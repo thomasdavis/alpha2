@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { put, list, del } from "@vercel/blob";
 
-const OUTPUTS_DIR = path.resolve(import.meta.dirname, "../outputs");
+const OUTPUTS_DIR = path.resolve(new URL(".", import.meta.url).pathname, "../outputs");
 
 interface RunMeta {
   id: string;

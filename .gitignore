@@ -8,3 +8,4 @@ outputs/
 data/
 .turbo/
 .vercel
+.env*.local
