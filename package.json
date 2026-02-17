@@ -1,6 +1,7 @@
 {
   "name": "alpha",
   "private": true,
+  "type": "module",
   "workspaces": [
     "apps/*",
     "packages/*"

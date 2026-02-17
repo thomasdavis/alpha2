@@ -1,9 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import * as path from "node:path";
 import { initEngine, getRuns } from "../apps/server/src/lib/engine.js";
 
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
-  await initEngine(path.resolve(process.cwd(), "outputs"));
+  await initEngine();
 
   const payload = getRuns().map((r) => ({
     id: r.id,

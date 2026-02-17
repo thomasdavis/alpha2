@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import * as path from "node:path";
 import { streamText } from "ai";
 import { initEngine, getRuns, ensureModel, AlphaLanguageModel } from "../apps/server/src/lib/engine.js";
 
@@ -9,7 +8,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  await initEngine(path.resolve(process.cwd(), "outputs"));
+  await initEngine();
   const runs = getRuns();
 
   const body = req.body;
