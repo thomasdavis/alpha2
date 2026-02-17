@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "noEmit": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../tensor" },
+    { "path": "../autograd" },
+    { "path": "../tokenizers" },
+    { "path": "../model" },
+    { "path": "../train" }
+  ]
+}

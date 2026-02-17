@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/tensor" },
+    { "path": "../../packages/autograd" },
+    { "path": "../../packages/tokenizers" },
+    { "path": "../../packages/model" },
+    { "path": "../../packages/train" },
+    { "path": "../../packages/effect-runtime" },
+    { "path": "../../packages/bench" }
+  ]
+}

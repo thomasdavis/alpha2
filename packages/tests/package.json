@@ -1,0 +1,20 @@
+{
+  "name": "@alpha/tests",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@alpha/core": "*",
+    "@alpha/tensor": "*",
+    "@alpha/autograd": "*",
+    "@alpha/tokenizers": "*",
+    "@alpha/model": "*",
+    "@alpha/train": "*",
+    "effect": "^3.12.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

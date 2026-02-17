@@ -1,0 +1,150 @@
+/**
+ * Optimizers: AdamW and SGD.
+ *
+ * Inspired by microgpt.py's Adam implementation but generalized to work
+ * with named parameter tensors.
+ */
+import type { Backend, TensorData, Optimizer, OptimizerState } from "@alpha/core";
+import { Registry, shapeSize } from "@alpha/core";
+
+// ── AdamW ──────────────────────────────────────────────────────────────────
+
+export interface AdamWConfig {
+  lr: number;
+  beta1: number;
+  beta2: number;
+  eps: number;
+  weightDecay: number;
+}
+
+export class AdamW implements Optimizer {
+  readonly name = "adamw";
+  private _step = 0;
+  private _m = new Map<string, Float32Array>();
+  private _v = new Map<string, Float32Array>();
+  private config: AdamWConfig;
+  private backend: Backend;
+
+  constructor(backend: Backend, config: Partial<AdamWConfig> = {}) {
+    this.backend = backend;
+    this.config = {
+      lr: config.lr ?? 3e-4,
+      beta1: config.beta1 ?? 0.9,
+      beta2: config.beta2 ?? 0.999,
+      eps: config.eps ?? 1e-8,
+      weightDecay: config.weightDecay ?? 0.01,
+    };
+  }
+
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>): void {
+    this._step++;
+    const { lr, beta1, beta2, eps, weightDecay } = this.config;
+
+    for (const [name, param] of params) {
+      const grad = grads.get(name);
+      if (!grad) continue;
+
+      const size = shapeSize(param.shape);
+      const pData = param.data as Float32Array;
+      const gData = grad.data as Float32Array;
+
+      // Lazy init moment buffers
+      if (!this._m.has(name)) {
+        this._m.set(name, new Float32Array(size));
+        this._v.set(name, new Float32Array(size));
+      }
+      const m = this._m.get(name)!;
+      const v = this._v.get(name)!;
+
+      // Bias correction
+      const bc1 = 1 - Math.pow(beta1, this._step);
+      const bc2 = 1 - Math.pow(beta2, this._step);
+
+      for (let i = 0; i < size; i++) {
+        // Weight decay (decoupled)
+        pData[i] -= lr * weightDecay * pData[i];
+        // Moment updates
+        m[i] = beta1 * m[i] + (1 - beta1) * gData[i];
+        v[i] = beta2 * v[i] + (1 - beta2) * gData[i] * gData[i];
+        // Bias-corrected
+        const mHat = m[i] / bc1;
+        const vHat = v[i] / bc2;
+        // Parameter update
+        pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
+      }
+    }
+  }
+
+  stateDict(): OptimizerState {
+    const buffers = new Map<string, TensorData>();
+    for (const [name, m] of this._m) {
+      const v = this._v.get(name)!;
+      buffers.set(`${name}.m`, { shape: [m.length], dtype: "f32", data: new Float32Array(m) });
+      buffers.set(`${name}.v`, { shape: [v.length], dtype: "f32", data: new Float32Array(v) });
+    }
+    return { step: this._step, buffers };
+  }
+
+  loadStateDict(state: OptimizerState): void {
+    this._step = state.step;
+    this._m.clear();
+    this._v.clear();
+    for (const [key, td] of state.buffers) {
+      if (key.endsWith(".m")) {
+        this._m.set(key.slice(0, -2), new Float32Array(td.data));
+      } else if (key.endsWith(".v")) {
+        this._v.set(key.slice(0, -2), new Float32Array(td.data));
+      }
+    }
+  }
+
+  setLr(lr: number): void {
+    this.config.lr = lr;
+  }
+}
+
+// ── SGD ────────────────────────────────────────────────────────────────────
+
+export class SGD implements Optimizer {
+  readonly name = "sgd";
+  private _step = 0;
+  private lr: number;
+
+  constructor(_backend: Backend, lr = 0.01) {
+    this.lr = lr;
+  }
+
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>): void {
+    this._step++;
+    for (const [name, param] of params) {
+      const grad = grads.get(name);
+      if (!grad) continue;
+      const pData = param.data as Float32Array;
+      const gData = grad.data as Float32Array;
+      for (let i = 0; i < pData.length; i++) {
+        pData[i] -= this.lr * gData[i];
+      }
+    }
+  }
+
+  stateDict(): OptimizerState {
+    return { step: this._step, buffers: new Map() };
+  }
+
+  loadStateDict(state: OptimizerState): void {
+    this._step = state.step;
+  }
+
+  setLr(lr: number): void {
+    this.lr = lr;
+  }
+}
+
+// ── Registry ───────────────────────────────────────────────────────────────
+
+export function createOptimizerRegistry(backend: Backend) {
+  const registry = new Registry<Optimizer>("optimizer");
+  registry.register("adamw", () => new AdamW(backend));
+  registry.register("sgd", () => new SGD(backend));
+  return registry;
+}
