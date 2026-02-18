@@ -10,12 +10,17 @@ import { resolveBackend, resolveRng } from "../resolve.js";
 import { FileCheckpoint, restoreParams, sample as runSample } from "@alpha/train";
 import { initGPT } from "@alpha/model";
 import { defaultSampleConfig } from "@alpha/core";
-import { CharTokenizer, BpeTokenizer } from "@alpha/tokenizers";
+import { CharTokenizer, BpeTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import type { SampleConfig, Tokenizer } from "@alpha/core";
 
 function tokenizerFromArtifacts(artifacts: { type: string; vocab: readonly string[]; merges?: readonly [number, number][] }): Tokenizer {
   if (artifacts.type === "bpe") {
     const tok = new BpeTokenizer();
+    tok.loadArtifacts(artifacts as any);
+    return tok;
+  }
+  if (artifacts.type === "word") {
+    const tok = new WordTokenizer();
     tok.loadArtifacts(artifacts as any);
     return tok;
   }

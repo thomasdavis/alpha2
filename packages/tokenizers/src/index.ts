@@ -8,10 +8,12 @@
 import { Registry, type Tokenizer } from "@alpha/core";
 import { CharTokenizer } from "./char.js";
 import { BpeTokenizer } from "./bpe.js";
+import { WordTokenizer } from "./word.js";
 
 // ── Re-exports ────────────────────────────────────────────────────────────
 export { CharTokenizer } from "./char.js";
 export { BpeTokenizer } from "./bpe.js";
+export { WordTokenizer } from "./word.js";
 export { saveArtifacts, loadArtifacts } from "./persist.js";
 
 // ── Tokenizer registry ────────────────────────────────────────────────────
@@ -22,6 +24,7 @@ export { saveArtifacts, loadArtifacts } from "./persist.js";
  * Pre-registered implementations:
  * - `"char"` -- character-level tokenizer
  * - `"bpe"`  -- byte-pair encoding tokenizer (default vocab size 2000)
+ * - `"word"` -- word-level tokenizer for discrete symbol domains
  *
  * Usage:
  * ```ts
@@ -32,3 +35,4 @@ export const tokenizerRegistry = new Registry<Tokenizer>("tokenizer");
 
 tokenizerRegistry.register("char", () => new CharTokenizer());
 tokenizerRegistry.register("bpe", () => new BpeTokenizer());
+tokenizerRegistry.register("word", () => new WordTokenizer());

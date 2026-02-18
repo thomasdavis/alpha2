@@ -4,7 +4,7 @@
 import { parseKV, requireArg, intArg, floatArg, strArg, boolArg, loadConfig } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng, listImplementations } from "../resolve.js";
 import { train as runTrain } from "@alpha/train";
-import { defaultModelConfig, defaultTrainConfig } from "@alpha/core";
+import { defaultModelConfig, defaultTrainConfig, getDomain } from "@alpha/core";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
 import { Effect } from "effect";
@@ -16,32 +16,43 @@ export async function trainCmd(args: string[]): Promise<void> {
   const dataPath = requireArg(kv, "data", "path to training text");
   const valDataPath = kv["valData"];
 
+  // Look up domain config for defaults
+  const domainId = kv["domain"];
+  const domain = domainId ? getDomain(domainId) : undefined;
+  if (domainId && !domain) {
+    console.error(`Unknown domain: "${domainId}". Available: novels, chords`);
+    process.exit(1);
+  }
+
+  const mDefaults = domain?.modelDefaults ?? {};
+  const tDefaults = domain?.trainDefaults ?? {};
+
   const modelConfig: ModelConfig = {
-    vocabSize: intArg(kv, "vocabSize", defaultModelConfig.vocabSize),
-    blockSize: intArg(kv, "block", defaultModelConfig.blockSize),
-    nLayer: intArg(kv, "layers", defaultModelConfig.nLayer),
-    nEmbd: intArg(kv, "dim", defaultModelConfig.nEmbd),
-    nHead: intArg(kv, "heads", defaultModelConfig.nHead),
-    dropout: floatArg(kv, "dropout", defaultModelConfig.dropout),
+    vocabSize: intArg(kv, "vocabSize", mDefaults.vocabSize ?? defaultModelConfig.vocabSize),
+    blockSize: intArg(kv, "block", mDefaults.blockSize ?? defaultModelConfig.blockSize),
+    nLayer: intArg(kv, "layers", mDefaults.nLayer ?? defaultModelConfig.nLayer),
+    nEmbd: intArg(kv, "dim", mDefaults.nEmbd ?? defaultModelConfig.nEmbd),
+    nHead: intArg(kv, "heads", mDefaults.nHead ?? defaultModelConfig.nHead),
+    dropout: floatArg(kv, "dropout", mDefaults.dropout ?? defaultModelConfig.dropout),
   };
 
   const trainConfig: TrainConfig = {
-    iters: intArg(kv, "iters", defaultTrainConfig.iters),
-    batchSize: intArg(kv, "batch", defaultTrainConfig.batchSize),
-    lr: floatArg(kv, "lr", defaultTrainConfig.lr),
-    beta1: floatArg(kv, "beta1", defaultTrainConfig.beta1),
-    beta2: floatArg(kv, "beta2", defaultTrainConfig.beta2),
-    eps: floatArg(kv, "eps", defaultTrainConfig.eps),
-    weightDecay: floatArg(kv, "weightDecay", defaultTrainConfig.weightDecay),
-    gradClip: floatArg(kv, "gradClip", defaultTrainConfig.gradClip),
-    evalInterval: intArg(kv, "evalInterval", defaultTrainConfig.evalInterval),
-    evalIters: intArg(kv, "evalIters", defaultTrainConfig.evalIters),
-    seed: intArg(kv, "seed", defaultTrainConfig.seed),
-    backend: strArg(kv, "backend", defaultTrainConfig.backend),
-    tokenizer: strArg(kv, "tokenizer", defaultTrainConfig.tokenizer),
-    optimizer: strArg(kv, "optim", defaultTrainConfig.optimizer),
-    logLevel: strArg(kv, "log", defaultTrainConfig.logLevel) as any,
-    trace: boolArg(kv, "trace", defaultTrainConfig.trace),
+    iters: intArg(kv, "iters", tDefaults.iters ?? defaultTrainConfig.iters),
+    batchSize: intArg(kv, "batch", tDefaults.batchSize ?? defaultTrainConfig.batchSize),
+    lr: floatArg(kv, "lr", tDefaults.lr ?? defaultTrainConfig.lr),
+    beta1: floatArg(kv, "beta1", tDefaults.beta1 ?? defaultTrainConfig.beta1),
+    beta2: floatArg(kv, "beta2", tDefaults.beta2 ?? defaultTrainConfig.beta2),
+    eps: floatArg(kv, "eps", tDefaults.eps ?? defaultTrainConfig.eps),
+    weightDecay: floatArg(kv, "weightDecay", tDefaults.weightDecay ?? defaultTrainConfig.weightDecay),
+    gradClip: floatArg(kv, "gradClip", tDefaults.gradClip ?? defaultTrainConfig.gradClip),
+    evalInterval: intArg(kv, "evalInterval", tDefaults.evalInterval ?? defaultTrainConfig.evalInterval),
+    evalIters: intArg(kv, "evalIters", tDefaults.evalIters ?? defaultTrainConfig.evalIters),
+    seed: intArg(kv, "seed", tDefaults.seed ?? defaultTrainConfig.seed),
+    backend: strArg(kv, "backend", tDefaults.backend ?? defaultTrainConfig.backend),
+    tokenizer: domain ? domain.tokenizer : strArg(kv, "tokenizer", defaultTrainConfig.tokenizer),
+    optimizer: strArg(kv, "optim", tDefaults.optimizer ?? defaultTrainConfig.optimizer),
+    logLevel: strArg(kv, "log", (tDefaults.logLevel ?? defaultTrainConfig.logLevel)) as any,
+    trace: boolArg(kv, "trace", tDefaults.trace ?? defaultTrainConfig.trace),
   };
 
   console.log(`Implementations available:\n${listImplementations()}\n`);
@@ -75,5 +86,6 @@ export async function trainCmd(args: string[]): Promise<void> {
     tokenizerArtifacts,
     runDir: kv["runDir"],
     resumePath: kv["resume"],
+    domain: domainId,
   });
 }

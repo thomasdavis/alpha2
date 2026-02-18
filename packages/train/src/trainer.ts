@@ -42,6 +42,7 @@ export interface TrainerDeps {
   resumePath?: string;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
   onStep?: (metrics: StepMetrics) => void;
+  domain?: string;
 }
 
 export async function train(deps: TrainerDeps): Promise<GPTParams> {
@@ -58,9 +59,11 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   await fs.mkdir(runDir, { recursive: true });
+  const configObj: Record<string, unknown> = { modelConfig, trainConfig, configHash, runId: rid };
+  if (deps.domain) configObj.domain = deps.domain;
   await fs.writeFile(
     path.join(runDir, "config.json"),
-    JSON.stringify({ modelConfig, trainConfig, configHash, runId: rid }, null, 2),
+    JSON.stringify(configObj, null, 2),
   );
 
   // Open metrics log

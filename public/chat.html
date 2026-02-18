@@ -144,7 +144,8 @@ async function loadModels() {
   sel.innerHTML = "";
   for (const m of models) {
     const opt = document.createElement("option");
-    opt.value = m.id; opt.textContent = m.name + " (step " + m.step + ")";
+    const tag = m.domain || "novels";
+    opt.value = m.id; opt.textContent = m.name + " [" + tag + "] (step " + m.step + ")";
     sel.appendChild(opt);
   }
   updateModelInfo();
@@ -153,9 +154,13 @@ function updateModelInfo() {
   const m = models.find(x => x.id === document.getElementById("model").value);
   if (!m) return;
   const mc = m.modelConfig;
-  const parts = [mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H", "vocab="+mc.vocabSize, "ctx="+mc.blockSize];
+  const domain = m.domain || "novels";
+  const parts = [domain, mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H", "vocab="+mc.vocabSize, "ctx="+mc.blockSize];
   if (m.lastLoss != null) parts.push("loss="+m.lastLoss.toFixed(3));
   document.getElementById("modelInfo").textContent = parts.join(" | ");
+  // Adapt placeholder based on domain
+  const input = document.getElementById("input");
+  input.placeholder = domain === "chords" ? "Enter chord progression..." : "Type a message...";
 }
 document.getElementById("model").addEventListener("change", updateModelInfo);
 function toggleSettings() { document.getElementById("settings").classList.toggle("open"); }

@@ -96,10 +96,12 @@ async function uploadRun(run: RunMeta): Promise<void> {
     access: "public",
     contentType: "application/json",
     addRandomSuffix: false,
+    allowOverwrite: true,
   });
   console.log(`  Checkpoint: ${ckptBlob.url}`);
 
   // Upload manifest
+  const domain = (run.config as any).domain ?? "novels";
   const manifest = {
     id: run.id,
     name: run.name,
@@ -107,13 +109,14 @@ async function uploadRun(run: RunMeta): Promise<void> {
     checkpointUrl: ckptBlob.url,
     config: run.config,
     lastLoss: run.lastLoss,
+    domain,
     uploadedAt: new Date().toISOString(),
   };
 
   const manifestBlob = await put(
     `models/${run.name}/manifest.json`,
     JSON.stringify(manifest, null, 2),
-    { access: "public", contentType: "application/json", addRandomSuffix: false },
+    { access: "public", contentType: "application/json", addRandomSuffix: false, allowOverwrite: true },
   );
   console.log(`  Manifest:   ${manifestBlob.url}`);
 }

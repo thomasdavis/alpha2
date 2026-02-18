@@ -4,3 +4,4 @@ export * from "./interfaces.js";
 export * from "./registry.js";
 export * from "./hash.js";
 export * from "./rng.js";
+export * from "./domains.js";

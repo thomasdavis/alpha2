@@ -43,6 +43,13 @@
   }
   #output .prompt-text { color: #888; }
   #output .gen-text { color: #4ade80; }
+  #output.chords .gen-text { letter-spacing: 0.05em; word-spacing: 0.3em; }
+  .domain-tag {
+    display: inline-block; font-size: 0.65rem; padding: 0.1rem 0.4rem;
+    border-radius: 3px; background: #1e3a5f; color: #60a5fa; margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .domain-tag.chords { background: #3b2f1e; color: #f59e0b; }
   #status { font-size: 0.75rem; color: #666; margin-top: 0.5rem; max-width: 700px; }
   nav { margin-bottom: 1rem; }
   nav a { color: #60a5fa; text-decoration: none; font-size: 0.85rem; }
@@ -85,19 +92,33 @@ async function loadModels() {
   sel.innerHTML = "";
   for (const m of models) {
     const opt = document.createElement("option");
-    opt.value = m.id; opt.textContent = m.name + " (step " + m.step + ")";
+    const tag = m.domain || "novels";
+    opt.value = m.id; opt.textContent = m.name + " [" + tag + "] (step " + m.step + ")";
     sel.appendChild(opt);
   }
   updateModelInfo();
 }
+const domainPrompts = {
+  novels: ["The ", "Once upon a time", "He walked into"],
+  chords: ["Em7 G Dsus4", "Am F C G", "D A Bm G"],
+  abc: ["X:1\nM:4/4\nK:G\n|:G", "X:1\nM:6/8\nK:D\nA|:d", "X:1\nM:4/4\nK:Ador\nE"],
+};
 function updateModelInfo() {
   const sel = document.getElementById("model");
   const m = models.find(x => x.id === sel.value);
   if (!m) { document.getElementById("modelInfo").textContent = ""; return; }
   const mc = m.modelConfig;
-  const parts = [mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H","vocab="+mc.vocabSize,"ctx="+mc.blockSize];
+  const domain = m.domain || "novels";
+  const parts = [domain, mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H","vocab="+mc.vocabSize,"ctx="+mc.blockSize];
   if (m.lastLoss != null) parts.push("loss="+m.lastLoss.toFixed(3));
   document.getElementById("modelInfo").textContent = parts.join(" | ");
+  // Set domain-appropriate prompt
+  const prompts = domainPrompts[domain] || domainPrompts.novels;
+  document.getElementById("prompt").value = prompts[0];
+  document.getElementById("prompt").placeholder = domain === "chords" ? "Enter chord progression..." : "Enter prompt...";
+  // Style output for domain
+  const output = document.getElementById("output");
+  output.className = domain === "chords" ? "chords" : "";
 }
 document.getElementById("model").addEventListener("change", updateModelInfo);
 function doGenerate() {

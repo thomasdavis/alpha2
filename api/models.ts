@@ -12,6 +12,7 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
     lastLoss: r.lastLoss,
     modelConfig: r.config.modelConfig,
     trainConfig: r.config.trainConfig,
+    domain: r.domain,
   }));
   res.status(200).json(payload);
 }

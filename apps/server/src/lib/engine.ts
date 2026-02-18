@@ -17,7 +17,7 @@ import { Tape } from "@alpha/autograd";
 import type { GPTParams } from "@alpha/model";
 import { initGPT, gptForward, countParams } from "@alpha/model";
 import { FileCheckpoint, restoreParams } from "@alpha/train";
-import { BpeTokenizer, CharTokenizer } from "@alpha/tokenizers";
+import { BpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -47,6 +47,8 @@ export interface RunInfo {
   lastLoss?: number;
   /** "local" or "blob" */
   source: "local" | "blob";
+  /** Model domain (e.g. "novels", "chords"). Defaults to "novels". */
+  domain: string;
 }
 
 export interface LoadedModel {
@@ -118,6 +120,7 @@ export function scanLocalRuns(outputsDir: string): RunInfo[] {
       config,
       lastLoss,
       source: "local",
+      domain: config.domain ?? "novels",
     });
   }
 
@@ -157,6 +160,7 @@ export async function scanBlobRuns(): Promise<RunInfo[]> {
         config: data.config,
         lastLoss: data.lastLoss,
         source: "blob",
+        domain: (data as any).domain ?? (data.config as any).domain ?? "novels",
       });
     } catch (e) {
       console.error(`Failed to read manifest ${manifest.pathname}:`, e);
@@ -203,6 +207,10 @@ function buildModel(state: CheckpointState, runId: string): LoadedModel {
   if (state.tokenizerArtifacts) {
     if (state.tokenizerArtifacts.type === "bpe") {
       const tok = new BpeTokenizer();
+      tok.loadArtifacts(state.tokenizerArtifacts);
+      tokenizer = tok;
+    } else if (state.tokenizerArtifacts.type === "word") {
+      const tok = new WordTokenizer();
       tok.loadArtifacts(state.tokenizerArtifacts);
       tokenizer = tok;
     } else {
@@ -354,7 +362,9 @@ export function* generateTokens(
     const next = sampleNextToken(model, tokens, currentLen, temperature, topk, rng);
     tokens[currentLen] = next;
     currentLen++;
-    yield tokenizer.decode(new Int32Array([next]));
+    const raw = tokenizer.decode(new Int32Array([next]));
+    const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
+    yield sep + raw;
   }
 }
 
@@ -476,8 +486,9 @@ export class AlphaLanguageModel implements LanguageModelV3 {
           currentLen++;
           outputCount++;
 
-          const decoded = tokenizer.decode(new Int32Array([next]));
-          controller.enqueue({ type: "text-delta", id: textId, delta: decoded });
+          const raw = tokenizer.decode(new Int32Array([next]));
+          const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
+          controller.enqueue({ type: "text-delta", id: textId, delta: sep + raw });
 
           setImmediate(step);
         }
