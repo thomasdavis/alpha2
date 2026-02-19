@@ -34,10 +34,21 @@ const OUTPUTS_DIR = process.env.OUTPUTS_DIR
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────
 
+const MAX_BODY_BYTES = 50 * 1024 * 1024; // 50 MB — enough for 20k+ token inputs with large messages
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c));
+    let total = 0;
+    req.on("data", (c: Buffer) => {
+      total += c.length;
+      if (total > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => {
       const raw = Buffer.concat(chunks);
       if (req.headers["content-encoding"] === "gzip") {
@@ -114,7 +125,7 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
   const runs = getRuns();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];
   const modelId: string = body.model ?? runs[0]?.id;
-  const maxTokens: number = Math.min(body.maxTokens ?? 200, 500);
+  const maxTokens: number = Math.min(body.maxTokens ?? 200, 20_000);
   const temperature: number = body.temperature ?? 0.8;
   const topk: number = body.topk ?? 40;
 
@@ -145,7 +156,7 @@ async function handleGenerate(req: http.IncomingMessage, res: http.ServerRespons
   const body = req.method === "POST" ? JSON.parse(await readBody(req)) : {};
   const runs = getRuns();
   const prompt: string = url.searchParams.get("prompt") ?? body.prompt ?? "";
-  const maxTokens: number = Math.min(parseInt(url.searchParams.get("max_tokens") ?? "", 10) || (body.max_tokens ?? 2048), 2048);
+  const maxTokens: number = Math.min(parseInt(url.searchParams.get("max_tokens") ?? "", 10) || (body.max_tokens ?? 2048), 20_000);
   const temperature: number = parseFloat(url.searchParams.get("temperature") ?? "") || (body.temperature ?? 0.7);
   const modelId: string = url.searchParams.get("model") ?? body.model ?? runs[0]?.id;
 
@@ -211,7 +222,7 @@ async function handleChatCompletions(req: http.IncomingMessage, res: http.Server
   const runs = getRuns();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];
   const modelId: string = body.model ?? runs[0]?.id;
-  const maxTokens: number = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 2048, 2048);
+  const maxTokens: number = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 2048, 20_000);
   const temperature: number = body.temperature ?? 0.7;
   const stream: boolean = body.stream === true;
 

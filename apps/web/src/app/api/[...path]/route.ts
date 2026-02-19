@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
 
+export const maxDuration = 300; // 5 min max for serverless
+
 const SERVER_URL =
   process.env.INTERNAL_SERVER_URL || "http://localhost:3001";
 
@@ -13,7 +15,7 @@ async function proxy(request: NextRequest, segments: string[]) {
   const init: RequestInit = {
     method: request.method,
     headers,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(300_000), // 5 min — enough for 20k token generation on CPU
   };
 
   if (request.method !== "GET" && request.method !== "HEAD") {
