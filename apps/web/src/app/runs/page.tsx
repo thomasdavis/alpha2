@@ -27,6 +27,7 @@ function DomainBadge({ domain }: { domain: string }) {
     novels: "bg-blue-bg text-blue",
     chords: "bg-yellow-bg text-yellow",
     abc: "bg-green-bg text-green",
+    dumb_finance: "bg-red-bg text-red",
   };
   return (
     <span

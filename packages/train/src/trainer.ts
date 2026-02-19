@@ -42,7 +42,8 @@ export interface TrainerDeps {
   resumePath?: string;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
   onStep?: (metrics: StepMetrics) => void;
-  onStart?: (info: { runId: string; configHash: string; totalParams: number }) => void;
+  onStart?: (info: { runId: string; configHash: string; totalParams: number; dataPath: string }) => void;
+  onCheckpoint?: (info: { step: number; path: string; runId: string }) => void;
   domain?: string;
 }
 
@@ -99,7 +100,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   }
 
   // Notify start
-  if (onStart) onStart({ runId: rid, configHash, totalParams });
+  if (onStart) onStart({ runId: rid, configHash, totalParams, dataPath });
 
   // Log header
   const paramBytes = totalParams * 4;
@@ -232,6 +233,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, modelConfig, deps.tokenizerArtifacts);
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
+      if (deps.onCheckpoint) deps.onCheckpoint({ step: step + 1, path: ckptPath, runId: rid });
     }
   }
 

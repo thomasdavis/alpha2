@@ -71,6 +71,28 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "dumb_finance",
+    {
+      id: "dumb_finance",
+      displayName: "Dumb Finance",
+      tokenizer: "char",
+      samplePrompts: [
+        "1708300800000|AAPL|BID|",
+        "1708300800000|TSLA|ASK|",
+        "1708300800000|NVDA|TRADE|",
+      ],
+      modelDefaults: {
+        blockSize: 256,
+        nLayer: 6,
+        nEmbd: 128,
+        nHead: 8,
+      },
+      trainDefaults: {
+        tokenizer: "char",
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */

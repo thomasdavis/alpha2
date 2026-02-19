@@ -70,6 +70,18 @@ const nav: NavItem[] = [
     ),
     match: (p) => p.startsWith("/checkpoints"),
   },
+  {
+    href: "/models",
+    label: "Models",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 1.5L14 5v6l-6 3.5L2 11V5l6-3.5z" />
+        <path d="M8 8.5V15" />
+        <path d="M2 5l6 3.5L14 5" />
+      </svg>
+    ),
+    match: (p) => p === "/models" || p.startsWith("/models/"),
+  },
 ];
 
 const tools: NavItem[] = [
@@ -92,18 +104,6 @@ const tools: NavItem[] = [
       </svg>
     ),
     match: (p) => p === "/chat",
-  },
-  {
-    href: "/models",
-    label: "Models",
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="3" width="12" height="10" rx="1" />
-        <line x1="2" y1="7" x2="14" y2="7" />
-        <line x1="6" y1="7" x2="6" y2="13" />
-      </svg>
-    ),
-    match: (p) => p === "/models",
   },
   {
     href: "/docs",

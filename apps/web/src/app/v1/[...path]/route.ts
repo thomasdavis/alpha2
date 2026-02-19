@@ -13,6 +13,7 @@ async function proxy(request: NextRequest, segments: string[]) {
   const init: RequestInit = {
     method: request.method,
     headers,
+    signal: AbortSignal.timeout(30_000),
   };
 
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -21,13 +22,22 @@ async function proxy(request: NextRequest, segments: string[]) {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(target, init);
+  try {
+    const upstream = await fetch(target, init);
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: upstream.headers,
-  });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: upstream.headers,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Upstream request failed";
+    const status = message.includes("timed out") ? 504 : 502;
+    return new Response(
+      JSON.stringify({ error: message }),
+      { status, headers: { "Content-Type": "application/json" } },
+    );
+  }
 }
 
 export async function GET(

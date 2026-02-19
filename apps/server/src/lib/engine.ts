@@ -103,8 +103,15 @@ export function scanLocalRuns(outputsDir: string): RunInfo[] {
     if (checkpoints.length === 0) continue;
 
     const best = checkpoints[0];
-    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     const stat = fs.statSync(path.join(dirPath, best.file));
+
+    // Skip tiny/corrupt checkpoints (valid checkpoints are at least 1KB)
+    if (stat.size < 1024) {
+      console.warn(`Skipping ${entry.name}: checkpoint too small (${stat.size} bytes)`);
+      continue;
+    }
+
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
     let lastLoss: number | undefined;
     const metricsPath = path.join(dirPath, "metrics.jsonl");

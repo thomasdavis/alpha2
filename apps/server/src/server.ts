@@ -456,17 +456,26 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
   }
 
   const body = JSON.parse(await readBody(req));
-  const { name, config, checkpoint, step, metrics } = body as {
+  const { name, config, checkpoint, step, metrics, trainingData } = body as {
     name: string;
     config: Record<string, unknown>;
     checkpoint: unknown;
     step: number;
     metrics?: string;
+    trainingData?: string;
   };
 
   if (!name || !config || !checkpoint || !step) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Missing required fields: name, config, checkpoint, step" }));
+    return;
+  }
+
+  // Reject empty/invalid checkpoints that would crash model loading
+  const ckpt = checkpoint as Record<string, unknown>;
+  if (!ckpt.modelConfig || !ckpt.params) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid checkpoint: missing modelConfig or params" }));
     return;
   }
 
@@ -478,6 +487,9 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
   if (metrics) {
     fs.writeFileSync(path.join(runDir, "metrics.jsonl"), metrics);
   }
+  if (trainingData) {
+    fs.writeFileSync(path.join(runDir, "training-data.txt"), trainingData);
+  }
 
   // Rescan engine to pick up new model
   resetEngine();
@@ -486,6 +498,49 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
   console.log(`Uploaded model: ${name} (step ${step})`);
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true, name, step }));
+}
+
+async function handleDeleteModel(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  const url = new URL(req.url!, `http://${req.headers.host}`);
+  const name = url.searchParams.get("name");
+  if (!name) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing ?name= parameter" }));
+    return;
+  }
+
+  const runDir = path.join(OUTPUTS_DIR, name);
+  if (!fs.existsSync(runDir)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Model not found" }));
+    return;
+  }
+
+  fs.rmSync(runDir, { recursive: true, force: true });
+  resetEngine();
+  await initEngine(OUTPUTS_DIR);
+
+  console.log(`Deleted model: ${name}`);
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true, deleted: name }));
+}
+
+// ── Training data handler ─────────────────────────────────────────────────
+
+async function handleRunTrainingData(_req: http.IncomingMessage, res: http.ServerResponse, runId: string): Promise<void> {
+  const filePath = path.join(OUTPUTS_DIR, runId, "training-data.txt");
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "No training data available" }));
+    return;
+  }
+  const text = fs.readFileSync(filePath, "utf-8");
+  const bytes = Buffer.byteLength(text, "utf-8");
+  const lines = text.split("\n").length;
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ text, bytes, lines }));
 }
 
 // ── Dashboard API handlers ────────────────────────────────────────────────
@@ -552,6 +607,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
   // API routes
+  if (p === "/api/models" && req.method === "DELETE") { await handleDeleteModel(req, res); return; }
   if (p === "/api/models") { handleModels(req, res); return; }
   if (p === "/api/inference" || p === "/inference") { await handleInference(req, res); return; }
   if ((p === "/api/chat") && req.method === "POST") { await handleChat(req, res); return; }
@@ -571,6 +627,8 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   if (runMetricsMatch) { await handleDbRunMetrics(req, res, decodeURIComponent(runMetricsMatch[1])); return; }
   const runCheckpointsMatch = p.match(/^\/api\/runs\/([^/]+)\/checkpoints$/);
   if (runCheckpointsMatch) { await handleDbRunCheckpoints(req, res, decodeURIComponent(runCheckpointsMatch[1])); return; }
+  const runTrainingDataMatch = p.match(/^\/api\/runs\/([^/]+)\/training-data$/);
+  if (runTrainingDataMatch) { await handleRunTrainingData(req, res, decodeURIComponent(runTrainingDataMatch[1])); return; }
 
   // Static pages
   if (p === "/") { serveStatic(res, "index.html", "text/html"); return; }

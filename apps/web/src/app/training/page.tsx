@@ -331,6 +331,7 @@ function LiveRunCard({ run }: { run: LiveRun }) {
     novels: "bg-blue-bg text-blue border-blue/20",
     chords: "bg-yellow-bg text-yellow border-yellow/20",
     abc: "bg-green-bg text-green border-green/20",
+    dumb_finance: "bg-red-bg text-red border-red/20",
   };
 
   return (

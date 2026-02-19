@@ -25,6 +25,15 @@ body {
   color: var(--color-text-primary);
 }
 
+/* Blinking cursor for chat streaming */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-blink {
+  animation: blink 0.8s infinite;
+}
+
 /* Hide sidebar on mobile, show on lg+ */
 aside {
   display: none;

@@ -104,9 +104,11 @@ export async function trainCmd(args: string[]): Promise<void> {
           domain: domainId,
           modelConfig: finalModelConfig,
           trainConfig,
+          dataPath: info.dataPath,
         })
       : undefined,
     onStep: reporter ? (metrics) => reporter.onStep(metrics) : undefined,
+    onCheckpoint: reporter ? (info) => reporter.uploadCheckpoint(info) : undefined,
   });
 
   if (reporter) {
