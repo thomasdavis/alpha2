@@ -4,13 +4,18 @@ import { getClient } from "@/lib/db";
 import { getRun, getMetrics, listCheckpoints } from "@alpha/db";
 import { formatParams, formatLoss, formatBytes, timeAgo, pct } from "@/lib/format";
 import { LossChart } from "@/components/loss-chart";
+import { Tip } from "@/components/tooltip";
+import { tips } from "@/components/tip-data";
 
 export const dynamic = "force-dynamic";
 
-function Detail({ label, value }: { label: string; value: string | number | null }) {
+function Detail({ label, value, tip }: { label: string; value: string | number | null; tip?: string }) {
   return (
     <tr>
-      <td className="py-0.5 pr-4 text-xs text-text-muted">{label}</td>
+      <td className="py-0.5 pr-4 text-xs text-text-muted">
+        {label}
+        {tip && <Tip text={tip} />}
+      </td>
       <td className="py-0.5 font-mono text-xs text-text-primary">
         {value ?? "-"}
       </td>
@@ -113,14 +118,14 @@ export default async function RunDetailPage({
           <div className="text-lg font-bold text-white">
             {formatParams(run.estimated_params)}
           </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">Params</div>
+          <div className="text-[0.68rem] uppercase text-text-muted">Params <Tip text={tips.params} /></div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
           <div className="text-lg font-bold text-white">
             {formatLoss(run.last_loss)}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Last loss
+            Last loss <Tip text={tips.lastLoss} />
           </div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
@@ -128,7 +133,7 @@ export default async function RunDetailPage({
             {formatLoss(run.best_val_loss)}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Best val loss
+            Best val loss <Tip text={tips.bestValLoss} />
           </div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
@@ -136,7 +141,7 @@ export default async function RunDetailPage({
             {avgTps > 0 ? avgTps.toFixed(0) : "-"}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Avg tok/sec
+            Avg tok/sec <Tip text={tips.tokPerSec} />
           </div>
         </div>
       </div>
@@ -144,7 +149,7 @@ export default async function RunDetailPage({
       {/* Loss chart */}
       <div className="mb-6 rounded-lg border border-border bg-surface p-4">
         <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-          Loss over training
+          Loss over training <Tip text={tips.lossChart} />
         </h2>
         <LossChart runId={run.id} />
       </div>
@@ -153,17 +158,17 @@ export default async function RunDetailPage({
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="rounded-lg border border-border bg-surface p-4">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-            Model Architecture
+            Model Architecture <Tip text={tips.architecture} />
           </h2>
           <table className="w-full">
             <tbody>
-              <Detail label="Vocab size" value={run.vocab_size} />
-              <Detail label="Block size" value={run.block_size} />
-              <Detail label="Layers" value={run.n_layer} />
-              <Detail label="Embedding dim" value={run.n_embd} />
-              <Detail label="Heads" value={run.n_head} />
-              <Detail label="Dropout" value={run.dropout} />
-              <Detail label="Est. params" value={formatParams(run.estimated_params)} />
+              <Detail label="Vocab size" value={run.vocab_size} tip={tips.vocabSize} />
+              <Detail label="Block size" value={run.block_size} tip={tips.blockSize} />
+              <Detail label="Layers" value={run.n_layer} tip={tips.nLayer} />
+              <Detail label="Embedding dim" value={run.n_embd} tip={tips.nEmbd} />
+              <Detail label="Heads" value={run.n_head} tip={tips.nHead} />
+              <Detail label="Dropout" value={run.dropout} tip={tips.dropout} />
+              <Detail label="Est. params" value={formatParams(run.estimated_params)} tip={tips.params} />
             </tbody>
           </table>
         </div>
@@ -174,21 +179,21 @@ export default async function RunDetailPage({
           </h2>
           <table className="w-full">
             <tbody>
-              <Detail label="Total iters" value={run.total_iters} />
-              <Detail label="Batch size" value={run.batch_size} />
-              <Detail label="Learning rate" value={run.lr} />
-              <Detail label="Seed" value={run.seed} />
-              <Detail label="Backend" value={run.backend} />
-              <Detail label="Tokenizer" value={run.tokenizer} />
-              <Detail label="Optimizer" value={run.optimizer} />
-              <Detail label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} />
+              <Detail label="Total iters" value={run.total_iters} tip={tips.totalIters} />
+              <Detail label="Batch size" value={run.batch_size} tip={tips.batchSize} />
+              <Detail label="Learning rate" value={run.lr} tip={tips.lr} />
+              <Detail label="Seed" value={run.seed} tip={tips.seed} />
+              <Detail label="Backend" value={run.backend} tip={tips.backend} />
+              <Detail label="Tokenizer" value={run.tokenizer} tip={tips.tokenizer} />
+              <Detail label="Optimizer" value={run.optimizer} tip={tips.optimizer} />
+              <Detail label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} tip={tips.msPerIter} />
             </tbody>
           </table>
         </div>
 
         <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-            Checkpoints ({checkpoints.length})
+            Checkpoints ({checkpoints.length}) <Tip text={tips.checkpoint} />
           </h2>
           {checkpoints.length === 0 ? (
             <p className="text-xs text-text-muted">No checkpoints saved</p>

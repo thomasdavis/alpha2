@@ -5,13 +5,18 @@ import { getRun, getMetrics, listCheckpoints } from "@alpha/db";
 import { formatParams, formatLoss, formatBytes, timeAgo, pct } from "@/lib/format";
 import { LossChart } from "@/components/loss-chart";
 import { TrainingDataPreview } from "./training-data";
+import { Tip } from "@/components/tooltip";
+import { tips } from "@/components/tip-data";
 
 export const dynamic = "force-dynamic";
 
-function Detail({ label, value }: { label: string; value: string | number | null }) {
+function Detail({ label, value, tip }: { label: string; value: string | number | null; tip?: string }) {
   return (
     <tr>
-      <td className="py-0.5 pr-4 text-xs text-text-muted">{label}</td>
+      <td className="py-0.5 pr-4 text-xs text-text-muted">
+        {label}
+        {tip && <Tip text={tip} />}
+      </td>
       <td className="py-0.5 font-mono text-xs text-text-primary">
         {value ?? "-"}
       </td>
@@ -108,11 +113,13 @@ export default async function ModelDetailPage({
         >
           {run.status}
         </span>
+        <Tip text={run.status === "active" ? tips.statusActive : run.status === "completed" ? tips.statusCompleted : run.status === "stale" ? tips.statusStale : tips.statusFailed} />
         <span
           className={`rounded px-2 py-0.5 text-xs font-semibold uppercase ${domainColors[run.domain] ?? "bg-surface-2 text-text-secondary"}`}
         >
           {run.domain}
         </span>
+        <Tip text={tips.domain} />
         <span className="ml-auto text-xs text-text-muted">
           Updated {timeAgo(run.updated_at)}
         </span>
@@ -126,6 +133,7 @@ export default async function ModelDetailPage({
               <span className="h-1.5 w-1.5 rounded-full bg-green" />
               Available for inference
             </span>
+            <Tip text={tips.inferenceAvailable} />
             <Link
               href={`/chat?model=${id}`}
               className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/80 hover:no-underline"
@@ -143,6 +151,7 @@ export default async function ModelDetailPage({
           <span className="inline-flex items-center gap-1.5 text-xs text-text-muted">
             <span className="h-1.5 w-1.5 rounded-full bg-text-muted" />
             Not loaded in inference engine
+            <Tip text={tips.inferenceUnavailable} />
           </span>
         )}
       </div>
@@ -153,14 +162,16 @@ export default async function ModelDetailPage({
           <div className="text-lg font-bold text-white">
             {formatParams(run.estimated_params)}
           </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">Params</div>
+          <div className="text-[0.68rem] uppercase text-text-muted">
+            Params <Tip text={tips.params} />
+          </div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
           <div className="text-lg font-bold text-white">
             {formatLoss(run.last_loss)}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Last loss
+            Last loss <Tip text={tips.lastLoss} />
           </div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
@@ -168,7 +179,7 @@ export default async function ModelDetailPage({
             {formatLoss(run.best_val_loss)}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Best val loss
+            Best val loss <Tip text={tips.bestValLoss} />
           </div>
         </div>
         <div className="rounded-lg border border-border bg-surface px-4 py-3">
@@ -176,7 +187,7 @@ export default async function ModelDetailPage({
             {avgTps > 0 ? avgTps.toFixed(0) : "-"}
           </div>
           <div className="text-[0.68rem] uppercase text-text-muted">
-            Avg tok/sec
+            Avg tok/sec <Tip text={tips.tokPerSec} />
           </div>
         </div>
       </div>
@@ -187,6 +198,7 @@ export default async function ModelDetailPage({
           <span>
             Step {run.latest_step.toLocaleString()} /{" "}
             {run.total_iters.toLocaleString()}
+            <Tip text={tips.step} />
           </span>
           <span>{p}%</span>
         </div>
@@ -201,7 +213,7 @@ export default async function ModelDetailPage({
       {/* Loss chart */}
       <div className="mb-6 rounded-lg border border-border bg-surface p-4">
         <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-          Loss over training
+          Loss over training <Tip text={tips.lossChart} />
         </h2>
         <LossChart runId={run.id} />
       </div>
@@ -210,17 +222,17 @@ export default async function ModelDetailPage({
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="rounded-lg border border-border bg-surface p-4">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-            Model Architecture
+            Model Architecture <Tip text={tips.architecture} />
           </h2>
           <table className="w-full">
             <tbody>
-              <Detail label="Vocab size" value={run.vocab_size} />
-              <Detail label="Block size" value={run.block_size} />
-              <Detail label="Layers" value={run.n_layer} />
-              <Detail label="Embedding dim" value={run.n_embd} />
-              <Detail label="Heads" value={run.n_head} />
-              <Detail label="Dropout" value={run.dropout} />
-              <Detail label="Est. params" value={formatParams(run.estimated_params)} />
+              <Detail label="Vocab size" value={run.vocab_size} tip={tips.vocabSize} />
+              <Detail label="Block size" value={run.block_size} tip={tips.blockSize} />
+              <Detail label="Layers" value={run.n_layer} tip={tips.nLayer} />
+              <Detail label="Embedding dim" value={run.n_embd} tip={tips.nEmbd} />
+              <Detail label="Heads" value={run.n_head} tip={tips.nHead} />
+              <Detail label="Dropout" value={run.dropout} tip={tips.dropout} />
+              <Detail label="Est. params" value={formatParams(run.estimated_params)} tip={tips.params} />
             </tbody>
           </table>
         </div>
@@ -231,14 +243,14 @@ export default async function ModelDetailPage({
           </h2>
           <table className="w-full">
             <tbody>
-              <Detail label="Total iters" value={run.total_iters} />
-              <Detail label="Batch size" value={run.batch_size} />
-              <Detail label="Learning rate" value={run.lr} />
-              <Detail label="Seed" value={run.seed} />
-              <Detail label="Backend" value={run.backend} />
-              <Detail label="Tokenizer" value={run.tokenizer} />
-              <Detail label="Optimizer" value={run.optimizer} />
-              <Detail label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} />
+              <Detail label="Total iters" value={run.total_iters} tip={tips.totalIters} />
+              <Detail label="Batch size" value={run.batch_size} tip={tips.batchSize} />
+              <Detail label="Learning rate" value={run.lr} tip={tips.lr} />
+              <Detail label="Seed" value={run.seed} tip={tips.seed} />
+              <Detail label="Backend" value={run.backend} tip={tips.backend} />
+              <Detail label="Tokenizer" value={run.tokenizer} tip={tips.tokenizer} />
+              <Detail label="Optimizer" value={run.optimizer} tip={tips.optimizer} />
+              <Detail label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} tip={tips.msPerIter} />
             </tbody>
           </table>
         </div>
@@ -247,7 +259,7 @@ export default async function ModelDetailPage({
         {(modelConfigJson || trainConfigJson) && (
           <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
             <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-              Raw Config JSON
+              Raw Config JSON <Tip text={tips.rawConfig} />
             </h2>
             <div className="grid gap-4 sm:grid-cols-2">
               {modelConfigJson && (
@@ -268,7 +280,7 @@ export default async function ModelDetailPage({
 
         <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-            Checkpoints ({checkpoints.length})
+            Checkpoints ({checkpoints.length}) <Tip text={tips.checkpoint} />
           </h2>
           {checkpoints.length === 0 ? (
             <p className="text-xs text-text-muted">No checkpoints saved</p>
@@ -294,7 +306,7 @@ export default async function ModelDetailPage({
         {/* Training data preview */}
         <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
-            Training Data
+            Training Data <Tip text={tips.trainingData} />
           </h2>
           <TrainingDataPreview runId={run.id} />
         </div>

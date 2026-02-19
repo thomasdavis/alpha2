@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { Tip } from "@/components/tooltip";
+import { tips } from "@/components/tip-data";
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "";
 
@@ -264,11 +266,14 @@ function LiveLossChart({ metrics, totalIters }: { metrics: StepMetric[]; totalIt
 
 // ── Stat card ──────────────────────────────────────────────────
 
-function Stat({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+function Stat({ label, value, sub, color, tip }: { label: string; value: string; sub?: string; color?: string; tip?: string }) {
   return (
     <div className="rounded-lg border border-border/60 bg-surface-2/80 px-3 py-2.5">
       <div className={`font-mono text-sm font-bold ${color ?? "text-white"}`}>{value}</div>
-      <div className="text-[0.6rem] uppercase tracking-wider text-text-muted">{label}</div>
+      <div className="text-[0.6rem] uppercase tracking-wider text-text-muted">
+        {label}
+        {tip && <Tip text={tip} />}
+      </div>
       {sub && <div className="mt-0.5 text-[0.6rem] text-text-muted">{sub}</div>}
     </div>
   );
@@ -276,10 +281,13 @@ function Stat({ label, value, sub, color }: { label: string; value: string; sub?
 
 // ── Detail row ─────────────────────────────────────────────────
 
-function DetailRow({ label, value }: { label: string; value: string | number | null | undefined }) {
+function DetailRow({ label, value, tip }: { label: string; value: string | number | null | undefined; tip?: string }) {
   return (
     <div className="flex justify-between border-b border-border/30 py-1.5 last:border-0">
-      <span className="text-[0.7rem] text-text-muted">{label}</span>
+      <span className="text-[0.7rem] text-text-muted">
+        {label}
+        {tip && <Tip text={tip} />}
+      </span>
       <span className="font-mono text-[0.7rem] text-text-primary">{value ?? "-"}</span>
     </div>
   );
@@ -381,13 +389,13 @@ function LiveRunCard({ run }: { run: LiveRun }) {
 
         {/* Primary metrics - two rows */}
         <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-          <Stat label="Loss" value={last ? last.loss.toFixed(4) : "-"} color="text-yellow" />
-          <Stat label="Best Loss" value={stats ? stats.minLoss.toFixed(4) : "-"} sub={stats ? `${stats.lossDropPct > 0 ? "-" : ""}${Math.abs(stats.lossDropPct).toFixed(1)}% from start` : undefined} />
-          <Stat label="Val Loss" value={stats?.lastVal != null ? stats.lastVal.toFixed(4) : "-"} sub={stats?.bestVal != null ? `best: ${stats.bestVal.toFixed(4)}` : undefined} color={stats?.lastVal != null ? "text-blue" : undefined} />
-          <Stat label="Learning Rate" value={last ? last.lr.toExponential(2) : "-"} />
-          <Stat label="Throughput" value={stats ? `${formatNumber(stats.avgTps, 0)}` : "-"} sub="tok/s (avg)" color="text-green" />
-          <Stat label="Speed" value={stats ? `${formatNumber(stats.avgMs, 0)}` : "-"} sub="ms/iter (avg)" />
-          <Stat label="Grad Norm" value={last ? last.gradNorm.toFixed(3) : "-"} sub={stats ? `avg: ${stats.avgGradNorm.toFixed(3)}` : undefined} />
+          <Stat label="Loss" value={last ? last.loss.toFixed(4) : "-"} color="text-yellow" tip={tips.loss} />
+          <Stat label="Best Loss" value={stats ? stats.minLoss.toFixed(4) : "-"} sub={stats ? `${stats.lossDropPct > 0 ? "-" : ""}${Math.abs(stats.lossDropPct).toFixed(1)}% from start` : undefined} tip={tips.lastLoss} />
+          <Stat label="Val Loss" value={stats?.lastVal != null ? stats.lastVal.toFixed(4) : "-"} sub={stats?.bestVal != null ? `best: ${stats.bestVal.toFixed(4)}` : undefined} color={stats?.lastVal != null ? "text-blue" : undefined} tip={tips.valLoss} />
+          <Stat label="Learning Rate" value={last ? last.lr.toExponential(2) : "-"} tip={tips.lr} />
+          <Stat label="Throughput" value={stats ? `${formatNumber(stats.avgTps, 0)}` : "-"} sub="tok/s (avg)" color="text-green" tip={tips.throughput} />
+          <Stat label="Speed" value={stats ? `${formatNumber(stats.avgMs, 0)}` : "-"} sub="ms/iter (avg)" tip={tips.msPerIter} />
+          <Stat label="Grad Norm" value={last ? last.gradNorm.toFixed(3) : "-"} sub={stats ? `avg: ${stats.avgGradNorm.toFixed(3)}` : undefined} tip={tips.gradNorm} />
           <Stat label="Tokens" value={stats ? formatParams(Math.round(stats.totalTokens)) : "-"} sub="processed" />
         </div>
 
@@ -396,7 +404,7 @@ function LiveRunCard({ run }: { run: LiveRun }) {
           {/* Loss chart */}
           <div>
             <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
-              Loss Curve
+              Loss Curve <Tip text={tips.lossChart} />
             </div>
             <LiveLossChart metrics={run.metrics} totalIters={run.totalIters} />
           </div>
@@ -408,13 +416,13 @@ function LiveRunCard({ run }: { run: LiveRun }) {
                 <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
                   Architecture
                 </div>
-                <DetailRow label="Layers" value={mc.nLayer} />
-                <DetailRow label="Embedding" value={mc.nEmbd} />
-                <DetailRow label="Heads" value={mc.nHead} />
-                <DetailRow label="Vocab" value={formatNumber(mc.vocabSize)} />
-                <DetailRow label="Context" value={mc.blockSize} />
-                {mc.dropout != null && <DetailRow label="Dropout" value={mc.dropout} />}
-                {run.totalParams != null && <DetailRow label="Parameters" value={formatParams(run.totalParams)} />}
+                <DetailRow label="Layers" value={mc.nLayer} tip={tips.nLayer} />
+                <DetailRow label="Embedding" value={mc.nEmbd} tip={tips.nEmbd} />
+                <DetailRow label="Heads" value={mc.nHead} tip={tips.nHead} />
+                <DetailRow label="Vocab" value={formatNumber(mc.vocabSize)} tip={tips.vocabSize} />
+                <DetailRow label="Context" value={mc.blockSize} tip={tips.blockSize} />
+                {mc.dropout != null && <DetailRow label="Dropout" value={mc.dropout} tip={tips.dropout} />}
+                {run.totalParams != null && <DetailRow label="Parameters" value={formatParams(run.totalParams)} tip={tips.params} />}
               </div>
             )}
 
@@ -423,14 +431,14 @@ function LiveRunCard({ run }: { run: LiveRun }) {
                 <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
                   Training Config
                 </div>
-                <DetailRow label="Batch size" value={tc.batchSize} />
-                <DetailRow label="Max LR" value={tc.lr} />
-                <DetailRow label="Optimizer" value={tc.optimizer} />
-                <DetailRow label="Weight decay" value={tc.weightDecay} />
-                <DetailRow label="Grad clip" value={tc.gradClip} />
-                <DetailRow label="Backend" value={tc.backend} />
-                <DetailRow label="Tokenizer" value={tc.tokenizer} />
-                <DetailRow label="Seed" value={tc.seed} />
+                <DetailRow label="Batch size" value={tc.batchSize} tip={tips.batchSize} />
+                <DetailRow label="Max LR" value={tc.lr} tip={tips.lr} />
+                <DetailRow label="Optimizer" value={tc.optimizer} tip={tips.optimizer} />
+                <DetailRow label="Weight decay" value={tc.weightDecay} tip={tips.weightDecay} />
+                <DetailRow label="Grad clip" value={tc.gradClip} tip={tips.gradClip} />
+                <DetailRow label="Backend" value={tc.backend} tip={tips.backend} />
+                <DetailRow label="Tokenizer" value={tc.tokenizer} tip={tips.tokenizer} />
+                <DetailRow label="Seed" value={tc.seed} tip={tips.seed} />
               </div>
             )}
           </div>

@@ -3,6 +3,8 @@ import { getClient } from "@/lib/db";
 import { listRuns, type DbRunSummary } from "@alpha/db";
 import { formatParams, formatLoss, formatNumber, timeAgo, pct } from "@/lib/format";
 import { Sparkline } from "@/components/sparkline";
+import { Tip } from "@/components/tooltip";
+import { tips } from "@/components/tip-data";
 
 export const dynamic = "force-dynamic";
 
@@ -81,17 +83,17 @@ function RunCard({ run }: { run: DbRunSummary }) {
             <DomainBadge domain={run.domain} />
           </div>
           <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-secondary">
-            <span>{formatParams(run.estimated_params)} params</span>
+            <span>{formatParams(run.estimated_params)} params <Tip text={tips.params} /></span>
             <span className="text-text-muted">|</span>
             <span>
-              {run.n_layer}L {run.n_embd}D {run.n_head}H
+              {run.n_layer}L {run.n_embd}D {run.n_head}H <Tip text={tips.architecture} />
             </span>
             <span className="text-text-muted">|</span>
-            <span>loss {formatLoss(bestLoss)}</span>
+            <span>loss {formatLoss(bestLoss)} <Tip text={tips.loss} /></span>
             <span className="text-text-muted">|</span>
-            <span>{run.metric_count} metrics</span>
+            <span>{run.metric_count} metrics <Tip text={tips.metricCount} /></span>
             <span className="text-text-muted">|</span>
-            <span>{run.checkpoint_count} ckpts</span>
+            <span>{run.checkpoint_count} ckpts <Tip text={tips.checkpointCount} /></span>
             <span className="text-text-muted">|</span>
             <span>{timeAgo(run.updated_at)}</span>
           </div>

@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { Tip } from "@/components/tooltip";
+import { tips } from "@/components/tip-data";
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -228,10 +230,10 @@ export default function ModelsPage() {
 
       {/* Stats row */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Models" value={String(stats.count)} />
-        <StatCard label="Best Loss" value={stats.bestLoss < Infinity ? stats.bestLoss.toFixed(3) : "-"} accent />
-        <StatCard label="Inference Ready" value={String(stats.inferenceCount)} />
-        <StatCard label="Total Steps" value={stats.totalSteps.toLocaleString()} />
+        <StatCard label="Models" value={String(stats.count)} tip={tips.model} />
+        <StatCard label="Best Loss" value={stats.bestLoss < Infinity ? stats.bestLoss.toFixed(3) : "-"} accent tip={tips.loss} />
+        <StatCard label="Inference Ready" value={String(stats.inferenceCount)} tip={tips.inferenceAvailable} />
+        <StatCard label="Total Steps" value={stats.totalSteps.toLocaleString()} tip={tips.step} />
       </div>
 
       {/* Filters + sort */}
@@ -267,11 +269,11 @@ export default function ModelsPage() {
       <div className="overflow-hidden rounded-lg border border-border">
         {/* Table header */}
         <div className="hidden sm:grid grid-cols-[1fr_80px_90px_80px_80px_60px] gap-2 bg-surface-2 px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
-          <span>Model</span>
-          <span className="text-right">Params</span>
-          <span className="text-right">Architecture</span>
-          <span className="text-right">Step</span>
-          <span className="text-right">Loss</span>
+          <span>Model <Tip text={tips.model} /></span>
+          <span className="text-right">Params <Tip text={tips.params} /></span>
+          <span className="text-right">Architecture <Tip text={tips.architecture} /></span>
+          <span className="text-right">Step <Tip text={tips.step} /></span>
+          <span className="text-right">Loss <Tip text={tips.loss} /></span>
           <span />
         </div>
 
@@ -359,11 +361,14 @@ export default function ModelsPage() {
 
 // ── Sub-components ────────────────────────────────────────────────
 
-function StatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function StatCard({ label, value, accent, tip }: { label: string; value: string; accent?: boolean; tip?: string }) {
   return (
     <div className="rounded-lg border border-border bg-surface px-4 py-3">
       <div className={`text-lg font-semibold ${accent ? "text-green" : "text-white"}`}>{value}</div>
-      <div className="text-[0.65rem] uppercase tracking-wider text-text-muted">{label}</div>
+      <div className="text-[0.65rem] uppercase tracking-wider text-text-muted">
+        {label}
+        {tip && <Tip text={tip} />}
+      </div>
     </div>
   );
 }
