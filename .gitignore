@@ -2,7 +2,7 @@ node_modules/
 dist/
 .tsbuildinfo
 *.tsbuildinfo
-runs/
+/runs/
 artifacts/
 outputs/
 data/
