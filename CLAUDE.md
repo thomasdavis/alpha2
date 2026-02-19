@@ -48,12 +48,16 @@ apps/cli            — CLI commands
 |-----|-------|---------|
 | `TURSO_DATABASE_URL` | .env.local, Railway | Turso libsql connection URL |
 | `TURSO_AUTH_TOKEN` | .env.local, Railway | Turso auth token (rw) |
-| `BLOB_READ_WRITE_TOKEN` | .env.local, Vercel | Vercel Blob for checkpoint storage |
+| `UPLOAD_SECRET` | Railway | Auth token for ingest/upload endpoints |
+| `ALPHA_REMOTE_URL` | training machine | Remote server URL for live metrics streaming |
+| `ALPHA_REMOTE_SECRET` | training machine | Same as UPLOAD_SECRET on server |
 
 ## Deploy
 
-- **Server**: Railway (`railway up`) — service `alpha2`, project `REDACTED_PROJECT`
-- **Vercel**: auto-deploys from git for serverless functions
+All deployments are on **Railway** (project `REDACTED_PROJECT`). Vercel is deprecated.
+
+- **Server**: `railway service alpha2 && railway up`
+- **Web dashboard**: `railway service alpha-web && railway up`
 - Training runs stored in `outputs/` locally, synced to Turso via `@alpha/db` syncFromDisk
 
 ## DB
