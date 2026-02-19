@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0a;
+  --color-surface: #111111;
+  --color-surface-2: #1a1a1a;
+  --color-border: #222222;
+  --color-border-2: #333333;
+  --color-text-primary: #e0e0e0;
+  --color-text-secondary: #888888;
+  --color-text-muted: #555555;
+  --color-accent: #2563eb;
+  --color-green: #4ade80;
+  --color-green-bg: #1a2f1a;
+  --color-yellow: #f59e0b;
+  --color-yellow-bg: #3b2f1e;
+  --color-red: #f87171;
+  --color-red-bg: #2d1f1f;
+  --color-blue: #60a5fa;
+  --color-blue-bg: #1e3a5f;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+}
+
+/* Hide sidebar on mobile, show on lg+ */
+aside {
+  display: none;
+}
+@media (min-width: 1024px) {
+  aside {
+    display: flex;
+  }
+}

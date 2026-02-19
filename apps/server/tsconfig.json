@@ -12,6 +12,7 @@
     { "path": "../../packages/autograd" },
     { "path": "../../packages/tokenizers" },
     { "path": "../../packages/model" },
-    { "path": "../../packages/train" }
+    { "path": "../../packages/train" },
+    { "path": "../../packages/db" }
   ]
 }

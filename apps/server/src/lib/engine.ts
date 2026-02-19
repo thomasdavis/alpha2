@@ -70,6 +70,13 @@ export function getRuns(): RunInfo[] { return runs; }
 export function getLoaded(): LoadedModel | null { return loaded; }
 export function isInitialized(): boolean { return initialized; }
 
+/** Clear cached state so the next initEngine() call rescans from disk. */
+export function resetEngine(): void {
+  runs = [];
+  loaded = null;
+  initialized = false;
+}
+
 // ── Scan local filesystem ─────────────────────────────────────────────────
 
 export function scanLocalRuns(outputsDir: string): RunInfo[] {

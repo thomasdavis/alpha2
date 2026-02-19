@@ -7,5 +7,9 @@ artifacts/
 outputs/
 data/
 .turbo/
+.next/
 .vercel
 .env*.local
+*.db
+*.db-wal
+*.db-shm

@@ -15,6 +15,7 @@
     "@alpha/tokenizers": "*",
     "@alpha/model": "*",
     "@alpha/train": "*",
+    "@alpha/db": "*",
     "ai": "^6.0.0",
     "@ai-sdk/provider": "^3.0.0",
     "@ai-sdk/provider-utils": "^4.0.0",

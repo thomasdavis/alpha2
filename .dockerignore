@@ -1,0 +1,11 @@
+node_modules/
+dist/
+outputs/
+data/
+runs/
+artifacts/
+.git/
+.turbo/
+.vercel/
+.env*.local
+*.tsbuildinfo
