@@ -42,13 +42,14 @@ export interface TrainerDeps {
   resumePath?: string;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
   onStep?: (metrics: StepMetrics) => void;
+  onStart?: (info: { runId: string; configHash: string; totalParams: number }) => void;
   domain?: string;
 }
 
 export async function train(deps: TrainerDeps): Promise<GPTParams> {
   const {
     backend, tokenizer, optimizer, rng, modelConfig, trainConfig,
-    dataPath, valDataPath, resumePath, onStep,
+    dataPath, valDataPath, resumePath, onStep, onStart,
   } = deps;
 
   const rid = makeRunId();
@@ -96,6 +97,9 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     startStep = state.step;
     console.log(`Resumed from step ${startStep}`);
   }
+
+  // Notify start
+  if (onStart) onStart({ runId: rid, configHash, totalParams });
 
   // Log header
   const paramBytes = totalParams * 4;

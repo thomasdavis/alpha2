@@ -25,6 +25,17 @@ const nav: NavItem[] = [
     match: (p) => p === "/",
   },
   {
+    href: "/training",
+    label: "Live Training",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="8" cy="8" r="3" />
+        <path d="M4.5 4.5L2 2M11.5 4.5L14 2M4.5 11.5L2 14M11.5 11.5L14 14" />
+      </svg>
+    ),
+    match: (p) => p === "/training",
+  },
+  {
     href: "/runs",
     label: "Training Runs",
     icon: (

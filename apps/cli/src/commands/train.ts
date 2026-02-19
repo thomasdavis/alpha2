@@ -3,7 +3,7 @@
  */
 import { parseKV, requireArg, intArg, floatArg, strArg, boolArg, loadConfig } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng, listImplementations } from "../resolve.js";
-import { train as runTrain } from "@alpha/train";
+import { train as runTrain, createRemoteReporter } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain } from "@alpha/core";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
@@ -74,6 +74,17 @@ export async function trainCmd(args: string[]): Promise<void> {
     vocabSize: tokenizer.vocabSize,
   };
 
+  // Set up remote reporter if env vars are configured
+  const remoteUrl = process.env.ALPHA_REMOTE_URL;
+  const remoteSecret = process.env.ALPHA_REMOTE_SECRET;
+  const reporter = remoteUrl && remoteSecret
+    ? createRemoteReporter({ url: remoteUrl, secret: remoteSecret })
+    : null;
+
+  if (reporter) {
+    console.log(`Remote reporting: ${remoteUrl}`);
+  }
+
   await runTrain({
     backend,
     tokenizer,
@@ -87,5 +98,18 @@ export async function trainCmd(args: string[]): Promise<void> {
     runDir: kv["runDir"],
     resumePath: kv["resume"],
     domain: domainId,
+    onStart: reporter
+      ? (info) => reporter.registerRun({
+          ...info,
+          domain: domainId,
+          modelConfig: finalModelConfig,
+          trainConfig,
+        })
+      : undefined,
+    onStep: reporter ? (metrics) => reporter.onStep(metrics) : undefined,
   });
+
+  if (reporter) {
+    await reporter.complete(trainConfig.iters);
+  }
 }

@@ -23,6 +23,7 @@ import { SeededRng } from "@alpha/core";
 import {
   createDb, getDb, syncFromDisk, listRuns as dbListRuns,
   getRecentMetrics, getMetrics, listCheckpoints, listDomains,
+  upsertRun, insertMetrics, updateRunProgress,
   type DbRunSummary,
 } from "@alpha/db";
 
@@ -303,6 +304,140 @@ async function handleChatCompletions(req: http.IncomingMessage, res: http.Server
   }
 }
 
+// ── Live training SSE hub ─────────────────────────────────────────────────
+
+const liveClients = new Set<http.ServerResponse>();
+
+function broadcastLive(event: string, data: unknown): void {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of liveClients) {
+    try { client.write(payload); } catch { liveClients.delete(client); }
+  }
+}
+
+// ── Ingest handler (training metrics from remote machines) ───────────────
+
+function checkIngestAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const secret = process.env.UPLOAD_SECRET;
+  if (!secret) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "UPLOAD_SECRET not configured" }));
+    return false;
+  }
+  const auth = req.headers.authorization;
+  if (auth !== `Bearer ${secret}`) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+    return false;
+  }
+  return true;
+}
+
+async function handleIngest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  const body = JSON.parse(await readBody(req));
+  const { type } = body as { type: string };
+
+  if (type === "run_start") {
+    const { runId, domain, modelConfig, trainConfig, totalParams } = body;
+    try {
+      const client = getDb();
+      await upsertRun(client, {
+        id: runId,
+        run_id: runId,
+        config_hash: "",
+        domain: domain || "unknown",
+        model_config: modelConfig,
+        train_config: trainConfig,
+        status: "active",
+        estimated_params: totalParams ?? null,
+      });
+    } catch (e) {
+      console.warn("Ingest run_start DB error:", (e as Error).message);
+    }
+    broadcastLive("run_start", { runId, domain, modelConfig, trainConfig, totalParams });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (type === "metrics") {
+    const { runId, metrics } = body as { runId: string; metrics: Array<Record<string, unknown>> };
+    try {
+      const client = getDb();
+      await insertMetrics(client, runId, metrics as any);
+      const last = metrics[metrics.length - 1] as any;
+      if (last) {
+        await updateRunProgress(client, runId, {
+          latest_step: last.step,
+          last_loss: last.loss,
+          best_val_loss: last.valLoss ?? null,
+        });
+      }
+    } catch (e) {
+      console.warn("Ingest metrics DB error:", (e as Error).message);
+    }
+    broadcastLive("metrics", { runId, metrics });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  res.writeHead(400, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Unknown ingest type" }));
+}
+
+async function handleIngestComplete(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  const { runId, finalStep } = JSON.parse(await readBody(req));
+  try {
+    const client = getDb();
+    await updateRunProgress(client, runId, { latest_step: finalStep, status: "completed" });
+  } catch (e) {
+    console.warn("Ingest complete DB error:", (e as Error).message);
+  }
+  broadcastLive("run_complete", { runId, finalStep });
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true }));
+}
+
+async function handleTrainingLive(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Send snapshot of active runs
+  try {
+    const client = getDb();
+    const activeRuns = await dbListRuns(client, { status: "active" });
+    const snapshot: Array<Record<string, unknown>> = [];
+    for (const run of activeRuns) {
+      const metrics = await getRecentMetrics(client, run.id, 200);
+      snapshot.push({ ...run, metrics });
+    }
+    res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+  } catch (e) {
+    console.warn("Training live snapshot error:", (e as Error).message);
+    res.write(`event: snapshot\ndata: []\n\n`);
+  }
+
+  liveClients.add(res);
+
+  // Heartbeat every 30s
+  const heartbeat = setInterval(() => {
+    try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+  }, 30_000);
+
+  _req.on("close", () => {
+    liveClients.delete(res);
+    clearInterval(heartbeat);
+  });
+}
+
 // ── Upload handler ───────────────────────────────────────────────────────
 
 async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -424,6 +559,9 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   if (p === "/v1/models") { handleOpenAIModels(req, res); return; }
   if (p === "/v1/chat/completions" || p === "/chat/completions") { await handleChatCompletions(req, res); return; }
   if (p === "/api/upload" && req.method === "POST") { await handleUpload(req, res); return; }
+  if (p === "/api/ingest" && req.method === "POST") { await handleIngest(req, res); return; }
+  if (p === "/api/ingest/complete" && req.method === "POST") { await handleIngestComplete(req, res); return; }
+  if (p === "/api/training/live") { await handleTrainingLive(req, res); return; }
 
   // Dashboard API routes
   if (p === "/api/runs") { await handleDbRuns(req, res); return; }

@@ -6,3 +6,4 @@ export {
 export { sample } from "./sample.js";
 export { train, type TrainerDeps, type StepMetrics } from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";
+export { createRemoteReporter, type RemoteReporter, type RemoteReporterConfig } from "./remote-reporter.js";
