@@ -13,7 +13,7 @@ export function LossChart({ runId }: { runId: string }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/metrics/${encodeURIComponent(runId)}`)
+    fetch(`/api/runs/${encodeURIComponent(runId)}/metrics`)
       .then((r) => r.json())
       .then((metrics: Metric[]) => {
         const canvas = canvasRef.current;

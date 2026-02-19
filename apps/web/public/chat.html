@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alpha Chat</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0a; --surface: #111; --surface2: #1a1a1a;
+    --border: #222; --border2: #333;
+    --text: #e0e0e0; --text2: #888; --text3: #555;
+    --accent: #2563eb; --accent-hover: #1d4ed8;
+    --user-bg: #1a2744; --assistant-bg: #161616;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  .header {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
+    background: var(--surface); flex-shrink: 0;
+  }
+  .header h1 { font-size: 1rem; color: #fff; white-space: nowrap; }
+  .header select {
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+    padding: 0.35rem 0.5rem; border-radius: 4px; font-size: 0.8rem;
+  }
+  .header .model-info { font-size: 0.7rem; color: var(--text3); }
+  .header .spacer { flex: 1; }
+  .header a { color: #60a5fa; text-decoration: none; font-size: 0.8rem; }
+  .header a:hover { text-decoration: underline; }
+  .header button {
+    background: transparent; border: 1px solid var(--border2); color: var(--text2);
+    padding: 0.3rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem;
+  }
+  .header button:hover { background: var(--surface2); color: var(--text); }
+  .settings {
+    display: none; padding: 0.5rem 1rem; background: var(--surface);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+    gap: 1rem; align-items: center; flex-wrap: wrap;
+  }
+  .settings.open { display: flex; }
+  .settings label { font-size: 0.75rem; color: var(--text2); }
+  .settings input {
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+    padding: 0.3rem 0.4rem; border-radius: 3px; width: 4.5rem; font-size: 0.8rem;
+  }
+  .setting { display: flex; align-items: center; gap: 0.3rem; }
+  .messages {
+    flex: 1; overflow-y: auto; padding: 1rem 0;
+    display: flex; flex-direction: column;
+  }
+  .message {
+    max-width: 720px; width: 100%; margin: 0 auto; padding: 0.75rem 1.25rem;
+  }
+  .message.user { background: var(--user-bg); border-radius: 12px; margin-bottom: 0.5rem; align-self: center; }
+  .message.assistant { background: var(--assistant-bg); margin-bottom: 0.5rem; }
+  .message .role { font-size: 0.7rem; color: var(--text2); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .message .content {
+    font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word;
+  }
+  .message.assistant .content { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.85rem; }
+  .welcome {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 0.5rem; color: var(--text3);
+  }
+  .welcome h2 { font-size: 1.2rem; color: var(--text2); font-weight: 400; }
+  .welcome p { font-size: 0.85rem; }
+  .input-area {
+    border-top: 1px solid var(--border); padding: 0.75rem 1rem;
+    background: var(--surface); flex-shrink: 0;
+  }
+  .input-row {
+    max-width: 720px; margin: 0 auto;
+    display: flex; gap: 0.5rem; align-items: flex-end;
+  }
+  .input-row textarea {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text); padding: 0.6rem 0.75rem; border-radius: 8px;
+    font-size: 0.9rem; font-family: inherit; resize: none;
+    min-height: 44px; max-height: 150px; line-height: 1.4;
+  }
+  .input-row textarea:focus { outline: none; border-color: var(--accent); }
+  .input-row textarea::placeholder { color: var(--text3); }
+  .input-row button.send {
+    background: var(--accent); color: #fff; border: none;
+    width: 40px; height: 40px; border-radius: 8px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    font-size: 1.1rem;
+  }
+  .input-row button.send:hover { background: var(--accent-hover); }
+  .input-row button.send:disabled { background: #333; cursor: not-allowed; }
+  .status-bar {
+    max-width: 720px; margin: 0.3rem auto 0; font-size: 0.7rem; color: var(--text3); min-height: 1em;
+  }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+  .cursor { display: inline-block; width: 2px; height: 1em; background: var(--accent); animation: blink 0.8s infinite; vertical-align: text-bottom; margin-left: 1px; }
+
+  /* ── Music generation button ── */
+  .music-btn {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    margin-top: 0.6rem; padding: 0.35rem 0.7rem; border-radius: 6px;
+    background: #3b2f1e; color: #f59e0b; border: 1px solid #5a4420;
+    font-size: 0.75rem; cursor: pointer; font-family: inherit;
+  }
+  .music-btn:hover { background: #4a3a24; border-color: #7a6030; }
+  .music-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+  /* ── Modal overlay ── */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-overlay.hidden { display: none; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border2); border-radius: 12px;
+    width: 90%; max-width: 440px; padding: 1.5rem; position: relative;
+  }
+  .modal h3 { font-size: 1rem; color: #fff; margin-bottom: 0.25rem; }
+  .modal .modal-chords {
+    font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem;
+    color: #f59e0b; background: var(--surface2); border-radius: 6px;
+    padding: 0.5rem 0.7rem; margin: 0.5rem 0 0.75rem; white-space: pre-wrap;
+    word-wrap: break-word; max-height: 80px; overflow-y: auto;
+    border: 1px solid var(--border);
+  }
+  .modal label { font-size: 0.8rem; color: var(--text2); display: block; margin-bottom: 0.25rem; }
+  .modal textarea {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text); padding: 0.5rem 0.6rem; border-radius: 6px;
+    font-size: 0.85rem; font-family: inherit; resize: none; min-height: 60px;
+  }
+  .modal textarea:focus { outline: none; border-color: var(--accent); }
+  .modal textarea::placeholder { color: var(--text3); }
+  .modal-row { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .modal select {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text); padding: 0.4rem; border-radius: 6px; font-size: 0.8rem;
+  }
+  .modal-actions { display: flex; gap: 0.5rem; margin-top: 1rem; justify-content: flex-end; }
+  .modal-actions button {
+    padding: 0.45rem 1rem; border-radius: 6px; font-size: 0.85rem; cursor: pointer; border: none; font-family: inherit;
+  }
+  .btn-cancel { background: var(--surface2); color: var(--text2); border: 1px solid var(--border2) !important; }
+  .btn-cancel:hover { background: var(--border2); color: var(--text); }
+  .btn-generate { background: #b45309; color: #fff; }
+  .btn-generate:hover { background: #d97706; }
+  .btn-generate:disabled { background: #5a4420; color: #888; cursor: not-allowed; }
+  .modal-status { font-size: 0.75rem; color: var(--text3); margin-top: 0.5rem; min-height: 1.2em; }
+
+  /* ── Audio player in modal ── */
+  .modal-player { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .modal-player audio { width: 100%; height: 36px; }
+  .modal-player .player-actions { display: flex; gap: 0.5rem; }
+  .btn-download {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.8rem;
+    background: #1e3a5f; color: #60a5fa; border: none; cursor: pointer; font-family: inherit;
+  }
+  .btn-download:hover { background: #254a75; }
+  .btn-new { background: var(--surface2); color: var(--text2); border: 1px solid var(--border2); }
+  .btn-new:hover { background: var(--border2); color: var(--text); }
+  .player-meta { font-size: 0.7rem; color: var(--text3); }
+
+  /* ── Inline player on messages ── */
+  .inline-player {
+    margin-top: 0.5rem; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.5rem 0.7rem; display: flex; align-items: center; gap: 0.6rem;
+  }
+  .inline-player audio { flex: 1; height: 32px; }
+  .inline-player .btn-download { font-size: 0.72rem; padding: 0.25rem 0.5rem; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Alpha Chat</h1>
+  <select id="model"></select>
+  <span class="model-info" id="modelInfo"></span>
+  <span class="spacer"></span>
+  <button onclick="toggleSettings()">Settings</button>
+  <button onclick="clearChat()">Clear</button>
+  <a href="/">Dashboard</a>
+  <a href="/inference">Inference</a>
+  <a href="/models">Models</a>
+  <a href="/docs">API</a>
+</div>
+<div class="settings" id="settings">
+  <div class="setting"><label>Max tokens</label><input type="number" id="maxTokens" value="200" min="1" max="500"></div>
+  <div class="setting"><label>Temperature</label><input type="number" id="temp" value="0.8" min="0.1" max="2.0" step="0.1"></div>
+  <div class="setting"><label>Top-k</label><input type="number" id="topk" value="40" min="0" max="200"></div>
+  <div class="setting"><label>Context msgs</label><input type="number" id="ctxMsgs" value="4" min="1" max="20"></div>
+</div>
+<div class="messages" id="messages">
+  <div class="welcome">
+    <h2>Alpha Chat</h2>
+    <p>Select a model and start typing. These are base language models trained on text, not instruction-tuned.</p>
+    <p>They work best as text continuations — type the beginning of a sentence or paragraph.</p>
+  </div>
+</div>
+<div class="input-area">
+  <div class="input-row">
+    <textarea id="input" rows="1" placeholder="Type a message..." autofocus></textarea>
+    <button class="send" id="sendBtn" onclick="sendMessage()">&#9654;</button>
+  </div>
+  <div class="status-bar" id="status"></div>
+</div>
+<!-- Music generation modal -->
+<div class="modal-overlay hidden" id="musicModal" onclick="if(event.target===this)closeMusicModal()">
+  <div class="modal">
+    <h3>Generate Music</h3>
+    <div class="modal-chords" id="modalChords"></div>
+    <label for="modalDesc">Describe the sound you want</label>
+    <textarea id="modalDesc" placeholder="e.g. smoky jazz bar, walking bass, mellow piano..."></textarea>
+    <div class="modal-row">
+      <select id="modalStyle">
+        <option value="">Auto-detect style</option>
+        <option value="acoustic">Acoustic</option>
+        <option value="folk">Folk</option>
+        <option value="ballad">Ballad</option>
+        <option value="piano_ballad">Piano Ballad</option>
+        <option value="pop">Pop</option>
+        <option value="rock">Rock</option>
+        <option value="clean_rock">Clean Rock</option>
+        <option value="jazz">Jazz</option>
+        <option value="rnb">R&B</option>
+        <option value="electronic">Electronic</option>
+        <option value="ambient">Ambient</option>
+        <option value="latin">Latin</option>
+        <option value="strings">Strings</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeMusicModal()">Cancel</button>
+      <button class="btn-generate" id="modalGenBtn" onclick="generateMusic()">Generate</button>
+    </div>
+    <div class="modal-status" id="modalStatus"></div>
+    <div class="modal-player hidden" id="modalPlayer">
+      <audio controls id="modalAudio"></audio>
+      <div class="player-actions">
+        <button class="btn-download" onclick="downloadAudio()">Download MP3</button>
+        <button class="btn-download btn-new" onclick="resetModal()">Generate another</button>
+      </div>
+      <div class="player-meta" id="modalMeta"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let models = [];
+let chatHistory = [];
+let abortController = null;
+let generating = false;
+
+// ── localStorage helpers ──────────────────────────────────────
+const STORAGE_KEY = "alpha-chat";
+
+function saveSettings() {
+  const data = {
+    model: document.getElementById("model").value,
+    maxTokens: document.getElementById("maxTokens").value,
+    temp: document.getElementById("temp").value,
+    topk: document.getElementById("topk").value,
+    ctxMsgs: document.getElementById("ctxMsgs").value,
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function applySettings(saved) {
+  if (!saved) return;
+  if (saved.maxTokens) document.getElementById("maxTokens").value = saved.maxTokens;
+  if (saved.temp) document.getElementById("temp").value = saved.temp;
+  if (saved.topk) document.getElementById("topk").value = saved.topk;
+  if (saved.ctxMsgs) document.getElementById("ctxMsgs").value = saved.ctxMsgs;
+}
+
+// Save on every change
+for (const id of ["maxTokens", "temp", "topk", "ctxMsgs"]) {
+  document.getElementById(id).addEventListener("change", saveSettings);
+}
+
+// ── Models ────────────────────────────────────────────────────
+async function loadModels() {
+  const saved = loadSettings();
+  applySettings(saved);
+
+  const res = await fetch("/api/models");
+  models = await res.json();
+  const sel = document.getElementById("model");
+  sel.innerHTML = "";
+  for (const m of models) {
+    const opt = document.createElement("option");
+    const tag = m.domain || "novels";
+    opt.value = m.id; opt.textContent = m.name + " [" + tag + "] (step " + m.step + ")";
+    sel.appendChild(opt);
+  }
+  // URL param takes priority, then localStorage
+  const urlModel = new URLSearchParams(window.location.search).get("model");
+  if (urlModel && models.find(m => m.id === urlModel)) {
+    sel.value = urlModel;
+  } else if (saved && saved.model && models.find(m => m.id === saved.model)) {
+    sel.value = saved.model;
+  }
+  updateModelInfo();
+}
+function updateModelInfo() {
+  const m = models.find(x => x.id === document.getElementById("model").value);
+  if (!m) return;
+  const mc = m.modelConfig;
+  const domain = m.domain || "novels";
+  const parts = [domain, mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H", "vocab="+mc.vocabSize, "ctx="+mc.blockSize];
+  if (m.lastLoss != null) parts.push("loss="+m.lastLoss.toFixed(3));
+  document.getElementById("modelInfo").textContent = parts.join(" | ");
+  const input = document.getElementById("input");
+  input.placeholder = domain === "chords" ? "Enter chord progression..." : "Type a message...";
+  // Update URL without reload
+  const url = new URL(window.location.href);
+  url.searchParams.set("model", m.id);
+  history.replaceState(null, "", url.toString());
+  saveSettings();
+}
+document.getElementById("model").addEventListener("change", updateModelInfo);
+function toggleSettings() { document.getElementById("settings").classList.toggle("open"); }
+function clearChat() { chatHistory = []; renderMessages(); document.getElementById("status").textContent = ""; }
+function isChordsDomain() {
+  const m = models.find(x => x.id === document.getElementById("model").value);
+  return m && m.domain === "chords";
+}
+
+function renderMessages() {
+  const container = document.getElementById("messages");
+  if (chatHistory.length === 0) {
+    container.innerHTML = '<div class="welcome"><h2>Alpha Chat</h2><p>Select a model and start typing. These are base language models trained on text, not instruction-tuned.</p><p>They work best as text continuations — type the beginning of a sentence or paragraph.</p></div>';
+    return;
+  }
+  container.innerHTML = "";
+  const chords = isChordsDomain();
+  for (let i = 0; i < chatHistory.length; i++) {
+    const msg = chatHistory[i];
+    const div = document.createElement("div");
+    div.className = "message " + msg.role;
+    div.innerHTML = '<div class="role">' + msg.role + '</div><div class="content"></div>';
+    div.querySelector(".content").textContent = msg.content;
+    // Add music button for assistant chords messages
+    if (chords && msg.role === "assistant" && msg.content.trim()) {
+      const btn = document.createElement("button");
+      btn.className = "music-btn";
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg> Make Music';
+      btn.onclick = () => openMusicModal(msg.content);
+      div.appendChild(btn);
+    }
+    // Re-attach inline player if we generated audio for this message
+    if (msg._audioUrl) {
+      const player = document.createElement("div");
+      player.className = "inline-player";
+      player.innerHTML = '<audio controls src="' + msg._audioUrl + '"></audio>'
+        + '<button class="btn-download" onclick="downloadUrl(\'' + msg._audioUrl + '\')">MP3</button>';
+      div.appendChild(player);
+    }
+    container.appendChild(div);
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+// ── Music generation ──────────────────────────────────────────
+const GAMMA_URL = "https://gamma.omegaai.dev/api/generate";
+let musicChords = "";
+let musicBlobUrl = null;
+let musicMsgIndex = -1;
+
+function openMusicModal(chords) {
+  musicChords = chords.trim();
+  musicMsgIndex = chatHistory.findIndex(m => m.role === "assistant" && m.content.trim() === musicChords);
+  document.getElementById("modalChords").textContent = musicChords;
+  document.getElementById("modalDesc").value = "";
+  document.getElementById("modalStyle").value = "";
+  document.getElementById("modalStatus").textContent = "";
+  document.getElementById("modalPlayer").classList.add("hidden");
+  document.getElementById("modalGenBtn").disabled = false;
+  document.getElementById("musicModal").classList.remove("hidden");
+  document.getElementById("modalDesc").focus();
+}
+
+function closeMusicModal() {
+  document.getElementById("musicModal").classList.add("hidden");
+}
+
+function resetModal() {
+  document.getElementById("modalPlayer").classList.add("hidden");
+  document.getElementById("modalGenBtn").disabled = false;
+  document.getElementById("modalStatus").textContent = "";
+  document.getElementById("modalDesc").value = "";
+  document.getElementById("modalDesc").focus();
+}
+
+async function generateMusic() {
+  const btn = document.getElementById("modalGenBtn");
+  const status = document.getElementById("modalStatus");
+  btn.disabled = true;
+  status.textContent = "Generating audio... this may take up to 15 seconds.";
+
+  const body = { chords: musicChords };
+  const desc = document.getElementById("modalDesc").value.trim();
+  const style = document.getElementById("modalStyle").value;
+  if (desc) body.description = desc;
+  if (style) body.style = style;
+
+  try {
+    const t0 = performance.now();
+    const res = await fetch(GAMMA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error("Generation failed (" + res.status + "): " + text);
+    }
+
+    const blob = await res.blob();
+    if (musicBlobUrl) URL.revokeObjectURL(musicBlobUrl);
+    musicBlobUrl = URL.createObjectURL(blob);
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    const usedStyle = res.headers.get("X-Style") || style || "auto";
+    const usedBpm = res.headers.get("X-BPM") || "?";
+
+    const audio = document.getElementById("modalAudio");
+    audio.src = musicBlobUrl;
+    document.getElementById("modalPlayer").classList.remove("hidden");
+    document.getElementById("modalMeta").textContent = "Style: " + usedStyle + " | BPM: " + usedBpm + " | Generated in " + elapsed + "s";
+    status.textContent = "";
+
+    // Attach to chat message for inline player
+    if (musicMsgIndex >= 0) {
+      chatHistory[musicMsgIndex]._audioUrl = musicBlobUrl;
+      renderMessages();
+      // Re-open modal since renderMessages redraws
+      document.getElementById("musicModal").classList.remove("hidden");
+      // Re-set modal state
+      document.getElementById("modalChords").textContent = musicChords;
+      document.getElementById("modalPlayer").classList.remove("hidden");
+      document.getElementById("modalAudio").src = musicBlobUrl;
+      document.getElementById("modalMeta").textContent = "Style: " + usedStyle + " | BPM: " + usedBpm + " | Generated in " + elapsed + "s";
+      btn.disabled = false;
+    }
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+    btn.disabled = false;
+  }
+}
+
+function downloadAudio() {
+  if (!musicBlobUrl) return;
+  const a = document.createElement("a");
+  a.href = musicBlobUrl;
+  a.download = "alpha-chords.mp3";
+  a.click();
+}
+
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "alpha-chords.mp3";
+  a.click();
+}
+async function sendMessage() {
+  const input = document.getElementById("input");
+  const text = input.value.trim();
+  if (!text || generating) return;
+  chatHistory.push({ role: "user", content: text });
+  input.value = ""; input.style.height = "auto";
+  renderMessages();
+  chatHistory.push({ role: "assistant", content: "" });
+  renderMessages();
+  const container = document.getElementById("messages");
+  const lastMsg = container.querySelector(".message:last-child .content");
+  lastMsg.innerHTML = '<span class="cursor"></span>';
+  generating = true;
+  document.getElementById("sendBtn").disabled = true;
+  document.getElementById("status").textContent = "Generating...";
+  const ctxMsgs = parseInt(document.getElementById("ctxMsgs").value) || 4;
+  const apiMessages = chatHistory.slice(-(ctxMsgs + 1), -1);
+  const maxTokens = parseInt(document.getElementById("maxTokens").value) || 200;
+  const temperature = parseFloat(document.getElementById("temp").value) || 0.8;
+  const topk = parseInt(document.getElementById("topk").value) || 40;
+  abortController = new AbortController();
+  const t0 = performance.now();
+  let charCount = 0;
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: apiMessages,
+        model: document.getElementById("model").value,
+        maxTokens, temperature, topk,
+      }),
+      signal: abortController.signal,
+    });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let assistantText = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      assistantText += chunk; charCount += chunk.length;
+      chatHistory[chatHistory.length - 1].content = assistantText;
+      lastMsg.textContent = assistantText;
+      const cursor = document.createElement("span");
+      cursor.className = "cursor";
+      lastMsg.appendChild(cursor);
+      container.scrollTop = container.scrollHeight;
+    }
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    document.getElementById("status").textContent = charCount + " chars in " + elapsed + "s";
+    renderMessages();
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      document.getElementById("status").textContent = "Error: " + e.message;
+      if (chatHistory.length && chatHistory[chatHistory.length - 1].content === "") {
+        chatHistory.pop(); renderMessages();
+      }
+    }
+  }
+  generating = false; abortController = null;
+  document.getElementById("sendBtn").disabled = false;
+}
+const input = document.getElementById("input");
+input.addEventListener("input", function() { this.style.height = "auto"; this.style.height = Math.min(this.scrollHeight, 150) + "px"; });
+input.addEventListener("keydown", function(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+loadModels();
+</script>
+</body>
+</html>

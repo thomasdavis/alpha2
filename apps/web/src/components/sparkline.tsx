@@ -16,7 +16,7 @@ export function Sparkline({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    fetch(`/api/metrics/${encodeURIComponent(runId)}?last=60`)
+    fetch(`/api/runs/${encodeURIComponent(runId)}/metrics?last=60`)
       .then((r) => r.json())
       .then((metrics: Array<{ loss: number }>) => {
         if (metrics.length < 2) return;

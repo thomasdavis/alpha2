@@ -61,27 +61,41 @@ const nav: NavItem[] = [
   },
 ];
 
-const external = [
+const tools: NavItem[] = [
   {
-    href: "https://alpha.omegaai.dev",
+    href: "/inference",
     label: "Inference",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <polygon points="5,2 13,8 5,14" />
       </svg>
     ),
+    match: (p) => p === "/inference",
   },
   {
-    href: "https://alpha.omegaai.dev/chat",
+    href: "/chat",
     label: "Chat",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M2 3h12a1 1 0 011 1v7a1 1 0 01-1 1H5l-3 3V4a1 1 0 011-1z" />
       </svg>
     ),
+    match: (p) => p === "/chat",
   },
   {
-    href: "https://alpha.omegaai.dev/docs",
+    href: "/models",
+    label: "Models",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="12" height="10" rx="1" />
+        <line x1="2" y1="7" x2="14" y2="7" />
+        <line x1="6" y1="7" x2="6" y2="13" />
+      </svg>
+    ),
+    match: (p) => p === "/models",
+  },
+  {
+    href: "/docs",
     label: "API Docs",
     icon: (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -89,6 +103,7 @@ const external = [
         <polyline points="10,1.5 10,5.5 14,5.5" />
       </svg>
     ),
+    match: (p) => p === "/docs",
   },
 ];
 
@@ -133,32 +148,29 @@ export function Sidebar() {
         })}
 
         <div className="mb-2 mt-6 px-2 text-[0.6rem] font-semibold uppercase tracking-widest text-text-muted">
-          External
+          Tools
         </div>
-        {external.map((item) => (
-          <a
-            key={item.href}
-            href={item.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.8rem] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary hover:no-underline"
-          >
-            <span className="text-text-muted">{item.icon}</span>
-            {item.label}
-            <svg
-              width="10"
-              height="10"
-              viewBox="0 0 10 10"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              strokeLinecap="round"
-              className="ml-auto opacity-40"
+        {tools.map((item) => {
+          const active = item.match
+            ? item.match(pathname)
+            : pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.8rem] transition-colors hover:no-underline ${
+                active
+                  ? "bg-surface-2 font-medium text-white"
+                  : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+              }`}
             >
-              <path d="M3 1h6v6M9 1L1 9" />
-            </svg>
-          </a>
-        ))}
+              <span className={active ? "text-accent" : "text-text-muted"}>
+                {item.icon}
+              </span>
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
 
       {/* Footer */}

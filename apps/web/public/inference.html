@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alpha Inference</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0a0a0a; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 2rem 1rem; min-height: 100vh;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #fff; }
+  .controls {
+    width: 100%; max-width: 700px;
+    display: flex; flex-direction: column; gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  label { font-size: 0.8rem; color: #888; min-width: 3rem; }
+  select, input[type="text"], input[type="number"] {
+    background: #1a1a1a; border: 1px solid #333; color: #e0e0e0;
+    padding: 0.5rem; border-radius: 4px; font-size: 0.9rem;
+  }
+  select { flex: 1; min-width: 200px; }
+  input[type="text"] { flex: 1; }
+  input[type="number"] { width: 5rem; }
+  button {
+    background: #2563eb; color: #fff; border: none; padding: 0.5rem 1.25rem;
+    border-radius: 4px; cursor: pointer; font-size: 0.9rem; white-space: nowrap;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #333; cursor: not-allowed; }
+  .model-info { font-size: 0.75rem; color: #666; margin-top: 0.25rem; }
+  #output {
+    width: 100%; max-width: 700px;
+    background: #111; border: 1px solid #222; border-radius: 6px;
+    padding: 1rem; min-height: 200px; max-height: 60vh;
+    overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;
+    font-family: "SF Mono", "Fira Code", monospace; font-size: 0.9rem; line-height: 1.5;
+  }
+  #output .prompt-text { color: #888; }
+  #output .gen-text { color: #4ade80; }
+  #output.chords .gen-text { letter-spacing: 0.05em; word-spacing: 0.3em; }
+  .domain-tag {
+    display: inline-block; font-size: 0.65rem; padding: 0.1rem 0.4rem;
+    border-radius: 3px; background: #1e3a5f; color: #60a5fa; margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .domain-tag.chords { background: #3b2f1e; color: #f59e0b; }
+  #status { font-size: 0.75rem; color: #666; margin-top: 0.5rem; max-width: 700px; }
+  nav { margin-bottom: 1rem; }
+  nav a { color: #60a5fa; text-decoration: none; font-size: 0.85rem; }
+  nav a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav><a href="/">Dashboard</a> &middot; <a href="/chat">Chat UI</a> &middot; <a href="/models">Models</a> &middot; <a href="/docs">API Docs</a></nav>
+<h1>Alpha Inference</h1>
+<div class="controls">
+  <div class="row">
+    <label>Model</label>
+    <select id="model"></select>
+  </div>
+  <div class="model-info" id="modelInfo"></div>
+  <div class="row">
+    <label>Prompt</label>
+    <input type="text" id="prompt" value="The " placeholder="Enter prompt...">
+  </div>
+  <div class="row">
+    <label>Steps</label>
+    <input type="number" id="steps" value="200" min="1" max="500">
+    <label>Temp</label>
+    <input type="number" id="temp" value="0.8" min="0.1" max="2.0" step="0.1">
+    <label>Top-k</label>
+    <input type="number" id="topk" value="40" min="0" max="200">
+    <button id="generate" onclick="doGenerate()">Generate</button>
+    <button id="stop" onclick="doStop()" disabled>Stop</button>
+  </div>
+</div>
+<div id="output"></div>
+<div id="status"></div>
+<script>
+let models = [];
+let source = null;
+async function loadModels() {
+  const res = await fetch("/api/models");
+  models = await res.json();
+  const sel = document.getElementById("model");
+  sel.innerHTML = "";
+  for (const m of models) {
+    const opt = document.createElement("option");
+    const tag = m.domain || "novels";
+    opt.value = m.id; opt.textContent = m.name + " [" + tag + "] (step " + m.step + ")";
+    sel.appendChild(opt);
+  }
+  updateModelInfo();
+}
+const domainPrompts = {
+  novels: ["The ", "Once upon a time", "He walked into"],
+  chords: ["Em7 G Dsus4", "Am F C G", "D A Bm G"],
+  abc: ["X:1\nM:4/4\nK:G\n|:G", "X:1\nM:6/8\nK:D\nA|:d", "X:1\nM:4/4\nK:Ador\nE"],
+};
+function updateModelInfo() {
+  const sel = document.getElementById("model");
+  const m = models.find(x => x.id === sel.value);
+  if (!m) { document.getElementById("modelInfo").textContent = ""; return; }
+  const mc = m.modelConfig;
+  const domain = m.domain || "novels";
+  const parts = [domain, mc.nLayer+"L "+mc.nEmbd+"D "+mc.nHead+"H","vocab="+mc.vocabSize,"ctx="+mc.blockSize];
+  if (m.lastLoss != null) parts.push("loss="+m.lastLoss.toFixed(3));
+  document.getElementById("modelInfo").textContent = parts.join(" | ");
+  // Set domain-appropriate prompt
+  const prompts = domainPrompts[domain] || domainPrompts.novels;
+  document.getElementById("prompt").value = prompts[0];
+  document.getElementById("prompt").placeholder = domain === "chords" ? "Enter chord progression..." : "Enter prompt...";
+  // Style output for domain
+  const output = document.getElementById("output");
+  output.className = domain === "chords" ? "chords" : "";
+}
+document.getElementById("model").addEventListener("change", updateModelInfo);
+function doGenerate() {
+  doStop();
+  const output = document.getElementById("output");
+  const prompt = document.getElementById("prompt").value;
+  const model = document.getElementById("model").value;
+  const steps = document.getElementById("steps").value;
+  const temp = document.getElementById("temp").value;
+  const topk = document.getElementById("topk").value;
+  output.innerHTML = "";
+  document.getElementById("status").textContent = "Generating...";
+  document.getElementById("generate").disabled = true;
+  document.getElementById("stop").disabled = false;
+  let isFirst = true;
+  const url = "/api/inference?query="+encodeURIComponent(prompt)+"&model="+encodeURIComponent(model)+"&steps="+steps+"&temp="+temp+"&topk="+topk;
+  source = new EventSource(url);
+  let tokenCount = 0;
+  const t0 = performance.now();
+  source.onmessage = function(e) {
+    if (e.data === "[DONE]") {
+      const elapsed = ((performance.now()-t0)/1000).toFixed(1);
+      document.getElementById("status").textContent = tokenCount+" tokens in "+elapsed+"s ("+(tokenCount/(parseFloat(elapsed)||1)).toFixed(1)+" tok/s)";
+      finish(); return;
+    }
+    const data = JSON.parse(e.data);
+    const span = document.createElement("span");
+    span.textContent = data.token;
+    if (isFirst) { span.className = "prompt-text"; isFirst = false; }
+    else { span.className = "gen-text"; tokenCount++; }
+    output.appendChild(span);
+    output.scrollTop = output.scrollHeight;
+  };
+  source.onerror = function() { document.getElementById("status").textContent = "Connection lost."; finish(); };
+}
+function doStop() { if (source) { source.close(); source = null; } finish(); }
+function finish() { if (source) { source.close(); source = null; } document.getElementById("generate").disabled = false; document.getElementById("stop").disabled = true; }
+document.getElementById("prompt").addEventListener("keydown", function(e) { if (e.key === "Enter") doGenerate(); });
+loadModels();
+</script>
+</body>
+</html>
