@@ -31,8 +31,6 @@
   }
   .header .model-info { font-size: 0.7rem; color: var(--text3); }
   .header .spacer { flex: 1; }
-  .header a { color: #60a5fa; text-decoration: none; font-size: 0.8rem; }
-  .header a:hover { text-decoration: underline; }
   .header button {
     background: transparent; border: 1px solid var(--border2); color: var(--text2);
     padding: 0.3rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem;
@@ -183,10 +181,6 @@
   <span class="spacer"></span>
   <button onclick="toggleSettings()">Settings</button>
   <button onclick="clearChat()">Clear</button>
-  <a href="/">Dashboard</a>
-  <a href="/inference">Inference</a>
-  <a href="/models">Models</a>
-  <a href="/docs">API</a>
 </div>
 <div class="settings" id="settings">
   <div class="setting"><label>Max tokens</label><input type="number" id="maxTokens" value="200" min="1" max="500"></div>
