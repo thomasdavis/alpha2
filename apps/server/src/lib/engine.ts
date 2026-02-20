@@ -268,7 +268,7 @@ async function loadFromBlob(url: string): Promise<CheckpointState> {
 export async function ensureModel(modelId: string): Promise<LoadedModel> {
   if (loaded && loaded.runId === modelId) return loaded;
 
-  const run = runs.find((r) => r.id === modelId);
+  const run = runs.find((r) => r.id === modelId || r.config?.runId === modelId);
   if (!run) throw new Error(`Unknown model: ${modelId}`);
 
   console.log(`Loading model: ${run.name} (source: ${run.source})...`);
