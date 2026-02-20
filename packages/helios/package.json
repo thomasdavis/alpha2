@@ -1,0 +1,21 @@
+{
+  "name": "@alpha/helios",
+  "version": "0.0.1",
+  "description": "Helios — from-scratch GPU compute backend via Vulkan native addon + TypeScript",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" } },
+  "scripts": {
+    "build:native": "node native/build.mjs",
+    "build": "npm run build:native && tsc -b",
+    "clean": "rm -rf dist native/*.node",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@alpha/core": "*"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

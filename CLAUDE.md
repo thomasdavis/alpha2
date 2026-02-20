@@ -2,6 +2,16 @@
 
 Domain: **alpha.omegaai.dev**
 
+## Philosophy
+
+Alpha is **hand-written from scratch**. Every component — tensors, autograd, model, tokenizers, training loop — is custom TypeScript with minimal to no external dependencies. This is intentional.
+
+- **Pure JavaScript/TypeScript** — no heavy ML frameworks, no ONNX runtime wrappers, no "just use PyTorch"
+- **Super configurable** — every layer of the stack should be tunable and swappable
+- **Zero dependencies** — prefer writing code over adding packages. No npm deps for core functionality. If we need GPU access, we write the native addon and SPIR-V assembler ourselves
+- **Understand everything** — no black boxes. If it's in the codebase, we wrote it and we understand it
+- **Scratch-built** — the value is in building it, not in importing it
+
 ## Architecture
 
 Monorepo: `npm` workspaces + Turbo. TypeScript ESM throughout.
@@ -9,6 +19,7 @@ Monorepo: `npm` workspaces + Turbo. TypeScript ESM throughout.
 ```
 packages/core       — types, configs, domains, RNG
 packages/tensor     — CPU tensor backend
+packages/helios     — GPU compute backend (Vulkan native addon + SPIR-V from TS)
 packages/autograd   — automatic differentiation
 packages/model      — GPT model (init, forward, params)
 packages/tokenizers — BPE, char, word tokenizers
@@ -24,6 +35,7 @@ apps/cli            — CLI commands
 - Use `@alpha/core` types (`ModelConfig`, `TrainConfig`, `DomainConfig`) as source of truth
 - Read existing code before modifying — patterns are intentional
 - Use `@libsql/client` for all DB access via `@alpha/db` (createDb/getDb)
+- **Always use the alpha remote** when running training — set `ALPHA_REMOTE_URL` and `ALPHA_REMOTE_SECRET` env vars so live metrics stream to https://alpha.omegaai.dev/training for real-time monitoring
 - Set env vars in `.env.local` for local dev (gitignored)
 - Set prod env vars via `railway variables set`
 - Run `npx tsc -b packages/X/tsconfig.json` to build a single package

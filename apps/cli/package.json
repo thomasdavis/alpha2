@@ -11,6 +11,7 @@
   "dependencies": {
     "@alpha/core": "*",
     "@alpha/tensor": "*",
+    "@alpha/helios": "*",
     "@alpha/autograd": "*",
     "@alpha/tokenizers": "*",
     "@alpha/model": "*",

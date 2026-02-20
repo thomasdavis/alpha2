@@ -9,6 +9,7 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/tensor" },
+    { "path": "../../packages/helios" },
     { "path": "../../packages/autograd" },
     { "path": "../../packages/tokenizers" },
     { "path": "../../packages/model" },
