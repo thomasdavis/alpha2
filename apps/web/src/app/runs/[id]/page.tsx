@@ -50,6 +50,7 @@ export default async function RunDetailPage({
     chords: "bg-yellow-bg text-yellow",
     abc: "bg-green-bg text-green",
     dumb_finance: "bg-red-bg text-red",
+    chaos: "bg-purple-bg text-purple",
   };
   const barColors: Record<string, string> = {
     active: "bg-green",

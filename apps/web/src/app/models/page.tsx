@@ -59,6 +59,7 @@ const DOMAIN_META: Record<string, { label: string; color: string; bg: string; ic
   abc:          { label: "ABC",          color: "text-green",  bg: "bg-green-bg",  icon: "A" },
   chords:       { label: "Chords",       color: "text-yellow", bg: "bg-yellow-bg", icon: "C" },
   dumb_finance: { label: "Finance",      color: "text-red",    bg: "bg-red-bg",    icon: "$" },
+  chaos:        { label: "Chaos",        color: "text-purple", bg: "bg-purple-bg", icon: "X" },
 };
 
 function domainMeta(d: string) {

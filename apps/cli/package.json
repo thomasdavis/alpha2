@@ -18,7 +18,9 @@
     "@alpha/train": "*",
     "@alpha/effect-runtime": "*",
     "@alpha/bench": "*",
-    "effect": "^3.12.0"
+    "@alpha/datagen": "*",
+    "effect": "^3.12.0",
+    "webgpu": "*"
   },
   "devDependencies": {
     "tsx": "^4.0.0"

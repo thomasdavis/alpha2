@@ -10,6 +10,7 @@ import { trainCmd } from "./commands/train.js";
 import { sampleCmd } from "./commands/sample.js";
 import { evalCmd } from "./commands/eval.js";
 import { benchCmd } from "./commands/bench.js";
+import { datagenCmd } from "./commands/datagen.js";
 
 const USAGE = `
 alpha — a tiny, readable GPT training system
@@ -20,6 +21,7 @@ Commands:
   sample           Generate text from a checkpoint
   eval             Evaluate a checkpoint on validation data
   bench            Run benchmarks
+  datagen          Generate synthetic training data
 
 Options:
   --help, -h       Show this help
@@ -52,6 +54,8 @@ async function main() {
     await evalCmd(args.slice(1));
   } else if (command === "bench") {
     await benchCmd(args.slice(1));
+  } else if (command === "datagen") {
+    await datagenCmd(args.slice(1));
   } else {
     console.error(`Unknown command: ${args.join(" ")}`);
     console.log(USAGE);

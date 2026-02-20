@@ -68,6 +68,7 @@ export const Op = {
   FDiv:                 136,
   FMod:                 141,
   FNegate:              127,
+  VectorTimesScalar:    142,
   CompositeExtract:     81,
   CompositeConstruct:   80,
   ULessThan:            176,
@@ -89,13 +90,18 @@ export const Op = {
   ConvertFToS:          110,
   ConvertUToF:          112,
   ConvertSToF:          111,
+  FConvert:             115,
   Bitcast:              124,
   ExtInst:              12,
+  ControlBarrier:       224,
+  MemoryBarrier:        225,
 } as const;
 
 // Capabilities
 export const Capability = {
   Shader: 1,
+  Float16: 9,
+  StorageBuffer16BitAccess: 4433, // SPV_KHR_16bit_storage
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
 } as const;
 
@@ -117,6 +123,7 @@ export const StorageClass = {
   CrossWorkgroup: 5,
   Private: 6,
   Function: 7,
+  PushConstant: 9,
   StorageBuffer: 12,
 } as const;
 
@@ -159,6 +166,23 @@ export const GLSLstd450 = {
   Ceil: 9,
   Tanh: 21,
   FClamp: 43,
+  FMA: 50,
+} as const;
+
+// Scope (for barriers)
+export const Scope = {
+  CrossDevice: 0,
+  Device: 1,
+  Workgroup: 2,
+  Subgroup: 3,
+  Invocation: 4,
+} as const;
+
+// Memory semantics (for barriers)
+export const MemorySemantics = {
+  None: 0x0000,
+  AcquireRelease: 0x0008,
+  WorkgroupMemory: 0x0100,
 } as const;
 
 // Function control

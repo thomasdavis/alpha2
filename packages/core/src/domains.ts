@@ -93,6 +93,25 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "chaos",
+    {
+      id: "chaos",
+      displayName: "Chaos",
+      tokenizer: "bpe-4k",
+      samplePrompts: ["The word ", "Once there was a ", "She noticed the "],
+      modelDefaults: {
+        blockSize: 128,
+        nLayer: 6,
+        nEmbd: 128,
+        nHead: 8,
+      },
+      trainDefaults: {
+        tokenizer: "bpe-4k",
+        lr: 5e-4,
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */

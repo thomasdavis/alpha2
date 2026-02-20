@@ -15,13 +15,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Native addon interface ──────────────────────────────────────────────────
 
 export interface NativeAddon {
-  initDevice():   { deviceName: string; vendorId: number };
+  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean };
   createBuffer(byteLength: number, hostVisible?: number): number;
   uploadBuffer(handle: number, data: Float32Array): void;
   readBuffer(handle: number): Float32Array;
   destroyBuffer(handle: number): void;
-  createPipeline(spirv: Uint32Array, numBindings: number): number;
-  dispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number): void;
+  createPipeline(spirv: Uint32Array, numBindings: number, pushConstantSize?: number): number;
+  dispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
+  batchBegin(): void;
+  batchDispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): void;
+  batchSubmit(): number;
+  waitTimeline(value: number): void;
+  getCompleted(): number;
+  gpuTime(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
   waitIdle(): void;
   destroy(): void;
 }
@@ -29,7 +35,7 @@ export interface NativeAddon {
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 let _native: NativeAddon | null = null;
-let _deviceInfo: { deviceName: string; vendorId: number } | null = null;
+let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } | null = null;
 
 function findNativeAddon(): string {
   // Try multiple locations: native/ dir relative to source, or dist/
@@ -50,7 +56,7 @@ function findNativeAddon(): string {
 }
 
 /** Load the native addon and initialize the Vulkan device. */
-export function initDevice(): { deviceName: string; vendorId: number } {
+export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } {
   if (_deviceInfo) return _deviceInfo;
 
   const addonPath = findNativeAddon();
@@ -70,7 +76,7 @@ export function getNative(): NativeAddon {
 }
 
 /** Get device info. */
-export function getDeviceInfo(): { deviceName: string; vendorId: number } {
+export function getDeviceInfo(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } {
   if (!_deviceInfo) initDevice();
   return _deviceInfo!;
 }

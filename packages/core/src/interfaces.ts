@@ -66,6 +66,7 @@ export interface Backend {
   layerNorm(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData;
   gelu(a: TensorData): TensorData;
   relu(a: TensorData): TensorData;
+  silu(a: TensorData): TensorData;
   softmax(a: TensorData, axis?: number): TensorData;
   logSoftmax(a: TensorData, axis?: number): TensorData;
   crossEntropy(logits: TensorData, targets: TensorData): TensorData;

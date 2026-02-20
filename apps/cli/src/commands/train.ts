@@ -4,7 +4,7 @@
 import { parseKV, requireArg, intArg, floatArg, strArg, boolArg, loadConfig } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng, listImplementations } from "../resolve.js";
 import { train as runTrain, createRemoteReporter } from "@alpha/train";
-import { defaultModelConfig, defaultTrainConfig, getDomain } from "@alpha/core";
+import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
 import { Effect } from "effect";
@@ -20,7 +20,8 @@ export async function trainCmd(args: string[]): Promise<void> {
   const domainId = kv["domain"];
   const domain = domainId ? getDomain(domainId) : undefined;
   if (domainId && !domain) {
-    console.error(`Unknown domain: "${domainId}". Available: novels, chords`);
+    const available = Array.from(domains.keys()).join(", ");
+    console.error(`Unknown domain: "${domainId}". Available: ${available}`);
     process.exit(1);
   }
 

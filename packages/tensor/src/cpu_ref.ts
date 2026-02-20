@@ -462,6 +462,10 @@ export class CpuRefBackend implements Backend {
     return unaryOp(a, (x) => (x > 0 ? x : 0));
   }
 
+  silu(a: TensorData): TensorData {
+    return unaryOp(a, (x) => x / (1 + Math.exp(-x)));
+  }
+
   softmax(a: TensorData, axis?: number): TensorData {
     // Default: last axis
     const ndim = a.shape.length;
