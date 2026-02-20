@@ -182,10 +182,17 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     // Optimizer step
     optimizer.step(paramDataMap, gradMap);
 
-    // Zero gradients
+    // Zero gradients and release tape references
     for (const [, variable] of paramMap) {
       variable.grad = null;
     }
+    tape.clear();
+
+    // Flush any pending GPU ops and force GC to trigger FinalizationRegistry
+    // cleanup of GPU buffers. The flush ensures all GPU work is submitted,
+    // and GC reclaims intermediate tensors so their buffers return to the pool.
+    if ("flush" in backend) (backend as any).flush();
+    if (typeof globalThis.gc === "function") (globalThis as any).gc();
 
     // Metrics
     const stepElapsed = performance.now() - stepStart;

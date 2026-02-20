@@ -139,7 +139,7 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
 
-const POOL_MAX_PER_SIZE = 8;
+const POOL_MAX_PER_SIZE = 32;
 const bufferPool = new Map<number, number[]>();
 
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
@@ -219,8 +219,12 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
   if (pool.length < POOL_MAX_PER_SIZE) {
     pool.push(region);
+  } else {
+    // Pool full — release buffer back to the general pool to prevent leaks.
+    // The GPU work may still be in flight, but the buffer won't be reused
+    // until the next iteration when all prior GPU ops have completed.
+    releaseBuffer(getNative(), region.handle, region.byteSize);
   }
-  // Don't destroy — let buffer pool handle lifecycle
 }
 
 /**
@@ -304,10 +308,12 @@ class ComputeGraph {
     const tv = vk.batchSubmit();
     this._lastFlushTimeline = tv;
 
-    // Release all output regions with the batch timeline value
-    for (const op of ops) {
-      releaseOutputRegion(op.outputRegion, tv);
-    }
+    // NOTE: We intentionally do NOT release output regions to the output pool
+    // here. Each graphLazyTensor registers the buffer handle with the
+    // FinalizationRegistry (gpuCleanup), which is the sole owner. Releasing
+    // to the output pool would create dual ownership — the pool could reuse
+    // the handle while the FinalizationRegistry still tracks it, leading to
+    // use-after-free on the GPU (SIGSEGV).
 
     return tv;
   }

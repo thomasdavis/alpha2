@@ -470,8 +470,8 @@ static PFN_vkGetQueryPoolResults                  fp_vkGetQueryPoolResults;
 // ── Memory sub-allocator (slab allocator) ────────────────────────────────────
 
 #define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)   // 64 MB per slab
-#define SLAB_MAX_SIZE       (512 * 1024 * 1024)   // 512 MB max per slab
-#define MAX_SLABS           16
+#define SLAB_MAX_SIZE       (1024 * 1024 * 1024)  // 1 GB max per slab
+#define MAX_SLABS           64
 
 typedef struct {
   VkDeviceMemory memory;
