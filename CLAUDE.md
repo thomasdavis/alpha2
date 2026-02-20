@@ -26,6 +26,7 @@ packages/tokenizers — BPE, char, word tokenizers
 packages/train      — training loop, checkpointing, data loading
 packages/db         — Turso/libsql database layer
 apps/server         — inference server (Hono, AI SDK provider)
+apps/web            — Next.js dashboard (Tailwind, App Router, dark theme)
 apps/tui            — terminal dashboard (Ink/React)
 apps/cli            — CLI commands
 ```
@@ -66,7 +67,7 @@ apps/cli            — CLI commands
 
 ## Deploy
 
-All deployments are on **Railway** (project `REDACTED_PROJECT`). Vercel is deprecated.
+All deployments are on **Railway** (project `REDACTED_PROJECT`). Root `vercel.json` is a legacy leftover.
 
 - **Server**: `railway service alpha2 && railway up`
 - **Web dashboard**: `railway service alpha-web && railway up`
