@@ -84,7 +84,19 @@ function serveStatic(res: http.ServerResponse, filePath: string, contentType: st
 
 // ── Handlers ──────────────────────────────────────────────────────────────
 
+// Cache for /api/models — avoids hitting Turso on every request
+let modelsCache: { json: string; ts: number } | null = null;
+const MODELS_CACHE_TTL = 30_000; // 30 seconds
+
+function invalidateModelsCache(): void { modelsCache = null; }
+
 async function handleModels(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (modelsCache && Date.now() - modelsCache.ts < MODELS_CACHE_TTL) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(modelsCache.json);
+    return;
+  }
+
   // Local filesystem runs
   const localRuns = getRuns().map((r) => ({
     id: r.id, name: r.name, step: r.step, mtime: r.mtime, lastLoss: r.lastLoss,
@@ -115,8 +127,10 @@ async function handleModels(_req: http.IncomingMessage, res: http.ServerResponse
     }
   } catch { /* DB unavailable — return local runs only */ }
 
+  const json = JSON.stringify(localRuns);
+  modelsCache = { json, ts: Date.now() };
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(localRuns));
+  res.end(json);
 }
 
 async function handleInference(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -398,6 +412,7 @@ async function handleIngest(req: http.IncomingMessage, res: http.ServerResponse)
     } catch (e) {
       console.warn("Ingest run_start DB error:", (e as Error).message);
     }
+    invalidateModelsCache();
     broadcastLive("run_start", { runId, domain, modelConfig, trainConfig, totalParams });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
@@ -567,6 +582,7 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
   // Rescan engine to pick up new model
   resetEngine();
   await initEngine(OUTPUTS_DIR);
+  invalidateModelsCache();
 
   console.log(`Uploaded model: ${name} (step ${step})`);
   res.writeHead(200, { "Content-Type": "application/json" });
@@ -594,6 +610,7 @@ async function handleDeleteModel(req: http.IncomingMessage, res: http.ServerResp
   fs.rmSync(runDir, { recursive: true, force: true });
   resetEngine();
   await initEngine(OUTPUTS_DIR);
+  invalidateModelsCache();
 
   console.log(`Deleted model: ${name}`);
   res.writeHead(200, { "Content-Type": "application/json" });
