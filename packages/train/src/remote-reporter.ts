@@ -26,7 +26,7 @@ export interface RemoteReporter {
     trainConfig: TrainConfig;
     totalParams: number;
     dataPath?: string;
-  }): void;
+  }): Promise<void>;
   /** Buffer a step metric and flush if batch is full */
   onStep(metrics: StepMetrics): void;
   /** Mark run as completed and flush remaining metrics */
@@ -90,13 +90,13 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
   }
 
   return {
-    registerRun(info) {
+    async registerRun(info) {
       runId = info.runId;
       domain = info.domain;
       storedModelConfig = info.modelConfig;
       storedTrainConfig = info.trainConfig;
       storedDataPath = info.dataPath;
-      post("/api/ingest", {
+      await post("/api/ingest", {
         type: "run_start",
         runId: info.runId,
         domain: info.domain,
@@ -134,9 +134,9 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
 
           const runDir = nodePath.dirname(info.path);
 
-          // Read checkpoint, config, and metrics files
-          const [checkpointRaw, configRaw, metricsRaw] = await Promise.all([
-            fs.readFile(info.path, "utf-8"),
+          // Read checkpoint as raw buffer (works for both binary and JSON formats)
+          const [checkpointBuf, configRaw, metricsRaw] = await Promise.all([
+            fs.readFile(info.path),
             fs.readFile(nodePath.join(runDir, "config.json"), "utf-8").catch(() => null),
             fs.readFile(nodePath.join(runDir, "metrics.jsonl"), "utf-8").catch(() => null),
           ]);
@@ -160,25 +160,51 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
             }
           }
 
-          const body = JSON.stringify({
-            name: info.runId,
-            config,
-            checkpoint: JSON.parse(checkpointRaw),
-            step: info.step,
-            metrics: metricsRaw || undefined,
-            trainingData,
-          });
+          // Detect binary checkpoint (starts with "ALPH" magic)
+          const isBinary = checkpointBuf.length >= 4 &&
+            checkpointBuf[0] === 0x41 && checkpointBuf[1] === 0x4c &&
+            checkpointBuf[2] === 0x50 && checkpointBuf[3] === 0x48;
 
-          const compressed = gzipSync(body);
+          if (isBinary) {
+            // Binary format: send checkpoint as gzipped binary, metadata in headers
+            const compressed = gzipSync(checkpointBuf);
 
-          await fetch(`${url}/api/upload`, {
-            method: "POST",
-            headers: {
-              ...headers,
-              "Content-Encoding": "gzip",
-            },
-            body: compressed,
-          });
+            await fetch(`${url}/api/upload`, {
+              method: "POST",
+              headers: {
+                ...headers,
+                "Content-Type": "application/octet-stream",
+                "Content-Encoding": "gzip",
+                "X-Checkpoint-Name": info.runId,
+                "X-Checkpoint-Step": String(info.step),
+                "X-Checkpoint-Config": Buffer.from(JSON.stringify(config)).toString("base64"),
+                "X-Checkpoint-Metrics": metricsRaw ? Buffer.from(metricsRaw).toString("base64") : "",
+                "X-Checkpoint-TrainingData": trainingData ? Buffer.from(trainingData).toString("base64") : "",
+              },
+              body: compressed,
+            });
+          } else {
+            // Legacy JSON format: send as JSON body
+            const body = JSON.stringify({
+              name: info.runId,
+              config,
+              checkpoint: JSON.parse(checkpointBuf.toString("utf-8")),
+              step: info.step,
+              metrics: metricsRaw || undefined,
+              trainingData,
+            });
+
+            const compressed = gzipSync(body);
+
+            await fetch(`${url}/api/upload`, {
+              method: "POST",
+              headers: {
+                ...headers,
+                "Content-Encoding": "gzip",
+              },
+              body: compressed,
+            });
+          }
 
           console.log(`  checkpoint uploaded to ${url} (step ${info.step})`);
         } catch {

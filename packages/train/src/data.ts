@@ -25,9 +25,30 @@ export class DataLoader {
     this.blockSize = blockSize;
   }
 
-  /** Create a DataLoader from raw text. */
+  /** Create a DataLoader from raw text. Encodes in chunks for large texts. */
   static fromText(text: string, tokenizer: Tokenizer, rng: Rng, batchSize: number, blockSize: number): DataLoader {
-    const tokens = tokenizer.encode(text);
+    // For large texts, encode in chunks to avoid exceeding JS array limits
+    const CHUNK_CHARS = 5_000_000; // 5M chars per chunk
+    if (text.length <= CHUNK_CHARS) {
+      return new DataLoader(tokenizer.encode(text), rng, batchSize, blockSize);
+    }
+
+    const chunks: Int32Array[] = [];
+    let totalLen = 0;
+    for (let i = 0; i < text.length; i += CHUNK_CHARS) {
+      const chunk = text.slice(i, i + CHUNK_CHARS);
+      const encoded = tokenizer.encode(chunk);
+      chunks.push(encoded);
+      totalLen += encoded.length;
+    }
+
+    const tokens = new Int32Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      tokens.set(chunk, offset);
+      offset += chunk.length;
+    }
+
     return new DataLoader(tokens, rng, batchSize, blockSize);
   }
 

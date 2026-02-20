@@ -42,7 +42,7 @@ export interface TrainerDeps {
   resumePath?: string;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
   onStep?: (metrics: StepMetrics) => void;
-  onStart?: (info: { runId: string; configHash: string; totalParams: number; dataPath: string }) => void;
+  onStart?: (info: { runId: string; configHash: string; totalParams: number; dataPath: string }) => void | Promise<void>;
   onCheckpoint?: (info: { step: number; path: string; runId: string }) => void;
   domain?: string;
 }
@@ -100,7 +100,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   }
 
   // Notify start
-  if (onStart) onStart({ runId: rid, configHash, totalParams, dataPath });
+  if (onStart) await onStart({ runId: rid, configHash, totalParams, dataPath });
 
   // Log header
   const paramBytes = totalParams * 4;

@@ -37,12 +37,18 @@ const OUTPUTS_DIR = process.env.OUTPUTS_DIR
 const MAX_BODY_BYTES = 50 * 1024 * 1024; // 50 MB — enough for 20k+ token inputs with large messages
 
 function readBody(req: http.IncomingMessage): Promise<string> {
+  return readBodyRaw(req, MAX_BODY_BYTES).then((buf) => buf.toString());
+}
+
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB — checkpoint uploads can be large
+
+function readBodyRaw(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
     req.on("data", (c: Buffer) => {
       total += c.length;
-      if (total > MAX_BODY_BYTES) {
+      if (total > maxBytes) {
         req.destroy();
         reject(new Error("Request body too large"));
         return;
@@ -54,10 +60,10 @@ function readBody(req: http.IncomingMessage): Promise<string> {
       if (req.headers["content-encoding"] === "gzip") {
         zlib.gunzip(raw, (err, result) => {
           if (err) reject(err);
-          else resolve(result.toString());
+          else resolve(result);
         });
       } else {
-        resolve(raw.toString());
+        resolve(raw);
       }
     });
     req.on("error", reject);
@@ -78,14 +84,39 @@ function serveStatic(res: http.ServerResponse, filePath: string, contentType: st
 
 // ── Handlers ──────────────────────────────────────────────────────────────
 
-function handleModels(_req: http.IncomingMessage, res: http.ServerResponse): void {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  const payload = getRuns().map((r) => ({
+async function handleModels(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  // Local filesystem runs
+  const localRuns = getRuns().map((r) => ({
     id: r.id, name: r.name, step: r.step, mtime: r.mtime, lastLoss: r.lastLoss,
     modelConfig: r.config.modelConfig, trainConfig: r.config.trainConfig,
     domain: r.domain,
   }));
-  res.end(JSON.stringify(payload));
+
+  // Database runs (includes remote runs from Modal / remote reporters)
+  const seen = new Set(localRuns.map((r) => r.id));
+  try {
+    const client = getDb();
+    const dbRuns = await dbListRuns(client, {});
+    for (const r of dbRuns) {
+      if (seen.has(r.id)) continue;
+      let modelConfig, trainConfig;
+      try { modelConfig = JSON.parse(r.model_config); } catch { modelConfig = {}; }
+      try { trainConfig = JSON.parse(r.train_config); } catch { trainConfig = {}; }
+      localRuns.push({
+        id: r.id,
+        name: r.run_id || r.id,
+        step: r.latest_step ?? 0,
+        mtime: r.disk_mtime ?? new Date(r.updated_at).getTime(),
+        lastLoss: r.last_loss ?? undefined,
+        modelConfig,
+        trainConfig,
+        domain: r.domain,
+      });
+    }
+  } catch { /* DB unavailable — return local runs only */ }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(localRuns));
 }
 
 async function handleInference(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -466,40 +497,71 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
     return;
   }
 
-  const body = JSON.parse(await readBody(req));
-  const { name, config, checkpoint, step, metrics, trainingData } = body as {
-    name: string;
-    config: Record<string, unknown>;
-    checkpoint: unknown;
-    step: number;
-    metrics?: string;
-    trainingData?: string;
-  };
+  const contentType = req.headers["content-type"] || "";
 
-  if (!name || !config || !checkpoint || !step) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Missing required fields: name, config, checkpoint, step" }));
-    return;
-  }
+  let name: string;
+  let config: Record<string, unknown>;
+  let step: number;
+  let metricsStr: string | undefined;
+  let trainingDataStr: string | undefined;
+  let checkpointBuf: Buffer | null = null;
 
-  // Reject empty/invalid checkpoints that would crash model loading
-  const ckpt = checkpoint as Record<string, unknown>;
-  if (!ckpt.modelConfig || !ckpt.params) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Invalid checkpoint: missing modelConfig or params" }));
-    return;
+  if (contentType === "application/octet-stream") {
+    // Binary checkpoint upload — metadata in headers, body is raw checkpoint
+    name = req.headers["x-checkpoint-name"] as string;
+    step = parseInt(req.headers["x-checkpoint-step"] as string, 10);
+    const configB64 = req.headers["x-checkpoint-config"] as string;
+    const metricsB64 = req.headers["x-checkpoint-metrics"] as string;
+    const dataB64 = req.headers["x-checkpoint-trainingdata"] as string;
+
+    config = configB64 ? JSON.parse(Buffer.from(configB64, "base64").toString("utf-8")) : {};
+    metricsStr = metricsB64 ? Buffer.from(metricsB64, "base64").toString("utf-8") : undefined;
+    trainingDataStr = dataB64 ? Buffer.from(dataB64, "base64").toString("utf-8") : undefined;
+
+    checkpointBuf = await readBodyRaw(req, MAX_UPLOAD_BYTES);
+
+    if (!name || !step) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing X-Checkpoint-Name or X-Checkpoint-Step headers" }));
+      return;
+    }
+  } else {
+    // Legacy JSON checkpoint upload
+    const body = JSON.parse(await readBody(req));
+    name = body.name;
+    config = body.config;
+    step = body.step;
+    metricsStr = body.metrics;
+    trainingDataStr = body.trainingData;
+
+    const checkpoint = body.checkpoint;
+    if (!name || !config || !checkpoint || !step) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing required fields: name, config, checkpoint, step" }));
+      return;
+    }
+
+    // Reject empty/invalid checkpoints that would crash model loading
+    const ckpt = checkpoint as Record<string, unknown>;
+    if (!ckpt.modelConfig || !ckpt.params) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid checkpoint: missing modelConfig or params" }));
+      return;
+    }
+
+    checkpointBuf = Buffer.from(JSON.stringify(checkpoint));
   }
 
   const runDir = path.join(OUTPUTS_DIR, name);
   fs.mkdirSync(runDir, { recursive: true });
 
   fs.writeFileSync(path.join(runDir, "config.json"), JSON.stringify(config, null, 2));
-  fs.writeFileSync(path.join(runDir, `checkpoint-${step}.json`), JSON.stringify(checkpoint));
-  if (metrics) {
-    fs.writeFileSync(path.join(runDir, "metrics.jsonl"), metrics);
+  fs.writeFileSync(path.join(runDir, `checkpoint-${step}.json`), checkpointBuf);
+  if (metricsStr) {
+    fs.writeFileSync(path.join(runDir, "metrics.jsonl"), metricsStr);
   }
-  if (trainingData) {
-    fs.writeFileSync(path.join(runDir, "training-data.txt"), trainingData);
+  if (trainingDataStr) {
+    fs.writeFileSync(path.join(runDir, "training-data.txt"), trainingDataStr);
   }
 
   // Rescan engine to pick up new model
@@ -619,7 +681,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
 
   // API routes
   if (p === "/api/models" && req.method === "DELETE") { await handleDeleteModel(req, res); return; }
-  if (p === "/api/models") { handleModels(req, res); return; }
+  if (p === "/api/models") { await handleModels(req, res); return; }
   if (p === "/api/inference" || p === "/inference") { await handleInference(req, res); return; }
   if ((p === "/api/chat") && req.method === "POST") { await handleChat(req, res); return; }
   if (p === "/api/generate") { await handleGenerate(req, res); return; }

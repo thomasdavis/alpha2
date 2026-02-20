@@ -554,8 +554,8 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
 
 // ── Resource tracking ───────────────────────────────────────────────────────
 
-#define MAX_BUFFERS   1024
-#define MAX_PIPELINES 128
+#define MAX_BUFFERS   8192
+#define MAX_PIPELINES 256
 
 typedef struct {
   VkBuffer       buffer;

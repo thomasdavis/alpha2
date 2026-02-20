@@ -17,7 +17,7 @@ export function LossChart({ runId }: { runId: string }) {
       .then((r) => r.json())
       .then((metrics: Metric[]) => {
         const canvas = canvasRef.current;
-        if (canvas && metrics.length >= 2) draw(canvas, metrics);
+        if (canvas && metrics.length >= 1) draw(canvas, metrics);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -84,31 +84,48 @@ function draw(canvas: HTMLCanvasElement, metrics: Metric[]) {
 
   // Step labels
   ctx.textAlign = "center";
-  const ticks = [
-    minStep,
-    Math.round(minStep + rangeS * 0.25),
-    Math.round(minStep + rangeS * 0.5),
-    Math.round(minStep + rangeS * 0.75),
-    maxStep,
-  ];
-  for (const s of ticks) {
+  if (metrics.length === 1) {
     ctx.fillStyle = "#555";
     ctx.font = "10px monospace";
-    ctx.fillText(s.toString(), sx(s), h - pad.bottom + 14);
+    ctx.fillText(minStep.toString(), sx(minStep), h - pad.bottom + 14);
+  } else {
+    const ticks = [
+      minStep,
+      Math.round(minStep + rangeS * 0.25),
+      Math.round(minStep + rangeS * 0.5),
+      Math.round(minStep + rangeS * 0.75),
+      maxStep,
+    ];
+    for (const s of ticks) {
+      ctx.fillStyle = "#555";
+      ctx.font = "10px monospace";
+      ctx.fillText(s.toString(), sx(s), h - pad.bottom + 14);
+    }
   }
 
-  // Train loss line
-  ctx.beginPath();
-  ctx.strokeStyle = "#f59e0b";
-  ctx.lineWidth = 1.5;
-  ctx.lineJoin = "round";
-  for (let i = 0; i < metrics.length; i++) {
-    const x = sx(metrics[i].step);
-    const y = sy(metrics[i].loss);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  // Train loss — dot for single point, line for multiple
+  if (metrics.length === 1) {
+    ctx.fillStyle = "#f59e0b";
+    ctx.beginPath();
+    ctx.arc(pad.left + cw / 2, pad.top + ch / 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#888";
+    ctx.font = "11px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`loss: ${metrics[0].loss.toFixed(4)}`, pad.left + cw / 2, pad.top + ch / 2 + 16);
+  } else {
+    ctx.beginPath();
+    ctx.strokeStyle = "#f59e0b";
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    for (let i = 0; i < metrics.length; i++) {
+      const x = sx(metrics[i].step);
+      const y = sy(metrics[i].loss);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
   }
-  ctx.stroke();
 
   // Val loss dots + line
   if (valPts.length > 0) {

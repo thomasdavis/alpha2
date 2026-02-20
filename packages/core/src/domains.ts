@@ -112,6 +112,28 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "concordance",
+    {
+      id: "concordance",
+      displayName: "Concordance",
+      tokenizer: "bpe",
+      samplePrompts: [
+        "The ",
+        "When in the Course of human events",
+        "It was a dark and stormy",
+      ],
+      modelDefaults: {
+        blockSize: 256,
+        nLayer: 6,
+        nEmbd: 256,
+        nHead: 8,
+      },
+      trainDefaults: {
+        tokenizer: "bpe",
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */

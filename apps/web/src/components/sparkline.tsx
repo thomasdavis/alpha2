@@ -19,7 +19,7 @@ export function Sparkline({
     fetch(`/api/runs/${encodeURIComponent(runId)}/metrics?last=60`)
       .then((r) => r.json())
       .then((metrics: Array<{ loss: number }>) => {
-        if (metrics.length < 2) return;
+        if (metrics.length === 0) return;
         const values = metrics.map((m) => m.loss);
         draw(canvas, values, status);
         setLoaded(true);
@@ -47,19 +47,28 @@ function draw(canvas: HTMLCanvasElement, values: number[], status: string) {
   canvas.height = h * dpr;
   ctx.scale(dpr, dpr);
 
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-
   const colors: Record<string, string> = {
     completed: "#60a5fa",
     active: "#4ade80",
     stale: "#f59e0b",
     failed: "#f87171",
   };
+  const color = colors[status] ?? "#888";
+
+  if (values.length === 1) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
 
   ctx.beginPath();
-  ctx.strokeStyle = colors[status] ?? "#888";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = "round";
 

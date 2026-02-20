@@ -2,6 +2,8 @@
 FROM node:22-slim AS build
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y gcc libnode-dev && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json turbo.json tsconfig.base.json ./
 COPY apps/ apps/
 COPY packages/ packages/
@@ -26,6 +28,8 @@ COPY --from=build /app/packages/autograd/dist/ packages/autograd/dist/
 COPY --from=build /app/packages/tokenizers/dist/ packages/tokenizers/dist/
 COPY --from=build /app/packages/model/dist/ packages/model/dist/
 COPY --from=build /app/packages/train/dist/ packages/train/dist/
+COPY --from=build /app/packages/helios/dist/ packages/helios/dist/
+COPY --from=build /app/packages/helios/native/helios_vk.node packages/helios/native/helios_vk.node
 COPY --from=build /app/packages/db/dist/ packages/db/dist/
 COPY public/ public/
 
