@@ -86,6 +86,22 @@ const nav: NavItem[] = [
 
 const tools: NavItem[] = [
   {
+    href: "/architecture",
+    label: "Architecture",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.5" y="1.5" width="5" height="4" rx="0.5" />
+        <rect x="9.5" y="1.5" width="5" height="4" rx="0.5" />
+        <rect x="5" y="10.5" width="6" height="4" rx="0.5" />
+        <line x1="4" y1="5.5" x2="4" y2="8" />
+        <line x1="12" y1="5.5" x2="12" y2="8" />
+        <line x1="4" y1="8" x2="12" y2="8" />
+        <line x1="8" y1="8" x2="8" y2="10.5" />
+      </svg>
+    ),
+    match: (p) => p === "/architecture",
+  },
+  {
     href: "/inference",
     label: "Inference",
     icon: (
