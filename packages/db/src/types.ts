@@ -64,4 +64,12 @@ export interface DbRunSummary extends DbRun {
   metric_count: number;
 }
 
+export interface DbSample {
+  run_id: string;
+  idx: number;
+  prompt: string;
+  output: string;
+  created_at: string;
+}
+
 export type RunStatus = "active" | "completed" | "stale" | "failed";

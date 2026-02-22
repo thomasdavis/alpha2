@@ -306,10 +306,11 @@ async function loadModels() {
   }
   // URL param takes priority, then localStorage
   const urlModel = new URLSearchParams(window.location.search).get("model");
-  if (urlModel && models.find(m => m.id === urlModel)) {
-    sel.value = urlModel;
-  } else if (saved && saved.model && models.find(m => m.id === saved.model)) {
-    sel.value = saved.model;
+  const findModel = (id) => models.find(m => m.id === id || m.runId === id);
+  if (urlModel && findModel(urlModel)) {
+    sel.value = findModel(urlModel).id;
+  } else if (saved && saved.model && findModel(saved.model)) {
+    sel.value = findModel(saved.model).id;
   }
   updateModelInfo();
 }

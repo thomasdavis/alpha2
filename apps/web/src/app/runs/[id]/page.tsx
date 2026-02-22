@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getClient } from "@/lib/db";
-import { getRun, getMetrics, listCheckpoints } from "@alpha/db";
+import { getRun, getMetrics, listCheckpoints, getSamples } from "@alpha/db";
 import { formatParams, formatLoss, formatBytes, timeAgo, pct } from "@/lib/format";
 import { LossChart } from "@/components/loss-chart";
 import { Tip } from "@/components/tooltip";
@@ -33,9 +33,10 @@ export default async function RunDetailPage({
   const run = await getRun(client, id);
   if (!run) notFound();
 
-  const [metrics, checkpoints] = await Promise.all([
+  const [metrics, checkpoints, samples] = await Promise.all([
     getMetrics(client, id),
     listCheckpoints(client, id),
+    getSamples(client, id),
   ]);
 
   const p = pct(run.latest_step, run.total_iters);
@@ -217,6 +218,25 @@ export default async function RunDetailPage({
           )}
         </div>
       </div>
+
+      {/* Sample generations */}
+      {samples.length > 0 && (
+        <div className="mt-6 rounded-lg border border-border bg-surface p-4">
+          <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
+            Sample Generations ({samples.length})
+          </h2>
+          <div className="space-y-3">
+            {samples.map((s: any) => (
+              <div key={s.idx} className="rounded border border-border bg-surface-2 p-3">
+                <div className="mb-1 text-[0.68rem] uppercase text-text-muted">Prompt</div>
+                <div className="mb-2 font-mono text-xs text-text-secondary">{s.prompt}</div>
+                <div className="mb-1 text-[0.68rem] uppercase text-text-muted">Output</div>
+                <div className="whitespace-pre-wrap font-mono text-xs text-text-primary">{s.output}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -35,6 +35,9 @@ export class BpeTokenizer implements Tokenizer {
   /** Ordered list of learned merges. */
   private _merges: Merge[] = [];
 
+  /** Cached merge rank lookup for fast encoding. */
+  private _mergeRank: Map<number, { rank: number; newId: number }> | null = null;
+
   constructor(vocabSize = 2000) {
     this._targetVocabSize = vocabSize;
   }
@@ -190,25 +193,153 @@ export class BpeTokenizer implements Tokenizer {
   /**
    * Encode text by greedily applying learned merges.
    *
-   * Start with the character-level token ids, then replay every merge in
-   * training order. This guarantees deterministic encoding.
+   * Uses a min-heap keyed by merge rank over a doubly-linked list of tokens.
+   * Complexity: O(N log N) amortized instead of O(M × N) where M = merge count.
+   * Each token position is visited a constant number of times.
    */
   encode(text: string): Int32Array {
     // Start with character-level ids.
-    let ids: number[] = [];
+    const charIds: number[] = [];
     for (const ch of text) {
       const id = this._stoi.get(ch);
       if (id !== undefined) {
-        ids.push(id);
+        charIds.push(id);
       }
     }
 
-    // Replay merges in order.
-    for (const merge of this._merges) {
-      ids = this._applyMerge(ids, merge.left, merge.right, merge.newId);
+    const n = charIds.length;
+    if (this._merges.length === 0 || n <= 1) {
+      return new Int32Array(charIds);
     }
 
-    return new Int32Array(ids);
+    // For small vocabs (< 1000 merges), use the simpler O(M×N) approach
+    // which avoids typed-array allocation overhead.
+    if (this._merges.length < 1000) {
+      return this._encodeSimple(charIds);
+    }
+
+    // Build merge rank lookup (cached across encode calls)
+    if (!this._mergeRank) {
+      this._mergeRank = new Map();
+      for (let i = 0; i < this._merges.length; i++) {
+        const m = this._merges[i];
+        this._mergeRank.set(m.left * 65536 + m.right, { rank: i, newId: m.newId });
+      }
+    }
+    const mr = this._mergeRank;
+    const pk = (a: number, b: number) => a * 65536 + b;
+
+    // ── Doubly-linked list of tokens ──
+    const nodeId = new Int32Array(n);
+    const nodeNext = new Int32Array(n);
+    const nodePrev = new Int32Array(n);
+    const deleted = new Uint8Array(n);
+
+    for (let i = 0; i < n; i++) {
+      nodeId[i] = charIds[i];
+      nodePrev[i] = i - 1;
+      nodeNext[i] = i + 1;
+    }
+    nodeNext[n - 1] = -1;
+
+    // ── Binary min-heap keyed by merge rank ──
+    // Each entry: (rank, position) where position is the LEFT node of the pair.
+    // Stale entries are detected and skipped at pop time.
+    // Capacity: initial pairs (≤ n-1) + at most 2 new pairs per merge, merges < n → max 3n.
+    let heapSize = 0;
+    const heapCap = Math.min(n * 3, n + 1_000_000); // cap growth for huge texts
+    const heapRank = new Int32Array(heapCap);
+    const heapPos = new Int32Array(heapCap);
+
+    const heapPush = (rank: number, pos: number): void => {
+      if (heapSize >= heapCap) return; // safety: skip if full (stale entries will be popped)
+      let i = heapSize++;
+      heapRank[i] = rank;
+      heapPos[i] = pos;
+      // Bubble up
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heapRank[p] <= heapRank[i]) break;
+        // Swap rank
+        const tr = heapRank[p]; heapRank[p] = heapRank[i]; heapRank[i] = tr;
+        // Swap pos
+        const tp = heapPos[p]; heapPos[p] = heapPos[i]; heapPos[i] = tp;
+        i = p;
+      }
+    };
+
+    const heapPop = (): [number, number] => {
+      const rank = heapRank[0];
+      const pos = heapPos[0];
+      heapSize--;
+      if (heapSize > 0) {
+        heapRank[0] = heapRank[heapSize];
+        heapPos[0] = heapPos[heapSize];
+        // Sink down
+        let i = 0;
+        while (true) {
+          let s = i;
+          const l = 2 * i + 1;
+          const r = 2 * i + 2;
+          if (l < heapSize && heapRank[l] < heapRank[s]) s = l;
+          if (r < heapSize && heapRank[r] < heapRank[s]) s = r;
+          if (s === i) break;
+          const tr = heapRank[s]; heapRank[s] = heapRank[i]; heapRank[i] = tr;
+          const tp = heapPos[s]; heapPos[s] = heapPos[i]; heapPos[i] = tp;
+          i = s;
+        }
+      }
+      return [rank, pos];
+    };
+
+    // Initialize heap with all mergeable adjacent pairs
+    for (let i = 0; i < n - 1; i++) {
+      const info = mr.get(pk(charIds[i], charIds[i + 1]));
+      if (info) heapPush(info.rank, i);
+    }
+
+    // ── Process merges in rank order ──
+    while (heapSize > 0) {
+      const [rank, pos] = heapPop();
+
+      // Skip stale entries: node deleted, no next, or pair changed
+      if (deleted[pos]) continue;
+      const nxt = nodeNext[pos];
+      if (nxt === -1 || deleted[nxt]) continue;
+      const info = mr.get(pk(nodeId[pos], nodeId[nxt]));
+      if (!info || info.rank !== rank) continue;
+
+      // Apply merge: replace pos's token, remove nxt from linked list
+      nodeId[pos] = info.newId;
+      deleted[nxt] = 1;
+      nodeNext[pos] = nodeNext[nxt];
+      if (nodeNext[nxt] !== -1) nodePrev[nodeNext[nxt]] = pos;
+
+      // New pair with left neighbor → push to heap
+      const prv = nodePrev[pos];
+      if (prv !== -1 && !deleted[prv]) {
+        const pInfo = mr.get(pk(nodeId[prv], nodeId[pos]));
+        if (pInfo) heapPush(pInfo.rank, prv);
+      }
+
+      // New pair with right neighbor → push to heap
+      const nxtNext = nodeNext[pos];
+      if (nxtNext !== -1 && !deleted[nxtNext]) {
+        const pInfo = mr.get(pk(nodeId[pos], nodeId[nxtNext]));
+        if (pInfo) heapPush(pInfo.rank, pos);
+      }
+    }
+
+    // ── Collect surviving tokens ──
+    const result: number[] = [];
+    let cur = 0;
+    while (cur < n && deleted[cur]) cur++;
+    while (cur !== -1 && cur < n) {
+      result.push(nodeId[cur]);
+      cur = nodeNext[cur];
+    }
+
+    return new Int32Array(result);
   }
 
   /**
@@ -233,6 +364,7 @@ export class BpeTokenizer implements Tokenizer {
   loadArtifacts(artifacts: TokenizerArtifacts): void {
     this._vocab = [...artifacts.vocab];
     this._rebuildStoi();
+    this._mergeRank = null; // invalidate cache
 
     if (artifacts.merges) {
       const baseSize = this._vocab.length - artifacts.merges.length;
@@ -254,6 +386,19 @@ export class BpeTokenizer implements Tokenizer {
     for (let i = 0; i < this._vocab.length; i++) {
       this._stoi.set(this._vocab[i], i);
     }
+  }
+
+  /**
+   * Simple O(M×N) encode for small vocabs (< 1000 merges).
+   * Avoids typed-array allocation overhead of the heap-based encoder.
+   */
+  private _encodeSimple(ids: number[]): Int32Array {
+    let current = ids;
+    for (const merge of this._merges) {
+      current = this._applyMerge(current, merge.left, merge.right, merge.newId);
+      if (current.length <= 1) break;
+    }
+    return new Int32Array(current);
   }
 
   /**

@@ -286,12 +286,26 @@ export function stripGutenbergBoilerplate(raw: string): string {
     }
   }
 
-  const text = raw.substring(startIdx >= 0 ? startIdx + 1 : 0, endIdx);
-  return text
+  let text = raw.substring(startIdx >= 0 ? startIdx + 1 : 0, endIdx);
+  text = text
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
+    .replace(/[ \t]+/g, " ");
+
+  // Strip residual boilerplate that slips past the header/footer markers
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    // Triple-star annotations (*** Transcribers' Notes, etc.)
+    if (/^\*\*\*\s/.test(trimmed)) return false;
+    // Standalone bracketed editorial notes like [RO, Aug 2025: ...]
+    if (/^\[.{0,60}\]$/.test(trimmed)) return false;
+    // Editorial brackets at line start: [Transcriber, [Editor, [Illustration, [Pg, [Page, [XX,
+    if (/^\[([A-Z]{1,3},|Transcriber|Editor|Illustration|Pg |Page )/.test(trimmed)) return false;
+    return true;
+  });
+
+  return filtered.join("\n").trim();
 }
 
 /**

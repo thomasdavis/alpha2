@@ -86,4 +86,16 @@ export const migrations: string[][] = [
        (SELECT COUNT(*) FROM metrics m WHERE m.run_id = r.id) AS metric_count
      FROM runs r`,
   ],
+
+  // Version 2: samples table
+  [
+    `CREATE TABLE IF NOT EXISTS samples (
+      run_id    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      idx       INTEGER NOT NULL,
+      prompt    TEXT NOT NULL,
+      output    TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (run_id, idx)
+    ) WITHOUT ROWID`,
+  ],
 ];

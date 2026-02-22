@@ -166,7 +166,7 @@ def train(data: str, train_args: str) -> str:
     run_dir = f"/runs/{run_id}"
 
     cmd = [
-        "node", "--max-old-space-size=8192", "apps/cli/dist/main.js", "train",
+        "node", "--expose-gc", "--max-old-space-size=8192", "apps/cli/dist/main.js", "train",
         f"--data={data_path}",
         f"--runDir={run_dir}",
         *train_args.split(),

@@ -16,6 +16,7 @@ export async function datagenCmd(args: string[]): Promise<void> {
   const sourcesStr = strArg(kv, "sources", "simplewiki,wiktionary,gutenberg,enwiki");
   const sources = sourcesStr.split(",") as Array<"simplewiki" | "wiktionary" | "gutenberg" | "enwiki">;
   const gutenbergBooks = intArg(kv, "gutenbergBooks", defaultDatagenConfig.gutenbergBooks!);
+  const contextsPerWord = intArg(kv, "contextsPerWord", 1);
   const mode = strArg(kv, "mode", "corpus") as "corpus" | "concordance";
 
   console.log(`Generating ${mode} → ${outPath} (sources: ${sources.join(", ")})`);
@@ -27,6 +28,7 @@ export async function datagenCmd(args: string[]): Promise<void> {
     scowlFilter,
     sources,
     gutenbergBooks,
+    contextsPerWord,
     mode,
     onProgress: (phase: string, count: number) => console.log(`[${phase}] ${count}`),
   });

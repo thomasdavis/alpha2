@@ -44,8 +44,14 @@ export class Tape {
   /**
    * Backward pass: topological reverse through the tape.
    * Sets .grad on every Variable that requiresGrad.
+   *
+   * @param releaseTensor — Optional callback to explicitly release GPU buffers
+   * for intermediate gradient tensors as they're consumed. Without this,
+   * backward creates hundreds of temporary GPU tensors per step that
+   * accumulate across steps (FinalizationRegistry is too slow to collect them),
+   * causing OOM during subsequent backward passes.
    */
-  backward(loss: Variable, backend: Backend): void {
+  backward(loss: Variable, backend: Backend, releaseTensor?: (td: TensorData) => void): void {
     // Initialize loss grad to ones (scalar)
     loss.grad = backend.ones(loss.data.shape, loss.data.dtype);
 
@@ -64,15 +70,65 @@ export class Tape {
         if (!g) continue;
 
         if (input.grad) {
+          const oldGrad = input.grad;
           input.grad = backend.add(input.grad, g);
+          // Release old accumulated grad and the backward output — both are
+          // now superseded by the new summed grad.
+          if (releaseTensor) {
+            releaseTensor(oldGrad);
+            releaseTensor(g);
+          }
         } else {
           input.grad = backend.clone(g);
+          // Release original g — we cloned it into input.grad
+          if (releaseTensor) releaseTensor(g);
         }
+      }
+
+      // Release this entry's outGrad — it's been fully consumed.
+      // (This frees GPU buffers from grad accumulation of previous entries.)
+      if (releaseTensor && outGrad) {
+        releaseTensor(outGrad);
+        entry.output.grad = null;
+      }
+
+      // Release this entry's forward activation data — all entries j > i have
+      // already been processed (we walk backward), so no future backward closure
+      // will reference this output. This dramatically reduces peak GPU memory
+      // during backward (from O(tape_size) to O(current_entry) activations).
+      if (releaseTensor) {
+        releaseTensor(entry.output.data);
       }
     }
   }
 
-  clear(): void {
+  /**
+   * Clear the tape, releasing all recorded entries and their GPU resources.
+   *
+   * @param releaseTensor — Optional callback to explicitly release GPU buffers
+   * for intermediate TensorData objects. Without this, GPU buffers are only
+   * freed when V8's FinalizationRegistry fires, which is unreliable for
+   * timely cleanup and leads to GPU OOM during multi-step training.
+   *
+   * All entry.output Variables are intermediates created by record() — never
+   * model parameters — so releasing their .data and .grad buffers is safe
+   * after backward() has completed.
+   */
+  clear(releaseTensor?: (td: TensorData) => void): void {
+    if (releaseTensor) {
+      for (const entry of this.entries) {
+        // Release intermediate output GPU buffers (forward pass results)
+        releaseTensor(entry.output.data);
+        // Release accumulated gradient GPU buffers on intermediates
+        if (entry.output.grad) {
+          releaseTensor(entry.output.grad);
+        }
+      }
+    }
+    // Clear JS references
+    for (const entry of this.entries) {
+      entry.output.grad = null;
+    }
     this.entries = [];
   }
 

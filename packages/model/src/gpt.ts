@@ -193,7 +193,6 @@ export function gptForward(
   // Loss
   let loss: Variable | undefined;
   if (targets) {
-    const logitsFlat: TensorData = { shape: [B * T, config.vocabSize], dtype: "f32", data: logits.data.data };
     const targetsFlat: TensorData = { shape: [B * T], dtype: "i32", data: targets.data };
     const logitsVar = reshape(ctx, logits, [B * T, config.vocabSize]);
     loss = crossEntropy(ctx, logitsVar, targetsFlat);

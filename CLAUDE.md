@@ -55,6 +55,62 @@ apps/cli            — CLI commands
 - Don't run `PRAGMA journal_mode=WAL` on remote Turso connections
 - Don't duplicate types — if `@alpha/core` has it, import it
 
+## GPU Training (RunPod)
+
+Training runs on **RunPod** GPU pods via `scripts/runpod_train.py`. The script handles the full lifecycle: provision pod, sync code, build, upload dataset, train, download results.
+
+```bash
+# Train on concordance dataset with H100:
+python scripts/runpod_train.py --data data/concordance.txt --domain concordance \
+  --iters 50000 --batch 8 --block 256 --dim 256 --heads 8 --layers 6 \
+  --backend helios --gpu H100
+
+# Pod management:
+python scripts/runpod_train.py --action status     # check pod
+python scripts/runpod_train.py --action stop        # stop (saves money)
+python scripts/runpod_train.py --action ssh         # interactive SSH
+python scripts/runpod_train.py --action terminate   # destroy pod
+```
+
+- Pods reuse automatically — the script finds an existing `alpha-train` pod before creating a new one
+- Environment setup (Node.js, Vulkan) is cached on the pod's workspace volume
+- Code is synced via rsync on each run; datasets are uploaded once and reused
+- Pass `--stop-after` to auto-stop the pod when training completes
+- SSH public key must be added to RunPod account settings (or is injected via `PUBLIC_KEY` env var)
+
+## GPU Training (GCP)
+
+Training also runs on **GCP** A100 80GB instances via `scripts/gcp_train.py`. Same structure as RunPod but roughly half the cost (~$1.10/hr vs $1.99-2.39/hr).
+
+Prerequisites:
+```bash
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+```bash
+# Train on concordance dataset with A100:
+python scripts/gcp_train.py --data data/concordance.txt --domain concordance \
+  --iters 50000 --batch 8 --block 256 --dim 256 --heads 8 --layers 6 \
+  --backend helios --stop-after
+
+# Train in a different zone:
+python scripts/gcp_train.py --data data/concordance.txt --iters 5000 --zone us-west1-b
+
+# Instance management:
+python scripts/gcp_train.py --action status     # check instance
+python scripts/gcp_train.py --action stop        # stop (disk persists, ~$34/mo)
+python scripts/gcp_train.py --action start       # resume stopped instance
+python scripts/gcp_train.py --action ssh         # interactive SSH
+python scripts/gcp_train.py --action delete      # destroy instance + disk
+```
+
+- Uses `a2-ultragpu-1g` machine type (A100 80GB included, no separate `--accelerator` needed)
+- Deep Learning VM image has NVIDIA drivers pre-installed — setup only needs Node.js + Vulkan
+- Boot disk (200GB SSD) persists across stop/start cycles
+- SSH keys bootstrapped automatically via `gcloud compute ssh` on first connection
+- Same CLI args as RunPod (except `--zone` instead of `--gpu`)
+
 ## Key env vars
 
 | Var | Where | Purpose |
@@ -62,8 +118,10 @@ apps/cli            — CLI commands
 | `TURSO_DATABASE_URL` | .env.local, Railway | Turso libsql connection URL |
 | `TURSO_AUTH_TOKEN` | .env.local, Railway | Turso auth token (rw) |
 | `UPLOAD_SECRET` | Railway | Auth token for ingest/upload endpoints |
-| `ALPHA_REMOTE_URL` | training machine | Remote server URL for live metrics streaming |
-| `ALPHA_REMOTE_SECRET` | training machine | Same as UPLOAD_SECRET on server |
+| `ALPHA_REMOTE_URL` | .env.local, training pod | Remote server URL for live metrics streaming |
+| `ALPHA_REMOTE_SECRET` | .env.local, training pod | Same as UPLOAD_SECRET on server |
+| `RUNPOD_API_KEY` | .env.local | RunPod API key for GPU pod provisioning |
+| `RUNPOD_VOLUME_ID` | .env.local | (optional) RunPod network volume for persistent storage |
 
 ## Deploy
 

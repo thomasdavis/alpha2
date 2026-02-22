@@ -29,10 +29,11 @@ import { getKernelSpirv } from "./kernels.js";
 
 /**
  * Default minimum number of elements to use GPU. Below this, CPU is faster.
- * Currently set high because per-dispatch overhead (descriptor pool/set/cmd buffer
- * creation) dominates for small element-wise ops. GPU matmul will lower this.
+ * With compute graph batching (ops recorded + submitted as single command buffer),
+ * per-op overhead is ~2µs. Threshold is based on when GPU compute beats CPU compute.
+ * For element-wise ops on modern GPUs, crossover is ~1K-4K elements.
  */
-const DEFAULT_MIN_GPU_SIZE = 1_000_000;
+const DEFAULT_MIN_GPU_SIZE = 4096;
 
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
@@ -139,7 +140,7 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
 
-const POOL_MAX_PER_SIZE = 32;
+const POOL_MAX_PER_SIZE = 8;
 const bufferPool = new Map<number, number[]>();
 
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
@@ -164,16 +165,31 @@ const PUSH_SIZE = 8;  // bytes — all kernels use 2 x f32 push constants
 
 // ── GPU residence tracking ──────────────────────────────────────────────────
 
-interface GpuHandle { handle: number; byteSize: number }
+interface GpuHandle { handle: number; byteSize: number; refs: number; released: boolean }
 
 /** Maps TensorData → its GPU buffer. Keyed on the object identity. */
 const gpuResidence = new WeakMap<object, GpuHandle>();
 
-/** Auto-release GPU buffers when TensorData is garbage collected. */
+/**
+ * Auto-release GPU buffers when TensorData is garbage collected.
+ *
+ * IMPORTANT: Uses graph.deferRelease() (NOT releaseBuffer()) so the buffer
+ * is returned to the timeline-aware outputPool after the next graph flush.
+ * This prevents buffer aliasing: FR callbacks can fire at any point during
+ * normal execution (any GC event during allocation), and if we returned the
+ * buffer to bufferPool directly, a pending graph operation could still be
+ * referencing it. The next acquireBuffer() would grab the same handle,
+ * causing two ops to share a buffer → GPU deadlock or data corruption.
+ */
 const gpuCleanup = new FinalizationRegistry<GpuHandle>((info) => {
-  try {
-    releaseBuffer(getNative(), info.handle, info.byteSize);
-  } catch { /* device may be destroyed */ }
+  if (info.released) return; // already explicitly released
+  info.refs--;
+  if (info.refs <= 0) {
+    info.released = true;
+    try {
+      graph.deferRelease({ handle: info.handle, byteSize: info.byteSize, readyValue: 0 });
+    } catch { /* device may be destroyed */ }
+  }
 });
 
 /** Get or create a GPU buffer for a TensorData. Returns the buffer handle. */
@@ -184,10 +200,75 @@ function ensureGpu(vk: NativeAddon, td: TensorData): number {
   const byteSize = td.data.length * 4;
   const handle = acquireBuffer(vk, byteSize);
   vk.uploadBuffer(handle, toF32(td));
-  const info: GpuHandle = { handle, byteSize };
+  const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
   gpuResidence.set(td, info);
   gpuCleanup.register(td, info);
   return handle;
+}
+
+/** Share GPU residence from one TensorData to another (e.g. for zero-copy reshape). */
+function shareGpuResidence(src: TensorData, dst: TensorData): void {
+  const gpuInfo = gpuResidence.get(src);
+  if (gpuInfo) {
+    gpuInfo.refs++;
+    gpuResidence.set(dst, gpuInfo);
+    gpuCleanup.register(dst, gpuInfo);
+  }
+}
+
+/**
+ * Explicitly release a TensorData's GPU buffer.
+ * This is the deterministic counterpart to FinalizationRegistry-based cleanup.
+ * Safe to call on non-GPU tensors (no-op) or tensors already released.
+ *
+ * The buffer is NOT returned to the pool immediately — it's deferred through
+ * the compute graph so that pending GPU operations referencing this buffer
+ * can complete first. The buffer becomes available for reuse after the next
+ * graph flush, tracked by the timeline semaphore.
+ */
+function releaseGpuBufferFor(td: TensorData): void {
+  const info = gpuResidence.get(td);
+  if (!info || info.released) return;
+  info.refs--;
+  gpuResidence.delete(td);
+  if (info.refs <= 0) {
+    info.released = true;
+    // Defer release through the compute graph — the buffer may be referenced
+    // by pending GPU operations that haven't been submitted yet. The deferred
+    // release goes to the timeline-aware outputPool after the next graph flush,
+    // ensuring the buffer isn't reused until the GPU has finished with it.
+    graph.deferRelease({ handle: info.handle, byteSize: info.byteSize, readyValue: 0 });
+  }
+}
+
+/**
+ * Invalidate the CPU-side cached data for a lazy tensor.
+ * Called after in-place GPU updates (e.g. AdamW) so the next .data access
+ * re-reads from the GPU buffer instead of returning stale cached values.
+ */
+function invalidateCache(td: TensorData): void {
+  // The lazy tensor has a getter for .data that caches a Float32Array.
+  // We can't directly clear that closure variable, but we can redefine .data
+  // as a fresh getter that will read from GPU on next access.
+  const gpuInfo = gpuResidence.get(td);
+  if (!gpuInfo) return;
+  const handle = gpuInfo.handle;
+  const vk = getNative();
+  let cached: Float32Array | null = null;
+  Object.defineProperty(td, "data", {
+    get(): Float32Array {
+      if (!cached) {
+        const tv = graph.flush();
+        // Must wait for GPU to finish before reading back (batch dispatch
+        // does not set per-buffer lastWriteTimeline, so readBuffer alone
+        // won't wait for in-place ops like AdamW on mapped/coherent memory).
+        if (tv > 0) vk.waitTimeline(tv);
+        cached = vk.readBuffer(handle);
+      }
+      return cached;
+    },
+    configurable: true,
+  });
 }
 
 // ── Timeline-aware output buffer pool ────────────────────────────────────────
@@ -213,6 +294,14 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
   return { handle: acquireBuffer(vk, byteSize), byteSize, readyValue: 0 };
 }
 
+/**
+ * Pending buffer destructions: handles that overflowed both outputPool and
+ * bufferPool, awaiting GPU completion before they can be safely destroyed.
+ * Without this, vk.destroyBuffer() on individually-allocated buffers would
+ * free GPU memory while the GPU is still accessing it → undefined behavior.
+ */
+const pendingDestroys: { handle: number; readyValue: number }[] = [];
+
 function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   region.readyValue = submitValue;
   let pool = outputPool.get(region.byteSize);
@@ -220,11 +309,25 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   if (pool.length < POOL_MAX_PER_SIZE) {
     pool.push(region);
   } else {
-    // Pool full — release buffer back to the general pool to prevent leaks.
-    // The GPU work may still be in flight, but the buffer won't be reused
-    // until the next iteration when all prior GPU ops have completed.
-    releaseBuffer(getNative(), region.handle, region.byteSize);
+    // Pool full — defer buffer destruction until GPU has finished using it.
+    // The buffer's memory may still be referenced by the just-submitted batch.
+    pendingDestroys.push({ handle: region.handle, readyValue: submitValue });
   }
+}
+
+/** Destroy buffers whose GPU work has completed. Called at flush time. */
+function processPendingDestroys(vk: NativeAddon): void {
+  if (pendingDestroys.length === 0) return;
+  const completed = vk.getCompleted();
+  let writeIdx = 0;
+  for (let i = 0; i < pendingDestroys.length; i++) {
+    if (pendingDestroys[i].readyValue <= completed) {
+      vk.destroyBuffer(pendingDestroys[i].handle);
+    } else {
+      pendingDestroys[writeIdx++] = pendingDestroys[i];
+    }
+  }
+  pendingDestroys.length = writeIdx;
 }
 
 /**
@@ -251,7 +354,7 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 const MAX_PENDING_OPS = 64; // auto-flush when this many ops are pending
 
-type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum";
+type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer";
 
 interface PendingOp {
   kind: PendingOpKind;
@@ -263,6 +366,7 @@ interface PendingOp {
   push: Float32Array;       // snapshot of push constants (must be a copy!)
   pushSize: number;
   shape: Shape;             // output shape
+  allBufs?: number[];       // Override: use these buffers instead of inputBufs + outputRegion
 }
 
 /**
@@ -275,6 +379,10 @@ class ComputeGraph {
   private pending: PendingOp[] = [];
   private vk: NativeAddon | null = null;
   private _lastFlushTimeline = 0;
+  private deferredReleases: OutputRegion[] = [];
+  totalOpsRecorded = 0;
+  get deferredReleaseCount(): number { return this.deferredReleases.length; }
+  opsThisStep = 0;
 
   attach(vk: NativeAddon): void { this.vk = vk; }
 
@@ -283,7 +391,14 @@ class ComputeGraph {
 
   record(op: PendingOp): void {
     this.pending.push(op);
+    this.totalOpsRecorded++;
+    this.opsThisStep++;
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
+  }
+
+  /** Schedule an intermediate output region for release after the next flush. */
+  deferRelease(region: OutputRegion): void {
+    this.deferredReleases.push(region);
   }
 
   /**
@@ -291,16 +406,29 @@ class ComputeGraph {
    * Returns the timeline value for the batch, or the last flush value if nothing pending.
    */
   flush(): number {
-    if (this.pending.length === 0 || !this.vk) return this._lastFlushTimeline;
+    // Destroy buffers from previous flushes whose GPU work has completed
+    if (this.vk) processPendingDestroys(this.vk);
+
+    if (this.pending.length === 0 || !this.vk) {
+      // Even with no pending ops, release any deferred regions
+      if (this.deferredReleases.length > 0) {
+        for (const region of this.deferredReleases) {
+          releaseOutputRegion(region, this._lastFlushTimeline);
+        }
+        this.deferredReleases = [];
+      }
+      return this._lastFlushTimeline;
+    }
     const vk = this.vk;
     const ops = this.pending;
     this.pending = [];
 
     vk.batchBegin();
     for (const op of ops) {
+      const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
       vk.batchDispatch(
         op.pipeline,
-        [...op.inputBufs, op.outputRegion.handle],
+        bufs,
         op.groups[0], op.groups[1], op.groups[2],
         op.push,
       );
@@ -308,12 +436,15 @@ class ComputeGraph {
     const tv = vk.batchSubmit();
     this._lastFlushTimeline = tv;
 
-    // NOTE: We intentionally do NOT release output regions to the output pool
-    // here. Each graphLazyTensor registers the buffer handle with the
-    // FinalizationRegistry (gpuCleanup), which is the sole owner. Releasing
-    // to the output pool would create dual ownership — the pool could reuse
-    // the handle while the FinalizationRegistry still tracks it, leading to
-    // use-after-free on the GPU (SIGSEGV).
+    // Release deferred intermediate regions (e.g. from multi-pass reductions)
+    for (const region of this.deferredReleases) {
+      releaseOutputRegion(region, tv);
+    }
+    this.deferredReleases = [];
+
+    // NOTE: We intentionally do NOT release output regions from ops here.
+    // Each graphLazyTensor registers the buffer handle with the
+    // FinalizationRegistry (gpuCleanup), which is the sole owner.
 
     return tv;
   }
@@ -328,7 +459,7 @@ const graph = new ComputeGraph();
  */
 function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
   let cached: Float32Array | null = null;
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: shapeSize(shape) * 4 };
+  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: shapeSize(shape) * 4, refs: 1, released: false };
   const td: TensorData = {
     shape: [...shape],
     dtype: "f32",
@@ -351,12 +482,24 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
 
 // ── HeliosBackend ───────────────────────────────────────────────────────────
 
+export interface GpuDeviceInfo {
+  deviceName: string;
+  vendorId: number;
+  f16Supported: boolean;
+  hasAsyncTransfer: boolean;
+  workgroupSize: number;
+  minGpuSize: number;
+}
+
 export class HeliosBackend implements Backend {
   readonly name = "helios";
   private readonly rng = new SeededRng(42);
   private initialized = false;
   private _minGpuSize = DEFAULT_MIN_GPU_SIZE;
   private _f16Supported = false;
+  private _deviceName = "";
+  private _vendorId = 0;
+  private _hasAsyncTransfer = false;
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
@@ -365,6 +508,9 @@ export class HeliosBackend implements Backend {
     if (!this.initialized) {
       const info = initDevice();
       this._f16Supported = info.f16Supported;
+      this._deviceName = info.deviceName;
+      this._vendorId = info.vendorId;
+      this._hasAsyncTransfer = info.hasAsyncTransfer;
       const vk = getNative();
       graph.attach(vk);
       autoTuneWgSize(vk);
@@ -377,18 +523,130 @@ export class HeliosBackend implements Backend {
   /** Flush the compute graph — executes all pending GPU ops as a single batch. */
   flush(): void { graph.flush(); }
 
+  /**
+   * Release all pooled GPU buffers and force-free unreachable tensor buffers.
+   * Call between training steps to prevent GPU memory growth.
+   */
+  purgeBufferPools(): void {
+    const vk = getNative();
+    // Drain the output pool — release all regions back to the buffer pool
+    for (const [, regions] of outputPool) {
+      for (const region of regions) {
+        releaseBuffer(vk, region.handle, region.byteSize);
+      }
+    }
+    outputPool.clear();
+
+    // Drain the buffer pool — destroy all cached buffers
+    for (const [, handles] of bufferPool) {
+      for (const handle of handles) {
+        vk.destroyBuffer(handle);
+      }
+    }
+    bufferPool.clear();
+
+    // Flush pending destroys (wait for GPU if needed)
+    for (const pd of pendingDestroys) {
+      vk.destroyBuffer(pd.handle);
+    }
+    pendingDestroys.length = 0;
+  }
+
+  /**
+   * Explicitly release a TensorData's GPU buffer, returning it to the pool.
+   * Call this for intermediate tensors that are no longer needed instead of
+   * relying on FinalizationRegistry, which is unreliable for timely cleanup.
+   * Safe to call on non-GPU tensors (no-op) or already-released tensors.
+   */
+  releaseGpuTensor(td: TensorData): void {
+    releaseGpuBufferFor(td);
+  }
+
+  /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
+  gpuMemStats(): { bufferPoolEntries: number; bufferPoolBytes: number; outputPoolEntries: number; outputPoolBytes: number; deferredReleases: number } {
+    let bpEntries = 0, bpBytes = 0;
+    for (const [size, handles] of bufferPool) { bpEntries += handles.length; bpBytes += handles.length * size; }
+    let opEntries = 0, opBytes = 0;
+    for (const [size, regions] of outputPool) { opEntries += regions.length; opBytes += regions.length * size; }
+    return {
+      bufferPoolEntries: bpEntries, bufferPoolBytes: bpBytes,
+      outputPoolEntries: opEntries, outputPoolBytes: opBytes,
+      deferredReleases: graph.deferredReleaseCount,
+    };
+  }
+
   /** Whether this device supports f16 storage buffers. */
   get f16Supported(): boolean { return this._f16Supported; }
 
+  /** Get GPU device info. Forces init if not already done. */
+  getDeviceInfo(): GpuDeviceInfo {
+    this.init();
+    return {
+      deviceName: this._deviceName,
+      vendorId: this._vendorId,
+      f16Supported: this._f16Supported,
+      hasAsyncTransfer: this._hasAsyncTransfer,
+      workgroupSize: WG_SIZE,
+      minGpuSize: this._minGpuSize,
+    };
+  }
+
+  /**
+   * Run a quick GPU smoke test: dispatches a small add kernel and verifies
+   * the result. Returns throughput in GB/s. Throws if GPU compute fails.
+   */
+  smokeTest(): { verified: boolean; throughputGBps: number } {
+    this.init();
+    graph.flush();
+
+    const size = 65536;
+    const a = this.full([size], 1.0);
+    const b = this.full([size], 2.0);
+    const c = this.add(a, b);
+    graph.flush();
+
+    // Verify result
+    const data = c.data as Float32Array;
+    let correct = 0;
+    for (let i = 0; i < Math.min(64, data.length); i++) {
+      if (Math.abs(data[i] - 3.0) < 1e-6) correct++;
+    }
+    const verified = correct === Math.min(64, data.length);
+
+    // Quick throughput benchmark: 1M element add
+    const benchSize = 1_048_576;
+    const ba = this.full([benchSize], 1.0);
+    const bb = this.full([benchSize], 2.0);
+    const start = performance.now();
+    for (let i = 0; i < 10; i++) {
+      this.add(ba, bb);
+    }
+    graph.flush();
+    // Force readback to include full round-trip
+    const last = this.add(ba, bb);
+    graph.flush();
+    void (last.data as Float32Array)[0];
+    const elapsed = performance.now() - start;
+    const bytesPerOp = benchSize * 4 * 3; // 2 reads + 1 write
+    const throughputGBps = (11 * bytesPerOp) / (elapsed * 1e6);
+
+    return { verified, throughputGBps };
+  }
+
+  /** Get count of GPU ops dispatched this step (reset with resetStepOps). */
+  get gpuOpsThisStep(): number { return graph.opsThisStep; }
+  get gpuOpsTotal(): number { return graph.totalOpsRecorded; }
+  resetStepOps(): void { graph.opsThisStep = 0; }
+
   // ── GPU binary ops ──────────────────────────────────────────────────────
 
-  private gpuBinaryOp(a: TensorData, b: TensorData, kernelName: string): TensorData {
+  private gpuBinaryOp(a: TensorData, b: TensorData, kernelName: string, forceScalar = false): TensorData {
     const vk = this.init();
     const size = shapeSize(a.shape);
     const byteSize = size * 4;
 
     // Use vec4 kernel when size is aligned (4x throughput)
-    const useVec4 = (size & 3) === 0;
+    const useVec4 = !forceScalar && (size & 3) === 0;
     const pipeline = getPipeline(vk, useVec4 ? `${kernelName}_vec4` : kernelName, 3);
 
     // Reuse GPU buffers if inputs already on GPU (skips upload)
@@ -570,13 +828,15 @@ export class HeliosBackend implements Backend {
     return this.cpuUnary(a, (x) => x / (1 + Math.exp(-x)));
   }
 
-  // ── Backend interface: matmul (CPU for now, GPU matmul kernel coming) ───
+  // ── Backend interface: matmul ─────────────────────────────────────────
 
   matmul(a: TensorData, b: TensorData): TensorData {
     const aNdim = a.shape.length, bNdim = b.shape.length;
     if (aNdim >= 2 && bNdim >= 2) {
       const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
-      if (M * N >= this._minGpuSize) return this.gpuMatmul(a, b);
+      // Use compute FLOPs (M*N*K) not output size (M*N) — matmul is compute-bound.
+      // GPU wins when there's enough arithmetic to hide dispatch latency (~100K FLOPs).
+      if (M * N * K >= 100_000) return this.gpuMatmul(a, b);
     }
     return this.cpuMatmul(a, b);
   }
@@ -584,9 +844,12 @@ export class HeliosBackend implements Backend {
   // ── Backend interface: reductions ───────────────────────────────────────
 
   sum(a: TensorData, axis?: number, keepdims = false): TensorData {
-    // GPU sum: only for full reduction (no axis) on large tensors
-    if (axis === undefined && shapeSize(a.shape) >= this._minGpuSize) {
-      return this.gpuReduceSum(a, keepdims);
+    const totalSize = shapeSize(a.shape);
+    if (totalSize >= this._minGpuSize) {
+      // GPU full reduction (no axis)
+      if (axis === undefined) return this.gpuReduceSum(a, keepdims);
+      // GPU axis-specific reduction
+      return this.gpuSumAxis(a, axis, keepdims);
     }
     return this.cpuSum(a, axis, keepdims);
   }
@@ -609,35 +872,94 @@ export class HeliosBackend implements Backend {
 
   private gpuReduceSum(a: TensorData, keepdims: boolean): TensorData {
     const vk = this.init();
-    // Flush pending graph ops since reduction does its own multi-pass dispatches
-    graph.flush();
-
     const totalSize = shapeSize(a.shape);
     const pipeline = getPipeline(vk, "sum_reduce", 2);
 
     let inputBuf = ensureGpu(vk, a);
     let remaining = totalSize;
+    let finalRegion: OutputRegion | null = null;
 
-    // Multi-pass reduction: each pass reduces by WG_SIZE
+    // Multi-pass reduction: each pass reduces by WG_SIZE, all recorded to graph
     while (remaining > 1) {
       const numGroups = Math.ceil(remaining / WG_SIZE);
       const outByteSize = numGroups * 4;
       const region = acquireOutputRegion(vk, outByteSize);
 
-      pushData[0] = remaining; // total elements for this pass
-      pushData[1] = 0;
+      const push = new Float32Array([remaining, 0]);
 
-      const tv = vk.dispatch(pipeline, [inputBuf, region.handle], numGroups, 1, 1, pushData);
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "sum_reduce",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [numGroups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: numGroups === 1 ? (keepdims ? a.shape.map(() => 1) : []) : [numGroups],
+        allBufs: [inputBuf, region.handle],
+      });
+
+      // Defer-release intermediate regions (not the final one)
+      if (finalRegion) graph.deferRelease(finalRegion);
 
       inputBuf = region.handle;
-      releaseOutputRegion(region, tv);
+      finalRegion = region;
       remaining = numGroups;
     }
 
-    // Read the single result
-    const result = vk.readBuffer(inputBuf);
+    if (!finalRegion) return a; // single element, already reduced
+
     const outShape = keepdims ? a.shape.map(() => 1) : [];
-    return makeTensor(outShape, a.dtype, dtypeArray(a.dtype).from([result[0]]));
+    return graphLazyTensor(vk, outShape, finalRegion);
+  }
+
+  private gpuSumAxis(a: TensorData, axis: number, keepdims: boolean): TensorData {
+    const vk = this.init();
+    const ndim = a.shape.length;
+    const ax = axis < 0 ? axis + ndim : axis;
+    const axisSize = a.shape[ax];
+
+    // Compute outer/inner sizes
+    let outerSize = 1;
+    for (let d = 0; d < ax; d++) outerSize *= a.shape[d];
+    let innerSize = 1;
+    for (let d = ax + 1; d < ndim; d++) innerSize *= a.shape[d];
+    const totalOutput = outerSize * innerSize;
+
+    // Output shape
+    const outShape: number[] = [];
+    for (let d = 0; d < ndim; d++) {
+      if (d === ax) { if (keepdims) outShape.push(1); }
+      else outShape.push(a.shape[d]);
+    }
+
+    const inputBuf = ensureGpu(vk, a);
+    const pipeline = getPipeline(vk, "sum_axis", 2, 3 * 4);
+    const region = acquireOutputRegion(vk, totalOutput * 4);
+    const groups = Math.ceil(totalOutput / WG_SIZE);
+
+    // Pack u32 push constants
+    const pushF = new Float32Array(3);
+    const pushU = new Uint32Array(pushF.buffer);
+    pushU[0] = totalOutput;
+    pushU[1] = axisSize;
+    pushU[2] = innerSize;
+
+    graph.record({
+      kind: "reduce_sum",
+      kernel: "sum_axis",
+      pipeline,
+      inputBufs: [],
+      outputRegion: region,
+      groups: [groups, 1, 1],
+      push: pushF,
+      pushSize: 3 * 4,
+      shape: outShape,
+      allBufs: [inputBuf, region.handle],
+    });
+
+    return graphLazyTensor(vk, outShape, region);
   }
 
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────
@@ -698,6 +1020,155 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, x.shape, region);
   }
 
+  // ── GPU backward ops ──────────────────────────────────────────────────
+
+  geluBackward(input: TensorData, gradOutput: TensorData): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
+      return this.gpuBinaryOp(input, gradOutput, "gelu_backward", true);
+    }
+    // CPU fallback
+    const SQRT2PI = Math.sqrt(2 / Math.PI);
+    const src = input.data as Float32Array;
+    const grad = gradOutput.data as Float32Array;
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const inner = SQRT2PI * (x + 0.044715 * x * x * x);
+      const tanh_val = Math.tanh(inner);
+      const sech2 = 1 - tanh_val * tanh_val;
+      const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
+      out[i] = grad[i] * (0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner);
+    }
+    return makeTensor(input.shape, input.dtype, out);
+  }
+
+  reluBackward(input: TensorData, gradOutput: TensorData): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
+      return this.gpuBinaryOp(input, gradOutput, "relu_backward", true);
+    }
+    const src = input.data as Float32Array;
+    const grad = gradOutput.data as Float32Array;
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) out[i] = src[i] > 0 ? grad[i] : 0;
+    return makeTensor(input.shape, input.dtype, out);
+  }
+
+  layerNormBackward(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData } {
+    const vk = this.init();
+    const dim = x.shape[x.shape.length - 1];
+    const numRows = shapeSize(x.shape) / dim;
+    const xSize = shapeSize(x.shape);
+
+    // GPU path — all dispatches recorded to graph (no flush/sync)
+    if (xSize >= this._minGpuSize) {
+      const bufX = ensureGpu(vk, x);
+      const bufW = ensureGpu(vk, weight);
+      const bufG = ensureGpu(vk, gradOutput);
+
+      const dxRegion = acquireOutputRegion(vk, xSize * 4);
+      const dwPartialRegion = acquireOutputRegion(vk, xSize * 4);
+      const dbPartialRegion = acquireOutputRegion(vk, xSize * 4);
+      const dwRegion = acquireOutputRegion(vk, dim * 4);
+      const dbRegion = acquireOutputRegion(vk, dim * 4);
+
+      // Main backward kernel (6 bindings) — recorded to graph
+      const pipeline1 = getPipeline(vk, "layernorm_backward", 6);
+      const push1 = new Float32Array([dim, eps]);
+      graph.record({
+        kind: "backward",
+        kernel: "layernorm_backward",
+        pipeline: pipeline1,
+        inputBufs: [],
+        outputRegion: dxRegion,
+        groups: [numRows, 1, 1],
+        push: push1,
+        pushSize: 2 * 4,
+        shape: x.shape,
+        allBufs: [bufX, bufW, bufG, dxRegion.handle, dwPartialRegion.handle, dbPartialRegion.handle],
+      });
+
+      // Column sum to reduce partials: [numRows, dim] → [dim]
+      const pipeline2 = getPipeline(vk, "column_sum", 2);
+      const push2 = new Float32Array([dim, numRows]);
+      const groups = Math.ceil(dim / WG_SIZE);
+      graph.record({
+        kind: "backward",
+        kernel: "column_sum_dw",
+        pipeline: pipeline2,
+        inputBufs: [],
+        outputRegion: dwRegion,
+        groups: [groups, 1, 1],
+        push: push2,
+        pushSize: 2 * 4,
+        shape: weight.shape,
+        allBufs: [dwPartialRegion.handle, dwRegion.handle],
+      });
+      graph.record({
+        kind: "backward",
+        kernel: "column_sum_db",
+        pipeline: pipeline2,
+        inputBufs: [],
+        outputRegion: dbRegion,
+        groups: [groups, 1, 1],
+        push: new Float32Array([dim, numRows]),
+        pushSize: 2 * 4,
+        shape: weight.shape,
+        allBufs: [dbPartialRegion.handle, dbRegion.handle],
+      });
+
+      // Defer-release intermediate partial buffers (freed after graph flush)
+      graph.deferRelease(dwPartialRegion);
+      graph.deferRelease(dbPartialRegion);
+
+      return {
+        dx: graphLazyTensor(vk, x.shape, dxRegion),
+        dw: graphLazyTensor(vk, weight.shape, dwRegion),
+        db: graphLazyTensor(vk, weight.shape, dbRegion),
+      };
+    }
+
+    // CPU fallback
+    const n = numRows;
+    const xArr = x.data as Float32Array;
+    const wArr = weight.data as Float32Array;
+    const gArr = gradOutput.data as Float32Array;
+    const dxOut = this.zeros(x.shape, x.dtype);
+    const dwOut = this.zeros(weight.shape, weight.dtype);
+    const dbOut = this.zeros(weight.shape, weight.dtype);
+    const dxArr = dxOut.data as Float32Array;
+    const dwArr = dwOut.data as Float32Array;
+    const dbArr = dbOut.data as Float32Array;
+    for (let i = 0; i < n; i++) {
+      const off = i * dim;
+      let mu = 0;
+      for (let j = 0; j < dim; j++) mu += xArr[off + j];
+      mu /= dim;
+      let v = 0;
+      for (let j = 0; j < dim; j++) { const d = xArr[off + j] - mu; v += d * d; }
+      v /= dim;
+      const is = 1 / Math.sqrt(v + eps);
+      for (let j = 0; j < dim; j++) {
+        const xhat = (xArr[off + j] - mu) * is;
+        dwArr[j] += gArr[off + j] * xhat;
+        dbArr[j] += gArr[off + j];
+      }
+      let s1 = 0, s2 = 0;
+      for (let j = 0; j < dim; j++) {
+        const dy = gArr[off + j] * wArr[j];
+        s1 += dy;
+        s2 += dy * (xArr[off + j] - mu) * is;
+      }
+      for (let j = 0; j < dim; j++) {
+        const xhat = (xArr[off + j] - mu) * is;
+        const dy = gArr[off + j] * wArr[j];
+        dxArr[off + j] = is * (dy - (s1 + xhat * s2) / dim);
+      }
+    }
+    return { dx: dxOut, dw: dwOut, db: dbOut };
+  }
+
   private gpuMatmul(a: TensorData, b: TensorData): TensorData {
     const vk = this.init();
     const aNdim = a.shape.length, bNdim = b.shape.length;
@@ -733,7 +1204,30 @@ export class HeliosBackend implements Backend {
 
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     } else {
-      return this.cpuMatmul(a, b);
+      // Batched matmul — dispatch all batches in one GPU submission
+      const pipelineBatched = getPipeline(vk, "matmul_batched", 3, 16);
+      const bufA = ensureGpu(vk, a);
+      const bufB = ensureGpu(vk, b);
+      const outBytes = batchSize * M * N * 4;
+      const region = acquireOutputRegion(vk, outBytes);
+
+      const push = new Float32Array([M, N, K, 0]);
+      const gX = Math.ceil(N / TILE);
+      const gY = Math.ceil(M / TILE);
+
+      graph.record({
+        kind: "matmul",
+        kernel: "matmul_batched",
+        pipeline: pipelineBatched,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [gX, gY, batchSize],
+        push,
+        pushSize: 16,
+        shape: [...aBatch, M, N],
+      });
+
+      return graphLazyTensor(vk, [...aBatch, M, N], region);
     }
   }
 
@@ -786,7 +1280,56 @@ export class HeliosBackend implements Backend {
 
   reshape(a: TensorData, shape: Shape): TensorData {
     if (shapeSize(shape) !== shapeSize(a.shape)) throw new Error(`Cannot reshape [${a.shape}] to [${shape}]`);
-    return makeTensor(shape, a.dtype, dtypeArray(a.dtype).from(a.data));
+    // Zero-copy: share underlying data + GPU buffer (avoids forced readback)
+    const td: TensorData = {
+      shape: [...shape],
+      dtype: a.dtype,
+      get data() { return a.data; },
+    };
+    shareGpuResidence(a, td);
+    return td;
+  }
+
+  broadcast(a: TensorData, targetShape: Shape): TensorData {
+    const srcSize = shapeSize(a.shape);
+    const dstSize = shapeSize(targetShape);
+    if (srcSize === dstSize) return this.reshape(a, targetShape);
+
+    // GPU broadcast: B[i] = A[i % srcSize]
+    if (dstSize >= this._minGpuSize) {
+      const vk = this.init();
+      const inputBuf = ensureGpu(vk, a);
+      const pipeline = getPipeline(vk, "broadcast", 2, 2 * 4);
+      const region = acquireOutputRegion(vk, dstSize * 4);
+      const groups = Math.ceil(dstSize / WG_SIZE);
+
+      const pushF = new Float32Array(2);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = dstSize;
+      pushU[1] = srcSize;
+
+      graph.record({
+        kind: "unary",
+        kernel: "broadcast",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 2 * 4,
+        shape: targetShape,
+        allBufs: [inputBuf, region.handle],
+      });
+
+      return graphLazyTensor(vk, targetShape, region);
+    }
+
+    // CPU fallback
+    const out = new Float32Array(dstSize);
+    const src = a.data as Float32Array;
+    if (srcSize === 1) { out.fill(src[0]); }
+    else { for (let i = 0; i < dstSize; i++) out[i] = src[i % srcSize]; }
+    return { shape: targetShape, dtype: a.dtype, data: out };
   }
 
   transpose(a: TensorData, dim0: number, dim1: number): TensorData {
@@ -794,9 +1337,64 @@ export class HeliosBackend implements Backend {
     const d0 = dim0 < 0 ? dim0 + ndim : dim0;
     const d1 = dim1 < 0 ? dim1 + ndim : dim1;
     const newShape = [...a.shape]; newShape[d0] = a.shape[d1]; newShape[d1] = a.shape[d0];
+    const size = shapeSize(a.shape);
+
+    // GPU path — use stride-based 4D transpose kernel
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const inputBuf = ensureGpu(vk, a);
+
+      // Pad shape to 4D (prepend 1s) and adjust dim indices
+      const pad = 4 - ndim;
+      const shape4 = ndim < 4
+        ? [...Array(pad).fill(1) as number[], ...a.shape]
+        : a.shape.slice(0, 4);
+      const d0_4 = d0 + pad;
+      const d1_4 = d1 + pad;
+
+      // Compute input strides for padded 4D shape
+      const inStrides = shapeStrides(shape4);
+
+      // Compute output strides: swap dims in shape, recompute strides,
+      // then swap stride positions so input coords map to correct output positions
+      const outShape4 = [...shape4];
+      outShape4[d0_4] = shape4[d1_4];
+      outShape4[d1_4] = shape4[d0_4];
+      const outStrides = shapeStrides(outShape4);
+      const tmpS = outStrides[d0_4]; outStrides[d0_4] = outStrides[d1_4]; outStrides[d1_4] = tmpS;
+
+      // Pack push constants as u32 via shared ArrayBuffer
+      const pushF = new Float32Array(9);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = size;
+      pushU[1] = inStrides[0]; pushU[2] = inStrides[1];
+      pushU[3] = inStrides[2]; pushU[4] = inStrides[3];
+      pushU[5] = outStrides[0]; pushU[6] = outStrides[1];
+      pushU[7] = outStrides[2]; pushU[8] = outStrides[3];
+
+      const pipeline = getPipeline(vk, "transpose", 2, 9 * 4);
+      const outRegion = acquireOutputRegion(vk, size * 4);
+      const groups = Math.ceil(size / WG_SIZE);
+
+      graph.record({
+        kind: "unary",
+        kernel: "transpose",
+        pipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 9 * 4,
+        shape: newShape,
+        allBufs: [inputBuf, outRegion.handle],
+      });
+
+      return graphLazyTensor(vk, newShape, outRegion);
+    }
+
+    // CPU fallback for small tensors
     const srcStrides = shapeStrides(a.shape);
     const dstStrides = shapeStrides(newShape);
-    const size = shapeSize(a.shape);
     const Ctor = dtypeArray(a.dtype);
     const out = new Ctor(size);
     for (let i = 0; i < size; i++) {
@@ -1145,7 +1743,7 @@ export class HeliosBackend implements Backend {
     for (let i = 0; i < outSize; i++) {
       const outCoords = flatToMulti(i, outShape);
       const inCoords: number[] = []; let oi = 0;
-      for (let d = 0; d < ndim; d++) inCoords.push(d === ax ? 0 : outCoords[oi++]);
+      for (let d = 0; d < ndim; d++) { if (d === ax) { inCoords.push(0); if (keepdims) oi++; } else inCoords.push(outCoords[oi++]); }
       const base = multiToFlat(inCoords, strides);
       let s = 0; for (let j = 0; j < dimSize; j++) s += a.data[base + j * axStride];
       out[i] = s;
@@ -1164,5 +1762,62 @@ export class HeliosBackend implements Backend {
     const out = dtypeArray(sumT.dtype).from(sumT.data);
     for (let i = 0; i < out.length; i++) out[i] /= a.shape[ax];
     return makeTensor(sumT.shape, sumT.dtype, out);
+  }
+
+  // ── GPU AdamW optimizer step ─────────────────────────────────────────────
+
+  adamwStep(
+    params: TensorData, grads: TensorData, m: TensorData, v: TensorData,
+    lr: number, beta1: number, beta2: number, eps: number,
+    weightDecay: number, bc1: number, bc2: number,
+  ): void {
+    const vk = this.init();
+    const size = shapeSize(params.shape);
+
+    if (size < this._minGpuSize) {
+      // CPU fallback for small tensors
+      const pData = params.data as Float32Array;
+      const gData = grads.data as Float32Array;
+      const mData = m.data as Float32Array;
+      const vData = v.data as Float32Array;
+      for (let i = 0; i < size; i++) {
+        pData[i] -= lr * weightDecay * pData[i];
+        mData[i] = beta1 * mData[i] + (1 - beta1) * gData[i];
+        vData[i] = beta2 * vData[i] + (1 - beta2) * gData[i] * gData[i];
+        const mHat = mData[i] / bc1;
+        const vHat = vData[i] / bc2;
+        pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
+      }
+      return;
+    }
+
+    // GPU path: record AdamW dispatch to graph (batched with other ops)
+    const bufP = ensureGpu(vk, params);
+    const bufG = ensureGpu(vk, grads);
+    const bufM = ensureGpu(vk, m);
+    const bufV = ensureGpu(vk, v);
+
+    const pipeline = getPipeline(vk, "adamw_step", 4, 8 * 4);
+    const push = new Float32Array([size, lr, beta1, beta2, eps, weightDecay, bc1, bc2]);
+    const groups = Math.ceil(size / WG_SIZE);
+
+    // Use a dummy output region since this is an in-place op
+    graph.record({
+      kind: "optimizer",
+      kernel: "adamw_step",
+      pipeline,
+      inputBufs: [],
+      outputRegion: { handle: bufP, byteSize: 0, readyValue: 0 },
+      groups: [groups, 1, 1],
+      push,
+      pushSize: 8 * 4,
+      shape: params.shape,
+      allBufs: [bufP, bufG, bufM, bufV],
+    });
+
+    // Invalidate CPU caches immediately — next .data access will flush graph + readback
+    invalidateCache(params);
+    invalidateCache(m);
+    invalidateCache(v);
   }
 }

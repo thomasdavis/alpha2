@@ -127,12 +127,11 @@ export function sqrt(ctx: Ctx, a: Variable): Variable {
 export function relu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
   return record(ctx, ctx.backend.relu(aData), [a], (g, B) => {
-    // mask: 1 where input > 0, 0 otherwise
-    const mask = B.fromArray(
-      Array.from(aData.data).map((v) => (v > 0 ? 1 : 0)),
-      [...aData.shape],
-      aData.dtype,
-    );
+    if (B.reluBackward) return [B.reluBackward(aData, g)];
+    const src = aData.data as Float32Array;
+    const maskArr = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) maskArr[i] = src[i] > 0 ? 1 : 0;
+    const mask: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: maskArr };
     return [B.mul(g, mask)];
   });
 }
@@ -140,19 +139,19 @@ export function relu(ctx: Ctx, a: Variable): Variable {
 export function gelu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
   return record(ctx, ctx.backend.gelu(aData), [a], (g, B) => {
-    // Approximate GELU gradient
+    if (B.geluBackward) return [B.geluBackward(aData, g)];
     const SQRT2PI = Math.sqrt(2 / Math.PI);
-    const out = B.fromArray(
-      Array.from(aData.data).map((x) => {
-        const inner = SQRT2PI * (x + 0.044715 * x * x * x);
-        const tanh_val = Math.tanh(inner);
-        const sech2 = 1 - tanh_val * tanh_val;
-        const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
-        return 0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner;
-      }),
-      [...aData.shape],
-      aData.dtype,
-    );
+    const src = aData.data as Float32Array;
+    const geluGrad = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const inner = SQRT2PI * (x + 0.044715 * x * x * x);
+      const tanh_val = Math.tanh(inner);
+      const sech2 = 1 - tanh_val * tanh_val;
+      const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
+      geluGrad[i] = 0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner;
+    }
+    const out: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: geluGrad };
     return [B.mul(g, out)];
   });
 }
@@ -186,7 +185,11 @@ export function layerNorm(
   const xData = x.data;
   const wData = weight.data;
   return record(ctx, ctx.backend.layerNorm(xData, wData, bias.data, eps), [x, weight, bias], (g, B) => {
-    // Simplified layernorm backward
+    if (B.layerNormBackward) {
+      const { dx, dw, db } = B.layerNormBackward(xData, wData, g, eps);
+      return [dx, dw, db];
+    }
+    // CPU fallback
     const shape = xData.shape;
     const dim = shape[shape.length - 1];
     const n = shapeSize(shape) / dim;
@@ -214,14 +217,12 @@ export function layerNorm(
       variance /= dim;
       const invStd = 1 / Math.sqrt(variance + eps);
 
-      // Accumulate dw, db
       for (let j = 0; j < dim; j++) {
         const xhat = (xArr[off + j] - mu) * invStd;
         dwArr[j] += gArr[off + j] * xhat;
         dbArr[j] += gArr[off + j];
       }
 
-      // dx
       let sum1 = 0, sum2 = 0;
       for (let j = 0; j < dim; j++) {
         const dy = gArr[off + j] * wArr[j];
@@ -252,19 +253,16 @@ export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
 export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
   const logitsData = logits.data;
   return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B) => {
-    // Gradient: softmax(logits) - one_hot(targets)
-    const probs = B.softmax(logitsData, -1);
+    // Gradient: (softmax(logits) - one_hot(targets)) * gScalar / N
+    const probs = B.softmax(logitsData, -1); // stays on GPU
     const [N, C] = logitsData.shape;
-    const gradArr = new Float32Array(N * C);
-    const probArr = probs.data as Float32Array;
-    const gScalar = (g.data as Float32Array)[0];
-    for (let i = 0; i < N; i++) {
-      const t = targets.data[i];
-      for (let c = 0; c < C; c++) {
-        gradArr[i * C + c] = (probArr[i * C + c] - (c === t ? 1 : 0)) * gScalar / N;
-      }
-    }
-    return [B.fromArray(Array.from(gradArr), [N, C], logitsData.dtype)];
+    const gScalar = (g.data as Float32Array)[0]; // scalar, 1 element
+    // Build one_hot on CPU (small: just N index lookups)
+    const oneHotArr = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) oneHotArr[targets.data[i] + i * C] = 1.0;
+    const oneHot: TensorData = { shape: [N, C], dtype: logitsData.dtype, data: oneHotArr };
+    // Compute gradient on GPU: (probs - oneHot) * (gScalar / N)
+    return [B.scale(B.sub(probs, oneHot), gScalar / N)];
   });
 }
 
@@ -309,7 +307,9 @@ function reduceBroadcast(B: Backend, grad: TensorData, targetShape: Shape): Tens
 /** Broadcast a (possibly reduced) tensor to a target shape. */
 function broadcastTo(B: Backend, t: TensorData, targetShape: Shape): TensorData {
   if (arraysEqual(t.shape, targetShape)) return t;
-  // For now, simple: create full-size tensor and fill
+  // Use GPU broadcast if available (avoids CPU readback + O(N) copy)
+  if (B.broadcast) return B.broadcast(t, targetShape);
+  // CPU fallback
   const size = shapeSize(targetShape);
   const srcSize = shapeSize(t.shape);
   const out = new Float32Array(size);
@@ -317,7 +317,6 @@ function broadcastTo(B: Backend, t: TensorData, targetShape: Shape): TensorData 
   if (srcSize === 1) {
     out.fill(src[0]);
   } else {
-    // Repeat pattern
     for (let i = 0; i < size; i++) {
       out[i] = src[i % srcSize];
     }

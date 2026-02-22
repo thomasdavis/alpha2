@@ -11,6 +11,8 @@ export interface DatagenConfig {
   gutenbergBooks?: number;
   /** Generation mode. "corpus" dumps full text, "concordance" extracts context windows. */
   mode?: "corpus" | "concordance";
+  /** How many distinct context windows each word should appear in. Default: 1. */
+  contextsPerWord?: number;
   /** Progress callback. */
   onProgress?: (phase: string, count: number) => void;
 }

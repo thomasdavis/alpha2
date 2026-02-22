@@ -3,9 +3,10 @@
  */
 import { parseKV, requireArg, intArg, floatArg, strArg, boolArg, loadConfig } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng, listImplementations } from "../resolve.js";
-import { train as runTrain, createRemoteReporter } from "@alpha/train";
+import { train as runTrain, createRemoteReporter, loadTextSample, sample as runSample } from "@alpha/train";
+import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
-import type { ModelConfig, TrainConfig } from "@alpha/core";
+import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
 import { Effect } from "effect";
 
@@ -38,7 +39,7 @@ export async function trainCmd(args: string[]): Promise<void> {
   };
 
   const trainConfig: TrainConfig = {
-    iters: intArg(kv, "iters", tDefaults.iters ?? defaultTrainConfig.iters),
+    iters: intArg(kv, "steps", intArg(kv, "iters", tDefaults.iters ?? defaultTrainConfig.iters)),
     batchSize: intArg(kv, "batch", tDefaults.batchSize ?? defaultTrainConfig.batchSize),
     lr: floatArg(kv, "lr", tDefaults.lr ?? defaultTrainConfig.lr),
     beta1: floatArg(kv, "beta1", tDefaults.beta1 ?? defaultTrainConfig.beta1),
@@ -64,9 +65,8 @@ export async function trainCmd(args: string[]): Promise<void> {
   const optimizer = resolveOptimizer(trainConfig.optimizer, backend);
   const rng = resolveRng(trainConfig.seed);
 
-  // Build tokenizer from training data
-  const fs = await import("node:fs/promises");
-  const text = await fs.readFile(dataPath, "utf-8");
+  // Build tokenizer from training data (sample first 100MB for large files)
+  const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
   const tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));
 
   // Override vocab size from tokenizer
@@ -86,7 +86,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     console.log(`Remote reporting: ${remoteUrl}`);
   }
 
-  await runTrain({
+  const params = await runTrain({
     backend,
     tokenizer,
     optimizer,
@@ -112,7 +112,32 @@ export async function trainCmd(args: string[]): Promise<void> {
     onCheckpoint: reporter ? (info) => reporter.uploadCheckpoint(info) : undefined,
   });
 
+  // Post-training sample generation
+  const samplePrompts = domain?.samplePrompts ?? ["The ", "Once upon a time", "He walked into"];
+  const extraPrompts = ["In the beginning ", "We the People of "];
+  const allPrompts = [...samplePrompts, ...extraPrompts].slice(0, 5);
+  const releaseFn = "releaseGpuTensor" in backend
+    ? (td: TensorData) => (backend as any).releaseGpuTensor(td)
+    : undefined;
+
+  console.log("\n── sample generations ──");
+  const samples: SampleGeneration[] = [];
+  for (const prompt of allPrompts) {
+    const output = runSample(
+      finalModelConfig, params, backend, rng,
+      (t) => tokenizer.encode(t),
+      (t) => tokenizer.decode(t),
+      prompt,
+      { steps: 200, temperature: 0.8, topk: 40 },
+      releaseFn,
+    );
+    console.log(`\n  prompt: "${prompt}"`);
+    console.log(`  output: ${output}`);
+    samples.push({ prompt, output });
+  }
+
   if (reporter) {
+    await reporter.sendSamples(samples);
     await reporter.complete(trainConfig.iters);
   }
 }

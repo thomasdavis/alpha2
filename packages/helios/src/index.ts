@@ -12,9 +12,10 @@
  *   src/backend.ts       → HeliosBackend implementing @alpha/core Backend
  */
 
-export { HeliosBackend } from "./backend.js";
-export { initDevice, destroyDevice, getDeviceInfo } from "./device.js";
+export { HeliosBackend, type GpuDeviceInfo } from "./backend.js";
+export { initDevice, destroyDevice, getDeviceInfo, getNative, type NativeAddon } from "./device.js";
 export { SpirVBuilder } from "./spirv.js";
+export { getKernelSpirv } from "./kernels.js";
 
 // Re-export types from core
 export type { Backend, TensorData, Dtype, Shape } from "@alpha/core";

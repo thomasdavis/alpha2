@@ -9,6 +9,11 @@ import { Tape } from "@alpha/autograd";
 
 /**
  * Generate text from a trained model.
+ *
+ * @param releaseTensor — Optional callback to release GPU buffers for intermediate
+ *   tensors after each forward step. Without this, inference creates hundreds of
+ *   GPU tensors (one tape per step) that accumulate until GC — causing OOM on long
+ *   generations. Pass `backend.releaseGpuTensor` for GPU backends.
  */
 export function sample(
   config: ModelConfig,
@@ -19,6 +24,7 @@ export function sample(
   decode: (tokens: ArrayLike<number>) => string,
   prompt: string,
   sampleConfig: SampleConfig,
+  releaseTensor?: (td: TensorData) => void,
 ): string {
   const { steps, temperature, topk } = sampleConfig;
 
@@ -41,7 +47,7 @@ export function sample(
       data: new Int32Array(ctx),
     };
 
-    // Forward pass (no tape needed for inference)
+    // Forward pass (tape records ops but we don't need gradients)
     const tape = new Tape();
     const { logits } = gptForward(config, params, backend, tape, inputData);
 
@@ -53,6 +59,9 @@ export function sample(
     for (let v = 0; v < vocabSize; v++) {
       lastLogits[v] = logitsArr[offset + v] / temperature;
     }
+
+    // Release tape entries to free GPU buffers (prevents OOM on long generations)
+    tape.clear(releaseTensor);
 
     // Top-k filtering
     if (topk > 0 && topk < vocabSize) {

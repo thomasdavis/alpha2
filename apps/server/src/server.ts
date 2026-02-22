@@ -23,7 +23,7 @@ import { SeededRng } from "@alpha/core";
 import {
   createDb, getDb, syncFromDisk, listRuns as dbListRuns,
   getRecentMetrics, getMetrics, listCheckpoints, listDomains,
-  upsertRun, insertMetrics, updateRunProgress,
+  upsertRun, insertMetrics, updateRunProgress, insertSamples, getSamples,
   type DbRunSummary,
 } from "@alpha/db";
 
@@ -99,7 +99,7 @@ async function handleModels(_req: http.IncomingMessage, res: http.ServerResponse
 
   // Local filesystem runs
   const localRuns = getRuns().map((r) => ({
-    id: r.id, name: r.name, step: r.step, mtime: r.mtime, lastLoss: r.lastLoss,
+    id: r.id, runId: r.config?.runId ?? r.id, name: r.name, step: r.step, mtime: r.mtime, lastLoss: r.lastLoss,
     modelConfig: r.config.modelConfig, trainConfig: r.config.trainConfig,
     domain: r.domain,
   }));
@@ -116,6 +116,7 @@ async function handleModels(_req: http.IncomingMessage, res: http.ServerResponse
       try { trainConfig = JSON.parse(r.train_config); } catch { trainConfig = {}; }
       localRuns.push({
         id: r.id,
+        runId: r.run_id || r.id,
         name: r.run_id || r.id,
         step: r.latest_step ?? 0,
         mtime: r.disk_mtime ?? new Date(r.updated_at).getTime(),
@@ -142,7 +143,7 @@ async function handleInference(req: http.IncomingMessage, res: http.ServerRespon
   const temperature = parseFloat(url.searchParams.get("temp") ?? "0.8");
   const topk = parseInt(url.searchParams.get("topk") ?? "40", 10);
 
-  if (!modelId || !runs.find((r) => r.id === modelId)) {
+  if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown model" }));
     return;
@@ -174,7 +175,7 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
   const temperature: number = body.temperature ?? 0.8;
   const topk: number = body.topk ?? 40;
 
-  if (!modelId || !runs.find((r) => r.id === modelId)) {
+  if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown model" }));
     return;
@@ -205,7 +206,7 @@ async function handleGenerate(req: http.IncomingMessage, res: http.ServerRespons
   const temperature: number = parseFloat(url.searchParams.get("temperature") ?? "") || (body.temperature ?? 0.7);
   const modelId: string = url.searchParams.get("model") ?? body.model ?? runs[0]?.id;
 
-  if (!modelId || !runs.find((r) => r.id === modelId)) {
+  if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown model" }));
     return;
@@ -271,7 +272,7 @@ async function handleChatCompletions(req: http.IncomingMessage, res: http.Server
   const temperature: number = body.temperature ?? 0.7;
   const stream: boolean = body.stream === true;
 
-  if (!modelId || !runs.find((r) => r.id === modelId)) {
+  if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: { message: "Unknown model: " + modelId, type: "invalid_request_error" } }));
     return;
@@ -436,6 +437,20 @@ async function handleIngest(req: http.IncomingMessage, res: http.ServerResponse)
       console.warn("Ingest metrics DB error:", (e as Error).message);
     }
     broadcastLive("metrics", { runId, metrics });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (type === "samples") {
+    const { runId, samples } = body as { runId: string; samples: Array<{ prompt: string; output: string }> };
+    try {
+      const client = getDb();
+      await insertSamples(client, runId, samples);
+    } catch (e) {
+      console.warn("Ingest samples DB error:", (e as Error).message);
+    }
+    broadcastLive("samples", { runId, samples });
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -665,6 +680,13 @@ async function handleDbRunCheckpoints(_req: http.IncomingMessage, res: http.Serv
   res.end(JSON.stringify(checkpoints));
 }
 
+async function handleDbRunSamples(_req: http.IncomingMessage, res: http.ServerResponse, runId: string): Promise<void> {
+  const client = getDb();
+  const samples = await getSamples(client, runId);
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(samples));
+}
+
 async function handleDbDomains(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const client = getDb();
   const domains = await listDomains(client);
@@ -717,6 +739,8 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   if (runMetricsMatch) { await handleDbRunMetrics(req, res, decodeURIComponent(runMetricsMatch[1])); return; }
   const runCheckpointsMatch = p.match(/^\/api\/runs\/([^/]+)\/checkpoints$/);
   if (runCheckpointsMatch) { await handleDbRunCheckpoints(req, res, decodeURIComponent(runCheckpointsMatch[1])); return; }
+  const runSamplesMatch = p.match(/^\/api\/runs\/([^/]+)\/samples$/);
+  if (runSamplesMatch) { await handleDbRunSamples(req, res, decodeURIComponent(runSamplesMatch[1])); return; }
   const runTrainingDataMatch = p.match(/^\/api\/runs\/([^/]+)\/training-data$/);
   if (runTrainingDataMatch) { await handleRunTrainingData(req, res, decodeURIComponent(runTrainingDataMatch[1])); return; }
 

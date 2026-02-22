@@ -479,6 +479,7 @@ typedef struct {
   VkDeviceSize   head;          // bump pointer
   void*          mapped;        // persistent mapping (NULL if not host-visible)
   uint32_t       memoryTypeIdx;
+  uint32_t       refCount;      // number of live buffer allocations from this slab
 } Slab;
 
 typedef struct {
@@ -508,6 +509,7 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
     VkDeviceSize offset = alignUp(s->head, slabAlignment);
     if (offset + aligned_size <= s->capacity) {
       s->head = offset + aligned_size;
+      s->refCount++;
       out->memory = s->memory;
       out->offset = offset;
       out->mappedBase = s->mapped;
@@ -539,6 +541,7 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
   s->head = aligned_size;  // first alloc starts at 0
   s->memoryTypeIdx = pool->memoryTypeIdx;
   s->mapped = NULL;
+  s->refCount = 1;
 
   if (pool->hostVisible) {
     fp_vkMapMemory(device, s->memory, 0, slabSize, 0, &s->mapped);
@@ -1182,20 +1185,27 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
   fp_vkGetBufferMemoryRequirements(device, buffers[slot].buffer, &memReq);
 
   // Determine memory type
+  // hostVisible=0 → use device pool (DEVICE_LOCAL, HBM3 on discrete GPUs)
+  // hostVisible=1 → use host pool (HOST_VISIBLE, system RAM for staging)
+  // On discrete GPUs, device-local memory is NOT host-visible; upload/readback
+  // uses staging buffers. On integrated GPUs, the device pool IS host-visible
+  // (detected in initDevice and flagged in devicePool.hostVisible).
   int useHostPool = hostVisible;
-  if (!hostVisible) {
-    // Check if device-local + host-visible is available (integrated GPU / rBAR)
-    VkFlags unifiedFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    if (findMemoryType(memReq.memoryTypeBits, unifiedFlags) != UINT32_MAX) {
-      useHostPool = 1;
-      hostVisible = 1;
-    }
+  if (!hostVisible && devicePool.hostVisible) {
+    // Integrated GPU or device pool is already host-visible — can map directly
+    hostVisible = 1;
   }
 
   SlabPool* pool = useHostPool ? &hostPool : &devicePool;
   SlabAlloc salloc;
-  // Only use slab if memory type is compatible with this buffer
-  int slabCompatible = (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0;
+  // Slab allocation for device-local buffers is DISABLED: persistent buffers
+  // (model params) share slabs with temporary buffers (intermediates), preventing
+  // slab space reclamation even with refcounting. The JS-side buffer pool handles
+  // buffer recycling; individual vkAllocateMemory/vkFreeMemory properly returns
+  // memory to the driver. Host-visible buffers still use slab (staging is long-lived).
+  int slabCompatible = useHostPool
+    ? (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0
+    : 0;
   if (slabCompatible && slabPoolAlloc(pool, memReq.size, &salloc)) {
     // Slab allocation succeeded
     res = fp_vkBindBufferMemory(device, buffers[slot].buffer, salloc.memory, salloc.offset);
@@ -1330,9 +1340,15 @@ static napi_value napi_readBuffer(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  // Wait for any in-flight dispatch that wrote to this buffer
-  if (buffers[slot].lastWriteTimeline > 0) {
-    waitTimelineValue(buffers[slot].lastWriteTimeline);
+  // Wait for any in-flight dispatch that wrote to this buffer.
+  // For mapped (host-visible) buffers, also wait for lastDispatchTimeline
+  // because batchDispatch doesn't track per-buffer write timelines.
+  uint64_t waitFor = buffers[slot].lastWriteTimeline;
+  if (buffers[slot].mapped && lastDispatchTimeline > waitFor) {
+    waitFor = lastDispatchTimeline;
+  }
+  if (waitFor > 0) {
+    waitTimelineValue(waitFor);
   }
 
   uint32_t elemCount = (uint32_t)(buffers[slot].size / 4);
@@ -1389,6 +1405,27 @@ static napi_value napi_destroyBuffer(napi_env env, napi_callback_info info) {
         fp_vkUnmapMemory(device, buffers[slot].memory);
       }
       fp_vkFreeMemory(device, buffers[slot].memory, NULL);
+    } else {
+      // Slab-allocated: decrement ref count. When a slab reaches zero refs,
+      // reset its bump pointer so the space can be reused for new allocations.
+      // This prevents unbounded slab growth during training where buffers are
+      // constantly created and destroyed through the JS-side buffer pool.
+      VkDeviceMemory slabMem = buffers[slot].memory;
+      SlabPool* pools[2] = { &devicePool, &hostPool };
+      for (int p = 0; p < 2; p++) {
+        for (uint32_t si = 0; si < pools[p]->slabCount; si++) {
+          if (pools[p]->slabs[si].memory == slabMem) {
+            if (pools[p]->slabs[si].refCount > 0) {
+              pools[p]->slabs[si].refCount--;
+              if (pools[p]->slabs[si].refCount == 0) {
+                pools[p]->slabs[si].head = 0;  // reset bump pointer — all space reclaimed
+              }
+            }
+            goto slab_found;
+          }
+        }
+      }
+      slab_found:;
     }
     buffers[slot].mapped = NULL;
     buffers[slot].active = 0;
@@ -1651,6 +1688,12 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
 // ── N-API: batchBegin() ─────────────────────────────────────────────────────
 
 static napi_value napi_batchBegin(napi_env env, napi_callback_info info) {
+  // Wait for any in-flight batch to finish before resetting the descriptor pool
+  // and command buffer. Without this, we'd destroy descriptors still in use by the GPU.
+  if (lastDispatchTimeline > 0) {
+    waitTimelineValue(lastDispatchTimeline);
+  }
+
   fp_vkResetDescriptorPool(device, persistentDescPool, 0);
   dispatchCacheValid = 0; // batch uses the descriptor pool, invalidate single-dispatch cache
 

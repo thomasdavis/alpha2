@@ -17,6 +17,11 @@ export interface RemoteReporterConfig {
   flushInterval?: number;
 }
 
+export interface SampleGeneration {
+  prompt: string;
+  output: string;
+}
+
 export interface RemoteReporter {
   /** Register a new training run with the server */
   registerRun(info: {
@@ -35,6 +40,8 @@ export interface RemoteReporter {
   flush(): Promise<void>;
   /** Upload a checkpoint to the remote server for inference */
   uploadCheckpoint(info: { step: number; path: string; runId: string }): void;
+  /** Send sample generations to the server for display */
+  sendSamples(samples: SampleGeneration[]): Promise<void>;
 }
 
 export function createRemoteReporter(config: RemoteReporterConfig): RemoteReporter {
@@ -122,6 +129,10 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
 
     async flush() {
       await flushBuffer();
+    },
+
+    async sendSamples(samples: SampleGeneration[]) {
+      await post("/api/ingest", { type: "samples", runId, samples });
     },
 
     uploadCheckpoint(info: { step: number; path: string; runId: string }) {

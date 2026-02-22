@@ -90,6 +90,18 @@ export interface Backend {
   // mask
   causalMask(size: number): TensorData;
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData;
+
+  // backward (GPU-optimized, optional)
+  geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
+  reluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
+  layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
+
+  // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
+  broadcast?(a: TensorData, targetShape: Shape): TensorData;
+
+  // optimizer (GPU-optimized, optional)
+  adamwStep?(params: TensorData, grads: TensorData, m: TensorData, v: TensorData,
+    lr: number, beta1: number, beta2: number, eps: number, weightDecay: number, bc1: number, bc2: number): void;
 }
 
 export class BackendService extends Context.Tag("BackendService")<
