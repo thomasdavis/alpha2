@@ -98,4 +98,12 @@ export const migrations: string[][] = [
       PRIMARY KEY (run_id, idx)
     ) WITHOUT ROWID`,
   ],
+
+  // Version 3: GPU metrics columns
+  [
+    `ALTER TABLE metrics ADD COLUMN gpu_util_pct REAL`,
+    `ALTER TABLE metrics ADD COLUMN gpu_vram_used_mb REAL`,
+    `ALTER TABLE metrics ADD COLUMN gpu_vram_total_mb REAL`,
+    `ALTER TABLE metrics ADD COLUMN gpu_mem_pool_mb REAL`,
+  ],
 ];

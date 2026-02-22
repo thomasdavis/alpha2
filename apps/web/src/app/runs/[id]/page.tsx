@@ -4,6 +4,7 @@ import { getClient } from "@/lib/db";
 import { getRun, getMetrics, listCheckpoints, getSamples } from "@alpha/db";
 import { formatParams, formatLoss, formatBytes, timeAgo, pct } from "@/lib/format";
 import { LossChart } from "@/components/loss-chart";
+import { GpuChart } from "@/components/gpu-chart";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
 
@@ -154,6 +155,14 @@ export default async function RunDetailPage({
           Loss over training <Tip text={tips.lossChart} />
         </h2>
         <LossChart runId={run.id} />
+      </div>
+
+      {/* GPU chart */}
+      <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
+          GPU Utilization & VRAM
+        </h2>
+        <GpuChart runId={run.id} />
       </div>
 
       {/* Config + checkpoints */}

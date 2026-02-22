@@ -18,6 +18,10 @@ export async function insertMetrics(
     elapsed_ms: number;
     tokens_per_sec: number;
     ms_per_iter: number;
+    gpu_util_pct?: number | null;
+    gpu_vram_used_mb?: number | null;
+    gpu_vram_total_mb?: number | null;
+    gpu_mem_pool_mb?: number | null;
   }>
 ): Promise<number> {
   if (metrics.length === 0) return 0;
@@ -28,8 +32,9 @@ export async function insertMetrics(
     await client.batch(
       chunk.map((m) => ({
         sql: `INSERT OR IGNORE INTO metrics
-              (run_id, step, loss, val_loss, lr, grad_norm, elapsed_ms, tokens_per_sec, ms_per_iter)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (run_id, step, loss, val_loss, lr, grad_norm, elapsed_ms, tokens_per_sec, ms_per_iter,
+               gpu_util_pct, gpu_vram_used_mb, gpu_vram_total_mb, gpu_mem_pool_mb)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           runId,
           m.step,
@@ -40,6 +45,10 @@ export async function insertMetrics(
           m.elapsed_ms,
           m.tokens_per_sec,
           m.ms_per_iter,
+          m.gpu_util_pct ?? null,
+          m.gpu_vram_used_mb ?? null,
+          m.gpu_vram_total_mb ?? null,
+          m.gpu_mem_pool_mb ?? null,
         ],
       })),
       "write"

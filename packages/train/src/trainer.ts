@@ -14,6 +14,39 @@ import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte 
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
 import { Effect } from "effect";
 
+// ── GPU stats ────────────────────────────────────────────────────────────
+
+interface GpuStats {
+  utilPct: number;
+  vramUsedMb: number;
+  vramTotalMb: number;
+}
+
+let _gpuStatsCache: GpuStats | null = null;
+let _gpuStatsLastQuery = 0;
+const GPU_STATS_INTERVAL_MS = 5000; // query nvidia-smi at most every 5s
+
+async function queryGpuStats(): Promise<GpuStats | null> {
+  const now = performance.now();
+  if (now - _gpuStatsLastQuery < GPU_STATS_INTERVAL_MS && _gpuStatsCache) {
+    return _gpuStatsCache;
+  }
+  _gpuStatsLastQuery = now;
+  try {
+    const { execSync } = await import("node:child_process");
+    const out = execSync(
+      "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
+      { timeout: 2000, encoding: "utf-8" },
+    ).trim();
+    const [util, used, total] = out.split(",").map(s => parseFloat(s.trim()));
+    if (isFinite(util) && isFinite(used) && isFinite(total)) {
+      _gpuStatsCache = { utilPct: util, vramUsedMb: used, vramTotalMb: total };
+      return _gpuStatsCache;
+    }
+  } catch { /* nvidia-smi not available — skip */ }
+  return null;
+}
+
 // ── Step metrics ───────────────────────────────────────────────────────────
 
 export interface StepMetrics {
@@ -25,6 +58,10 @@ export interface StepMetrics {
   elapsed_ms: number;
   tokens_per_sec: number;
   ms_per_iter: number;
+  gpu_util_pct?: number;
+  gpu_vram_used_mb?: number;
+  gpu_vram_total_mb?: number;
+  gpu_mem_pool_mb?: number;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -298,6 +335,18 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       tokens_per_sec: tokensProcessed / (stepElapsed / 1000),
       ms_per_iter: stepElapsed,
     };
+
+    // GPU stats (queried at most every 5s via nvidia-smi)
+    const gpuStats = await queryGpuStats();
+    if (gpuStats) {
+      metrics.gpu_util_pct = gpuStats.utilPct;
+      metrics.gpu_vram_used_mb = gpuStats.vramUsedMb;
+      metrics.gpu_vram_total_mb = gpuStats.vramTotalMb;
+    }
+    if ("gpuMemStats" in backend) {
+      const memStats = (backend as any).gpuMemStats();
+      metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
+    }
 
     // Eval
     if (valLoader && (step + 1) % trainConfig.evalInterval === 0) {

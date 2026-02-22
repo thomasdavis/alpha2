@@ -47,6 +47,10 @@ export interface DbMetric {
   elapsed_ms: number;
   tokens_per_sec: number;
   ms_per_iter: number;
+  gpu_util_pct: number | null;
+  gpu_vram_used_mb: number | null;
+  gpu_vram_total_mb: number | null;
+  gpu_mem_pool_mb: number | null;
 }
 
 export interface DbCheckpoint {
