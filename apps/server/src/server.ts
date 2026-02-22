@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
 import * as crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import { streamText } from "ai";
 import {
   initEngine, getRuns, ensureModel, generateTokens, sampleNextToken, AlphaLanguageModel, resetEngine,
@@ -31,6 +32,16 @@ const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const OUTPUTS_DIR = process.env.OUTPUTS_DIR
   ? path.resolve(process.env.OUTPUTS_DIR)
   : path.resolve(import.meta.dirname, "../../../outputs");
+
+const BUILD_INFO = (() => {
+  try {
+    const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+    const msg = execSync("git log -1 --format=%s", { encoding: "utf8" }).trim();
+    return { sha, message: msg, startedAt: new Date().toISOString() };
+  } catch {
+    return { sha: "unknown", message: "unknown", startedAt: new Date().toISOString() };
+  }
+})();
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -717,6 +728,13 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
 
   // CORS preflight
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+  // Version
+  if (p === "/api/version") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(BUILD_INFO));
+    return;
+  }
 
   // API routes
   if (p === "/api/models" && req.method === "DELETE") { await handleDeleteModel(req, res); return; }
