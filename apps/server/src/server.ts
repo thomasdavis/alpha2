@@ -34,14 +34,20 @@ const OUTPUTS_DIR = process.env.OUTPUTS_DIR
   : path.resolve(import.meta.dirname, "../../../outputs");
 
 const BUILD_INFO = (() => {
-  // Railway provides RAILWAY_GIT_COMMIT_SHA; fall back to local git
-  const envSha = process.env.RAILWAY_GIT_COMMIT_SHA;
+  // build-info.json is written by the build script with git SHA + message
+  const infoPath = path.resolve(import.meta.dirname, "../build-info.json");
   try {
-    const sha = envSha?.slice(0, 7) || execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-    const msg = envSha ? (process.env.RAILWAY_GIT_COMMIT_MESSAGE ?? "") : execSync("git log -1 --format=%s", { encoding: "utf8" }).trim();
-    return { sha, message: msg, startedAt: new Date().toISOString() };
+    const info = JSON.parse(fs.readFileSync(infoPath, "utf8"));
+    return { ...info, startedAt: new Date().toISOString() };
   } catch {
-    return { sha: envSha?.slice(0, 7) ?? "unknown", message: "", startedAt: new Date().toISOString() };
+    // Fallback for dev (no build step)
+    try {
+      const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+      const msg = execSync("git log -1 --format=%s", { encoding: "utf8" }).trim();
+      return { sha, message: msg, startedAt: new Date().toISOString() };
+    } catch {
+      return { sha: "unknown", message: "", startedAt: new Date().toISOString() };
+    }
   }
 })();
 
