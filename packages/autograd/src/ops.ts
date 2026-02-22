@@ -15,7 +15,7 @@ function record(
   ctx: Ctx,
   data: TensorData,
   inputs: Variable[],
-  backward: (outGrad: TensorData, b: Backend) => TensorData[]
+  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void) => TensorData[]
 ): Variable {
   const out = new Variable(data, true);
   ctx.tape.record({ output: out, inputs, backward });
@@ -36,27 +36,40 @@ export function add(ctx: Ctx, a: Variable, b: Variable): Variable {
 }
 
 export function sub(ctx: Ctx, a: Variable, b: Variable): Variable {
-  return record(ctx, ctx.backend.sub(a.data, b.data), [a, b], (g, B) => {
-    return [reduceBroadcast(B, g, a.data.shape), reduceBroadcast(B, B.neg(g), b.data.shape)];
+  const aShape = a.data.shape, bShape = b.data.shape;
+  return record(ctx, ctx.backend.sub(a.data, b.data), [a, b], (g, B, release) => {
+    const negG = B.neg(g);
+    const gb = reduceBroadcast(B, negG, bShape);
+    if (release && gb !== negG) release(negG);
+    return [reduceBroadcast(B, g, aShape), gb];
   });
 }
 
 export function mul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.mul(aData, bData), [a, b], (g, B) => {
-    return [
-      reduceBroadcast(B, B.mul(g, bData), aData.shape),
-      reduceBroadcast(B, B.mul(g, aData), bData.shape),
-    ];
+  return record(ctx, ctx.backend.mul(aData, bData), [a, b], (g, B, release) => {
+    const gTimesB = B.mul(g, bData);
+    const gTimesA = B.mul(g, aData);
+    const ga = reduceBroadcast(B, gTimesB, aData.shape);
+    const gb = reduceBroadcast(B, gTimesA, bData.shape);
+    if (release) {
+      if (ga !== gTimesB) release(gTimesB);
+      if (gb !== gTimesA) release(gTimesA);
+    }
+    return [ga, gb];
   });
 }
 
 export function div(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.div(aData, bData), [a, b], (g, B) => {
+  return record(ctx, ctx.backend.div(aData, bData), [a, b], (g, B, release) => {
     // d(a/b)/da = 1/b, d(a/b)/db = -a/b^2
     const ga = B.div(g, bData);
-    const gb = B.neg(B.div(B.mul(g, aData), B.mul(bData, bData)));
+    const gTimesA = B.mul(g, aData);
+    const bSq = B.mul(bData, bData);
+    const ratio = B.div(gTimesA, bSq);
+    const gb = B.neg(ratio);
+    if (release) { release(gTimesA); release(bSq); release(ratio); }
     return [reduceBroadcast(B, ga, aData.shape), reduceBroadcast(B, gb, bData.shape)];
   });
 }
@@ -75,12 +88,15 @@ export function neg(ctx: Ctx, a: Variable): Variable {
 
 export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B) => {
+  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release) => {
     // For 2D: dL/dA = G @ B^T, dL/dB = A^T @ G
     const ndimA = aData.shape.length;
     const ndimB = bData.shape.length;
-    const ga = B.matmul(g, B.transpose(bData, ndimB - 2, ndimB - 1));
-    const gb = B.matmul(B.transpose(aData, ndimA - 2, ndimA - 1), g);
+    const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
+    const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
+    const ga = B.matmul(g, tB);
+    const gb = B.matmul(tA, g);
+    if (release) { release(tB); release(tA); }
     return [ga, gb];
   });
 }
@@ -119,8 +135,11 @@ export function log(ctx: Ctx, a: Variable): Variable {
 
 export function sqrt(ctx: Ctx, a: Variable): Variable {
   const out = ctx.backend.sqrt(a.data);
-  return record(ctx, out, [a], (g, B) => {
-    return [B.div(g, B.scale(out, 2))];
+  return record(ctx, out, [a], (g, B, release) => {
+    const denom = B.scale(out, 2);
+    const result = B.div(g, denom);
+    if (release) release(denom);
+    return [result];
   });
 }
 
@@ -138,7 +157,7 @@ export function relu(ctx: Ctx, a: Variable): Variable {
 
 export function gelu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
-  return record(ctx, ctx.backend.gelu(aData), [a], (g, B) => {
+  return record(ctx, ctx.backend.gelu(aData), [a], (g, B, release) => {
     if (B.geluBackward) return [B.geluBackward(aData, g)];
     const SQRT2PI = Math.sqrt(2 / Math.PI);
     const src = aData.data as Float32Array;
@@ -242,18 +261,21 @@ export function layerNorm(
 
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   const out = ctx.backend.softmax(a.data, axis);
-  return record(ctx, out, [a], (g, B) => {
+  return record(ctx, out, [a], (g, B, release) => {
     // dsoftmax: s * (g - sum(g * s))
     const sg = B.mul(out, g);
     const sumSg = B.sum(sg, axis ?? -1, true);
     const expanded = broadcastTo(B, sumSg, out.shape);
-    return [B.mul(out, B.sub(g, expanded))];
+    const diff = B.sub(g, expanded);
+    const result = B.mul(out, diff);
+    if (release) { release(sg); release(sumSg); if (expanded !== sumSg) release(expanded); release(diff); }
+    return [result];
   });
 }
 
 export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
   const logitsData = logits.data;
-  return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B) => {
+  return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
     if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, targets, g)];
     // CPU fallback: (softmax(logits) - one_hot(targets)) * gScalar / N
     const probs = B.softmax(logitsData, -1);
@@ -262,7 +284,10 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
     const oneHotArr = new Float32Array(N * C);
     for (let i = 0; i < N; i++) oneHotArr[targets.data[i] + i * C] = 1.0;
     const oneHot: TensorData = { shape: [N, C], dtype: logitsData.dtype, data: oneHotArr };
-    return [B.scale(B.sub(probs, oneHot), gScalar / N)];
+    const diff = B.sub(probs, oneHot);
+    const result = B.scale(diff, gScalar / N);
+    if (release) { release(probs); release(diff); }
+    return [result];
   });
 }
 
@@ -276,7 +301,7 @@ export function reshape(ctx: Ctx, a: Variable, shape: Shape): Variable {
 }
 
 export function transpose(ctx: Ctx, a: Variable, dim0: number, dim1: number): Variable {
-  return record(ctx, ctx.backend.transpose(a.data, dim0, dim1), [a], (g, B) => {
+  return record(ctx, ctx.backend.transpose(a.data, dim0, dim1), [a], (g, B, _release) => {
     return [B.transpose(g, dim0, dim1)];
   });
 }

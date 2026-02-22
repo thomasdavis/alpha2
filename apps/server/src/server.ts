@@ -642,7 +642,7 @@ const pendingChunks = new Map<string, { chunks: Map<number, Buffer>; total: numb
 setInterval(() => {
   const now = Date.now();
   for (const [id, entry] of pendingChunks) {
-    if (now - entry.receivedAt > 10 * 60 * 1000) pendingChunks.delete(id);
+    if (now - entry.receivedAt > 60 * 60 * 1000) pendingChunks.delete(id);
   }
 }, 5 * 60 * 1000);
 

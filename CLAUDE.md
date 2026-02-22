@@ -33,6 +33,7 @@ apps/cli            — CLI commands
 
 ## Do
 
+- **Maximize GPU utilization** — training should use at least 80% of available GPU resources (VRAM, compute). Don't waste money on rented GPUs by under-utilizing them. Tune batch size, block size, and model dimensions to fill the GPU.
 - Use `@alpha/core` types (`ModelConfig`, `TrainConfig`, `DomainConfig`) as source of truth
 - Read existing code before modifying — patterns are intentional
 - Use `@libsql/client` for all DB access via `@alpha/db` (createDb/getDb)

@@ -80,7 +80,7 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
   }
 
   const lnF = { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) };
-  const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std);
+  const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std / Math.sqrt(2 * nLayer));
 
   return { wte, wpe, layers, lnF, lmHead };
 }
@@ -151,7 +151,7 @@ export function gptForward(
 
     // Apply causal mask
     const maskedScores = new Variable(
-      backend.maskedFill(scores.data, mask, -Infinity),
+      backend.maskedFill(scores.data, mask, -1e9),
       true,
     );
     // Record identity op for gradient flow

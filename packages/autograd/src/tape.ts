@@ -13,8 +13,10 @@ export interface TapeEntry {
   readonly output: Variable;
   /** Inputs to this op */
   readonly inputs: readonly Variable[];
-  /** Compute gradients for each input given the output grad */
-  backward(outGrad: TensorData, backend: Backend): TensorData[];
+  /** Compute gradients for each input given the output grad.
+   *  The optional release callback frees intermediate GPU tensors created
+   *  within the backward closure (transposes, intermediates, etc.) */
+  backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void): TensorData[];
 }
 
 // ── Variable ───────────────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ export class Tape {
       const outGrad = entry.output.grad;
       if (!outGrad) continue;
 
-      const inputGrads = entry.backward(outGrad, backend);
+      const inputGrads = entry.backward(outGrad, backend, releaseTensor);
 
       for (let j = 0; j < entry.inputs.length; j++) {
         const input = entry.inputs[j];

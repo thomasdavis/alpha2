@@ -44,8 +44,64 @@ export interface RemoteReporter {
   sendSamples(samples: SampleGeneration[]): Promise<void>;
 }
 
-/** Max chunk size for chunked uploads (512KB — well under Railway CDN limit) */
-const CHUNK_SIZE = 512 * 1024;
+/** Max chunk size for chunked uploads (1.5MB — under Railway CDN ~4MB limit) */
+const CHUNK_SIZE = 1536 * 1024;
+
+/**
+ * Strip optimizer state from a binary checkpoint to reduce upload size.
+ * Binary format: [ALPH magic][4-byte header len][header JSON][tensor data...]
+ * We keep only param tensors (p.*), dropping optimizer tensors (o.*).
+ */
+function stripOptimizerState(data: Buffer): Buffer {
+  // Check magic
+  if (data.length < 8 || data[0] !== 0x41 || data[1] !== 0x4c || data[2] !== 0x50 || data[3] !== 0x48) {
+    // Not a binary checkpoint — return as-is (legacy JSON format)
+    return data;
+  }
+
+  let offset = 4;
+  const headerLen = data.readUInt32LE(offset); offset += 4;
+  const header = JSON.parse(data.subarray(offset, offset + headerLen).toString("utf-8"));
+  const dataStart = offset + headerLen;
+
+  // Separate param tensors from optimizer tensors
+  const paramTensors: { name: string; shape: number[]; elements: number }[] = [];
+  const paramBuffers: Buffer[] = [];
+  let tensorOffset = dataStart;
+
+  for (const t of header.tensors) {
+    const byteLen = t.elements * 4;
+    if (t.name.startsWith("p.")) {
+      paramTensors.push(t);
+      paramBuffers.push(data.subarray(tensorOffset, tensorOffset + byteLen));
+    }
+    tensorOffset += byteLen;
+  }
+
+  // Rebuild header without optimizer tensors
+  const newHeader = JSON.stringify({
+    ...header,
+    tensors: paramTensors,
+    optimizerStep: 0,
+  });
+  const newHeaderBuf = Buffer.from(newHeader, "utf-8");
+
+  // Rebuild file
+  const dataSize = paramBuffers.reduce((acc, b) => acc + b.length, 0);
+  const totalSize = 4 + 4 + newHeaderBuf.length + dataSize;
+  const out = Buffer.alloc(totalSize);
+
+  let pos = 0;
+  Buffer.from("ALPH").copy(out, pos); pos += 4;
+  out.writeUInt32LE(newHeaderBuf.length, pos); pos += 4;
+  newHeaderBuf.copy(out, pos); pos += newHeaderBuf.length;
+  for (const buf of paramBuffers) {
+    buf.copy(out, pos);
+    pos += buf.length;
+  }
+
+  return out;
+}
 
 export function createRemoteReporter(config: RemoteReporterConfig): RemoteReporter {
   const { url, secret } = config;
@@ -73,6 +129,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000), // 15s timeout — never block training
       });
     } catch {
       // Fire-and-forget — never block training
@@ -120,6 +177,8 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     const totalChunks = Math.ceil(compressed.length / CHUNK_SIZE);
     const uploadId = `${meta.name}_${meta.step}_${Date.now()}`;
 
+    console.log(`  uploading checkpoint: ${(compressed.length / 1024 / 1024).toFixed(1)}MB compressed, ${totalChunks} chunks`);
+
     // Send each chunk
     for (let i = 0; i < totalChunks; i++) {
       const start = i * CHUNK_SIZE;
@@ -136,9 +195,14 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
           "X-Total-Chunks": String(totalChunks),
         },
         body: chunk,
+        signal: AbortSignal.timeout(30_000), // 30s timeout per chunk
       });
       if (!res.ok) {
         throw new Error(`Chunk ${i}/${totalChunks} failed: ${res.status}`);
+      }
+      // Log progress every 50 chunks
+      if ((i + 1) % 50 === 0 || i + 1 === totalChunks) {
+        console.log(`  upload progress: ${i + 1}/${totalChunks} chunks`);
       }
     }
 
@@ -240,8 +304,13 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
             }
           }
 
+          // Strip optimizer state — inference only needs model params
+          // This cuts upload size by ~2/3 (e.g. 1.3GB → 440MB for 115M model)
+          const inferBuf = stripOptimizerState(checkpointBuf as unknown as Buffer);
+          console.log(`  checkpoint: ${(checkpointBuf.length / 1024 / 1024).toFixed(1)}MB full → ${(inferBuf.length / 1024 / 1024).toFixed(1)}MB inference-only`);
+
           // Use chunked upload to bypass Railway CDN body size limit
-          await chunkedUpload(checkpointBuf, {
+          await chunkedUpload(inferBuf, {
             name: info.runId,
             step: info.step,
             config,

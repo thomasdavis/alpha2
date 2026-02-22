@@ -200,7 +200,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const stepStart = performance.now();
 
     // Learning rate schedule: linear warmup + cosine decay
-    const warmup = Math.min(100, trainConfig.iters / 10);
+    const warmup = Math.min(500, trainConfig.iters / 10);
     let lr: number;
     if (step < warmup) {
       lr = trainConfig.lr * (step + 1) / warmup;
@@ -231,7 +231,20 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       ? (td: TensorData) => (backend as any).releaseGpuTensor(td)
       : undefined;
 
-    tape.backward(loss, backend, releaseFn);
+    // Early NaN bail-out: loss scalar is already on CPU (crossEntropy reads it back),
+    // so this check is free. If loss is NaN/Inf, skip the entire backward pass,
+    // gradient norm, clipping, and optimizer step — saves ~50% of step time.
+    const lossVal = (loss.data.data as Float32Array)[0];
+    let nanDetected = !isFinite(lossVal);
+    let gradNorm = 0;
+
+    if (nanDetected) {
+      console.warn(`  [warn] loss=NaN at step ${step + 1} — skipping backward + optimizer`);
+      // Release all forward intermediate GPU buffers without running backward
+      tape.clear(releaseFn);
+    } else {
+      tape.backward(loss, backend, releaseFn);
+    }
     const _t3 = performance.now();
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU)
@@ -239,38 +252,45 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const paramDataMap = new Map<string, TensorData>();
     const gradMap = new Map<string, TensorData>();
 
-    // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
-    // Phase 1: record mul+sum on GPU graph (no flush — all ops batch together)
-    const sqNormParts: TensorData[] = [];
-    const g2Intermediates: TensorData[] = [];
-    for (const [name, variable] of paramMap) {
-      paramDataMap.set(name, variable.data);
-      if (variable.grad) {
-        const g = variable.grad;
-        const g2 = backend.mul(g, g);
-        g2Intermediates.push(g2);
-        sqNormParts.push(backend.sum(g2));
+    if (!nanDetected) {
+      // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
+      // Phase 1: record mul+sum on GPU graph (no flush — all ops batch together)
+      const sqNormParts: TensorData[] = [];
+      const g2Intermediates: TensorData[] = [];
+      for (const [name, variable] of paramMap) {
+        paramDataMap.set(name, variable.data);
+        if (variable.grad) {
+          const g = variable.grad;
+          const g2 = backend.mul(g, g);
+          g2Intermediates.push(g2);
+          sqNormParts.push(backend.sum(g2));
+        }
+      }
+      // Phase 2: first .data access triggers single flush of ALL pending GPU work
+      let gradNormSq = 0;
+      for (const part of sqNormParts) {
+        gradNormSq += (part.data as Float32Array)[0];
+      }
+      gradNorm = Math.sqrt(gradNormSq);
+      // Release grad norm intermediates (g² tensors and scalar sums)
+      if (releaseFn) {
+        for (const g2 of g2Intermediates) releaseFn(g2);
+        for (const part of sqNormParts) releaseFn(part);
+      }
+
+      // NaN guard on gradient norm (backward produced NaN even though loss was finite)
+      if (!isFinite(gradNorm)) {
+        console.warn(`  [warn] grad_norm=NaN at step ${step + 1} — skipping optimizer update`);
+        nanDetected = true;
+      }
+    } else {
+      // Still need paramDataMap for zero-grad cleanup
+      for (const [name, variable] of paramMap) {
+        paramDataMap.set(name, variable.data);
       }
     }
-    // Phase 2: first .data access triggers single flush of ALL pending GPU work
-    let gradNormSq = 0;
-    for (const part of sqNormParts) {
-      gradNormSq += (part.data as Float32Array)[0];
-    }
-    const gradNorm = Math.sqrt(gradNormSq);
-    // Release grad norm intermediates (g² tensors and scalar sums)
-    if (releaseFn) {
-      for (const g2 of g2Intermediates) releaseFn(g2);
-      for (const part of sqNormParts) releaseFn(part);
-    }
-    const _t4 = performance.now();
 
-    // NaN guard: skip optimizer step if gradients are NaN (prevents permanent
-    // weight corruption from a single bad batch)
-    const nanDetected = !isFinite(gradNorm);
-    if (nanDetected) {
-      console.warn(`  [warn] NaN/Inf grad_norm at step ${step + 1} — skipping optimizer update`);
-    }
+    const _t4 = performance.now();
 
     // Clip gradients using backend.scale (stays on GPU)
     if (!nanDetected && trainConfig.gradClip > 0 && gradNorm > trainConfig.gradClip) {
@@ -280,6 +300,29 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
           const oldGrad = variable.grad;
           variable.grad = backend.scale(variable.grad, clipCoef);
           if (releaseFn) releaseFn(oldGrad);
+        }
+      }
+
+      // Post-clip safety: spot-check the largest gradient tensors for Inf values.
+      // In f16, Inf * clip_ratio = Inf — clipping cannot fix f16 overflow.
+      // Check 3 largest tensors by computing their sum-of-squares on GPU.
+      const gradEntries: { grad: TensorData; size: number }[] = [];
+      for (const [, variable] of paramMap) {
+        if (variable.grad) {
+          gradEntries.push({ grad: variable.grad, size: shapeSize(variable.grad.shape) });
+        }
+      }
+      gradEntries.sort((a, b) => b.size - a.size);
+      for (let i = 0; i < Math.min(3, gradEntries.length); i++) {
+        const g = gradEntries[i].grad;
+        const g2 = backend.mul(g, g);
+        const s = backend.sum(g2);
+        const val = (s.data as Float32Array)[0];
+        if (releaseFn) { releaseFn(g2); releaseFn(s); }
+        if (!isFinite(val)) {
+          console.warn(`  [warn] Inf in gradients after clipping (pre-clip norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
+          nanDetected = true;
+          break;
         }
       }
     }
@@ -302,13 +345,21 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     // Release all forward/backward intermediate GPU buffers deterministically
     tape.clear(releaseFn);
 
-    // Flush pending GPU ops, then run GC as defense-in-depth for backward
-    // closure-internal intermediates (transpose results, etc.) that can't be
-    // explicitly released because they're local to the backward closure scope.
+    // Flush pending GPU ops (optimizer commands + deferred buffer releases).
     if ("flush" in backend) (backend as any).flush();
+    // GC to clean up backward closure-internal intermediates via FinalizationRegistry.
     if (typeof globalThis.gc === "function") {
       (globalThis as any).gc();
       await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
+    // This ensures all output pool regions have readyValue <= getCompleted(),
+    // so step N+1's acquireOutputRegion can reuse them instead of allocating
+    // fresh VRAM (which would OOM at high utilization like batch=32 on L4).
+    if ("syncGpu" in backend) {
+      (backend as any).syncGpu();
+    } else if ("flush" in backend) {
+      (backend as any).flush();
     }
     const _t6 = performance.now();
 
@@ -317,10 +368,12 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       console.log(`  [trace] batch=${(_t1-_t0).toFixed(0)}ms fwd=${(_t2-_t1).toFixed(0)}ms bwd=${(_t3-_t2).toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms optim=${(_t5-_t4).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
 
-    // GPU memory diagnostics (every 10 steps)
-    if ("gpuMemStats" in backend && (step + 1) % 10 === 0) {
+    // GPU memory diagnostics (every 5 steps, every step for first 20)
+    if ("gpuMemStats" in backend && ((step + 1) <= 20 || (step + 1) % 5 === 0)) {
       const stats = (backend as any).gpuMemStats();
-      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries} (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases}`);
+      const breakdown = "poolBreakdown" in backend ? ` | ${(backend as any).poolBreakdown(8)}` : "";
+      const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
+      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${breakdown}`);
     }
 
     // Metrics
@@ -348,15 +401,28 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
     }
 
-    // Eval
+    // Eval — flush GPU and wait for completion first to maximize free VRAM
     if (valLoader && (step + 1) % trainConfig.evalInterval === 0) {
+      if ("flush" in backend) (backend as any).flush();
+      if (typeof globalThis.gc === "function") {
+        (globalThis as any).gc();
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      // Second flush to process deferred releases from GC's FinalizationRegistry
+      if ("flush" in backend) (backend as any).flush();
+
       let valLossSum = 0;
       for (let ei = 0; ei < trainConfig.evalIters; ei++) {
         const valBatch = valLoader.nextBatch();
         const evalTape = new Tape();
         const { loss: vl } = gptForward(modelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets);
-        if (vl) valLossSum += (vl.data.data as Float32Array)[0];
+        if (vl) {
+          valLossSum += (vl.data.data as Float32Array)[0];
+          if (releaseFn) releaseFn(vl.data);
+        }
         evalTape.clear(releaseFn);
+        // Flush between eval iters to process deferred releases
+        if ("flush" in backend) (backend as any).flush();
       }
       metrics.valLoss = valLossSum / trainConfig.evalIters;
     }

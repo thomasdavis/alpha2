@@ -166,9 +166,16 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 const POOL_MAX_PER_SIZE = 8;
 const bufferPool = new Map<number, number[]>();
 
+let _totalAllocCount = 0;
+let _totalAllocBytes = 0;
+let _liveAllocCount = 0;
+
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
   const pool = bufferPool.get(byteSize);
   if (pool && pool.length > 0) return pool.pop()!;
+  _totalAllocCount++;
+  _totalAllocBytes += byteSize;
+  _liveAllocCount++;
   return vk.createBuffer(byteSize, 0); // device-local (staging handled in C)
 }
 
@@ -179,6 +186,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
     pool.push(handle);
   } else {
     vk.destroyBuffer(handle);
+    _liveAllocCount--;
   }
 }
 
@@ -346,6 +354,7 @@ function processPendingDestroys(vk: NativeAddon): void {
   for (let i = 0; i < pendingDestroys.length; i++) {
     if (pendingDestroys[i].readyValue <= completed) {
       vk.destroyBuffer(pendingDestroys[i].handle);
+      _liveAllocCount--;
     } else {
       pendingDestroys[writeIdx++] = pendingDestroys[i];
     }
@@ -547,6 +556,17 @@ export class HeliosBackend implements Backend {
   flush(): void { graph.flush(); }
 
   /**
+   * Flush GPU work AND wait for completion so all pending buffer releases
+   * become reclaimable. Call between training steps when VRAM is tight.
+   */
+  syncGpu(): void {
+    const vk = getNative();
+    const tv = graph.flush();
+    if (tv > 0) vk.waitTimeline(tv);
+    processPendingDestroys(vk);
+  }
+
+  /**
    * Release all pooled GPU buffers and force-free unreachable tensor buffers.
    * Call between training steps to prevent GPU memory growth.
    */
@@ -586,7 +606,7 @@ export class HeliosBackend implements Backend {
   }
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
-  gpuMemStats(): { bufferPoolEntries: number; bufferPoolBytes: number; outputPoolEntries: number; outputPoolBytes: number; deferredReleases: number } {
+  gpuMemStats(): { bufferPoolEntries: number; bufferPoolBytes: number; outputPoolEntries: number; outputPoolBytes: number; deferredReleases: number; pendingDestroys: number; outputPoolSizeClasses: number; totalAllocs: number; totalAllocMB: number; liveAllocs: number } {
     let bpEntries = 0, bpBytes = 0;
     for (const [size, handles] of bufferPool) { bpEntries += handles.length; bpBytes += handles.length * size; }
     let opEntries = 0, opBytes = 0;
@@ -595,7 +615,24 @@ export class HeliosBackend implements Backend {
       bufferPoolEntries: bpEntries, bufferPoolBytes: bpBytes,
       outputPoolEntries: opEntries, outputPoolBytes: opBytes,
       deferredReleases: graph.deferredReleaseCount,
+      pendingDestroys: pendingDestroys.length,
+      outputPoolSizeClasses: outputPool.size,
+      totalAllocs: _totalAllocCount,
+      totalAllocMB: Math.round(_totalAllocBytes / 1024 / 1024),
+      liveAllocs: _liveAllocCount,
     };
+  }
+
+  /** Detailed pool breakdown: size → count for the top N entries by bytes. */
+  poolBreakdown(topN = 10): string {
+    const entries: [number, number][] = [];
+    for (const [size, regions] of outputPool) {
+      entries.push([size, regions.length]);
+    }
+    entries.sort((a, b) => b[0] * b[1] - a[0] * a[1]); // sort by total bytes desc
+    return entries.slice(0, topN).map(([size, count]) =>
+      `${(size/1024/1024).toFixed(1)}MB×${count}`
+    ).join(", ");
   }
 
   /** Whether this device supports f16 storage buffers. */
@@ -1446,11 +1483,13 @@ export class HeliosBackend implements Backend {
 
     if (N * C >= this._minGpuSize) {
       const vk = this.init();
-      // GPU path: softmax → log → pick targets → sum → /N
-      // All stays on GPU until the final scalar read
-      const probs = this.softmax(logits, -1);           // GPU softmax
-      const logProbs = this.gpuUnaryOp(probs, "log");   // GPU log
-      releaseGpuBufferFor(probs);                        // free softmax intermediate
+      // GPU path: softmax → clamp → log → pick targets → sum → /N
+      // clamp_min prevents log(0) = -Inf when softmax underflows to exactly 0.0 in f32
+      const probs = this.softmax(logits, -1);                        // GPU softmax (numerically stable)
+      const clampedProbs = this.gpuUnaryOp(probs, "clamp_min", 1e-30); // floor at 1e-30
+      releaseGpuBufferFor(probs);                                     // free softmax intermediate
+      const logProbs = this.gpuUnaryOp(clampedProbs, "log");          // GPU log (now safe)
+      releaseGpuBufferFor(clampedProbs);                              // free clamped intermediate
 
       // Pick kernel: perRowLoss[i] = -logProbs[i * C + targets[i]]
       const bufLP = ensureGpu(vk, logProbs);
@@ -1486,7 +1525,7 @@ export class HeliosBackend implements Backend {
       return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / N]));
     }
 
-    // CPU fallback
+    // CPU fallback — numerically stable log-softmax
     const logProbs = this.cpuLogSoftmax(logits, 1);
     let loss = 0;
     for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]];
