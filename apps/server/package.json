@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "build": "node -e \"const{execSync:e}=require('child_process');const s=e('git rev-parse --short HEAD',{encoding:'utf8'}).trim();const m=e('git log -1 --format=%s',{encoding:'utf8'}).trim();require('fs').writeFileSync('build-info.json',JSON.stringify({sha:s,message:m,builtAt:new Date().toISOString()}))\" && tsc -b",
+    "build": "tsc -b",
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "clean": "rm -rf dist"
