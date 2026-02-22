@@ -239,26 +239,26 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const paramDataMap = new Map<string, TensorData>();
     const gradMap = new Map<string, TensorData>();
 
-    // Compute gradient norm using backend ops (avoids CPU readback of all grads)
+    // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
+    // Phase 1: record mul+sum on GPU graph (no flush — all ops batch together)
     const sqNormParts: TensorData[] = [];
     const g2Intermediates: TensorData[] = [];
     for (const [name, variable] of paramMap) {
       paramDataMap.set(name, variable.data);
       if (variable.grad) {
         const g = variable.grad;
-        // backend.sum(backend.mul(g, g)) computes sum of squares on GPU
         const g2 = backend.mul(g, g);
         g2Intermediates.push(g2);
         sqNormParts.push(backend.sum(g2));
       }
     }
-    // Sum all scalar parts (these are tiny — just read back the scalars)
+    // Phase 2: first .data access triggers single flush of ALL pending GPU work
     let gradNormSq = 0;
     for (const part of sqNormParts) {
       gradNormSq += (part.data as Float32Array)[0];
     }
     const gradNorm = Math.sqrt(gradNormSq);
-    // Release grad norm intermediates (g² tensors and scalar parts)
+    // Release grad norm intermediates (g² tensors and scalar sums)
     if (releaseFn) {
       for (const g2 of g2Intermediates) releaseFn(g2);
       for (const part of sqNormParts) releaseFn(part);

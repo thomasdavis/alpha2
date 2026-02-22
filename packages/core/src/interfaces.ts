@@ -95,6 +95,8 @@ export interface Backend {
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   reluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
+  crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;
+  embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
 
   // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
   broadcast?(a: TensorData, targetShape: Shape): TensorData;

@@ -50,6 +50,29 @@ function toF32(td: TensorData): Float32Array {
   return Float32Array.from(td.data);
 }
 
+/** Reinterpret Int32Array as Float32Array (preserving raw bits, no value conversion). */
+function i32AsF32(data: Int32Array): Float32Array {
+  return new Float32Array(data.buffer, data.byteOffset, data.length);
+}
+
+/** Upload integer tensor to GPU preserving raw bits (for use as u32 in shaders). */
+function ensureGpuRawBits(vk: NativeAddon, td: TensorData): number {
+  const existing = gpuResidence.get(td);
+  if (existing) return existing.handle;
+  const byteSize = td.data.length * 4;
+  const handle = acquireBuffer(vk, byteSize);
+  // Upload raw bytes — don't convert int to float values
+  if (td.data instanceof Int32Array) {
+    vk.uploadBuffer(handle, i32AsF32(td.data));
+  } else {
+    vk.uploadBuffer(handle, toF32(td));
+  }
+  const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
+  gpuResidence.set(td, info);
+  gpuCleanup.register(td, info);
+  return handle;
+}
+
 function flatToMulti(flat: number, shape: Shape): number[] {
   const ndim = shape.length;
   const coords = new Array(ndim);
@@ -1055,6 +1078,122 @@ export class HeliosBackend implements Backend {
     return makeTensor(input.shape, input.dtype, out);
   }
 
+  crossEntropyBackward(logits: TensorData, targets: TensorData, _gradOutput: TensorData): TensorData {
+    const vk = this.init();
+    const [N, C] = logits.shape;
+    const totalElements = N * C;
+
+    // Flush pending ops to reclaim GPU memory from earlier backward operations
+    graph.flush();
+
+    // Compute softmax on GPU (stays lazy)
+    const probs = this.softmax(logits, -1);
+
+    if (totalElements >= this._minGpuSize) {
+      const bufProbs = ensureGpu(vk, probs);
+      // Upload targets as raw i32 bytes (bitcast in shader to u32)
+      const bufTargets = ensureGpuRawBits(vk, targets);
+
+      const pipeline = getPipeline(vk, "cross_entropy_backward", 3, 3 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(3);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;  // float value for bounds check (loadPushLen reads as f32)
+      pushU[1] = C;             // u32 bits — kernel bitcasts f32→u32
+      push[2] = 1.0 / N;        // invN as actual f32
+
+      graph.record({
+        kind: "backward",
+        kernel: "cross_entropy_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufProbs, bufTargets, region.handle],
+      });
+
+      // Release probs GPU buffer after dispatch completes (deferred through graph)
+      // Without this, the buffer stays alive until GC collects the local `probs` var
+      releaseGpuBufferFor(probs);
+
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
+    // CPU fallback
+    const probsArr = probs.data as Float32Array;
+    const out = new Float32Array(totalElements);
+    const invN = 1.0 / N;
+    for (let i = 0; i < N; i++) {
+      const off = i * C;
+      const target = targets.data[i];
+      for (let j = 0; j < C; j++) {
+        out[off + j] = (probsArr[off + j] - (j === target ? 1 : 0)) * invN;
+      }
+    }
+    return makeTensor(logits.shape, logits.dtype, out);
+  }
+
+  embeddingBackward(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData {
+    const vk = this.init();
+    const nIdx = shapeSize(indices.shape);
+    const dim = gradOutput.shape[gradOutput.shape.length - 1];
+    const totalElements = nIdx * dim;
+    const outputSize = vocabSize * dim;
+
+    if (totalElements >= this._minGpuSize) {
+      const bufIndices = ensureGpuRawBits(vk, indices);
+      const bufGradOut = ensureGpu(vk, gradOutput);
+
+      // Allocate output via output pool and zero it (avoids double-tracking
+      // that would happen with zeros() + ensureGpu())
+      const outByteSize = outputSize * 4;
+      const region = acquireOutputRegion(vk, outByteSize);
+      vk.uploadBuffer(region.handle, new Float32Array(outputSize));
+
+      // Dispatch the scatter-add kernel
+      const pipeline = getPipeline(vk, "embedding_backward", 3, 2 * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(2);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;  // float value for bounds check
+      pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+
+      graph.record({
+        kind: "backward",
+        kernel: "embedding_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 2 * 4,
+        shape: [vocabSize, dim],
+        allBufs: [bufIndices, bufGradOut, region.handle],
+      });
+
+      return graphLazyTensor(vk, [vocabSize, dim], region);
+    }
+
+    // CPU fallback
+    const out = new Float32Array(outputSize);
+    const gradArr = gradOutput.data as Float32Array;
+    for (let i = 0; i < nIdx; i++) {
+      const idx = indices.data[i] as number;
+      const srcOff = i * dim;
+      const dstOff = idx * dim;
+      for (let d = 0; d < dim; d++) {
+        out[dstOff + d] += gradArr[srcOff + d];
+      }
+    }
+    return makeTensor([vocabSize, dim], gradOutput.dtype, out);
+  }
+
   layerNormBackward(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData } {
     const vk = this.init();
     const dim = x.shape[x.shape.length - 1];
@@ -1235,10 +1374,45 @@ export class HeliosBackend implements Backend {
 
   embedding(weight: TensorData, indices: TensorData): TensorData {
     const dim = weight.shape[1];
+    const nIdx = shapeSize(indices.shape);
+    const totalElements = nIdx * dim;
     const outShape = [...indices.shape, dim];
+
+    // GPU path: gather rows from weight matrix on GPU
+    if (totalElements >= this._minGpuSize) {
+      const vk = this.init();
+      const bufWeight = ensureGpu(vk, weight);
+      const bufIndices = ensureGpuRawBits(vk, indices);
+
+      const pipeline = getPipeline(vk, "embedding_forward", 3, 2 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(2);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;  // float value for bounds check
+      pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+
+      graph.record({
+        kind: "unary",
+        kernel: "embedding_forward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 2 * 4,
+        shape: outShape,
+        allBufs: [bufWeight, bufIndices, region.handle],
+      });
+
+      return graphLazyTensor(vk, outShape, region);
+    }
+
+    // CPU fallback
     const Ctor = dtypeArray(weight.dtype);
-    const out = new Ctor(shapeSize(outShape));
-    for (let i = 0; i < indices.data.length; i++) {
+    const out = new Ctor(totalElements);
+    for (let i = 0; i < nIdx; i++) {
       const idx = indices.data[i];
       for (let d = 0; d < dim; d++) out[i * dim + d] = weight.data[idx * dim + d];
     }
@@ -1269,7 +1443,51 @@ export class HeliosBackend implements Backend {
   crossEntropy(logits: TensorData, targets: TensorData): TensorData {
     const N = logits.shape[0];
     const C = logits.shape[1];
-    const logProbs = this.logSoftmax(logits, 1);
+
+    if (N * C >= this._minGpuSize) {
+      const vk = this.init();
+      // GPU path: softmax → log → pick targets → sum → /N
+      // All stays on GPU until the final scalar read
+      const probs = this.softmax(logits, -1);           // GPU softmax
+      const logProbs = this.gpuUnaryOp(probs, "log");   // GPU log
+      releaseGpuBufferFor(probs);                        // free softmax intermediate
+
+      // Pick kernel: perRowLoss[i] = -logProbs[i * C + targets[i]]
+      const bufLP = ensureGpu(vk, logProbs);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const pipeline = getPipeline(vk, "ce_fwd_pick", 3, 2 * 4);
+      const region = acquireOutputRegion(vk, N * 4);
+      const groups = Math.ceil(N / WG_SIZE);
+
+      const push = new Float32Array(2);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = N;
+      pushU[1] = C;
+
+      graph.record({
+        kind: "unary",
+        kernel: "ce_fwd_pick",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 2 * 4,
+        shape: [N],
+        allBufs: [bufLP, bufTargets, region.handle],
+      });
+
+      releaseGpuBufferFor(logProbs);  // free log intermediate
+
+      // Sum per-row losses on GPU, then read single scalar
+      const perRowLosses = graphLazyTensor(vk, [N], region);
+      const totalLoss = this.gpuReduceSum(perRowLosses, false);
+      const total = (totalLoss.data as Float32Array)[0];
+      return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / N]));
+    }
+
+    // CPU fallback
+    const logProbs = this.cpuLogSoftmax(logits, 1);
     let loss = 0;
     for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]];
     loss /= N;
@@ -1524,6 +1742,12 @@ export class HeliosBackend implements Backend {
   }
 
   clone(a: TensorData): TensorData {
+    // GPU clone: copy buffer on GPU without reading back to CPU.
+    // This is critical for backward pass performance — clone() is called for
+    // every gradient, and GPU→CPU→GPU ping-pong was causing 30s backward times.
+    if (gpuResidence.has(a) && shapeSize(a.shape) >= this._minGpuSize) {
+      return this.gpuUnaryOp(a, "scale", 1.0);
+    }
     return makeTensor(a.shape, a.dtype, dtypeArray(a.dtype).from(a.data));
   }
 
@@ -1551,9 +1775,42 @@ export class HeliosBackend implements Backend {
   }
 
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData {
+    const totalElements = shapeSize(a.shape);
+    const maskSize = shapeSize(mask.shape);
+
+    if (totalElements >= this._minGpuSize) {
+      const vk = this.init();
+      const bufA = ensureGpu(vk, a);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "masked_fill", 3, 3 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(3);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = totalElements;
+      pushU[1] = maskSize;
+      push[2] = value;
+
+      graph.record({
+        kind: "unary",
+        kernel: "masked_fill",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: a.shape,
+        allBufs: [bufA, bufMask, region.handle],
+      });
+
+      return graphLazyTensor(vk, a.shape, region);
+    }
+
+    // CPU fallback
     const Ctor = dtypeArray(a.dtype);
     const out = Ctor.from(a.data);
-    const maskSize = mask.data.length;
     for (let i = 0; i < out.length; i++) if (mask.data[i % maskSize] !== 0) out[i] = value;
     return makeTensor(a.shape, a.dtype, out);
   }

@@ -161,7 +161,8 @@ export function gelu(ctx: Ctx, a: Variable): Variable {
 export function embedding(ctx: Ctx, weight: Variable, indices: TensorData): Variable {
   const wData = weight.data;
   return record(ctx, ctx.backend.embedding(wData, indices), [weight], (g, B) => {
-    // Scatter gradients back to weight rows
+    if (B.embeddingBackward) return [B.embeddingBackward(indices, g, wData.shape[0])];
+    // CPU fallback: scatter gradients back to weight rows
     const [vocabSize, dim] = wData.shape;
     const grad = B.zeros([vocabSize, dim], wData.dtype);
     const nIdx = shapeSize(indices.shape);
@@ -253,15 +254,14 @@ export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
 export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
   const logitsData = logits.data;
   return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B) => {
-    // Gradient: (softmax(logits) - one_hot(targets)) * gScalar / N
-    const probs = B.softmax(logitsData, -1); // stays on GPU
+    if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, targets, g)];
+    // CPU fallback: (softmax(logits) - one_hot(targets)) * gScalar / N
+    const probs = B.softmax(logitsData, -1);
     const [N, C] = logitsData.shape;
-    const gScalar = (g.data as Float32Array)[0]; // scalar, 1 element
-    // Build one_hot on CPU (small: just N index lookups)
+    const gScalar = (g.data as Float32Array)[0];
     const oneHotArr = new Float32Array(N * C);
     for (let i = 0; i < N; i++) oneHotArr[targets.data[i] + i * C] = 1.0;
     const oneHot: TensorData = { shape: [N, C], dtype: logitsData.dtype, data: oneHotArr };
-    // Compute gradient on GPU: (probs - oneHot) * (gScalar / N)
     return [B.scale(B.sub(probs, oneHot), gScalar / N)];
   });
 }
