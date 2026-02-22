@@ -620,6 +620,118 @@ async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse)
   res.end(JSON.stringify({ ok: true, name, step }));
 }
 
+async function handleEngineReset(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  resetEngine();
+  await initEngine(OUTPUTS_DIR);
+  invalidateModelsCache();
+
+  const runCount = getRuns().length;
+  console.log(`Engine reset: rescanned ${runCount} run(s)`);
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true, runs: runCount }));
+}
+
+// ── Chunked upload — bypass Railway CDN body size limit ──────────────────────
+
+/** Temporary storage for in-progress chunked uploads: uploadId → chunk buffers */
+const pendingChunks = new Map<string, { chunks: Map<number, Buffer>; total: number; receivedAt: number }>();
+
+// Clean up stale pending uploads every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of pendingChunks) {
+    if (now - entry.receivedAt > 10 * 60 * 1000) pendingChunks.delete(id);
+  }
+}, 5 * 60 * 1000);
+
+async function handleUploadChunk(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  const uploadId = req.headers["x-upload-id"] as string;
+  const chunkIndex = parseInt(req.headers["x-chunk-index"] as string, 10);
+  const totalChunks = parseInt(req.headers["x-total-chunks"] as string, 10);
+
+  if (!uploadId || isNaN(chunkIndex) || isNaN(totalChunks)) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing X-Upload-Id, X-Chunk-Index, or X-Total-Chunks" }));
+    return;
+  }
+
+  const body = await readBodyRaw(req, 2 * 1024 * 1024); // 2MB max per chunk
+
+  if (!pendingChunks.has(uploadId)) {
+    pendingChunks.set(uploadId, { chunks: new Map(), total: totalChunks, receivedAt: Date.now() });
+  }
+  const entry = pendingChunks.get(uploadId)!;
+  entry.chunks.set(chunkIndex, body);
+  entry.receivedAt = Date.now();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true, chunk: chunkIndex, received: entry.chunks.size, total: totalChunks }));
+}
+
+async function handleUploadAssemble(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!checkIngestAuth(req, res)) return;
+
+  const body = JSON.parse(await readBody(req));
+  const { uploadId, name, step, totalChunks, config, metrics, trainingData } = body;
+
+  if (!uploadId || !name || !step || !totalChunks) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing required fields" }));
+    return;
+  }
+
+  const entry = pendingChunks.get(uploadId);
+  if (!entry || entry.chunks.size < totalChunks) {
+    const received = entry?.chunks.size ?? 0;
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: `Incomplete upload: ${received}/${totalChunks} chunks received` }));
+    return;
+  }
+
+  // Reassemble chunks in order
+  const ordered: Buffer[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const chunk = entry.chunks.get(i);
+    if (!chunk) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Missing chunk ${i}` }));
+      return;
+    }
+    ordered.push(chunk);
+  }
+  pendingChunks.delete(uploadId);
+
+  // Decompress the reassembled gzipped checkpoint
+  const compressed = Buffer.concat(ordered);
+  const checkpointBuf = zlib.gunzipSync(compressed);
+
+  // Write to outputs directory on Railway volume
+  const runDir = path.join(OUTPUTS_DIR, name);
+  fs.mkdirSync(runDir, { recursive: true });
+
+  fs.writeFileSync(path.join(runDir, "config.json"), JSON.stringify(config, null, 2));
+  fs.writeFileSync(path.join(runDir, `checkpoint-${step}.json`), checkpointBuf);
+  if (metrics) {
+    fs.writeFileSync(path.join(runDir, "metrics.jsonl"), metrics);
+  }
+  if (trainingData) {
+    fs.writeFileSync(path.join(runDir, "training-data.txt"), trainingData);
+  }
+
+  // Rescan engine to pick up new model
+  resetEngine();
+  await initEngine(OUTPUTS_DIR);
+  invalidateModelsCache();
+
+  console.log(`Uploaded model (chunked): ${name} (step ${step}, ${totalChunks} chunks, ${compressed.length} bytes compressed)`);
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true, name, step }));
+}
+
 async function handleDeleteModel(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!checkIngestAuth(req, res)) return;
 
@@ -750,6 +862,9 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
   if (p === "/v1/models") { handleOpenAIModels(req, res); return; }
   if (p === "/v1/chat/completions" || p === "/chat/completions") { await handleChatCompletions(req, res); return; }
   if (p === "/api/upload" && req.method === "POST") { await handleUpload(req, res); return; }
+  if (p === "/api/upload/chunk" && req.method === "POST") { await handleUploadChunk(req, res); return; }
+  if (p === "/api/upload/assemble" && req.method === "POST") { await handleUploadAssemble(req, res); return; }
+  if (p === "/api/engine/reset" && req.method === "POST") { await handleEngineReset(req, res); return; }
   if (p === "/api/ingest" && req.method === "POST") { await handleIngest(req, res); return; }
   if (p === "/api/ingest/complete" && req.method === "POST") { await handleIngestComplete(req, res); return; }
   if (p === "/api/training/live") { await handleTrainingLive(req, res); return; }

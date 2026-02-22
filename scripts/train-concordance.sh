@@ -5,7 +5,7 @@
 # Requires GPU backend (helios) — runs on L4/A100/H100.
 # Estimated ~33 minutes for 2000 steps on L4 GPU.
 #
-# For remote dashboard reporting, set:
+# For remote dashboard reporting + checkpoint upload, set:
 #   ALPHA_REMOTE_URL=ALPHA_REMOTE_URL
 #   ALPHA_REMOTE_SECRET=<your-secret>
 

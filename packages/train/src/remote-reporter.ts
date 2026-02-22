@@ -7,7 +7,7 @@ import type { StepMetrics } from "./trainer.js";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 
 export interface RemoteReporterConfig {
-  /** Base URL of the remote server (e.g. https://alpha.omegaai.dev) */
+  /** Base URL of the remote server (e.g. ALPHA_REMOTE_URL) */
   url: string;
   /** Bearer token for authentication */
   secret: string;
@@ -44,6 +44,9 @@ export interface RemoteReporter {
   sendSamples(samples: SampleGeneration[]): Promise<void>;
 }
 
+/** Max chunk size for chunked uploads (512KB — well under Railway CDN limit) */
+const CHUNK_SIZE = 512 * 1024;
+
 export function createRemoteReporter(config: RemoteReporterConfig): RemoteReporter {
   const { url, secret } = config;
   const batchSize = config.batchSize ?? 1;
@@ -57,6 +60,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
   let trainingDataSent = false;
   let buffer: StepMetrics[] = [];
   let timer: ReturnType<typeof setInterval> | null = null;
+  const pendingUploads: Promise<void>[] = [];
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -96,6 +100,67 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     }
   }
 
+  /**
+   * Upload a buffer to the server via chunked upload.
+   * Splits data into CHUNK_SIZE pieces, sends each sequentially,
+   * then calls assemble to combine them on the server volume.
+   */
+  async function chunkedUpload(
+    data: Buffer,
+    meta: {
+      name: string;
+      step: number;
+      config: Record<string, unknown>;
+      metrics?: string | null;
+      trainingData?: string;
+    },
+  ): Promise<void> {
+    const { gzipSync } = await import("node:zlib");
+    const compressed = gzipSync(data);
+    const totalChunks = Math.ceil(compressed.length / CHUNK_SIZE);
+    const uploadId = `${meta.name}_${meta.step}_${Date.now()}`;
+
+    // Send each chunk
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, compressed.length);
+      const chunk = compressed.subarray(start, end);
+
+      const res = await fetch(`${url}/api/upload/chunk`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/octet-stream",
+          "X-Upload-Id": uploadId,
+          "X-Chunk-Index": String(i),
+          "X-Total-Chunks": String(totalChunks),
+        },
+        body: chunk,
+      });
+      if (!res.ok) {
+        throw new Error(`Chunk ${i}/${totalChunks} failed: ${res.status}`);
+      }
+    }
+
+    // Assemble chunks on the server
+    const res = await fetch(`${url}/api/upload/assemble`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        uploadId,
+        name: meta.name,
+        step: meta.step,
+        totalChunks,
+        config: meta.config,
+        metrics: meta.metrics || undefined,
+        trainingData: meta.trainingData,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Assemble failed: ${res.status}`);
+    }
+  }
+
   return {
     async registerRun(info) {
       runId = info.runId;
@@ -124,6 +189,11 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     async complete(finalStep: number) {
       stopTimer();
       await flushBuffer();
+      // Wait for any in-flight checkpoint uploads before marking complete
+      if (pendingUploads.length > 0) {
+        console.log(`  waiting for ${pendingUploads.length} checkpoint upload(s)...`);
+        await Promise.allSettled(pendingUploads);
+      }
       await post("/api/ingest/complete", { runId, finalStep });
     },
 
@@ -136,12 +206,11 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     },
 
     uploadCheckpoint(info: { step: number; path: string; runId: string }) {
-      // Fire-and-forget — never block training
-      (async () => {
+      // Async but tracked — complete() waits for all pending uploads
+      const p = (async () => {
         try {
           const fs = await import("node:fs/promises");
           const nodePath = await import("node:path");
-          const { gzipSync } = await import("node:zlib");
 
           const runDir = nodePath.dirname(info.path);
 
@@ -171,57 +240,21 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
             }
           }
 
-          // Detect binary checkpoint (starts with "ALPH" magic)
-          const isBinary = checkpointBuf.length >= 4 &&
-            checkpointBuf[0] === 0x41 && checkpointBuf[1] === 0x4c &&
-            checkpointBuf[2] === 0x50 && checkpointBuf[3] === 0x48;
-
-          if (isBinary) {
-            // Binary format: send checkpoint as gzipped binary, metadata in headers
-            const compressed = gzipSync(checkpointBuf);
-
-            await fetch(`${url}/api/upload`, {
-              method: "POST",
-              headers: {
-                ...headers,
-                "Content-Type": "application/octet-stream",
-                "Content-Encoding": "gzip",
-                "X-Checkpoint-Name": info.runId,
-                "X-Checkpoint-Step": String(info.step),
-                "X-Checkpoint-Config": Buffer.from(JSON.stringify(config)).toString("base64"),
-                "X-Checkpoint-Metrics": metricsRaw ? Buffer.from(metricsRaw).toString("base64") : "",
-                "X-Checkpoint-TrainingData": trainingData ? Buffer.from(trainingData).toString("base64") : "",
-              },
-              body: compressed,
-            });
-          } else {
-            // Legacy JSON format: send as JSON body
-            const body = JSON.stringify({
-              name: info.runId,
-              config,
-              checkpoint: JSON.parse(checkpointBuf.toString("utf-8")),
-              step: info.step,
-              metrics: metricsRaw || undefined,
-              trainingData,
-            });
-
-            const compressed = gzipSync(body);
-
-            await fetch(`${url}/api/upload`, {
-              method: "POST",
-              headers: {
-                ...headers,
-                "Content-Encoding": "gzip",
-              },
-              body: compressed,
-            });
-          }
+          // Use chunked upload to bypass Railway CDN body size limit
+          await chunkedUpload(checkpointBuf, {
+            name: info.runId,
+            step: info.step,
+            config,
+            metrics: metricsRaw,
+            trainingData,
+          });
 
           console.log(`  checkpoint uploaded to ${url} (step ${info.step})`);
-        } catch {
-          // Fire-and-forget — never block training
+        } catch (e) {
+          console.error(`  checkpoint upload failed: ${e}`);
         }
       })();
+      pendingUploads.push(p);
     },
   };
 }
