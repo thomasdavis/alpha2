@@ -118,7 +118,7 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 | `TURSO_DATABASE_URL` | .env.local, Railway | Turso libsql connection URL |
 | `TURSO_AUTH_TOKEN` | .env.local, Railway | Turso auth token (rw) |
 | `UPLOAD_SECRET` | Railway | Auth token for ingest/upload endpoints |
-| `ALPHA_REMOTE_URL` | .env.local, training pod | Remote server URL for live metrics streaming |
+| `ALPHA_REMOTE_URL` | .env.local, training pod | API server URL for metrics streaming (use `ALPHA_REMOTE_URL`, NOT the web dashboard URL) |
 | `ALPHA_REMOTE_SECRET` | .env.local, training pod | Same as UPLOAD_SECRET on server |
 | `RUNPOD_API_KEY` | .env.local | RunPod API key for GPU pod provisioning |
 | `RUNPOD_VOLUME_ID` | .env.local | (optional) RunPod network volume for persistent storage |

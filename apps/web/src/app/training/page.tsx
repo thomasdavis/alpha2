@@ -877,7 +877,7 @@ export default function TrainingPage() {
             Set these environment variables on the training machine to stream metrics here:
           </div>
           <pre className="mx-auto inline-block rounded-lg border border-border bg-[#0d0d0d] px-5 py-3 text-left font-mono text-xs leading-relaxed text-text-primary">
-            <span className="text-text-muted">export </span><span className="text-green">ALPHA_REMOTE_URL</span>=https://alpha.omegaai.dev{"\n"}
+            <span className="text-text-muted">export </span><span className="text-green">ALPHA_REMOTE_URL</span>=ALPHA_REMOTE_URL{"\n"}
             <span className="text-text-muted">export </span><span className="text-green">ALPHA_REMOTE_SECRET</span>=&lt;your-secret&gt;
           </pre>
           <div className="mt-4 text-xs text-text-muted">
