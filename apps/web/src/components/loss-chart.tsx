@@ -112,7 +112,7 @@ function draw(canvas: HTMLCanvasElement, metrics: Metric[]) {
     ctx.fillStyle = "#888";
     ctx.font = "11px monospace";
     ctx.textAlign = "center";
-    ctx.fillText(`loss: ${metrics[0].loss.toFixed(4)}`, pad.left + cw / 2, pad.top + ch / 2 + 16);
+    ctx.fillText(`loss: ${metrics[0].loss != null ? metrics[0].loss.toFixed(4) : "-"}`, pad.left + cw / 2, pad.top + ch / 2 + 16);
   } else {
     ctx.beginPath();
     ctx.strokeStyle = "#f59e0b";

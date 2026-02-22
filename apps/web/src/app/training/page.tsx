@@ -390,13 +390,13 @@ function LiveRunCard({ run }: { run: LiveRun }) {
 
         {/* Primary metrics - two rows */}
         <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-          <Stat label="Loss" value={last ? last.loss.toFixed(4) : "-"} color="text-yellow" tip={tips.loss} />
-          <Stat label="Best Loss" value={stats ? stats.minLoss.toFixed(4) : "-"} sub={stats ? `${stats.lossDropPct > 0 ? "-" : ""}${Math.abs(stats.lossDropPct).toFixed(1)}% from start` : undefined} tip={tips.lastLoss} />
+          <Stat label="Loss" value={last?.loss != null ? last.loss.toFixed(4) : "-"} color="text-yellow" tip={tips.loss} />
+          <Stat label="Best Loss" value={stats && isFinite(stats.minLoss) ? stats.minLoss.toFixed(4) : "-"} sub={stats && isFinite(stats.lossDropPct) ? `${stats.lossDropPct > 0 ? "-" : ""}${Math.abs(stats.lossDropPct).toFixed(1)}% from start` : undefined} tip={tips.lastLoss} />
           <Stat label="Val Loss" value={stats?.lastVal != null ? stats.lastVal.toFixed(4) : "-"} sub={stats?.bestVal != null ? `best: ${stats.bestVal.toFixed(4)}` : undefined} color={stats?.lastVal != null ? "text-blue" : undefined} tip={tips.valLoss} />
-          <Stat label="Learning Rate" value={last ? last.lr.toExponential(2) : "-"} tip={tips.lr} />
+          <Stat label="Learning Rate" value={last?.lr != null ? last.lr.toExponential(2) : "-"} tip={tips.lr} />
           <Stat label="Throughput" value={stats ? `${formatNumber(stats.avgTps, 0)}` : "-"} sub="tok/s (avg)" color="text-green" tip={tips.throughput} />
           <Stat label="Speed" value={stats ? `${formatNumber(stats.avgMs, 0)}` : "-"} sub="ms/iter (avg)" tip={tips.msPerIter} />
-          <Stat label="Grad Norm" value={last ? last.gradNorm.toFixed(3) : "-"} sub={stats ? `avg: ${stats.avgGradNorm.toFixed(3)}` : undefined} tip={tips.gradNorm} />
+          <Stat label="Grad Norm" value={last?.gradNorm != null ? last.gradNorm.toFixed(3) : "-"} sub={stats && isFinite(stats.avgGradNorm) ? `avg: ${stats.avgGradNorm.toFixed(3)}` : undefined} tip={tips.gradNorm} />
           <Stat label="Tokens" value={stats ? formatParams(Math.round(stats.totalTokens)) : "-"} sub="processed" />
         </div>
 
@@ -469,10 +469,10 @@ export default function TrainingPage() {
         const parsedModel = r.model_config ? JSON.parse(r.model_config) : null;
         const parsedTrain = r.train_config ? JSON.parse(r.train_config) : null;
         const metrics: StepMetric[] = (r.metrics ?? []).map((m: any) => ({
-          step: m.step,
-          loss: m.loss,
+          step: m.step ?? 0,
+          loss: m.loss ?? 0,
           valLoss: m.val_loss ?? m.valLoss ?? null,
-          lr: m.lr,
+          lr: m.lr ?? 0,
           gradNorm: m.grad_norm ?? m.gradNorm ?? 0,
           elapsed_ms: m.elapsed_ms ?? 0,
           tokens_per_sec: m.tokens_per_sec ?? 0,
@@ -521,14 +521,24 @@ export default function TrainingPage() {
 
     es.addEventListener("metrics", (e) => {
       const data = JSON.parse(e.data);
-      const { runId, metrics } = data as { runId: string; metrics: StepMetric[] };
+      const { runId, metrics: rawMetrics } = data as { runId: string; metrics: any[] };
+      const normalized: StepMetric[] = (rawMetrics ?? []).map((m: any) => ({
+        step: m.step ?? 0,
+        loss: m.loss ?? 0,
+        valLoss: m.val_loss ?? m.valLoss ?? null,
+        lr: m.lr ?? 0,
+        gradNorm: m.grad_norm ?? m.gradNorm ?? 0,
+        elapsed_ms: m.elapsed_ms ?? 0,
+        tokens_per_sec: m.tokens_per_sec ?? 0,
+        ms_per_iter: m.ms_per_iter ?? 0,
+      }));
       setRuns((prev) => {
         const next = new Map(prev);
         const existing = next.get(runId);
         if (existing) {
           next.set(runId, {
             ...existing,
-            metrics: [...existing.metrics, ...metrics],
+            metrics: [...existing.metrics, ...normalized],
           });
         }
         return next;
