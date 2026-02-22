@@ -17,6 +17,10 @@ interface StepMetric {
   elapsed_ms: number;
   tokens_per_sec: number;
   ms_per_iter: number;
+  gpu_util_pct?: number | null;
+  gpu_vram_used_mb?: number | null;
+  gpu_vram_total_mb?: number | null;
+  gpu_mem_pool_mb?: number | null;
 }
 
 interface TrainConfig {
@@ -264,6 +268,224 @@ function LiveLossChart({ metrics, totalIters }: { metrics: StepMetric[]; totalIt
   return <canvas ref={canvasRef} className="h-56 w-full rounded-lg" />;
 }
 
+// ── Mini chart helper ──────────────────────────────────────────
+
+interface MiniChartSeries {
+  data: { step: number; value: number }[];
+  color: string;
+  label: string;
+  axis?: "left" | "right";
+}
+
+function drawMiniChart(
+  canvas: HTMLCanvasElement,
+  series: MiniChartSeries[],
+  opts: {
+    totalSteps: number;
+    leftLabel?: string;
+    rightLabel?: string;
+    logScale?: boolean;
+    formatLeft?: (v: number) => string;
+    formatRight?: (v: number) => string;
+  }
+): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+
+  const hasRight = series.some((s) => s.axis === "right");
+  const pad = { top: 8, right: hasRight ? 42 : 12, bottom: 22, left: 42 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  // X axis range
+  const allSteps = series.flatMap((s) => s.data.map((d) => d.step));
+  const minStep = allSteps.length > 0 ? Math.min(...allSteps) : 0;
+  const maxStep = Math.max(allSteps.length > 0 ? Math.max(...allSteps) : 0, opts.totalSteps);
+  const rangeS = maxStep - minStep || 1;
+  const sx = (step: number) => pad.left + ((step - minStep) / rangeS) * cw;
+
+  // Compute Y ranges per axis
+  const leftSeries = series.filter((s) => s.axis !== "right");
+  const rightSeries = series.filter((s) => s.axis === "right");
+
+  function computeRange(items: MiniChartSeries[], log: boolean) {
+    const vals = items.flatMap((s) => s.data.map((d) => d.value));
+    if (vals.length === 0) return { min: 0, max: 1 };
+    if (log) {
+      const pos = vals.filter((v) => v > 0);
+      if (pos.length === 0) return { min: -2, max: 2 };
+      const logVals = pos.map((v) => Math.log10(v));
+      const lo = Math.floor(Math.min(...logVals));
+      const hi = Math.ceil(Math.max(...logVals));
+      return { min: lo, max: hi === lo ? lo + 1 : hi };
+    }
+    let lo = Math.min(...vals);
+    let hi = Math.max(...vals);
+    const r = hi - lo || 1;
+    lo -= r * 0.05;
+    hi += r * 0.05;
+    return { min: lo, max: hi };
+  }
+
+  const leftRange = computeRange(leftSeries, !!opts.logScale);
+  const rightRange = computeRange(rightSeries, false);
+
+  const syLeft = (v: number) => {
+    const nv = opts.logScale ? Math.log10(Math.max(v, 1e-10)) : v;
+    return pad.top + (1 - (nv - leftRange.min) / (leftRange.max - leftRange.min || 1)) * ch;
+  };
+  const syRight = (v: number) =>
+    pad.top + (1 - (v - rightRange.min) / (rightRange.max - rightRange.min || 1)) * ch;
+
+  // Background
+  ctx.fillStyle = "#0d0d0d";
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid lines
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.lineWidth = 0.5;
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + (i / gridLines) * ch;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(w - pad.right, y);
+    ctx.stroke();
+
+    // Left axis ticks
+    if (leftSeries.length > 0) {
+      const frac = 1 - i / gridLines;
+      let val: number;
+      if (opts.logScale) {
+        val = Math.pow(10, leftRange.min + frac * (leftRange.max - leftRange.min));
+      } else {
+        val = leftRange.min + frac * (leftRange.max - leftRange.min);
+      }
+      ctx.fillStyle = "#555";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "right";
+      const label = opts.formatLeft ? opts.formatLeft(val) : (opts.logScale ? val.toExponential(0) : val.toPrecision(3));
+      ctx.fillText(label, pad.left - 4, y + 3);
+    }
+
+    // Right axis ticks
+    if (hasRight && rightSeries.length > 0) {
+      const frac = 1 - i / gridLines;
+      const val = rightRange.min + frac * (rightRange.max - rightRange.min);
+      ctx.fillStyle = "#555";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "left";
+      const label = opts.formatRight ? opts.formatRight(val) : val.toPrecision(3);
+      ctx.fillText(label, w - pad.right + 4, y + 3);
+    }
+  }
+
+  // Step labels
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#444";
+  ctx.font = "9px monospace";
+  const stepTicks = [minStep, Math.round(minStep + rangeS * 0.5), maxStep];
+  for (const s of stepTicks) {
+    ctx.fillText(String(s), sx(s), h - pad.bottom + 12);
+  }
+
+  // Draw each series
+  for (const s of series) {
+    if (s.data.length === 0) continue;
+    const isRight = s.axis === "right";
+    const toY = isRight ? syRight : syLeft;
+
+    ctx.shadowColor = s.color.replace(")", ", 0.3)").replace("rgb(", "rgba(");
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    for (let i = 0; i < s.data.length; i++) {
+      const x = sx(s.data[i].step);
+      const v = s.data[i].value;
+      const y = toY(opts.logScale && !isRight ? Math.max(v, 1e-10) : v);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // Legend
+  const ly = h - 4;
+  let lx = pad.left;
+  ctx.font = "9px sans-serif";
+  for (const s of series) {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, ly - 1, 10, 2);
+    ctx.fillStyle = "#666";
+    ctx.textAlign = "left";
+    ctx.fillText(s.label, lx + 13, ly + 2);
+    lx += ctx.measureText(s.label).width + 24;
+  }
+}
+
+function MiniChart({
+  metrics,
+  totalSteps,
+  title,
+  buildSeries,
+  logScale,
+  formatLeft,
+  formatRight,
+  noDataMsg,
+}: {
+  metrics: StepMetric[];
+  totalSteps: number;
+  title: string;
+  buildSeries: (metrics: StepMetric[]) => MiniChartSeries[];
+  logScale?: boolean;
+  formatLeft?: (v: number) => string;
+  formatRight?: (v: number) => string;
+  noDataMsg?: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const series = useMemo(() => buildSeries(metrics), [metrics, buildSeries]);
+  const hasData = series.some((s) => s.data.length >= 2);
+
+  useEffect(() => {
+    if (canvasRef.current && hasData) {
+      const hasRight = series.some((s) => s.axis === "right");
+      drawMiniChart(canvasRef.current, series, {
+        totalSteps,
+        leftLabel: undefined,
+        rightLabel: hasRight ? undefined : undefined,
+        logScale,
+        formatLeft,
+        formatRight,
+      });
+    }
+  }, [series, totalSteps, hasData, logScale, formatLeft, formatRight]);
+
+  return (
+    <div>
+      <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
+        {title}
+      </div>
+      {hasData ? (
+        <canvas ref={canvasRef} className="h-[140px] w-full rounded-lg" />
+      ) : (
+        <div className="flex h-[140px] items-center justify-center rounded-lg border border-border/50 bg-[#0d0d0d] text-[0.65rem] text-text-muted">
+          {noDataMsg ?? "Waiting for data..."}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Stat card ──────────────────────────────────────────────────
 
 function Stat({ label, value, sub, color, tip }: { label: string; value: string; sub?: string; color?: string; tip?: string }) {
@@ -444,6 +666,47 @@ function LiveRunCard({ run }: { run: LiveRun }) {
             )}
           </div>
         </div>
+
+        {/* Mini charts row */}
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <MiniChart
+            metrics={run.metrics}
+            totalSteps={run.totalIters}
+            title="GPU & VRAM"
+            noDataMsg="No GPU data"
+            formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
+            formatRight={(v) => v.toFixed(0) + "%"}
+            buildSeries={useCallback((m: StepMetric[]) => {
+              const vram = m.filter((x) => x.gpu_vram_used_mb != null).map((x) => ({ step: x.step, value: x.gpu_vram_used_mb! }));
+              const util = m.filter((x) => x.gpu_util_pct != null).map((x) => ({ step: x.step, value: x.gpu_util_pct! }));
+              return [
+                { data: vram, color: "#10b981", label: "VRAM", axis: "left" as const },
+                { data: util, color: "#f59e0b", label: "GPU%", axis: "right" as const },
+              ];
+            }, [])}
+          />
+          <MiniChart
+            metrics={run.metrics}
+            totalSteps={run.totalIters}
+            title="Learning Rate"
+            formatLeft={(v) => v.toExponential(1)}
+            buildSeries={useCallback((m: StepMetric[]) => {
+              const lr = m.filter((x) => x.lr > 0).map((x) => ({ step: x.step, value: x.lr }));
+              return [{ data: lr, color: "#22d3ee", label: "LR" }];
+            }, [])}
+          />
+          <MiniChart
+            metrics={run.metrics}
+            totalSteps={run.totalIters}
+            title="Grad Norm"
+            logScale
+            formatLeft={(v) => v.toExponential(0)}
+            buildSeries={useCallback((m: StepMetric[]) => {
+              const gn = m.filter((x) => x.gradNorm > 0 && isFinite(x.gradNorm)).map((x) => ({ step: x.step, value: x.gradNorm }));
+              return [{ data: gn, color: "#f97316", label: "norm" }];
+            }, [])}
+          />
+        </div>
       </div>
     </div>
   );
@@ -477,6 +740,10 @@ export default function TrainingPage() {
           elapsed_ms: m.elapsed_ms ?? 0,
           tokens_per_sec: m.tokens_per_sec ?? 0,
           ms_per_iter: m.ms_per_iter ?? 0,
+          gpu_util_pct: m.gpu_util_pct ?? null,
+          gpu_vram_used_mb: m.gpu_vram_used_mb ?? null,
+          gpu_vram_total_mb: m.gpu_vram_total_mb ?? null,
+          gpu_mem_pool_mb: m.gpu_mem_pool_mb ?? null,
         }));
         next.set(r.id, {
           id: r.id,
@@ -531,6 +798,10 @@ export default function TrainingPage() {
         elapsed_ms: m.elapsed_ms ?? 0,
         tokens_per_sec: m.tokens_per_sec ?? 0,
         ms_per_iter: m.ms_per_iter ?? 0,
+        gpu_util_pct: m.gpu_util_pct ?? null,
+        gpu_vram_used_mb: m.gpu_vram_used_mb ?? null,
+        gpu_vram_total_mb: m.gpu_vram_total_mb ?? null,
+        gpu_mem_pool_mb: m.gpu_mem_pool_mb ?? null,
       }));
       setRuns((prev) => {
         const next = new Map(prev);
