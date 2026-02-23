@@ -3,7 +3,7 @@ export {
   add, sub, mul, div, neg, scale,
   matmul,
   sum, mean,
-  exp, log, sqrt, relu, gelu,
+  exp, log, sqrt, relu, gelu, clamp,
   embedding, layerNorm, softmax, crossEntropy,
   reshape, transpose,
 } from "./ops.js";

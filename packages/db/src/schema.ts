@@ -106,4 +106,16 @@ export const migrations: string[][] = [
     `ALTER TABLE metrics ADD COLUMN gpu_vram_total_mb REAL`,
     `ALTER TABLE metrics ADD COLUMN gpu_mem_pool_mb REAL`,
   ],
+
+  // Version 4: Per-step timing breakdown (Phase 0 instrumentation)
+  [
+    `ALTER TABLE metrics ADD COLUMN timing_fwd_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_bwd_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_optim_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_data_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_flush_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_grad_norm_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN timing_grad_clip_ms REAL`,
+    `ALTER TABLE metrics ADD COLUMN gpu_ops_count INTEGER`,
+  ],
 ];

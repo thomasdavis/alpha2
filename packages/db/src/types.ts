@@ -51,6 +51,15 @@ export interface DbMetric {
   gpu_vram_used_mb: number | null;
   gpu_vram_total_mb: number | null;
   gpu_mem_pool_mb: number | null;
+  // Per-step timing breakdown (Phase 0 instrumentation)
+  timing_fwd_ms: number | null;
+  timing_bwd_ms: number | null;
+  timing_optim_ms: number | null;
+  timing_data_ms: number | null;
+  timing_flush_ms: number | null;
+  timing_grad_norm_ms: number | null;
+  timing_grad_clip_ms: number | null;
+  gpu_ops_count: number | null;
 }
 
 export interface DbCheckpoint {

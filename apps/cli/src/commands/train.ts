@@ -55,6 +55,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     optimizer: strArg(kv, "optim", tDefaults.optimizer ?? defaultTrainConfig.optimizer),
     logLevel: strArg(kv, "log", (tDefaults.logLevel ?? defaultTrainConfig.logLevel)) as any,
     trace: boolArg(kv, "trace", tDefaults.trace ?? defaultTrainConfig.trace),
+    gradAccumSteps: intArg(kv, "accumSteps", tDefaults.gradAccumSteps ?? defaultTrainConfig.gradAccumSteps),
   };
 
   console.log(`Implementations available:\n${listImplementations()}\n`);
@@ -62,7 +63,13 @@ export async function trainCmd(args: string[]): Promise<void> {
   // Resolve implementations
   const backend = resolveBackend(trainConfig.backend);
   let tokenizer = resolveTokenizer(trainConfig.tokenizer);
-  const optimizer = resolveOptimizer(trainConfig.optimizer, backend);
+  const optimizer = resolveOptimizer(trainConfig.optimizer, backend, {
+    lr: trainConfig.lr,
+    beta1: trainConfig.beta1,
+    beta2: trainConfig.beta2,
+    eps: trainConfig.eps,
+    weightDecay: trainConfig.weightDecay,
+  });
   const rng = resolveRng(trainConfig.seed);
 
   // Build tokenizer from training data (sample first 100MB for large files)
@@ -78,8 +85,9 @@ export async function trainCmd(args: string[]): Promise<void> {
   // Set up remote reporter if env vars are configured
   const remoteUrl = process.env.ALPHA_REMOTE_URL;
   const remoteSecret = process.env.ALPHA_REMOTE_SECRET;
+  const discordWebhook = process.env.DISCORD_WEBHOOK_URL;
   const reporter = remoteUrl && remoteSecret
-    ? createRemoteReporter({ url: remoteUrl, secret: remoteSecret })
+    ? createRemoteReporter({ url: remoteUrl, secret: remoteSecret, discordWebhook })
     : null;
 
   if (reporter) {
@@ -99,6 +107,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     runDir: kv["runDir"],
     resumePath: kv["resume"],
     domain: domainId,
+    samplePrompts: (domain?.samplePrompts ?? ["The ", "Once upon a time", "He walked into"]),
     onStart: reporter
       ? (info) => reporter.registerRun({
           ...info,
@@ -109,7 +118,11 @@ export async function trainCmd(args: string[]): Promise<void> {
         })
       : undefined,
     onStep: reporter ? (metrics) => reporter.onStep(metrics) : undefined,
-    onCheckpoint: reporter ? (info) => reporter.uploadCheckpoint(info) : undefined,
+    // Skip intermediate checkpoint uploads — only upload final checkpoint after training
+    onCheckpoint: undefined,
+    onSamples: reporter
+      ? (samples, step) => reporter.sendSamples(samples, step)
+      : undefined,
   });
 
   // Post-training sample generation
@@ -119,17 +132,20 @@ export async function trainCmd(args: string[]): Promise<void> {
   const releaseFn = "releaseGpuTensor" in backend
     ? (td: TensorData) => (backend as any).releaseGpuTensor(td)
     : undefined;
+  const flushFn = "flush" in backend ? () => (backend as any).flush() : undefined;
 
   console.log("\n── sample generations ──");
   const samples: SampleGeneration[] = [];
   for (const prompt of allPrompts) {
+    // Flush GPU between samples to reclaim buffers
+    if (flushFn) flushFn();
     const output = runSample(
       finalModelConfig, params, backend, rng,
       (t) => tokenizer.encode(t),
       (t) => tokenizer.decode(t),
       prompt,
-      { steps: 200, temperature: 0.8, topk: 40 },
-      releaseFn,
+      { steps: 100, temperature: 0.8, topk: 40 },
+      releaseFn, flushFn,
     );
     console.log(`\n  prompt: "${prompt}"`);
     console.log(`  output: ${output}`);
@@ -137,7 +153,21 @@ export async function trainCmd(args: string[]): Promise<void> {
   }
 
   if (reporter) {
-    await reporter.sendSamples(samples);
+    await reporter.sendSamples(samples, trainConfig.iters);
+
+    // Upload final checkpoint to remote server for inference
+    const runDir = kv["runDir"] ?? `runs/${reporter.runId}`;
+    const finalCkptPath = `${runDir}/checkpoint-${trainConfig.iters}.json`;
+    try {
+      const fs = await import("node:fs/promises");
+      await fs.access(finalCkptPath);
+      console.log(`\nUploading final checkpoint: ${finalCkptPath}`);
+      reporter.uploadCheckpoint({ step: trainConfig.iters, path: finalCkptPath, runId: reporter.runId });
+    } catch {
+      // Final checkpoint may not exist if training was interrupted
+      console.log(`Final checkpoint not found at ${finalCkptPath}, skipping upload`);
+    }
+
     await reporter.complete(trainConfig.iters);
   }
 }

@@ -4,7 +4,22 @@
  *
  * Commands: tokenizer build, train, sample, eval, bench
  */
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+
+// Load .env.local (no dotenv dependency — zero deps philosophy)
+try {
+  const envContent = readFileSync(".env.local", "utf8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+    if (!process.env[key]) process.env[key] = val;
+  }
+} catch { /* .env.local is optional */ }
 import { tokenizerBuildCmd } from "./commands/tokenizer-build.js";
 import { trainCmd } from "./commands/train.js";
 import { sampleCmd } from "./commands/sample.js";

@@ -11,7 +11,7 @@ import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape,
   add, matmul, gelu, layerNorm, softmax, crossEntropy,
-  reshape, transpose, embedding, scale,
+  reshape, transpose, embedding, scale, clamp,
 } from "@alpha/autograd";
 
 // ── Parameter initialization ───────────────────────────────────────────────
@@ -80,7 +80,7 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
   }
 
   const lnF = { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) };
-  const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std / Math.sqrt(2 * nLayer));
+  const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std);
 
   return { wte, wpe, layers, lnF, lmHead };
 }
@@ -147,7 +147,10 @@ export function gptForward(
 
     // Attention scores: [B, nHead, T, T]
     const kT = transpose(ctx, kH, 2, 3); // [B, nHead, headDim, T]
-    const scores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+    const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+
+    // Logit capping: prevent attention score explosion (PaLM/Gemma technique)
+    const scores = clamp(ctx, rawScores, -30, 30);
 
     // Apply causal mask
     const maskedScores = new Variable(

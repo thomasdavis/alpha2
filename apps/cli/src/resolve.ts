@@ -4,7 +4,8 @@
 import { backendRegistry } from "@alpha/tensor";
 import { heliosRegistry } from "@alpha/helios";
 import { tokenizerRegistry } from "@alpha/tokenizers";
-import { createOptimizerRegistry } from "@alpha/train";
+import { AdamW, createOptimizerRegistry } from "@alpha/train";
+import type { AdamWConfig } from "@alpha/train";
 import type { Backend, Tokenizer, Optimizer, Rng } from "@alpha/core";
 import { SeededRng } from "@alpha/core";
 
@@ -21,7 +22,10 @@ export function resolveTokenizer(name: string): Tokenizer {
   return tokenizerRegistry.get(name);
 }
 
-export function resolveOptimizer(name: string, backend: Backend): Optimizer {
+export function resolveOptimizer(name: string, backend: Backend, config?: Partial<AdamWConfig>): Optimizer {
+  if (name === "adamw") {
+    return new AdamW(backend, config);
+  }
   return createOptimizerRegistry(backend).get(name);
 }
 

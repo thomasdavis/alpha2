@@ -60,6 +60,7 @@ export interface Backend {
   sqrt(a: TensorData): TensorData;
   pow(a: TensorData, exp: number): TensorData;
   scale(a: TensorData, s: number): TensorData;
+  clamp(a: TensorData, lo: number, hi: number): TensorData;
 
   // nn
   embedding(weight: TensorData, indices: TensorData): TensorData;
@@ -94,6 +95,7 @@ export interface Backend {
   // backward (GPU-optimized, optional)
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   reluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
+  clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
   crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;

@@ -137,6 +137,31 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "chat",
+    {
+      id: "chat",
+      displayName: "Chat",
+      tokenizer: "bpe-4k",
+      samplePrompts: [
+        "<|user|> Hello, how are you? <|assistant|>",
+        "<|user|> What do you like to do for fun? <|assistant|>",
+        "<|user|> Tell me about yourself. <|assistant|>",
+      ],
+      modelDefaults: {
+        blockSize: 256,
+        nLayer: 6,
+        nEmbd: 256,
+        nHead: 8,
+      },
+      trainDefaults: {
+        tokenizer: "bpe-4k",
+        lr: 3e-4,
+        batchSize: 16,
+        gradClip: 1.0,
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */

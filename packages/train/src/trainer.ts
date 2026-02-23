@@ -5,13 +5,14 @@
  * Inspired by microgpt.py's training loop but with proper batching and logging.
  */
 import type {
-  ModelConfig, TrainConfig, Backend, Tokenizer, Optimizer, Rng, TensorData,
+  ModelConfig, TrainConfig, Backend, Tokenizer, Optimizer, Rng, TensorData, SampleConfig,
 } from "@alpha/core";
 import { shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
 import { Tape } from "@alpha/autograd";
 import { initGPT, gptForward, collectParams, countParams, type GPTParams } from "@alpha/model";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
+import { sample as runSample } from "./sample.js";
 import { Effect } from "effect";
 
 // ── GPU stats ────────────────────────────────────────────────────────────
@@ -62,6 +63,15 @@ export interface StepMetrics {
   gpu_vram_used_mb?: number;
   gpu_vram_total_mb?: number;
   gpu_mem_pool_mb?: number;
+  // Phase 0 instrumentation: per-step timing breakdown
+  timing_fwd_ms?: number;
+  timing_bwd_ms?: number;
+  timing_optim_ms?: number;
+  timing_data_ms?: number;
+  timing_flush_ms?: number;
+  timing_grad_norm_ms?: number;
+  timing_grad_clip_ms?: number;
+  gpu_ops_count?: number;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -81,6 +91,8 @@ export interface TrainerDeps {
   onStep?: (metrics: StepMetrics) => void;
   onStart?: (info: { runId: string; configHash: string; totalParams: number; dataPath: string }) => void | Promise<void>;
   onCheckpoint?: (info: { step: number; path: string; runId: string }) => void;
+  onSamples?: (samples: { prompt: string; output: string }[], step: number) => void | Promise<void>;
+  samplePrompts?: string[];
   domain?: string;
 }
 
@@ -165,7 +177,9 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   console.log(`config_hash: ${configHash}`);
   console.log(`params: ${totalParams.toLocaleString()} (${(paramBytes / 1024 / 1024).toFixed(1)} MB)`);
   console.log(`backend: ${backend.name} | tokenizer: ${tokenizer.name} | optimizer: ${optimizer.name}`);
-  console.log(`seed: ${trainConfig.seed} | block_size: ${modelConfig.blockSize} | batch: ${trainConfig.batchSize}`);
+  const effectiveBatch = trainConfig.batchSize * trainConfig.gradAccumSteps;
+  const accumStr = trainConfig.gradAccumSteps > 1 ? ` (${trainConfig.batchSize}×${trainConfig.gradAccumSteps})` : "";
+  console.log(`seed: ${trainConfig.seed} | block_size: ${modelConfig.blockSize} | batch: ${effectiveBatch}${accumStr}`);
   console.log(`iters: ${trainConfig.iters} | lr: ${trainConfig.lr}`);
 
   // GPU proof: log device info and run smoke test
@@ -215,36 +229,65 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     // Reset per-step GPU ops counter
     if ("resetStepOps" in backend) (backend as any).resetStepOps();
 
-    // Forward + backward
-    const tape = new Tape();
-    const _t0 = performance.now();
-    const batch = trainLoader.nextBatch();
-    const _t1 = performance.now();
-    const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets);
-    const _t2 = performance.now();
-
-    if (!loss) throw new Error("Loss is undefined");
-
     // Explicit GPU buffer release function — deterministic cleanup instead of
     // relying on FinalizationRegistry which is unreliable for timely VRAM reclaim.
     const releaseFn = "releaseGpuTensor" in backend
       ? (td: TensorData) => (backend as any).releaseGpuTensor(td)
       : undefined;
 
-    // Early NaN bail-out: loss scalar is already on CPU (crossEntropy reads it back),
-    // so this check is free. If loss is NaN/Inf, skip the entire backward pass,
-    // gradient norm, clipping, and optimizer step — saves ~50% of step time.
-    const lossVal = (loss.data.data as Float32Array)[0];
-    let nanDetected = !isFinite(lossVal);
-    let gradNorm = 0;
+    // Gradient accumulation: run K forward+backward passes, accumulating
+    // gradients on parameter Variables. Each micro-batch contributes 1/K
+    // of the total gradient. Increases effective batch size by K without
+    // increasing VRAM usage (only one micro-batch is live at a time).
+    const accumSteps = trainConfig.gradAccumSteps;
+    let nanDetected = false;
+    let lossVal = 0;
+    let dataLoadMs = 0;
+    let fwdMs = 0;
+    let bwdMs = 0;
+    const _t0 = performance.now();
 
-    if (nanDetected) {
-      console.warn(`  [warn] loss=NaN at step ${step + 1} — skipping backward + optimizer`);
-      // Release all forward intermediate GPU buffers without running backward
-      tape.clear(releaseFn);
-    } else {
+    for (let microStep = 0; microStep < accumSteps; microStep++) {
+      const tape = new Tape();
+      const _dl0 = performance.now();
+      const batch = trainLoader.nextBatch();
+      const _dl1 = performance.now();
+      dataLoadMs += _dl1 - _dl0;
+      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets);
+      const _fwd1 = performance.now();
+      fwdMs += _fwd1 - _dl1;
+
+      if (!loss) throw new Error("Loss is undefined");
+
+      const microLoss = (loss.data.data as Float32Array)[0];
+      if (!isFinite(microLoss)) {
+        console.warn(`  [warn] loss=NaN at step ${step + 1} micro ${microStep} — skipping`);
+        nanDetected = true;
+        tape.clear(releaseFn);
+        break;
+      }
+      lossVal += microLoss / accumSteps;
+
       tape.backward(loss, backend, releaseFn);
+      const _bwd1 = performance.now();
+      bwdMs += _bwd1 - _fwd1;
+      // Release tape intermediates but keep param gradients for accumulation
+      tape.clear(releaseFn);
     }
+
+    // Scale accumulated gradients by 1/accumSteps (backward summed them)
+    if (!nanDetected && accumSteps > 1) {
+      const paramMap0 = collectParams(params);
+      const invAccum = 1.0 / accumSteps;
+      for (const [, variable] of paramMap0) {
+        if (variable.grad) {
+          const oldGrad = variable.grad;
+          variable.grad = backend.scale(variable.grad, invAccum);
+          if (releaseFn) releaseFn(oldGrad);
+        }
+      }
+    }
+    let gradNorm = 0;
     const _t3 = performance.now();
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU)
@@ -342,8 +385,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       if (variable.grad && releaseFn) releaseFn(variable.grad);
       variable.grad = null;
     }
-    // Release all forward/backward intermediate GPU buffers deterministically
-    tape.clear(releaseFn);
+    // Note: tape intermediates already released in the accumulation loop above
 
     // Flush pending GPU ops (optimizer commands + deferred buffer releases).
     if ("flush" in backend) (backend as any).flush();
@@ -365,7 +407,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     if (trainConfig.trace) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
-      console.log(`  [trace] batch=${(_t1-_t0).toFixed(0)}ms fwd=${(_t2-_t1).toFixed(0)}ms bwd=${(_t3-_t2).toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms optim=${(_t5-_t4).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
+      console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms optim=${(_t5-_t4).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
 
     // GPU memory diagnostics (every 5 steps, every step for first 20)
@@ -378,15 +420,24 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     // Metrics
     const stepElapsed = performance.now() - stepStart;
-    const tokensProcessed = trainConfig.batchSize * modelConfig.blockSize;
+    const tokensProcessed = trainConfig.batchSize * modelConfig.blockSize * trainConfig.gradAccumSteps;
     const metrics: StepMetrics = {
       step: step + 1,
-      loss: (loss.data.data as Float32Array)[0],
+      loss: lossVal,
       lr,
       gradNorm,
       elapsed_ms: stepElapsed,
       tokens_per_sec: tokensProcessed / (stepElapsed / 1000),
       ms_per_iter: stepElapsed,
+      // Per-step timing breakdown (always recorded)
+      timing_fwd_ms: fwdMs,
+      timing_bwd_ms: bwdMs,
+      timing_grad_norm_ms: _t4 - _t3,
+      timing_grad_clip_ms: _t5 - _t4,
+      timing_optim_ms: _t5 - _t4,  // includes clip + step
+      timing_flush_ms: _t6 - _t5,
+      timing_data_ms: dataLoadMs,
+      gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
     };
 
     // GPU stats (queried at most every 5s via nvidia-smi)
@@ -450,6 +501,38 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
       if (deps.onCheckpoint) deps.onCheckpoint({ step: step + 1, path: ckptPath, runId: rid });
+
+      // Generate inference samples at checkpoint intervals
+      if (deps.samplePrompts && deps.samplePrompts.length > 0) {
+        try {
+          // Flush GPU before sampling to maximize free VRAM
+          if ("flush" in backend) (backend as any).flush();
+          if (typeof globalThis.gc === "function") {
+            (globalThis as any).gc();
+            await new Promise<void>(resolve => setImmediate(resolve));
+          }
+          if ("flush" in backend) (backend as any).flush();
+
+          const sampleCfg: SampleConfig = { steps: 50, temperature: 0.8, topk: 40 };
+          const flushFn = "flush" in backend ? () => (backend as any).flush() : undefined;
+          const samples: { prompt: string; output: string }[] = [];
+
+          for (const prompt of deps.samplePrompts.slice(0, 3)) {
+            const output = runSample(
+              modelConfig, params, backend, rng,
+              (t) => tokenizer.encode(t),
+              (t) => tokenizer.decode(t),
+              prompt, sampleCfg, releaseFn, flushFn,
+            );
+            console.log(`  sample: "${prompt}" → ${output.slice(0, 80)}${output.length > 80 ? "..." : ""}`);
+            samples.push({ prompt, output });
+          }
+
+          if (deps.onSamples) await deps.onSamples(samples, step + 1);
+        } catch (e) {
+          console.warn(`  sample generation failed: ${(e as Error).message}`);
+        }
+      }
     }
   }
 

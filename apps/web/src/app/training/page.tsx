@@ -21,6 +21,15 @@ interface StepMetric {
   gpu_vram_used_mb?: number | null;
   gpu_vram_total_mb?: number | null;
   gpu_mem_pool_mb?: number | null;
+  // Per-step timing breakdown
+  timing_fwd_ms?: number | null;
+  timing_bwd_ms?: number | null;
+  timing_optim_ms?: number | null;
+  timing_data_ms?: number | null;
+  timing_flush_ms?: number | null;
+  timing_grad_norm_ms?: number | null;
+  timing_grad_clip_ms?: number | null;
+  gpu_ops_count?: number | null;
 }
 
 interface TrainConfig {
@@ -486,6 +495,141 @@ function MiniChart({
   );
 }
 
+// ── Step time breakdown (stacked area) ─────────────────────────
+
+const TIMING_PHASES = [
+  { key: "timing_fwd_ms" as const, label: "Forward", color: "#22d3ee" },
+  { key: "timing_bwd_ms" as const, label: "Backward", color: "#f97316" },
+  { key: "timing_grad_norm_ms" as const, label: "Grad Norm", color: "#a78bfa" },
+  { key: "timing_optim_ms" as const, label: "Optimizer", color: "#10b981" },
+  { key: "timing_flush_ms" as const, label: "GPU Sync", color: "#f43f5e" },
+  { key: "timing_data_ms" as const, label: "Data", color: "#64748b" },
+];
+
+function drawStepTimeChart(canvas: HTMLCanvasElement, metrics: StepMetric[], totalSteps: number) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Filter to metrics that have timing data
+  const data = metrics.filter((m) => m.timing_fwd_ms != null);
+  if (data.length < 2) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+
+  const pad = { top: 10, right: 12, bottom: 26, left: 44 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  // Background
+  ctx.fillStyle = "#0d0d0d";
+  ctx.fillRect(0, 0, w, h);
+
+  const minStep = data[0].step;
+  const maxStep = Math.max(data[data.length - 1].step, totalSteps);
+  const rangeS = maxStep - minStep || 1;
+
+  // Compute stacked values
+  const stacked = data.map((m) => {
+    const phases = TIMING_PHASES.map((p) => (m[p.key] as number) ?? 0);
+    const total = phases.reduce((a, b) => a + b, 0);
+    return { step: m.step, phases, total };
+  });
+
+  const maxTotal = Math.max(...stacked.map((s) => s.total), 1);
+  const sx = (step: number) => pad.left + ((step - minStep) / rangeS) * cw;
+  const sy = (ms: number) => pad.top + (1 - ms / maxTotal) * ch;
+
+  // Grid lines
+  ctx.strokeStyle = "#1a1a1a";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (i / 4) * ch;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(w - pad.right, y);
+    ctx.stroke();
+    const val = maxTotal * (1 - i / 4);
+    ctx.fillStyle = "#444";
+    ctx.font = "9px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(val >= 1000 ? (val / 1000).toFixed(1) + "s" : val.toFixed(0) + "ms", pad.left - 6, y + 3);
+  }
+
+  // Step labels
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#444";
+  ctx.font = "9px monospace";
+  const ticks = [minStep, Math.round(minStep + rangeS * 0.5), maxStep];
+  for (const s of ticks) ctx.fillText(String(s), sx(s), h - pad.bottom + 12);
+
+  // Draw stacked areas (bottom to top)
+  for (let pi = TIMING_PHASES.length - 1; pi >= 0; pi--) {
+    ctx.beginPath();
+    for (let i = 0; i < stacked.length; i++) {
+      const s = stacked[i];
+      const cumulative = s.phases.slice(0, pi + 1).reduce((a, b) => a + b, 0);
+      const x = sx(s.step);
+      const y = sy(cumulative);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    // Close path along bottom
+    for (let i = stacked.length - 1; i >= 0; i--) {
+      const s = stacked[i];
+      const cumBelow = pi > 0 ? s.phases.slice(0, pi).reduce((a, b) => a + b, 0) : 0;
+      ctx.lineTo(sx(s.step), sy(cumBelow));
+    }
+    ctx.closePath();
+    ctx.fillStyle = TIMING_PHASES[pi].color + "80";
+    ctx.fill();
+  }
+
+  // Legend
+  ctx.font = "8px monospace";
+  let lx = pad.left;
+  const ly = h - 3;
+  for (const p of TIMING_PHASES) {
+    ctx.fillStyle = p.color;
+    ctx.fillRect(lx, ly - 4, 6, 4);
+    ctx.fillStyle = "#555";
+    ctx.textAlign = "left";
+    ctx.fillText(p.label, lx + 8, ly);
+    lx += ctx.measureText(p.label).width + 16;
+    if (lx > w - 30) break;
+  }
+}
+
+function StepTimeChart({ metrics, totalSteps }: { metrics: StepMetric[]; totalSteps: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hasData = metrics.some((m) => m.timing_fwd_ms != null);
+
+  useEffect(() => {
+    if (canvasRef.current && hasData) {
+      drawStepTimeChart(canvasRef.current, metrics, totalSteps);
+    }
+  }, [metrics, totalSteps, hasData]);
+
+  return (
+    <div>
+      <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
+        Step Time Breakdown
+      </div>
+      {hasData ? (
+        <canvas ref={canvasRef} className="h-[140px] w-full rounded-lg" />
+      ) : (
+        <div className="flex h-[140px] items-center justify-center rounded-lg border border-border/50 bg-[#0d0d0d] text-[0.65rem] text-text-muted">
+          Waiting for timing data...
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Stat card ──────────────────────────────────────────────────
 
 function Stat({ label, value, sub, color, tip }: { label: string; value: string; sub?: string; color?: string; tip?: string }) {
@@ -548,12 +692,27 @@ function LiveRunCard({ run }: { run: LiveRun }) {
     const bestVal = valLosses.length > 0 ? Math.min(...valLosses.map((m) => m.valLoss!)) : null;
     const lastVal = valLosses.length > 0 ? valLosses[valLosses.length - 1].valLoss : null;
 
+    // Timing breakdown (from recent steps with timing data)
+    const timedSteps = recent.filter((m) => m.timing_fwd_ms != null);
+    const avgFwd = timedSteps.length > 0 ? timedSteps.reduce((s, m) => s + (m.timing_fwd_ms ?? 0), 0) / timedSteps.length : null;
+    const avgBwd = timedSteps.length > 0 ? timedSteps.reduce((s, m) => s + (m.timing_bwd_ms ?? 0), 0) / timedSteps.length : null;
+    const avgFlush = timedSteps.length > 0 ? timedSteps.reduce((s, m) => s + (m.timing_flush_ms ?? 0), 0) / timedSteps.length : null;
+    const avgGpuOps = timedSteps.length > 0 ? timedSteps.reduce((s, m) => s + (m.gpu_ops_count ?? 0), 0) / timedSteps.length : null;
+
+    // MFU estimation: 6 * params * tokens_per_step / (step_time * peak_flops)
+    // Use 30.3 TFLOPS for L4, 312 TFLOPS for A100, 989 TFLOPS for H100
+    const totalParams = run.totalParams ?? 0;
+    const tokensPerStep = (run.trainConfig?.batchSize ?? 1) * (run.modelConfig?.blockSize ?? 256);
+    const flopsPerStep = 6 * totalParams * tokensPerStep;
+    const mfu = avgMs > 0 && totalParams > 0 ? (flopsPerStep / (avgMs / 1000)) / 30.3e12 * 100 : null; // L4 FP32
+
     return {
       minLoss, maxLoss, firstLoss, lastLoss, lossDrop, lossDropPct,
       avgTps, avgMs, avgGradNorm,
       totalElapsed, eta,
       bestVal, lastVal,
       totalTokens: run.metrics.reduce((s, m) => s + (m.tokens_per_sec * m.elapsed_ms / 1000), 0),
+      avgFwd, avgBwd, avgFlush, avgGpuOps, mfu,
     };
   }, [run.metrics, run.totalIters, last]);
 
@@ -622,6 +781,18 @@ function LiveRunCard({ run }: { run: LiveRun }) {
           <Stat label="Tokens" value={stats ? formatParams(Math.round(stats.totalTokens)) : "-"} sub="processed" />
         </div>
 
+        {/* Timing stats row (only shows when timing data is available) */}
+        {stats?.avgFwd != null && (
+          <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+            <Stat label="Forward" value={`${stats.avgFwd.toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${(stats.avgFwd / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-cyan-400" />
+            <Stat label="Backward" value={`${(stats.avgBwd ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgBwd ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-orange-400" />
+            <Stat label="GPU Sync" value={`${(stats.avgFlush ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgFlush ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-rose-400" />
+            <Stat label="GPU Ops" value={stats.avgGpuOps != null ? formatNumber(stats.avgGpuOps, 0) : "-"} sub="per step" />
+            <Stat label="MFU" value={stats.mfu != null ? `${stats.mfu.toFixed(1)}%` : "-"} sub="model FLOPS util" color={stats.mfu != null && stats.mfu > 50 ? "text-green" : stats.mfu != null && stats.mfu > 10 ? "text-yellow" : "text-red"} />
+            <Stat label="Bwd/Fwd" value={stats.avgFwd != null && stats.avgBwd != null ? `${(stats.avgBwd / stats.avgFwd).toFixed(1)}x` : "-"} sub="ratio" />
+          </div>
+        )}
+
         {/* Chart + side panels */}
         <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
           {/* Loss chart */}
@@ -668,7 +839,7 @@ function LiveRunCard({ run }: { run: LiveRun }) {
         </div>
 
         {/* Mini charts row */}
-        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MiniChart
             metrics={run.metrics}
             totalSteps={run.totalIters}
@@ -705,6 +876,10 @@ function LiveRunCard({ run }: { run: LiveRun }) {
               const gn = m.filter((x) => x.gradNorm > 0 && isFinite(x.gradNorm)).map((x) => ({ step: x.step, value: x.gradNorm }));
               return [{ data: gn, color: "#f97316", label: "norm" }];
             }, [])}
+          />
+          <StepTimeChart
+            metrics={run.metrics}
+            totalSteps={run.totalIters}
           />
         </div>
       </div>
@@ -744,6 +919,14 @@ export default function TrainingPage() {
           gpu_vram_used_mb: m.gpu_vram_used_mb ?? null,
           gpu_vram_total_mb: m.gpu_vram_total_mb ?? null,
           gpu_mem_pool_mb: m.gpu_mem_pool_mb ?? null,
+          timing_fwd_ms: m.timing_fwd_ms ?? null,
+          timing_bwd_ms: m.timing_bwd_ms ?? null,
+          timing_optim_ms: m.timing_optim_ms ?? null,
+          timing_data_ms: m.timing_data_ms ?? null,
+          timing_flush_ms: m.timing_flush_ms ?? null,
+          timing_grad_norm_ms: m.timing_grad_norm_ms ?? null,
+          timing_grad_clip_ms: m.timing_grad_clip_ms ?? null,
+          gpu_ops_count: m.gpu_ops_count ?? null,
         }));
         next.set(r.id, {
           id: r.id,
@@ -802,6 +985,14 @@ export default function TrainingPage() {
         gpu_vram_used_mb: m.gpu_vram_used_mb ?? null,
         gpu_vram_total_mb: m.gpu_vram_total_mb ?? null,
         gpu_mem_pool_mb: m.gpu_mem_pool_mb ?? null,
+        timing_fwd_ms: m.timing_fwd_ms ?? null,
+        timing_bwd_ms: m.timing_bwd_ms ?? null,
+        timing_optim_ms: m.timing_optim_ms ?? null,
+        timing_data_ms: m.timing_data_ms ?? null,
+        timing_flush_ms: m.timing_flush_ms ?? null,
+        timing_grad_norm_ms: m.timing_grad_norm_ms ?? null,
+        timing_grad_clip_ms: m.timing_grad_clip_ms ?? null,
+        gpu_ops_count: m.gpu_ops_count ?? null,
       }));
       setRuns((prev) => {
         const next = new Map(prev);

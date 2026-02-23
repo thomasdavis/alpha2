@@ -961,6 +961,82 @@ export function kernelReluBackward(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+/**
+ * Clamp backward: result[i] = (input[i] > lo && input[i] < hi) ? gradOut[i] : 0.0
+ * Push constants: { len: f32, lo: f32, hi: f32 } — 12 bytes
+ * Bindings: 0=input (readonly), 1=gradOutput (readonly), 2=output
+ */
+export function kernelClampBackward(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufInput = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load lo and hi from push constants
+  const ptrLo = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrLo, pc.varId, p.const1u]);
+  const lo = b.id();
+  b.emit(Op.Load, [p.tF32, lo, ptrLo]);
+
+  const ptrHi = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrHi, pc.varId, p.const2u]);
+  const hi = b.id();
+  b.emit(Op.Load, [p.tF32, hi, ptrHi]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // Load input value
+  const ptrIn = b.id();
+  b.emit(Op.AccessChain, [bufInput.tPtrF32, ptrIn, bufInput.varId, p.const0u, gidX]);
+  const x = b.id();
+  b.emit(Op.Load, [p.tF32, x, ptrIn]);
+
+  // Load gradient
+  const ptrG = b.id();
+  b.emit(Op.AccessChain, [bufGrad.tPtrF32, ptrG, bufGrad.varId, p.const0u, gidX]);
+  const dout = b.id();
+  b.emit(Op.Load, [p.tF32, dout, ptrG]);
+
+  // result = (x > lo && x < hi) ? dout : 0.0
+  const cmpLo = b.id();
+  b.emit(Op.FOrdGreaterThan, [p.tBool, cmpLo, x, lo]);
+  const cmpHi = b.id();
+  b.emit(Op.FOrdLessThan, [p.tBool, cmpHi, x, hi]);
+  const inRange = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, inRange, cmpLo, cmpHi]);
+  const result = b.id();
+  b.emit(Op.Select, [p.tF32, result, inRange, dout, p.const0f]);
+
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrOut, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Vec4 helpers ────────────────────────────────────────────────────────────
 
 /**
@@ -1395,6 +1471,133 @@ export function kernelClampMinVec4(wgSize = 256): Uint32Array {
   // max(valA, vec4(scalar)) — clamp each component to minimum
   const valC = b.id();
   b.emit(Op.ExtInst, [tVec4F32, valC, p.glslStd, GLSLstd450.FMax, valA, scalarVec4]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * Clamp kernel: C[i] = clamp(A[i], lo, hi)
+ * Push constants: { len: f32, lo: f32, hi: f32 } — 12 bytes
+ */
+export function kernelClamp(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd   = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load lo (member 1) and hi (member 2) scalars
+  const ptrLo = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrLo, pc.varId, p.const1u]);
+  const lo = b.id();
+  b.emit(Op.Load, [p.tF32, lo, ptrLo]);
+
+  const ptrHi = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrHi, pc.varId, p.const2u]);
+  const hi = b.id();
+  b.emit(Op.Load, [p.tF32, hi, ptrHi]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
+  const valA = b.id();
+  b.emit(Op.Load, [p.tF32, valA, ptrA]);
+
+  // clamp(valA, lo, hi) — single GLSL instruction
+  const valC = b.id();
+  b.emit(Op.ExtInst, [p.tF32, valC, p.glslStd, GLSLstd450.FClamp, valA, lo, hi]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+export function kernelClampVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load lo and hi scalars, splat to vec4
+  const ptrLo = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrLo, pc.varId, p.const1u]);
+  const lo = b.id();
+  b.emit(Op.Load, [p.tF32, lo, ptrLo]);
+  const loVec4 = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, loVec4, lo, lo, lo, lo]);
+
+  const ptrHi = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrHi, pc.varId, p.const2u]);
+  const hi = b.id();
+  b.emit(Op.Load, [p.tF32, hi, ptrHi]);
+  const hiVec4 = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, hiVec4, hi, hi, hi, hi]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gidX]);
+  const valA = b.id();
+  b.emit(Op.Load, [tVec4F32, valA, ptrA]);
+
+  // clamp(valA, loVec4, hiVec4)
+  const valC = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, valC, p.glslStd, GLSLstd450.FClamp, valA, loVec4, hiVec4]);
 
   const ptrC = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
@@ -4500,6 +4703,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "sqrt":      spirv = kernelSqrt(wgSize); break;
     case "relu":      spirv = kernelRelu(wgSize); break;
     case "clamp_min": spirv = kernelClampMin(wgSize); break;
+    case "clamp":     spirv = kernelClamp(wgSize); break;
     case "gelu":      spirv = kernelGelu(wgSize); break;
     case "add_vec4":  spirv = kernelAddVec4(wgSize); break;
     case "sub_vec4":  spirv = kernelSubVec4(wgSize); break;
@@ -4512,6 +4716,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "sqrt_vec4": spirv = kernelSqrtVec4(wgSize); break;
     case "relu_vec4": spirv = kernelReluVec4(wgSize); break;
     case "clamp_min_vec4": spirv = kernelClampMinVec4(wgSize); break;
+    case "clamp_vec4":     spirv = kernelClampVec4(wgSize); break;
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
@@ -4524,6 +4729,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "matmul_batched": spirv = kernelMatmulBatched(); break;
     case "gelu_backward": spirv = kernelGeluBackward(wgSize); break;
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;
+    case "clamp_backward": spirv = kernelClampBackward(wgSize); break;
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;
     case "column_sum": spirv = kernelColumnSum(wgSize); break;
     case "adamw_step": spirv = kernelAdamW(wgSize); break;

@@ -15,6 +15,8 @@ export interface RemoteReporterConfig {
   batchSize?: number;
   /** Max time between flushes in ms (default: 5000) */
   flushInterval?: number;
+  /** Discord webhook URL for notifications */
+  discordWebhook?: string;
 }
 
 export interface SampleGeneration {
@@ -23,6 +25,8 @@ export interface SampleGeneration {
 }
 
 export interface RemoteReporter {
+  /** Run ID (set after registerRun) */
+  readonly runId: string;
   /** Register a new training run with the server */
   registerRun(info: {
     runId: string;
@@ -41,11 +45,11 @@ export interface RemoteReporter {
   /** Upload a checkpoint to the remote server for inference */
   uploadCheckpoint(info: { step: number; path: string; runId: string }): void;
   /** Send sample generations to the server for display */
-  sendSamples(samples: SampleGeneration[]): Promise<void>;
+  sendSamples(samples: SampleGeneration[], step?: number): Promise<void>;
 }
 
-/** Max chunk size for chunked uploads (1.5MB — under Railway CDN ~4MB limit) */
-const CHUNK_SIZE = 1536 * 1024;
+/** Max chunk size for chunked uploads (3.5MB — under Railway CDN ~4.5MB limit) */
+const CHUNK_SIZE = 3584 * 1024;
 
 /**
  * Strip optimizer state from a binary checkpoint to reduce upload size.
@@ -103,8 +107,25 @@ function stripOptimizerState(data: Buffer): Buffer {
   return out;
 }
 
+async function sendDiscord(webhookUrl: string, embeds: Array<{
+  title: string;
+  color: number;
+  description?: string;
+  fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  timestamp?: string;
+}>): Promise<void> {
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ embeds }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch { /* fire-and-forget */ }
+}
+
 export function createRemoteReporter(config: RemoteReporterConfig): RemoteReporter {
-  const { url, secret } = config;
+  const { url, secret, discordWebhook } = config;
   const batchSize = config.batchSize ?? 1;
   const flushInterval = config.flushInterval ?? 5000;
 
@@ -195,7 +216,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
           "X-Total-Chunks": String(totalChunks),
         },
         body: chunk,
-        signal: AbortSignal.timeout(30_000), // 30s timeout per chunk
+        signal: AbortSignal.timeout(60_000), // 60s timeout per chunk
       });
       if (!res.ok) {
         throw new Error(`Chunk ${i}/${totalChunks} failed: ${res.status}`);
@@ -219,6 +240,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         metrics: meta.metrics || undefined,
         trainingData: meta.trainingData,
       }),
+      signal: AbortSignal.timeout(120_000), // 120s — server needs time to reassemble large files
     });
     if (!res.ok) {
       throw new Error(`Assemble failed: ${res.status}`);
@@ -226,6 +248,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
   }
 
   return {
+    get runId() { return runId; },
     async registerRun(info) {
       runId = info.runId;
       domain = info.domain;
@@ -241,6 +264,27 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         totalParams: info.totalParams,
       });
       startTimer();
+
+      if (discordWebhook) {
+        const mc = info.modelConfig;
+        const tc = info.trainConfig;
+        const paramStr = info.totalParams > 1e6
+          ? `${(info.totalParams / 1e6).toFixed(1)}M`
+          : `${(info.totalParams / 1e3).toFixed(0)}K`;
+        await sendDiscord(discordWebhook, [{
+          title: "🚀 Training Started",
+          color: 0x00c853,
+          fields: [
+            { name: "Run ID", value: `\`${info.runId}\``, inline: true },
+            { name: "Domain", value: info.domain ?? "unknown", inline: true },
+            { name: "Params", value: paramStr, inline: true },
+            { name: "Model", value: `${mc.nEmbd}d ${mc.nHead}h ${mc.nLayer}L`, inline: true },
+            { name: "Training", value: `batch=${tc.batchSize} lr=${tc.lr} iters=${tc.iters}`, inline: true },
+            { name: "Backend", value: tc.backend, inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }]);
+      }
     },
 
     onStep(metrics: StepMetrics) {
@@ -259,14 +303,41 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         await Promise.allSettled(pendingUploads);
       }
       await post("/api/ingest/complete", { runId, finalStep });
+
+      if (discordWebhook) {
+        await sendDiscord(discordWebhook, [{
+          title: "✅ Training Complete",
+          color: 0x2196f3,
+          fields: [
+            { name: "Run ID", value: `\`${runId}\``, inline: true },
+            { name: "Final Step", value: `${finalStep}`, inline: true },
+            { name: "Domain", value: domain ?? "unknown", inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }]);
+      }
     },
 
     async flush() {
       await flushBuffer();
     },
 
-    async sendSamples(samples: SampleGeneration[]) {
+    async sendSamples(samples: SampleGeneration[], step?: number) {
       await post("/api/ingest", { type: "samples", runId, samples });
+
+      if (discordWebhook && samples.length > 0) {
+        const sampleFields = samples.map((s, i) => ({
+          name: `Prompt ${i + 1}: "${s.prompt}"`,
+          value: `\`\`\`\n${s.output.slice(0, 300)}${s.output.length > 300 ? "..." : ""}\n\`\`\``,
+        }));
+        await sendDiscord(discordWebhook, [{
+          title: `📝 Inference Samples${step ? ` (Step ${step})` : ""}`,
+          color: 0xff9800,
+          description: `Run \`${runId}\``,
+          fields: sampleFields,
+          timestamp: new Date().toISOString(),
+        }]);
+      }
     },
 
     uploadCheckpoint(info: { step: number; path: string; runId: string }) {

@@ -22,6 +22,15 @@ export async function insertMetrics(
     gpu_vram_used_mb?: number | null;
     gpu_vram_total_mb?: number | null;
     gpu_mem_pool_mb?: number | null;
+    // Per-step timing breakdown
+    timing_fwd_ms?: number | null;
+    timing_bwd_ms?: number | null;
+    timing_optim_ms?: number | null;
+    timing_data_ms?: number | null;
+    timing_flush_ms?: number | null;
+    timing_grad_norm_ms?: number | null;
+    timing_grad_clip_ms?: number | null;
+    gpu_ops_count?: number | null;
   }>
 ): Promise<number> {
   if (metrics.length === 0) return 0;
@@ -33,8 +42,10 @@ export async function insertMetrics(
       chunk.map((m) => ({
         sql: `INSERT OR IGNORE INTO metrics
               (run_id, step, loss, val_loss, lr, grad_norm, elapsed_ms, tokens_per_sec, ms_per_iter,
-               gpu_util_pct, gpu_vram_used_mb, gpu_vram_total_mb, gpu_mem_pool_mb)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               gpu_util_pct, gpu_vram_used_mb, gpu_vram_total_mb, gpu_mem_pool_mb,
+               timing_fwd_ms, timing_bwd_ms, timing_optim_ms, timing_data_ms,
+               timing_flush_ms, timing_grad_norm_ms, timing_grad_clip_ms, gpu_ops_count)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           runId,
           m.step,
@@ -49,6 +60,14 @@ export async function insertMetrics(
           m.gpu_vram_used_mb ?? null,
           m.gpu_vram_total_mb ?? null,
           m.gpu_mem_pool_mb ?? null,
+          m.timing_fwd_ms ?? null,
+          m.timing_bwd_ms ?? null,
+          m.timing_optim_ms ?? null,
+          m.timing_data_ms ?? null,
+          m.timing_flush_ms ?? null,
+          m.timing_grad_norm_ms ?? null,
+          m.timing_grad_clip_ms ?? null,
+          m.gpu_ops_count ?? null,
         ],
       })),
       "write"

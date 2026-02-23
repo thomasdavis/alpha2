@@ -11,6 +11,9 @@ Alpha is **hand-written from scratch**. Every component — tensors, autograd, m
 - **Zero dependencies** — prefer writing code over adding packages. No npm deps for core functionality. If we need GPU access, we write the native addon and SPIR-V assembler ourselves
 - **Understand everything** — no black boxes. If it's in the codebase, we wrote it and we understand it
 - **Scratch-built** — the value is in building it, not in importing it
+- **Never take shortcuts** — if a feature needs a new GPU kernel, write the SPIR-V kernel. Don't compose workarounds from existing ops when a dedicated kernel would be faster. We build everything from scratch and should embrace the complexity — new kernels, new ops, new backends. Aim to do it better than existing solutions, not just equivalent
+- **Build it right** — expect to implement complex things. A proper `clamp` kernel is better than chaining `neg` + `clamp_min` + `neg`. A fused attention kernel is better than 6 separate dispatches. Don't fear the SPIR-V
+- **Scale from scratch** — this system is designed to eventually run on 100+ H100s at 90%+ utilization. Every scaling feature (data parallelism, tensor parallelism, pipeline parallelism, collective ops, gradient compression) must be custom-built. No NCCL, no DeepSpeed, no Megatron imports. We write our own all-reduce, our own ring communication, our own sharded optimizer. See `scale.md` for the full roadmap
 
 ## Architecture
 
@@ -123,6 +126,18 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 | `ALPHA_REMOTE_SECRET` | .env.local, training pod | Same as UPLOAD_SECRET on server |
 | `RUNPOD_API_KEY` | .env.local | RunPod API key for GPU pod provisioning |
 | `RUNPOD_VOLUME_ID` | .env.local | (optional) RunPod network volume for persistent storage |
+| `DISCORD_WEBHOOK_URL` | .env.local, training pod | Discord webhook for training notifications + inference samples |
+
+## Discord Notifications
+
+Training posts to Discord via webhook when:
+- A run starts (model config, params, hyperparams)
+- Inference samples are generated (at each checkpoint interval)
+- Training completes
+
+Webhook: `REDACTED_DISCORD_WEBHOOK_URL`
+
+Set `DISCORD_WEBHOOK_URL` in `.env.local` on training pods. The remote reporter sends embeds with run info, sample outputs, and completion status.
 
 ## Deploy
 

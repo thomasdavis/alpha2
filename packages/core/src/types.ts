@@ -77,6 +77,7 @@ export interface TrainConfig {
   readonly optimizer: string;
   readonly logLevel: "debug" | "info" | "warn" | "error";
   readonly trace: boolean;
+  readonly gradAccumSteps: number;
 }
 
 export const defaultTrainConfig: TrainConfig = {
@@ -84,9 +85,9 @@ export const defaultTrainConfig: TrainConfig = {
   batchSize: 64,
   lr: 3e-4,
   beta1: 0.9,
-  beta2: 0.95,
-  eps: 1e-8,
-  weightDecay: 0.1,
+  beta2: 0.999,
+  eps: 1e-6,
+  weightDecay: 0.01,
   gradClip: 1.0,
   evalInterval: 100,
   evalIters: 10,
@@ -96,6 +97,7 @@ export const defaultTrainConfig: TrainConfig = {
   optimizer: "adamw",
   logLevel: "info",
   trace: false,
+  gradAccumSteps: 1,
 };
 
 // ── Sampling config ────────────────────────────────────────────────────────

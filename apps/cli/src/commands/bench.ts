@@ -264,6 +264,7 @@ async function benchTrain(iters: number): Promise<void> {
     optimizer: "adamw",
     logLevel: "error" as const,
     trace: false,
+    gradAccumSteps: 1,
   };
 
   const backends = ["cpu_ref", "helios"] as const;

@@ -155,6 +155,22 @@ export function relu(ctx: Ctx, a: Variable): Variable {
   });
 }
 
+export function clamp(ctx: Ctx, a: Variable, lo: number, hi: number): Variable {
+  const aData = a.data;
+  const clamped = ctx.backend.clamp(aData, lo, hi);
+  return record(ctx, clamped, [a], (g, B) => {
+    // Gradient passes through where lo < x < hi, zero where clamped.
+    // Use clampBackward if available (GPU-optimized single dispatch).
+    if (B.clampBackward) return [B.clampBackward(aData, g, lo, hi)];
+    // CPU fallback
+    const src = aData.data as Float32Array;
+    const gArr = g.data as Float32Array;
+    const grad = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) grad[i] = (src[i] > lo && src[i] < hi) ? gArr[i] : 0;
+    return [{ shape: [...g.shape], dtype: g.dtype, data: grad } as TensorData];
+  });
+}
+
 export function gelu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
   return record(ctx, ctx.backend.gelu(aData), [a], (g, B, release) => {

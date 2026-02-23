@@ -870,6 +870,36 @@ export class HeliosBackend implements Backend {
     return this.cpuUnary(a, (x) => x * s);
   }
 
+  clamp(a: TensorData, lo: number, hi: number): TensorData {
+    const size = shapeSize(a.shape);
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const byteSize = size * 4;
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "clamp_vec4" : "clamp";
+      const CLAMP_PUSH_SIZE = 12; // 3 x f32: [len, lo, hi]
+      const pipeline = getPipeline(vk, kernelName, 2, CLAMP_PUSH_SIZE);
+      const bufA = ensureGpu(vk, a);
+      const region = acquireOutputRegion(vk, byteSize);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const push = new Float32Array([effectiveSize, lo, hi]);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      graph.record({
+        kind: "unary",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: CLAMP_PUSH_SIZE,
+        shape: a.shape,
+      });
+      return graphLazyTensor(vk, a.shape, region);
+    }
+    return this.cpuUnary(a, (x) => Math.max(lo, Math.min(hi, x)));
+  }
+
   gelu(a: TensorData): TensorData {
     if (shapeSize(a.shape) >= this._minGpuSize) return this.gpuUnaryOp(a, "gelu");
     const SQRT_2_OVER_PI = Math.sqrt(2 / Math.PI);
@@ -1112,6 +1142,39 @@ export class HeliosBackend implements Backend {
     const grad = gradOutput.data as Float32Array;
     const out = new Float32Array(src.length);
     for (let i = 0; i < src.length; i++) out[i] = src[i] > 0 ? grad[i] : 0;
+    return makeTensor(input.shape, input.dtype, out);
+  }
+
+  clampBackward(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
+      const vk = this.init();
+      const CLAMP_BW_PUSH_SIZE = 12; // 3 x f32: [len, lo, hi]
+      const pipeline = getPipeline(vk, "clamp_backward", 3, CLAMP_BW_PUSH_SIZE);
+      const bufIn = ensureGpu(vk, input);
+      const bufGrad = ensureGpu(vk, gradOutput);
+      const region = acquireOutputRegion(vk, size * 4);
+      const push = new Float32Array([size, lo, hi]);
+      const groups = Math.ceil(size / WG_SIZE);
+      graph.record({
+        kind: "backward",
+        kernel: "clamp_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: CLAMP_BW_PUSH_SIZE,
+        shape: input.shape,
+        allBufs: [bufIn, bufGrad, region.handle],
+      });
+      return graphLazyTensor(vk, input.shape, region);
+    }
+    // CPU fallback
+    const src = input.data as Float32Array;
+    const grad = gradOutput.data as Float32Array;
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) out[i] = (src[i] > lo && src[i] < hi) ? grad[i] : 0;
     return makeTensor(input.shape, input.dtype, out);
   }
 

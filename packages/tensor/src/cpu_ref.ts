@@ -396,6 +396,10 @@ export class CpuRefBackend implements Backend {
     return unaryOp(a, (x) => x * s);
   }
 
+  clamp(a: TensorData, lo: number, hi: number): TensorData {
+    return unaryOp(a, (x) => Math.max(lo, Math.min(hi, x)));
+  }
+
   // ── nn ──────────────────────────────────────────────────────────────────
 
   embedding(weight: TensorData, indices: TensorData): TensorData {
