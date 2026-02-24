@@ -51,7 +51,7 @@ export default async function ModelDetailPage({
     checkInferenceStatus(id),
   ]);
 
-  const p = pct(run.latest_step, run.total_iters);
+  const p = pct(run.latest_step ?? 0, run.total_iters ?? 0);
   const statusColors: Record<string, string> = {
     active: "bg-green-bg text-green",
     completed: "bg-blue-bg text-blue",
@@ -192,8 +192,8 @@ export default async function ModelDetailPage({
       <div className="mb-6 rounded-lg border border-border bg-surface p-4">
         <div className="mb-2 flex justify-between text-sm text-text-secondary">
           <span>
-            Step {run.latest_step.toLocaleString()} /{" "}
-            {run.total_iters.toLocaleString()}
+            Step {(run.latest_step ?? 0).toLocaleString()} /{" "}
+            {(run.total_iters ?? 0).toLocaleString()}
             <Tip text={tips.step} />
           </span>
           <span>{p}%</span>

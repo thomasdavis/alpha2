@@ -156,7 +156,8 @@ function fmtDuration(ms: number): string {
   return `${h}h ${rm}m`;
 }
 
-function fmtNum(n: number, decimals = 0): string {
+function fmtNum(n: number | null | undefined, decimals = 0): string {
+  if (n == null) return "0";
   return n.toLocaleString(undefined, { maximumFractionDigits: decimals });
 }
 

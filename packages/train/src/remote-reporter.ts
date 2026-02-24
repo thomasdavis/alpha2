@@ -145,16 +145,35 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     Authorization: `Bearer ${secret}`,
   };
 
+  let postErrorCount = 0;
+
   async function post(path: string, body: unknown): Promise<void> {
     try {
-      await fetch(`${url}${path}`, {
+      const res = await fetch(`${url}${path}`, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15_000), // 15s timeout — never block training
       });
-    } catch {
-      // Fire-and-forget — never block training
+      if (!res.ok) {
+        postErrorCount++;
+        // Log first 5 errors then every 100th
+        if (postErrorCount <= 5 || postErrorCount % 100 === 0) {
+          const text = await res.text().catch(() => "");
+          console.warn(`  [remote] POST ${path} failed: ${res.status} ${text.slice(0, 200)} (error #${postErrorCount})`);
+        }
+      } else {
+        // Reset on success
+        if (postErrorCount > 0) {
+          console.log(`  [remote] POST ${path} recovered after ${postErrorCount} errors`);
+          postErrorCount = 0;
+        }
+      }
+    } catch (e) {
+      postErrorCount++;
+      if (postErrorCount <= 5 || postErrorCount % 100 === 0) {
+        console.warn(`  [remote] POST ${path} error: ${(e as Error).message} (error #${postErrorCount})`);
+      }
     }
   }
 

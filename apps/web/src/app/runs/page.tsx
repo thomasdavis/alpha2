@@ -41,8 +41,8 @@ function DomainBadge({ domain }: { domain: string }) {
   );
 }
 
-function ProgressBar({ step, total, status }: { step: number; total: number; status: string }) {
-  const p = pct(step, total);
+function ProgressBar({ step, total, status }: { step: number | null; total: number | null; status: string }) {
+  const p = pct(step ?? 0, total ?? 0);
   const colors: Record<string, string> = {
     active: "bg-green",
     completed: "bg-blue",
@@ -59,7 +59,7 @@ function ProgressBar({ step, total, status }: { step: number; total: number; sta
       </div>
       <div className="mt-1 flex justify-between text-[0.68rem] text-text-muted">
         <span>
-          Step {step.toLocaleString()} / {total.toLocaleString()}
+          Step {(step ?? 0).toLocaleString()} / {(total ?? 0).toLocaleString()}
         </span>
         <span>{p}%</span>
       </div>
