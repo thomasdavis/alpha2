@@ -1,9 +1,11 @@
 import { streamText } from "ai";
 import { getRuns, ensureModel, AlphaLanguageModel } from "@/lib/engine";
+import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
+  await ensureInit();
   const body = await request.json();
   const runs = getRuns();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];

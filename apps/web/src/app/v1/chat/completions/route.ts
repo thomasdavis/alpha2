@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import { SeededRng } from "@alpha/core";
 import { getRuns, ensureModel, sampleNextToken } from "@/lib/engine";
 import { jsonResponse } from "@/lib/server-state";
+import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ function messagesToPrompt(messages: Array<{ role: string; content: string }>): s
 }
 
 export async function POST(request: Request) {
+  await ensureInit();
   const body = await request.json();
   const runs = getRuns();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];

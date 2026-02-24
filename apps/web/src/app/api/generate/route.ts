@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { SeededRng } from "@alpha/core";
 import { getRuns, ensureModel, sampleNextToken } from "@/lib/engine";
 import { jsonResponse } from "@/lib/server-state";
+import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleGenerate(request: NextRequest) {
+  await ensureInit();
   const runs = getRuns();
   const body = request.method === "POST" ? await request.json() : {};
   const prompt: string = request.nextUrl.searchParams.get("prompt") ?? body.prompt ?? "";

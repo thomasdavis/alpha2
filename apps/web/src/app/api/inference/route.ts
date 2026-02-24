@@ -1,9 +1,11 @@
 import { NextRequest } from "next/server";
 import { getRuns, ensureModel, generateTokens } from "@/lib/engine";
+import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  await ensureInit();
   const runs = getRuns();
   const query = request.nextUrl.searchParams.get("query") ?? "";
   const modelId = request.nextUrl.searchParams.get("model") ?? runs[0]?.id;
