@@ -105,7 +105,7 @@ export async function listRuns(
   const limit = opts?.limit ?? 100;
 
   const result = await client.execute({
-    sql: `SELECT * FROM run_summary r ${where} ORDER BY r.updated_at DESC LIMIT ?`,
+    sql: `SELECT * FROM run_summary r ${where} ORDER BY r.created_at DESC LIMIT ?`,
     args: [...args, limit],
   });
   return result.rows as unknown as DbRunSummary[];
