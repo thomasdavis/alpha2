@@ -2,6 +2,9 @@
 FROM node:22-slim AS build
 WORKDIR /app
 
+ARG RAILWAY_GIT_COMMIT_SHA=""
+ARG COMMIT_SHA=""
+
 RUN apt-get update && apt-get install -y gcc libnode-dev && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json turbo.json tsconfig.base.json ./
@@ -10,6 +13,9 @@ COPY packages/ packages/
 
 RUN npm ci
 RUN npx turbo build
+
+# Bake commit hash into build-info.json for the /api/version endpoint
+RUN echo "{\"sha\":\"$(echo ${RAILWAY_GIT_COMMIT_SHA:-${COMMIT_SHA:-unknown}} | cut -c1-7)\",\"message\":\"\"}" > apps/server/dist/build-info.json
 
 # ── Production stage ──────────────────────────────────────────────────────
 FROM node:22-slim

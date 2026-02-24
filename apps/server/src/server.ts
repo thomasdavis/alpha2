@@ -41,8 +41,8 @@ const BUILD_INFO = (() => {
     return { ...info, startedAt: new Date().toISOString() };
   } catch {}
   try {
-    const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-    const msg = execSync("git log -1 --format=%s", { encoding: "utf8" }).trim();
+    const sha = execSync("git rev-parse --short HEAD", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const msg = execSync("git log -1 --format=%s", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
     return { sha, message: msg, startedAt: new Date().toISOString() };
   } catch {}
   return { sha: process.env.COMMIT_SHA ?? "unknown", message: "", startedAt: new Date().toISOString() };
