@@ -7,7 +7,7 @@ import type { StepMetrics } from "./trainer.js";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 
 export interface RemoteReporterConfig {
-  /** Base URL of the remote server (e.g. ALPHA_REMOTE_URL) */
+  /** Base URL of the remote server (e.g. https://alpha.omegaai.dev) */
   url: string;
   /** Bearer token for authentication */
   secret: string;

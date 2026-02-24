@@ -6,7 +6,7 @@
 # Estimated ~33 minutes for 2000 steps on L4 GPU.
 #
 # For remote dashboard reporting + checkpoint upload, set:
-#   ALPHA_REMOTE_URL=ALPHA_REMOTE_URL
+#   ALPHA_REMOTE_URL=https://alpha.omegaai.dev
 #   ALPHA_REMOTE_SECRET=<your-secret>
 
 set -euo pipefail

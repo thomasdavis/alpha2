@@ -24,17 +24,12 @@ function Detail({ label, value, tip }: { label: string; value: string | number |
   );
 }
 
-// Check if model is loaded in the inference engine
+// Check if model is loaded in the inference engine (direct import, no HTTP)
 async function checkInferenceStatus(id: string): Promise<boolean> {
   try {
-    const baseUrl = process.env.INTERNAL_SERVER_URL || "http://localhost:3001";
-    const res = await fetch(`${baseUrl}/api/models`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return false;
-    const models: Array<{ id: string }> = await res.json();
-    return models.some((m) => m.id === id);
+    const { getRuns } = await import("@/lib/engine");
+    const runs = getRuns();
+    return runs.some((r) => r.id === id);
   } catch {
     return false;
   }

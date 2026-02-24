@@ -104,7 +104,7 @@ async function main() {
 
   if (!baseUrl) {
     console.error("Error: RAILWAY_URL environment variable is required.");
-    console.error("Example: RAILWAY_URL=https://alpha-server-production.up.railway.app");
+    console.error("Example: RAILWAY_URL=https://alpha.omegaai.dev");
     process.exit(1);
   }
   if (!secret) {

@@ -56,12 +56,12 @@
 <div class="content">
 <h1>Alpha API</h1>
 <p>Alpha serves small GPT models trained from scratch. All endpoints are unauthenticated except <code>/api/upload</code>.</p>
-<p>Base URL: <code>ALPHA_REMOTE_URL</code></p>
+<p>Base URL: <code>https://alpha.omegaai.dev</code></p>
 
 <!-- ── OpenAI-compatible ────────────────────────────────────── -->
 
 <h2 style="color: #4ade80;">OpenAI-Compatible API</h2>
-<p>Drop-in compatible with vLLM, Ollama, LiteLLM, FastChat, the OpenAI Python/JS SDKs, and any OpenAI-compatible client. Use base URL <code>ALPHA_REMOTE_URL/v1</code>.</p>
+<p>Drop-in compatible with vLLM, Ollama, LiteLLM, FastChat, the OpenAI Python/JS SDKs, and any OpenAI-compatible client. Use base URL <code>https://alpha.omegaai.dev/v1</code>.</p>
 
 <h2><span class="method get">GET</span> <span class="endpoint">/v1/models</span></h2>
 <p>List available models in OpenAI format.</p>
@@ -122,7 +122,7 @@ data: {<span class="str">"id"</span>:<span class="str">"chatcmpl-..."</span>,<sp
 data: [DONE]</pre>
 
 <h3>Example &mdash; curl</h3>
-<pre>curl -X POST <span class="str">"ALPHA_REMOTE_URL/v1/chat/completions"</span> \
+<pre>curl -X POST <span class="str">"https://alpha.omegaai.dev/v1/chat/completions"</span> \
   -H <span class="str">"Content-Type: application/json"</span> \
   -H <span class="str">"Authorization: Bearer any-key"</span> \
   -d <span class="str">'{
@@ -136,7 +136,7 @@ data: [DONE]</pre>
 <pre><span class="kw">from</span> openai <span class="kw">import</span> OpenAI
 
 client = OpenAI(
-    base_url=<span class="str">"ALPHA_REMOTE_URL/v1"</span>,
+    base_url=<span class="str">"https://alpha.omegaai.dev/v1"</span>,
     api_key=<span class="str">"any-key"</span>,
 )
 
@@ -163,7 +163,7 @@ stream = client.chat.completions.create(
 <pre><span class="kw">import</span> OpenAI <span class="kw">from</span> <span class="str">"openai"</span>;
 
 <span class="kw">const</span> client = <span class="kw">new</span> OpenAI({
-  baseURL: <span class="str">"ALPHA_REMOTE_URL/v1"</span>,
+  baseURL: <span class="str">"https://alpha.omegaai.dev/v1"</span>,
   apiKey: <span class="str">"any-key"</span>,
 });
 
@@ -229,7 +229,7 @@ console.log(response.choices[<span class="num">0</span>].message.content);</pre>
 }</pre>
 
 <h3>Example &mdash; curl</h3>
-<pre>curl -X POST <span class="str">"ALPHA_REMOTE_URL/api/generate"</span> \
+<pre>curl -X POST <span class="str">"https://alpha.omegaai.dev/api/generate"</span> \
   -H <span class="str">"Content-Type: application/json"</span> \
   -d <span class="str">'{
     "prompt": "Once upon a time",
@@ -270,7 +270,7 @@ console.log(data.usage);
 </table>
 
 <h3>Example &mdash; curl</h3>
-<pre>curl -N <span class="str">"ALPHA_REMOTE_URL/api/inference?query=The&amp;model=novels-5hr&amp;steps=100&amp;temp=0.8"</span></pre>
+<pre>curl -N <span class="str">"https://alpha.omegaai.dev/api/inference?query=The&amp;model=novels-5hr&amp;steps=100&amp;temp=0.8"</span></pre>
 
 <h3>Example &mdash; JavaScript (EventSource)</h3>
 <pre><span class="kw">const</span> url = <span class="str">"/api/inference?query=The&amp;model=novels-5hr&amp;steps=100"</span>;
@@ -305,7 +305,7 @@ data: [DONE]</pre>
 </table>
 
 <h3>Example &mdash; curl (streaming)</h3>
-<pre>curl -N -X POST <span class="str">"ALPHA_REMOTE_URL/api/chat"</span> \
+<pre>curl -N -X POST <span class="str">"https://alpha.omegaai.dev/api/chat"</span> \
   -H <span class="str">"Content-Type: application/json"</span> \
   -d <span class="str">'{
     "model": "novels-5hr",

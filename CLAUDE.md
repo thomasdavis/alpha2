@@ -1,6 +1,8 @@
 # Alpha — GPT training system
 
 Domain: **alpha.omegaai.dev**
+API endpoints: **https://alpha.omegaai.dev/api** (dashboard, inference, training ingest, uploads)
+OpenAI-compatible: **https://alpha.omegaai.dev/v1** (chat completions, model list)
 
 ## Philosophy
 
@@ -122,7 +124,7 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 | `TURSO_DATABASE_URL` | .env.local, Railway | Turso libsql connection URL |
 | `TURSO_AUTH_TOKEN` | .env.local, Railway | Turso auth token (rw) |
 | `UPLOAD_SECRET` | Railway | Auth token for ingest/upload endpoints |
-| `ALPHA_REMOTE_URL` | .env.local, training pod | API server URL for metrics streaming (use `ALPHA_REMOTE_URL`, NOT the web dashboard URL) |
+| `ALPHA_REMOTE_URL` | .env.local, training pod | API server URL for metrics streaming (use `https://alpha.omegaai.dev`) |
 | `ALPHA_REMOTE_SECRET` | .env.local, training pod | Same as UPLOAD_SECRET on server |
 | `RUNPOD_API_KEY` | .env.local | RunPod API key for GPU pod provisioning |
 | `RUNPOD_VOLUME_ID` | .env.local | (optional) RunPod network volume for persistent storage |
@@ -143,8 +145,7 @@ Set `DISCORD_WEBHOOK_URL` in `.env.local` on training pods. The remote reporter 
 
 All deployments are on **Railway** (project `REDACTED_PROJECT`).
 
-- **Server**: `railway service alpha2 && railway up`
-- **Web dashboard**: `railway service alpha-web && railway up`
+- **Single service** (web + API consolidated): `railway service alpha-web && railway up`
 - Training runs stored in `outputs/` locally, synced to Turso via `@alpha/db` syncFromDisk
 
 ## DB
