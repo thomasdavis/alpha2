@@ -15,8 +15,10 @@ export interface TapeEntry {
   readonly inputs: readonly Variable[];
   /** Compute gradients for each input given the output grad.
    *  The optional release callback frees intermediate GPU tensors created
-   *  within the backward closure (transposes, intermediates, etc.) */
-  backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void): TensorData[];
+   *  within the backward closure (transposes, intermediates, etc.).
+   *  The optional needsGrad array indicates which inputs actually need gradients,
+   *  allowing closures to skip expensive computations for non-parameter inputs. */
+  backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]): TensorData[];
 }
 
 // ── Variable ───────────────────────────────────────────────────────────────
@@ -63,7 +65,9 @@ export class Tape {
       const outGrad = entry.output.grad;
       if (!outGrad) continue;
 
-      const inputGrads = entry.backward(outGrad, backend, releaseTensor);
+      // Compute needsGrad mask so backward closures can skip dead gradients
+      const needsGrad = entry.inputs.map(inp => inp.requiresGrad);
+      const inputGrads = entry.backward(outGrad, backend, releaseTensor, needsGrad);
 
       for (let j = 0; j < entry.inputs.length; j++) {
         const input = entry.inputs[j];
@@ -72,13 +76,17 @@ export class Tape {
         if (!g) continue;
 
         if (input.grad) {
-          const oldGrad = input.grad;
-          input.grad = backend.add(input.grad, g);
-          // Release old accumulated grad and the backward output — both are
-          // now superseded by the new summed grad.
-          if (releaseTensor) {
-            releaseTensor(oldGrad);
-            releaseTensor(g);
+          // In-place accumulation: A += B without allocating a new tensor
+          if (backend.addInplace) {
+            backend.addInplace(input.grad, g);
+            if (releaseTensor) releaseTensor(g);
+          } else {
+            const oldGrad = input.grad;
+            input.grad = backend.add(input.grad, g);
+            if (releaseTensor) {
+              releaseTensor(oldGrad);
+              releaseTensor(g);
+            }
           }
         } else {
           input.grad = backend.clone(g);
@@ -98,8 +106,10 @@ export class Tape {
       // already been processed (we walk backward), so no future backward closure
       // will reference this output. This dramatically reduces peak GPU memory
       // during backward (from O(tape_size) to O(current_entry) activations).
+      // Null out .data so clear() won't double-free.
       if (releaseTensor) {
         releaseTensor(entry.output.data);
+        (entry.output as { data: TensorData | null }).data = null!;
       }
     }
   }
@@ -120,7 +130,10 @@ export class Tape {
     if (releaseTensor) {
       for (const entry of this.entries) {
         // Release intermediate output GPU buffers (forward pass results)
-        releaseTensor(entry.output.data);
+        // Skip if already released by backward() (data nulled out)
+        if (entry.output.data) {
+          releaseTensor(entry.output.data);
+        }
         // Release accumulated gradient GPU buffers on intermediates
         if (entry.output.grad) {
           releaseTensor(entry.output.grad);

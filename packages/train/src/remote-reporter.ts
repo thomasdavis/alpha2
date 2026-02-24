@@ -49,8 +49,8 @@ export interface RemoteReporter {
   sendSamples(samples: SampleGeneration[], step?: number): Promise<void>;
 }
 
-/** Max chunk size for chunked uploads (3.5MB — under Railway CDN ~4.5MB limit) */
-const CHUNK_SIZE = 3584 * 1024;
+/** Max chunk size for chunked uploads (1MB — safely under Railway CDN limit) */
+const CHUNK_SIZE = 1024 * 1024;
 
 /**
  * Strip optimizer state from a binary checkpoint to reduce upload size.
@@ -263,6 +263,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         modelConfig: info.modelConfig,
         trainConfig: info.trainConfig,
         totalParams: info.totalParams,
+        infra: info.infra,
       });
       startTimer();
 
@@ -272,17 +273,21 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         const paramStr = info.totalParams > 1e6
           ? `${(info.totalParams / 1e6).toFixed(1)}M`
           : `${(info.totalParams / 1e3).toFixed(0)}K`;
+        const fields = [
+          { name: "Run ID", value: `\`${info.runId}\``, inline: true },
+          { name: "Domain", value: info.domain ?? "unknown", inline: true },
+          { name: "Params", value: paramStr, inline: true },
+          { name: "Model", value: `${mc.nEmbd}d ${mc.nHead}h ${mc.nLayer}L`, inline: true },
+          { name: "Training", value: `batch=${tc.batchSize} lr=${tc.lr} iters=${tc.iters}`, inline: true },
+          { name: "Backend", value: tc.backend, inline: true },
+        ];
+        if (info.infra) {
+          fields.push({ name: "GPU", value: `${info.infra.gpuName} (${info.infra.gpuVendor})`, inline: true });
+        }
         await sendDiscord(discordWebhook, [{
           title: "🚀 Training Started",
           color: 0x00c853,
-          fields: [
-            { name: "Run ID", value: `\`${info.runId}\``, inline: true },
-            { name: "Domain", value: info.domain ?? "unknown", inline: true },
-            { name: "Params", value: paramStr, inline: true },
-            { name: "Model", value: `${mc.nEmbd}d ${mc.nHead}h ${mc.nLayer}L`, inline: true },
-            { name: "Training", value: `batch=${tc.batchSize} lr=${tc.lr} iters=${tc.iters}`, inline: true },
-            { name: "Backend", value: tc.backend, inline: true },
-          ],
+          fields,
           timestamp: new Date().toISOString(),
         }]);
       }

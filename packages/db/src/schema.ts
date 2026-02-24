@@ -118,4 +118,15 @@ export const migrations: string[][] = [
     `ALTER TABLE metrics ADD COLUMN timing_grad_clip_ms REAL`,
     `ALTER TABLE metrics ADD COLUMN gpu_ops_count INTEGER`,
   ],
+
+  // Version 5: Infrastructure metadata on runs
+  [
+    `ALTER TABLE runs ADD COLUMN gpu_name TEXT`,
+    `ALTER TABLE runs ADD COLUMN gpu_vendor TEXT`,
+    `ALTER TABLE runs ADD COLUMN gpu_vram_mb INTEGER`,
+    `ALTER TABLE runs ADD COLUMN hostname TEXT`,
+    `ALTER TABLE runs ADD COLUMN cpu_count INTEGER`,
+    `ALTER TABLE runs ADD COLUMN ram_total_mb INTEGER`,
+    `ALTER TABLE runs ADD COLUMN os_platform TEXT`,
+  ],
 ];

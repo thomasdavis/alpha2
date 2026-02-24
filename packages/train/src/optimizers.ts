@@ -27,9 +27,11 @@ export class AdamW implements Optimizer {
   private _vTd = new Map<string, TensorData>();
   private config: AdamWConfig;
   private backend: Backend;
+  private noDecayNames: Set<string>;
 
   constructor(backend: Backend, config: Partial<AdamWConfig> = {}) {
     this.backend = backend;
+    this.noDecayNames = config.noDecayNames ?? new Set();
     this.config = {
       lr: config.lr ?? 3e-4,
       beta1: config.beta1 ?? 0.9,
@@ -57,12 +59,14 @@ export class AdamW implements Optimizer {
         this._v.set(name, new Float32Array(size));
       }
 
+      const wd = this.noDecayNames.has(name) ? 0 : weightDecay;
+
       // Try GPU path if backend supports it
       if (this.backend.adamwStep) {
         const mTd = this._mTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._m.get(name)! };
         const vTd = this._vTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._v.get(name)! };
         if (!this._mTd.has(name)) { this._mTd.set(name, mTd); this._vTd.set(name, vTd); }
-        this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, weightDecay, bc1, bc2);
+        this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, wd, bc1, bc2);
         continue;
       }
 
@@ -73,7 +77,7 @@ export class AdamW implements Optimizer {
       const v = this._v.get(name)!;
 
       for (let i = 0; i < size; i++) {
-        pData[i] -= lr * weightDecay * pData[i];
+        if (wd > 0) pData[i] -= lr * wd * pData[i];
         m[i] = beta1 * m[i] + (1 - beta1) * gData[i];
         v[i] = beta2 * v[i] + (1 - beta2) * gData[i] * gData[i];
         const mHat = m[i] / bc1;

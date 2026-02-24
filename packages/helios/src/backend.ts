@@ -312,9 +312,20 @@ interface OutputRegion {
 
 const outputPool = new Map<number, OutputRegion[]>();
 
+/**
+ * Round allocation size up to coarse bins to reduce pool fragmentation.
+ * Collapses many similar sizes into fewer size classes for better reuse.
+ */
+function roundPoolSize(bytes: number): number {
+  if (bytes <= 4096) return 4096;
+  if (bytes <= 1_048_576) return Math.ceil(bytes / 262144) * 262144;  // 256KB bins up to 1MB
+  return Math.ceil(bytes / 4_194_304) * 4_194_304;  // 4MB bins above 1MB
+}
+
 function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
+  const rounded = roundPoolSize(byteSize);
   const completed = vk.getCompleted();
-  const pool = outputPool.get(byteSize);
+  const pool = outputPool.get(rounded);
   if (pool) {
     for (let i = 0; i < pool.length; i++) {
       if (pool[i].readyValue <= completed) {
@@ -322,7 +333,7 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
       }
     }
   }
-  return { handle: acquireBuffer(vk, byteSize), byteSize, readyValue: 0 };
+  return { handle: acquireBuffer(vk, rounded), byteSize: rounded, readyValue: 0 };
 }
 
 /**
@@ -384,9 +395,9 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 // ── Compute graph / lazy evaluation ──────────────────────────────────────────
 
-const MAX_PENDING_OPS = 64; // auto-flush when this many ops are pending
+const MAX_PENDING_OPS = 256; // auto-flush when this many ops are pending
 
-type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer";
+type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
 
 interface PendingOp {
   kind: PendingOpKind;
@@ -1178,16 +1189,122 @@ export class HeliosBackend implements Backend {
     return makeTensor(input.shape, input.dtype, out);
   }
 
+  softCap(input: TensorData, cap: number): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const byteSize = size * 4;
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "softcap_forward_vec4" : "softcap_forward";
+      const pipeline = getPipeline(vk, kernelName, 2);
+      const bufA = ensureGpu(vk, input);
+      const region = acquireOutputRegion(vk, byteSize);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const push = new Float32Array([effectiveSize, cap]);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      graph.record({
+        kind: "unary",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: input.shape,
+      });
+      return graphLazyTensor(vk, input.shape, region);
+    }
+    // CPU fallback
+    return this.cpuUnary(input, (x) => {
+      const scaled = Math.max(-80, Math.min(80, x / cap));
+      return Math.tanh(scaled) * cap;
+    });
+  }
+
+  softCapBackward(gradOutput: TensorData, input: TensorData, cap: number): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
+      const vk = this.init();
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "softcap_backward_vec4" : "softcap_backward";
+      const pipeline = getPipeline(vk, kernelName, 3);
+      const bufGrad = ensureGpu(vk, gradOutput);
+      const bufInput = ensureGpu(vk, input);
+      const region = acquireOutputRegion(vk, size * 4);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const push = new Float32Array([effectiveSize, cap]);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      graph.record({
+        kind: "backward",
+        kernel: "softcap_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: input.shape,
+        allBufs: [bufGrad, bufInput, region.handle],
+      });
+      return graphLazyTensor(vk, input.shape, region);
+    }
+    // CPU fallback
+    const src = input.data as Float32Array;
+    const grad = gradOutput.data as Float32Array;
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const scaled = Math.max(-80, Math.min(80, src[i] / cap));
+      const t = Math.tanh(scaled);
+      out[i] = grad[i] * (1 - t * t);
+    }
+    return makeTensor(input.shape, input.dtype, out);
+  }
+
+  residualDropoutAdd(residual: TensorData, projected: TensorData, mask: TensorData): TensorData {
+    const size = shapeSize(residual.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(residual.shape, projected.shape) && this.shapesEqual(residual.shape, mask.shape)) {
+      const vk = this.init();
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "residual_dropout_add_vec4" : "residual_dropout_add";
+      const pipeline = getPipeline(vk, kernelName, 4);
+      const bufR = ensureGpu(vk, residual);
+      const bufP = ensureGpu(vk, projected);
+      const bufM = ensureGpu(vk, mask);
+      const region = acquireOutputRegion(vk, size * 4);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const push = new Float32Array([effectiveSize, 0]);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      graph.record({
+        kind: "binary",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: residual.shape,
+        allBufs: [bufR, bufP, bufM, region.handle],
+      });
+      return graphLazyTensor(vk, residual.shape, region);
+    }
+    // CPU fallback: residual + projected * mask
+    const rArr = residual.data as Float32Array;
+    const pArr = projected.data as Float32Array;
+    const mArr = mask.data as Float32Array;
+    const out = new Float32Array(size);
+    for (let i = 0; i < size; i++) out[i] = rArr[i] + pArr[i] * mArr[i];
+    return makeTensor(residual.shape, residual.dtype, out);
+  }
+
   crossEntropyBackward(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData {
     const vk = this.init();
     const [N, C] = logits.shape;
     const totalElements = N * C;
     const gradScalar = (gradOutput.data as Float32Array)[0];
 
-    // Flush pending ops to reclaim GPU memory from earlier backward operations
-    graph.flush();
-
-    // Compute softmax on GPU (stays lazy)
+    // Compute softmax on GPU (stays lazy — no flush needed)
     const probs = this.softmax(logits, -1);
 
     if (totalElements >= this._minGpuSize) {
@@ -1469,6 +1586,225 @@ export class HeliosBackend implements Backend {
 
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     }
+  }
+
+  // ── Fused matmul with B transposed: C = A × B^T ─────────────────────────
+
+  /**
+   * GPU matmul where B is transposed: computes A[M,K] × B[N,K]^T = C[M,N].
+   * B is stored as [N,K] but used as if transposed to [K,N].
+   * Eliminates the need for a separate transpose dispatch before matmul.
+   */
+  matmulTransposed(a: TensorData, b: TensorData): TensorData {
+    const aNdim = a.shape.length, bNdim = b.shape.length;
+    const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
+    const N = b.shape[bNdim - 2]; // B is [N, K], so N is dim -2
+    // Use compute FLOPs threshold like regular matmul
+    if (M * N * K >= 100_000) return this.gpuMatmulTransposed(a, b, M, N, K);
+    // CPU fallback: materialize transpose then multiply
+    const bT = this.transpose(b, bNdim - 2, bNdim - 1);
+    return this.cpuMatmul(a, bT);
+  }
+
+  private gpuMatmulTransposed(a: TensorData, b: TensorData, M: number, N: number, K: number): TensorData {
+    const vk = this.init();
+    const aNdim = a.shape.length;
+    const aBatch = a.shape.slice(0, aNdim - 2);
+    let batchSize = 1;
+    for (const d of aBatch) batchSize *= d;
+
+    const TILE = 16;
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const gX = Math.ceil(N / TILE);
+    const gY = Math.ceil(M / TILE);
+    const push = new Float32Array([M, N, K, 0]);
+
+    if (batchSize === 1) {
+      const pipeline = getPipeline(vk, "matmul_transposed", 3, 16);
+      const outBytes = M * N * 4;
+      const region = acquireOutputRegion(vk, outBytes);
+
+      graph.record({
+        kind: "matmul",
+        kernel: "matmul_transposed",
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [gX, gY, 1],
+        push,
+        pushSize: 16,
+        shape: [...aBatch, M, N],
+      });
+
+      return graphLazyTensor(vk, [...aBatch, M, N], region);
+    } else {
+      const pipeline = getPipeline(vk, "matmul_transposed_batched", 3, 16);
+      const outBytes = batchSize * M * N * 4;
+      const region = acquireOutputRegion(vk, outBytes);
+
+      graph.record({
+        kind: "matmul",
+        kernel: "matmul_transposed_batched",
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [gX, gY, batchSize],
+        push,
+        pushSize: 16,
+        shape: [...aBatch, M, N],
+      });
+
+      return graphLazyTensor(vk, [...aBatch, M, N], region);
+    }
+  }
+
+  // ── In-place add: A += B on GPU ────────────────────────────────────────────
+
+  addInplace(a: TensorData, b: TensorData): void {
+    const size = shapeSize(a.shape);
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const bufA = ensureGpu(vk, a);
+      const bufB = ensureGpu(vk, b);
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "add_inplace_vec4" : "add_inplace";
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const pipeline = getPipeline(vk, kernelName, 2);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      const push = new Float32Array([effectiveSize, 0]);
+
+      graph.record({
+        kind: "inplace",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [],
+        outputRegion: null as any, // in-place — no output region
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape as number[],
+        allBufs: [bufA, bufB],
+      });
+      return;
+    }
+    // CPU fallback
+    const aArr = a.data as Float32Array;
+    const bArr = b.data as Float32Array;
+    for (let i = 0; i < size; i++) aArr[i] += bArr[i];
+  }
+
+  // ── Flash Attention (fused forward + backward) ─────────────────────────
+
+  flashAttention(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    // Q/K/V are [BH, T, D] where BH = batch * nHeads
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 32, Bc = 32;
+
+    const kernelName = `flash_attn_fwd_${Br}_${Bc}_${D}`;
+    const pipeline = getPipeline(vk, kernelName, 5, 16);
+
+    const bufQ = ensureGpu(vk, Q);
+    const bufK = ensureGpu(vk, K);
+    const bufV = ensureGpu(vk, V);
+
+    // Output: O [BH, T, D]
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    // LSE: [BH, T]
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = new Float32Array([T, scale, softCap, 0]);
+    const gX = Math.ceil(T / Br);
+
+    graph.record({
+      kind: "matmul", // reuse matmul kind for flash attention dispatch
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [],
+      outputRegion: oRegion, // not used directly — allBufs overrides
+      groups: [gX, BH, 1],
+      push,
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+    });
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { output, lse };
+  }
+
+  flashAttentionBackward(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 32, Bc = 32;
+
+    const bufQ = ensureGpu(vk, Q);
+    const bufK = ensureGpu(vk, K);
+    const bufV = ensureGpu(vk, V);
+    const bufO = ensureGpu(vk, O);
+    const bufDO = ensureGpu(vk, dO);
+    const bufLSE = ensureGpu(vk, lse);
+
+    // Step 1: Precompute D[i] = sum_d(dO[i,d] * O[i,d]) via element-wise mul + sum
+    // D_precomp: [BH, T] — one scalar per query position
+    const doTimesO = this.mul(dO, O); // [BH, T, D]
+    const dPrecomp = this.sum(doTimesO, 2); // [BH, T] — sum over last axis (D)
+    const bufDpre = ensureGpu(vk, dPrecomp);
+
+    // Step 2: dQ kernel
+    const dqKernel = `flash_attn_bwd_dq_${Br}_${Bc}_${D}`;
+    const dqPipeline = getPipeline(vk, dqKernel, 7, 16);
+    const dqBytes = BH * T * D * 4;
+    const dqRegion = acquireOutputRegion(vk, dqBytes);
+    const push = new Float32Array([T, scale, softCap, 0]);
+
+    graph.record({
+      kind: "backward",
+      kernel: dqKernel,
+      pipeline: dqPipeline,
+      inputBufs: [],
+      outputRegion: dqRegion,
+      groups: [Math.ceil(T / Br), BH, 1],
+      push,
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, bufDpre, dqRegion.handle],
+    });
+
+    // Step 3: dKV kernel
+    const dkvKernel = `flash_attn_bwd_dkv_${Br}_${Bc}_${D}`;
+    const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
+    const dkBytes = BH * T * D * 4;
+    const dkRegion = acquireOutputRegion(vk, dkBytes);
+    const dvBytes = BH * T * D * 4;
+    const dvRegion = acquireOutputRegion(vk, dvBytes);
+
+    graph.record({
+      kind: "backward",
+      kernel: dkvKernel,
+      pipeline: dkvPipeline,
+      inputBufs: [],
+      outputRegion: dkRegion,
+      groups: [Math.ceil(T / Bc), BH, 1],
+      push: new Float32Array([T, scale, softCap, 0]),
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, bufDpre, dkRegion.handle, dvRegion.handle],
+    });
+
+    const dQ = graphLazyTensor(vk, [BH, T, D], dqRegion);
+    const dK = graphLazyTensor(vk, [BH, T, D], dkRegion);
+    const dV = graphLazyTensor(vk, [BH, T, D], dvRegion);
+    return { dQ, dK, dV };
   }
 
   // ── Backend interface: nn ops ───────────────────────────────────────────

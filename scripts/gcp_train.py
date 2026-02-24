@@ -4,7 +4,7 @@ gcp_train.py — Run Alpha training on GCP A100 GPU instances.
 
 Provisions an a2-ultragpu-1g VM (A100 80GB), syncs code, runs training,
 downloads results. Boot disk persists across stop/start cycles.
-Roughly half the cost of RunPod H100 ($1.10/hr vs $1.99-2.39/hr).
+~$1.10/hr on-demand for A100 80GB.
 
 Usage:
   # Train (creates instance if needed, syncs code, runs, downloads results):
@@ -69,7 +69,7 @@ RECOMMENDED_ZONES = [
     "asia-east1-a", "asia-east1-c",
 ]
 
-# Exclusions for rsync (same as runpod_train.py / modal_train.py)
+# Exclusions for rsync
 RSYNC_EXCLUDES = [
     "node_modules", ".git", ".turbo", ".next", "data", "runs", "outputs",
     "artifacts", ".env.local", "*.node", "*.db", "*.db-wal",
@@ -563,7 +563,7 @@ def run_training(ip: str, remote_data_path: str, train_args: str,
 
     # Export env vars so metrics stream to the dashboard
     env_exports = "export DISPLAY=:99 && "
-    for var in ["ALPHA_REMOTE_URL", "ALPHA_REMOTE_SECRET"]:
+    for var in ["ALPHA_REMOTE_URL", "ALPHA_REMOTE_SECRET", "DISCORD_WEBHOOK_URL"]:
         val = os.environ.get(var)
         if val:
             env_exports += f"export {var}='{val}' && "
@@ -692,6 +692,16 @@ def train_pipeline(args):
         train_args_parts.append(f"--evalInterval={args.eval_interval}")
     if args.grad_clip is not None:
         train_args_parts.append(f"--gradClip={args.grad_clip}")
+    if args.sample_interval:
+        train_args_parts.append(f"--sampleInterval={args.sample_interval}")
+    if args.accum_steps:
+        train_args_parts.append(f"--accumSteps={args.accum_steps}")
+    if args.warmup:
+        train_args_parts.append(f"--warmupIters={args.warmup}")
+    if args.beta2 is not None:
+        train_args_parts.append(f"--beta2={args.beta2}")
+    if args.spike_threshold is not None:
+        train_args_parts.append(f"--spikeThreshold={args.spike_threshold}")
     train_args = " ".join(train_args_parts)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -783,7 +793,7 @@ def main():
     parser.add_argument("--machine-type", default=MACHINE_TYPE,
                         help=f"GCP machine type (default: {MACHINE_TYPE})")
 
-    # Training params (identical to runpod_train.py)
+    # Training params
     parser.add_argument("--data", help="Path to local training data file (uploaded via scp)")
     parser.add_argument("--data-url", help="URL to download dataset directly on instance (faster than upload)")
     parser.add_argument("--iters", type=int, default=1000)
@@ -800,6 +810,11 @@ def main():
     parser.add_argument("--eval-interval", type=int, default=0, help="Eval/checkpoint interval")
     parser.add_argument("--grad-clip", type=float, default=None, help="Gradient clipping norm")
     parser.add_argument("--download-dir", default="runs", help="Local directory for results")
+    parser.add_argument("--sample-interval", type=int, default=0, help="Sample generation interval")
+    parser.add_argument("--accum-steps", type=int, default=0, help="Gradient accumulation steps")
+    parser.add_argument("--warmup", type=int, default=0, help="Warmup iterations")
+    parser.add_argument("--beta2", type=float, default=None, help="Adam beta2")
+    parser.add_argument("--spike-threshold", type=float, default=None, help="Skip optimizer step when grad_norm > threshold × EMA")
     parser.add_argument("--stop-after", action="store_true",
                         help="Stop instance after training completes")
 

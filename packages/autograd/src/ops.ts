@@ -15,7 +15,7 @@ function record(
   ctx: Ctx,
   data: TensorData,
   inputs: Variable[],
-  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void) => TensorData[]
+  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]) => TensorData[]
 ): Variable {
   const out = new Variable(data, true);
   ctx.tape.record({ output: out, inputs, backward });
@@ -88,16 +88,55 @@ export function neg(ctx: Ctx, a: Variable): Variable {
 
 export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release) => {
+  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release, needsGrad) => {
     // For 2D: dL/dA = G @ B^T, dL/dB = A^T @ G
     const ndimA = aData.shape.length;
     const ndimB = bData.shape.length;
-    const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
-    const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
-    const ga = B.matmul(g, tB);
-    const gb = B.matmul(tA, g);
-    if (release) { release(tB); release(tA); }
-    return [ga, gb];
+    let ga: TensorData | null = null;
+    let gb: TensorData | null = null;
+    if (!needsGrad || needsGrad[0]) {
+      const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
+      ga = B.matmul(g, tB);
+      if (release) release(tB);
+    }
+    if (!needsGrad || needsGrad[1]) {
+      const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
+      gb = B.matmul(tA, g);
+      if (release) release(tA);
+    }
+    return [ga!, gb!];
+  });
+}
+
+/**
+ * Fused matmul with B transposed: computes A @ B^T.
+ * B is stored as [N, K] but used as [K, N].
+ * Eliminates separate transpose dispatch on the forward path.
+ * Falls back to transpose + matmul if backend doesn't support it.
+ */
+export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
+  const aData = a.data, bData = b.data;
+  const B = ctx.backend;
+  // Use fused kernel if available, otherwise fall back to transpose + matmul
+  const out = B.matmulTransposed
+    ? B.matmulTransposed(aData, bData)
+    : B.matmul(aData, B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1));
+  return record(ctx, out, [a, b], (g, B, release, needsGrad) => {
+    // C = A @ B^T where B is [N, K]
+    let ga: TensorData | null = null;
+    let gb: TensorData | null = null;
+    if (!needsGrad || needsGrad[0]) {
+      // dL/dA = G @ B (G is [..., M, N], B is [..., N, K] → result [..., M, K])
+      ga = B.matmul(g, bData);
+    }
+    if (!needsGrad || needsGrad[1]) {
+      // dL/dB = G^T @ A (G^T is [..., N, M], A is [..., M, K] → result [..., N, K])
+      const ndimG = g.shape.length;
+      const tG = B.transpose(g, ndimG - 2, ndimG - 1);
+      gb = B.matmul(tG, aData);
+      if (release) release(tG);
+    }
+    return [ga!, gb!];
   });
 }
 
@@ -169,6 +208,40 @@ export function clamp(ctx: Ctx, a: Variable, lo: number, hi: number): Variable {
     for (let i = 0; i < src.length; i++) grad[i] = (src[i] > lo && src[i] < hi) ? gArr[i] : 0;
     return [{ shape: [...g.shape], dtype: g.dtype, data: grad } as TensorData];
   });
+}
+
+export function softCap(ctx: Ctx, a: Variable, cap: number): Variable {
+  // tanh(x/cap) * cap — smooth logit capping (PaLM/Gemma technique)
+  // Use native kernel if backend supports it (single dispatch vs 7 composed ops)
+  if (ctx.backend.softCap) {
+    const aData = a.data;
+    const out = ctx.backend.softCap(aData, cap);
+    return record(ctx, out, [a], (g, B, release) => {
+      if (B.softCapBackward) return [B.softCapBackward(g, aData, cap)];
+      // CPU fallback for backward
+      const t = B.softCap!(aData, cap);
+      const tanhVals = B.scale(t, 1 / cap);
+      const tanhSq = B.mul(tanhVals, tanhVals);
+      const ones = B.ones(tanhSq.shape, tanhSq.dtype);
+      const deriv = B.sub(ones, tanhSq);
+      const result = B.mul(g, deriv);
+      if (release) { release(t); release(tanhVals); release(tanhSq); release(ones); release(deriv); }
+      return [result];
+    });
+  }
+
+  // Composed fallback (for backends without native softCap):
+  // tanh(z) = (exp(2z) - 1) / (exp(2z) + 1)
+  // Clamp exp input to [-80, 80] to prevent float32 overflow (exp(88) ≈ max f32).
+  // This only affects |x| > cap*40 = 1200 where tanh gradient is already ~0.
+  const xScaled = scale(ctx, a, 2 / cap); // 2x/cap
+  const xSafe = clamp(ctx, xScaled, -80, 80); // prevent exp overflow
+  const e2x = exp(ctx, xSafe); // exp(2x/cap)
+  const onesVar = new Variable(ctx.backend.ones(e2x.data.shape, e2x.data.dtype), false);
+  const numer = sub(ctx, e2x, onesVar); // exp(2x/cap) - 1
+  const denom = add(ctx, e2x, onesVar); // exp(2x/cap) + 1
+  const tanhVal = div(ctx, numer, denom); // tanh(x/cap)
+  return scale(ctx, tanhVal, cap); // tanh(x/cap) * cap
 }
 
 export function gelu(ctx: Ctx, a: Variable): Variable {
@@ -275,6 +348,72 @@ export function layerNorm(
   });
 }
 
+export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Variable {
+  if (!training || p === 0) return a;
+  const aData = a.data;
+  const size = shapeSize(aData.shape);
+  const maskArr = new Float32Array(size);
+  const scaleVal = 1 / (1 - p);
+  // Generate dropout mask: 1/(1-p) where kept, 0 where dropped
+  for (let i = 0; i < size; i++) maskArr[i] = Math.random() > p ? scaleVal : 0;
+  const cpuMask: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: maskArr };
+  // Clone mask into backend storage so it's GPU-resident when using GPU backend
+  const mask = ctx.backend.clone(cpuMask);
+  const out = ctx.backend.mul(aData, mask);
+  return record(ctx, out, [a], (g, B) => {
+    return [B.mul(g, mask)];
+  });
+}
+
+/**
+ * Fused residual + dropout + add: output = residual + dropout(projected, p, training)
+ * Single GPU dispatch replaces mul(projected, mask) + add(residual, dropResult).
+ * Backward: grad_residual = upstream_grad, grad_projected = upstream_grad * mask.
+ */
+export function residualDropoutAdd(
+  ctx: Ctx,
+  residual: Variable,
+  projected: Variable,
+  p: number,
+  training: boolean,
+): Variable {
+  // No dropout: just add
+  if (!training || p === 0) return add(ctx, residual, projected);
+
+  const projData = projected.data;
+  const resData = residual.data;
+  const size = shapeSize(projData.shape);
+  const scaleVal = 1 / (1 - p);
+
+  // Generate dropout mask on CPU (same RNG as standalone dropout)
+  const maskArr = new Float32Array(size);
+  for (let i = 0; i < size; i++) maskArr[i] = Math.random() > p ? scaleVal : 0;
+  const cpuMask: TensorData = { shape: [...projData.shape], dtype: projData.dtype, data: maskArr };
+  const mask = ctx.backend.clone(cpuMask);
+
+  // Use fused kernel if backend supports it
+  if (ctx.backend.residualDropoutAdd) {
+    const out = ctx.backend.residualDropoutAdd(resData, projData, mask);
+    return record(ctx, out, [residual, projected], (g, B, release) => {
+      // grad_residual = upstream_grad (pass-through via broadcast reduction)
+      const ga = reduceBroadcast(B, g, resData.shape);
+      // grad_projected = upstream_grad * mask
+      const gb = B.mul(g, mask);
+      return [ga, gb];
+    });
+  }
+
+  // Fallback: separate ops
+  const dropOut = ctx.backend.mul(projData, mask);
+  const out = ctx.backend.add(resData, dropOut);
+  return record(ctx, out, [residual, projected], (g, B, release) => {
+    const ga = reduceBroadcast(B, g, resData.shape);
+    const gb = B.mul(g, mask);
+    if (release) release(dropOut);
+    return [ga, gb];
+  });
+}
+
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   const out = ctx.backend.softmax(a.data, axis);
   return record(ctx, out, [a], (g, B, release) => {
@@ -304,6 +443,40 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
     const result = B.scale(diff, gScalar / N);
     if (release) { release(probs); release(diff); }
     return [result];
+  });
+}
+
+// ── Flash Attention ────────────────────────────────────────────────────────
+
+/**
+ * Fused multi-head attention with Flash Attention algorithm.
+ * Q, K, V are [B*H, T, D] (already reshaped to per-head layout).
+ * Returns [B*H, T, D] attention output.
+ *
+ * Replaces: matmul(Q, K^T) → scale → softCap → maskedFill → softmax → dropout → matmul(@V)
+ * with a single fused GPU dispatch (forward) and two dispatches (backward).
+ */
+export function flashAttention(
+  ctx: Ctx, q: Variable, k: Variable, v: Variable,
+  T: number, scale: number, softCap: number,
+): Variable {
+  const B = ctx.backend;
+  if (!B.flashAttention) throw new Error("flashAttention requires GPU backend");
+
+  const { output, lse } = B.flashAttention(q.data, k.data, v.data, T, scale, softCap);
+
+  return record(ctx, output, [q, k, v], (g, B2, release, needsGrad) => {
+    if (!B2.flashAttentionBackward) throw new Error("flashAttentionBackward requires GPU backend");
+
+    const { dQ, dK, dV } = B2.flashAttentionBackward(
+      q.data, k.data, v.data, output, g, lse, T, scale, softCap,
+    );
+
+    return [
+      (!needsGrad || needsGrad[0]) ? dQ : null as any,
+      (!needsGrad || needsGrad[1]) ? dK : null as any,
+      (!needsGrad || needsGrad[2]) ? dV : null as any,
+    ];
   });
 }
 

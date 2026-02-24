@@ -105,6 +105,16 @@ export const tips = {
   domainAbc: "Trained on ABC music notation. Generates melodies and tunes in ABC format.",
   domainFinance: "Trained on financial data patterns.",
 
+  // ── Infrastructure ─────────────────────────────────────────────
+  infrastructure:
+    "Details about the hardware and environment used to train this model — GPU, CPU, memory, and cloud provider.",
+  gpuName:
+    "The specific GPU model used for training. Different GPUs have different compute capabilities and VRAM.",
+  gpuVram:
+    "Video RAM on the GPU. More VRAM allows larger batch sizes and model sizes. Measured in gigabytes.",
+  estimatedCost:
+    "Estimated cloud compute cost based on GPU type, provider pricing, and training duration. Actual cost may vary.",
+
   // ── General ──────────────────────────────────────────────────────
   model:
     "A neural network that has been trained to predict the next token in a sequence. Given some text, it generates plausible continuations.",

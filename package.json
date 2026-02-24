@@ -25,7 +25,6 @@
     "train:chords": "scripts/train-chords.sh",
     "train:concordance": "scripts/train-concordance.sh",
     "train:gcp": "python scripts/gcp_train.py",
-    "train:runpod": "python scripts/runpod_train.py",
     "upload": "npx tsx scripts/upload-railway.ts",
     "demo": "npx tsx scripts/demo.ts",
     "server": "npm run dev -w @alpha/web",

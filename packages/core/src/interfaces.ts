@@ -99,6 +99,23 @@ export interface Backend {
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
   crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
+  softCap?(input: TensorData, cap: number): TensorData;
+  softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
+
+  // fused ops (GPU-optimized, optional)
+  residualDropoutAdd?(residual: TensorData, projected: TensorData, mask: TensorData): TensorData;
+  matmulTransposed?(a: TensorData, b: TensorData): TensorData;
+  addInplace?(a: TensorData, b: TensorData): void;
+
+  // flash attention (GPU-optimized, optional)
+  // Q,K,V: [B*H, T, D], returns { output: [B*H, T, D], lse: [B*H, T] }
+  flashAttention?(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData };
+  // dO: [B*H, T, D], O: forward output, lse: from forward
+  // returns { dQ, dK, dV } each [B*H, T, D]
+  flashAttentionBackward?(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData };
 
   // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
   broadcast?(a: TensorData, targetShape: Shape): TensorData;

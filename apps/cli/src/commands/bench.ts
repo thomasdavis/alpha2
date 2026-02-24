@@ -266,8 +266,8 @@ async function benchTrain(iters: number): Promise<void> {
     trace: false,
     gradAccumSteps: 1,
     lrMin: 0,
-    warmupIters: 0,
-    sampleInterval: iters + 1,
+    warmupIters: -1, // disable warmup for bench
+    sampleInterval: 0, // no samples during bench
     spikeThreshold: 0,
   };
 

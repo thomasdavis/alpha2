@@ -72,6 +72,9 @@ export interface StepMetrics {
   timing_grad_norm_ms?: number;
   timing_grad_clip_ms?: number;
   gpu_ops_count?: number;
+  // Clipping telemetry
+  clip_coef?: number;
+  clip_pct?: number;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -236,6 +239,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   // Training loop
   const startTime = performance.now();
   let spikeSkips = 0;
+  let clippedSteps = 0;
 
   for (let step = startStep; step < trainConfig.iters; step++) {
     const stepStart = performance.now();
@@ -287,7 +291,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
-      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets);
+      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 
@@ -346,27 +350,50 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
         }
       }
       // Phase 2: first .data access triggers single flush of ALL pending GPU work
+      // Always collect per-param norms for diagnostics (minimal overhead — values already on CPU)
       let gradNormSq = 0;
-      const perParamNormSq = trainConfig.trace ? new Map<string, number>() : null;
+      const perParamNorms: { name: string; normSq: number }[] = [];
       for (let pi = 0; pi < sqNormParts.length; pi++) {
         const val = (sqNormParts[pi].data as Float32Array)[0];
         gradNormSq += val;
-        if (perParamNormSq) perParamNormSq.set(sqNormNames[pi], val);
+        perParamNorms.push({ name: sqNormNames[pi], normSq: val });
       }
       gradNorm = Math.sqrt(gradNormSq);
+
+      // Per-layer gradient diagnostics (when trace enabled)
+      if (trainConfig.trace) {
+        const sorted = [...perParamNorms]
+          .map(({ name: n, normSq: sq }) => [n, Math.sqrt(sq)] as const)
+          .sort((a, b) => b[1] - a[1]);
+        const top5 = sorted.slice(0, 5).map(([n, v]) => `${n}=${v.toFixed(2)}`).join(", ");
+        console.log(`  [trace] grad norms (top 5): ${top5}`);
+      }
+
+      // Per-layer gradient diagnostics (every 500 steps, independent of trace flag)
+      if ((step + 1) % 500 === 0 && perParamNorms.length > 0) {
+        const layerNorms = perParamNorms
+          .map(({ name, normSq }) => ({ name, norm: Math.sqrt(normSq) }))
+          .sort((a, b) => b.norm - a.norm);
+
+        console.log(`  [diag] per-layer grad norms (step ${step + 1}):`);
+        const top10 = layerNorms.slice(0, 10);
+        for (const { name, norm } of top10) {
+          console.log(`    ${name}: ${norm.toFixed(4)}`);
+        }
+
+        // Identify spike source — which parameter dominates the total norm
+        if (layerNorms.length > 0) {
+          const topParam = layerNorms[0];
+          const totalNorm = Math.sqrt(layerNorms.reduce((s, l) => s + l.norm * l.norm, 0));
+          const pct = ((topParam.norm / totalNorm) * 100).toFixed(1);
+          console.log(`    -> dominant: ${topParam.name} (${pct}% of total norm)`);
+        }
+      }
+
       // Release grad norm intermediates (g² tensors and scalar sums)
       if (releaseFn) {
         for (const g2 of g2Intermediates) releaseFn(g2);
         for (const part of sqNormParts) releaseFn(part);
-      }
-
-      // Per-layer gradient diagnostics (when trace enabled)
-      if (perParamNormSq) {
-        const sorted = [...perParamNormSq.entries()]
-          .map(([n, sq]) => [n, Math.sqrt(sq)] as const)
-          .sort((a, b) => b[1] - a[1]);
-        const top5 = sorted.slice(0, 5).map(([n, v]) => `${n}=${v.toFixed(2)}`).join(", ");
-        console.log(`  [trace] grad norms (top 5): ${top5}`);
       }
 
       // NaN guard on gradient norm (backward produced NaN even though loss was finite)
@@ -393,8 +420,10 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const _t4 = performance.now();
 
     // Clip gradients using backend.scale (stays on GPU)
+    let clipCoef = 1.0;
     if (!nanDetected && trainConfig.gradClip > 0 && gradNorm > trainConfig.gradClip) {
-      const clipCoef = trainConfig.gradClip / gradNorm;
+      clipCoef = trainConfig.gradClip / gradNorm;
+      clippedSteps++;
       for (const [, variable] of paramMap) {
         if (variable.grad) {
           const oldGrad = variable.grad;
@@ -495,6 +524,9 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       timing_flush_ms: _t6 - _t5,
       timing_data_ms: dataLoadMs,
       gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
+      // Clipping telemetry
+      clip_coef: clipCoef,
+      clip_pct: (clippedSteps / (step + 1)) * 100,
     };
 
     // GPU stats (queried at most every 5s via nvidia-smi)
@@ -533,6 +565,14 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
         if ("flush" in backend) (backend as any).flush();
       }
       metrics.valLoss = valLossSum / trainConfig.evalIters;
+
+      // Eval-time diagnostic summary
+      console.log(
+        `  [diag] eval step ${step + 1}: loss=${lossVal.toFixed(4)}, ` +
+        `val_loss=${metrics.valLoss.toFixed(4)}, ` +
+        `grad_norm=${gradNorm.toFixed(2)}, ` +
+        `clip_pct=${((clippedSteps / (step + 1)) * 100).toFixed(1)}%`
+      );
     }
 
     // Log
@@ -540,9 +580,10 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const valStr = metrics.valLoss !== undefined ? ` val_loss=${metrics.valLoss.toFixed(4)}` : "";
     const toksStr = (metrics.tokens_per_sec).toFixed(0);
     const gpuStr = "gpuOpsThisStep" in backend ? ` | ${(backend as any).gpuOpsThisStep} gpu_ops` : "";
+    const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
     console.log(
       `step ${metrics.step}/${trainConfig.iters} | loss=${lossStr}${valStr} ` +
-      `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)} ` +
+      `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
       `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}`
     );
 
@@ -584,7 +625,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
               (t) => tokenizer.decode(t),
               prompt, sampleCfg, releaseFn, flushFn,
             );
-            console.log(`  sample: "${prompt}" → ${output.slice(0, 80)}${output.length > 80 ? "..." : ""}`);
+            console.log(`  sample: "${prompt}" → ${output}`);
             samples.push({ prompt, output });
           }
 

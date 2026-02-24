@@ -61,32 +61,38 @@ apps/cli            — CLI commands
 - Don't run `PRAGMA journal_mode=WAL` on remote Turso connections
 - Don't duplicate types — if `@alpha/core` has it, import it
 
-## GPU Training (RunPod)
+## Chat Training Data
 
-Training runs on **RunPod** GPU pods via `scripts/runpod_train.py`. The script handles the full lifecycle: provision pod, sync code, build, upload dataset, train, download results.
+For chat model training, always use **`data/chat_clean.txt`** (not `chat_combined.txt`). The clean version is validated and normalized:
+- Every conversation starts with `<|user|>` and ends with `<|assistant|>` turn + `<|end_of_text|>`
+- Strict user/assistant alternation
+- No empty turns, no conversations ending on a user turn
 
-```bash
-# Train on concordance dataset with H100:
-python scripts/runpod_train.py --data data/concordance.txt --domain concordance \
-  --iters 50000 --batch 8 --block 256 --dim 256 --heads 8 --layers 6 \
-  --backend helios --gpu H100
-
-# Pod management:
-python scripts/runpod_train.py --action status     # check pod
-python scripts/runpod_train.py --action stop        # stop (saves money)
-python scripts/runpod_train.py --action ssh         # interactive SSH
-python scripts/runpod_train.py --action terminate   # destroy pod
-```
-
-- Pods reuse automatically — the script finds an existing `alpha-train` pod before creating a new one
-- Environment setup (Node.js, Vulkan) is cached on the pod's workspace volume
-- Code is synced via rsync on each run; datasets are uploaded once and reused
-- Pass `--stop-after` to auto-stop the pod when training completes
-- SSH public key must be added to RunPod account settings (or is injected via `PUBLIC_KEY` env var)
+Run `npx tsx scripts/validate-chat-data.ts <file>` to validate any chat data file, or `--fix` to auto-clean it.
 
 ## GPU Training (GCP)
 
-Training also runs on **GCP** A100 80GB instances via `scripts/gcp_train.py`. Same structure as RunPod but roughly half the cost (~$1.10/hr vs $1.99-2.39/hr).
+Training runs on **GCP** A100 80GB instances via `scripts/gcp_train.py`. The script handles the full lifecycle: provision instance, sync code, build, upload dataset, train, download results. ~$1.10/hr on-demand.
+
+### SSH access
+
+gcloud CLI is at `~/google-cloud-sdk/bin/gcloud`. To SSH into the training instance:
+
+```bash
+export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b --command="<cmd>"
+```
+
+The code is at `~/alpha/` on the instance. Training logs are at `~/alpha/runs/<run_dir>.log`. Checkpoints are at `~/alpha/runs/<run_dir>/checkpoint-<step>.json`.
+
+To run inference from a checkpoint while training is running, use `cpu_ref` backend (GPU is locked by the training process):
+```bash
+gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+  --command="cd ~/alpha && node apps/cli/dist/main.js sample \
+    --checkpoint=runs/<run_dir>/checkpoint-<step>.json \
+    --backend=cpu_ref --steps=80 --temp=0.8 --topk=40 \
+    --prompt='<|user|> Hello <|assistant|>'"
+```
 
 Prerequisites:
 ```bash
@@ -115,7 +121,7 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 - Deep Learning VM image has NVIDIA drivers pre-installed — setup only needs Node.js + Vulkan
 - Boot disk (200GB SSD) persists across stop/start cycles
 - SSH keys bootstrapped automatically via `gcloud compute ssh` on first connection
-- Same CLI args as RunPod (except `--zone` instead of `--gpu`)
+- Pass `--zone` to select a different region
 
 ## Key env vars
 
@@ -126,9 +132,7 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 | `UPLOAD_SECRET` | Railway | Auth token for ingest/upload endpoints |
 | `ALPHA_REMOTE_URL` | .env.local, training pod | API server URL for metrics streaming (use `https://alpha.omegaai.dev`) |
 | `ALPHA_REMOTE_SECRET` | .env.local, training pod | Same as UPLOAD_SECRET on server |
-| `RUNPOD_API_KEY` | .env.local | RunPod API key for GPU pod provisioning |
-| `RUNPOD_VOLUME_ID` | .env.local | (optional) RunPod network volume for persistent storage |
-| `DISCORD_WEBHOOK_URL` | .env.local, training pod | Discord webhook for training notifications + inference samples |
+| `DISCORD_WEBHOOK_URL` | .env.local, training instance | Discord webhook for training notifications + inference samples |
 
 ## Discord Notifications
 

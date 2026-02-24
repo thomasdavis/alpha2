@@ -35,6 +35,14 @@ export interface DbRun {
   created_at: string;
   updated_at: string;
   disk_mtime: number | null;
+  // infrastructure metadata
+  gpu_name: string | null;
+  gpu_vendor: string | null;
+  gpu_vram_mb: number | null;
+  hostname: string | null;
+  cpu_count: number | null;
+  ram_total_mb: number | null;
+  os_platform: string | null;
 }
 
 export interface DbMetric {

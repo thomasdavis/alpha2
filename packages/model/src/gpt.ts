@@ -10,8 +10,9 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape,
-  add, matmul, gelu, layerNorm, softmax, crossEntropy,
-  reshape, transpose, embedding, scale, clamp,
+  add, matmul, matmulTransposed, gelu, layerNorm, softmax, crossEntropy,
+  reshape, transpose, embedding, scale, softCap, dropout,
+  residualDropoutAdd, flashAttention,
 } from "@alpha/autograd";
 
 // ── Parameter initialization ───────────────────────────────────────────────
@@ -90,6 +91,10 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
 export interface GPTForwardResult {
   logits: Variable;
   loss?: Variable;
+  diagnostics?: {
+    maxLogitMagnitude: number;
+    meanLogitMagnitude: number;
+  };
 }
 
 /**
@@ -97,6 +102,7 @@ export interface GPTForwardResult {
  *
  * @param tokens - [B, T] token indices
  * @param targets - [B, T] target indices (optional, for loss computation)
+ * @param training - whether to apply dropout (default: false)
  */
 export function gptForward(
   config: ModelConfig,
@@ -105,6 +111,7 @@ export function gptForward(
   tape: Tape,
   tokens: TensorData,
   targets?: TensorData,
+  training = false,
 ): GPTForwardResult {
   const ctx = { tape, backend };
   const { nHead, nEmbd } = config;
@@ -134,56 +141,60 @@ export function gptForward(
     // 1) LN → Attention → Residual
     const ln1Out = layerNorm(ctx, x, layer.ln1.weight, layer.ln1.bias, 1e-5);
 
-    // Q, K, V projections: [B, T, nEmbd] @ [nEmbd, nEmbd]^T
+    // Q, K, V projections: [B*T, nEmbd] @ [nEmbd, nEmbd]^T → fused matmulTransposed
     const q3d = reshape(ctx, ln1Out, [B * T, nEmbd]);
-    const q = reshape(ctx, matmul(ctx, q3d, transpose(ctx, layer.attn.wq, 0, 1)), [B, T, nEmbd]);
-    const k = reshape(ctx, matmul(ctx, q3d, transpose(ctx, layer.attn.wk, 0, 1)), [B, T, nEmbd]);
-    const v = reshape(ctx, matmul(ctx, q3d, transpose(ctx, layer.attn.wv, 0, 1)), [B, T, nEmbd]);
+    const q = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wq), [B, T, nEmbd]);
+    const k = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wk), [B, T, nEmbd]);
+    const v = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wv), [B, T, nEmbd]);
 
-    // Reshape to [B, nHead, T, headDim]
-    const qH = transpose(ctx, reshape(ctx, q, [B, T, nHead, headDim]), 1, 2);
-    const kH = transpose(ctx, reshape(ctx, k, [B, T, nHead, headDim]), 1, 2);
-    const vH = transpose(ctx, reshape(ctx, v, [B, T, nHead, headDim]), 1, 2);
+    // Attention: Flash Attention (fused) or standard path
+    let attnConcat: Variable;
+    if (backend.flashAttention) {
+      // Reshape to [B*nHead, T, headDim] for flash attention
+      const qFA = reshape(ctx, q, [B * nHead, T, headDim]);
+      const kFA = reshape(ctx, k, [B * nHead, T, headDim]);
+      const vFA = reshape(ctx, v, [B * nHead, T, headDim]);
 
-    // Attention scores: [B, nHead, T, T]
-    const kT = transpose(ctx, kH, 2, 3); // [B, nHead, headDim, T]
-    const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+      // Fused: Q*K^T/sqrt(d) → softCap → causal mask → softmax → @V
+      const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), 30);
 
-    // Logit capping: prevent attention score explosion (PaLM/Gemma technique)
-    const scores = clamp(ctx, rawScores, -30, 30);
+      // Reshape back: [B*nHead, T, headDim] → [B, nHead, T, headDim] → [B, T, nHead, headDim] → [B*T, nEmbd]
+      attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [B, nHead, T, headDim]), 1, 2), [B * T, nEmbd]);
+    } else {
+      // Standard multi-dispatch attention (CPU fallback)
+      const qH = transpose(ctx, reshape(ctx, q, [B, T, nHead, headDim]), 1, 2);
+      const kH = transpose(ctx, reshape(ctx, k, [B, T, nHead, headDim]), 1, 2);
+      const vH = transpose(ctx, reshape(ctx, v, [B, T, nHead, headDim]), 1, 2);
 
-    // Apply causal mask
-    const maskedScores = new Variable(
-      backend.maskedFill(scores.data, mask, -1e9),
-      true,
-    );
-    // Record identity op for gradient flow
-    tape.record({
-      output: maskedScores,
-      inputs: [scores],
-      backward: (g, B) => {
-        // Zero out gradients where mask was applied
-        return [B.maskedFill(g, mask, 0)];
-      },
-    });
+      const kT = transpose(ctx, kH, 2, 3);
+      const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+      const scores = softCap(ctx, rawScores, 30);
 
-    const attnWeights = softmax(ctx, maskedScores, -1); // [B, nHead, T, T]
-    const attnOut = matmul(ctx, attnWeights, vH); // [B, nHead, T, headDim]
+      const maskedScores = new Variable(
+        backend.maskedFill(scores.data, mask, -1e9),
+        true,
+      );
+      tape.record({
+        output: maskedScores,
+        inputs: [scores],
+        backward: (g, B) => [B.maskedFill(g, mask, 0)],
+      });
 
-    // Reshape back: [B, T, nEmbd]
-    const attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [B * T, nEmbd]);
-    const projected = reshape(ctx, matmul(ctx, attnConcat, transpose(ctx, layer.attn.wo, 0, 1)), [B, T, nEmbd]);
-
-    x = add(ctx, x, projected); // Residual
+      const attnWeights = softmax(ctx, maskedScores, -1);
+      const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
+      const attnOut = matmul(ctx, attnDrop, vH);
+      attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [B * T, nEmbd]);
+    }
+    const projected = reshape(ctx, matmulTransposed(ctx, attnConcat, layer.attn.wo), [B, T, nEmbd]);
+    x = residualDropoutAdd(ctx, x, projected, config.dropout, training); // Fused residual + dropout
 
     // 2) LN → MLP → Residual
     const ln2Out = layerNorm(ctx, x, layer.ln2.weight, layer.ln2.bias, 1e-5);
     const flat = reshape(ctx, ln2Out, [B * T, nEmbd]);
 
-    const h = gelu(ctx, matmul(ctx, flat, transpose(ctx, layer.mlp.fc1, 0, 1))); // [B*T, 4*nEmbd]
-    const mlpOut = reshape(ctx, matmul(ctx, h, transpose(ctx, layer.mlp.fc2, 0, 1)), [B, T, nEmbd]);
-
-    x = add(ctx, x, mlpOut); // Residual
+    const h = gelu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc1)); // [B*T, 4*nEmbd]
+    const mlpOut = reshape(ctx, matmulTransposed(ctx, h, layer.mlp.fc2), [B, T, nEmbd]);
+    x = residualDropoutAdd(ctx, x, mlpOut, config.dropout, training); // Fused residual + dropout
   }
 
   // Final layer norm
@@ -191,7 +202,7 @@ export function gptForward(
 
   // Language model head: [B, T, nEmbd] → [B, T, vocabSize]
   const flat = reshape(ctx, x, [B * T, nEmbd]);
-  const logits = reshape(ctx, matmul(ctx, flat, transpose(ctx, params.lmHead, 0, 1)), [B, T, config.vocabSize]);
+  const logits = reshape(ctx, matmulTransposed(ctx, flat, params.lmHead), [B, T, config.vocabSize]);
 
   // Loss
   let loss: Variable | undefined;
