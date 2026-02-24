@@ -1,0 +1,19 @@
+{
+  "name": "@alpha/hf",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "hono": "^4.0.0",
+    "@hono/node-server": "^1.0.0",
+    "@alpha/core": "*",
+    "@alpha/inference": "*",
+    "@alpha/tokenizers": "*",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0"
+  }
+}

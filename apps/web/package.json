@@ -11,10 +11,8 @@
   "dependencies": {
     "@alpha/core": "*",
     "@alpha/db": "*",
-    "@alpha/tensor": "*",
-    "@alpha/autograd": "*",
+    "@alpha/inference": "*",
     "@alpha/tokenizers": "*",
-    "@alpha/model": "*",
     "@alpha/train": "*",
     "ai": "^6.0.0",
     "@ai-sdk/provider": "^3.0.0",

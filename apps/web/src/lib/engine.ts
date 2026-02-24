@@ -3,17 +3,25 @@
  *
  * Scans the local filesystem (outputs/ directory) for model checkpoints.
  * The loaded model is cached in module scope so warm invocations skip loading.
+ *
+ * Uses @alpha/inference for fast CPU inference (KV cache, tiled matmul,
+ * zero-allocation decode loop) — 10-20× faster than the autograd path.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Effect } from "effect";
-import type { ModelConfig, TensorData, Tokenizer, CheckpointState } from "@alpha/core";
+import type { ModelConfig, Tokenizer, CheckpointState } from "@alpha/core";
 import { SeededRng } from "@alpha/core";
-import { CpuRefBackend } from "@alpha/tensor";
-import { Tape } from "@alpha/autograd";
-import type { GPTParams } from "@alpha/model";
-import { initGPT, gptForward, countParams } from "@alpha/model";
-import { FileCheckpoint, restoreParams } from "@alpha/train";
+import {
+  type InferenceModel,
+  prepareInferenceModel,
+  resetCache,
+  prefill,
+  decodeStep,
+  sampleFromLogits,
+  countModelParams,
+} from "@alpha/inference";
+import { FileCheckpoint } from "@alpha/train";
 import { BpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import type {
   LanguageModelV3,
@@ -50,9 +58,8 @@ export interface RunInfo {
 export interface LoadedModel {
   runId: string;
   config: ModelConfig;
-  params: GPTParams;
+  inference: InferenceModel;
   tokenizer: Tokenizer;
-  backend: CpuRefBackend;
   paramCount: number;
 }
 
@@ -153,10 +160,8 @@ export async function initEngine(outputsDir?: string): Promise<void> {
 // ── Load model from checkpoint ────────────────────────────────────────────
 
 function buildModel(state: CheckpointState, runId: string): LoadedModel {
-  const backend = new CpuRefBackend();
-  const rng = new SeededRng(state.rngState);
-  const params = initGPT(state.modelConfig, backend, rng);
-  restoreParams(params, state.params);
+  const inference = prepareInferenceModel(state.modelConfig, state.params);
+  const paramCount = countModelParams(state.params);
 
   let tokenizer: Tokenizer;
   if (state.tokenizerArtifacts) {
@@ -177,8 +182,7 @@ function buildModel(state: CheckpointState, runId: string): LoadedModel {
     throw new Error("Checkpoint has no tokenizer artifacts");
   }
 
-  const paramCount = countParams(params);
-  return { runId, config: state.modelConfig, params, tokenizer, backend, paramCount };
+  return { runId, config: state.modelConfig, inference, tokenizer, paramCount };
 }
 
 export async function ensureModel(modelId: string): Promise<LoadedModel> {
@@ -202,69 +206,6 @@ export async function ensureModel(modelId: string): Promise<LoadedModel> {
 
 // ── Token generation ──────────────────────────────────────────────────────
 
-export function sampleNextToken(
-  model: LoadedModel,
-  tokens: Int32Array,
-  currentLen: number,
-  temperature: number,
-  topk: number,
-  rng: SeededRng,
-): number {
-  const { config, params, backend } = model;
-  const ctxStart = Math.max(0, currentLen - config.blockSize);
-  const ctxLen = currentLen - ctxStart;
-  const ctx = tokens.slice(ctxStart, ctxStart + ctxLen);
-
-  const inputData: TensorData = {
-    shape: [1, ctxLen],
-    dtype: "i32",
-    data: new Int32Array(ctx),
-  };
-
-  const tape = new Tape();
-  const { logits } = gptForward(config, params, backend, tape, inputData);
-
-  const vocabSize = config.vocabSize;
-  const lastLogits = new Float32Array(vocabSize);
-  const logitsArr = logits.data.data as Float32Array;
-  const offset = (ctxLen - 1) * vocabSize;
-  for (let v = 0; v < vocabSize; v++) {
-    lastLogits[v] = logitsArr[offset + v] / temperature;
-  }
-
-  if (topk > 0 && topk < vocabSize) {
-    const indexed = Array.from(lastLogits).map((val, idx) => ({ val, idx }));
-    indexed.sort((a, b) => b.val - a.val);
-    const threshold = indexed[topk - 1].val;
-    for (let v = 0; v < vocabSize; v++) {
-      if (lastLogits[v] < threshold) lastLogits[v] = -Infinity;
-    }
-  }
-
-  let maxVal = -Infinity;
-  for (let v = 0; v < vocabSize; v++) {
-    if (lastLogits[v] > maxVal) maxVal = lastLogits[v];
-  }
-  let sumExp = 0;
-  const probs = new Float32Array(vocabSize);
-  for (let v = 0; v < vocabSize; v++) {
-    probs[v] = Math.exp(lastLogits[v] - maxVal);
-    sumExp += probs[v];
-  }
-  for (let v = 0; v < vocabSize; v++) {
-    probs[v] /= sumExp;
-  }
-
-  const r = rng.next();
-  let cumsum = 0;
-  let nextToken = 0;
-  for (let v = 0; v < vocabSize; v++) {
-    cumsum += probs[v];
-    if (r < cumsum) { nextToken = v; break; }
-  }
-  return nextToken;
-}
-
 export function* generateTokens(
   model: LoadedModel,
   prompt: string,
@@ -272,24 +213,30 @@ export function* generateTokens(
   temperature: number,
   topk: number,
 ): Generator<string> {
-  const { config, tokenizer } = model;
+  const { config, tokenizer, inference } = model;
   const rng = new SeededRng(Date.now() & 0xffffffff);
 
-  const promptTokens = tokenizer.encode(prompt);
-  const maxLen = Math.min(promptTokens.length + steps, config.blockSize);
-  const tokens = new Int32Array(maxLen);
-  tokens.set(promptTokens);
-  let currentLen = promptTokens.length;
+  const allPromptTokens = tokenizer.encode(prompt);
+  const maxPrompt = Math.max(1, config.blockSize - 1);
+  const promptTokens = allPromptTokens.length > maxPrompt
+    ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
+    : allPromptTokens;
 
-  yield tokenizer.decode(promptTokens);
+  yield tokenizer.decode(new Int32Array(promptTokens));
 
-  for (let i = 0; i < steps && currentLen < config.blockSize; i++) {
-    const next = sampleNextToken(model, tokens, currentLen, temperature, topk, rng);
-    tokens[currentLen] = next;
-    currentLen++;
-    const raw = tokenizer.decode(new Int32Array([next]));
+  // Reset KV cache and prefill prompt
+  resetCache(inference);
+  let logits = prefill(inference, Int32Array.from(promptTokens));
+  let currentPos = promptTokens.length;
+
+  for (let i = 0; i < steps && currentPos < config.blockSize; i++) {
+    const tok = sampleFromLogits(inference, logits, temperature, topk, rng);
+    const raw = tokenizer.decode(new Int32Array([tok]));
     const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
     yield sep + raw;
+
+    logits = decodeStep(inference, tok, currentPos);
+    currentPos++;
   }
 }
 
@@ -344,23 +291,32 @@ export class AlphaLanguageModel implements LanguageModelV3 {
     const temperature = options.temperature ?? this._temperature;
     const topk = options.topK ?? this._topk;
 
-    const { config, tokenizer } = model;
+    const { config, tokenizer, inference } = model;
     const rng = new SeededRng(Date.now() & 0xffffffff);
-    const promptTokens = tokenizer.encode(promptText);
-    const maxLen = Math.min(promptTokens.length + maxTokens, config.blockSize);
-    const tokens = new Int32Array(maxLen);
-    tokens.set(promptTokens);
-    let currentLen = promptTokens.length;
-    let outputTokenCount = 0;
 
-    for (let i = 0; i < maxTokens && currentLen < config.blockSize; i++) {
-      const next = sampleNextToken(model, tokens, currentLen, temperature, topk, rng);
-      tokens[currentLen] = next;
-      currentLen++;
+    const allPromptTokens = tokenizer.encode(promptText);
+    const maxPrompt = Math.max(1, config.blockSize - 1);
+    const promptTokens = allPromptTokens.length > maxPrompt
+      ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
+      : allPromptTokens;
+
+    // Reset KV cache and prefill prompt
+    resetCache(inference);
+    let logits = prefill(inference, Int32Array.from(promptTokens));
+    let currentPos = promptTokens.length;
+    let outputTokenCount = 0;
+    const generatedTokens: number[] = [];
+
+    for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
+      const tok = sampleFromLogits(inference, logits, temperature, topk, rng);
+      generatedTokens.push(tok);
       outputTokenCount++;
+
+      logits = decodeStep(inference, tok, currentPos);
+      currentPos++;
     }
 
-    const generatedText = tokenizer.decode(tokens.slice(promptTokens.length, currentLen));
+    const generatedText = tokenizer.decode(new Int32Array(generatedTokens));
 
     return {
       content: [{ type: "text", text: generatedText }],
@@ -378,13 +334,19 @@ export class AlphaLanguageModel implements LanguageModelV3 {
     const topk = options.topK ?? this._topk;
     const signal = options.abortSignal;
 
-    const { config, tokenizer } = model;
+    const { config, tokenizer, inference } = model;
     const rng = new SeededRng(Date.now() & 0xffffffff);
-    const promptTokens = tokenizer.encode(promptText);
-    const maxLen = Math.min(promptTokens.length + maxTokens, config.blockSize);
-    const allTokens = new Int32Array(maxLen);
-    allTokens.set(promptTokens);
-    let currentLen = promptTokens.length;
+
+    const allPromptTokens = tokenizer.encode(promptText);
+    const maxPrompt = Math.max(1, config.blockSize - 1);
+    const promptTokens = allPromptTokens.length > maxPrompt
+      ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
+      : allPromptTokens;
+
+    // Reset KV cache and prefill prompt
+    resetCache(inference);
+    let logits = prefill(inference, Int32Array.from(promptTokens));
+    let currentPos = promptTokens.length;
     const textId = "t0";
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
@@ -395,7 +357,7 @@ export class AlphaLanguageModel implements LanguageModelV3 {
         let outputCount = 0;
 
         function step() {
-          if (signal?.aborted || outputCount >= maxTokens || currentLen >= config.blockSize) {
+          if (signal?.aborted || outputCount >= maxTokens || currentPos >= config.blockSize) {
             controller.enqueue({ type: "text-end", id: textId });
             controller.enqueue({
               type: "finish",
@@ -406,14 +368,15 @@ export class AlphaLanguageModel implements LanguageModelV3 {
             return;
           }
 
-          const next = sampleNextToken(model, allTokens, currentLen, temperature, topk, rng);
-          allTokens[currentLen] = next;
-          currentLen++;
+          const tok = sampleFromLogits(inference, logits, temperature, topk, rng);
           outputCount++;
 
-          const raw = tokenizer.decode(new Int32Array([next]));
+          const raw = tokenizer.decode(new Int32Array([tok]));
           const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
           controller.enqueue({ type: "text-delta", id: textId, delta: sep + raw });
+
+          logits = decodeStep(inference, tok, currentPos);
+          currentPos++;
 
           setImmediate(step);
         }

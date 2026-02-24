@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { SeededRng } from "@alpha/core";
-import { getRuns, ensureModel, sampleNextToken } from "@/lib/engine";
+import { resetCache, prefill, decodeStep, sampleFromLogits } from "@alpha/inference";
+import { getRuns, ensureModel } from "@/lib/engine";
 import { jsonResponse } from "@/lib/server-state";
-import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,6 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleGenerate(request: NextRequest) {
-  await ensureInit();
   const runs = getRuns();
   const body = request.method === "POST" ? await request.json() : {};
   const prompt: string = request.nextUrl.searchParams.get("prompt") ?? body.prompt ?? "";
@@ -31,24 +30,32 @@ async function handleGenerate(request: NextRequest) {
   }
 
   const model = await ensureModel(modelId);
-  const { config, tokenizer } = model;
+  const { config, tokenizer, inference } = model;
   const rng = new SeededRng(Date.now() & 0xffffffff);
 
-  const promptTokens = tokenizer.encode(prompt);
-  const maxLen = Math.min(promptTokens.length + maxTokens, config.blockSize);
-  const tokens = new Int32Array(maxLen);
-  tokens.set(promptTokens);
-  let currentLen = promptTokens.length;
-  let completionCount = 0;
+  const allPromptTokens = tokenizer.encode(prompt);
+  const maxPrompt = Math.max(1, config.blockSize - 1);
+  const promptTokens = allPromptTokens.length > maxPrompt
+    ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
+    : allPromptTokens;
 
-  for (let i = 0; i < maxTokens && currentLen < config.blockSize; i++) {
-    const next = sampleNextToken(model, tokens, currentLen, temperature, 40, rng);
-    tokens[currentLen] = next;
-    currentLen++;
+  // Reset KV cache and prefill prompt
+  resetCache(inference);
+  let logits = prefill(inference, Int32Array.from(promptTokens));
+  let currentPos = promptTokens.length;
+  let completionCount = 0;
+  const generatedTokens: number[] = [];
+
+  for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
+    const tok = sampleFromLogits(inference, logits, temperature, 40, rng);
+    generatedTokens.push(tok);
     completionCount++;
+
+    logits = decodeStep(inference, tok, currentPos);
+    currentPos++;
   }
 
-  const text = tokenizer.decode(tokens.slice(promptTokens.length, currentLen));
+  const text = tokenizer.decode(new Int32Array(generatedTokens));
 
   return jsonResponse({
     text,

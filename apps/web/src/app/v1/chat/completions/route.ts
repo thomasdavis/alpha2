@@ -1,8 +1,8 @@
 import * as crypto from "node:crypto";
 import { SeededRng } from "@alpha/core";
-import { getRuns, ensureModel, sampleNextToken } from "@/lib/engine";
+import { resetCache, prefill, decodeStep, sampleFromLogits } from "@alpha/inference";
+import { getRuns, ensureModel } from "@/lib/engine";
 import { jsonResponse } from "@/lib/server-state";
-import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,6 @@ function messagesToPrompt(messages: Array<{ role: string; content: string }>): s
 }
 
 export async function POST(request: Request) {
-  await ensureInit();
   const body = await request.json();
   const runs = getRuns();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];
@@ -25,14 +24,21 @@ export async function POST(request: Request) {
   }
 
   const model = await ensureModel(modelId);
-  const { config, tokenizer } = model;
+  const { config, tokenizer, inference } = model;
   const rng = new SeededRng(Date.now() & 0xffffffff);
   const prompt = messagesToPrompt(messages);
-  const promptTokens = tokenizer.encode(prompt);
-  const maxLen = Math.min(promptTokens.length + maxTokens, config.blockSize);
-  const tokens = new Int32Array(maxLen);
-  tokens.set(promptTokens);
-  let currentLen = promptTokens.length;
+
+  const allPromptTokens = tokenizer.encode(prompt);
+  const maxPrompt = Math.max(1, config.blockSize - 1);
+  const promptTokens = allPromptTokens.length > maxPrompt
+    ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
+    : allPromptTokens;
+
+  // Reset KV cache and prefill prompt
+  resetCache(inference);
+  let logits = prefill(inference, Int32Array.from(promptTokens));
+  let currentPos = promptTokens.length;
+
   const completionId = "chatcmpl-" + crypto.randomBytes(12).toString("hex");
   const created = Math.floor(Date.now() / 1000);
 
@@ -50,7 +56,7 @@ export async function POST(request: Request) {
 
         function nextChunk() {
           if (request.signal.aborted) return;
-          if (completionCount >= maxTokens || currentLen >= config.blockSize) {
+          if (completionCount >= maxTokens || currentPos >= config.blockSize) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({
               id: completionId, object: "chat.completion.chunk", created, model: modelId,
               choices: [{ index: 0, delta: {}, finish_reason: completionCount >= maxTokens ? "length" : "stop" }],
@@ -61,17 +67,19 @@ export async function POST(request: Request) {
             return;
           }
 
-          const next = sampleNextToken(model, tokens, currentLen, temperature, 40, rng);
-          tokens[currentLen] = next;
-          currentLen++;
+          const tok = sampleFromLogits(inference, logits, temperature, 40, rng);
           completionCount++;
-          const raw = tokenizer.decode(new Int32Array([next]));
+          const raw = tokenizer.decode(new Int32Array([tok]));
           const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
 
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({
             id: completionId, object: "chat.completion.chunk", created, model: modelId,
             choices: [{ index: 0, delta: { content: sep + raw }, finish_reason: null }],
           })}\n\n`));
+
+          logits = decodeStep(inference, tok, currentPos);
+          currentPos++;
+
           setImmediate(nextChunk);
         }
         nextChunk();
@@ -89,14 +97,17 @@ export async function POST(request: Request) {
 
   // Non-streaming
   let completionCount = 0;
-  for (let i = 0; i < maxTokens && currentLen < config.blockSize; i++) {
-    const next = sampleNextToken(model, tokens, currentLen, temperature, 40, rng);
-    tokens[currentLen] = next;
-    currentLen++;
+  const generatedTokens: number[] = [];
+  for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
+    const tok = sampleFromLogits(inference, logits, temperature, 40, rng);
+    generatedTokens.push(tok);
     completionCount++;
+
+    logits = decodeStep(inference, tok, currentPos);
+    currentPos++;
   }
 
-  const text = tokenizer.decode(tokens.slice(promptTokens.length, currentLen));
+  const text = tokenizer.decode(new Int32Array(generatedTokens));
 
   return jsonResponse({
     id: completionId,
