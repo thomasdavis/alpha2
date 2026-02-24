@@ -101,6 +101,7 @@ export interface TrainerDeps {
   samplePrompts?: string[];
   domain?: string;
   activationCheckpointing?: boolean;
+  mixedPrecision?: boolean;
 }
 
 export async function train(deps: TrainerDeps): Promise<GPTParams> {
@@ -212,6 +213,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   console.log(`seed: ${trainConfig.seed} | block_size: ${modelConfig.blockSize} | batch: ${effectiveBatch}${accumStr}`);
   console.log(`iters: ${trainConfig.iters} | lr: ${trainConfig.lr}`);
   if (deps.activationCheckpointing) console.log(`activation_checkpointing: enabled`);
+  if (deps.mixedPrecision) console.log(`mixed_precision: f16 activations enabled`);
 
   // GPU proof: log device info and run smoke test
   if ("getDeviceInfo" in backend && "smokeTest" in backend) {
@@ -242,6 +244,13 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   const startTime = performance.now();
   let spikeSkips = 0;
   let clippedSteps = 0;
+
+  // Dynamic loss scaling for mixed precision training
+  const useLossScaling = !!deps.mixedPrecision;
+  let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
+  let scaleSuccessCount = 0;
+  const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
+  let lossScaleReductions = 0;
 
   for (let step = startStep; step < trainConfig.iters; step++) {
     const stepStart = performance.now();
@@ -293,7 +302,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
-      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing);
+      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 
@@ -308,21 +317,31 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       }
       lossVal += microLoss / accumSteps;
 
-      tape.backward(loss, backend, releaseFn);
+      // Loss scaling: pass scaled initial gradient for backward.
+      // This scales all gradients by lossScale, preventing f16 underflow.
+      // Gradients are unscaled back before the optimizer step.
+      if (useLossScaling && lossScale !== 1.0) {
+        const scaledGrad = backend.full(loss.data.shape, lossScale, loss.data.dtype);
+        tape.backward(loss, backend, releaseFn, scaledGrad);
+      } else {
+        tape.backward(loss, backend, releaseFn);
+      }
       const _bwd1 = performance.now();
       bwdMs += _bwd1 - _fwd1;
       // Release tape intermediates but keep param gradients for accumulation
       tape.clear(releaseFn);
     }
 
-    // Scale accumulated gradients by 1/accumSteps (backward summed them)
-    if (!nanDetected && accumSteps > 1) {
+    // Scale accumulated gradients: combine 1/accumSteps and 1/lossScale into one op.
+    // accumSteps > 1: backward summed micro-batch gradients → divide by accumSteps.
+    // lossScale != 1: gradients were amplified by loss scaling → divide by lossScale.
+    const gradScaleFactor = 1.0 / (accumSteps * lossScale);
+    if (!nanDetected && gradScaleFactor !== 1.0) {
       const paramMap0 = collectParams(params);
-      const invAccum = 1.0 / accumSteps;
       for (const [, variable] of paramMap0) {
         if (variable.grad) {
           const oldGrad = variable.grad;
-          variable.grad = backend.scale(variable.grad, invAccum);
+          variable.grad = backend.scale(variable.grad, gradScaleFactor);
           if (releaseFn) releaseFn(oldGrad);
         }
       }
@@ -405,8 +424,23 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
       // NaN guard on gradient norm (backward produced NaN even though loss was finite)
       if (!isFinite(gradNorm)) {
-        console.warn(`  [warn] grad_norm=NaN at step ${step + 1} — skipping optimizer update`);
+        if (useLossScaling) {
+          // Dynamic loss scaling: halve the scale and retry
+          lossScale /= 2;
+          lossScaleReductions++;
+          console.warn(`  [loss_scale] grad overflow at step ${step + 1} — reducing scale to ${lossScale}`);
+          scaleSuccessCount = 0;
+        } else {
+          console.warn(`  [warn] grad_norm=NaN at step ${step + 1} — skipping optimizer update`);
+        }
         nanDetected = true;
+      } else if (useLossScaling) {
+        // Track consecutive successes for scale growth
+        scaleSuccessCount++;
+        if (scaleSuccessCount >= SCALE_GROWTH_INTERVAL) {
+          lossScale *= 2;
+          scaleSuccessCount = 0;
+        }
       }
 
       // Spike detection: skip optimizer step when grad_norm exceeds absolute threshold.
@@ -588,10 +622,11 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     const toksStr = (metrics.tokens_per_sec).toFixed(0);
     const gpuStr = "gpuOpsThisStep" in backend ? ` | ${(backend as any).gpuOpsThisStep} gpu_ops` : "";
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
+    const scaleStr = useLossScaling ? ` | scale=${lossScale}` : "";
     console.log(
       `step ${metrics.step}/${trainConfig.iters} | loss=${lossStr}${valStr} ` +
       `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
-      `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}`
+      `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
     );
 
     // Write metrics JSONL

@@ -143,6 +143,7 @@ export async function trainCmd(args: string[]): Promise<void> {
       ? (samples, step) => reporter.sendSamples(samples, step)
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
+    mixedPrecision: boolArg(kv, "fp16", false),
   });
 
   // Post-training sample generation

@@ -543,3 +543,42 @@ function arraysEqual(a: Shape, b: Shape): boolean {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+
+// ── Mixed precision ──────────────────────────────────────────────────────
+
+/**
+ * Cast activation to f16 for storage, reducing VRAM by 50%.
+ * Forward: f32 → f16. Backward: gradient cast f16 → f32 (or passed through as-is if already f32).
+ * No-op if backend doesn't support castDtype.
+ */
+export function castToF16(ctx: Ctx, x: Variable): Variable {
+  const B = ctx.backend;
+  if (!B.castDtype) return x; // no-op on backends without f16 support
+  const f16Data = B.castDtype(x.data, "f16");
+  return record(ctx, f16Data, [x], (g, backend) => {
+    // Gradient is f32 (backward always computes in f32)
+    // If it's somehow f16, cast back to f32
+    if (g.dtype === "f16" && backend.castDtype) {
+      return [backend.castDtype(g, "f32")];
+    }
+    return [g];
+  });
+}
+
+/**
+ * Cast activation from f16 back to f32 for computation.
+ * Forward: f16 → f32. Backward: gradient stays f32 (no cast needed).
+ */
+export function castToF32(ctx: Ctx, x: Variable): Variable {
+  const B = ctx.backend;
+  if (x.data.dtype === "f32") return x; // already f32
+  if (!B.castDtype) return x;
+  const f32Data = B.castDtype(x.data, "f32");
+  return record(ctx, f32Data, [x], (g, backend) => {
+    // Backward: cast gradient to f16 to match input dtype
+    if (backend.castDtype) {
+      return [backend.castDtype(g, "f16")];
+    }
+    return [g];
+  });
+}

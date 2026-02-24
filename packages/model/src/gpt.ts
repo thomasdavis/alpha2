@@ -13,6 +13,7 @@ import {
   add, matmul, matmulTransposed, gelu, layerNorm, softmax, crossEntropy,
   reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
+  castToF16, castToF32,
 } from "@alpha/autograd";
 
 // ── Parameter initialization ───────────────────────────────────────────────
@@ -171,6 +172,7 @@ function transformerBlock(
  * @param targets - [B, T] target indices (optional, for loss computation)
  * @param training - whether to apply dropout (default: false)
  * @param activationCheckpointing - recompute layer intermediates during backward to save memory
+ * @param mixedPrecision - store inter-layer activations as f16 to halve VRAM usage
  */
 export function gptForward(
   config: ModelConfig,
@@ -181,6 +183,7 @@ export function gptForward(
   targets?: TensorData,
   training = false,
   activationCheckpointing = false,
+  mixedPrecision = false,
 ): GPTForwardResult {
   const ctx = { tape, backend };
   const { nEmbd } = config;
@@ -206,14 +209,18 @@ export function gptForward(
 
   // Transformer blocks
   for (const layer of params.layers) {
+    // Mixed precision: cast inter-layer activations to f16 for VRAM savings
+    if (mixedPrecision && training) x = castToF16(ctx, x);
+
     if (activationCheckpointing && training) {
-      // Activation checkpointing: discard intermediates, recompute during backward.
-      // Saves ~30 intermediate tensors per layer at the cost of one extra forward pass.
-      x = checkpoint(ctx, (innerCtx, inp) =>
-        transformerBlock(innerCtx, inp, layer, config, B, T, mask, training),
-        x,
-      );
+      x = checkpoint(ctx, (innerCtx, inp) => {
+        // Cast f16 input back to f32 for compute within the block
+        const f32Inp = mixedPrecision ? castToF32(innerCtx, inp) : inp;
+        return transformerBlock(innerCtx, f32Inp, layer, config, B, T, mask, training);
+      }, x);
     } else {
+      // Cast f16 input back to f32 for compute within the block
+      if (mixedPrecision && training) x = castToF32(ctx, x);
       x = transformerBlock(ctx, x, layer, config, B, T, mask, training);
     }
   }
