@@ -9,6 +9,7 @@ import {
   type Backend,
   type TensorData,
   type Dtype,
+  type NumericArray,
   type Shape,
   shapeSize,
   shapeStrides,
@@ -20,13 +21,18 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeTensor(shape: Shape, dtype: Dtype, data: Float32Array | Float64Array | Int32Array): TensorData {
+function makeTensor(shape: Shape, dtype: Dtype, data: NumericArray): TensorData {
   return { shape, dtype, data };
+}
+
+/** Get the data array, asserting it's not f16 (CPU ref doesn't handle f16). */
+function numData(td: TensorData): NumericArray {
+  return td.data as NumericArray;
 }
 
 function allocTensor(shape: Shape, dtype: Dtype): TensorData {
   const Ctor = dtypeArray(dtype);
-  return makeTensor(shape, dtype, new Ctor(shapeSize(shape)));
+  return makeTensor(shape, dtype, new Ctor(shapeSize(shape)) as NumericArray);
 }
 
 /** Normalise a possibly-negative axis to [0, ndim). */
@@ -109,10 +115,12 @@ function binaryOp(
   const [resultShape, stridesA, stridesB] = broadcastShapes(a.shape, b.shape);
   const size = shapeSize(resultShape);
   const Ctor = dtypeArray(dtype);
-  const out = new Ctor(size);
+  const out = new Ctor(size) as NumericArray;
+  const ad = numData(a);
+  const bd = numData(b);
   for (let i = 0; i < size; i++) {
     const [ia, ib] = broadcastIndices(i, resultShape, stridesA, stridesB);
-    out[i] = fn(a.data[ia], b.data[ib]);
+    out[i] = fn(ad[ia], bd[ib]);
   }
   return makeTensor(resultShape, dtype, out);
 }
@@ -120,9 +128,10 @@ function binaryOp(
 function unaryOp(a: TensorData, fn: (x: number) => number, dtype?: Dtype): TensorData {
   const d = dtype ?? a.dtype;
   const Ctor = dtypeArray(d);
-  const out = new Ctor(a.data.length);
-  for (let i = 0; i < a.data.length; i++) {
-    out[i] = fn(a.data[i]);
+  const ad = numData(a);
+  const out = new Ctor(ad.length) as NumericArray;
+  for (let i = 0; i < ad.length; i++) {
+    out[i] = fn(ad[i]);
   }
   return makeTensor(a.shape, d, out);
 }
@@ -187,7 +196,7 @@ export class CpuRefBackend implements Backend {
       throw new Error(`Data length ${data.length} does not match shape size ${size}`);
     }
     const Ctor = dtypeArray(dtype);
-    return makeTensor(shape, dtype, Ctor.from(data));
+    return makeTensor(shape, dtype, Ctor.from(data) as NumericArray);
   }
 
   // ── math ────────────────────────────────────────────────────────────────
@@ -248,7 +257,9 @@ export class CpuRefBackend implements Backend {
     const outShape = [...batchShape, M, N];
     const dtype = commonDtype(a.dtype, b.dtype);
     const Ctor = dtypeArray(dtype);
-    const out = new Ctor(batchSize * M * N);
+    const out = new Ctor(batchSize * M * N) as NumericArray;
+    const ad = numData(a);
+    const bd = numData(b);
 
     const aMK = M * K;
     const bKN = K * N;
@@ -290,7 +301,7 @@ export class CpuRefBackend implements Backend {
         for (let n = 0; n < N; n++) {
           let sum = 0;
           for (let k = 0; k < K; k++) {
-            sum += a.data[aOff + m * K + k] * b.data[bOff + k * N + n];
+            sum += ad[aOff + m * K + k] * bd[bOff + k * N + n];
           }
           out[oOff + m * N + n] = sum;
         }
@@ -301,13 +312,14 @@ export class CpuRefBackend implements Backend {
   }
 
   sum(a: TensorData, axis?: number, keepdims = false): TensorData {
+    const ad = numData(a);
     if (axis === undefined) {
       // Reduce over all elements -> scalar
       let s = 0;
-      for (let i = 0; i < a.data.length; i++) s += a.data[i];
+      for (let i = 0; i < ad.length; i++) s += ad[i];
       const Ctor = dtypeArray(a.dtype);
       const shape: Shape = keepdims ? a.shape.map(() => 1) : [];
-      return makeTensor(shape, a.dtype, Ctor.from([s]));
+      return makeTensor(shape, a.dtype, Ctor.from([s]) as NumericArray);
     }
 
     const ax = normalizeAxis(axis, a.shape.length);
@@ -322,7 +334,7 @@ export class CpuRefBackend implements Backend {
     }
     const outSize = shapeSize(outShape);
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(outSize);
+    const out = new Ctor(outSize) as NumericArray;
 
     const inStrides = shapeStrides(a.shape);
     const axStride = inStrides[ax];
@@ -345,7 +357,7 @@ export class CpuRefBackend implements Backend {
       let s = 0;
       const baseFlat = multiToFlat(inCoords, inStrides);
       for (let j = 0; j < dimSize; j++) {
-        s += a.data[baseFlat + j * axStride];
+        s += ad[baseFlat + j * axStride];
       }
       out[i] = s;
     }
@@ -354,18 +366,19 @@ export class CpuRefBackend implements Backend {
   }
 
   mean(a: TensorData, axis?: number, keepdims = false): TensorData {
+    const ad = numData(a);
     if (axis === undefined) {
       let s = 0;
-      for (let i = 0; i < a.data.length; i++) s += a.data[i];
+      for (let i = 0; i < ad.length; i++) s += ad[i];
       const Ctor = dtypeArray(a.dtype);
       const shape: Shape = keepdims ? a.shape.map(() => 1) : [];
-      return makeTensor(shape, a.dtype, Ctor.from([s / a.data.length]));
+      return makeTensor(shape, a.dtype, Ctor.from([s / ad.length]) as NumericArray);
     }
 
     const sumT = this.sum(a, axis, keepdims);
     const ax = normalizeAxis(axis, a.shape.length);
     const dimSize = a.shape[ax];
-    const out = dtypeArray(sumT.dtype).from(sumT.data);
+    const out = dtypeArray(sumT.dtype).from(numData(sumT)) as NumericArray;
     for (let i = 0; i < out.length; i++) out[i] /= dimSize;
     return makeTensor(sumT.shape, sumT.dtype, out);
   }
@@ -408,15 +421,17 @@ export class CpuRefBackend implements Backend {
     const dim = weight.shape[1];
     const outShape = [...indices.shape, dim];
     const Ctor = dtypeArray(weight.dtype);
-    const out = new Ctor(shapeSize(outShape));
+    const out = new Ctor(shapeSize(outShape)) as NumericArray;
+    const wd = numData(weight);
+    const id = numData(indices);
 
-    const numIndices = indices.data.length;
+    const numIndices = id.length;
     for (let i = 0; i < numIndices; i++) {
-      const idx = indices.data[i];
+      const idx = id[i];
       const srcOff = idx * dim;
       const dstOff = i * dim;
       for (let d = 0; d < dim; d++) {
-        out[dstOff + d] = weight.data[srcOff + d];
+        out[dstOff + d] = wd[srcOff + d];
       }
     }
 
@@ -430,25 +445,28 @@ export class CpuRefBackend implements Backend {
     const dim = shape[shape.length - 1];
     const outer = shapeSize(shape) / dim;
     const Ctor = dtypeArray(x.dtype);
-    const out = new Ctor(x.data.length);
+    const xd = numData(x);
+    const wd = numData(weight);
+    const bd = numData(bias);
+    const out = new Ctor(xd.length) as NumericArray;
 
     for (let i = 0; i < outer; i++) {
       const off = i * dim;
       // Compute mean
       let mean = 0;
-      for (let j = 0; j < dim; j++) mean += x.data[off + j];
+      for (let j = 0; j < dim; j++) mean += xd[off + j];
       mean /= dim;
       // Compute variance
       let variance = 0;
       for (let j = 0; j < dim; j++) {
-        const d = x.data[off + j] - mean;
+        const d = xd[off + j] - mean;
         variance += d * d;
       }
       variance /= dim;
       const invStd = 1 / Math.sqrt(variance + eps);
       // Normalize, scale, shift
       for (let j = 0; j < dim; j++) {
-        out[off + j] = (x.data[off + j] - mean) * invStd * weight.data[j] + bias.data[j];
+        out[off + j] = (xd[off + j] - mean) * invStd * wd[j] + bd[j];
       }
     }
 
@@ -476,7 +494,8 @@ export class CpuRefBackend implements Backend {
     const ax = normalizeAxis(axis ?? ndim - 1, ndim);
     const dimSize = a.shape[ax];
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(a.data.length);
+    const ad = numData(a);
+    const out = new Ctor(ad.length) as NumericArray;
 
     const strides = shapeStrides(a.shape);
     const axStride = strides[ax];
@@ -504,14 +523,14 @@ export class CpuRefBackend implements Backend {
       // Find max for numerical stability
       let max = -Infinity;
       for (let j = 0; j < dimSize; j++) {
-        const v = a.data[base + j * axStride];
+        const v = ad[base + j * axStride];
         if (v > max) max = v;
       }
 
       // Compute exp and sum
       let sumExp = 0;
       for (let j = 0; j < dimSize; j++) {
-        const e = Math.exp(a.data[base + j * axStride] - max);
+        const e = Math.exp(ad[base + j * axStride] - max);
         out[base + j * axStride] = e;
         sumExp += e;
       }
@@ -531,7 +550,8 @@ export class CpuRefBackend implements Backend {
     const ax = normalizeAxis(axis ?? ndim - 1, ndim);
     const dimSize = a.shape[ax];
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(a.data.length);
+    const ad = numData(a);
+    const out = new Ctor(ad.length) as NumericArray;
 
     const strides = shapeStrides(a.shape);
     const axStride = strides[ax];
@@ -554,20 +574,20 @@ export class CpuRefBackend implements Backend {
       // max
       let max = -Infinity;
       for (let j = 0; j < dimSize; j++) {
-        const v = a.data[base + j * axStride];
+        const v = ad[base + j * axStride];
         if (v > max) max = v;
       }
 
       // sum(exp(x - max))
       let sumExp = 0;
       for (let j = 0; j < dimSize; j++) {
-        sumExp += Math.exp(a.data[base + j * axStride] - max);
+        sumExp += Math.exp(ad[base + j * axStride] - max);
       }
       const logSumExp = max + Math.log(sumExp);
 
       // x - logSumExp
       for (let j = 0; j < dimSize; j++) {
-        out[base + j * axStride] = a.data[base + j * axStride] - logSumExp;
+        out[base + j * axStride] = ad[base + j * axStride] - logSumExp;
       }
     }
 
@@ -583,15 +603,17 @@ export class CpuRefBackend implements Backend {
     const logProbs = this.logSoftmax(logits, 1);
 
     // Pick the log-probability of the correct class for each sample
+    const td = numData(targets);
+    const lpd = numData(logProbs);
     let loss = 0;
     for (let i = 0; i < N; i++) {
-      const cls = targets.data[i];
-      loss -= logProbs.data[i * C + cls];
+      const cls = td[i];
+      loss -= lpd[i * C + cls];
     }
     loss /= N;
 
     const Ctor = dtypeArray(logits.dtype);
-    return makeTensor([], logits.dtype, Ctor.from([loss]));
+    return makeTensor([], logits.dtype, Ctor.from([loss]) as NumericArray);
   }
 
   // ── reshape / slice ─────────────────────────────────────────────────────
@@ -603,7 +625,7 @@ export class CpuRefBackend implements Backend {
     }
     // Data is contiguous, just reinterpret with new shape
     const Ctor = dtypeArray(a.dtype);
-    const out = Ctor.from(a.data);
+    const out = Ctor.from(numData(a)) as NumericArray;
     return makeTensor(shape, a.dtype, out);
   }
 
@@ -620,7 +642,8 @@ export class CpuRefBackend implements Backend {
     const srcStrides = shapeStrides(a.shape);
     const totalSize = shapeSize(a.shape);
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(totalSize);
+    const ad = numData(a);
+    const out = new Ctor(totalSize) as NumericArray;
     const dstStrides = shapeStrides(newShape);
 
     for (let i = 0; i < totalSize; i++) {
@@ -631,7 +654,7 @@ export class CpuRefBackend implements Backend {
       coords[d0] = coords[d1];
       coords[d1] = tmp;
       const dstIdx = multiToFlat(coords, dstStrides);
-      out[dstIdx] = a.data[i];
+      out[dstIdx] = ad[i];
     }
 
     return makeTensor(newShape, a.dtype, out);
@@ -645,7 +668,8 @@ export class CpuRefBackend implements Backend {
     }
     const outSize = shapeSize(outShape);
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(outSize);
+    const ad = numData(a);
+    const out = new Ctor(outSize) as NumericArray;
 
     const srcStrides = shapeStrides(a.shape);
     const dstStrides = shapeStrides(outShape);
@@ -657,7 +681,7 @@ export class CpuRefBackend implements Backend {
       for (let d = 0; d < ndim; d++) {
         srcFlat += (coords[d] + starts[d]) * srcStrides[d];
       }
-      out[i] = a.data[srcFlat];
+      out[i] = ad[srcFlat];
     }
 
     return makeTensor(outShape, a.dtype, out);
@@ -683,12 +707,13 @@ export class CpuRefBackend implements Backend {
 
     const outSize = shapeSize(outShape);
     const Ctor = dtypeArray(dtype);
-    const out = new Ctor(outSize);
+    const out = new Ctor(outSize) as NumericArray;
     const outStrides = shapeStrides(outShape);
 
     let axOffset = 0;
     for (let t = 0; t < tensors.length; t++) {
       const src = tensors[t];
+      const srcd = numData(src);
       const srcStrides = shapeStrides(src.shape);
       const srcSize = shapeSize(src.shape);
 
@@ -696,7 +721,7 @@ export class CpuRefBackend implements Backend {
         const coords = flatToMulti(i, src.shape);
         coords[ax] += axOffset;
         const dstIdx = multiToFlat(coords, outStrides);
-        out[dstIdx] = src.data[i];
+        out[dstIdx] = srcd[i];
       }
       axOffset += src.shape[ax];
     }
@@ -707,13 +732,14 @@ export class CpuRefBackend implements Backend {
   // ── utility ─────────────────────────────────────────────────────────────
 
   argmax(a: TensorData, axis?: number): TensorData {
+    const ad = numData(a);
     if (axis === undefined) {
       // Global argmax -> scalar
       let maxVal = -Infinity;
       let maxIdx = 0;
-      for (let i = 0; i < a.data.length; i++) {
-        if (a.data[i] > maxVal) {
-          maxVal = a.data[i];
+      for (let i = 0; i < ad.length; i++) {
+        if (ad[i] > maxVal) {
+          maxVal = ad[i];
           maxIdx = i;
         }
       }
@@ -753,7 +779,7 @@ export class CpuRefBackend implements Backend {
       let maxVal = -Infinity;
       let maxIdx = 0;
       for (let j = 0; j < dimSize; j++) {
-        const v = a.data[base + j * axStride];
+        const v = ad[base + j * axStride];
         if (v > maxVal) {
           maxVal = v;
           maxIdx = j;
@@ -782,7 +808,8 @@ export class CpuRefBackend implements Backend {
     const outSize = shapeSize(outShape);
 
     const Ctor = dtypeArray(a.dtype);
-    const valuesOut = new Ctor(outSize);
+    const ad = numData(a);
+    const valuesOut = new Ctor(outSize) as NumericArray;
     const indicesOut = new Int32Array(outSize);
 
     const strides = shapeStrides(a.shape);
@@ -807,7 +834,7 @@ export class CpuRefBackend implements Backend {
       // Collect (value, index) pairs
       const pairs: Array<[number, number]> = new Array(dimSize);
       for (let j = 0; j < dimSize; j++) {
-        pairs[j] = [a.data[base + j * axStride], j];
+        pairs[j] = [ad[base + j * axStride], j];
       }
       // Sort descending by value
       pairs.sort((x, y) => y[0] - x[0]);
@@ -834,7 +861,9 @@ export class CpuRefBackend implements Backend {
     const outShape = [...indices.shape];
     const outSize = shapeSize(outShape);
     const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(outSize);
+    const ad = numData(a);
+    const id = numData(indices);
+    const out = new Ctor(outSize) as NumericArray;
 
     const aStrides = shapeStrides(a.shape);
     const idxStrides = shapeStrides(indices.shape);
@@ -843,9 +872,9 @@ export class CpuRefBackend implements Backend {
       const coords = flatToMulti(i, outShape);
       // In the source tensor, replace the axis coordinate with the index value
       const srcCoords = [...coords];
-      srcCoords[ax] = indices.data[i];
+      srcCoords[ax] = id[i];
       const srcFlat = multiToFlat(srcCoords, aStrides);
-      out[i] = a.data[srcFlat];
+      out[i] = ad[srcFlat];
     }
 
     return makeTensor(outShape, a.dtype, out);
@@ -853,7 +882,7 @@ export class CpuRefBackend implements Backend {
 
   clone(a: TensorData): TensorData {
     const Ctor = dtypeArray(a.dtype);
-    return makeTensor(a.shape, a.dtype, Ctor.from(a.data));
+    return makeTensor(a.shape, a.dtype, Ctor.from(numData(a)) as NumericArray);
   }
 
   // ── comparison ──────────────────────────────────────────────────────────
@@ -897,19 +926,21 @@ export class CpuRefBackend implements Backend {
 
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData {
     const Ctor = dtypeArray(a.dtype);
-    const out = Ctor.from(a.data);
-    const maskSize = mask.data.length;
-    const aSize = a.data.length;
+    const ad = numData(a);
+    const md = numData(mask);
+    const out = Ctor.from(ad) as NumericArray;
+    const maskSize = md.length;
+    const aSize = ad.length;
 
     if (maskSize === aSize) {
       // Same size — direct
       for (let i = 0; i < out.length; i++) {
-        if (mask.data[i] !== 0) out[i] = value;
+        if (md[i] !== 0) out[i] = value;
       }
     } else {
       // Broadcasting: mask is smaller, tile it over leading dims
       for (let i = 0; i < aSize; i++) {
-        if (mask.data[i % maskSize] !== 0) out[i] = value;
+        if (md[i % maskSize] !== 0) out[i] = value;
       }
     }
     return makeTensor(a.shape, a.dtype, out);

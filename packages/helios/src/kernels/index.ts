@@ -98,10 +98,10 @@ import {
   kernelFlashAttentionBackwardDKV,
 } from "./attention.js";
 
-// F16 storage variant kernels
-export { kernelBinaryOpF16, kernelUnaryOpF16 } from "./f16.js";
+// F16 storage variant kernels + cast kernels
+export { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
 
-import { kernelBinaryOpF16, kernelUnaryOpF16 } from "./f16.js";
+import { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
 
 // ── Kernel cache ────────────────────────────────────────────────────────────
 
@@ -189,6 +189,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "exp_f16":   spirv = kernelUnaryOpF16(GLSLstd450.Exp, wgSize); break;
     case "log_f16":   spirv = kernelUnaryOpF16(GLSLstd450.Log, wgSize); break;
     case "sqrt_f16":  spirv = kernelUnaryOpF16(GLSLstd450.Sqrt, wgSize); break;
+    // f16 ↔ f32 cast kernels
+    case "cast_f32_to_f16": spirv = kernelCastF32ToF16(wgSize); break;
+    case "cast_f16_to_f32": spirv = kernelCastF16ToF32(wgSize); break;
     default: {
       // Flash attention kernels — name encodes params: flash_attn_{variant}_{Br}_{Bc}_{D}
       const flashMatch = name.match(/^flash_attn_(fwd|bwd_dq|bwd_dkv)_(\d+)_(\d+)_(\d+)$/);

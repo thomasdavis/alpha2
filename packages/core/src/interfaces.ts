@@ -3,7 +3,7 @@
  */
 import { Context, Effect } from "effect";
 import type { TokenizerError, BackendError, OptimizerError, CheckpointError } from "./errors.js";
-import type { Dtype, Shape, ModelConfig } from "./types.js";
+import type { Dtype, Shape, ModelConfig, TensorArray } from "./types.js";
 
 // ── Tokenizer ──────────────────────────────────────────────────────────────
 export interface TokenizerArtifacts {
@@ -30,7 +30,7 @@ export class TokenizerService extends Context.Tag("TokenizerService")<
 export interface TensorData {
   readonly shape: Shape;
   readonly dtype: Dtype;
-  readonly data: Float32Array | Float64Array | Int32Array;
+  readonly data: TensorArray;
 }
 
 // ── Backend ────────────────────────────────────────────────────────────────
@@ -119,6 +119,9 @@ export interface Backend {
 
   // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
   broadcast?(a: TensorData, targetShape: Shape): TensorData;
+
+  // dtype casting (GPU-optimized, optional)
+  castDtype?(a: TensorData, dtype: Dtype): TensorData;
 
   // reduction (GPU-optimized, optional)
   sumOfSquares?(data: TensorData): TensorData;

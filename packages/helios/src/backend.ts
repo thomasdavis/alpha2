@@ -41,18 +41,61 @@ let wgAutoTuned = false;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeTensor(shape: Shape, dtype: Dtype, data: Float32Array | Float64Array | Int32Array): TensorData {
+function makeTensor(shape: Shape, dtype: Dtype, data: Float32Array | Float64Array | Int32Array | Uint16Array): TensorData {
   return { shape, dtype, data };
 }
 
 function toF32(td: TensorData): Float32Array {
   if (td.data instanceof Float32Array) return td.data;
-  return Float32Array.from(td.data);
+  return Float32Array.from(td.data as any);
 }
 
 /** Reinterpret Int32Array as Float32Array (preserving raw bits, no value conversion). */
 function i32AsF32(data: Int32Array): Float32Array {
   return new Float32Array(data.buffer, data.byteOffset, data.length);
+}
+
+/** Convert a single f32 value to f16 bits (IEEE 754 half-precision). */
+function f32ToF16Bits(val: number): number {
+  const buf = new ArrayBuffer(4);
+  new Float32Array(buf)[0] = val;
+  const bits = new Uint32Array(buf)[0];
+  const sign = (bits >> 16) & 0x8000;
+  const exp = (bits >> 23) & 0xFF;
+  const frac = bits & 0x7FFFFF;
+  if (exp === 0xFF) return sign | 0x7C00 | (frac ? 0x200 : 0); // Inf/NaN
+  const newExp = exp - 127 + 15;
+  if (newExp >= 31) return sign | 0x7C00; // overflow → Inf
+  if (newExp <= 0) {
+    if (newExp < -10) return sign; // too small → zero
+    const m = (frac | 0x800000) >> (1 - newExp);
+    return sign | (m >> 13);
+  }
+  return sign | (newExp << 10) | (frac >> 13);
+}
+
+/** Convert f16 bits back to f32. */
+function f16BitsToF32(bits: number): number {
+  const sign = (bits & 0x8000) >> 15;
+  const exp = (bits & 0x7C00) >> 10;
+  const frac = bits & 0x3FF;
+  if (exp === 0) {
+    if (frac === 0) return sign ? -0 : 0;
+    // Denormalized
+    let e = -14;
+    let f = frac;
+    while (!(f & 0x400)) { f <<= 1; e--; }
+    f &= 0x3FF;
+    const buf = new ArrayBuffer(4);
+    new Uint32Array(buf)[0] = (sign << 31) | ((e + 127) << 23) | (f << 13);
+    return new Float32Array(buf)[0];
+  }
+  if (exp === 31) {
+    return frac ? NaN : (sign ? -Infinity : Infinity);
+  }
+  const buf = new ArrayBuffer(4);
+  new Uint32Array(buf)[0] = (sign << 31) | ((exp - 15 + 127) << 23) | (frac << 13);
+  return new Float32Array(buf)[0];
 }
 
 /** Upload integer tensor to GPU preserving raw bits (for use as u32 in shaders). */
@@ -518,6 +561,27 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
     },
   };
   // Track GPU residence so subsequent ops can find this buffer
+  gpuResidence.set(td, gpuInfo);
+  gpuCleanup.register(td, gpuInfo);
+  return td;
+}
+
+/** Like graphLazyTensor but for f16 output buffers (2 bytes per element). */
+function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
+  const size = shapeSize(shape);
+  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: size * 2, refs: 1, released: false };
+  const td: TensorData = {
+    shape: [...shape],
+    dtype: "f16",
+    get data(): Uint16Array {
+      // F16 data shouldn't normally be read back to CPU — this is a fallback
+      const tv = graph.flush();
+      if (tv > 0) vk.waitTimeline(tv);
+      // readBuffer returns Float32Array; reinterpret as Uint16Array
+      const f32 = vk.readBuffer(region.handle);
+      return new Uint16Array(f32.buffer, f32.byteOffset, size);
+    },
+  };
   gpuResidence.set(td, gpuInfo);
   gpuCleanup.register(td, gpuInfo);
   return td;
@@ -1125,6 +1189,98 @@ export class HeliosBackend implements Backend {
     if (!finalRegion) return a; // single element, already reduced
 
     return graphLazyTensor(vk, [], finalRegion);
+  }
+
+  // ── Dtype casting ────────────────────────────────────────────────────────
+
+  castDtype(a: TensorData, targetDtype: Dtype): TensorData {
+    if (a.dtype === targetDtype) return a;
+
+    const size = shapeSize(a.shape);
+
+    // f32 → f16 (GPU path)
+    if (a.dtype === "f32" && targetDtype === "f16" && this._f16Supported && size >= this._minGpuSize) {
+      const vk = this.init();
+      const bufA = ensureGpu(vk, a);
+      const pipeline = getPipeline(vk, "cast_f32_to_f16", 2);
+      const outBytes = size * 2; // f16 = 2 bytes per element
+      const region = acquireOutputRegion(vk, outBytes);
+      const push = new Float32Array([size, 0]);
+
+      graph.record({
+        kind: "unary",
+        kernel: "cast_f32_to_f16",
+        pipeline,
+        inputBufs: [bufA],
+        outputRegion: region,
+        groups: [Math.ceil(size / WG_SIZE), 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape,
+      });
+
+      return graphLazyTensorF16(vk, a.shape, region);
+    }
+
+    // f16 → f32 (GPU path)
+    if (a.dtype === "f16" && targetDtype === "f32" && this._f16Supported && size >= this._minGpuSize) {
+      const vk = this.init();
+      const bufA = this.ensureGpuF16(vk, a);
+      const pipeline = getPipeline(vk, "cast_f16_to_f32", 2);
+      const outBytes = size * 4; // f32 = 4 bytes per element
+      const region = acquireOutputRegion(vk, outBytes);
+      const push = new Float32Array([size, 0]);
+
+      graph.record({
+        kind: "unary",
+        kernel: "cast_f16_to_f32",
+        pipeline,
+        inputBufs: [bufA],
+        outputRegion: region,
+        groups: [Math.ceil(size / WG_SIZE), 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape,
+      });
+
+      return graphLazyTensor(vk, a.shape, region);
+    }
+
+    // CPU fallback: only f32↔f16 supported
+    if (a.dtype === "f32" && targetDtype === "f16") {
+      const f32 = a.data as Float32Array;
+      const u16 = new Uint16Array(size);
+      for (let i = 0; i < size; i++) u16[i] = f32ToF16Bits(f32[i]);
+      return makeTensor(a.shape, "f16", u16);
+    }
+    if (a.dtype === "f16" && targetDtype === "f32") {
+      const u16 = a.data as Uint16Array;
+      const f32 = new Float32Array(size);
+      for (let i = 0; i < size; i++) f32[i] = f16BitsToF32(u16[i]);
+      return makeTensor(a.shape, "f32", f32);
+    }
+
+    throw new Error(`Helios: unsupported cast ${a.dtype} → ${targetDtype}`);
+  }
+
+  /** Ensure an f16 tensor's data is on GPU. F16 tensors created by GPU ops already have residence. */
+  private ensureGpuF16(vk: NativeAddon, td: TensorData): number {
+    const existing = gpuResidence.get(td);
+    if (existing) return existing.handle;
+    // F16 data from CPU — need to upload raw u16 bits
+    const byteSize = td.data.length * 2;
+    const handle = acquireBuffer(vk, byteSize);
+    // Pack Uint16Array into Float32Array for uploadBuffer (shares underlying bytes)
+    const u16 = td.data as Uint16Array;
+    const paddedLen = Math.ceil(u16.length / 2);
+    const f32 = new Float32Array(paddedLen);
+    const f32u16 = new Uint16Array(f32.buffer);
+    f32u16.set(u16);
+    vk.uploadBuffer(handle, f32);
+    const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
+    gpuResidence.set(td, info);
+    gpuCleanup.register(td, info);
+    return handle;
   }
 
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────

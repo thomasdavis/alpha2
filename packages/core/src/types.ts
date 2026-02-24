@@ -3,10 +3,16 @@
  */
 
 // ── Dtype ──────────────────────────────────────────────────────────────────
-export type Dtype = "f32" | "f64" | "i32";
+export type Dtype = "f32" | "f64" | "i32" | "f16";
+
+/** Array types used for standard f32/f64/i32 tensor data. */
+export type NumericArray = Float32Array | Float64Array | Int32Array;
+/** All array types including f16 (Uint16Array for raw f16 bits). */
+export type TensorArray = NumericArray | Uint16Array;
 
 export function dtypeBytes(d: Dtype): number {
   switch (d) {
+    case "f16": return 2;
     case "f32": return 4;
     case "f64": return 8;
     case "i32": return 4;
@@ -15,6 +21,7 @@ export function dtypeBytes(d: Dtype): number {
 
 export function dtypeArray(d: Dtype) {
   switch (d) {
+    case "f16": return Uint16Array;  // f16 stored as raw u16 bits on CPU side
     case "f32": return Float32Array;
     case "f64": return Float64Array;
     case "i32": return Int32Array;
