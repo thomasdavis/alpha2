@@ -120,6 +120,9 @@ export interface Backend {
   // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
   broadcast?(a: TensorData, targetShape: Shape): TensorData;
 
+  // reduction (GPU-optimized, optional)
+  sumOfSquares?(data: TensorData): TensorData;
+
   // optimizer (GPU-optimized, optional)
   adamwStep?(params: TensorData, grads: TensorData, m: TensorData, v: TensorData,
     lr: number, beta1: number, beta2: number, eps: number, weightDecay: number, bc1: number, bc2: number): void;

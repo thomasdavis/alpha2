@@ -354,6 +354,195 @@ export function kernelMaxReduce(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: GPU Sum-of-Squares Reduction (Phase 1) ───────────────────────────
+
+/**
+ * Parallel sum-of-squares reduction using shared memory.
+ * Each workgroup reduces WG_SIZE elements down to 1 partial sum of squares.
+ *
+ * Identical to kernelSumReduce but squares each value before accumulating:
+ *   val² = val * val
+ *
+ * Bindings: 0=A(in), 1=C(out, partial sums)
+ * Push constants: { totalLen: f32, _unused: f32 }
+ *
+ * Each thread loads one element (or 0 if out of bounds), squares it.
+ * Tree reduction in shared memory with workgroup barriers.
+ * Thread 0 of each workgroup writes the partial sum of squares.
+ */
+export function kernelSumOfSquares(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  // Shared memory: array of WG_SIZE floats
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id();
+  b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  // Pointer for Function-scope variable (loop counter)
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+
+  // WorkgroupId built-in
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+
+  // LocalInvocationId built-in
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  // Scope/semantics constants for barrier
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  // Additional int constants
+  const const1u_extra = b.id();
+  b.constant(p.tU32, const1u_extra, 1);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  // gidX = GlobalInvocationId.x
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // localIdx = LocalInvocationId.x
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  // wgId = WorkgroupId.x
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const wgId = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, wgId, wgIdVec, 0]);
+
+  // Load total length from push constants
+  const lenF = loadPushLen(b, p, pc);
+
+  // Load value: val = (gidX < len) ? A[gidX] : 0.0
+  const gidF = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, gidF, gidX]);
+  const inBounds = b.id();
+  b.emit(Op.FOrdLessThan, [p.tBool, inBounds, gidF, lenF]);
+  const labelLoad = b.id();
+  const labelAfterLoad = b.id();
+  const labelOOB = b.id();
+  b.emit(Op.SelectionMerge, [labelAfterLoad, 0]);
+  b.emit(Op.BranchConditional, [inBounds, labelLoad, labelOOB]);
+
+  b.emit(Op.Label, [labelLoad]);
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
+  const loadedVal = b.id();
+  b.emit(Op.Load, [p.tF32, loadedVal, ptrA]);
+  // Square the loaded value: squaredVal = loadedVal * loadedVal
+  const squaredVal = b.id();
+  b.emit(Op.FMul, [p.tF32, squaredVal, loadedVal, loadedVal]);
+  b.emit(Op.Branch, [labelAfterLoad]);
+
+  b.emit(Op.Label, [labelOOB]);
+  b.emit(Op.Branch, [labelAfterLoad]);
+
+  b.emit(Op.Label, [labelAfterLoad]);
+  const val = b.id();
+  b.emit(Op.Phi, [p.tF32, val, squaredVal, labelLoad, p.const0f, labelOOB]);
+
+  // Store to shared memory: shared[localIdx] = val
+  const ptrSharedLocal = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSharedLocal, sharedMem, localIdx]);
+  b.emit(Op.Store, [ptrSharedLocal, val]);
+
+  // Workgroup barrier
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Tree reduction: for (stride = wgSize/2; stride > 0; stride >>= 1)
+  // Unroll the loop since wgSize is known at compile time
+  let stride = wgSize >> 1;
+  while (stride > 0) {
+    const strideConst = b.id();
+    b.constant(p.tU32, strideConst, stride);
+
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, strideConst]);
+    const labelReduce = b.id();
+    const labelAfterReduce = b.id();
+    b.emit(Op.SelectionMerge, [labelAfterReduce, 0]);
+    b.emit(Op.BranchConditional, [cmp, labelReduce, labelAfterReduce]);
+
+    b.emit(Op.Label, [labelReduce]);
+    // shared[localIdx] += shared[localIdx + stride]
+    const otherIdx = b.id();
+    b.emit(Op.IAdd, [p.tU32, otherIdx, localIdx, strideConst]);
+    const ptrMe = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrMe, sharedMem, localIdx]);
+    const myVal = b.id();
+    b.emit(Op.Load, [p.tF32, myVal, ptrMe]);
+    const ptrOther = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrOther, sharedMem, otherIdx]);
+    const otherVal = b.id();
+    b.emit(Op.Load, [p.tF32, otherVal, ptrOther]);
+    const sum = b.id();
+    b.emit(Op.FAdd, [p.tF32, sum, myVal, otherVal]);
+    b.emit(Op.Store, [ptrMe, sum]);
+    b.emit(Op.Branch, [labelAfterReduce]);
+
+    b.emit(Op.Label, [labelAfterReduce]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    stride >>= 1;
+  }
+
+  // Thread 0 writes the partial sum to output
+  const isZero = b.id();
+  b.emit(Op.ULessThan, [p.tBool, isZero, localIdx, const1u_extra]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [isZero, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+  const ptrShared0 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrShared0, sharedMem, p.const0u]);
+  const partialSum = b.id();
+  b.emit(Op.Load, [p.tF32, partialSum, ptrShared0]);
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, wgId]);
+  b.emit(Op.Store, [ptrC, partialSum]);
+  b.emit(Op.Branch, [labelEnd]);
+
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: Column sum (reduce axis 0 of a 2D buffer) ────────────────────────
 
 /**

@@ -1063,6 +1063,70 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, outShape, region);
   }
 
+  // ── Sum of squares (fused: square + reduce) ────────────────────────────
+
+  sumOfSquares(data: TensorData): TensorData {
+    const totalSize = shapeSize(data.shape);
+    if (totalSize >= this._minGpuSize) {
+      return this.gpuReduceSumOfSquares(data);
+    }
+    // CPU fallback: sum of element-wise squares
+    const arr = data.data as Float32Array;
+    let acc = 0;
+    for (let i = 0; i < arr.length; i++) acc += arr[i] * arr[i];
+    return makeTensor([], data.dtype, dtypeArray(data.dtype).from([acc]));
+  }
+
+  private gpuReduceSumOfSquares(a: TensorData): TensorData {
+    const vk = this.init();
+    const totalSize = shapeSize(a.shape);
+    // First pass uses sum_sq_reduce (squares at input load)
+    const sqPipeline = getPipeline(vk, "sum_sq_reduce", 2);
+    // Subsequent passes use plain sum_reduce (just sum partial sums)
+    const sumPipeline = getPipeline(vk, "sum_reduce", 2);
+
+    let inputBuf = ensureGpu(vk, a);
+    let remaining = totalSize;
+    let finalRegion: OutputRegion | null = null;
+    let isFirstPass = true;
+
+    // Multi-pass reduction: each pass reduces by WG_SIZE, all recorded to graph
+    while (remaining > 1) {
+      const numGroups = Math.ceil(remaining / WG_SIZE);
+      const outByteSize = numGroups * 4;
+      const region = acquireOutputRegion(vk, outByteSize);
+
+      const push = new Float32Array([remaining, 0]);
+      const pipeline = isFirstPass ? sqPipeline : sumPipeline;
+      const kernel = isFirstPass ? "sum_sq_reduce" : "sum_reduce";
+
+      graph.record({
+        kind: "reduce_sum",
+        kernel,
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [numGroups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: numGroups === 1 ? [] : [numGroups],
+        allBufs: [inputBuf, region.handle],
+      });
+
+      // Defer-release intermediate regions (not the final one)
+      if (finalRegion) graph.deferRelease(finalRegion);
+
+      inputBuf = region.handle;
+      finalRegion = region;
+      remaining = numGroups;
+      isFirstPass = false;
+    }
+
+    if (!finalRegion) return a; // single element, already reduced
+
+    return graphLazyTensor(vk, [], finalRegion);
+  }
+
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────
 
   private gpuSoftmax(a: TensorData): TensorData {

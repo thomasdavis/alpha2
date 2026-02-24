@@ -337,7 +337,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     if (!nanDetected) {
       // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
-      // Phase 1: record mul+sum on GPU graph (no flush — all ops batch together)
+      // Use fused sumOfSquares when available (1 dispatch vs 2 for mul+sum per param).
+      const hasSumSq = !!backend.sumOfSquares;
       const sqNormParts: TensorData[] = [];
       const sqNormNames: string[] = [];
       const g2Intermediates: TensorData[] = [];
@@ -345,9 +346,13 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
         paramDataMap.set(name, variable.data);
         if (variable.grad) {
           const g = variable.grad;
-          const g2 = backend.mul(g, g);
-          g2Intermediates.push(g2);
-          sqNormParts.push(backend.sum(g2));
+          if (hasSumSq) {
+            sqNormParts.push(backend.sumOfSquares!(g));
+          } else {
+            const g2 = backend.mul(g, g);
+            g2Intermediates.push(g2);
+            sqNormParts.push(backend.sum(g2));
+          }
           sqNormNames.push(name);
         }
       }
@@ -392,7 +397,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
         }
       }
 
-      // Release grad norm intermediates (g² tensors and scalar sums)
+      // Release grad norm intermediates
       if (releaseFn) {
         for (const g2 of g2Intermediates) releaseFn(g2);
         for (const part of sqNormParts) releaseFn(part);

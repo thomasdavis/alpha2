@@ -35,11 +35,11 @@ import {
 
 // Reduction kernels
 export {
-  kernelSumReduce, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
 } from "./reduction.js";
 
 import {
-  kernelSumReduce, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
 } from "./reduction.js";
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd)
@@ -141,6 +141,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "clamp_vec4":     spirv = kernelClampVec4(wgSize); break;
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
+    case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
     case "softmax":   spirv = kernelSoftmax(wgSize); break;
     case "layernorm": spirv = kernelLayerNorm(wgSize); break;
