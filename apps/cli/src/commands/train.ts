@@ -142,6 +142,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     onSamples: reporter
       ? (samples, step) => reporter.sendSamples(samples, step)
       : undefined,
+    activationCheckpointing: boolArg(kv, "checkpoint", false),
   });
 
   // Post-training sample generation

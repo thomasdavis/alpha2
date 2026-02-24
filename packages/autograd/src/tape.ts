@@ -55,9 +55,9 @@ export class Tape {
    * accumulate across steps (FinalizationRegistry is too slow to collect them),
    * causing OOM during subsequent backward passes.
    */
-  backward(loss: Variable, backend: Backend, releaseTensor?: (td: TensorData) => void): void {
-    // Initialize loss grad to ones (scalar)
-    loss.grad = backend.ones(loss.data.shape, loss.data.dtype);
+  backward(loss: Variable, backend: Backend, releaseTensor?: (td: TensorData) => void, initialGrad?: TensorData): void {
+    // Initialize loss grad: use provided gradient or default to ones
+    loss.grad = initialGrad ?? backend.ones(loss.data.shape, loss.data.dtype);
 
     // Walk tape in reverse
     for (let i = this.entries.length - 1; i >= 0; i--) {

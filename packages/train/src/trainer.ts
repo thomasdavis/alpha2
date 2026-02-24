@@ -100,6 +100,7 @@ export interface TrainerDeps {
   onSamples?: (samples: { prompt: string; output: string }[], step: number) => void | Promise<void>;
   samplePrompts?: string[];
   domain?: string;
+  activationCheckpointing?: boolean;
 }
 
 export async function train(deps: TrainerDeps): Promise<GPTParams> {
@@ -210,6 +211,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   const accumStr = trainConfig.gradAccumSteps > 1 ? ` (${trainConfig.batchSize}×${trainConfig.gradAccumSteps})` : "";
   console.log(`seed: ${trainConfig.seed} | block_size: ${modelConfig.blockSize} | batch: ${effectiveBatch}${accumStr}`);
   console.log(`iters: ${trainConfig.iters} | lr: ${trainConfig.lr}`);
+  if (deps.activationCheckpointing) console.log(`activation_checkpointing: enabled`);
 
   // GPU proof: log device info and run smoke test
   if ("getDeviceInfo" in backend && "smokeTest" in backend) {
@@ -291,7 +293,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
-      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true);
+      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 

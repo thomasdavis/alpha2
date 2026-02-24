@@ -9,3 +9,4 @@ export {
   flashAttention,
   reshape, transpose,
 } from "./ops.js";
+export { checkpoint } from "./checkpoint.js";
