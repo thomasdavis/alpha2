@@ -30,7 +30,7 @@ export default async function RunDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const client = getClient();
+  const client = await getClient();
   const run = await getRun(client, id);
   if (!run) notFound();
 

@@ -1,4 +1,5 @@
-import { getDb, updateRunProgress } from "@alpha/db";
+import { getClient } from "@/lib/db";
+import { updateRunProgress } from "@alpha/db";
 import { checkAuth, broadcastLive, jsonResponse } from "@/lib/server-state";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +10,7 @@ export async function POST(request: Request) {
 
   const { runId, finalStep } = await request.json();
   try {
-    const client = getDb();
+    const client = await getClient();
     await updateRunProgress(client, runId, { latest_step: finalStep, status: "completed" });
   } catch (e) {
     console.warn("Ingest complete DB error:", (e as Error).message);

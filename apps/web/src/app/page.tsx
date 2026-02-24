@@ -76,7 +76,7 @@ function RunRow({ run }: { run: DbRunSummary }) {
 }
 
 export default async function DashboardPage() {
-  const client = getClient();
+  const client = await getClient();
   const [runs, domains] = await Promise.all([
     listRuns(client),
     listDomains(client),

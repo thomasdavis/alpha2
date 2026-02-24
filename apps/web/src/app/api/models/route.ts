@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { NextRequest } from "next/server";
-import { getDb, listRuns as dbListRuns } from "@alpha/db";
+import { getClient } from "@/lib/db";
+import { listRuns as dbListRuns } from "@alpha/db";
 import { getRuns, resetEngine, initEngine } from "@/lib/engine";
 import {
   OUTPUTS_DIR, modelsCache, MODELS_CACHE_TTL, invalidateModelsCache, setModelsCache,
@@ -25,7 +26,7 @@ export async function GET() {
 
   const seen = new Set(localRuns.map((r) => r.id));
   try {
-    const client = getDb();
+    const client = await getClient();
     const dbRuns = await dbListRuns(client, {});
     for (const r of dbRuns) {
       if (seen.has(r.id)) continue;

@@ -1,4 +1,5 @@
-import { getDb, listCheckpoints } from "@alpha/db";
+import { getClient } from "@/lib/db";
+import { listCheckpoints } from "@alpha/db";
 import { jsonResponse } from "@/lib/server-state";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +9,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const client = getDb();
+  const client = await getClient();
   const checkpoints = await listCheckpoints(client, id);
   return jsonResponse(checkpoints);
 }

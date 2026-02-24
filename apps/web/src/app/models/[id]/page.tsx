@@ -41,7 +41,7 @@ export default async function ModelDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const client = getClient();
+  const client = await getClient();
   const run = await getRun(client, id);
   if (!run) notFound();
 

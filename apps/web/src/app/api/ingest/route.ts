@@ -1,4 +1,5 @@
-import { getDb, upsertRun, insertMetrics, updateRunProgress, insertSamples } from "@alpha/db";
+import { getClient } from "@/lib/db";
+import { upsertRun, insertMetrics, updateRunProgress, insertSamples } from "@alpha/db";
 import { checkAuth, invalidateModelsCache, broadcastLive, jsonResponse } from "@/lib/server-state";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
   if (type === "run_start") {
     const { runId, domain, modelConfig, trainConfig, totalParams } = body;
     try {
-      const client = getDb();
+      const client = await getClient();
       await upsertRun(client, {
         id: runId,
         run_id: runId,
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
   if (type === "metrics") {
     const { runId, metrics } = body as { runId: string; metrics: Array<Record<string, unknown>> };
     try {
-      const client = getDb();
+      const client = await getClient();
       await insertMetrics(client, runId, metrics as any);
       const last = metrics[metrics.length - 1] as any;
       if (last) {
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
   if (type === "samples") {
     const { runId, samples } = body as { runId: string; samples: Array<{ prompt: string; output: string }> };
     try {
-      const client = getDb();
+      const client = await getClient();
       await insertSamples(client, runId, samples);
     } catch (e) {
       console.warn("Ingest samples DB error:", (e as Error).message);

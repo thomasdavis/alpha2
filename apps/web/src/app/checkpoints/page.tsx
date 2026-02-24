@@ -14,7 +14,7 @@ interface CheckpointRow {
 }
 
 export default async function CheckpointsPage() {
-  const client = getClient();
+  const client = await getClient();
   const runs = await listRuns(client);
 
   // Gather all checkpoints across runs

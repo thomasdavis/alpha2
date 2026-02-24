@@ -1,4 +1,5 @@
-import { getDb, listRuns, getRecentMetrics } from "@alpha/db";
+import { getClient } from "@/lib/db";
+import { listRuns, getRecentMetrics } from "@alpha/db";
 import { liveClients } from "@/lib/server-state";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ export async function GET(request: Request) {
     async start(controller) {
       // Send snapshot of active runs
       try {
-        const client = getDb();
+        const client = await getClient();
         const activeRuns = await listRuns(client, { status: "active" });
         const snapshot: Array<Record<string, unknown>> = [];
         for (const run of activeRuns) {

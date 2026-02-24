@@ -4,7 +4,7 @@ import { listDomains, listRuns } from "@alpha/db";
 export const dynamic = "force-dynamic";
 
 export default async function DomainsPage() {
-  const client = getClient();
+  const client = await getClient();
   const [domains, runs] = await Promise.all([
     listDomains(client),
     listRuns(client),

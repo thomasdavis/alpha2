@@ -111,8 +111,8 @@ function RunCard({ run }: { run: DbRunSummary }) {
 }
 
 export default async function RunsPage() {
-  const client = getClient();
-  const runs = await listRuns(client);
+  const client = await getClient();
+  const runs = await listRuns(client, { limit: 500 });
 
   const active = runs.filter((r) => r.status === "active").length;
   const completed = runs.filter((r) => r.status === "completed").length;
