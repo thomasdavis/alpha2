@@ -91,7 +91,8 @@ function formatDuration(ms: number): string {
   return `${h}h ${rm}m`;
 }
 
-function formatNumber(n: number, decimals = 0): string {
+function formatNumber(n: number | null | undefined, decimals = 0): string {
+  if (n == null) return "0";
   return n.toLocaleString(undefined, { maximumFractionDigits: decimals });
 }
 
