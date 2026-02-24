@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     "@alpha/core", "@alpha/db", "@alpha/tensor", "@alpha/autograd",
     "@alpha/tokenizers", "@alpha/model", "@alpha/train",
   ],
-  serverExternalPackages: ["effect"],
+  serverExternalPackages: [],
   async rewrites() {
     return [
       { source: "/chat/completions", destination: "/v1/chat/completions" },
