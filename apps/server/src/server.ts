@@ -45,7 +45,10 @@ const BUILD_INFO = (() => {
     const msg = execSync("git log -1 --format=%s", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
     return { sha, message: msg, startedAt: new Date().toISOString() };
   } catch {}
-  return { sha: process.env.COMMIT_SHA ?? "unknown", message: "", startedAt: new Date().toISOString() };
+  const sha = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7)
+    ?? process.env.COMMIT_SHA
+    ?? "unknown";
+  return { sha, message: "", startedAt: new Date().toISOString() };
 })();
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────
