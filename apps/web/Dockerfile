@@ -9,6 +9,7 @@ COPY package.json package-lock.json turbo.json tsconfig.base.json ./
 COPY apps/web/ apps/web/
 COPY packages/core/ packages/core/
 COPY packages/db/ packages/db/
+COPY packages/inference/ packages/inference/
 COPY packages/tensor/ packages/tensor/
 COPY packages/autograd/ packages/autograd/
 COPY packages/tokenizers/ packages/tokenizers/
