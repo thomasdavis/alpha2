@@ -702,6 +702,10 @@ def train_pipeline(args):
         train_args_parts.append(f"--beta2={args.beta2}")
     if args.spike_threshold is not None:
         train_args_parts.append(f"--spikeThreshold={args.spike_threshold}")
+    if args.fp16:
+        train_args_parts.append("--fp16=true")
+    if args.checkpoint:
+        train_args_parts.append("--checkpoint=true")
     train_args = " ".join(train_args_parts)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -815,6 +819,8 @@ def main():
     parser.add_argument("--warmup", type=int, default=0, help="Warmup iterations")
     parser.add_argument("--beta2", type=float, default=None, help="Adam beta2")
     parser.add_argument("--spike-threshold", type=float, default=None, help="Skip optimizer step when grad_norm > threshold × EMA")
+    parser.add_argument("--fp16", action="store_true", help="Enable mixed precision (f16 activations + loss scaling)")
+    parser.add_argument("--checkpoint", action="store_true", help="Enable activation checkpointing")
     parser.add_argument("--stop-after", action="store_true",
                         help="Stop instance after training completes")
 
