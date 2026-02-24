@@ -316,7 +316,7 @@ function drawMiniChart(
   // X axis range
   const allSteps = series.flatMap((s) => s.data.map((d) => d.step));
   const minStep = allSteps.length > 0 ? Math.min(...allSteps) : 0;
-  const maxStep = Math.max(allSteps.length > 0 ? Math.max(...allSteps) : 0, opts.totalSteps);
+  const maxStep = allSteps.length > 0 ? Math.max(...allSteps) : 1;
   const rangeS = maxStep - minStep || 1;
   const sx = (step: number) => pad.left + ((step - minStep) / rangeS) * cw;
 
