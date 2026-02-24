@@ -64,6 +64,8 @@ export interface TrainConfig {
   readonly iters: number;
   readonly batchSize: number;
   readonly lr: number;
+  readonly lrMin: number;
+  readonly warmupIters: number;
   readonly beta1: number;
   readonly beta2: number;
   readonly eps: number;
@@ -78,16 +80,20 @@ export interface TrainConfig {
   readonly logLevel: "debug" | "info" | "warn" | "error";
   readonly trace: boolean;
   readonly gradAccumSteps: number;
+  readonly sampleInterval: number;
+  readonly spikeThreshold: number;
 }
 
 export const defaultTrainConfig: TrainConfig = {
   iters: 1000,
   batchSize: 64,
   lr: 3e-4,
+  lrMin: 0,
+  warmupIters: 0,
   beta1: 0.9,
-  beta2: 0.999,
-  eps: 1e-6,
-  weightDecay: 0.01,
+  beta2: 0.95,
+  eps: 1e-8,
+  weightDecay: 0.1,
   gradClip: 1.0,
   evalInterval: 100,
   evalIters: 10,
@@ -98,6 +104,8 @@ export const defaultTrainConfig: TrainConfig = {
   logLevel: "info",
   trace: false,
   gradAccumSteps: 1,
+  sampleInterval: 100,
+  spikeThreshold: 0,
 };
 
 // ── Sampling config ────────────────────────────────────────────────────────

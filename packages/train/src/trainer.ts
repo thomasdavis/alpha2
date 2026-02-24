@@ -89,7 +89,10 @@ export interface TrainerDeps {
   resumePath?: string;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
   onStep?: (metrics: StepMetrics) => void;
-  onStart?: (info: { runId: string; configHash: string; totalParams: number; dataPath: string }) => void | Promise<void>;
+  onStart?: (info: {
+    runId: string; configHash: string; totalParams: number; dataPath: string;
+    infra?: { gpuName: string; gpuVendor: string; gpuVramMb: number; hostname: string; cpuCount: number; ramTotalMb: number; osPlatform: string };
+  }) => void | Promise<void>;
   onCheckpoint?: (info: { step: number; path: string; runId: string }) => void;
   onSamples?: (samples: { prompt: string; output: string }[], step: number) => void | Promise<void>;
   samplePrompts?: string[];
@@ -167,8 +170,31 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     console.log(`Resumed from step ${startStep}`);
   }
 
+  // Collect infrastructure metadata (GPU runs only)
+  let infra: { gpuName: string; gpuVendor: string; gpuVramMb: number; hostname: string; cpuCount: number; ramTotalMb: number; osPlatform: string } | undefined;
+  if ("getDeviceInfo" in backend) {
+    try {
+      const os = await import("node:os");
+      const gpu = (backend as any).getDeviceInfo();
+      const vendorName = gpu.vendorId === 0x10de ? "NVIDIA"
+        : gpu.vendorId === 0x1002 ? "AMD"
+        : gpu.vendorId === 0x8086 ? "Intel"
+        : `0x${gpu.vendorId.toString(16)}`;
+      const gpuStats = await queryGpuStats();
+      infra = {
+        gpuName: gpu.deviceName,
+        gpuVendor: vendorName,
+        gpuVramMb: gpuStats?.vramTotalMb ?? 0,
+        hostname: os.hostname(),
+        cpuCount: os.cpus().length,
+        ramTotalMb: Math.round(os.totalmem() / 1024 / 1024),
+        osPlatform: os.platform(),
+      };
+    } catch { /* infra collection is best-effort */ }
+  }
+
   // Notify start
-  if (onStart) await onStart({ runId: rid, configHash, totalParams, dataPath });
+  if (onStart) await onStart({ runId: rid, configHash, totalParams, dataPath, infra });
 
   // Log header
   const paramBytes = totalParams * 4;
@@ -209,18 +235,26 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
   // Training loop
   const startTime = performance.now();
+  let spikeSkips = 0;
 
   for (let step = startStep; step < trainConfig.iters; step++) {
     const stepStart = performance.now();
 
-    // Learning rate schedule: linear warmup + cosine decay
-    const warmup = Math.min(500, trainConfig.iters / 10);
+    // Learning rate schedule: linear warmup + cosine decay to lrMin
+    const warmup = trainConfig.warmupIters > 0
+      ? trainConfig.warmupIters
+      : trainConfig.warmupIters < 0
+        ? 0  // negative = explicitly disabled
+        : Math.min(2000, Math.floor(trainConfig.iters / 5));
+    const lrMin = (trainConfig.lrMin ?? 0) === 0
+      ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
+      : trainConfig.lrMin;
     let lr: number;
     if (step < warmup) {
-      lr = trainConfig.lr * (step + 1) / warmup;
+      lr = lrMin + (trainConfig.lr - lrMin) * (step + 1) / warmup;
     } else {
       const decay = (step - warmup) / (trainConfig.iters - warmup);
-      lr = trainConfig.lr * 0.5 * (1 + Math.cos(Math.PI * decay));
+      lr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
     }
     if (optimizer && "setLr" in optimizer) {
       (optimizer as any).setLr(lr);
@@ -299,6 +333,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
       // Phase 1: record mul+sum on GPU graph (no flush — all ops batch together)
       const sqNormParts: TensorData[] = [];
+      const sqNormNames: string[] = [];
       const g2Intermediates: TensorData[] = [];
       for (const [name, variable] of paramMap) {
         paramDataMap.set(name, variable.data);
@@ -307,12 +342,16 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
           const g2 = backend.mul(g, g);
           g2Intermediates.push(g2);
           sqNormParts.push(backend.sum(g2));
+          sqNormNames.push(name);
         }
       }
       // Phase 2: first .data access triggers single flush of ALL pending GPU work
       let gradNormSq = 0;
-      for (const part of sqNormParts) {
-        gradNormSq += (part.data as Float32Array)[0];
+      const perParamNormSq = trainConfig.trace ? new Map<string, number>() : null;
+      for (let pi = 0; pi < sqNormParts.length; pi++) {
+        const val = (sqNormParts[pi].data as Float32Array)[0];
+        gradNormSq += val;
+        if (perParamNormSq) perParamNormSq.set(sqNormNames[pi], val);
       }
       gradNorm = Math.sqrt(gradNormSq);
       // Release grad norm intermediates (g² tensors and scalar sums)
@@ -321,10 +360,28 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
         for (const part of sqNormParts) releaseFn(part);
       }
 
+      // Per-layer gradient diagnostics (when trace enabled)
+      if (perParamNormSq) {
+        const sorted = [...perParamNormSq.entries()]
+          .map(([n, sq]) => [n, Math.sqrt(sq)] as const)
+          .sort((a, b) => b[1] - a[1]);
+        const top5 = sorted.slice(0, 5).map(([n, v]) => `${n}=${v.toFixed(2)}`).join(", ");
+        console.log(`  [trace] grad norms (top 5): ${top5}`);
+      }
+
       // NaN guard on gradient norm (backward produced NaN even though loss was finite)
       if (!isFinite(gradNorm)) {
         console.warn(`  [warn] grad_norm=NaN at step ${step + 1} — skipping optimizer update`);
         nanDetected = true;
+      }
+
+      // Spike detection: skip optimizer step when grad_norm exceeds absolute threshold.
+      // This prevents pathological batches from disrupting Adam's momentum estimates.
+      // spikeThreshold is an absolute grad_norm cap (e.g. 50 means skip when > 50).
+      if (!nanDetected && trainConfig.spikeThreshold > 0 && gradNorm > trainConfig.spikeThreshold) {
+        spikeSkips++;
+        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${trainConfig.spikeThreshold} — skipping step ${step + 1} (${spikeSkips} total skips)`);
+        nanDetected = true; // reuse the skip path
       }
     } else {
       // Still need paramDataMap for zero-grad cleanup
@@ -501,8 +558,11 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
       if (deps.onCheckpoint) deps.onCheckpoint({ step: step + 1, path: ckptPath, runId: rid });
+    }
 
-      // Generate inference samples at checkpoint intervals
+    // Generate inference samples at sampleInterval (decoupled from checkpointing)
+    const sampleInterval = trainConfig.sampleInterval;
+    if (sampleInterval > 0 && ((step + 1) % sampleInterval === 0 || step + 1 === trainConfig.iters)) {
       if (deps.samplePrompts && deps.samplePrompts.length > 0) {
         try {
           // Flush GPU before sampling to maximize free VRAM

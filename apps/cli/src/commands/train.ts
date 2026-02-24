@@ -42,6 +42,8 @@ export async function trainCmd(args: string[]): Promise<void> {
     iters: intArg(kv, "steps", intArg(kv, "iters", tDefaults.iters ?? defaultTrainConfig.iters)),
     batchSize: intArg(kv, "batch", tDefaults.batchSize ?? defaultTrainConfig.batchSize),
     lr: floatArg(kv, "lr", tDefaults.lr ?? defaultTrainConfig.lr),
+    lrMin: floatArg(kv, "lrMin", tDefaults.lrMin ?? defaultTrainConfig.lrMin),
+    warmupIters: intArg(kv, "warmupIters", tDefaults.warmupIters ?? defaultTrainConfig.warmupIters),
     beta1: floatArg(kv, "beta1", tDefaults.beta1 ?? defaultTrainConfig.beta1),
     beta2: floatArg(kv, "beta2", tDefaults.beta2 ?? defaultTrainConfig.beta2),
     eps: floatArg(kv, "eps", tDefaults.eps ?? defaultTrainConfig.eps),
@@ -56,6 +58,8 @@ export async function trainCmd(args: string[]): Promise<void> {
     logLevel: strArg(kv, "log", (tDefaults.logLevel ?? defaultTrainConfig.logLevel)) as any,
     trace: boolArg(kv, "trace", tDefaults.trace ?? defaultTrainConfig.trace),
     gradAccumSteps: intArg(kv, "accumSteps", tDefaults.gradAccumSteps ?? defaultTrainConfig.gradAccumSteps),
+    sampleInterval: intArg(kv, "sampleInterval", tDefaults.sampleInterval ?? defaultTrainConfig.sampleInterval),
+    spikeThreshold: floatArg(kv, "spikeThreshold", tDefaults.spikeThreshold ?? defaultTrainConfig.spikeThreshold),
   };
 
   console.log(`Implementations available:\n${listImplementations()}\n`);
@@ -63,12 +67,26 @@ export async function trainCmd(args: string[]): Promise<void> {
   // Resolve implementations
   const backend = resolveBackend(trainConfig.backend);
   let tokenizer = resolveTokenizer(trainConfig.tokenizer);
+  // Build no-decay set: embeddings + LayerNorm weights/biases should skip weight decay
+  const noDecayNames = new Set<string>();
+  noDecayNames.add("wte");
+  noDecayNames.add("wpe");
+  noDecayNames.add("lnF.weight");
+  noDecayNames.add("lnF.bias");
+  for (let i = 0; i < modelConfig.nLayer; i++) {
+    noDecayNames.add(`layer.${i}.ln1.weight`);
+    noDecayNames.add(`layer.${i}.ln1.bias`);
+    noDecayNames.add(`layer.${i}.ln2.weight`);
+    noDecayNames.add(`layer.${i}.ln2.bias`);
+  }
+
   const optimizer = resolveOptimizer(trainConfig.optimizer, backend, {
     lr: trainConfig.lr,
     beta1: trainConfig.beta1,
     beta2: trainConfig.beta2,
     eps: trainConfig.eps,
     weightDecay: trainConfig.weightDecay,
+    noDecayNames,
   });
   const rng = resolveRng(trainConfig.seed);
 
@@ -115,6 +133,7 @@ export async function trainCmd(args: string[]): Promise<void> {
           modelConfig: finalModelConfig,
           trainConfig,
           dataPath: info.dataPath,
+          infra: info.infra,
         })
       : undefined,
     onStep: reporter ? (metrics) => reporter.onStep(metrics) : undefined,

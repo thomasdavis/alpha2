@@ -122,7 +122,7 @@ function drawLossChart(canvas: HTMLCanvasElement, metrics: StepMetric[], totalIt
   const paddedMax = maxL + rangeL * 0.05;
   const paddedRange = paddedMax - paddedMin;
   const minStep = metrics[0].step;
-  const maxStep = Math.max(metrics[metrics.length - 1].step, totalIters);
+  const maxStep = metrics[metrics.length - 1].step;
   const rangeS = maxStep - minStep || 1;
 
   const sx = (step: number) => pad.left + ((step - minStep) / rangeS) * cw;
@@ -530,7 +530,7 @@ function drawStepTimeChart(canvas: HTMLCanvasElement, metrics: StepMetric[], tot
   ctx.fillRect(0, 0, w, h);
 
   const minStep = data[0].step;
-  const maxStep = Math.max(data[data.length - 1].step, totalSteps);
+  const maxStep = data[data.length - 1].step;
   const rangeS = maxStep - minStep || 1;
 
   // Compute stacked values

@@ -1178,10 +1178,11 @@ export class HeliosBackend implements Backend {
     return makeTensor(input.shape, input.dtype, out);
   }
 
-  crossEntropyBackward(logits: TensorData, targets: TensorData, _gradOutput: TensorData): TensorData {
+  crossEntropyBackward(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData {
     const vk = this.init();
     const [N, C] = logits.shape;
     const totalElements = N * C;
+    const gradScalar = (gradOutput.data as Float32Array)[0];
 
     // Flush pending ops to reclaim GPU memory from earlier backward operations
     graph.flush();
@@ -1202,7 +1203,7 @@ export class HeliosBackend implements Backend {
       const pushU = new Uint32Array(push.buffer);
       push[0] = totalElements;  // float value for bounds check (loadPushLen reads as f32)
       pushU[1] = C;             // u32 bits — kernel bitcasts f32→u32
-      push[2] = 1.0 / N;        // invN as actual f32
+      push[2] = gradScalar / N; // scale by upstream gradient
 
       graph.record({
         kind: "backward",
@@ -1227,12 +1228,12 @@ export class HeliosBackend implements Backend {
     // CPU fallback
     const probsArr = probs.data as Float32Array;
     const out = new Float32Array(totalElements);
-    const invN = 1.0 / N;
+    const scale = gradScalar / N;
     for (let i = 0; i < N; i++) {
       const off = i * C;
       const target = targets.data[i];
       for (let j = 0; j < C; j++) {
-        out[off + j] = (probsArr[off + j] - (j === target ? 1 : 0)) * invN;
+        out[off + j] = (probsArr[off + j] - (j === target ? 1 : 0)) * scale;
       }
     }
     return makeTensor(logits.shape, logits.dtype, out);
@@ -1546,20 +1547,13 @@ export class HeliosBackend implements Backend {
 
     if (N * C >= this._minGpuSize) {
       const vk = this.init();
-      // GPU path: softmax → clamp → log → pick targets → sum → /N
-      // clamp_min prevents log(0) = -Inf when softmax underflows to exactly 0.0 in f32
-      const probs = this.softmax(logits, -1);                        // GPU softmax (numerically stable)
-      const clampedProbs = this.gpuUnaryOp(probs, "clamp_min", 1e-30); // floor at 1e-30
-      releaseGpuBufferFor(probs);                                     // free softmax intermediate
-      const logProbs = this.gpuUnaryOp(clampedProbs, "log");          // GPU log (now safe)
-      releaseGpuBufferFor(clampedProbs);                              // free clamped intermediate
-
-      // Pick kernel: perRowLoss[i] = -logProbs[i * C + targets[i]]
-      const bufLP = ensureGpu(vk, logProbs);
+      // GPU path: fused log-sum-exp CE kernel (one workgroup per row)
+      // Replaces 5-op chain (softmax → clamp → log → pick → negate) with
+      // a single kernel that computes loss[i] = log(sum(exp(x - max))) + max - x[target]
+      const bufLogits = ensureGpu(vk, logits);
       const bufTargets = ensureGpuRawBits(vk, targets);
-      const pipeline = getPipeline(vk, "ce_fwd_pick", 3, 2 * 4);
+      const pipeline = getPipeline(vk, "ce_fwd_fused", 3, 2 * 4);
       const region = acquireOutputRegion(vk, N * 4);
-      const groups = Math.ceil(N / WG_SIZE);
 
       const push = new Float32Array(2);
       const pushU = new Uint32Array(push.buffer);
@@ -1568,18 +1562,16 @@ export class HeliosBackend implements Backend {
 
       graph.record({
         kind: "unary",
-        kernel: "ce_fwd_pick",
+        kernel: "ce_fwd_fused",
         pipeline,
         inputBufs: [],
         outputRegion: region,
-        groups: [groups, 1, 1],
+        groups: [N, 1, 1],  // one workgroup per row
         push,
         pushSize: 2 * 4,
         shape: [N],
-        allBufs: [bufLP, bufTargets, region.handle],
+        allBufs: [bufLogits, bufTargets, region.handle],
       });
-
-      releaseGpuBufferFor(logProbs);  // free log intermediate
 
       // Sum per-row losses on GPU, then read single scalar
       const perRowLosses = graphLazyTensor(vk, [N], region);
