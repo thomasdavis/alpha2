@@ -19,6 +19,7 @@
     "eval": "node apps/cli/dist/main.js eval",
     "bench": "node apps/cli/dist/main.js bench",
     "datagen": "node apps/cli/dist/main.js datagen",
+    "chatgen": "node apps/cli/dist/main.js chatgen",
     "tokenizer:build": "node apps/cli/dist/main.js tokenizer build",
     "train:abc": "scripts/train-abc.sh",
     "train:chords": "scripts/train-chords.sh",

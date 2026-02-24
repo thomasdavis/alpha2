@@ -16,6 +16,7 @@
     { "path": "../../packages/train" },
     { "path": "../../packages/effect-runtime" },
     { "path": "../../packages/bench" },
-    { "path": "../../packages/datagen" }
+    { "path": "../../packages/datagen" },
+    { "path": "../../packages/historic-chat-gen" }
   ]
 }
