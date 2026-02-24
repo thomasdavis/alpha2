@@ -35,6 +35,7 @@ export interface RemoteReporter {
     trainConfig: TrainConfig;
     totalParams: number;
     dataPath?: string;
+    infra?: { gpuName: string; gpuVendor: string; gpuVramMb: number; hostname: string; cpuCount: number; ramTotalMb: number; osPlatform: string };
   }): Promise<void>;
   /** Buffer a step metric and flush if batch is full */
   onStep(metrics: StepMetrics): void;

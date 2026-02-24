@@ -265,6 +265,10 @@ async function benchTrain(iters: number): Promise<void> {
     logLevel: "error" as const,
     trace: false,
     gradAccumSteps: 1,
+    lrMin: 0,
+    warmupIters: 0,
+    sampleInterval: iters + 1,
+    spikeThreshold: 0,
   };
 
   const backends = ["cpu_ref", "helios"] as const;

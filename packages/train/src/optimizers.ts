@@ -15,6 +15,7 @@ export interface AdamWConfig {
   beta2: number;
   eps: number;
   weightDecay: number;
+  noDecayNames?: Set<string>;
 }
 
 export class AdamW implements Optimizer {
