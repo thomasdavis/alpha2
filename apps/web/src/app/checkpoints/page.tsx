@@ -51,12 +51,13 @@ export default async function CheckpointsPage() {
 
       <div className="rounded-lg border border-border bg-surface">
         {/* Table header */}
-        <div className="grid grid-cols-[1fr_80px_100px_80px] gap-4 border-b border-border px-4 py-2.5 text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted sm:grid-cols-[1fr_1fr_100px_100px_100px]">
+        <div className="grid grid-cols-[1fr_80px_100px_80px_44px] gap-4 border-b border-border px-4 py-2.5 text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted sm:grid-cols-[1fr_1fr_100px_100px_100px_52px]">
           <span>Run</span>
           <span className="hidden sm:block">Filename</span>
           <span>Step</span>
           <span>Size</span>
           <span>Created</span>
+          <span></span>
         </div>
 
         {allCheckpoints.length === 0 ? (
@@ -67,7 +68,7 @@ export default async function CheckpointsPage() {
           allCheckpoints.map((c, i) => (
             <div
               key={`${c.runId}-${c.step}`}
-              className="grid grid-cols-[1fr_80px_100px_80px] gap-4 border-b border-border px-4 py-2.5 text-xs last:border-0 sm:grid-cols-[1fr_1fr_100px_100px_100px]"
+              className="grid grid-cols-[1fr_80px_100px_80px_44px] gap-4 border-b border-border px-4 py-2.5 text-xs last:border-0 sm:grid-cols-[1fr_1fr_100px_100px_100px_52px]"
             >
               <Link
                 href={`/runs/${encodeURIComponent(c.runId)}`}
@@ -87,6 +88,16 @@ export default async function CheckpointsPage() {
               <span className="text-text-muted">
                 {c.created_at ? timeAgo(c.created_at) : "-"}
               </span>
+              <a
+                href={`/api/runs/${encodeURIComponent(c.runId)}/download/${encodeURIComponent(c.filename)}`}
+                className="text-text-muted transition-colors hover:text-accent"
+                title="Download checkpoint"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                  <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+                  <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                </svg>
+              </a>
             </div>
           ))
         )}

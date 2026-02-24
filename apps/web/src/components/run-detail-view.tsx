@@ -1088,15 +1088,25 @@ export function RunDetailView({ run, metrics, checkpoints, samples }: RunDetailP
           <div className="px-4 py-6 text-center text-xs text-text-muted">No checkpoints saved</div>
         ) : (
           <>
-            <div className="grid grid-cols-[80px_1fr_90px_100px] gap-4 border-b border-border/50 px-4 py-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
-              <span>Step</span><span>Filename</span><span>Size</span><span>Created</span>
+            <div className="grid grid-cols-[80px_1fr_90px_100px_52px] gap-4 border-b border-border/50 px-4 py-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
+              <span>Step</span><span>Filename</span><span>Size</span><span>Created</span><span></span>
             </div>
             {checkpoints.map((c) => (
-              <div key={c.step} className="grid grid-cols-[80px_1fr_90px_100px] gap-4 border-b border-border/30 px-4 py-2 text-xs last:border-0">
+              <div key={c.step} className="grid grid-cols-[80px_1fr_90px_100px_52px] gap-4 border-b border-border/30 px-4 py-2 text-xs last:border-0">
                 <span className="font-mono font-semibold text-white">{fmtNum(c.step)}</span>
                 <span className="truncate font-mono text-text-secondary">{c.filename}</span>
                 <span className="text-text-muted">{fmtBytes(c.file_size)}</span>
                 <span className="text-text-muted">{c.created_at ? timeAgo(c.created_at) : "-"}</span>
+                <a
+                  href={`/api/runs/${encodeURIComponent(run.id)}/download/${encodeURIComponent(c.filename)}`}
+                  className="text-text-muted transition-colors hover:text-accent"
+                  title="Download checkpoint"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                    <path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z" />
+                    <path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z" />
+                  </svg>
+                </a>
               </div>
             ))}
           </>
