@@ -62,7 +62,8 @@ Options (generate):
   --seed=N        RNG seed for reproducibility
 
 Options (export):
-  --out=PATH      Output JSONL path (default: data/historic-chat.jsonl)
+  --format=FORMAT chat (default) or jsonl
+  --out=PATH      Output path (default: data/historic-chat.txt)
   --run=ID        Specific run ID (default: latest)
 
 Options (doctor):
@@ -168,9 +169,11 @@ async function resumeCmd(): Promise<void> {
 }
 
 async function exportCmd(kv: KV): Promise<void> {
-  const out = strArg(kv, "out", "data/historic-chat.jsonl");
+  const format = strArg(kv, "format", "chat") as "jsonl" | "chat";
+  const defaultOut = format === "chat" ? "data/historic-chat.txt" : "data/historic-chat.jsonl";
+  const out = strArg(kv, "out", defaultOut);
   const runId = kv["run"];
-  await exportTrainingData({ out, runId });
+  await exportTrainingData({ out, runId, format });
 }
 
 async function statsCmd(kv: KV): Promise<void> {

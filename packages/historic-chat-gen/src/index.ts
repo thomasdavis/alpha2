@@ -14,6 +14,6 @@ export { hasApiKey } from "./openai.js";
 export { estimateTotalCost, estimateCostPerConversation, formatCost } from "./budget.js";
 export type {
   Figure, Topic, Tone, ConversationAssignment, ConversationTurn,
-  GeneratedConversation, Run, Batch, GenerateOptions, ExportOptions,
+  GeneratedConversation, Run, Batch, GenerateOptions, ExportOptions, ExportFormat,
   StatsResult, PlanResult,
 } from "./types.js";

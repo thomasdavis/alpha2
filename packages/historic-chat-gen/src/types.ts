@@ -106,9 +106,12 @@ export interface GenerateOptions {
   seed?: number;
 }
 
+export type ExportFormat = "jsonl" | "chat";
+
 export interface ExportOptions {
   runId?: string;
   out: string;
+  format: ExportFormat;
 }
 
 export interface StatsResult {

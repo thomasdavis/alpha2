@@ -19,7 +19,6 @@
     "@alpha/effect-runtime": "*",
     "@alpha/bench": "*",
     "@alpha/datagen": "*",
-    "@alpha/historic-chat-gen": "*",
     "effect": "^3.12.0",
     "webgpu": "*"
   },
