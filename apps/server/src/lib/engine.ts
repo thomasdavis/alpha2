@@ -1,11 +1,8 @@
 /**
  * Shared inference engine.
  *
- * Supports two storage backends:
- *   1. Local filesystem (dev) — scans outputs/ directory
- *   2. Vercel Blob (production) — fetches checkpoints from blob store
- *
- * The loaded model is cached in module scope so warm function invocations skip loading.
+ * Scans the local filesystem (outputs/ directory) for model checkpoints.
+ * The loaded model is cached in module scope so warm invocations skip loading.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -34,7 +31,7 @@ import type {
 export interface RunInfo {
   id: string;
   name: string;
-  /** Filesystem path (local) or blob URL (Vercel) */
+  /** Filesystem path to checkpoint */
   checkpoint: string;
   step: number;
   mtime: number;
@@ -45,8 +42,7 @@ export interface RunInfo {
     runId: string;
   };
   lastLoss?: number;
-  /** "local" or "blob" */
-  source: "local" | "blob";
+  source: "local";
   /** Model domain (e.g. "novels", "chords"). Defaults to "novels". */
   domain: string;
 }
@@ -141,71 +137,16 @@ export function scanLocalRuns(outputsDir: string): RunInfo[] {
   return results.sort((a, b) => b.mtime - a.mtime);
 }
 
-// ── Scan Vercel Blob storage ──────────────────────────────────────────────
-
-export async function scanBlobRuns(): Promise<RunInfo[]> {
-  const { list } = await import("@vercel/blob");
-
-  // List all manifests: models/{name}/manifest.json
-  const { blobs } = await list({ prefix: "models/", token: process.env.BLOB_READ_WRITE_TOKEN });
-
-  const manifests = blobs.filter((b) => b.pathname.endsWith("/manifest.json"));
-  const results: RunInfo[] = [];
-
-  for (const manifest of manifests) {
-    try {
-      const res = await fetch(manifest.url);
-      const data = await res.json() as {
-        id: string;
-        name: string;
-        checkpointUrl: string;
-        step: number;
-        config: RunInfo["config"];
-        lastLoss?: number;
-        uploadedAt: string;
-      };
-
-      results.push({
-        id: data.id,
-        name: data.name,
-        checkpoint: data.checkpointUrl,
-        step: data.step,
-        mtime: new Date(data.uploadedAt).getTime(),
-        config: data.config,
-        lastLoss: data.lastLoss,
-        source: "blob",
-        domain: (data as any).domain ?? (data.config as any).domain ?? "novels",
-      });
-    } catch (e) {
-      console.error(`Failed to read manifest ${manifest.pathname}:`, e);
-    }
-  }
-
-  return results.sort((a, b) => b.mtime - a.mtime);
-}
-
-// ── Initialize (auto-detect local vs Vercel) ─────────────────────────────
+// ── Initialize ────────────────────────────────────────────────────────────
 
 export async function initEngine(outputsDir?: string): Promise<void> {
   if (initialized) return;
 
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
-    console.log("Vercel Blob token found, scanning blob storage...");
-    runs = await scanBlobRuns();
-    // Also scan local if available (for hybrid)
-    if (outputsDir) {
-      const local = scanLocalRuns(outputsDir);
-      const blobIds = new Set(runs.map((r) => r.id));
-      for (const r of local) {
-        if (!blobIds.has(r.id)) runs.push(r);
-      }
-      runs.sort((a, b) => b.mtime - a.mtime);
-    }
-  } else if (outputsDir) {
+  if (outputsDir) {
     runs = scanLocalRuns(outputsDir);
   }
 
-  console.log(`Found ${runs.length} run(s): ${runs.map((r) => `${r.name} [${r.source}]`).join(", ")}`);
+  console.log(`Found ${runs.length} run(s): ${runs.map((r) => r.name).join(", ")}`);
   initialized = true;
 }
 
@@ -240,47 +181,17 @@ function buildModel(state: CheckpointState, runId: string): LoadedModel {
   return { runId, config: state.modelConfig, params, tokenizer, backend, paramCount };
 }
 
-async function loadFromBlob(url: string): Promise<CheckpointState> {
-  console.log(`Fetching checkpoint from blob: ${url}`);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Blob fetch failed: ${res.status}`);
-  const parsed: any = await res.json();
-
-  // Reconstruct typed arrays (same as FileCheckpoint.load)
-  const buffers = new Map();
-  if (parsed.optimizerState?.buffers) {
-    for (const [k, v] of Object.entries(parsed.optimizerState.buffers) as [string, any][]) {
-      buffers.set(k, { shape: v.shape, dtype: "f32", data: new Float32Array(v.data) });
-    }
-  }
-
-  return {
-    modelConfig: parsed.modelConfig,
-    params: parsed.params,
-    optimizerState: { step: parsed.optimizerState?.step ?? 0, buffers },
-    tokenizerArtifacts: parsed.tokenizerArtifacts,
-    rngState: parsed.rngState,
-    configHash: parsed.configHash,
-    step: parsed.step,
-  };
-}
-
 export async function ensureModel(modelId: string): Promise<LoadedModel> {
   if (loaded && loaded.runId === modelId) return loaded;
 
   const run = runs.find((r) => r.id === modelId || r.config?.runId === modelId);
   if (!run) throw new Error(`Unknown model: ${modelId}`);
 
-  console.log(`Loading model: ${run.name} (source: ${run.source})...`);
+  console.log(`Loading model: ${run.name}...`);
   const t0 = Date.now();
 
-  let state: CheckpointState;
-  if (run.source === "blob") {
-    state = await loadFromBlob(run.checkpoint);
-  } else {
-    const ckpt = new FileCheckpoint();
-    state = await Effect.runPromise(ckpt.load(run.checkpoint));
-  }
+  const ckpt = new FileCheckpoint();
+  const state = await Effect.runPromise(ckpt.load(run.checkpoint));
 
   loaded = buildModel(state, run.id);
   console.log(

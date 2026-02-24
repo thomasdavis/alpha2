@@ -69,7 +69,7 @@ TEMPLATE_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 # Exclusions for rsync (same as modal_train.py)
 RSYNC_EXCLUDES = [
     "node_modules", ".git", ".turbo", ".next", "data", "runs", "outputs",
-    "artifacts", ".env.local", ".vercel", "*.node", "*.db", "*.db-wal",
+    "artifacts", ".env.local", "*.node", "*.db", "*.db-wal",
     "*.db-shm", "__pycache__", ".DS_Store",
 ]
 

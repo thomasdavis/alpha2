@@ -76,7 +76,6 @@ image = (
             "outputs",
             "artifacts",
             ".env.local",
-            ".vercel",
             "*.node",        # platform-specific native addons
             "*.db",
             "*.db-wal",

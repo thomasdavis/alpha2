@@ -6,6 +6,5 @@ data/
 artifacts/
 .git/
 .turbo/
-.vercel/
 .env*.local
 *.tsbuildinfo

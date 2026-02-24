@@ -141,7 +141,7 @@ Set `DISCORD_WEBHOOK_URL` in `.env.local` on training pods. The remote reporter 
 
 ## Deploy
 
-All deployments are on **Railway** (project `REDACTED_PROJECT`). Root `vercel.json` is a legacy leftover.
+All deployments are on **Railway** (project `REDACTED_PROJECT`).
 
 - **Server**: `railway service alpha2 && railway up`
 - **Web dashboard**: `railway service alpha-web && railway up`

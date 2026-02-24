@@ -8,7 +8,6 @@ outputs/
 data/
 .turbo/
 .next/
-.vercel
 .env*.local
 *.db
 *.db-wal

@@ -448,7 +448,7 @@ Alpha also has its own inference endpoints used by the web dashboard:
 | POST | `/api/chat` | Chat via AI SDK (`streamText` from `ai` package) |
 | POST/GET | `/api/generate` | Single-shot generation (Alpha format) |
 
-The AI SDK integration (`AlphaLanguageModel` class in `engine.ts`) implements the `LanguageModelV3` interface, allowing Alpha models to be used with Vercel's `ai` package and `streamText()`.
+The AI SDK integration (`AlphaLanguageModel` class in `engine.ts`) implements the `LanguageModelV3` interface, allowing Alpha models to be used with the `ai` package and `streamText()`.
 
 ---
 

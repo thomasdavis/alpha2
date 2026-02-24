@@ -292,7 +292,7 @@ data: [DONE]</pre>
 <!-- ── Chat (streaming) ─────────────────────────────────────── -->
 
 <h2><span class="method post">POST</span> <span class="endpoint">/api/chat</span></h2>
-<p>AI SDK-compatible streaming chat endpoint. Returns a text stream (not SSE). Compatible with the Vercel AI SDK <code>useChat</code> hook.</p>
+<p>AI SDK-compatible streaming chat endpoint. Returns a text stream (not SSE). Compatible with the AI SDK <code>useChat</code> hook.</p>
 
 <h3>Request body (JSON)</h3>
 <table>
@@ -381,7 +381,7 @@ console.log(text);</pre>
   <li>These are small GPT models (100K&ndash;10M params) trained from scratch on specific domains &mdash; they don't follow instructions or answer questions. Treat them as text completers.</li>
   <li>The <code>domain</code> field on each model indicates what kind of text it generates: <code>novels</code>, <code>abc</code> (ABC music notation), or <code>chords</code>.</li>
   <li>The first token event from <code>/api/inference</code> is the echoed prompt. All subsequent events are generated tokens.</li>
-  <li>The <code>/api/chat</code> endpoint streams text using the Vercel AI SDK data protocol. To consume it without streaming, just call <code>await res.text()</code>.</li>
+  <li>The <code>/api/chat</code> endpoint streams text using the AI SDK data protocol. To consume it without streaming, just call <code>await res.text()</code>.</li>
   <li>Model loading is lazy &mdash; the first request to a model takes a few seconds to load the checkpoint into memory. Subsequent requests reuse the cached model.</li>
 </ul>
 

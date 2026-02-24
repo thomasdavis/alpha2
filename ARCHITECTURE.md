@@ -1399,7 +1399,7 @@ A Node.js HTTP server providing inference, training metrics ingestion, and an Op
 
 ### 11.3 AI SDK Provider
 
-Implements `LanguageModelV3` interface for Vercel AI SDK integration:
+Implements `LanguageModelV3` interface for AI SDK integration:
 
 - `doGenerate()` — non-streaming completion with usage stats
 - `doStream()` — streaming with `ReadableStream<LanguageModelV3StreamPart>` (start, text-delta, finish parts)

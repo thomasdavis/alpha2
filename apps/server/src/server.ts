@@ -1,7 +1,7 @@
 /**
  * Local dev server for inference + chat.
  *
- * Endpoints match Vercel routing:
+ * Endpoints:
  *   GET  /              → Inference UI
  *   GET  /chat          → Chat UI
  *   GET  /api/models    → JSON list of available runs

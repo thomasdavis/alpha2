@@ -72,7 +72,7 @@ RECOMMENDED_ZONES = [
 # Exclusions for rsync (same as runpod_train.py / modal_train.py)
 RSYNC_EXCLUDES = [
     "node_modules", ".git", ".turbo", ".next", "data", "runs", "outputs",
-    "artifacts", ".env.local", ".vercel", "*.node", "*.db", "*.db-wal",
+    "artifacts", ".env.local", "*.node", "*.db", "*.db-wal",
     "*.db-shm", "__pycache__", ".DS_Store",
 ]
 

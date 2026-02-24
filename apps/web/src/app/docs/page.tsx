@@ -446,7 +446,7 @@ export default function DocsPage() {
       </EndpointHeading>
       <p className="mb-3 text-sm text-text-primary/70">
         AI SDK-compatible streaming chat endpoint. Returns a text stream (not
-        SSE). Compatible with the Vercel AI SDK{" "}
+        SSE). Compatible with the AI SDK{" "}
         <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[0.82rem] text-text-primary">useChat</code>{" "}
         hook.
       </p>
@@ -572,7 +572,7 @@ export default function DocsPage() {
         </li>
         <li>
           The <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[0.82rem] text-text-primary">/api/chat</code>{" "}
-          endpoint streams text using the Vercel AI SDK data protocol. To consume
+          endpoint streams text using the AI SDK data protocol. To consume
           it without streaming, just call{" "}
           <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[0.82rem] text-text-primary">await res.text()</code>.
         </li>
