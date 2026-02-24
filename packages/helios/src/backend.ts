@@ -1598,10 +1598,15 @@ export class HeliosBackend implements Backend {
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
 
-    const TILE = 16;
-    const pipeline = getPipeline(vk, "matmul", 3, 16);
+    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
+    // Tile=16 for small matrices (better occupancy when parallelism is limited)
+    // All discrete GPUs we target (A100, L4, etc.) support 1024 invocations per workgroup
+    const useLargeTile = M * N >= 100_000;
+    const TILE = useLargeTile ? 32 : 16;
+    const suffix = useLargeTile ? "_T32" : "";
 
     if (batchSize === 1) {
+      const pipeline = getPipeline(vk, `matmul${suffix}`, 3, 16);
       const bufA = ensureGpu(vk, a);
       const bufB = ensureGpu(vk, b);
       const outBytes = M * N * 4;
@@ -1613,7 +1618,7 @@ export class HeliosBackend implements Backend {
 
       graph.record({
         kind: "matmul",
-        kernel: "matmul",
+        kernel: `matmul${suffix}`,
         pipeline,
         inputBufs: [bufA, bufB],
         outputRegion: region,
@@ -1626,7 +1631,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     } else {
       // Batched matmul — dispatch all batches in one GPU submission
-      const pipelineBatched = getPipeline(vk, "matmul_batched", 3, 16);
+      const pipeline = getPipeline(vk, `matmul_batched${suffix}`, 3, 16);
       const bufA = ensureGpu(vk, a);
       const bufB = ensureGpu(vk, b);
       const outBytes = batchSize * M * N * 4;
@@ -1638,8 +1643,8 @@ export class HeliosBackend implements Backend {
 
       graph.record({
         kind: "matmul",
-        kernel: "matmul_batched",
-        pipeline: pipelineBatched,
+        kernel: `matmul_batched${suffix}`,
+        pipeline,
         inputBufs: [bufA, bufB],
         outputRegion: region,
         groups: [gX, gY, batchSize],
@@ -1677,7 +1682,12 @@ export class HeliosBackend implements Backend {
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
 
-    const TILE = 16;
+    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
+    // Tile=16 for small matrices (better occupancy when parallelism is limited)
+    const useLargeTile = M * N >= 100_000;
+    const TILE = useLargeTile ? 32 : 16;
+    const suffix = useLargeTile ? "_T32" : "";
+
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
     const gX = Math.ceil(N / TILE);
@@ -1685,13 +1695,13 @@ export class HeliosBackend implements Backend {
     const push = new Float32Array([M, N, K, 0]);
 
     if (batchSize === 1) {
-      const pipeline = getPipeline(vk, "matmul_transposed", 3, 16);
+      const pipeline = getPipeline(vk, `matmul_transposed${suffix}`, 3, 16);
       const outBytes = M * N * 4;
       const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
-        kernel: "matmul_transposed",
+        kernel: `matmul_transposed${suffix}`,
         pipeline,
         inputBufs: [bufA, bufB],
         outputRegion: region,
@@ -1703,13 +1713,13 @@ export class HeliosBackend implements Backend {
 
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     } else {
-      const pipeline = getPipeline(vk, "matmul_transposed_batched", 3, 16);
+      const pipeline = getPipeline(vk, `matmul_transposed_batched${suffix}`, 3, 16);
       const outBytes = batchSize * M * N * 4;
       const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
-        kernel: "matmul_transposed_batched",
+        kernel: `matmul_transposed_batched${suffix}`,
         pipeline,
         inputBufs: [bufA, bufB],
         outputRegion: region,

@@ -28,9 +28,10 @@ import {
  * Dispatch: (ceil(N/TILE), ceil(M/TILE), 1) workgroups
  * Each workgroup computes a TILE×TILE block of output.
  */
-const TILE_SIZE = 16; // each workgroup is TILE_SIZE × TILE_SIZE threads
+const DEFAULT_TILE = 16;
 
-export function kernelMatmul(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array {
+export function kernelMatmul(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
   const b = new SpirVBuilder();
   // workgroup is 2D: TILE_SIZE × TILE_SIZE
   const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
@@ -301,7 +302,8 @@ export function kernelMatmul(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array {
  * Bindings: 0=A(in), 1=B(in), 2=C(out)
  * Dispatch: (ceil(N/TILE), ceil(M/TILE), batchCount)
  */
-export function kernelMatmulBatched(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array {
+export function kernelMatmulBatched(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
   const b = new SpirVBuilder();
   const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
 
@@ -583,7 +585,8 @@ export function kernelMatmulBatched(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array
  * Bindings: 0=A(in), 1=B(in), 2=C(out)
  * Dispatch: (ceil(N/TILE), ceil(M/TILE), 1)
  */
-export function kernelMatmulTransposed(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array {
+export function kernelMatmulTransposed(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
   const b = new SpirVBuilder();
   const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
 
@@ -845,7 +848,8 @@ export function kernelMatmulTransposed(wgSize = TILE_SIZE * TILE_SIZE): Uint32Ar
  * Bindings: 0=A(in), 1=B(in), 2=C(out)
  * Dispatch: (ceil(N/TILE), ceil(M/TILE), batchCount)
  */
-export function kernelMatmulTransposedBatched(wgSize = TILE_SIZE * TILE_SIZE): Uint32Array {
+export function kernelMatmulTransposedBatched(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
   const b = new SpirVBuilder();
   const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
 
