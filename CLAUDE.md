@@ -64,7 +64,7 @@ apps/cli            — CLI commands
 
 ## Chat Training Data
 
-For chat model training, always use **`data/chat_clean.txt`** (not `chat_combined.txt`). The clean version is validated and normalized:
+Primary dataset: **`data/super_chat.txt`** (91MB, 226k conversations) — combined from `dailydialog_proper.txt`, `discord_chat.txt`, and `historic-chat-v2.txt`. Validated and clean:
 - Every conversation starts with `<|user|>` and ends with `<|assistant|>` turn + `<|end_of_text|>`
 - Strict user/assistant alternation
 - No empty turns, no conversations ending on a user turn
@@ -73,56 +73,64 @@ Run `npx tsx scripts/validate-chat-data.ts <file>` to validate any chat data fil
 
 ## GPU Training (GCP)
 
-Training runs on **GCP** A100 80GB instances via `scripts/gcp_train.py`. The script handles the full lifecycle: provision instance, sync code, build, upload dataset, train, download results. ~$1.10/hr on-demand.
+Training runs on **GCP** via `scripts/gcp_train.py`. The script handles the full lifecycle: provision instance, sync code, build, upload dataset, train, download results.
+
+See **`training-runs.md`** for active/recent run tracking and GPU quota status.
+
+### Machine types
+
+| Machine | GPU | Cost | Notes |
+|---------|-----|------|-------|
+| `g2-standard-4` | L4 24GB | ~$0.70/hr | Default fallback |
+| `a2-ultragpu-1g` | A100 80GB | ~$1.10/hr | Needs quota (currently 0) |
 
 ### SSH access
 
-gcloud CLI is at `~/google-cloud-sdk/bin/gcloud`. To SSH into the training instance:
-
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"
-gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b --command="<cmd>"
+gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=<zone> --command="<cmd>"
 ```
 
-The code is at `~/alpha/` on the instance. Training logs are at `~/alpha/runs/<run_dir>.log`. Checkpoints are at `~/alpha/runs/<run_dir>/checkpoint-<step>.json`.
+Code: `~/alpha/`, logs: `~/alpha/runs/<run_dir>.log`, checkpoints: `~/alpha/runs/<run_dir>/checkpoint-<step>.json`
 
-To run inference from a checkpoint while training is running, use `cpu_ref` backend (GPU is locked by the training process):
+Inference from checkpoint while training (use `cpu_ref` — GPU is locked):
 ```bash
-gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=<zone> \
   --command="cd ~/alpha && node apps/cli/dist/main.js sample \
     --checkpoint=runs/<run_dir>/checkpoint-<step>.json \
     --backend=cpu_ref --steps=80 --temp=0.8 --topk=40 \
     --prompt='<|user|> Hello <|assistant|>'"
 ```
 
-Prerequisites:
-```bash
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
-```
+### Commands
 
 ```bash
-# Train on concordance dataset with A100:
-python scripts/gcp_train.py --data data/concordance.txt --domain concordance \
-  --iters 50000 --batch 8 --block 256 --dim 256 --heads 8 --layers 6 \
-  --backend helios --stop-after
+# Train chat model on L4:
+python3 scripts/gcp_train.py --data data/super_chat.txt --domain chat \
+  --iters 50000 --batch 20 --block 512 --dim 384 --heads 8 --layers 8 \
+  --backend helios --zone us-central1-b --machine-type g2-standard-4 --stop-after
 
-# Train in a different zone:
-python scripts/gcp_train.py --data data/concordance.txt --iters 5000 --zone us-west1-b
+# Train on A100 (when quota available):
+python3 scripts/gcp_train.py --data data/super_chat.txt --domain chat \
+  --iters 50000 --batch 20 --block 512 --dim 384 --heads 8 --layers 8 \
+  --backend helios --zone us-central1-c --stop-after
 
 # Instance management:
-python scripts/gcp_train.py --action status     # check instance
-python scripts/gcp_train.py --action stop        # stop (disk persists, ~$34/mo)
-python scripts/gcp_train.py --action start       # resume stopped instance
-python scripts/gcp_train.py --action ssh         # interactive SSH
-python scripts/gcp_train.py --action delete      # destroy instance + disk
+python3 scripts/gcp_train.py --action status     # check instance
+python3 scripts/gcp_train.py --action stop        # stop (disk persists)
+python3 scripts/gcp_train.py --action start       # resume stopped instance
+python3 scripts/gcp_train.py --action ssh         # interactive SSH
+python3 scripts/gcp_train.py --action delete      # destroy instance + disk
 ```
 
-- Uses `a2-ultragpu-1g` machine type (A100 80GB included, no separate `--accelerator` needed)
-- Deep Learning VM image has NVIDIA drivers pre-installed — setup only needs Node.js + Vulkan
-- Boot disk (200GB SSD) persists across stop/start cycles
-- SSH keys bootstrapped automatically via `gcloud compute ssh` on first connection
-- Pass `--zone` to select a different region
+### Remote metrics
+
+Export these env vars before running `gcp_train.py` (it reads `os.environ`, not `.env.local`):
+- `ALPHA_REMOTE_URL` — API server for metrics streaming
+- `ALPHA_REMOTE_SECRET` — auth token (same as UPLOAD_SECRET)
+- `DISCORD_WEBHOOK_URL` — Discord webhook for notifications
+
+Values are in `.env.local`.
 
 ## Key env vars
 
@@ -137,14 +145,10 @@ python scripts/gcp_train.py --action delete      # destroy instance + disk
 
 ## Discord Notifications
 
-Training posts to Discord via webhook when:
+Training posts to Discord via `DISCORD_WEBHOOK_URL` (set in `.env.local`) when:
 - A run starts (model config, params, hyperparams)
 - Inference samples are generated (at each checkpoint interval)
 - Training completes
-
-Webhook: `REDACTED_DISCORD_WEBHOOK_URL`
-
-Set `DISCORD_WEBHOOK_URL` in `.env.local` on training pods. The remote reporter sends embeds with run info, sample outputs, and completion status.
 
 ## Deploy
 

@@ -190,7 +190,7 @@ def create_instance(zone: str, machine_type: str = MACHINE_TYPE) -> dict:
     if not machine_type.startswith("a2-") and not machine_type.startswith("a3-"):
         gpu_type_map = {
             "g2-": "nvidia-l4",
-            "n1-": "nvidia-tesla-t4",
+            "n1-": "nvidia-tesla-v100",
         }
         for prefix, gpu_type in gpu_type_map.items():
             if machine_type.startswith(prefix):
@@ -708,11 +708,17 @@ def train_pipeline(args):
         train_args_parts.append("--checkpoint=true")
     train_args = " ".join(train_args_parts)
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    machine_type = args.machine_type
+
+    # Descriptive run name: dataset_gpu_timestamp
+    data_stem = Path(args.data).stem.replace("-", "_")  # e.g. "super_chat"
+    gpu_label = machine_type.split("-")[0]  # e.g. "g2", "n1", "a2"
+    gpu_map = {"g2": "l4", "n1": "v100", "a2": "a100", "a3": "h100"}
+    gpu_short = gpu_map.get(gpu_label, gpu_label)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_id = f"{data_stem}_{gpu_short}_{ts}"
     project_dir = str(Path(__file__).resolve().parent.parent)
     start_time = time.time()
-
-    machine_type = args.machine_type
 
     print("=" * 60)
     print("Alpha Training — GCP GPU")

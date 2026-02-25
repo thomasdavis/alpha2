@@ -13,9 +13,10 @@ export function hashConfig(config: Record<string, unknown>): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function runId(): string {
+export function runId(tag?: string): string {
   const now = new Date();
   const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 14);
   const rand = Math.random().toString(36).slice(2, 6);
+  if (tag) return `${tag}_${ts}_${rand}`;
   return `${ts}_${rand}`;
 }
