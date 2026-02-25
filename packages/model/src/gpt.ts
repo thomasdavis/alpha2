@@ -138,7 +138,11 @@ function transformerBlock(
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
-  if (ctx.backend.flashAttention && !(training && config.dropout > 0)) {
+  if (ctx.backend.flashAttention) {
+    // Flash attention path: causal masking + softcap are handled inside the kernel.
+    // Attention-level dropout is skipped — residual dropouts (after attention output
+    // and after MLP output) still provide regularization. This matches modern
+    // architectures (LLaMA, Mistral) which don't use attention dropout.
     const qFA = reshape(ctx, q, [Batch * nHead, T, headDim]);
     const kFA = reshape(ctx, k, [Batch * nHead, T, headDim]);
     const vFA = reshape(ctx, v, [Batch * nHead, T, headDim]);
