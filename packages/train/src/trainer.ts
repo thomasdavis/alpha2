@@ -134,7 +134,7 @@ export interface TrainerDeps {
   mixedPrecision?: boolean;
 }
 
-export async function train(deps: TrainerDeps): Promise<GPTParams> {
+export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; modelConfig: ModelConfig }> {
   const {
     backend, tokenizer, optimizer, rng, modelConfig, trainConfig,
     dataPath, valDataPath, resumePath, onStep, onStart,
@@ -905,5 +905,5 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
   await flushMetrics();
   await metricsHandle.close();
-  return params;
+  return { params, modelConfig: activeModelConfig };
 }

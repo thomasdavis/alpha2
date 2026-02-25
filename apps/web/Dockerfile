@@ -15,6 +15,7 @@ COPY packages/autograd/ packages/autograd/
 COPY packages/tokenizers/ packages/tokenizers/
 COPY packages/model/ packages/model/
 COPY packages/train/ packages/train/
+COPY packages/symbiogenesis/ packages/symbiogenesis/
 COPY packages/helios/ packages/helios/
 
 RUN npm ci

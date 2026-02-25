@@ -141,7 +141,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     console.log(`Remote reporting: ${remoteUrl}`);
   }
 
-  const params = await runTrain({
+  const { params, modelConfig: trainedModelConfig } = await runTrain({
     backend,
     tokenizer,
     optimizer,
@@ -190,7 +190,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     // Flush GPU between samples to reclaim buffers
     if (flushFn) flushFn();
     const output = runSample(
-      finalModelConfig, params, backend, rng,
+      trainedModelConfig, params, backend, rng,
       (t) => tokenizer.encode(t),
       (t) => tokenizer.decode(t),
       prompt,
