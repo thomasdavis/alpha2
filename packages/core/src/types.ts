@@ -93,6 +93,8 @@ export interface TrainConfig {
   readonly syncEvery: number;
   /** GC cadence: run gc() every N steps (0 = disabled, requires --expose-gc) */
   readonly gcEvery: number;
+  /** Sequence packing: advance cursors sequentially instead of random windows */
+  readonly packed: boolean;
 }
 
 export const defaultTrainConfig: TrainConfig = {
@@ -119,6 +121,7 @@ export const defaultTrainConfig: TrainConfig = {
   spikeThreshold: 0,
   syncEvery: 1,
   gcEvery: 0,
+  packed: false,
 };
 
 // ── Sampling config ────────────────────────────────────────────────────────

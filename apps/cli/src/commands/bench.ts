@@ -271,6 +271,7 @@ async function benchTrain(iters: number): Promise<void> {
     spikeThreshold: 0,
     syncEvery: 1,
     gcEvery: 0,
+    packed: false,
   };
 
   const backends = ["cpu_ref", "helios"] as const;

@@ -1,7 +1,10 @@
 /**
- * Minimal data pipeline.
+ * Data pipeline.
  *
- * Loads text → tokenizes → creates random contiguous windows for training.
+ * Two modes:
+ * - Random: independent random windows per batch item (original behavior)
+ * - Packed: B cursors advance sequentially through the corpus for deterministic
+ *   coverage, sequential memory access, and no random number overhead.
  */
 import type { Tokenizer, Rng, TensorData } from "@alpha/core";
 
@@ -17,20 +20,35 @@ export class DataLoader {
   private rng: Rng;
   private batchSize: number;
   private blockSize: number;
+  private packed: boolean;
+  /** Packed mode: B cursors spread evenly across the corpus. */
+  private cursors?: number[];
 
-  constructor(tokens: Int32Array, rng: Rng, batchSize: number, blockSize: number) {
+  constructor(tokens: Int32Array, rng: Rng, batchSize: number, blockSize: number, packed = false) {
     this.tokens = tokens;
     this.rng = rng;
     this.batchSize = batchSize;
     this.blockSize = blockSize;
+    this.packed = packed;
+
+    if (packed) {
+      // Spread B cursors evenly so each batch item processes a different
+      // non-overlapping stripe of the corpus. Guarantees all tokens are
+      // seen once per full pass (epoch).
+      const stride = Math.floor(tokens.length / batchSize);
+      this.cursors = [];
+      for (let b = 0; b < batchSize; b++) {
+        this.cursors.push(b * stride);
+      }
+    }
   }
 
   /** Create a DataLoader from raw text. Encodes in chunks for large texts. */
-  static fromText(text: string, tokenizer: Tokenizer, rng: Rng, batchSize: number, blockSize: number): DataLoader {
+  static fromText(text: string, tokenizer: Tokenizer, rng: Rng, batchSize: number, blockSize: number, packed = false): DataLoader {
     // For large texts, encode in chunks to avoid exceeding JS array limits
     const CHUNK_CHARS = 5_000_000; // 5M chars per chunk
     if (text.length <= CHUNK_CHARS) {
-      return new DataLoader(tokenizer.encode(text), rng, batchSize, blockSize);
+      return new DataLoader(tokenizer.encode(text), rng, batchSize, blockSize, packed);
     }
 
     const chunks: Int32Array[] = [];
@@ -49,11 +67,16 @@ export class DataLoader {
       offset += chunk.length;
     }
 
-    return new DataLoader(tokens, rng, batchSize, blockSize);
+    return new DataLoader(tokens, rng, batchSize, blockSize, packed);
   }
 
-  /** Get a random batch of contiguous windows. */
+  /** Get the next batch (dispatches to random or packed mode). */
   nextBatch(): DataBatch {
+    return this.packed ? this.nextBatchPacked() : this.nextBatchRandom();
+  }
+
+  /** Random mode: each batch item gets an independent random window. */
+  private nextBatchRandom(): DataBatch {
     const B = this.batchSize;
     const T = this.blockSize;
     if (this.tokens.length <= T) {
@@ -78,6 +101,45 @@ export class DataLoader {
       inputs: { shape: [B, T], dtype: "i32", data: inputs },
       targets: { shape: [B, T], dtype: "i32", data: targets },
     };
+  }
+
+  /**
+   * Packed mode: B cursors advance sequentially through the corpus.
+   *
+   * Benefits:
+   * - Sequential memory access (cache-friendly reads from token array)
+   * - Deterministic coverage: every token seen exactly once per epoch
+   * - No random number generation overhead per batch
+   * - All documents naturally packed contiguously (no wasted padding)
+   */
+  private nextBatchPacked(): DataBatch {
+    const B = this.batchSize;
+    const T = this.blockSize;
+    const N = this.tokens.length;
+    const cursors = this.cursors!;
+
+    const inputs = new Int32Array(B * T);
+    const targets = new Int32Array(B * T);
+
+    for (let b = 0; b < B; b++) {
+      let pos = cursors[b];
+      for (let t = 0; t < T; t++) {
+        inputs[b * T + t] = this.tokens[pos % N];
+        targets[b * T + t] = this.tokens[(pos + 1) % N];
+        pos++;
+      }
+      cursors[b] = pos % N;
+    }
+
+    return {
+      inputs: { shape: [B, T], dtype: "i32", data: inputs },
+      targets: { shape: [B, T], dtype: "i32", data: targets },
+    };
+  }
+
+  /** Steps per epoch (approximate, for logging). */
+  get stepsPerEpoch(): number {
+    return Math.floor(this.tokens.length / (this.batchSize * this.blockSize));
   }
 
   get length(): number {

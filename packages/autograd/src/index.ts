@@ -2,7 +2,7 @@ export { Variable, Tape, type TapeEntry } from "./tape.js";
 export {
   DropoutRng,
   add, sub, mul, div, neg, scale,
-  matmul, matmulTransposed,
+  matmul, matmulTransposed, matmulTransposedGelu,
   sum, mean,
   exp, log, sqrt, relu, gelu, clamp, softCap,
   dropout, residualDropoutAdd,

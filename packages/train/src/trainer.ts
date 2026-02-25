@@ -243,10 +243,14 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   console.log(``);
 
   // Create data loaders from pre-tokenized arrays
-  const trainLoader = new DataLoader(trainTokens, rng, trainConfig.batchSize, modelConfig.blockSize);
+  const packed = trainConfig.packed;
+  const trainLoader = new DataLoader(trainTokens, rng, trainConfig.batchSize, modelConfig.blockSize, packed);
   const valLoader = valTokens.length > 0
     ? new DataLoader(valTokens, rng, trainConfig.batchSize, modelConfig.blockSize)
     : undefined;
+  if (packed) {
+    console.log(`Sequence packing: ON (${trainLoader.stepsPerEpoch} steps/epoch)`);
+  }
 
   // Training loop
   const startTime = performance.now();

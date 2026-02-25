@@ -10,7 +10,7 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, matmul, matmulTransposed, gelu, layerNorm, softmax, crossEntropy,
+  add, matmul, matmulTransposed, matmulTransposedGelu, gelu, layerNorm, softmax, crossEntropy,
   slice, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
@@ -175,7 +175,7 @@ function transformerBlock(
   // 2) LN → MLP → Residual
   const ln2Out = layerNorm(ctx, x, layer.ln2.weight, layer.ln2.bias, 1e-5);
   const flat = reshape(ctx, ln2Out, [Batch * T, nEmbd]);
-  const h = gelu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc1));
+  const h = matmulTransposedGelu(ctx, flat, layer.mlp.fc1);
   const mlpOut = reshape(ctx, matmulTransposed(ctx, h, layer.mlp.fc2), [Batch, T, nEmbd]);
   return residualDropoutAdd(ctx, x, mlpOut, config.dropout, training);
 }

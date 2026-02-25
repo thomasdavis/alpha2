@@ -62,6 +62,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     spikeThreshold: floatArg(kv, "spikeThreshold", tDefaults.spikeThreshold ?? defaultTrainConfig.spikeThreshold),
     syncEvery: intArg(kv, "syncEvery", tDefaults.syncEvery ?? defaultTrainConfig.syncEvery),
     gcEvery: intArg(kv, "gcEvery", tDefaults.gcEvery ?? defaultTrainConfig.gcEvery),
+    packed: boolArg(kv, "packed", tDefaults.packed ?? defaultTrainConfig.packed),
   };
 
   console.log(`Implementations available:\n${listImplementations()}\n`);

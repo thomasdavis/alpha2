@@ -319,6 +319,55 @@ export function gelu(ctx: Ctx, a: Variable): Variable {
   });
 }
 
+/**
+ * Fused matmulTransposed + GELU: computes gelu(A @ B^T) in one tape entry.
+ * Eliminates an intermediate Variable and tape entry vs separate ops.
+ * The pre-GELU matmul output is captured in the backward closure for gelu gradient.
+ */
+export function matmulTransposedGelu(ctx: Ctx, a: Variable, b: Variable): Variable {
+  const aData = a.data, bData = b.data;
+  const B = ctx.backend;
+  const mmOut = B.matmulTransposed
+    ? B.matmulTransposed(aData, bData)
+    : B.matmul(aData, B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1));
+  const geluOut = B.gelu(mmOut);
+  return record(ctx, geluOut, [a, b], (g, B2, release, needsGrad) => {
+    // Chain rule: d(gelu(mmOut))/d(inputs) = gelu'(mmOut) * d(mmOut)/d(inputs)
+    const dMM = B2.geluBackward
+      ? B2.geluBackward(mmOut, g)
+      : (() => {
+          // CPU fallback for gelu backward
+          const SQRT2PI = Math.sqrt(2 / Math.PI);
+          const src = mmOut.data as Float32Array;
+          const grad = g.data as Float32Array;
+          const out = new Float32Array(src.length);
+          for (let i = 0; i < src.length; i++) {
+            const x = src[i];
+            const inner = SQRT2PI * (x + 0.044715 * x * x * x);
+            const tanh_val = Math.tanh(inner);
+            const sech2 = 1 - tanh_val * tanh_val;
+            const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
+            out[i] = grad[i] * (0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner);
+          }
+          return { shape: [...mmOut.shape], dtype: mmOut.dtype, data: out } as TensorData;
+        })();
+    if (release) release(mmOut);
+    let ga: TensorData | null = null;
+    let gb: TensorData | null = null;
+    if (!needsGrad || needsGrad[0]) {
+      ga = B2.matmul(dMM, bData);
+    }
+    if (!needsGrad || needsGrad[1]) {
+      const ndim = dMM.shape.length;
+      const tG = B2.transpose(dMM, ndim - 2, ndim - 1);
+      gb = B2.matmul(tG, aData);
+      if (release) release(tG);
+    }
+    if (release) release(dMM);
+    return [ga!, gb!];
+  });
+}
+
 // ── NN ops ─────────────────────────────────────────────────────────────────
 
 export function embedding(ctx: Ctx, weight: Variable, indices: TensorData): Variable {
