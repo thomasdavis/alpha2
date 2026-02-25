@@ -1473,10 +1473,10 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
             </div>
           )}
 
-          {/* 3D Radial Training Visualization */}
+          {/* Radial Activation Evolution */}
           {metrics.length > 10 && (
             <div className="mb-4">
-              <ChartPanel title="Radial Training Dynamics" helpText="Interactive 3D visualization of training state. Concentric rings represent different metrics (loss, gradient norm, learning rate, throughput, entropy) mapped radially around the training timeline. The central orb pulses with current loss (red=high, cyan=low). Ring heights show metric values — spikes and oscillations are visible as 3D terrain. Particle field intensity reflects gradient flow. Color-coded by activation type during evolutionary search. Generation transitions appear as pulse rings. Drag to orbit, scroll to zoom.">
+              <ChartPanel title="Activation Evolution Radial" helpText="Radial polar plot of the evolutionary activation search. Angle = training time (clockwise from top). Outer band shows which activation is active per candidate (color-coded). Inner rings: loss trajectory (colored by activation), fitness score, architecture diversity, and MI flow. Diamond markers indicate candidate switches. Generation boundaries are dashed spokes. Center shows the current candidate name, activation type, and loss. Hover for detailed candidate info including lineage.">
                 <RadialTrainingViz metrics={metrics} />
               </ChartPanel>
             </div>
