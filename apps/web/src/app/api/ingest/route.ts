@@ -12,9 +12,11 @@ export async function POST(request: Request) {
   const { type } = body as { type: string };
 
   if (type === "run_start") {
-    const { runId, domain, modelConfig, trainConfig, totalParams } = body;
+    const { runId, domain, modelConfig, trainConfig, totalParams, infra } = body;
     try {
       const client = await getClient();
+      const tc = trainConfig ?? {};
+      const mc = modelConfig ?? {};
       await upsertRun(client, {
         id: runId,
         run_id: runId,
@@ -24,6 +26,17 @@ export async function POST(request: Request) {
         train_config: trainConfig,
         status: "active",
         estimated_params: totalParams ?? null,
+        gpu_name: infra?.gpuName ?? null,
+        gpu_vendor: infra?.gpuVendor ?? null,
+        gpu_vram_mb: infra?.gpuVramMb ?? null,
+        hostname: infra?.hostname ?? null,
+        cpu_count: infra?.cpuCount ?? null,
+        ram_total_mb: infra?.ramTotalMb ?? null,
+        os_platform: infra?.osPlatform ?? null,
+        symbio: tc.symbio ? 1 : 0,
+        symbio_config: tc.symbioConfig ? JSON.stringify(tc.symbioConfig) : null,
+        ffn_activation: mc.ffnActivation ?? null,
+        symbio_mode: tc.symbio ? (tc.symbioConfig?.searchMode ?? "ffn-activation-search") : null,
       });
     } catch (e) {
       console.warn("Ingest run_start DB error:", (e as Error).message);

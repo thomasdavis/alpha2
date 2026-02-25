@@ -1,0 +1,17 @@
+{
+  "searchMode": "ffn-activation-search",
+  "activationPool": ["gelu", "silu", "relu", "swiglu"],
+  "populationSize": 4,
+  "generations": 2,
+  "stepsPerCandidate": 20,
+  "selectionStrategy": "topk",
+  "mutationRate": 0.5,
+  "rankBy": "valLoss",
+  "metricsInterval": 10,
+  "cusumSensitivity": 4.0,
+  "cusumBaselineWindow": 5,
+  "adaptiveBatch": false,
+  "writeReport": true,
+  "writeCandidates": true,
+  "writeSummary": true
+}

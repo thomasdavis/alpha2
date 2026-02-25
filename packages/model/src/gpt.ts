@@ -10,7 +10,7 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, matmul, matmulTransposed, matmulTransposedGelu, gelu, layerNorm, softmax, crossEntropy,
+  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, relu, layerNorm, softmax, crossEntropy,
   slice, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
@@ -38,7 +38,12 @@ export interface LayerParams {
     wqkv: Variable; wo: Variable;
   };
   ln2: { weight: Variable; bias: Variable };
-  mlp: { fc1: Variable; fc2: Variable };
+  mlp: {
+    /** Standard MLP: fc1 [ffnDim, nEmbd], fc2 [nEmbd, ffnDim] */
+    fc1: Variable; fc2: Variable;
+    /** SwiGLU: gate [ffnDim, nEmbd], up [ffnDim, nEmbd], proj [nEmbd, ffnDim] */
+    fc_gate?: Variable; fc_up?: Variable; fc_proj?: Variable;
+  };
 }
 
 function initWeight(backend: Backend, rng: SeededRng, shape: number[], std: number): Variable {
@@ -59,13 +64,36 @@ function initZeros(backend: Backend, shape: number[]): Variable {
 
 export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): GPTParams {
   const { vocabSize, blockSize, nLayer, nEmbd, nHead } = config;
+  const activation = config.ffnActivation ?? "gelu";
   const std = 0.02;
 
   const wte = initWeight(backend, rng, [vocabSize, nEmbd], std);
   const wpe = initWeight(backend, rng, [blockSize, nEmbd], std);
 
+  // FFN hidden dim: SwiGLU uses (8/3)*nEmbd rounded to multiple of 64 for parameter parity,
+  // standard activations use 4*nEmbd. Config override takes precedence.
+  const ffnDim = config.ffnDim ?? (activation === "swiglu"
+    ? Math.ceil((8 / 3) * nEmbd / 64) * 64
+    : 4 * nEmbd);
+
   const layers: LayerParams[] = [];
   for (let i = 0; i < nLayer; i++) {
+    const mlp: LayerParams["mlp"] = activation === "swiglu"
+      ? {
+          // SwiGLU: 3 weight matrices (gate, up, proj)
+          // fc1/fc2 unused but required by interface — point to gate/proj
+          fc_gate: initWeight(backend, rng, [ffnDim, nEmbd], std),
+          fc_up: initWeight(backend, rng, [ffnDim, nEmbd], std),
+          fc_proj: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+          // Satisfy interface — alias to gate/proj so collectParams doesn't double-count
+          get fc1() { return this.fc_gate!; },
+          get fc2() { return this.fc_proj!; },
+        }
+      : {
+          fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
+          fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+        };
+
     layers.push({
       ln1: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
       attn: {
@@ -73,10 +101,7 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
         wo: initWeight(backend, rng, [nEmbd, nEmbd], std / Math.sqrt(2 * nLayer)),
       },
       ln2: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
-      mlp: {
-        fc1: initWeight(backend, rng, [4 * nEmbd, nEmbd], std),
-        fc2: initWeight(backend, rng, [nEmbd, 4 * nEmbd], std / Math.sqrt(2 * nLayer)),
-      },
+      mlp,
     });
   }
 
@@ -179,8 +204,24 @@ function transformerBlock(
   // 2) LN → MLP → Residual
   const ln2Out = layerNorm(ctx, x, layer.ln2.weight, layer.ln2.bias, 1e-5);
   const flat = reshape(ctx, ln2Out, [Batch * T, nEmbd]);
-  const h = matmulTransposedGelu(ctx, flat, layer.mlp.fc1);
-  const mlpOut = reshape(ctx, matmulTransposed(ctx, h, layer.mlp.fc2), [Batch, T, nEmbd]);
+  const activation = config.ffnActivation ?? "gelu";
+
+  let mlpH: Variable;
+  if (activation === "swiglu") {
+    // SwiGLU: h = (silu(x @ W_gate) ⊙ (x @ W_up)) @ W_proj
+    const gate = silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc_gate!));
+    const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);
+    mlpH = matmulTransposed(ctx, mul(ctx, gate, up), layer.mlp.fc_proj!);
+  } else if (activation === "silu") {
+    mlpH = matmulTransposed(ctx, silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc1)), layer.mlp.fc2);
+  } else if (activation === "relu") {
+    mlpH = matmulTransposed(ctx, relu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc1)), layer.mlp.fc2);
+  } else {
+    // GELU — preserve fused matmulTransposedGelu fast path for zero regression
+    mlpH = matmulTransposed(ctx, matmulTransposedGelu(ctx, flat, layer.mlp.fc1), layer.mlp.fc2);
+  }
+
+  const mlpOut = reshape(ctx, mlpH, [Batch, T, nEmbd]);
   return residualDropoutAdd(ctx, x, mlpOut, config.dropout, training);
 }
 
@@ -294,8 +335,15 @@ export function collectParams(params: GPTParams): Map<string, Variable> {
     map.set(`layer.${i}.attn.wo`, l.attn.wo);
     map.set(`layer.${i}.ln2.weight`, l.ln2.weight);
     map.set(`layer.${i}.ln2.bias`, l.ln2.bias);
-    map.set(`layer.${i}.mlp.fc1`, l.mlp.fc1);
-    map.set(`layer.${i}.mlp.fc2`, l.mlp.fc2);
+    if (l.mlp.fc_gate) {
+      // SwiGLU: 3 separate weight matrices
+      map.set(`layer.${i}.mlp.fc_gate`, l.mlp.fc_gate);
+      map.set(`layer.${i}.mlp.fc_up`, l.mlp.fc_up!);
+      map.set(`layer.${i}.mlp.fc_proj`, l.mlp.fc_proj!);
+    } else {
+      map.set(`layer.${i}.mlp.fc1`, l.mlp.fc1);
+      map.set(`layer.${i}.mlp.fc2`, l.mlp.fc2);
+    }
   }
   return map;
 }

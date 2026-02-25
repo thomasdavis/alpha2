@@ -10,6 +10,7 @@ import {
   buildGpuSeries, buildLrSeries, buildGradNormSeries,
   fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
 } from "@/components/charts";
+import { SymbioSection } from "@/components/symbio-charts";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -59,6 +60,10 @@ interface RunData {
   created_at: string;
   updated_at: string;
   disk_mtime: number | null;
+  symbio?: number | null;
+  symbio_config?: string | null;
+  ffn_activation?: string | null;
+  symbio_mode?: string | null;
 }
 
 export interface RunDetailProps {
@@ -355,6 +360,9 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
         />
         <StepTimeChart metrics={metrics} />
       </div>
+
+      {/* Symbio section */}
+      <SymbioSection metrics={metrics as any} run={run} />
 
       {/* Checkpoints */}
       <div className="mb-6 rounded-lg border border-border bg-surface">

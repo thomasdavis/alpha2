@@ -129,4 +129,48 @@ export const migrations: string[][] = [
     `ALTER TABLE runs ADD COLUMN ram_total_mb INTEGER`,
     `ALTER TABLE runs ADD COLUMN os_platform TEXT`,
   ],
+
+  // Version 6: Symbio metrics, CUSUM, clipping telemetry, adaptive batch, search candidates
+  [
+    // Clipping telemetry (ALL runs)
+    `ALTER TABLE metrics ADD COLUMN clip_coef REAL`,
+    `ALTER TABLE metrics ADD COLUMN clip_pct REAL`,
+
+    // CUSUM
+    `ALTER TABLE metrics ADD COLUMN cusum_grad REAL`,
+    `ALTER TABLE metrics ADD COLUMN cusum_clip REAL`,
+    `ALTER TABLE metrics ADD COLUMN cusum_tps REAL`,
+    `ALTER TABLE metrics ADD COLUMN cusum_val REAL`,
+    `ALTER TABLE metrics ADD COLUMN cusum_alerts INTEGER`,
+    `ALTER TABLE metrics ADD COLUMN cusum_alert_reason TEXT`,
+
+    // Symbio metrics (sparse)
+    `ALTER TABLE metrics ADD COLUMN weight_entropy REAL`,
+    `ALTER TABLE metrics ADD COLUMN effective_rank REAL`,
+    `ALTER TABLE metrics ADD COLUMN free_energy REAL`,
+    `ALTER TABLE metrics ADD COLUMN population_entropy REAL`,
+    `ALTER TABLE metrics ADD COLUMN activation_distribution TEXT`,
+    `ALTER TABLE metrics ADD COLUMN mi_input_repr REAL`,
+    `ALTER TABLE metrics ADD COLUMN mi_repr_output REAL`,
+    `ALTER TABLE metrics ADD COLUMN mi_compression REAL`,
+    `ALTER TABLE metrics ADD COLUMN fitness_score REAL`,
+    `ALTER TABLE metrics ADD COLUMN complexity_score REAL`,
+
+    // Adaptive batch
+    `ALTER TABLE metrics ADD COLUMN adaptive_batch_size INTEGER`,
+    `ALTER TABLE metrics ADD COLUMN batch_change_reason TEXT`,
+
+    // Search candidate tracking
+    `ALTER TABLE metrics ADD COLUMN symbio_candidate_id TEXT`,
+    `ALTER TABLE metrics ADD COLUMN symbio_candidate_activation TEXT`,
+    `ALTER TABLE metrics ADD COLUMN symbio_generation INTEGER`,
+    `ALTER TABLE metrics ADD COLUMN architecture_diversity REAL`,
+
+    // Run-level symbio metadata
+    `ALTER TABLE runs ADD COLUMN symbio INTEGER DEFAULT 0`,
+    `ALTER TABLE runs ADD COLUMN symbio_config TEXT`,
+    `ALTER TABLE runs ADD COLUMN ffn_activation TEXT`,
+    `ALTER TABLE runs ADD COLUMN symbio_winner TEXT`,
+    `ALTER TABLE runs ADD COLUMN symbio_mode TEXT`,
+  ],
 ];

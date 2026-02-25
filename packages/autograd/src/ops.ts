@@ -309,6 +309,23 @@ export function softCap(ctx: Ctx, a: Variable, cap: number): Variable {
   return scale(ctx, tanhVal, cap); // tanh(x/cap) * cap
 }
 
+export function silu(ctx: Ctx, a: Variable): Variable {
+  const aData = a.data;
+  return record(ctx, ctx.backend.silu(aData), [a], (g, B) => {
+    if (B.siluBackward) return [B.siluBackward(aData, g)];
+    // CPU fallback: silu(x) = x * sigmoid(x), silu'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
+    const src = aData.data as Float32Array;
+    const gArr = g.data as Float32Array;
+    const grad = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const sig = 1 / (1 + Math.exp(-x));
+      grad[i] = gArr[i] * (sig * (1 + x * (1 - sig)));
+    }
+    return [{ shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData];
+  });
+}
+
 export function gelu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
   return record(ctx, ctx.backend.gelu(aData), [a], (g, B, release) => {

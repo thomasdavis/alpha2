@@ -16,6 +16,7 @@
     "@alpha/tokenizers": "*",
     "@alpha/model": "*",
     "@alpha/train": "*",
+    "@alpha/symbiogenesis": "*",
     "@alpha/inference": "*",
     "@alpha/effect-runtime": "*",
     "@alpha/bench": "*",

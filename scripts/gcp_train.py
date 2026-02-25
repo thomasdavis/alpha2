@@ -706,6 +706,12 @@ def train_pipeline(args):
         train_args_parts.append("--fp16=true")
     if args.checkpoint:
         train_args_parts.append("--checkpoint=true")
+    if args.symbio:
+        train_args_parts.append("--symbio=true")
+    if args.symbio_config:
+        train_args_parts.append(f"--symbio-config={args.symbio_config}")
+    if args.activation:
+        train_args_parts.append(f"--activation={args.activation}")
     train_args = " ".join(train_args_parts)
 
     machine_type = args.machine_type
@@ -827,6 +833,9 @@ def main():
     parser.add_argument("--spike-threshold", type=float, default=None, help="Skip optimizer step when grad_norm > threshold × EMA")
     parser.add_argument("--fp16", action="store_true", help="Enable mixed precision (f16 activations + loss scaling)")
     parser.add_argument("--checkpoint", action="store_true", help="Enable activation checkpointing")
+    parser.add_argument("--symbio", action="store_true", help="Enable symbiogenesis mode")
+    parser.add_argument("--symbio-config", default=None, help="Path to symbio config JSON")
+    parser.add_argument("--activation", default=None, help="FFN activation: gelu, silu, relu, swiglu")
     parser.add_argument("--stop-after", action="store_true",
                         help="Stop instance after training completes")
 

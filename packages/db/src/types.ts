@@ -43,6 +43,12 @@ export interface DbRun {
   cpu_count: number | null;
   ram_total_mb: number | null;
   os_platform: string | null;
+  // Symbio metadata
+  symbio: number | null;
+  symbio_config: string | null;
+  ffn_activation: string | null;
+  symbio_winner: string | null;
+  symbio_mode: string | null;
 }
 
 export interface DbMetric {
@@ -68,6 +74,35 @@ export interface DbMetric {
   timing_grad_norm_ms: number | null;
   timing_grad_clip_ms: number | null;
   gpu_ops_count: number | null;
+  // Clipping telemetry
+  clip_coef: number | null;
+  clip_pct: number | null;
+  // CUSUM
+  cusum_grad: number | null;
+  cusum_clip: number | null;
+  cusum_tps: number | null;
+  cusum_val: number | null;
+  cusum_alerts: number | null;
+  cusum_alert_reason: string | null;
+  // Symbio metrics
+  weight_entropy: number | null;
+  effective_rank: number | null;
+  free_energy: number | null;
+  population_entropy: number | null;
+  activation_distribution: string | null;
+  mi_input_repr: number | null;
+  mi_repr_output: number | null;
+  mi_compression: number | null;
+  fitness_score: number | null;
+  complexity_score: number | null;
+  // Adaptive batch
+  adaptive_batch_size: number | null;
+  batch_change_reason: string | null;
+  // Search candidate
+  symbio_candidate_id: string | null;
+  symbio_candidate_activation: string | null;
+  symbio_generation: number | null;
+  architecture_diversity: number | null;
 }
 
 export interface DbCheckpoint {

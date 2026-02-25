@@ -55,6 +55,8 @@ export interface ModelConfig {
   readonly nEmbd: number;
   readonly nHead: number;
   readonly dropout: number;
+  readonly ffnActivation?: "gelu" | "silu" | "relu" | "swiglu";
+  readonly ffnDim?: number;
 }
 
 export const defaultModelConfig: ModelConfig = {
@@ -64,6 +66,7 @@ export const defaultModelConfig: ModelConfig = {
   nEmbd: 256,
   nHead: 8,
   dropout: 0.0,
+  ffnActivation: "gelu",
 };
 
 // ── Training config ────────────────────────────────────────────────────────
@@ -95,6 +98,8 @@ export interface TrainConfig {
   readonly gcEvery: number;
   /** Sequence packing: advance cursors sequentially instead of random windows */
   readonly packed: boolean;
+  readonly symbio: boolean;
+  readonly symbioConfig?: Record<string, unknown> | null;
 }
 
 export const defaultTrainConfig: TrainConfig = {
@@ -122,6 +127,8 @@ export const defaultTrainConfig: TrainConfig = {
   syncEvery: 1,
   gcEvery: 0,
   packed: false,
+  symbio: false,
+  symbioConfig: null,
 };
 
 // ── Sampling config ────────────────────────────────────────────────────────

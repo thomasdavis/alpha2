@@ -4,7 +4,7 @@ export {
   add, sub, mul, div, neg, scale,
   matmul, matmulTransposed, matmulTransposedGelu,
   sum, mean,
-  exp, log, sqrt, relu, gelu, clamp, softCap,
+  exp, log, sqrt, relu, silu, gelu, clamp, softCap,
   dropout, residualDropoutAdd,
   embedding, layerNorm, softmax, crossEntropy,
   flashAttention,

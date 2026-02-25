@@ -95,6 +95,7 @@ export interface Backend {
   // backward (GPU-optimized, optional)
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   reluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
+  siluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
   crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;

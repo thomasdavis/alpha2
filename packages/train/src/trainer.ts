@@ -9,7 +9,11 @@ import type {
 } from "@alpha/core";
 import { shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
 import { Tape, DropoutRng } from "@alpha/autograd";
-import { initGPT, gptForward, collectParams, countParams, type GPTParams } from "@alpha/model";
+import { initGPT, gptForward, collectParams, countParams, clearForwardCache, type GPTParams } from "@alpha/model";
+import {
+  CusumDashboard, AdaptiveBatch, SymbioMetricsCollector, SearchOrchestrator,
+  defaultSymbioConfig, type SymbioConfig, type TrainerStepInfo,
+} from "@alpha/symbiogenesis";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
 import { sample as runSample } from "./sample.js";
@@ -75,6 +79,32 @@ export interface StepMetrics {
   // Clipping telemetry
   clip_coef?: number;
   clip_pct?: number;
+  // CUSUM (symbio)
+  cusum_grad?: number;
+  cusum_clip?: number;
+  cusum_tps?: number;
+  cusum_val?: number;
+  cusum_alerts?: number;
+  cusum_alert_reason?: string;
+  // Symbio metrics
+  weight_entropy?: number;
+  effective_rank?: number;
+  free_energy?: number;
+  population_entropy?: number;
+  activation_distribution?: string;
+  mi_input_repr?: number;
+  mi_repr_output?: number;
+  mi_compression?: number;
+  fitness_score?: number;
+  complexity_score?: number;
+  // Adaptive batch
+  adaptive_batch_size?: number;
+  batch_change_reason?: string;
+  // Search candidate
+  symbio_candidate_id?: string;
+  symbio_candidate_activation?: string;
+  symbio_generation?: number;
+  architecture_diversity?: number;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -168,8 +198,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
   // Initialize model
   rng.seed(trainConfig.seed);
-  const params = initGPT(modelConfig, backend, rng as any);
-  const totalParams = countParams(params);
+  let params = initGPT(modelConfig, backend, rng as any);
+  let totalParams = countParams(params);
 
   // Resume from checkpoint
   let startStep = 0;
@@ -252,6 +282,43 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     console.log(`Sequence packing: ON (${trainLoader.stepsPerEpoch} steps/epoch)`);
   }
 
+  // Symbio initialization (zero overhead when disabled)
+  const symbioEnabled = !!trainConfig.symbio;
+  const symbioConfig: SymbioConfig = (trainConfig.symbioConfig as unknown as SymbioConfig) ?? defaultSymbioConfig;
+  const cusumDash = symbioEnabled ? new CusumDashboard(symbioConfig.cusumSensitivity, symbioConfig.cusumBaselineWindow) : null;
+  const adaptiveBatch = symbioEnabled && symbioConfig.adaptiveBatch
+    ? new AdaptiveBatch(trainConfig.batchSize, symbioConfig)
+    : null;
+  const symbioCollector = symbioEnabled ? new SymbioMetricsCollector(symbioConfig) : null;
+  if (symbioEnabled) {
+    const activation = modelConfig.ffnActivation ?? "gelu";
+    console.log(`symbio: enabled | activation=${activation} | cusum_sens=${symbioConfig.cusumSensitivity} | metrics_interval=${symbioConfig.metricsInterval}`);
+    if (adaptiveBatch) console.log(`symbio: adaptive_batch=[${symbioConfig.batchMin},${symbioConfig.batchMax}] step=${symbioConfig.batchStep}`);
+  }
+
+  // FFN activation search orchestrator (only when searchMode is active)
+  const searchActive = symbioEnabled && symbioConfig.searchMode === "ffn-activation-search";
+  const searchOrchestrator = searchActive ? new SearchOrchestrator(symbioConfig) : null;
+  let activeModelConfig = { ...modelConfig };
+
+  if (searchOrchestrator) {
+    const firstCandidate = searchOrchestrator.currentCandidate;
+    if (firstCandidate) {
+      // Re-init model with first candidate's activation
+      const ffnDim = firstCandidate.activation === "swiglu"
+        ? Math.ceil((8 / 3) * modelConfig.nEmbd / 64) * 64
+        : modelConfig.ffnDim ?? 4 * modelConfig.nEmbd;
+      activeModelConfig = { ...modelConfig, ffnActivation: firstCandidate.activation as any, ffnDim };
+      rng.seed(trainConfig.seed);
+      params = initGPT(activeModelConfig, backend, rng as any);
+      totalParams = countParams(params);
+      optimizer.loadStateDict({ step: 0, buffers: new Map() });
+      console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.id} activation=${firstCandidate.activation} params=${totalParams.toLocaleString()}`);
+    }
+    const totalSearchSteps = symbioConfig.populationSize * symbioConfig.stepsPerCandidate * symbioConfig.generations;
+    console.log(`symbio search: ${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens = ${totalSearchSteps} total steps`);
+  }
+
   // Training loop
   const startTime = performance.now();
   let spikeSkips = 0;
@@ -315,7 +382,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
       const dropoutRng = new DropoutRng(trainConfig.seed + step * 1000 + microStep);
-      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng);
+      const { loss } = gptForward(activeModelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 
@@ -605,6 +672,119 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       clip_pct: (clippedSteps / (step + 1)) * 100,
     };
 
+    // Symbio metrics (only when symbio is enabled — zero overhead otherwise)
+    if (symbioEnabled && cusumDash && symbioCollector) {
+      const clipPctVal = (clippedSteps / (step + 1)) * 100;
+      const stepInfo: TrainerStepInfo = {
+        step: step + 1,
+        loss: lossVal,
+        gradNorm,
+        clipPct: clipPctVal,
+        tokensPerSec: metrics.tokens_per_sec,
+        valLoss: metrics.valLoss,
+      };
+
+      // CUSUM update (every step)
+      const cusumResult = cusumDash.update(stepInfo);
+      metrics.cusum_grad = cusumResult.cusum_grad;
+      metrics.cusum_clip = cusumResult.cusum_clip;
+      metrics.cusum_tps = cusumResult.cusum_tps;
+      metrics.cusum_val = cusumResult.cusum_val;
+      metrics.cusum_alerts = cusumResult.cusum_alerts;
+      if (cusumResult.cusum_alert_reason) {
+        metrics.cusum_alert_reason = cusumResult.cusum_alert_reason;
+        console.log(`  [symbio] CUSUM alert: ${cusumResult.cusum_alert_reason}`);
+      }
+
+      // Adaptive batch sizing
+      if (adaptiveBatch) {
+        const newBatch = adaptiveBatch.onAlert(cusumResult.cusum_alerts);
+        metrics.adaptive_batch_size = newBatch;
+        if (adaptiveBatch.changeReason) {
+          metrics.batch_change_reason = adaptiveBatch.changeReason;
+          console.log(`  [symbio] batch size → ${newBatch} (${adaptiveBatch.changeReason})`);
+          adaptiveBatch.clearChangeReason();
+        }
+      }
+
+      // Record loss for population entropy sliding window
+      symbioCollector.recordLoss(lossVal);
+
+      // Expensive metrics (every metricsInterval steps)
+      if ((step + 1) % symbioConfig.metricsInterval === 0) {
+        // Collect TensorData for weight params
+        const paramTDs = new Map<string, TensorData>();
+        for (const [name, v] of paramMap) paramTDs.set(name, v.data);
+
+        const activation = activeModelConfig.ffnActivation ?? "gelu";
+        const expensiveMetrics = symbioCollector.collect(
+          paramTDs, lossVal, totalParams, activation, activeModelConfig.nLayer, metrics.valLoss,
+        );
+        Object.assign(metrics, expensiveMetrics);
+      }
+    }
+
+    // Search orchestrator: record step and switch candidates when evaluation period ends
+    if (searchOrchestrator && !searchOrchestrator.isDone) {
+      const candidate = searchOrchestrator.currentCandidate;
+      if (candidate) {
+        metrics.symbio_candidate_id = candidate.id;
+        metrics.symbio_candidate_activation = candidate.activation;
+        metrics.symbio_generation = searchOrchestrator.generation;
+        metrics.architecture_diversity = searchOrchestrator.architectureDiversity;
+
+        const candidateDone = searchOrchestrator.recordStep(
+          lossVal,
+          metrics.valLoss,
+          metrics.fitness_score,
+        );
+
+        if (candidateDone) {
+          console.log(`  [symbio search] candidate ${candidate.id} done: bestLoss=${candidate.bestLoss.toFixed(4)} bestVal=${candidate.bestValLoss === Infinity ? "N/A" : candidate.bestValLoss.toFixed(4)} fitness=${candidate.fitnessScore === -Infinity ? "N/A" : candidate.fitnessScore.toFixed(4)}`);
+          const nextActivation = searchOrchestrator.advance();
+
+          if (nextActivation !== null) {
+            // Switch to next candidate: re-init model with new activation
+            const ffnDim = nextActivation === "swiglu"
+              ? Math.ceil((8 / 3) * activeModelConfig.nEmbd / 64) * 64
+              : modelConfig.ffnDim ?? 4 * activeModelConfig.nEmbd;
+            activeModelConfig = { ...modelConfig, ffnActivation: nextActivation as any, ffnDim };
+            rng.seed(trainConfig.seed + (step + 1)); // different seed per candidate for fresh init
+            params = initGPT(activeModelConfig, backend, rng as any);
+            totalParams = countParams(params);
+            optimizer.loadStateDict({ step: 0, buffers: new Map() });
+            clearForwardCache();
+            const nextCandidate = searchOrchestrator.currentCandidate;
+            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.id} activation=${nextActivation} params=${totalParams.toLocaleString()}`);
+          } else {
+            // Search complete
+            const winner = searchOrchestrator.getWinner();
+            console.log(`\n── symbio search complete ──`);
+            if (winner) {
+              console.log(`winner: ${winner.activation} (${winner.id}) | bestVal=${winner.bestValLoss === Infinity ? "N/A" : winner.bestValLoss.toFixed(4)} | fitness=${winner.fitnessScore === -Infinity ? "N/A" : winner.fitnessScore.toFixed(4)}`);
+            }
+
+            // Write artifacts to run directory
+            const fs = await import("node:fs/promises");
+            const path = await import("node:path");
+            if (symbioConfig.writeReport) {
+              const report = searchOrchestrator.getReport();
+              await fs.writeFile(path.join(runDir, "symbio-search-report.md"), report);
+              console.log(`  report: ${runDir}/symbio-search-report.md`);
+            }
+            if (symbioConfig.writeCandidates) {
+              const jsonl = searchOrchestrator.getCandidatesJSONL();
+              await fs.writeFile(path.join(runDir, "symbio-candidates.jsonl"), jsonl);
+            }
+            if (symbioConfig.writeSummary) {
+              const summary = searchOrchestrator.getSummary();
+              await fs.writeFile(path.join(runDir, "symbio-search-summary.json"), JSON.stringify(summary, null, 2));
+            }
+          }
+        }
+      }
+    }
+
     // GPU stats (queried at most every 5s via nvidia-smi)
     const gpuStats = await queryGpuStats();
     if (gpuStats) {
@@ -631,7 +811,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       for (let ei = 0; ei < trainConfig.evalIters; ei++) {
         const valBatch = valLoader.nextBatch();
         const evalTape = new Tape();
-        const { loss: vl } = gptForward(modelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets);
+        const { loss: vl } = gptForward(activeModelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets);
         if (vl) {
           valLossSum += (vl.data.data as Float32Array)[0];
           if (releaseFn) releaseFn(vl.data);
@@ -677,7 +857,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     if ((step + 1) % trainConfig.evalInterval === 0 || step + 1 === trainConfig.iters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${step + 1}.json`);
-      const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, modelConfig, deps.tokenizerArtifacts);
+      const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, activeModelConfig, deps.tokenizerArtifacts);
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
       if (deps.onCheckpoint) deps.onCheckpoint({ step: step + 1, path: ckptPath, runId: rid });
@@ -702,7 +882,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
           for (const prompt of deps.samplePrompts.slice(0, 3)) {
             const output = runSample(
-              modelConfig, params, backend, rng,
+              activeModelConfig, params, backend, rng,
               (t) => tokenizer.encode(t),
               (t) => tokenizer.decode(t),
               prompt, sampleCfg, releaseFn, flushFn,

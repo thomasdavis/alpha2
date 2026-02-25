@@ -8,6 +8,7 @@ import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
+import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
 export async function trainCmd(args: string[]): Promise<void> {
@@ -29,16 +30,18 @@ export async function trainCmd(args: string[]): Promise<void> {
   const mDefaults = domain?.modelDefaults ?? {};
   const tDefaults = domain?.trainDefaults ?? {};
 
-  const modelConfig: ModelConfig = {
+  let modelConfig: ModelConfig = {
     vocabSize: intArg(kv, "vocabSize", mDefaults.vocabSize ?? defaultModelConfig.vocabSize),
     blockSize: intArg(kv, "block", mDefaults.blockSize ?? defaultModelConfig.blockSize),
     nLayer: intArg(kv, "layers", mDefaults.nLayer ?? defaultModelConfig.nLayer),
     nEmbd: intArg(kv, "dim", mDefaults.nEmbd ?? defaultModelConfig.nEmbd),
     nHead: intArg(kv, "heads", mDefaults.nHead ?? defaultModelConfig.nHead),
     dropout: floatArg(kv, "dropout", mDefaults.dropout ?? defaultModelConfig.dropout),
+    ffnActivation: (strArg(kv, "activation", mDefaults.ffnActivation ?? defaultModelConfig.ffnActivation ?? "gelu") as ModelConfig["ffnActivation"]),
+    ffnDim: kv["ffnDim"] ? intArg(kv, "ffnDim", 0) : undefined,
   };
 
-  const trainConfig: TrainConfig = {
+  let trainConfig: TrainConfig = {
     iters: intArg(kv, "steps", intArg(kv, "iters", tDefaults.iters ?? defaultTrainConfig.iters)),
     batchSize: intArg(kv, "batch", tDefaults.batchSize ?? defaultTrainConfig.batchSize),
     lr: floatArg(kv, "lr", tDefaults.lr ?? defaultTrainConfig.lr),
@@ -63,7 +66,30 @@ export async function trainCmd(args: string[]): Promise<void> {
     syncEvery: intArg(kv, "syncEvery", tDefaults.syncEvery ?? defaultTrainConfig.syncEvery),
     gcEvery: intArg(kv, "gcEvery", tDefaults.gcEvery ?? defaultTrainConfig.gcEvery),
     packed: boolArg(kv, "packed", tDefaults.packed ?? defaultTrainConfig.packed),
+    symbio: boolArg(kv, "symbio", tDefaults.symbio ?? defaultTrainConfig.symbio),
+    symbioConfig: null,
   };
+
+  // Apply symbio preset if enabled (before resolving implementations)
+  if (trainConfig.symbio) {
+    const symbioConfigFile = kv["symbio-config"];
+    const symbioConfig = await loadSymbioConfig(symbioConfigFile);
+
+    // Apply symbio model/train presets (explicit CLI flags already override above)
+    const presetModel = applySymbioModelPreset(modelConfig);
+    const presetTrain = applySymbioTrainPreset(trainConfig);
+
+    // Only apply preset values that weren't explicitly overridden by CLI
+    if (!kv["activation"]) modelConfig = { ...modelConfig, ffnActivation: presetModel.ffnActivation, ffnDim: presetModel.ffnDim };
+    if (!kv["lr"]) trainConfig = { ...trainConfig, lr: presetTrain.lr };
+    if (!kv["gradClip"]) trainConfig = { ...trainConfig, gradClip: presetTrain.gradClip };
+    if (!kv["warmupIters"]) trainConfig = { ...trainConfig, warmupIters: presetTrain.warmupIters };
+    if (!kv["spikeThreshold"]) trainConfig = { ...trainConfig, spikeThreshold: presetTrain.spikeThreshold };
+
+    trainConfig = { ...trainConfig, symbioConfig: symbioConfig as unknown as Record<string, unknown> };
+    console.log(`Symbiogenesis mode: ON`);
+    console.log(`  activation: ${modelConfig.ffnActivation ?? "gelu"} | lr: ${trainConfig.lr} | gradClip: ${trainConfig.gradClip}`);
+  }
 
   console.log(`Implementations available:\n${listImplementations()}\n`);
 

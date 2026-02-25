@@ -6,4 +6,5 @@ export {
   gptForward,
   collectParams,
   countParams,
+  clearForwardCache,
 } from "./gpt.js";

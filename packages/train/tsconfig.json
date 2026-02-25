@@ -11,6 +11,7 @@
     { "path": "../tensor" },
     { "path": "../autograd" },
     { "path": "../model" },
-    { "path": "../tokenizers" }
+    { "path": "../tokenizers" },
+    { "path": "../symbiogenesis" }
   ]
 }

@@ -24,6 +24,11 @@ export interface UpsertRunInput {
   cpu_count?: number | null;
   ram_total_mb?: number | null;
   os_platform?: string | null;
+  symbio?: number | null;
+  symbio_config?: string | null;
+  ffn_activation?: string | null;
+  symbio_winner?: string | null;
+  symbio_mode?: string | null;
 }
 
 export async function upsertRun(client: Client, input: UpsertRunInput): Promise<void> {
@@ -39,6 +44,7 @@ export async function upsertRun(client: Client, input: UpsertRunInput): Promise<
       status, latest_step, last_loss, best_val_loss, estimated_params,
       disk_mtime,
       gpu_name, gpu_vendor, gpu_vram_mb, hostname, cpu_count, ram_total_mb, os_platform,
+      symbio, symbio_config, ffn_activation, symbio_winner, symbio_mode,
       updated_at
     ) VALUES (
       ?, ?, ?, ?,
@@ -48,6 +54,7 @@ export async function upsertRun(client: Client, input: UpsertRunInput): Promise<
       ?, ?, ?, ?, ?,
       ?,
       ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,
       datetime('now')
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -64,6 +71,11 @@ export async function upsertRun(client: Client, input: UpsertRunInput): Promise<
       cpu_count = COALESCE(excluded.cpu_count, cpu_count),
       ram_total_mb = COALESCE(excluded.ram_total_mb, ram_total_mb),
       os_platform = COALESCE(excluded.os_platform, os_platform),
+      symbio = COALESCE(excluded.symbio, symbio),
+      symbio_config = COALESCE(excluded.symbio_config, symbio_config),
+      ffn_activation = COALESCE(excluded.ffn_activation, ffn_activation),
+      symbio_winner = COALESCE(excluded.symbio_winner, symbio_winner),
+      symbio_mode = COALESCE(excluded.symbio_mode, symbio_mode),
       updated_at = datetime('now')`,
     args: [
       input.id,
@@ -98,6 +110,11 @@ export async function upsertRun(client: Client, input: UpsertRunInput): Promise<
       input.cpu_count ?? null,
       input.ram_total_mb ?? null,
       input.os_platform ?? null,
+      input.symbio ?? null,
+      input.symbio_config ?? null,
+      input.ffn_activation ?? null,
+      input.symbio_winner ?? null,
+      input.symbio_mode ?? null,
     ],
   });
 }

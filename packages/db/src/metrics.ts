@@ -31,6 +31,30 @@ export async function insertMetrics(
     timing_grad_norm_ms?: number | null;
     timing_grad_clip_ms?: number | null;
     gpu_ops_count?: number | null;
+    clip_coef?: number | null;
+    clip_pct?: number | null;
+    cusum_grad?: number | null;
+    cusum_clip?: number | null;
+    cusum_tps?: number | null;
+    cusum_val?: number | null;
+    cusum_alerts?: number | null;
+    cusum_alert_reason?: string | null;
+    weight_entropy?: number | null;
+    effective_rank?: number | null;
+    free_energy?: number | null;
+    population_entropy?: number | null;
+    activation_distribution?: string | null;
+    mi_input_repr?: number | null;
+    mi_repr_output?: number | null;
+    mi_compression?: number | null;
+    fitness_score?: number | null;
+    complexity_score?: number | null;
+    adaptive_batch_size?: number | null;
+    batch_change_reason?: string | null;
+    symbio_candidate_id?: string | null;
+    symbio_candidate_activation?: string | null;
+    symbio_generation?: number | null;
+    architecture_diversity?: number | null;
   }>
 ): Promise<number> {
   if (metrics.length === 0) return 0;
@@ -44,8 +68,14 @@ export async function insertMetrics(
               (run_id, step, loss, val_loss, lr, grad_norm, elapsed_ms, tokens_per_sec, ms_per_iter,
                gpu_util_pct, gpu_vram_used_mb, gpu_vram_total_mb, gpu_mem_pool_mb,
                timing_fwd_ms, timing_bwd_ms, timing_optim_ms, timing_data_ms,
-               timing_flush_ms, timing_grad_norm_ms, timing_grad_clip_ms, gpu_ops_count)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               timing_flush_ms, timing_grad_norm_ms, timing_grad_clip_ms, gpu_ops_count,
+               clip_coef, clip_pct,
+               cusum_grad, cusum_clip, cusum_tps, cusum_val, cusum_alerts, cusum_alert_reason,
+               weight_entropy, effective_rank, free_energy, population_entropy, activation_distribution,
+               mi_input_repr, mi_repr_output, mi_compression, fitness_score, complexity_score,
+               adaptive_batch_size, batch_change_reason,
+               symbio_candidate_id, symbio_candidate_activation, symbio_generation, architecture_diversity)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           runId,
           m.step,
@@ -68,6 +98,30 @@ export async function insertMetrics(
           m.timing_grad_norm_ms ?? null,
           m.timing_grad_clip_ms ?? null,
           m.gpu_ops_count ?? null,
+          m.clip_coef ?? null,
+          m.clip_pct ?? null,
+          m.cusum_grad ?? null,
+          m.cusum_clip ?? null,
+          m.cusum_tps ?? null,
+          m.cusum_val ?? null,
+          m.cusum_alerts ?? null,
+          m.cusum_alert_reason ?? null,
+          m.weight_entropy ?? null,
+          m.effective_rank ?? null,
+          m.free_energy ?? null,
+          m.population_entropy ?? null,
+          m.activation_distribution ?? null,
+          m.mi_input_repr ?? null,
+          m.mi_repr_output ?? null,
+          m.mi_compression ?? null,
+          m.fitness_score ?? null,
+          m.complexity_score ?? null,
+          m.adaptive_batch_size ?? null,
+          m.batch_change_reason ?? null,
+          m.symbio_candidate_id ?? null,
+          m.symbio_candidate_activation ?? null,
+          m.symbio_generation ?? null,
+          m.architecture_diversity ?? null,
         ],
       })),
       "write"

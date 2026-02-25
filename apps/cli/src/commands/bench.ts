@@ -272,6 +272,7 @@ async function benchTrain(iters: number): Promise<void> {
     syncEvery: 1,
     gcEvery: 0,
     packed: false,
+    symbio: false,
   };
 
   const backends = ["cpu_ref", "helios"] as const;
