@@ -100,7 +100,10 @@ export interface DbMetric {
   batch_change_reason: string | null;
   // Search candidate
   symbio_candidate_id: string | null;
+  symbio_candidate_name: string | null;
   symbio_candidate_activation: string | null;
+  symbio_candidate_parent_id: string | null;
+  symbio_candidate_parent_name: string | null;
   symbio_generation: number | null;
   architecture_diversity: number | null;
 }

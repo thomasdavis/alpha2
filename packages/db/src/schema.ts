@@ -173,4 +173,11 @@ export const migrations: string[][] = [
     `ALTER TABLE runs ADD COLUMN symbio_winner TEXT`,
     `ALTER TABLE runs ADD COLUMN symbio_mode TEXT`,
   ],
+
+  // Version 7: candidate lineage columns (name, parent_id, parent_name)
+  [
+    `ALTER TABLE metrics ADD COLUMN symbio_candidate_name TEXT`,
+    `ALTER TABLE metrics ADD COLUMN symbio_candidate_parent_id TEXT`,
+    `ALTER TABLE metrics ADD COLUMN symbio_candidate_parent_name TEXT`,
+  ],
 ];

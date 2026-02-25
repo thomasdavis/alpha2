@@ -52,7 +52,10 @@ export async function insertMetrics(
     adaptive_batch_size?: number | null;
     batch_change_reason?: string | null;
     symbio_candidate_id?: string | null;
+    symbio_candidate_name?: string | null;
     symbio_candidate_activation?: string | null;
+    symbio_candidate_parent_id?: string | null;
+    symbio_candidate_parent_name?: string | null;
     symbio_generation?: number | null;
     architecture_diversity?: number | null;
   }>
@@ -74,8 +77,10 @@ export async function insertMetrics(
                weight_entropy, effective_rank, free_energy, population_entropy, activation_distribution,
                mi_input_repr, mi_repr_output, mi_compression, fitness_score, complexity_score,
                adaptive_batch_size, batch_change_reason,
-               symbio_candidate_id, symbio_candidate_activation, symbio_generation, architecture_diversity)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               symbio_candidate_id, symbio_candidate_name, symbio_candidate_activation,
+               symbio_candidate_parent_id, symbio_candidate_parent_name,
+               symbio_generation, architecture_diversity)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           runId,
           m.step,
@@ -119,7 +124,10 @@ export async function insertMetrics(
           m.adaptive_batch_size ?? null,
           m.batch_change_reason ?? null,
           m.symbio_candidate_id ?? null,
+          m.symbio_candidate_name ?? null,
           m.symbio_candidate_activation ?? null,
+          m.symbio_candidate_parent_id ?? null,
+          m.symbio_candidate_parent_name ?? null,
           m.symbio_generation ?? null,
           m.architecture_diversity ?? null,
         ],

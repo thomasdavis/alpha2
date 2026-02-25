@@ -1167,6 +1167,279 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
   return <div ref={chartRef} style={{ width: "100%", height: 400 }} />;
 }
 
+// ── Traditional Tree Layout (Canvas) ─────────────────────────
+
+interface TreeNode {
+  id: string;
+  name: string;
+  activation: string;
+  generation: number;
+  bestLoss: number;
+  bestFitness: number;
+  steps: number;
+  children: TreeNode[];
+  x: number;
+  y: number;
+  width: number;
+}
+
+function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
+  metrics: SymbioMetric[];
+  selectedCandidateId?: string | null;
+  onSelectCandidate?: (id: string) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [hoveredNode, setHoveredNode] = useState<TreeNode | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+  const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
+
+  const { roots, allNodes, maxGen, treeHeight } = useMemo(() => {
+    if (candidates.length === 0) return { roots: [] as TreeNode[], allNodes: [] as TreeNode[], maxGen: 0, treeHeight: 300 };
+
+    const nodeMap = new Map<string, TreeNode>();
+    for (const c of candidates) {
+      nodeMap.set(c.id, {
+        id: c.id, name: c.name, activation: c.activation, generation: c.generation,
+        bestLoss: c.bestLoss, bestFitness: c.bestFitness, steps: c.steps,
+        children: [], x: 0, y: 0, width: 0,
+      });
+    }
+
+    const rootNodes: TreeNode[] = [];
+    for (const c of candidates) {
+      const node = nodeMap.get(c.id)!;
+      if (c.parentId && nodeMap.has(c.parentId)) {
+        nodeMap.get(c.parentId)!.children.push(node);
+      } else {
+        rootNodes.push(node);
+      }
+    }
+
+    // Sort roots by activation for consistent ordering
+    rootNodes.sort((a, b) => a.activation.localeCompare(b.activation));
+
+    // Layout: assign x positions using a simple recursive walk
+    const NODE_W = 90;
+    const NODE_H = 56;
+    const H_GAP = 16;
+    const V_GAP = 40;
+
+    // Compute subtree widths bottom-up
+    function computeWidth(node: TreeNode): number {
+      if (node.children.length === 0) {
+        node.width = NODE_W;
+        return NODE_W;
+      }
+      node.children.sort((a, b) => a.activation.localeCompare(b.activation));
+      let total = 0;
+      for (const child of node.children) {
+        if (total > 0) total += H_GAP;
+        total += computeWidth(child);
+      }
+      node.width = Math.max(NODE_W, total);
+      return node.width;
+    }
+
+    let totalWidth = 0;
+    for (const root of rootNodes) {
+      if (totalWidth > 0) totalWidth += H_GAP;
+      totalWidth += computeWidth(root);
+    }
+
+    // Assign positions
+    function assignPositions(node: TreeNode, xStart: number, depth: number) {
+      node.y = depth * (NODE_H + V_GAP) + 20;
+      if (node.children.length === 0) {
+        node.x = xStart + node.width / 2;
+        return;
+      }
+      let cx = xStart;
+      for (const child of node.children) {
+        assignPositions(child, cx, depth + 1);
+        cx += child.width + H_GAP;
+      }
+      // Center parent over children
+      const first = node.children[0];
+      const last = node.children[node.children.length - 1];
+      node.x = (first.x + last.x) / 2;
+    }
+
+    let xOff = 20;
+    for (const root of rootNodes) {
+      assignPositions(root, xOff, 0);
+      xOff += root.width + H_GAP;
+    }
+
+    const all: TreeNode[] = [];
+    function collect(n: TreeNode) { all.push(n); n.children.forEach(collect); }
+    rootNodes.forEach(collect);
+
+    const mg = Math.max(0, ...all.map((n) => n.generation));
+    const th = (mg + 1) * (NODE_H + V_GAP) + 40;
+
+    return { roots: rootNodes, allNodes: all, maxGen: mg, treeHeight: Math.max(300, th) };
+  }, [candidates]);
+
+  // Draw
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || allNodes.length === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = rect.width;
+    const h = rect.height;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const NODE_W = 90;
+    const NODE_H = 56;
+    const RADIUS = 6;
+
+    // Draw links first (behind nodes)
+    ctx.lineWidth = 1.5;
+    for (const node of allNodes) {
+      for (const child of node.children) {
+        const col = ACTIVATION_HEX[child.activation] ?? "#888";
+        ctx.strokeStyle = col + "60"; // 37% opacity
+        ctx.beginPath();
+        ctx.moveTo(node.x, node.y + NODE_H);
+        // Curved bezier link
+        const midY = (node.y + NODE_H + child.y) / 2;
+        ctx.bezierCurveTo(node.x, midY, child.x, midY, child.x, child.y);
+        ctx.stroke();
+      }
+    }
+
+    // Draw nodes
+    for (const node of allNodes) {
+      const col = ACTIVATION_HEX[node.activation] ?? "#888";
+      const isSelected = node.id === selectedCandidateId;
+      const isHovered = hoveredNode?.id === node.id;
+      const x = node.x - NODE_W / 2;
+      const y = node.y;
+
+      // Node background
+      ctx.fillStyle = isSelected ? col + "30" : isHovered ? col + "20" : "#111118";
+      ctx.strokeStyle = isSelected ? col : isHovered ? col + "bb" : col + "55";
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, NODE_W, NODE_H, RADIUS);
+      ctx.fill();
+      ctx.stroke();
+
+      // Activation color bar at top
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.roundRect(x, y, NODE_W, 3, [RADIUS, RADIUS, 0, 0]);
+      ctx.fill();
+
+      // Name
+      ctx.fillStyle = col;
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(node.name, node.x, y + 7);
+
+      // Activation type
+      ctx.fillStyle = "rgba(255,255,255,0.4)";
+      ctx.font = "7px monospace";
+      ctx.fillText(node.activation, node.x, y + 19);
+
+      // Loss
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.font = "8px monospace";
+      const lossStr = node.bestLoss === Infinity ? "—" : node.bestLoss.toFixed(4);
+      ctx.fillText(`loss ${lossStr}`, node.x, y + 31);
+
+      // Steps
+      ctx.fillStyle = "rgba(255,255,255,0.3)";
+      ctx.font = "7px monospace";
+      ctx.fillText(`${node.steps} steps · gen ${node.generation}`, node.x, y + 43);
+    }
+
+    // Generation row labels on the left
+    ctx.fillStyle = "rgba(255,255,255,0.15)";
+    ctx.font = "bold 8px monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    for (let g = 0; g <= maxGen; g++) {
+      const y = g * (NODE_H + 40) + 20 + NODE_H / 2;
+      ctx.fillText(`Gen ${g}`, 4, y);
+    }
+
+    ctx.restore();
+  }, [allNodes, maxGen, selectedCandidateId, hoveredNode]);
+
+  useEffect(() => { draw(); }, [draw]);
+  useEffect(() => {
+    const handleResize = () => draw();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [draw]);
+
+  // Mouse interaction — hit test nodes
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    const NODE_W = 90;
+    const NODE_H = 56;
+    let found: TreeNode | null = null;
+    for (const node of allNodes) {
+      if (mx >= node.x - NODE_W / 2 && mx <= node.x + NODE_W / 2 && my >= node.y && my <= node.y + NODE_H) {
+        found = node;
+        break;
+      }
+    }
+    setHoveredNode(found);
+    setTooltipPos(found ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : null);
+  }, [allNodes]);
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (hoveredNode && onSelectCandidate) {
+      onSelectCandidate(hoveredNode.id);
+    }
+  }, [hoveredNode, onSelectCandidate]);
+
+  if (candidates.length === 0) return null;
+
+  return (
+    <div className="relative w-full overflow-x-auto overflow-y-hidden rounded-lg bg-[#08080f]">
+      <canvas
+        ref={canvasRef}
+        className="w-full cursor-pointer"
+        style={{ height: treeHeight, minWidth: Math.max(400, allNodes.length * 50) }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => { setHoveredNode(null); setTooltipPos(null); }}
+        onClick={handleClick}
+      />
+      {hoveredNode && tooltipPos && (
+        <div
+          className="pointer-events-none absolute z-20 rounded border border-border bg-black/90 px-2.5 py-1.5 font-mono text-[0.6rem] leading-relaxed text-white/80 shadow-lg backdrop-blur-sm"
+          style={{ left: tooltipPos.x + 12, top: tooltipPos.y - 10, maxWidth: 200 }}
+        >
+          <div className="font-bold" style={{ color: ACTIVATION_HEX[hoveredNode.activation] ?? "#888" }}>
+            {hoveredNode.name}
+          </div>
+          <div>activation: {hoveredNode.activation}</div>
+          <div>generation: {hoveredNode.generation}</div>
+          <div>best loss: {hoveredNode.bestLoss === Infinity ? "—" : hoveredNode.bestLoss.toFixed(4)}</div>
+          <div>fitness: {hoveredNode.bestFitness === -Infinity ? "—" : hoveredNode.bestFitness.toFixed(4)}</div>
+          <div>steps: {hoveredNode.steps}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Amcharts Oscillator / Damping Analysis ───────────────────
 
 function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
@@ -1423,6 +1696,17 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
               <div className="mb-4" ref={treeRef}>
                 <ChartPanel title="Evolutionary Lineage Tree" helpText={HELP.lineageTree}>
                   <EvolutionaryTreeChart
+                    metrics={metrics}
+                    selectedCandidateId={selectedCandidateId}
+                    onSelectCandidate={setSelectedCandidateId}
+                  />
+                </ChartPanel>
+              </div>
+
+              {/* Traditional Lineage Tree */}
+              <div className="mb-4">
+                <ChartPanel title="Lineage Tree" helpText="Traditional top-down tree layout showing parent-child relationships between candidates. Gen-0 candidates (initial population) are at the top, with mutations and offspring branching downward. Each node shows the candidate name, activation type, best loss, and step count. Nodes are color-coded by activation. Click to select a candidate. Bezier curves connect parents to children.">
+                  <LineageTreeChart
                     metrics={metrics}
                     selectedCandidateId={selectedCandidateId}
                     onSelectCandidate={setSelectedCandidateId}
