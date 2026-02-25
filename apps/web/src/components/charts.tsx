@@ -331,7 +331,7 @@ function drawLossChart(
   const paddedMin = minL - rangeL * 0.05;
   const paddedMax = maxL + rangeL * 0.05;
   const paddedRange = paddedMax - paddedMin;
-  const minStep = metrics[0].step;
+  const minStep = 0;
   const maxStep = metrics[metrics.length - 1].step;
   const rangeS = maxStep - minStep || 1;
 
@@ -657,7 +657,7 @@ export function InteractiveLossChart({ metrics, checkpoints }: { metrics: ChartM
       return;
     }
 
-    const minStep = metrics[0].step;
+    const minStep = 0;
     const maxStep = metrics[metrics.length - 1].step;
     const rangeS = maxStep - minStep || 1;
     const stepAt = minStep + ((mouseX - padL) / cw) * rangeS;
@@ -794,7 +794,7 @@ function drawMiniChart(
   const ch = h - pad.top - pad.bottom;
 
   const allSteps = series.flatMap((s) => s.data.map((d) => d.step));
-  const minStep = allSteps.length > 0 ? Math.min(...allSteps) : 0;
+  const minStep = 0;
   const maxStep = allSteps.length > 0 ? Math.max(...allSteps) : 1;
   const rangeS = maxStep - minStep || 1;
   const sx = (step: number) => pad.left + ((step - minStep) / rangeS) * cw;
@@ -957,7 +957,7 @@ function drawStepTimeChart(canvas: HTMLCanvasElement, metrics: ChartMetric[]) {
   ctx.fillStyle = "#0d0d0d";
   ctx.fillRect(0, 0, w, h);
 
-  const minStep = data[0].step;
+  const minStep = 0;
   const maxStep = data[data.length - 1].step;
   const rangeS = maxStep - minStep || 1;
 
