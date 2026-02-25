@@ -1,9 +1,9 @@
 {
   "searchMode": "ffn-activation-search",
   "activationPool": ["gelu", "silu", "relu", "swiglu", "universal", "kan_spline"],
-  "populationSize": 50000,
-  "generations": 20,
-  "stepsPerCandidate": 3000,
+  "populationSize": 6,
+  "generations": 12,
+  "stepsPerCandidate": 30,
   "selectionStrategy": "topk",
   "mutationRate": 0.5,
   "rankBy": "valLoss",
