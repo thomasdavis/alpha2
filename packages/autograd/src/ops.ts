@@ -5,10 +5,65 @@
  * The backward closure captures what it needs to compute input gradients.
  */
 import type { TensorData, Backend, Shape } from "@alpha/core";
-import { shapeSize } from "@alpha/core";
+import { shapeSize, broadcastStrides } from "@alpha/core";
 import { Variable, type Tape } from "./tape.js";
 
-type Ctx = { tape: Tape; backend: Backend };
+type Ctx = { tape: Tape; backend: Backend; dropoutRng?: DropoutRng };
+
+// ── Deterministic dropout RNG ─────────────────────────────────────────────
+
+/**
+ * Counter-based deterministic RNG for dropout masks.
+ *
+ * When activation checkpointing recomputes a block during backward,
+ * dropout must produce the same mask as the forward pass. This RNG uses
+ * a simple counter so the mask sequence is reproducible: save the counter
+ * before a block, restore it before recomputation.
+ *
+ * Algorithm: splitmix64-style mixing of (seed + counter).
+ */
+export class DropoutRng {
+  private seed: number;
+  private counter: number;
+
+  constructor(seed: number) {
+    this.seed = seed | 0;
+    this.counter = 0;
+  }
+
+  /** Generate a dropout mask: values are 1/(1-p) where kept, 0 where dropped. */
+  nextMask(size: number, p: number): Float32Array {
+    const mask = new Float32Array(size);
+    const scaleVal = 1 / (1 - p);
+    for (let i = 0; i < size; i++) {
+      // Simple hash: combine seed, counter, and element index
+      const x = this.hash(this.counter, i);
+      mask[i] = x > p ? scaleVal : 0;
+    }
+    this.counter++;
+    return mask;
+  }
+
+  /** Save counter position for later restore (activation checkpointing). */
+  saveCounter(): number {
+    return this.counter;
+  }
+
+  /** Restore counter to a previously saved position. */
+  restoreCounter(n: number): void {
+    this.counter = n;
+  }
+
+  /** Hash function: maps (counter, index) → uniform [0, 1). */
+  private hash(counter: number, index: number): number {
+    // splitmix32-style: mix seed + counter + index
+    let h = (this.seed + counter * 2654435761 + index * 2246822519) | 0;
+    h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    h = h ^ (h >>> 16);
+    return (h >>> 0) / 4294967296; // [0, 1)
+  }
+}
 
 // helper: create output variable and record on tape
 function record(
@@ -352,10 +407,15 @@ export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Va
   if (!training || p === 0) return a;
   const aData = a.data;
   const size = shapeSize(aData.shape);
-  const maskArr = new Float32Array(size);
-  const scaleVal = 1 / (1 - p);
-  // Generate dropout mask: 1/(1-p) where kept, 0 where dropped
-  for (let i = 0; i < size; i++) maskArr[i] = Math.random() > p ? scaleVal : 0;
+  // Use deterministic RNG when available (required for activation checkpointing)
+  const maskArr = ctx.dropoutRng
+    ? ctx.dropoutRng.nextMask(size, p)
+    : (() => {
+        const m = new Float32Array(size);
+        const scaleVal = 1 / (1 - p);
+        for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
+        return m;
+      })();
   const cpuMask: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: maskArr };
   // Clone mask into backend storage so it's GPU-resident when using GPU backend
   const mask = ctx.backend.clone(cpuMask);
@@ -383,11 +443,16 @@ export function residualDropoutAdd(
   const projData = projected.data;
   const resData = residual.data;
   const size = shapeSize(projData.shape);
-  const scaleVal = 1 / (1 - p);
 
-  // Generate dropout mask on CPU (same RNG as standalone dropout)
-  const maskArr = new Float32Array(size);
-  for (let i = 0; i < size; i++) maskArr[i] = Math.random() > p ? scaleVal : 0;
+  // Use deterministic RNG when available (required for activation checkpointing)
+  const maskArr = ctx.dropoutRng
+    ? ctx.dropoutRng.nextMask(size, p)
+    : (() => {
+        const m = new Float32Array(size);
+        const scaleVal = 1 / (1 - p);
+        for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
+        return m;
+      })();
   const cpuMask: TensorData = { shape: [...projData.shape], dtype: projData.dtype, data: maskArr };
   const mask = ctx.backend.clone(cpuMask);
 
@@ -523,7 +588,7 @@ function broadcastTo(B: Backend, t: TensorData, targetShape: Shape): TensorData 
   if (arraysEqual(t.shape, targetShape)) return t;
   // Use GPU broadcast if available (avoids CPU readback + O(N) copy)
   if (B.broadcast) return B.broadcast(t, targetShape);
-  // CPU fallback
+  // CPU fallback — stride-based for correct non-trailing broadcasts
   const size = shapeSize(targetShape);
   const srcSize = shapeSize(t.shape);
   const out = new Float32Array(size);
@@ -531,8 +596,17 @@ function broadcastTo(B: Backend, t: TensorData, targetShape: Shape): TensorData 
   if (srcSize === 1) {
     out.fill(src[0]);
   } else {
+    const strides = broadcastStrides(t.shape, targetShape);
+    const ndim = targetShape.length;
     for (let i = 0; i < size; i++) {
-      out[i] = src[i % srcSize];
+      let srcIdx = 0;
+      let remainder = i;
+      for (let d = ndim - 1; d >= 0; d--) {
+        const coord = remainder % targetShape[d];
+        remainder = (remainder - coord) / targetShape[d];
+        srcIdx += coord * strides[d];
+      }
+      out[i] = src[srcIdx];
     }
   }
   return { shape: targetShape, dtype: t.dtype, data: out };

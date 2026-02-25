@@ -9,7 +9,7 @@
 import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
-  Variable, Tape,
+  Variable, Tape, DropoutRng,
   add, matmul, matmulTransposed, gelu, layerNorm, softmax, crossEntropy,
   reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
@@ -87,6 +87,20 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
   return { wte, wpe, layers, lnF, lmHead };
 }
 
+// ── Forward pass caches ────────────────────────────────────────────────────
+
+/** Cache for position indices keyed by "B,T". */
+const posIndicesCache = new Map<string, TensorData>();
+
+/** Cache for causal masks keyed by T. */
+const causalMaskCache = new Map<number, TensorData>();
+
+/** Clear forward pass caches (call when changing model config or freeing memory). */
+export function clearForwardCache(): void {
+  posIndicesCache.clear();
+  causalMaskCache.clear();
+}
+
 // ── Forward pass ───────────────────────────────────────────────────────────
 
 export interface GPTForwardResult {
@@ -100,7 +114,7 @@ export interface GPTForwardResult {
 
 /** Single transformer block: LN → Attention → Residual, LN → MLP → Residual. */
 function transformerBlock(
-  ctx: { tape: Tape; backend: Backend },
+  ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng },
   x: Variable,
   layer: LayerParams,
   config: ModelConfig,
@@ -123,7 +137,7 @@ function transformerBlock(
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
-  if (ctx.backend.flashAttention) {
+  if (ctx.backend.flashAttention && !(training && config.dropout > 0)) {
     const qFA = reshape(ctx, q, [Batch * nHead, T, headDim]);
     const kFA = reshape(ctx, k, [Batch * nHead, T, headDim]);
     const vFA = reshape(ctx, v, [Batch * nHead, T, headDim]);
@@ -184,28 +198,38 @@ export function gptForward(
   training = false,
   activationCheckpointing = false,
   mixedPrecision = false,
+  dropoutRng?: DropoutRng,
 ): GPTForwardResult {
-  const ctx = { tape, backend };
+  const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng } = { tape, backend, dropoutRng };
   const { nEmbd } = config;
   const [B, T] = tokens.shape;
 
   // Token + position embeddings
   const tokEmb = embedding(ctx, params.wte, tokens); // [B, T, nEmbd]
 
-  // Create position indices [B, T]
-  const posData = new Int32Array(B * T);
-  for (let b = 0; b < B; b++) {
-    for (let t = 0; t < T; t++) {
-      posData[b * T + t] = t;
+  // Position indices [B, T] — cached per (B, T) since they're constant
+  const posKey = `${B},${T}`;
+  let posIndices = posIndicesCache.get(posKey);
+  if (!posIndices) {
+    const posData = new Int32Array(B * T);
+    for (let b = 0; b < B; b++) {
+      for (let t = 0; t < T; t++) {
+        posData[b * T + t] = t;
+      }
     }
+    posIndices = { shape: [B, T], dtype: "i32", data: posData };
+    posIndicesCache.set(posKey, posIndices);
   }
-  const posIndices: TensorData = { shape: [B, T], dtype: "i32", data: posData };
   const posEmb = embedding(ctx, params.wpe, posIndices); // [B, T, nEmbd]
 
   let x = add(ctx, tokEmb, posEmb); // [B, T, nEmbd]
 
-  // Causal mask [T, T]
-  const mask = backend.causalMask(T);
+  // Causal mask [T, T] — cached per T since it's constant
+  let mask = causalMaskCache.get(T);
+  if (!mask) {
+    mask = backend.causalMask(T);
+    causalMaskCache.set(T, mask);
+  }
 
   // Transformer blocks
   for (const layer of params.layers) {
@@ -213,10 +237,15 @@ export function gptForward(
     if (mixedPrecision && training) x = castToF16(ctx, x);
 
     if (activationCheckpointing && training) {
+      // Save dropout RNG counter so recomputation during backward produces identical masks
+      const savedCounter = dropoutRng?.saveCounter();
       x = checkpoint(ctx, (innerCtx, inp) => {
+        // Restore dropout RNG counter for deterministic replay
+        if (dropoutRng && savedCounter !== undefined) dropoutRng.restoreCounter(savedCounter);
+        const innerCtxWithRng = { ...innerCtx, dropoutRng };
         // Cast f16 input back to f32 for compute within the block
-        const f32Inp = mixedPrecision ? castToF32(innerCtx, inp) : inp;
-        return transformerBlock(innerCtx, f32Inp, layer, config, B, T, mask, training);
+        const f32Inp = mixedPrecision ? castToF32(innerCtxWithRng, inp) : inp;
+        return transformerBlock(innerCtxWithRng, f32Inp, layer, config, B, T, mask, training);
       }, x);
     } else {
       // Cast f16 input back to f32 for compute within the block

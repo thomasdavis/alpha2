@@ -1,5 +1,6 @@
 export { Variable, Tape, type TapeEntry } from "./tape.js";
 export {
+  DropoutRng,
   add, sub, mul, div, neg, scale,
   matmul, matmulTransposed,
   sum, mean,
