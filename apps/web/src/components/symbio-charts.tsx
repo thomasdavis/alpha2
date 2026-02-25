@@ -104,7 +104,7 @@ export function CusumChart({ metrics, sensitivity = 4.0 }: { metrics: SymbioMetr
     ctx.fillRect(0, 0, w, h);
     drawGrid(ctx, pad, w, h, 4);
 
-    const cusumData = metrics.filter(m => m.cusum_grad != null);
+    const cusumData = metrics.filter(m => m.cusum_grad != null || m.cusum_clip != null || m.cusum_tps != null || m.cusum_val != null);
     if (cusumData.length === 0) {
       ctx.fillStyle = "#666";
       ctx.font = "11px monospace";
@@ -790,7 +790,7 @@ function ActivationDistributionChart({ metrics }: { metrics: SymbioMetric[] }) {
 export function SymbioSection({ metrics, run }: { metrics: SymbioMetric[]; run: { symbio?: number | null; symbio_config?: string | null; ffn_activation?: string | null } }) {
   const isSymbio = (run.symbio ?? 0) === 1;
   const hasClipData = metrics.some(m => m.clip_coef != null);
-  const hasCusumData = metrics.some(m => m.cusum_grad != null);
+  const hasCusumData = metrics.some(m => m.cusum_grad != null || m.cusum_clip != null || m.cusum_tps != null || m.cusum_val != null);
   const hasSymbioMetrics = metrics.some(m => m.weight_entropy != null);
   const hasAdaptiveBatch = metrics.some(m => m.adaptive_batch_size != null);
   const hasSearchData = metrics.some(m => m.symbio_candidate_id != null);
