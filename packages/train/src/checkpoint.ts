@@ -220,10 +220,28 @@ export function restoreParams(
   const paramMap = collectParams(gptParams);
   for (const [name, variable] of paramMap) {
     const saved = checkpointParams[name];
-    if (!saved) continue;
-    const arr = variable.data.data as Float32Array;
-    for (let i = 0; i < arr.length; i++) {
-      arr[i] = saved.data[i];
+    if (saved) {
+      const arr = variable.data.data as Float32Array;
+      for (let i = 0; i < arr.length; i++) {
+        arr[i] = saved.data[i];
+      }
+      continue;
+    }
+    // Backward compat: old checkpoints have separate wq/wk/wv instead of wqkv
+    if (name.endsWith(".attn.wqkv")) {
+      const prefix = name.replace(".attn.wqkv", "");
+      const wq = checkpointParams[`${prefix}.attn.wq`];
+      const wk = checkpointParams[`${prefix}.attn.wk`];
+      const wv = checkpointParams[`${prefix}.attn.wv`];
+      if (wq && wk && wv) {
+        const arr = variable.data.data as Float32Array;
+        let offset = 0;
+        for (const src of [wq, wk, wv]) {
+          for (let i = 0; i < src.data.length; i++) {
+            arr[offset++] = src.data[i];
+          }
+        }
+      }
     }
   }
 }

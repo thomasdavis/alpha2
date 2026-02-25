@@ -11,7 +11,7 @@ import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
   add, matmul, matmulTransposed, gelu, layerNorm, softmax, crossEntropy,
-  reshape, transpose, embedding, scale, softCap, dropout,
+  slice, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
@@ -34,7 +34,8 @@ export interface GPTParams {
 export interface LayerParams {
   ln1: { weight: Variable; bias: Variable };
   attn: {
-    wq: Variable; wk: Variable; wv: Variable; wo: Variable;
+    /** Grouped QKV weight [3*nEmbd, nEmbd] — single GEMM instead of three. */
+    wqkv: Variable; wo: Variable;
   };
   ln2: { weight: Variable; bias: Variable };
   mlp: { fc1: Variable; fc2: Variable };
@@ -68,9 +69,7 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
     layers.push({
       ln1: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
       attn: {
-        wq: initWeight(backend, rng, [nEmbd, nEmbd], std),
-        wk: initWeight(backend, rng, [nEmbd, nEmbd], std),
-        wv: initWeight(backend, rng, [nEmbd, nEmbd], std),
+        wqkv: initWeight(backend, rng, [3 * nEmbd, nEmbd], std),
         wo: initWeight(backend, rng, [nEmbd, nEmbd], std / Math.sqrt(2 * nLayer)),
       },
       ln2: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
@@ -129,11 +128,13 @@ function transformerBlock(
   // 1) LN → Attention → Residual
   const ln1Out = layerNorm(ctx, x, layer.ln1.weight, layer.ln1.bias, 1e-5);
 
-  // Q, K, V projections
+  // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
-  const q = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wq), [Batch, T, nEmbd]);
-  const k = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wk), [Batch, T, nEmbd]);
-  const v = reshape(ctx, matmulTransposed(ctx, q3d, layer.attn.wv), [Batch, T, nEmbd]);
+  const qkvFlat = matmulTransposed(ctx, q3d, layer.attn.wqkv); // [B*T, 3*nEmbd]
+  const BT = Batch * T;
+  const q = reshape(ctx, slice(ctx, qkvFlat, [0, 0], [BT, nEmbd]), [Batch, T, nEmbd]);
+  const k = reshape(ctx, slice(ctx, qkvFlat, [0, nEmbd], [BT, 2 * nEmbd]), [Batch, T, nEmbd]);
+  const v = reshape(ctx, slice(ctx, qkvFlat, [0, 2 * nEmbd], [BT, 3 * nEmbd]), [Batch, T, nEmbd]);
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
@@ -285,9 +286,7 @@ export function collectParams(params: GPTParams): Map<string, Variable> {
     const l = params.layers[i];
     map.set(`layer.${i}.ln1.weight`, l.ln1.weight);
     map.set(`layer.${i}.ln1.bias`, l.ln1.bias);
-    map.set(`layer.${i}.attn.wq`, l.attn.wq);
-    map.set(`layer.${i}.attn.wk`, l.attn.wk);
-    map.set(`layer.${i}.attn.wv`, l.attn.wv);
+    map.set(`layer.${i}.attn.wqkv`, l.attn.wqkv);
     map.set(`layer.${i}.attn.wo`, l.attn.wo);
     map.set(`layer.${i}.ln2.weight`, l.ln2.weight);
     map.set(`layer.${i}.ln2.bias`, l.ln2.bias);

@@ -545,6 +545,41 @@ export function flashAttention(
   });
 }
 
+// ── Slice ──────────────────────────────────────────────────────────────────
+
+/** Slice a tensor: out = a[starts:ends] along each dimension. */
+export function slice(ctx: Ctx, a: Variable, starts: number[], ends: number[]): Variable {
+  const origShape = [...a.data.shape];
+  return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release) => {
+    // Backward: pad gradient with zeros to reconstruct original shape.
+    // For each sliced dimension, cat zeros on left/right.
+    const ndim = origShape.length;
+    let padded: TensorData = g;
+    for (let d = ndim - 1; d >= 0; d--) {
+      if (starts[d] === 0 && ends[d] === origShape[d]) continue;
+      const chunks: TensorData[] = [];
+      if (starts[d] > 0) {
+        const zShape = [...padded.shape];
+        zShape[d] = starts[d];
+        chunks.push(B.zeros(zShape, padded.dtype));
+      }
+      chunks.push(padded);
+      if (ends[d] < origShape[d]) {
+        const zShape = [...padded.shape];
+        zShape[d] = origShape[d] - ends[d];
+        chunks.push(B.zeros(zShape, padded.dtype));
+      }
+      const old = padded;
+      padded = B.cat(chunks, d);
+      if (release) {
+        for (const c of chunks) { if (c !== g && c !== old) release(c); }
+        if (old !== g) release(old);
+      }
+    }
+    return [padded];
+  });
+}
+
 // ── Reshape / view ops ─────────────────────────────────────────────────────
 
 export function reshape(ctx: Ctx, a: Variable, shape: Shape): Variable {

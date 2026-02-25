@@ -190,16 +190,29 @@ export function prepareInferenceWeights(
   config: ModelConfig,
   params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
 ): InferenceWeights {
-  const { nLayer } = config;
+  const { nLayer, nEmbd } = config;
 
   const layers: InferenceLayer[] = [];
   for (let i = 0; i < nLayer; i++) {
+    // Support both grouped wqkv (new) and separate wq/wk/wv (old) checkpoints
+    let wq: Float32Array, wk: Float32Array, wv: Float32Array;
+    const wqkvParam = params[`layer.${i}.attn.wqkv`];
+    if (wqkvParam) {
+      const f32 = extractF32(wqkvParam);
+      const size = nEmbd * nEmbd;
+      wq = f32.slice(0, size);
+      wk = f32.slice(size, 2 * size);
+      wv = f32.slice(2 * size, 3 * size);
+    } else {
+      wq = extractF32(params[`layer.${i}.attn.wq`]);
+      wk = extractF32(params[`layer.${i}.attn.wk`]);
+      wv = extractF32(params[`layer.${i}.attn.wv`]);
+    }
+
     layers.push({
       ln1W: extractF32(params[`layer.${i}.ln1.weight`]),
       ln1B: extractF32(params[`layer.${i}.ln1.bias`]),
-      wq: extractF32(params[`layer.${i}.attn.wq`]),
-      wk: extractF32(params[`layer.${i}.attn.wk`]),
-      wv: extractF32(params[`layer.${i}.attn.wv`]),
+      wq, wk, wv,
       wo: extractF32(params[`layer.${i}.attn.wo`]),
       ln2W: extractF32(params[`layer.${i}.ln2.weight`]),
       ln2B: extractF32(params[`layer.${i}.ln2.bias`]),

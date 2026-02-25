@@ -8,7 +8,7 @@ export {
   dropout, residualDropoutAdd,
   embedding, layerNorm, softmax, crossEntropy,
   flashAttention,
-  reshape, transpose,
+  slice, reshape, transpose,
   castToF16, castToF32,
 } from "./ops.js";
 export { checkpoint } from "./checkpoint.js";
