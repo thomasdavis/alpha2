@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
@@ -103,9 +103,33 @@ const DOMAIN_STYLES: Record<string, string> = {
 
 // ── Main Component ───────────────────────────────────────────────
 
-export function RunDetailView({ run, metrics, checkpoints, samples }: RunDetailProps) {
+const POLL_INTERVAL = 60_000;
+
+export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initialCheckpoints, samples: initialSamples }: RunDetailProps) {
+  const [metrics, setMetrics] = useState(initialMetrics);
+  const [checkpoints, setCheckpoints] = useState(initialCheckpoints);
+  const [samples, setSamples] = useState(initialSamples);
   const [showModelConfig, setShowModelConfig] = useState(false);
   const [showTrainConfig, setShowTrainConfig] = useState(false);
+
+  const poll = useCallback(async () => {
+    try {
+      const base = `/api/runs/${encodeURIComponent(run.id)}`;
+      const [m, c, s] = await Promise.all([
+        fetch(`${base}/metrics`).then((r) => r.ok ? r.json() : null),
+        fetch(`${base}/checkpoints`).then((r) => r.ok ? r.json() : null),
+        fetch(`${base}/samples`).then((r) => r.ok ? r.json() : null),
+      ]);
+      if (m) setMetrics(m);
+      if (c) setCheckpoints(c);
+      if (s) setSamples(s);
+    } catch {}
+  }, [run.id]);
+
+  useEffect(() => {
+    const id = setInterval(poll, POLL_INTERVAL);
+    return () => clearInterval(id);
+  }, [poll]);
 
   const modelConfig = useMemo(() => {
     try { return JSON.parse(run.model_config); } catch { return null; }
