@@ -58,7 +58,7 @@ interface StepTimeTooltip {
 
 // ── Event Marker Types ──────────────────────────────────────────
 
-export type MarkerType = "checkpoints" | "bestVal" | "warmupEnd" | "gradSpikes" | "lossSpikes" | "overfit";
+export type MarkerType = "checkpoints" | "bestVal" | "warmupEnd" | "gradSpikes" | "lossSpikes" | "overfit" | "activationSwitch";
 export type MarkerVisibility = Record<MarkerType, boolean>;
 
 export const DEFAULT_MARKERS: MarkerVisibility = {
@@ -68,6 +68,7 @@ export const DEFAULT_MARKERS: MarkerVisibility = {
   overfit: true,
   gradSpikes: false,
   lossSpikes: false,
+  activationSwitch: true,
 };
 
 export const MARKER_COLORS: Record<MarkerType, string> = {
@@ -77,6 +78,7 @@ export const MARKER_COLORS: Record<MarkerType, string> = {
   gradSpikes: "#fb923c",
   lossSpikes: "#f472b6",
   overfit: "#ef4444",
+  activationSwitch: "#e879f9",
 };
 
 export const MARKER_LABELS: Record<MarkerType, string> = {
@@ -86,7 +88,17 @@ export const MARKER_LABELS: Record<MarkerType, string> = {
   gradSpikes: "Grad Spikes",
   lossSpikes: "Loss Spikes",
   overfit: "Overfit",
+  activationSwitch: "Activation Switch",
 };
+
+export interface ActivationSwitchEvent {
+  step: number;
+  fromActivation: string | null;
+  toActivation: string;
+  toGeneration: number;
+  toCandidateId: string;
+  lossAtSwitch: number;
+}
 
 export interface ComputedEvents {
   checkpointSteps: number[];
@@ -96,6 +108,7 @@ export interface ComputedEvents {
   gradSpikeSteps: number[];
   lossSpikeSteps: number[];
   overfitStep: number | null;
+  activationSwitches: ActivationSwitchEvent[];
 }
 
 export const MARKERS_STORAGE_KEY = "alpha-chart-markers";
@@ -270,7 +283,7 @@ function detectOverfitStep(metrics: ChartMetric[]): number | null {
   return valPts[minIdx].step;
 }
 
-function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[]): ComputedEvents {
+function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[], activationSwitches?: ActivationSwitchEvent[]): ComputedEvents {
   const bestVal = detectBestValStep(metrics);
   return {
     checkpointSteps: checkpoints.map((c) => c.step),
@@ -280,10 +293,46 @@ function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[]): 
     gradSpikeSteps: detectGradNormSpikes(metrics),
     lossSpikeSteps: detectLossSpikes(metrics),
     overfitStep: detectOverfitStep(metrics),
+    activationSwitches: activationSwitches ?? [],
   };
 }
 
 // ── Small Components ─────────────────────────────────────────────
+
+export function ChartHelpIcon({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex h-5 w-5 items-center justify-center rounded-full border border-border/60 bg-surface-2 text-[0.6rem] text-text-muted transition-colors hover:border-border-2 hover:text-text-secondary"
+        title="What is this?"
+      >
+        ?
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-7 z-40 w-72 rounded-lg border border-border-2 bg-surface-2 p-3 shadow-xl text-[0.68rem] leading-relaxed text-text-secondary">
+            {text}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function ChartPanel({ title, helpText, children }: { title: string; helpText?: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">{title}</span>
+        {helpText && <ChartHelpIcon text={helpText} />}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export function Stat({ label, value, sub, color, tip }: {
   label: string; value: string; sub?: string; color?: string; tip?: string;
@@ -317,6 +366,7 @@ interface LossTooltip {
   mouseY: number;
   metric: ChartMetric;
   containerWidth: number;
+  nearbySwitch?: ActivationSwitchEvent | null;
 }
 
 function drawLossChart(
@@ -536,6 +586,40 @@ function drawLossChart(
     }
   }
 
+  // Activation switch vertical lines
+  if (markers.activationSwitch && events.activationSwitches.length > 0) {
+    const actColors: Record<string, string> = { gelu: "#60a5fa", silu: "#34d399", relu: "#f59e0b", swiglu: "#a78bfa" };
+    for (const sw of events.activationSwitches) {
+      if (sw.step < minStep || sw.step > maxStep) continue;
+      const ax = sx(sw.step);
+      const col = actColors[sw.toActivation] ?? MARKER_COLORS.activationSwitch;
+      ctx.save();
+      ctx.strokeStyle = col + "aa";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(ax, pad.top);
+      ctx.lineTo(ax, pad.top + ch);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Small colored label at top
+      ctx.fillStyle = col;
+      ctx.font = "bold 8px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(sw.toActivation, ax, pad.top - 4);
+      // Small diamond marker
+      ctx.beginPath();
+      ctx.moveTo(ax, pad.top + 2);
+      ctx.lineTo(ax + 4, pad.top + 6);
+      ctx.lineTo(ax, pad.top + 10);
+      ctx.lineTo(ax - 4, pad.top + 6);
+      ctx.closePath();
+      ctx.fillStyle = col + "cc";
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   // Best val loss diamond
   if (markers.bestVal && events.bestValStep != null && events.bestValLoss != null) {
     const bx = sx(events.bestValStep);
@@ -631,7 +715,7 @@ function drawLossChart(
   }
 }
 
-export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinStep }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedStep?: number | null; onPinStep?: (step: number) => void }) {
+export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinStep, activationSwitches }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedStep?: number | null; onPinStep?: (step: number) => void; activationSwitches?: ActivationSwitchEvent[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tooltip, setTooltip] = useState<LossTooltip | null>(null);
   const hoverRef = useRef<number | null>(null);
@@ -650,7 +734,7 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     });
   }, []);
 
-  const events = useMemo(() => computeEvents(metrics, checkpoints), [metrics, checkpoints]);
+  const events = useMemo(() => computeEvents(metrics, checkpoints, activationSwitches), [metrics, checkpoints, activationSwitches]);
 
   const draw = useCallback((idx: number | null = null) => {
     if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, markers, pinnedStep ?? null);
@@ -697,9 +781,12 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     hoverRef.current = lo;
     const m = metrics[lo];
     const pointX = padL + ((m.step - minStep) / rangeS) * cw;
-    setTooltip({ pointX, mouseY, metric: m, containerWidth: w });
+    // Check for nearby activation switch (within 2% of step range)
+    const threshold = rangeS * 0.02;
+    const nearbySwitch = events.activationSwitches.find(sw => Math.abs(sw.step - m.step) <= threshold) ?? null;
+    setTooltip({ pointX, mouseY, metric: m, containerWidth: w, nearbySwitch });
     draw(lo);
-  }, [metrics, draw]);
+  }, [metrics, draw, events]);
 
   const onLeave = useCallback(() => {
     hoverRef.current = null;
@@ -807,6 +894,32 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
                 <span className="text-text-muted">GPU</span>
                 <span className="font-mono text-text-secondary">{tooltip.metric.gpu_util_pct.toFixed(0)}%</span>
               </div>
+            )}
+            {tooltip.nearbySwitch && (
+              <>
+                <div className="my-1 border-t border-purple-500/30" />
+                <div className="text-[0.62rem] font-semibold uppercase tracking-wider text-purple-400">Activation Switch</div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-muted">From</span>
+                  <span className="font-mono text-text-secondary">{tooltip.nearbySwitch.fromActivation ?? "start"}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-muted">To</span>
+                  <span className="font-mono font-semibold text-purple-300">{tooltip.nearbySwitch.toActivation}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-muted">Generation</span>
+                  <span className="font-mono text-text-secondary">{tooltip.nearbySwitch.toGeneration}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-muted">Candidate</span>
+                  <span className="font-mono text-text-secondary">{tooltip.nearbySwitch.toCandidateId}</span>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-muted">Loss @ Switch</span>
+                  <span className="font-mono text-yellow">{tooltip.nearbySwitch.lossAtSwitch.toFixed(4)}</span>
+                </div>
+              </>
             )}
           </div>
         </div>

@@ -6,11 +6,11 @@ import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
 import {
   type ChartMetric,
-  Stat, DetailRow, InteractiveLossChart, MiniChart, StepTimeChart,
+  Stat, DetailRow, InteractiveLossChart, MiniChart, StepTimeChart, ChartPanel,
   buildGpuSeries, buildLrSeries, buildGradNormSeries,
   fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
 } from "@/components/charts";
-import { SymbioSection } from "@/components/symbio-charts";
+import { SymbioSection, extractActivationSwitchEvents } from "@/components/symbio-charts";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -114,8 +114,9 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
   const [metrics, setMetrics] = useState(initialMetrics);
   const [checkpoints, setCheckpoints] = useState(initialCheckpoints);
   const [samples, setSamples] = useState(initialSamples);
-  const [showModelConfig, setShowModelConfig] = useState(false);
-  const [showTrainConfig, setShowTrainConfig] = useState(false);
+  const [showModelConfig, setShowModelConfig] = useState(true);
+  const [showTrainConfig, setShowTrainConfig] = useState(true);
+  const [copiedJson, setCopiedJson] = useState(false);
   const [pinnedStep, setPinnedStep] = useState<number | null>(null);
 
   const handlePinStep = useCallback((step: number) => {
@@ -148,6 +149,16 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
   const trainConfig = useMemo(() => {
     try { return JSON.parse(run.train_config); } catch { return null; }
   }, [run.train_config]);
+
+  const activationSwitches = useMemo(() => extractActivationSwitchEvents(metrics as any), [metrics]);
+
+  const copyMetricsJson = useCallback(() => {
+    const data = { run, metrics, checkpoints, samples };
+    navigator.clipboard.writeText(JSON.stringify(data, null, 2)).then(() => {
+      setCopiedJson(true);
+      setTimeout(() => setCopiedJson(false), 2000);
+    });
+  }, [run, metrics, checkpoints, samples]);
 
   const last = metrics.length > 0 ? metrics[metrics.length - 1] : null;
   const isActive = run.status === "active";
@@ -222,6 +233,13 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             <span className="rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[0.65rem] font-semibold text-text-secondary">
               {fmtParams(run.estimated_params)} params
             </span>
+            <button
+              onClick={copyMetricsJson}
+              className="rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[0.62rem] font-medium text-text-muted transition-colors hover:border-border-2 hover:text-text-secondary"
+              title="Copy all run data as JSON"
+            >
+              {copiedJson ? "Copied!" : "Copy as JSON"}
+            </button>
             <span className="ml-auto text-xs text-text-muted">
               {stats && stats.totalElapsed > 0 && <>{fmtDuration(stats.totalElapsed)} elapsed</>}
               {isActive && stats && stats.eta > 0 && <> &middot; ~{fmtDuration(stats.eta)} remaining</>}
@@ -307,7 +325,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
           <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
             Loss Curve <Tip text={tips.lossChart} />
           </div>
-          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} pinnedStep={pinnedStep} onPinStep={handlePinStep} activationSwitches={activationSwitches} />
         </div>
 
         <div className="space-y-3">
@@ -342,10 +360,10 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Mini charts */}
       <div className="mb-6 space-y-4">
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <ChartPanel title="GPU & VRAM" helpText="GPU utilization percentage and video RAM usage over training time. High GPU utilization (>80%) means the hardware is being used efficiently. VRAM tracks memory consumption to detect leaks or pressure.">
           <MiniChart
             metrics={metrics}
-            title="GPU & VRAM"
+            title=""
             noDataMsg="No GPU data"
             formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
             formatRight={(v) => v.toFixed(0) + "%"}
@@ -353,37 +371,37 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             pinnedStep={pinnedStep}
             onPinStep={handlePinStep}
           />
-        </div>
+        </ChartPanel>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="rounded-lg border border-border bg-surface p-4">
+          <ChartPanel title="Learning Rate" helpText="The learning rate schedule over training. Typically starts low (warmup), peaks, then decays via cosine annealing. The shape of this curve directly affects convergence speed and final model quality.">
             <MiniChart
               metrics={metrics}
-              title="Learning Rate"
+              title=""
               formatLeft={(v) => v.toExponential(1)}
               buildSeries={buildLrSeries}
               pinnedStep={pinnedStep}
               onPinStep={handlePinStep}
             />
-          </div>
-          <div className="rounded-lg border border-border bg-surface p-4">
+          </ChartPanel>
+          <ChartPanel title="Grad Norm" helpText="The L2 norm of all gradients at each step (log scale). Stable training shows consistent gradient norms. Sudden spikes indicate training instability, exploding gradients, or data anomalies. Values that trend to zero indicate vanishing gradients.">
             <MiniChart
               metrics={metrics}
-              title="Grad Norm"
+              title=""
               logScale
               formatLeft={(v) => v.toExponential(0)}
               buildSeries={buildGradNormSeries}
               pinnedStep={pinnedStep}
               onPinStep={handlePinStep}
             />
-          </div>
+          </ChartPanel>
         </div>
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <ChartPanel title="Step Time Breakdown" helpText="How time is spent within each training step. Forward pass computes the loss, backward pass computes gradients, optimizer updates weights, GPU sync flushes compute queues, and data loading prepares the next batch. Bottlenecks appear as dominant phases.">
           <StepTimeChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
-        </div>
+        </ChartPanel>
       </div>
 
       {/* Symbio section */}
-      <SymbioSection metrics={metrics as any} run={run} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+      <SymbioSection metrics={metrics as any} run={run as any} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
 
       {/* Checkpoints */}
       <div className="mb-6 rounded-lg border border-border bg-surface">
@@ -423,29 +441,45 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Samples */}
       {samples.length > 0 && (
-        <div className="mb-6">
-          <div className="mb-3 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
-            Sample Generations ({samples.length})
+        <div className="mb-6 rounded-lg border border-border bg-surface">
+          <div className="border-b border-border px-4 py-3">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
+              Sample Generations ({samples.length})
+            </span>
           </div>
-          <div className="space-y-3">
-            {samples.map((s) => (
-              <div key={s.idx} className="overflow-hidden rounded-lg border border-border bg-surface">
-                <div className="flex items-center gap-2 border-b border-border/50 bg-surface-2/50 px-4 py-2">
-                  <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[0.62rem] font-bold text-text-secondary">#{s.idx + 1}</span>
-                  <span className="text-[0.62rem] text-text-muted">{s.created_at ? timeAgo(s.created_at) : ""}</span>
-                </div>
-                <div className="p-4">
-                  <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Prompt</div>
-                  <div className="mb-3 rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary">
-                    {s.prompt}
+          {/* Summary table */}
+          <div className="border-b border-border/50">
+            <div className="grid grid-cols-[50px_80px_1fr_100px] gap-4 border-b border-border/30 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
+              <span>#</span><span>Checkpoint</span><span>Prompt (preview)</span><span>Generated</span>
+            </div>
+            {samples.map((s, i) => {
+              // Find nearest checkpoint that was created before this sample
+              const sampleTime = s.created_at ? new Date(s.created_at + "Z").getTime() : 0;
+              const nearestCp = [...checkpoints].reverse().find(c => {
+                const cpTime = c.created_at ? new Date(c.created_at + "Z").getTime() : 0;
+                return cpTime <= sampleTime + 60000; // within 1 min
+              });
+              return (
+                <details key={s.idx} className="border-b border-border/20 last:border-0 group">
+                  <summary className="grid grid-cols-[50px_80px_1fr_100px] gap-4 px-4 py-2 text-xs cursor-pointer hover:bg-surface-2/30">
+                    <span className="font-mono font-semibold text-text-secondary">{s.idx + 1}</span>
+                    <span className="font-mono text-green">{nearestCp ? `step ${fmtNum(nearestCp.step)}` : "-"}</span>
+                    <span className="truncate text-text-muted">{s.prompt.slice(0, 80)}{s.prompt.length > 80 ? "..." : ""}</span>
+                    <span className="text-text-muted">{s.created_at ? timeAgo(s.created_at) : "-"}</span>
+                  </summary>
+                  <div className="px-4 pb-3 pt-1">
+                    <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Prompt</div>
+                    <div className="mb-3 rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary">
+                      {s.prompt}
+                    </div>
+                    <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Output</div>
+                    <div className="whitespace-pre-wrap rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-primary">
+                      {s.output}
+                    </div>
                   </div>
-                  <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Output</div>
-                  <div className="whitespace-pre-wrap rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-primary">
-                    {s.output}
-                  </div>
-                </div>
-              </div>
-            ))}
+                </details>
+              );
+            })}
           </div>
         </div>
       )}
