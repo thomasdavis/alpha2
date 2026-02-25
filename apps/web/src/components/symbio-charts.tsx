@@ -757,38 +757,95 @@ function EvolutionaryTimeline({ metrics, pinnedStep, onPinStep }: { metrics: Sym
     }
   }
 
+  // Overall leaderboard: top candidates across all generations
+  const allSorted = [...candidates].sort((a, b) => a.bestLoss - b.bestLoss);
+  const globalBest = allSorted[0];
+  const totalSteps = candidates.reduce((s, c) => s + c.steps, 0);
+  const uniqueActivations = new Set(candidates.map(c => c.activation)).size;
+
   return (
     <div className="space-y-4">
-      {/* Generation Population Cards */}
-      <div className="space-y-3">
-        {genEntries.map(([gen, cands]) => {
-          const sortedCands = [...cands].sort((a, b) => a.bestLoss - b.bestLoss);
-          const best = sortedCands[0];
-          return (
-            <div key={gen} className="rounded-lg border border-border/60 bg-surface-2/30 p-3">
-              <div className="mb-2 flex items-center gap-2">
-                <span className="rounded bg-surface-2 px-2 py-0.5 text-[0.62rem] font-bold text-text-secondary">Generation {gen}</span>
-                <span className="text-[0.6rem] text-text-muted">{cands.length} candidates</span>
-                {best && <span className={`rounded border px-1.5 py-0.5 text-[0.58rem] font-semibold ${ACTIVATION_BG[best.activation] ?? ""} ${ACTIVATION_COLORS[best.activation] ?? "text-text-secondary"}`}>Best: {best.activation} ({best.bestLoss.toFixed(4)})</span>}
+      {/* Summary stats */}
+      <div className="grid grid-cols-5 gap-2">
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.5rem] text-text-muted uppercase tracking-wider">Generations</div>
+          <div className="text-lg font-bold text-white">{genEntries.length}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.5rem] text-text-muted uppercase tracking-wider">Candidates</div>
+          <div className="text-lg font-bold text-white">{candidates.length}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.5rem] text-text-muted uppercase tracking-wider">Activations</div>
+          <div className="text-lg font-bold text-cyan-400">{uniqueActivations}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.5rem] text-text-muted uppercase tracking-wider">Best Loss</div>
+          <div className="text-lg font-bold text-green-400">{globalBest?.bestLoss === Infinity ? "—" : globalBest?.bestLoss.toFixed(4)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.5rem] text-text-muted uppercase tracking-wider">Total Steps</div>
+          <div className="text-lg font-bold text-white">{totalSteps.toLocaleString()}</div>
+        </div>
+      </div>
+
+      {/* Compact leaderboard table */}
+      <div className="rounded-lg border border-border overflow-hidden">
+        <table className="w-full text-[0.62rem]">
+          <thead>
+            <tr className="border-b border-border bg-surface-2/50">
+              <th className="px-2 py-1.5 text-left text-text-muted font-medium">#</th>
+              <th className="px-2 py-1.5 text-left text-text-muted font-medium">Candidate</th>
+              <th className="px-2 py-1.5 text-left text-text-muted font-medium">Activation</th>
+              <th className="px-2 py-1.5 text-right text-text-muted font-medium">Gen</th>
+              <th className="px-2 py-1.5 text-right text-text-muted font-medium">Loss</th>
+              <th className="px-2 py-1.5 text-right text-text-muted font-medium">Fitness</th>
+              <th className="px-2 py-1.5 text-right text-text-muted font-medium">Steps</th>
+              <th className="px-2 py-1.5 text-left text-text-muted font-medium">Mutation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {allSorted.slice(0, 20).map((c, i) => (
+              <tr key={c.id} className={`border-b border-border/30 hover:bg-white/[0.02] ${i === 0 ? "bg-green-500/[0.04]" : ""}`}>
+                <td className="px-2 py-1 text-text-muted">{i + 1}</td>
+                <td className="px-2 py-1 font-mono truncate max-w-[120px]" title={c.name}>{c.name}</td>
+                <td className="px-2 py-1"><span className={`font-semibold ${ACTIVATION_COLORS[c.activation] ?? "text-text-secondary"}`} style={{ color: actHex(c.activation) }}>{c.activation}</span></td>
+                <td className="px-2 py-1 text-right font-mono text-text-muted">{c.generation}</td>
+                <td className="px-2 py-1 text-right font-mono text-white">{c.bestLoss === Infinity ? "—" : c.bestLoss.toFixed(4)}</td>
+                <td className="px-2 py-1 text-right font-mono text-green-400">{c.bestFitness === -Infinity ? "—" : c.bestFitness.toFixed(4)}</td>
+                <td className="px-2 py-1 text-right font-mono text-text-muted">{c.steps}</td>
+                <td className="px-2 py-1 text-[0.55rem] text-purple-400 truncate max-w-[100px]" title={c.mutationApplied ?? "origin"}>{c.mutationApplied ?? "origin"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {allSorted.length > 20 && (
+          <div className="px-2 py-1 text-[0.55rem] text-text-muted text-center border-t border-border/30">
+            Showing top 20 of {allSorted.length} candidates
+          </div>
+        )}
+      </div>
+
+      {/* Compact generation summary — horizontal strip instead of stacked cards */}
+      <div className="rounded-lg border border-border p-2">
+        <div className="text-[0.55rem] text-text-muted uppercase tracking-wider mb-1.5">Generation Summary</div>
+        <div className="flex flex-wrap gap-1.5">
+          {genEntries.map(([gen, cands]) => {
+            const best = [...cands].sort((a, b) => a.bestLoss - b.bestLoss)[0];
+            return (
+              <div key={gen} className="flex items-center gap-1 rounded border border-border/40 bg-surface-2/20 px-2 py-1 text-[0.55rem]">
+                <span className="font-bold text-text-secondary">G{gen}</span>
+                <span className="text-text-muted">{cands.length}c</span>
+                {best && (
+                  <>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: actHex(best.activation) }} />
+                    <span className="font-mono text-white">{best.bestLoss === Infinity ? "—" : best.bestLoss.toFixed(4)}</span>
+                  </>
+                )}
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                {sortedCands.map((c, i) => (
-                  <div key={c.id} className={`rounded border p-2 text-[0.62rem] ${i === 0 ? "border-green-500/30 bg-green-500/5" : "border-border/30 bg-surface-2/20"}`}>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className={`font-semibold ${ACTIVATION_COLORS[c.activation] ?? "text-text-secondary"}`}>{c.activation}</span>
-                      {i === 0 && <span className="text-[0.5rem] text-green">BEST</span>}
-                    </div>
-                    <div className="space-y-0.5 text-text-muted">
-                      <div className="flex justify-between"><span>Loss</span><span className="font-mono text-white">{c.bestLoss.toFixed(4)}</span></div>
-                      <div className="flex justify-between"><span>Fitness</span><span className="font-mono text-green">{c.bestFitness === -Infinity ? "-" : c.bestFitness.toFixed(4)}</span></div>
-                      <div className="flex justify-between"><span>Steps</span><span className="font-mono">{c.steps}</span></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {/* Fitness Progression Chart */}
@@ -854,44 +911,121 @@ function EvolutionaryTimeline({ metrics, pinnedStep, onPinStep }: { metrics: Sym
 function PhaseChangeTimeline({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
   // Aggregate alert density over windows of 50 steps
   const windowSize = 50;
-  const data: { step: number; alertDensity: number; channels: number; reason: string }[] = [];
+  const channelNames = ["Gradients", "Clipping", "Throughput", "Val Loss"];
+  const data: { step: number; alertDensity: number; channels: number; channelFlags: boolean[]; reason: string; phase: string }[] = [];
   for (let i = 0; i < metrics.length; i += windowSize) {
     const window = metrics.slice(i, i + windowSize);
     const alerts = window.filter(m => (m.cusum_alerts ?? 0) > 0);
     const density = alerts.length / window.length;
     const allChannels = alerts.reduce((s, m) => s | (m.cusum_alerts ?? 0), 0);
-    const channelCount = [allChannels & 1, (allChannels >> 1) & 1, (allChannels >> 2) & 1, (allChannels >> 3) & 1].reduce((a, b) => a + b, 0);
+    const channelFlags = [!!(allChannels & 1), !!((allChannels >> 1) & 1), !!((allChannels >> 2) & 1), !!((allChannels >> 3) & 1)];
+    const channelCount = channelFlags.filter(Boolean).length;
     const reasons = [...new Set(alerts.map(m => m.cusum_alert_reason).filter(Boolean))].join(", ");
-    data.push({ step: window[0].step, alertDensity: density, channels: channelCount, reason: reasons });
+    // Determine human-readable phase
+    let phase = "Stable";
+    if (density > 0.5 && channelCount >= 3) phase = "Regime Shift";
+    else if (density > 0.3) phase = "Transitioning";
+    else if (density > 0) phase = "Minor Fluctuation";
+    data.push({ step: window[0].step, alertDensity: density, channels: channelCount, channelFlags, reason: reasons, phase });
   }
   if (data.length === 0) return null;
 
+  // Compute summary stats
+  const totalPhases = data.filter(d => d.alertDensity > 0.3).length;
+  const regimeShifts = data.filter(d => d.phase === "Regime Shift").length;
+  const currentPhase = data[data.length - 1];
+  const stablePercent = ((data.filter(d => d.phase === "Stable").length / data.length) * 100).toFixed(0);
+
   return (
-    <ResponsiveContainer width="100%" height={120}>
-      <BarChart data={data} onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
-        <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
-        <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
-        <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
-        <RTooltip content={({ active, payload, label }: any) => {
-          if (!active || !payload?.[0]) return null;
-          const d = payload[0].payload;
-          return (
-            <div className="rounded-lg border border-border-2 bg-surface-2 p-2.5 shadow-xl text-[0.64rem]">
-              <div className="font-mono font-bold text-white">Step {Number(label).toLocaleString()}</div>
-              <div className="flex justify-between gap-3"><span className="text-text-muted">Alert Rate</span><span className="font-mono">{(d.alertDensity * 100).toFixed(0)}%</span></div>
-              <div className="flex justify-between gap-3"><span className="text-text-muted">Channels</span><span className="font-mono">{d.channels}/4</span></div>
-              {d.reason && <div className="mt-1 text-[0.58rem] text-orange-400">{d.reason}</div>}
-            </div>
-          );
-        }} />
-        {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
-        <Bar dataKey="alertDensity" name="Alert Density">
+    <div className="space-y-3">
+      {/* Phase summary cards */}
+      <div className="grid grid-cols-4 gap-2 px-3 pt-2">
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] text-text-muted uppercase tracking-wider">Current</div>
+          <div className={`text-sm font-bold ${currentPhase.phase === "Stable" ? "text-green-400" : currentPhase.phase === "Regime Shift" ? "text-red-400" : "text-yellow-400"}`}>
+            {currentPhase.phase}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] text-text-muted uppercase tracking-wider">Stability</div>
+          <div className="text-sm font-bold text-green-400">{stablePercent}%</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] text-text-muted uppercase tracking-wider">Phase Changes</div>
+          <div className="text-sm font-bold text-yellow-400">{totalPhases}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] text-text-muted uppercase tracking-wider">Regime Shifts</div>
+          <div className={`text-sm font-bold ${regimeShifts > 0 ? "text-red-400" : "text-green-400"}`}>{regimeShifts}</div>
+        </div>
+      </div>
+
+      {/* What this means */}
+      <div className="mx-3 rounded border border-white/5 bg-white/[0.02] px-3 py-2 text-[0.6rem] text-white/50 leading-relaxed">
+        {currentPhase.phase === "Stable" && "Training is in a steady state — loss is decreasing predictably. The model is learning without disruptions."}
+        {currentPhase.phase === "Minor Fluctuation" && "Small disturbances detected. Usually harmless — could be a batch of unusual data or a learning rate schedule change. Watch for escalation."}
+        {currentPhase.phase === "Transitioning" && "Training dynamics are shifting. The model may be entering a new loss basin or the learning rate is hitting a critical threshold. This often happens before a breakthrough or a plateau."}
+        {currentPhase.phase === "Regime Shift" && "Major training disruption. Multiple monitors triggered simultaneously — gradient behavior, clipping, and/or throughput all changed. This can mean the model has found a new loss landscape, or training is becoming unstable. Check learning rate and gradient norms."}
+      </div>
+
+      {/* Bar chart */}
+      <ResponsiveContainer width="100%" height={120}>
+        <BarChart data={data} onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
+          <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
+          <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
+          <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
+          <RTooltip content={({ active, payload, label }: any) => {
+            if (!active || !payload?.[0]) return null;
+            const d = payload[0].payload;
+            return (
+              <div className="rounded-lg border border-border-2 bg-surface-2 p-2.5 shadow-xl text-[0.64rem]">
+                <div className="font-mono font-bold text-white">Step {Number(label).toLocaleString()}</div>
+                <div className={`text-[0.62rem] font-semibold mb-1 ${d.phase === "Stable" ? "text-green-400" : d.phase === "Regime Shift" ? "text-red-400" : "text-yellow-400"}`}>{d.phase}</div>
+                <div className="flex justify-between gap-3"><span className="text-text-muted">Alert Rate</span><span className="font-mono">{(d.alertDensity * 100).toFixed(0)}%</span></div>
+                <div className="mt-1 text-[0.55rem] text-text-muted">Monitors triggered:</div>
+                {channelNames.map((name, ci) => (
+                  <div key={ci} className="flex items-center gap-1.5 text-[0.55rem]">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${d.channelFlags[ci] ? "bg-red-400" : "bg-green-400/30"}`} />
+                    <span className={d.channelFlags[ci] ? "text-red-300" : "text-white/20"}>{name}</span>
+                  </div>
+                ))}
+                {d.reason && <div className="mt-1 text-[0.55rem] text-orange-400 border-t border-white/10 pt-1">{d.reason}</div>}
+              </div>
+            );
+          }} />
+          {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
+          <Bar dataKey="alertDensity" name="Alert Density">
+            {data.map((d, i) => (
+              <Cell key={i} fill={d.phase === "Regime Shift" ? "#ef4444" : d.phase === "Transitioning" ? "#f59e0b" : d.alertDensity > 0 ? "#facc15" : "#34d399"} fillOpacity={0.7} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Phase change timeline — horizontal bar showing phases over time */}
+      <div className="mx-3 mb-1">
+        <div className="text-[0.55rem] text-text-muted mb-1 uppercase tracking-wider">Phase Timeline</div>
+        <div className="flex w-full h-4 rounded-full overflow-hidden border border-white/5">
           {data.map((d, i) => (
-            <Cell key={i} fill={d.alertDensity > 0.5 ? "#ef4444" : d.alertDensity > 0.2 ? "#f59e0b" : d.alertDensity > 0 ? "#facc15" : "#34d399"} fillOpacity={0.7} />
+            <div
+              key={i}
+              className="h-full cursor-pointer transition-opacity hover:opacity-80"
+              style={{
+                flex: 1,
+                backgroundColor: d.phase === "Regime Shift" ? "#ef4444" : d.phase === "Transitioning" ? "#f59e0b" : d.alertDensity > 0 ? "#facc15" : "#34d399",
+                opacity: 0.6 + d.alertDensity * 0.4,
+              }}
+              title={`Step ${d.step}: ${d.phase}`}
+              onClick={() => onPinStep?.(d.step)}
+            />
           ))}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+        </div>
+        <div className="flex justify-between text-[0.5rem] text-white/20 mt-0.5">
+          <span>Step {data[0]?.step}</span>
+          <span>Step {data[data.length - 1]?.step}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1044,207 +1178,183 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
   selectedCandidateId?: string | null;
   onSelectCandidate?: (id: string) => void;
 }) {
-  const chartRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<any>(null);
-  const seriesRef = useRef<any>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const simRef = useRef<any>(null);
   const prevCandidateIdsRef = useRef<Set<string>>(new Set());
   const onSelectRef = useRef(onSelectCandidate);
   onSelectRef.current = onSelectCandidate;
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; c: CandidateStats } | null>(null);
 
-  // Build tree data from candidates (reusable for init + incremental)
-  const buildTreeData = useCallback((cands: CandidateStats[], am5: any) => {
-    const allLosses = cands.filter(c => c.bestLoss < Infinity).map(c => c.bestLoss);
-    const minLoss = Math.min(...allLosses, 1);
-    const maxLoss = Math.max(...allLosses, 10);
-    const lossRange = maxLoss - minLoss || 1;
-
-    const rootNodes: any[] = [];
-    const nodeMap = new Map<string, any>();
-
-    for (const c of cands) {
-      const lossScore = c.bestLoss < Infinity ? 1 - (c.bestLoss - minLoss) / lossRange : 0;
-      const nodeValue = Math.max(2, Math.round(lossScore * 30 + Math.sqrt(c.steps) * 2));
-
-      const node: any = {
-        id: c.id,
-        name: c.name,
-        value: nodeValue,
-        activation: c.activation,
-        generation: c.generation,
-        bestLoss: c.bestLoss === Infinity ? "N/A" : c.bestLoss.toFixed(4),
-        bestFitness: c.bestFitness === -Infinity ? "N/A" : c.bestFitness.toFixed(4),
-        steps: c.steps,
-        mutation: c.mutationApplied ?? "origin",
-        parentId: c.parentId,
-        children: [],
-        nodeSettings: {
-          fill: am5.color(actHex(c.activation)),
-        },
-      };
-      nodeMap.set(c.id, node);
-    }
-
-    for (const c of cands) {
-      const node = nodeMap.get(c.id);
-      if (!node) continue;
-      if (c.parentId && nodeMap.has(c.parentId)) {
-        nodeMap.get(c.parentId)!.children.push(node);
-      } else {
-        rootNodes.push(node);
-      }
-    }
-
-    return { id: "root", name: "Evolution", value: 0, children: rootNodes };
-  }, []);
-
-  // Initialize chart once
   useEffect(() => {
-    if (!chartRef.current || candidates.length === 0) return;
+    if (!svgRef.current || candidates.length === 0) return;
+    const currentIds = new Set(candidates.map(c => c.id));
+    const prevIds = prevCandidateIdsRef.current;
+    let hasNew = currentIds.size !== prevIds.size;
+    if (!hasNew) { for (const id of currentIds) { if (!prevIds.has(id)) { hasNew = true; break; } } }
+    if (!hasNew && simRef.current) return;
+    prevCandidateIdsRef.current = currentIds;
 
     const initChart = async () => {
-      const am5 = await import("@amcharts/amcharts5");
-      const am5hierarchy = await import("@amcharts/amcharts5/hierarchy");
-      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+      const d3 = await import("d3");
+      const svg = d3.select(svgRef.current!);
+      const width = svgRef.current!.clientWidth || 800;
+      const height = svgRef.current!.clientHeight || 500;
 
-      if (rootRef.current) rootRef.current.dispose();
-      if (!chartRef.current) return;
-      const root = am5.Root.new(chartRef.current);
-      rootRef.current = root;
-      root.setThemes([am5themes.default.new(root)]);
-
-      const container = root.container.children.push(
-        am5.Container.new(root, { width: am5.percent(100), height: am5.percent(100), layout: root.verticalLayout })
-      );
-
-      const maxGen = Math.max(0, ...candidates.map(c => c.generation));
-      const popPerGen = candidates.length / Math.max(1, maxGen + 1);
+      // Compute metrics
       const allLosses = candidates.filter(c => c.bestLoss < Infinity).map(c => c.bestLoss);
       const minLoss = Math.min(...allLosses, 1);
       const maxLoss = Math.max(...allLosses, 10);
       const lossRange = maxLoss - minLoss || 1;
+      const maxGen = Math.max(0, ...candidates.map(c => c.generation));
 
-      const repulsion = -Math.max(8, Math.min(30, popPerGen * 3));
-      const centerPull = Math.min(0.8, 0.3 + candidates.length * 0.005);
+      // Build nodes and links
+      type SimNode = d3.SimulationNodeDatum & CandidateStats & { radius: number };
+      type SimLink = d3.SimulationLinkDatum<SimNode>;
 
-      const series = container.children.push(
-        am5hierarchy.ForceDirected.new(root, {
-          singleBranchOnly: false,
-          downDepth: 10,
-          topDepth: 1,
-          initialDepth: 10,
-          valueField: "value",
-          categoryField: "name",
-          childDataField: "children",
-          idField: "id",
-          linkWithStrength: 0.7,
-          minRadius: 10,
-          maxRadius: 36,
-          manyBodyStrength: repulsion,
-          centerStrength: centerPull,
-          velocityDecay: 0.65,
-        })
-      );
-      seriesRef.current = series;
-
-      const treeData = buildTreeData(candidates, am5);
-      series.data.setAll([treeData]);
-      series.set("selectedDataItem", series.dataItems[0]);
-      prevCandidateIdsRef.current = new Set(candidates.map(c => c.id));
-
-      // Node appearance
-      series.nodes.template.setAll({ toggleKey: "none", cursorOverStyle: "pointer" });
-      series.nodes.template.setup = (target: any) => {
-        const circle = target.children.getIndex(0);
-        if (circle) {
-          circle.setAll({ strokeWidth: 1.5, stroke: am5.color("#222") });
-          circle.adapters.add("strokeWidth", (_sw: number, t: any) => {
-            const ctx = t.dataItem?.dataContext as any;
-            if (ctx?.bestLoss !== "N/A" && parseFloat(ctx?.bestLoss) < minLoss + lossRange * 0.25) return 3;
-            return 1.5;
-          });
-          circle.adapters.add("stroke", (_s: any, t: any) => {
-            const ctx = t.dataItem?.dataContext as any;
-            if (ctx?.bestLoss !== "N/A" && parseFloat(ctx?.bestLoss) < minLoss + lossRange * 0.25) {
-              return am5.color("#fbbf24");
-            }
-            return am5.color("#333");
-          });
+      const nodes: SimNode[] = candidates.map(c => {
+        const lossScore = c.bestLoss < Infinity ? 1 - (c.bestLoss - minLoss) / lossRange : 0;
+        return { ...c, radius: Math.max(6, 4 + lossScore * 16 + Math.sqrt(c.steps) * 0.3) };
+      });
+      const nodeById = new Map(nodes.map(n => [n.id, n]));
+      const links: SimLink[] = [];
+      for (const n of nodes) {
+        if (n.parentId && nodeById.has(n.parentId)) {
+          links.push({ source: n.parentId, target: n.id });
         }
-      };
+      }
 
-      (series.nodes.template as any).adapters.add("fill", (_fill: any, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        return ctx?.activation ? am5.color(actHex(ctx.activation)) : _fill;
-      });
+      // Clear and rebuild SVG
+      svg.selectAll("*").remove();
+      const defs = svg.append("defs");
+      // Glow filter
+      const filter = defs.append("filter").attr("id", "glow").attr("x", "-50%").attr("y", "-50%").attr("width", "200%").attr("height", "200%");
+      filter.append("feGaussianBlur").attr("stdDeviation", "3").attr("result", "blur");
+      filter.append("feMerge").selectAll("feMergeNode").data(["blur", "SourceGraphic"]).join("feMergeNode").attr("in", d => d);
 
-      series.nodes.template.set("tooltipText",
-        "[bold]{name}[/]\n" +
-        "Activation: {activation}\n" +
-        "Generation: {generation}\n" +
-        "Mutation: {mutation}\n" +
-        "Best Loss: {bestLoss}\n" +
-        "Fitness: {bestFitness}\n" +
-        "Steps: {steps}"
-      );
+      const g = svg.append("g");
 
-      series.nodes.template.events.on("click", (ev: any) => {
-        const ctx = ev.target.dataItem?.dataContext as any;
-        if (ctx?.id && onSelectRef.current) onSelectRef.current(ctx.id);
-      });
+      // Zoom behavior
+      const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 5])
+        .on("zoom", (event) => g.attr("transform", event.transform));
+      svg.call(zoomBehavior);
 
-      series.links.template.setAll({ strokeWidth: 1.5, strokeOpacity: 0.35 });
-      (series.links.template as any).adapters.add("strokeOpacity", (_o: number, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        if (ctx?.generation != null) return Math.min(0.7, 0.2 + ctx.generation / Math.max(1, maxGen) * 0.5);
-        return 0.35;
-      });
-      (series.links.template as any).adapters.add("strokeWidth", (_w: number, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        if (ctx?.generation != null && ctx.generation >= maxGen - 1) return 2.5;
-        return 1.5;
-      });
+      // Generation band lines
+      const bandG = g.append("g").attr("class", "bands");
+      for (let gen = 0; gen <= maxGen; gen++) {
+        const yBand = (gen / Math.max(maxGen, 1)) * height * 0.8 + height * 0.1;
+        bandG.append("line")
+          .attr("x1", 0).attr("x2", width)
+          .attr("y1", yBand).attr("y2", yBand)
+          .attr("stroke", "rgba(255,255,255,0.05)")
+          .attr("stroke-dasharray", "4,4");
+        bandG.append("text")
+          .attr("x", 8).attr("y", yBand - 4)
+          .attr("fill", "rgba(255,255,255,0.12)")
+          .attr("font-size", "9px").attr("font-family", "monospace")
+          .text(`Gen ${gen}`);
+      }
 
-      series.labels.template.setAll({
-        fontSize: 8, fill: am5.color("#aaa"),
-        oversizedBehavior: "truncate", maxWidth: 70,
-        centerX: am5.percent(50), centerY: am5.percent(110),
-      });
+      // Links
+      const linkG = g.append("g").attr("class", "links");
+      const linkEls = linkG.selectAll("line")
+        .data(links).join("line")
+        .attr("stroke", (d: any) => actHex((d.target as SimNode)?.activation ?? (nodeById.get(d.target as string)?.activation ?? "")) + "50")
+        .attr("stroke-width", (d: any) => {
+          const t = (d.target as SimNode) ?? nodeById.get(d.target as string);
+          return t && t.generation >= maxGen - 1 ? 2.5 : 1.2;
+        });
 
-      series.appear(1000, 100);
+      // Nodes
+      const nodeG = g.append("g").attr("class", "nodes");
+      const nodeEls = nodeG.selectAll("circle")
+        .data(nodes).join("circle")
+        .attr("r", d => d.radius)
+        .attr("fill", d => actHex(d.activation) + "cc")
+        .attr("stroke", d => {
+          if (d.bestLoss < Infinity && d.bestLoss < minLoss + lossRange * 0.25) return "#fbbf24";
+          return actHex(d.activation) + "88";
+        })
+        .attr("stroke-width", d => d.bestLoss < Infinity && d.bestLoss < minLoss + lossRange * 0.25 ? 2.5 : 1.2)
+        .attr("cursor", "pointer")
+        .attr("filter", d => d.id === selectedCandidateId ? "url(#glow)" : "none")
+        .on("click", (_ev: any, d: SimNode) => { if (onSelectRef.current) onSelectRef.current(d.id); })
+        .on("mouseenter", (ev: MouseEvent, d: SimNode) => {
+          const rect = svgRef.current!.getBoundingClientRect();
+          setTooltip({ x: ev.clientX - rect.left, y: ev.clientY - rect.top, c: d });
+        })
+        .on("mouseleave", () => setTooltip(null))
+        .call(d3.drag<any, SimNode>()
+          .on("start", (event, d) => { if (!event.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+          .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
+          .on("end", (event, d) => { if (!event.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+        );
+
+      // Labels
+      const labelG = g.append("g").attr("class", "labels");
+      const labelEls = labelG.selectAll("text")
+        .data(nodes).join("text")
+        .attr("font-size", "7px").attr("font-family", "monospace")
+        .attr("fill", d => actHex(d.activation) + "aa")
+        .attr("text-anchor", "middle").attr("dy", d => d.radius + 10)
+        .text(d => d.name.length > 10 ? d.name.slice(0, 8) + ".." : d.name);
+
+      // Force simulation
+      const popPerGen = candidates.length / Math.max(1, maxGen + 1);
+      const sim = d3.forceSimulation(nodes)
+        .force("link", d3.forceLink<SimNode, SimLink>(links).id(d => d.id).strength(0.7).distance(40))
+        .force("charge", d3.forceManyBody().strength(-Math.max(8, Math.min(30, popPerGen * 3))))
+        .force("x", d3.forceX(width / 2).strength(0.05))
+        .force("y", d3.forceY<SimNode>(d => (d.generation / Math.max(maxGen, 1)) * height * 0.8 + height * 0.1).strength(0.4))
+        .force("collision", d3.forceCollide<SimNode>(d => d.radius + 3))
+        .velocityDecay(0.65)
+        .on("tick", () => {
+          linkEls
+            .attr("x1", (d: any) => d.source.x).attr("y1", (d: any) => d.source.y)
+            .attr("x2", (d: any) => d.target.x).attr("y2", (d: any) => d.target.y);
+          nodeEls.attr("cx", d => d.x!).attr("cy", d => d.y!);
+          labelEls.attr("x", d => d.x!).attr("y", d => d.y!);
+        });
+      simRef.current = sim;
+
+      // Initial zoom to fit
+      setTimeout(() => {
+        const xExt = d3.extent(nodes, d => d.x!) as [number, number];
+        const yExt = d3.extent(nodes, d => d.y!) as [number, number];
+        if (xExt[0] != null && yExt[0] != null) {
+          const bw = (xExt[1] - xExt[0]) || 200;
+          const bh = (yExt[1] - yExt[0]) || 200;
+          const scale = Math.min(width / (bw + 80), height / (bh + 80), 2) * 0.85;
+          const tx = width / 2 - ((xExt[0] + xExt[1]) / 2) * scale;
+          const ty = height / 2 - ((yExt[0] + yExt[1]) / 2) * scale;
+          svg.transition().duration(600).call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        }
+      }, 1200);
     };
 
     initChart();
-    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; seriesRef.current = null; } };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Init once only
-
-  // Incremental data update: only push new tree data when candidates change
-  useEffect(() => {
-    const series = seriesRef.current;
-    if (!series || candidates.length === 0) return;
-
-    // Check if any new candidates appeared
-    const currentIds = new Set(candidates.map(c => c.id));
-    const prevIds = prevCandidateIdsRef.current;
-    let hasNew = currentIds.size !== prevIds.size;
-    if (!hasNew) {
-      for (const id of currentIds) {
-        if (!prevIds.has(id)) { hasNew = true; break; }
-      }
-    }
-    if (!hasNew) return; // No new candidates, skip
-
-    // Update tree data without disposing the chart
-    import("@amcharts/amcharts5").then((am5) => {
-      const treeData = buildTreeData(candidates, am5);
-      series.data.setAll([treeData]);
-      prevCandidateIdsRef.current = currentIds;
-    });
-  }, [candidates, buildTreeData]);
+    return () => { if (simRef.current) { simRef.current.stop(); simRef.current = null; } };
+  }, [candidates, selectedCandidateId]);
 
   if (candidates.length === 0) return null;
-  return <div ref={chartRef} style={{ width: "100%", height: 500 }} />;
+  return (
+    <div className="relative" style={{ height: 500 }}>
+      <svg ref={svgRef} className="w-full h-full" style={{ background: "#08080f" }} />
+      {tooltip && (
+        <div className="pointer-events-none absolute z-20 rounded border border-border bg-black/90 px-2.5 py-1.5 font-mono text-[0.6rem] leading-relaxed text-white/80 shadow-lg backdrop-blur-sm"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 10, maxWidth: 240 }}>
+          <div className="font-bold truncate" style={{ color: actHex(tooltip.c.activation) }}>{tooltip.c.name}</div>
+          <div className="font-semibold" style={{ color: actHex(tooltip.c.activation) + "cc" }}>⚙ {tooltip.c.activation}</div>
+          <div>generation: {tooltip.c.generation}</div>
+          <div>mutation: {tooltip.c.mutationApplied ?? "origin"}</div>
+          <div>best loss: {tooltip.c.bestLoss === Infinity ? "—" : tooltip.c.bestLoss.toFixed(4)}</div>
+          <div>fitness: {tooltip.c.bestFitness === -Infinity ? "—" : tooltip.c.bestFitness.toFixed(4)}</div>
+          <div>steps: {tooltip.c.steps}</div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Activation Graph Composition Parser ──────────────────────
@@ -1785,34 +1895,26 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
   );
 }
 
-// ── Amcharts Oscillator / Damping Analysis ───────────────────
+// ── D3 Oscillator / Damping Analysis ─────────────────────────
 
-function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
-  const chartRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<any>(null);
+function D3OscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
+  const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
-    if (!chartRef.current || metrics.length < 40) return;
+    if (!svgRef.current || metrics.length < 40) return;
 
     const initChart = async () => {
-      const am5 = await import("@amcharts/amcharts5");
-      const am5xy = await import("@amcharts/amcharts5/xy");
-      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+      const d3 = await import("d3");
+      const svgEl = svgRef.current!;
+      const width = svgEl.clientWidth || 800;
+      const height = svgEl.clientHeight || 300;
+      const margin = { top: 30, right: 60, bottom: 30, left: 50 };
+      const iw = width - margin.left - margin.right;
+      const ih = height - margin.top - margin.bottom;
 
-      if (rootRef.current) rootRef.current.dispose();
-
-      if (!chartRef.current) return;
-      const root = am5.Root.new(chartRef.current);
-      rootRef.current = root;
-      root.setThemes([am5themes.default.new(root)]);
-
-      const chart = root.container.children.push(
-        am5xy.XYChart.new(root, { panX: true, panY: false, wheelX: "panX", wheelY: "zoomX" })
-      );
-
-      // Compute oscillation data: deviation from exponential moving average
+      // Compute oscillation data
       const windowSize = 20;
-      const data: { step: number; deviation: number; amplitude: number; ema: number; heatCapacity: number }[] = [];
+      const data: { step: number; deviation: number; amplitude: number; heatCapacity: number }[] = [];
       let ema = metrics[0].loss;
       const alpha = 2 / (windowSize + 1);
 
@@ -1820,152 +1922,132 @@ function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
         ema = alpha * metrics[i].loss + (1 - alpha) * ema;
         const deviation = metrics[i].loss - ema;
         const amplitude = Math.abs(deviation);
-
-        // Heat capacity proxy: |d(loss)/d(lr)| over a small window
         let heatCapacity = 0;
         if (i >= 5) {
           const lossChange = Math.abs(metrics[i].loss - metrics[i - 5].loss);
           const lrChange = Math.abs(metrics[i].lr - metrics[i - 5].lr);
           heatCapacity = lrChange > 1e-10 ? lossChange / lrChange : 0;
         }
-
-        data.push({
-          step: metrics[i].step,
-          deviation,
-          amplitude,
-          ema,
-          heatCapacity: Math.min(heatCapacity, 1e6), // cap for display
-        });
+        data.push({ step: metrics[i].step, deviation, amplitude, heatCapacity: Math.min(heatCapacity, 1e6) });
       }
 
-      // X Axis
-      const xAxis = chart.xAxes.push(am5xy.ValueAxis.new(root, {
-        renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }),
-        tooltip: am5.Tooltip.new(root, {}),
-      }));
-      xAxis.get("renderer").labels.template.setAll({ fill: am5.color("#666"), fontSize: 10 });
-      xAxis.get("renderer").grid.template.setAll({ stroke: am5.color("#1a1a1a") });
+      const svg = d3.select(svgEl);
+      svg.selectAll("*").remove();
 
-      // Y Axis for deviation
-      const yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, {
-        renderer: am5xy.AxisRendererY.new(root, {}),
-        tooltip: am5.Tooltip.new(root, {}),
-      }));
-      yAxis.get("renderer").labels.template.setAll({ fill: am5.color("#666"), fontSize: 10 });
-      yAxis.get("renderer").grid.template.setAll({ stroke: am5.color("#1a1a1a") });
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-      // Y Axis for heat capacity (opposite side)
-      const yAxis2 = chart.yAxes.push(am5xy.ValueAxis.new(root, {
-        renderer: am5xy.AxisRendererY.new(root, { opposite: true }),
-      }));
-      yAxis2.get("renderer").labels.template.setAll({ fill: am5.color("#f59e0b"), fontSize: 10 });
+      // Scales
+      const xScale = d3.scaleLinear().domain(d3.extent(data, d => d.step) as [number, number]).range([0, iw]);
+      const devExt = d3.extent(data, d => d.deviation) as [number, number];
+      const yScale = d3.scaleLinear().domain([Math.min(devExt[0], -0.01), Math.max(devExt[1], 0.01)]).range([ih, 0]);
+      const heatMax = d3.max(data, d => d.heatCapacity) ?? 1;
+      const yScale2 = d3.scaleLinear().domain([0, heatMax]).range([ih, 0]);
 
-      // Deviation area series (oscillation)
-      const deviationSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
-        name: "Loss Oscillation",
-        xAxis, yAxis,
-        valueYField: "deviation",
-        valueXField: "step",
-        tooltip: am5.Tooltip.new(root, { labelText: "Step {valueX}\nDeviation: {valueY.formatNumber('#.####')}" }),
-      }));
-      deviationSeries.strokes.template.setAll({ strokeWidth: 1.5, stroke: am5.color("#22d3ee") });
-      deviationSeries.fills.template.setAll({ fillOpacity: 0.08, fill: am5.color("#22d3ee"), visible: true });
+      // Axes
+      g.append("g").attr("transform", `translate(0,${ih})`).call(d3.axisBottom(xScale).ticks(8))
+        .selectAll("text").attr("fill", "#666").attr("font-size", "9px");
+      g.append("g").call(d3.axisLeft(yScale).ticks(6))
+        .selectAll("text").attr("fill", "#666").attr("font-size", "9px");
+      g.append("g").attr("transform", `translate(${iw},0)`).call(d3.axisRight(yScale2).ticks(4))
+        .selectAll("text").attr("fill", "#f59e0b").attr("font-size", "9px");
 
-      // Amplitude envelope series
-      const ampSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
-        name: "Amplitude Envelope",
-        xAxis, yAxis,
-        valueYField: "amplitude",
-        valueXField: "step",
-        tooltip: am5.Tooltip.new(root, { labelText: "Amplitude: {valueY.formatNumber('#.####')}" }),
-      }));
-      ampSeries.strokes.template.setAll({ strokeWidth: 2, stroke: am5.color("#f472b6"), strokeDasharray: [4, 2] });
+      // Grid
+      g.selectAll(".grid-line").data(yScale.ticks(6)).join("line")
+        .attr("x1", 0).attr("x2", iw)
+        .attr("y1", d => yScale(d)).attr("y2", d => yScale(d))
+        .attr("stroke", "#1a1a1a");
 
-      // Heat capacity series (secondary axis)
-      const heatSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
-        name: "Heat Capacity",
-        xAxis, yAxis: yAxis2,
-        valueYField: "heatCapacity",
-        valueXField: "step",
-        tooltip: am5.Tooltip.new(root, { labelText: "Heat Capacity: {valueY.formatNumber('#.##')}" }),
-      }));
-      heatSeries.strokes.template.setAll({ strokeWidth: 1.5, stroke: am5.color("#f59e0b"), strokeOpacity: 0.6 });
+      // Zero line
+      g.append("line").attr("x1", 0).attr("x2", iw)
+        .attr("y1", yScale(0)).attr("y2", yScale(0))
+        .attr("stroke", "#555").attr("stroke-dasharray", "4,4");
 
-      // Zero reference line
-      const rangeDataItem = yAxis.createAxisRange(yAxis.makeDataItem({ value: 0 }));
-      rangeDataItem.get("grid")!.setAll({ stroke: am5.color("#555"), strokeWidth: 1, strokeDasharray: [4, 4] });
+      // Deviation area
+      const area = d3.area<typeof data[0]>()
+        .x(d => xScale(d.step)).y0(yScale(0)).y1(d => yScale(d.deviation))
+        .curve(d3.curveBasis);
+      g.append("path").datum(data).attr("d", area).attr("fill", "#22d3ee").attr("fill-opacity", 0.08);
 
-      // Cursor
-      chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "zoomX", xAxis }));
+      // Deviation line
+      const devLine = d3.line<typeof data[0]>().x(d => xScale(d.step)).y(d => yScale(d.deviation)).curve(d3.curveBasis);
+      g.append("path").datum(data).attr("d", devLine).attr("fill", "none").attr("stroke", "#22d3ee").attr("stroke-width", 1.5);
+
+      // Amplitude envelope (dashed)
+      const ampLine = d3.line<typeof data[0]>().x(d => xScale(d.step)).y(d => yScale(d.amplitude)).curve(d3.curveBasis);
+      g.append("path").datum(data).attr("d", ampLine).attr("fill", "none").attr("stroke", "#f472b6").attr("stroke-width", 2).attr("stroke-dasharray", "4,2");
+
+      // Heat capacity line (right axis)
+      const heatLine = d3.line<typeof data[0]>().x(d => xScale(d.step)).y(d => yScale2(d.heatCapacity)).curve(d3.curveBasis);
+      g.append("path").datum(data).attr("d", heatLine).attr("fill", "none").attr("stroke", "#f59e0b").attr("stroke-width", 1.5).attr("stroke-opacity", 0.6);
 
       // Legend
-      const legend = chart.children.push(am5.Legend.new(root, { x: am5.percent(50), centerX: am5.percent(50), y: 0 }));
-      legend.labels.template.setAll({ fill: am5.color("#888"), fontSize: 10 });
-      legend.data.setAll(chart.series.values);
+      const legend = svg.append("g").attr("transform", `translate(${width / 2 - 120},12)`);
+      const items = [
+        { label: "Loss Oscillation", color: "#22d3ee", dash: "" },
+        { label: "Amplitude Envelope", color: "#f472b6", dash: "4,2" },
+        { label: "Heat Capacity", color: "#f59e0b", dash: "" },
+      ];
+      items.forEach((item, i) => {
+        const lg = legend.append("g").attr("transform", `translate(${i * 110},0)`);
+        lg.append("line").attr("x1", 0).attr("x2", 14).attr("y1", 0).attr("y2", 0)
+          .attr("stroke", item.color).attr("stroke-width", 2).attr("stroke-dasharray", item.dash);
+        lg.append("text").attr("x", 18).attr("y", 3).text(item.label)
+          .attr("fill", "#888").attr("font-size", "8px").attr("font-family", "monospace");
+      });
 
-      // Set data
-      deviationSeries.data.setAll(data);
-      ampSeries.data.setAll(data);
-      heatSeries.data.setAll(data);
-
-      chart.appear(1000, 100);
+      // Brush zoom
+      const brush = d3.brushX().extent([[0, 0], [iw, ih]]).on("end", (event: any) => {
+        if (!event.selection) return;
+        const [x0, x1] = event.selection;
+        xScale.domain([xScale.invert(x0), xScale.invert(x1)]);
+        g.select<SVGGElement>("g:first-of-type").transition().call(d3.axisBottom(xScale).ticks(8) as any);
+        g.selectAll<SVGPathElement, typeof data>("path").transition().duration(300)
+          .attr("d", (_, i2) => {
+            if (i2 === 0) return area(data);
+            if (i2 === 1) return devLine(data);
+            if (i2 === 2) return ampLine(data);
+            return heatLine(data);
+          });
+        g.select(".brush").call(brush.move as any, null);
+      });
+      g.append("g").attr("class", "brush").call(brush);
     };
 
     initChart();
-
-    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
   }, [metrics]);
 
   if (metrics.length < 40) return null;
 
-  return <div ref={chartRef} style={{ width: "100%", height: 300 }} />;
+  return <svg ref={svgRef} className="w-full" style={{ height: 300, background: "#08080f" }} />;
 }
 
-// ── Activation Sankey Diagram ─────────────────────────────────
+// ── D3 Activation Sankey Diagram ──────────────────────────────
 
 function ActivationSankeyChart({ metrics }: { metrics: SymbioMetric[] }) {
-  const chartRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<any>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
 
   useEffect(() => {
-    if (!chartRef.current || candidates.length < 2) return;
+    if (!svgRef.current || candidates.length < 2) return;
 
     const initChart = async () => {
-      const am5 = await import("@amcharts/amcharts5");
-      const am5flow = await import("@amcharts/amcharts5/flow");
-      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+      const d3 = await import("d3");
+      const { sankey, sankeyLinkHorizontal } = await import("d3-sankey");
 
-      if (rootRef.current) rootRef.current.dispose();
+      const svgEl = svgRef.current!;
+      const width = svgEl.clientWidth || 800;
+      const height = svgEl.clientHeight || 350;
+      const margin = { top: 10, right: 10, bottom: 10, left: 10 };
 
-      const root = am5.Root.new(chartRef.current!);
-      rootRef.current = root;
-      root.setThemes([am5themes.default.new(root)]);
-
-      const series = root.container.children.push(
-        am5flow.Sankey.new(root, {
-          sourceIdField: "from",
-          targetIdField: "to",
-          valueField: "value",
-          paddingRight: 60,
-          nodePadding: 12,
-        })
-      );
-
-      // Build sankey data: group by generation+activation
-      // Nodes: "Gen0:silu", "Gen1:silu+gelu", etc.
-      // Links: parent activation group → child activation group with count
+      // Build sankey data
       const linkCounts = new Map<string, number>();
       const nodeSet = new Set<string>();
 
       for (const c of candidates) {
-        // For composed activations, create a readable group key
         let actKey = c.activation;
         if (c.activationGraph) {
           const comp = normalizeComposition(extractComposition(c.activationGraph));
-          if (comp.length > 1) {
-            actKey = comp.map(bw => bw.basis).sort().join("+");
-          }
+          if (comp.length > 1) actKey = comp.map(bw => bw.basis).sort().join("+");
         }
         const nodeKey = `Gen${c.generation}:${actKey}`;
         nodeSet.add(nodeKey);
@@ -1986,71 +2068,78 @@ function ActivationSankeyChart({ metrics }: { metrics: SymbioMetric[] }) {
         }
       }
 
-      const data: { from: string; to: string; value: number }[] = [];
+      const nodeArr = Array.from(nodeSet);
+      const nodeIdx = new Map(nodeArr.map((n, i) => [n, i]));
+      const nodes = nodeArr.map(id => ({ id }));
+      const links: { source: number; target: number; value: number }[] = [];
       for (const [key, count] of linkCounts) {
         const [from, to] = key.split("→");
-        data.push({ from, to, value: count });
+        const si = nodeIdx.get(from);
+        const ti = nodeIdx.get(to);
+        if (si != null && ti != null) links.push({ source: si, target: ti, value: count });
       }
 
-      // Style nodes by activation color
-      series.nodes.rectangles.template.setAll({
-        fillOpacity: 0.85,
-        strokeOpacity: 0,
-        cornerRadiusTL: 3,
-        cornerRadiusTR: 3,
-        cornerRadiusBL: 3,
-        cornerRadiusBR: 3,
-      });
-      series.nodes.rectangles.template.adapters.add("fill", (_fill: any, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        const id = ctx?.id ?? "";
-        // Extract activation from "GenN:activation"
-        const act = typeof id === "string" ? id.split(":")[1] ?? "" : "";
-        // Get primary color from first basis in the group
-        const primary = act.split("+")[0] ?? act;
-        return am5.color(actHex(primary));
-      });
+      if (links.length === 0) return;
 
-      series.nodes.labels.template.setAll({
-        fill: am5.color("#ccc"),
-        fontSize: 10,
-        fontFamily: "monospace",
-      });
-      series.nodes.labels.template.adapters.add("text", (_text: any, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        const id = ctx?.id ?? "";
-        if (typeof id === "string") {
+      const sankeyGen = sankey<{ id: string }, { source: number; target: number; value: number }>()
+        .nodeId((d: any) => d.index)
+        .nodeWidth(14)
+        .nodePadding(10)
+        .extent([[margin.left, margin.top], [width - margin.right, height - margin.bottom]]);
+
+      const graph = sankeyGen({ nodes: nodes.map(n => ({ ...n })), links: links.map(l => ({ ...l })) });
+
+      const svg = d3.select(svgEl);
+      svg.selectAll("*").remove();
+
+      // Links
+      svg.append("g").selectAll("path")
+        .data(graph.links).join("path")
+        .attr("d", sankeyLinkHorizontal())
+        .attr("fill", "none")
+        .attr("stroke", (d: any) => {
+          const srcId = (d.source as any).id ?? nodeArr[(d.source as any).index ?? 0];
+          const act = typeof srcId === "string" ? (srcId.split(":")[1] ?? "").split("+")[0] : "";
+          return actHex(act);
+        })
+        .attr("stroke-opacity", 0.35)
+        .attr("stroke-width", (d: any) => Math.max(1, d.width ?? 1));
+
+      // Nodes
+      svg.append("g").selectAll("rect")
+        .data(graph.nodes).join("rect")
+        .attr("x", (d: any) => d.x0).attr("y", (d: any) => d.y0)
+        .attr("width", (d: any) => (d.x1 ?? 0) - (d.x0 ?? 0))
+        .attr("height", (d: any) => Math.max(1, (d.y1 ?? 0) - (d.y0 ?? 0)))
+        .attr("rx", 3)
+        .attr("fill", (d: any) => {
+          const act = typeof d.id === "string" ? (d.id.split(":")[1] ?? "").split("+")[0] : "";
+          return actHex(act);
+        })
+        .attr("fill-opacity", 0.85);
+
+      // Node labels
+      svg.append("g").selectAll("text")
+        .data(graph.nodes).join("text")
+        .attr("x", (d: any) => (d.x0 ?? 0) < width / 2 ? (d.x1 ?? 0) + 4 : (d.x0 ?? 0) - 4)
+        .attr("y", (d: any) => ((d.y0 ?? 0) + (d.y1 ?? 0)) / 2)
+        .attr("text-anchor", (d: any) => (d.x0 ?? 0) < width / 2 ? "start" : "end")
+        .attr("dy", "0.35em")
+        .attr("font-size", "9px").attr("font-family", "monospace")
+        .attr("fill", "#ccc")
+        .text((d: any) => {
+          const id = d.id ?? "";
           const parts = id.split(":");
-          return `${parts[0]}\n${parts[1] ?? ""}`;
-        }
-        return id;
-      });
-
-      // Link colors follow source node
-      series.links.template.setAll({
-        fillOpacity: 0.3,
-        strokeOpacity: 0,
-        controlPointDistance: 0.4,
-      });
-      series.links.template.adapters.add("fill", (_fill: any, target: any) => {
-        const ctx = target.dataItem?.dataContext as any;
-        const from = ctx?.from ?? "";
-        const act = typeof from === "string" ? (from.split(":")[1] ?? "").split("+")[0] : "";
-        return am5.color(actHex(act));
-      });
-
-      series.data.setAll(data);
-      series.appear(1000, 100);
+          return `${parts[0]} ${parts[1] ?? ""}`;
+        });
     };
 
     initChart();
-
-    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
   }, [candidates]);
 
   if (candidates.length < 2) return null;
 
-  return <div ref={chartRef} style={{ width: "100%", height: 350 }} />;
+  return <svg ref={svgRef} className="w-full" style={{ height: 350, background: "#08080f" }} />;
 }
 
 // ── Symbio Section (composite) ───────────────────────────────
@@ -2236,8 +2325,8 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
           {/* Amcharts Oscillator / Damping Analysis */}
           {metrics.length > 40 && (
             <div className="mb-4">
-              <ChartPanel title="Oscillation & Heat Capacity (amcharts)" helpText={HELP.harmonicAmcharts}>
-                <AmchartsOscillatorChart metrics={metrics} />
+              <ChartPanel title="Oscillation & Heat Capacity" helpText={HELP.harmonicAmcharts}>
+                <D3OscillatorChart metrics={metrics} />
               </ChartPanel>
             </div>
           )}
