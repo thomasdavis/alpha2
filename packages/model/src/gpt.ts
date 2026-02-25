@@ -120,6 +120,12 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
         kan_c3: initFull(backend, [1, ffnDim], 0.0),  // identity weight
         kan_c4: initFull(backend, [1, ffnDim], 0.0),  // quadratic weight
       };
+    } else if (activation === "composed") {
+      // Composed activation: just standard fc1/fc2, the graph handles activation logic
+      mlp = {
+        fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+      };
     } else {
       mlp = {
         fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
@@ -142,6 +148,47 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
   const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std);
 
   return { wte, wpe, layers, lnF, lmHead };
+}
+
+// ── Composed activation graph evaluator ─────────────────────────────────────
+
+/**
+ * Graph node types for composed activations (mirrors ActivationNode from symbiogenesis).
+ * Defined locally to avoid cross-package dependency — the graph is passed as unknown
+ * from ModelConfig.activationGraph and cast here.
+ */
+type GraphNode =
+  | { type: "basis"; op: string }
+  | { type: "scale"; child: GraphNode; factor: number }
+  | { type: "add"; left: GraphNode; right: GraphNode }
+  | { type: "mul"; left: GraphNode; right: GraphNode };
+
+/**
+ * Recursively evaluate an activation expression tree using autograd ops.
+ * Backprop works automatically through any graph structure.
+ */
+function evalActivationGraph(
+  ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng },
+  x: Variable,
+  node: GraphNode,
+): Variable {
+  switch (node.type) {
+    case "basis":
+      switch (node.op) {
+        case "silu": return silu(ctx, x);
+        case "relu": return relu(ctx, x);
+        case "gelu": return gelu(ctx, x);
+        case "identity": return x;
+        case "square": return mul(ctx, x, x);
+        default: return gelu(ctx, x); // fallback
+      }
+    case "scale":
+      return scale(ctx, evalActivationGraph(ctx, x, node.child), node.factor);
+    case "add":
+      return add(ctx, evalActivationGraph(ctx, x, node.left), evalActivationGraph(ctx, x, node.right));
+    case "mul":
+      return mul(ctx, evalActivationGraph(ctx, x, node.left), evalActivationGraph(ctx, x, node.right));
+  }
 }
 
 // ── Forward pass caches ────────────────────────────────────────────────────
@@ -240,7 +287,13 @@ function transformerBlock(
   const activation = config.ffnActivation ?? "gelu";
 
   let mlpH: Variable;
-  if (activation === "swiglu") {
+  if (activation === "composed" && config.activationGraph) {
+    // Composed activation: evaluate the expression tree using autograd ops.
+    // Graph is structurally mutated by symbiogenesis — backprop works through any tree.
+    const h = matmulTransposed(ctx, flat, layer.mlp.fc1);
+    const h_act = evalActivationGraph(ctx, h, config.activationGraph as GraphNode);
+    mlpH = matmulTransposed(ctx, h_act, layer.mlp.fc2);
+  } else if (activation === "swiglu") {
     // SwiGLU: h = (silu(x @ W_gate) ⊙ (x @ W_up)) @ W_proj
     const gate = silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc_gate!));
     const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);

@@ -39,12 +39,24 @@ export {
 export { computeComplexity, computeFitness, type FitnessInput } from "./metrics/fitness.js";
 export { SymbioMetricsCollector } from "./metrics/collector.js";
 
+// Activation graphs
+export {
+  type ActivationNode, type BasisOp,
+  basisGraph, nameGraph, nodeCount, graphDepth,
+  serializeGraph, deserializeGraph, simplifyGraph,
+  collectBases, BASIS_POOL,
+} from "./activation/index.js";
+export { mutateActivationGraph, crossoverGraphs } from "./activation/index.js";
+
 // Search
 export {
   type SearchCandidate,
   createCandidate,
   generateInitialPopulation,
+  generateComposedPopulation,
   mutateCandidate,
+  mutateComposedCandidate,
+  cloneComposedCandidate,
 } from "./search/candidates.js";
 export { rankCandidates, selectParents } from "./search/ranking.js";
 export {

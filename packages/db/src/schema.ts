@@ -180,4 +180,10 @@ export const migrations: string[][] = [
     `ALTER TABLE metrics ADD COLUMN symbio_candidate_parent_id TEXT`,
     `ALTER TABLE metrics ADD COLUMN symbio_candidate_parent_name TEXT`,
   ],
+
+  // Version 8: composed activation graph + mutation tracking
+  [
+    `ALTER TABLE metrics ADD COLUMN symbio_activation_graph TEXT`,
+    `ALTER TABLE metrics ADD COLUMN symbio_mutation_applied TEXT`,
+  ],
 ];

@@ -1,14 +1,18 @@
 /**
  * FFN activation search orchestrator.
- * Evolutionary search over activation functions with fitness ranking.
- * Inspired by symbiogenesis/population.py — written from scratch.
+ * Supports both fixed-activation pool and composed-activation graph evolution.
  */
 import type { SymbioConfig } from "../config/schema.js";
+import type { ActivationNode, BasisOp, MutationConfig } from "../activation/index.js";
+import { nameGraph, serializeGraph, BASIS_POOL } from "../activation/index.js";
 import {
   type SearchCandidate,
   createCandidate,
   generateInitialPopulation,
+  generateComposedPopulation,
   mutateCandidate,
+  mutateComposedCandidate,
+  cloneComposedCandidate,
 } from "./candidates.js";
 import { selectParents, rankCandidates } from "./ranking.js";
 import { generateSummary, generateCandidatesJSONL, generateReport, type SearchSummary } from "./report.js";
@@ -26,11 +30,24 @@ export interface SearchState {
 
 export class SearchOrchestrator {
   private readonly config: SymbioConfig;
+  private readonly composed: boolean;
+  private readonly mutCfg: MutationConfig;
   private state: SearchState;
 
   constructor(config: SymbioConfig) {
     this.config = config;
-    const initial = generateInitialPopulation(config.activationPool, config.populationSize);
+    this.composed = config.searchMode === "composed-activation-search";
+
+    this.mutCfg = {
+      maxDepth: config.maxGraphDepth ?? 4,
+      maxNodes: config.maxGraphNodes ?? 10,
+      basisPool: (config.basisPool ?? BASIS_POOL) as BasisOp[],
+    };
+
+    const initial = this.composed
+      ? generateComposedPopulation(this.mutCfg.basisPool, config.populationSize)
+      : generateInitialPopulation(config.activationPool, config.populationSize);
+
     this.state = {
       generation: 0,
       candidateIndex: 0,
@@ -58,8 +75,21 @@ export class SearchOrchestrator {
     return this.state.done;
   }
 
+  /** Whether this is a composed-activation search. */
+  get isComposed(): boolean {
+    return this.composed;
+  }
+
   /** Get architecture diversity for current population. */
   get architectureDiversity(): number {
+    if (this.composed) {
+      // For composed mode, use graph name diversity
+      const names = this.state.population.map(c =>
+        c.activationGraph ? nameGraph(c.activationGraph) : c.activation,
+      );
+      const unique = new Set(names).size;
+      return unique / Math.max(1, names.length);
+    }
     return computeArchitectureDiversity(
       this.state.population.map(c => c.activation),
     );
@@ -116,27 +146,42 @@ export class SearchOrchestrator {
     const numParents = Math.ceil(this.config.populationSize / 2);
     const parents = selectParents(this.state.population, numParents, this.config);
 
-    // Generate new population: keep parents + mutate to fill
-    const newPop: SearchCandidate[] = [];
-
-    // Carry forward top parents (elite)
+    // Mark old generation as done
     for (const parent of parents) {
-      parent.alive = false; // Mark old generation as done
+      parent.alive = false;
     }
 
-    // Generate children via mutation — track parent lineage for tree visualization
-    for (let i = 0; i < this.config.populationSize; i++) {
-      const parentIdx = i % parents.length;
-      const parent = parents[parentIdx];
-      if (Math.random() < this.config.mutationRate) {
-        const child = mutateCandidate(parent, this.config.activationPool, this.state.generation, i);
-        newPop.push(child);
-        this.state.allCandidates.push(child);
-      } else {
-        // Clone parent's activation for new generation
-        const child = createCandidate(parent.activation, this.state.generation, parent.id, parent.name, parent.lineage, i);
-        newPop.push(child);
-        this.state.allCandidates.push(child);
+    const newPop: SearchCandidate[] = [];
+
+    if (this.composed) {
+      // Composed mode: structural graph mutations
+      for (let i = 0; i < this.config.populationSize; i++) {
+        const parentIdx = i % parents.length;
+        const parent = parents[parentIdx];
+        if (Math.random() < this.config.mutationRate) {
+          const child = mutateComposedCandidate(parent, this.state.generation, i, this.mutCfg);
+          newPop.push(child);
+          this.state.allCandidates.push(child);
+        } else {
+          const child = cloneComposedCandidate(parent, this.state.generation, i);
+          newPop.push(child);
+          this.state.allCandidates.push(child);
+        }
+      }
+    } else {
+      // Fixed-activation mode: swap between pool
+      for (let i = 0; i < this.config.populationSize; i++) {
+        const parentIdx = i % parents.length;
+        const parent = parents[parentIdx];
+        if (Math.random() < this.config.mutationRate) {
+          const child = mutateCandidate(parent, this.config.activationPool, this.state.generation, i);
+          newPop.push(child);
+          this.state.allCandidates.push(child);
+        } else {
+          const child = createCandidate(parent.activation, this.state.generation, parent.id, parent.name, parent.lineage, i);
+          newPop.push(child);
+          this.state.allCandidates.push(child);
+        }
       }
     }
 

@@ -106,6 +106,8 @@ export interface DbMetric {
   symbio_candidate_parent_name: string | null;
   symbio_generation: number | null;
   architecture_diversity: number | null;
+  symbio_activation_graph: string | null;
+  symbio_mutation_applied: string | null;
 }
 
 export interface DbCheckpoint {

@@ -55,8 +55,10 @@ export interface ModelConfig {
   readonly nEmbd: number;
   readonly nHead: number;
   readonly dropout: number;
-  readonly ffnActivation?: "gelu" | "silu" | "relu" | "swiglu" | "universal" | "kan_spline";
+  readonly ffnActivation?: "gelu" | "silu" | "relu" | "swiglu" | "universal" | "kan_spline" | "composed";
   readonly ffnDim?: number;
+  /** Activation expression tree for composed mode (from symbiogenesis). */
+  readonly activationGraph?: unknown;
 }
 
 export const defaultModelConfig: ModelConfig = {

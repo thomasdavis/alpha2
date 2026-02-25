@@ -58,6 +58,8 @@ export async function insertMetrics(
     symbio_candidate_parent_name?: string | null;
     symbio_generation?: number | null;
     architecture_diversity?: number | null;
+    symbio_activation_graph?: string | null;
+    symbio_mutation_applied?: string | null;
   }>
 ): Promise<number> {
   if (metrics.length === 0) return 0;
@@ -79,8 +81,9 @@ export async function insertMetrics(
                adaptive_batch_size, batch_change_reason,
                symbio_candidate_id, symbio_candidate_name, symbio_candidate_activation,
                symbio_candidate_parent_id, symbio_candidate_parent_name,
-               symbio_generation, architecture_diversity)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               symbio_generation, architecture_diversity,
+               symbio_activation_graph, symbio_mutation_applied)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           runId,
           m.step,
@@ -130,6 +133,8 @@ export async function insertMetrics(
           m.symbio_candidate_parent_name ?? null,
           m.symbio_generation ?? null,
           m.architecture_diversity ?? null,
+          m.symbio_activation_graph ?? null,
+          m.symbio_mutation_applied ?? null,
         ],
       })),
       "write"

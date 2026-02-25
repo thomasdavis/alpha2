@@ -32,7 +32,7 @@ export interface SymbioConfig {
   readonly diversityDecay: "none" | "linear" | "cosine";
 
   // -- FFN activation search --
-  readonly searchMode: "ffn-activation-search" | "none";
+  readonly searchMode: "ffn-activation-search" | "composed-activation-search" | "none";
   readonly activationPool: readonly string[];
   readonly searchStrategy: "evolutionary" | "exhaustive";
   readonly populationSize: number;
@@ -44,6 +44,11 @@ export interface SymbioConfig {
   readonly rankBy: "valLoss" | "fitness";
   readonly perfWeight: number;
   readonly stabilityWeight: number;
+
+  // -- Composed activation graph --
+  readonly basisPool?: readonly string[];
+  readonly maxGraphDepth?: number;
+  readonly maxGraphNodes?: number;
 
   // -- Output --
   readonly writeReport: boolean;

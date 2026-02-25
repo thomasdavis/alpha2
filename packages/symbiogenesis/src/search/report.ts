@@ -3,6 +3,7 @@
  */
 import type { SearchCandidate } from "./candidates.js";
 import type { SymbioConfig } from "../config/schema.js";
+import { nameGraph } from "../activation/index.js";
 
 export interface SearchSummary {
   winner: SearchCandidate | null;
@@ -46,7 +47,10 @@ export function generateReport(summary: SearchSummary): string {
 
   if (summary.winner) {
     lines.push("## Winner\n");
-    lines.push(`- **Activation:** ${summary.winner.activation}`);
+    const winnerFormula = summary.winner.activationGraph
+      ? nameGraph(summary.winner.activationGraph)
+      : summary.winner.activation;
+    lines.push(`- **Activation:** ${winnerFormula}`);
     lines.push(`- **Best Val Loss:** ${summary.winner.bestValLoss.toFixed(4)}`);
     lines.push(`- **Fitness Score:** ${summary.winner.fitnessScore.toFixed(4)}`);
     lines.push(`- **Steps Trained:** ${summary.winner.steps}`);
@@ -59,8 +63,10 @@ export function generateReport(summary: SearchSummary): string {
 
   for (let i = 0; i < summary.rankedCandidates.length; i++) {
     const c = summary.rankedCandidates[i];
+    const formula = c.activationGraph ? nameGraph(c.activationGraph) : c.activation;
+    const shortFormula = formula.length > 40 ? formula.slice(0, 37) + "..." : formula;
     lines.push(
-      `| ${i + 1} | ${c.name} | ${c.activation} | ${c.generation} | ${c.parentName ?? "-"} | ${c.bestValLoss === Infinity ? "N/A" : c.bestValLoss.toFixed(4)} | ${c.fitnessScore === -Infinity ? "N/A" : c.fitnessScore.toFixed(4)} | ${c.steps} |`,
+      `| ${i + 1} | ${c.name} | ${shortFormula} | ${c.generation} | ${c.parentName ?? "-"} | ${c.bestValLoss === Infinity ? "N/A" : c.bestValLoss.toFixed(4)} | ${c.fitnessScore === -Infinity ? "N/A" : c.fitnessScore.toFixed(4)} | ${c.steps} |`,
     );
   }
 

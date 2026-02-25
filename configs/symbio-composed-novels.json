@@ -1,0 +1,23 @@
+{
+  "searchMode": "composed-activation-search",
+  "basisPool": ["silu", "relu", "gelu", "identity", "square"],
+  "maxGraphDepth": 4,
+  "maxGraphNodes": 10,
+  "populationSize": 8,
+  "generations": 50,
+  "stepsPerCandidate": 25,
+  "selectionStrategy": "topk",
+  "mutationRate": 0.7,
+  "rankBy": "valLoss",
+  "metricsInterval": 10,
+  "cusumSensitivity": 4.0,
+  "cusumBaselineWindow": 5,
+  "adaptiveBatch": true,
+  "trackMIProfiles": false,
+  "trackPopulationMetrics": true,
+  "diversityBonus": 0.1,
+  "diversityDecay": "cosine",
+  "writeReport": true,
+  "writeCandidates": true,
+  "writeSummary": true
+}

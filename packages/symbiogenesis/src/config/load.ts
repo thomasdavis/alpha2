@@ -50,10 +50,21 @@ export function validateSymbioConfig(config: SymbioConfig): void {
   if (config.stepsPerCandidate < 1) {
     throw new Error(`stepsPerCandidate must be >= 1, got ${config.stepsPerCandidate}`);
   }
-  const validActivations = new Set(["gelu", "relu", "silu", "swiglu", "universal", "kan_spline"]);
-  for (const act of config.activationPool) {
-    if (!validActivations.has(act)) {
-      throw new Error(`Invalid activation in pool: "${act}". Valid: ${[...validActivations].join(", ")}`);
+  if (config.searchMode === "composed-activation-search") {
+    // Composed mode — validate basis pool
+    const validBases = new Set(["silu", "relu", "gelu", "identity", "square"]);
+    for (const b of config.basisPool ?? []) {
+      if (!validBases.has(b)) {
+        throw new Error(`Invalid basis in pool: "${b}". Valid: ${[...validBases].join(", ")}`);
+      }
+    }
+  } else {
+    // Fixed-activation mode — validate activation pool
+    const validActivations = new Set(["gelu", "relu", "silu", "swiglu", "universal", "kan_spline"]);
+    for (const act of config.activationPool) {
+      if (!validActivations.has(act)) {
+        throw new Error(`Invalid activation in pool: "${act}". Valid: ${[...validActivations].join(", ")}`);
+      }
     }
   }
 }

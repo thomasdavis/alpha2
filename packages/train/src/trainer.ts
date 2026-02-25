@@ -13,6 +13,7 @@ import { initGPT, gptForward, collectParams, countParams, clearForwardCache, typ
 import {
   CusumDashboard, AdaptiveBatch, SymbioMetricsCollector, SearchOrchestrator,
   defaultSymbioConfig, ffnDimForActivation, type SymbioConfig, type TrainerStepInfo,
+  serializeGraph, nameGraph, type ActivationNode,
 } from "@alpha/symbiogenesis";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
@@ -108,6 +109,8 @@ export interface StepMetrics {
   symbio_candidate_parent_name?: string;
   symbio_generation?: number;
   architecture_diversity?: number;
+  symbio_activation_graph?: string;
+  symbio_mutation_applied?: string;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -299,8 +302,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (adaptiveBatch) console.log(`symbio: adaptive_batch=[${symbioConfig.batchMin},${symbioConfig.batchMax}] step=${symbioConfig.batchStep}`);
   }
 
-  // FFN activation search orchestrator (only when searchMode is active)
-  const searchActive = symbioEnabled && symbioConfig.searchMode === "ffn-activation-search";
+  // FFN activation search orchestrator (both fixed and composed modes)
+  const searchActive = symbioEnabled && (symbioConfig.searchMode === "ffn-activation-search" || symbioConfig.searchMode === "composed-activation-search");
   const searchOrchestrator = searchActive ? new SearchOrchestrator(symbioConfig) : null;
   let activeModelConfig = { ...modelConfig };
 
@@ -309,15 +312,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (firstCandidate) {
       // Re-init model with first candidate's activation
       const ffnDim = ffnDimForActivation(firstCandidate.activation, modelConfig.nEmbd, modelConfig.ffnDim);
-      activeModelConfig = { ...modelConfig, ffnActivation: firstCandidate.activation as any, ffnDim };
+      activeModelConfig = {
+        ...modelConfig,
+        ffnActivation: firstCandidate.activation as any,
+        ffnDim,
+        activationGraph: firstCandidate.activationGraph ?? undefined,
+      };
       rng.seed(trainConfig.seed);
       params = initGPT(activeModelConfig, backend, rng as any);
       totalParams = countParams(params);
       optimizer.loadStateDict({ step: 0, buffers: new Map() });
-      console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.name} (${firstCandidate.id}) activation=${firstCandidate.activation} params=${totalParams.toLocaleString()}`);
+      const graphName = firstCandidate.activationGraph ? nameGraph(firstCandidate.activationGraph) : firstCandidate.activation;
+      console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.name} (${firstCandidate.id}) activation=${graphName} params=${totalParams.toLocaleString()}`);
     }
     const totalSearchSteps = symbioConfig.populationSize * symbioConfig.stepsPerCandidate * symbioConfig.generations;
-    console.log(`symbio search: ${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens = ${totalSearchSteps} total steps`);
+    console.log(`symbio search: mode=${symbioConfig.searchMode} | ${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens = ${totalSearchSteps} total steps`);
   }
 
   // Training loop
@@ -731,11 +740,18 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (candidate) {
         metrics.symbio_candidate_id = candidate.id;
         metrics.symbio_candidate_name = candidate.name;
-        metrics.symbio_candidate_activation = candidate.activation;
+        metrics.symbio_candidate_activation = candidate.activationGraph
+          ? nameGraph(candidate.activationGraph) : candidate.activation;
         metrics.symbio_candidate_parent_id = candidate.parentId ?? undefined;
         metrics.symbio_candidate_parent_name = candidate.parentName ?? undefined;
         metrics.symbio_generation = searchOrchestrator.generation;
         metrics.architecture_diversity = searchOrchestrator.architectureDiversity;
+        if (candidate.activationGraph) {
+          metrics.symbio_activation_graph = serializeGraph(candidate.activationGraph);
+        }
+        if (candidate.mutationApplied) {
+          metrics.symbio_mutation_applied = candidate.mutationApplied;
+        }
 
         const candidateDone = searchOrchestrator.recordStep(
           lossVal,
@@ -749,21 +765,28 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
           if (nextActivation !== null) {
             // Switch to next candidate: re-init model with new activation
+            const nextCandidate = searchOrchestrator.currentCandidate;
             const ffnDim = ffnDimForActivation(nextActivation, modelConfig.nEmbd, modelConfig.ffnDim);
-            activeModelConfig = { ...modelConfig, ffnActivation: nextActivation as any, ffnDim };
+            activeModelConfig = {
+              ...modelConfig,
+              ffnActivation: nextActivation as any,
+              ffnDim,
+              activationGraph: nextCandidate?.activationGraph ?? undefined,
+            };
             rng.seed(trainConfig.seed + (step + 1)); // different seed per candidate for fresh init
             params = initGPT(activeModelConfig, backend, rng as any);
             totalParams = countParams(params);
             optimizer.loadStateDict({ step: 0, buffers: new Map() });
             clearForwardCache();
-            const nextCandidate = searchOrchestrator.currentCandidate;
-            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.name} (${nextCandidate?.id}) activation=${nextActivation} params=${totalParams.toLocaleString()}`);
+            const graphName = nextCandidate?.activationGraph ? nameGraph(nextCandidate.activationGraph) : nextActivation;
+            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.name} (${nextCandidate?.id}) activation=${graphName} params=${totalParams.toLocaleString()}`);
           } else {
             // Search complete
             const winner = searchOrchestrator.getWinner();
             console.log(`\n── symbio search complete ──`);
             if (winner) {
-              console.log(`winner: ${winner.activation} (${winner.id}) | bestVal=${winner.bestValLoss === Infinity ? "N/A" : winner.bestValLoss.toFixed(4)} | fitness=${winner.fitnessScore === -Infinity ? "N/A" : winner.fitnessScore.toFixed(4)}`);
+              const winnerName = winner.activationGraph ? nameGraph(winner.activationGraph) : winner.activation;
+              console.log(`winner: ${winnerName} (${winner.id}) | bestVal=${winner.bestValLoss === Infinity ? "N/A" : winner.bestValLoss.toFixed(4)} | fitness=${winner.fitnessScore === -Infinity ? "N/A" : winner.fitnessScore.toFixed(4)}`);
             }
 
             // Write artifacts to run directory
