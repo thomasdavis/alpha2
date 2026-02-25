@@ -16,9 +16,11 @@ import type { ModelConfig, Tokenizer, TokenizerArtifacts } from "@alpha/core";
 import { SeededRng } from "@alpha/core";
 import { BpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import {
-  type InferenceModel,
-  prepareInferenceModel, resetCache, prefill, decodeStep, sampleFromLogits,
+  type InferenceWeights,
+  type InferenceSession,
+  prepareInferenceWeights, createSession, resetCache, prefill, decodeStep, sampleFromLogits,
   countModelParams,
+  SessionPool,
 } from "@alpha/inference";
 
 // ── Checkpoint loading (inlined — no @alpha/train dependency) ──────────────
@@ -100,7 +102,8 @@ const ckpt = loadCheckpoint(CHECKPOINT_PATH);
 if (!ckpt.tokenizerArtifacts) throw new Error("Checkpoint has no tokenizer artifacts");
 const tokenizer = buildTokenizer(ckpt.tokenizerArtifacts);
 const paramCount = countModelParams(ckpt.params);
-const inferenceModel = prepareInferenceModel(ckpt.modelConfig, ckpt.params);
+const inferenceWeights = prepareInferenceWeights(ckpt.modelConfig, ckpt.params);
+const sessionPool = new SessionPool(inferenceWeights);
 
 console.log(
   `Loaded ${MODEL_ID} (${(paramCount / 1e6).toFixed(2)}M params, step ${ckpt.step}) in ${Date.now() - t0}ms`,
@@ -145,24 +148,22 @@ app.post("/v1/chat/completions", async (c) => {
   const stream: boolean = body.stream === true;
 
   const prompt = messages.map((m) => m.content).join("\n");
-  const config = inferenceModel.config;
+  if (!prompt) return c.json({ error: { message: "Empty prompt", type: "invalid_request_error" } }, 400);
 
+  const config = inferenceWeights.config;
   const requestedMax = body.max_tokens ?? body.max_completion_tokens ?? 200;
   const maxTokens = Math.min(requestedMax, config.blockSize);
   const rng = new SeededRng(Date.now() & 0xffffffff);
+  const session = sessionPool.acquire();
+
   const allPromptTokens = tokenizer.encode(prompt);
-  // Truncate prompt to leave room for at least 1 completion token
   const maxPrompt = Math.max(1, config.blockSize - 1);
   const promptTokens = allPromptTokens.length > maxPrompt
     ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
     : allPromptTokens;
 
-  // Reset KV cache for this request
-  resetCache(inferenceModel);
-
-  // Prefill: process all prompt tokens at once, get logits for last position
-  let logits = prefill(inferenceModel, new Int32Array(promptTokens));
-  let currentPos = promptTokens.length; // next position to decode into
+  let logits = prefill(inferenceWeights, session, new Int32Array(promptTokens));
+  let currentPos = promptTokens.length;
 
   const completionId = "chatcmpl-" + crypto.randomBytes(12).toString("hex");
   const created = Math.floor(Date.now() / 1000);
@@ -174,7 +175,6 @@ app.post("/v1/chat/completions", async (c) => {
       start(controller) {
         let count = 0;
 
-        // Role chunk
         controller.enqueue(enc.encode(`data: ${JSON.stringify({
           id: completionId, object: "chat.completion.chunk", created, model: MODEL_ID,
           choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
@@ -189,11 +189,11 @@ app.post("/v1/chat/completions", async (c) => {
             })}\n\n`));
             controller.enqueue(enc.encode("data: [DONE]\n\n"));
             controller.close();
+            sessionPool.release(session);
             return;
           }
 
-          // Sample from current logits
-          const tok = sampleFromLogits(inferenceModel, logits, temperature, 40, rng);
+          const tok = sampleFromLogits(session, logits, temperature, 40, rng);
           generatedTokens.push(tok);
           count++;
 
@@ -205,8 +205,7 @@ app.post("/v1/chat/completions", async (c) => {
             choices: [{ index: 0, delta: { content: sep + raw }, finish_reason: null }],
           })}\n\n`));
 
-          // Decode next token using KV cache (only processes 1 token)
-          logits = decodeStep(inferenceModel, tok, currentPos);
+          logits = decodeStep(inferenceWeights, session, tok, currentPos);
           currentPos++;
 
           setImmediate(next);
@@ -227,16 +226,17 @@ app.post("/v1/chat/completions", async (c) => {
   // Non-streaming
   let count = 0;
   for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-    const tok = sampleFromLogits(inferenceModel, logits, temperature, 40, rng);
+    const tok = sampleFromLogits(session, logits, temperature, 40, rng);
     generatedTokens.push(tok);
     count++;
 
-    logits = decodeStep(inferenceModel, tok, currentPos);
+    logits = decodeStep(inferenceWeights, session, tok, currentPos);
     currentPos++;
 
     if (count % 8 === 0) await new Promise((r) => setImmediate(r));
   }
 
+  sessionPool.release(session);
   const text = tokenizer.decode(new Int32Array(generatedTokens));
 
   return c.json({

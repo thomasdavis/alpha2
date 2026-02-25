@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import { SeededRng } from "@alpha/core";
-import { resetCache, prefill, decodeStep, sampleFromLogits } from "@alpha/inference";
+import { prefill, decodeStep, sampleFromLogits } from "@alpha/inference";
 import { getRuns, ensureModel } from "@/lib/engine";
 import { jsonResponse } from "@/lib/server-state";
 
@@ -23,10 +23,15 @@ export async function POST(request: Request) {
     return jsonResponse({ error: { message: "Unknown model: " + modelId, type: "invalid_request_error" } }, 400);
   }
 
-  const model = await ensureModel(modelId);
-  const { config, tokenizer, inference } = model;
-  const rng = new SeededRng(Date.now() & 0xffffffff);
   const prompt = messagesToPrompt(messages);
+  if (!prompt) {
+    return jsonResponse({ error: { message: "Empty prompt", type: "invalid_request_error" } }, 400);
+  }
+
+  const model = await ensureModel(modelId);
+  const { config, tokenizer, weights, sessionPool } = model;
+  const rng = new SeededRng(Date.now() & 0xffffffff);
+  const session = sessionPool.acquire();
 
   const allPromptTokens = tokenizer.encode(prompt);
   const maxPrompt = Math.max(1, config.blockSize - 1);
@@ -34,13 +39,12 @@ export async function POST(request: Request) {
     ? allPromptTokens.slice(allPromptTokens.length - maxPrompt)
     : allPromptTokens;
 
-  // Reset KV cache and prefill prompt
-  resetCache(inference);
-  let logits = prefill(inference, Int32Array.from(promptTokens));
+  let logits = prefill(weights, session, Int32Array.from(promptTokens));
   let currentPos = promptTokens.length;
 
   const completionId = "chatcmpl-" + crypto.randomBytes(12).toString("hex");
   const created = Math.floor(Date.now() / 1000);
+  const generatedTokens: number[] = [];
 
   if (stream) {
     const encoder = new TextEncoder();
@@ -48,15 +52,13 @@ export async function POST(request: Request) {
       start(controller) {
         let completionCount = 0;
 
-        // Role chunk
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({
           id: completionId, object: "chat.completion.chunk", created, model: modelId,
           choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
         })}\n\n`));
 
         function nextChunk() {
-          if (request.signal.aborted) return;
-          if (completionCount >= maxTokens || currentPos >= config.blockSize) {
+          if (request.signal.aborted || completionCount >= maxTokens || currentPos >= config.blockSize) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({
               id: completionId, object: "chat.completion.chunk", created, model: modelId,
               choices: [{ index: 0, delta: {}, finish_reason: completionCount >= maxTokens ? "length" : "stop" }],
@@ -64,10 +66,12 @@ export async function POST(request: Request) {
             })}\n\n`));
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
+            sessionPool.release(session);
             return;
           }
 
-          const tok = sampleFromLogits(inference, logits, temperature, 40, rng);
+          const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+          generatedTokens.push(tok);
           completionCount++;
           const raw = tokenizer.decode(new Int32Array([tok]));
           const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
@@ -77,7 +81,7 @@ export async function POST(request: Request) {
             choices: [{ index: 0, delta: { content: sep + raw }, finish_reason: null }],
           })}\n\n`));
 
-          logits = decodeStep(inference, tok, currentPos);
+          logits = decodeStep(weights, session, tok, currentPos);
           currentPos++;
 
           setImmediate(nextChunk);
@@ -97,15 +101,16 @@ export async function POST(request: Request) {
 
   // Non-streaming
   let completionCount = 0;
-  const generatedTokens: number[] = [];
   for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-    const tok = sampleFromLogits(inference, logits, temperature, 40, rng);
+    const tok = sampleFromLogits(session, logits, temperature, 40, rng);
     generatedTokens.push(tok);
     completionCount++;
 
-    logits = decodeStep(inference, tok, currentPos);
+    logits = decodeStep(weights, session, tok, currentPos);
     currentPos++;
   }
+
+  sessionPool.release(session);
 
   const text = tokenizer.decode(new Int32Array(generatedTokens));
 

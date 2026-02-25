@@ -7,6 +7,9 @@
  * - Zero allocation in the decode loop (pre-allocated buffers)
  * - Last-token-only LM head (skip vocabSize computation for all but final position)
  * - Fused layernorm, attention scoring, in-place GELU
+ *
+ * Architecture: weights (immutable, shared) are separate from sessions (mutable,
+ * per-request) so concurrent requests cannot corrupt each other's KV cache.
  */
 import type { ModelConfig } from "@alpha/core";
 import type { SeededRng } from "@alpha/core";
@@ -26,7 +29,8 @@ interface InferenceLayer {
   fc2: Float32Array;   // [nEmbd, 4*nEmbd]
 }
 
-export interface InferenceModel {
+/** Immutable model weights — safe to share across concurrent requests. */
+export interface InferenceWeights {
   config: ModelConfig;
   wte: Float32Array;     // [vocabSize, nEmbd]
   wpe: Float32Array;     // [blockSize, nEmbd]
@@ -34,6 +38,11 @@ export interface InferenceModel {
   lnFW: Float32Array;    // [nEmbd]
   lnFB: Float32Array;    // [nEmbd]
   lmHead: Float32Array;  // [vocabSize, nEmbd]
+}
+
+/** Mutable per-request session — KV cache + pre-allocated decode buffers. */
+export interface InferenceSession {
+  config: ModelConfig;
 
   // KV cache per layer — flat [nHead * blockSize * headDim] for K and V
   kCache: Float32Array[];
@@ -52,16 +61,28 @@ export interface InferenceModel {
   _mlpOut: Float32Array;      // [nEmbd]
   _logits: Float32Array;      // [vocabSize]
   _sampleBuf: Float32Array;   // [vocabSize] — scratch for sampling
+
+  // Prefill scratch buffers (reused across prefill calls on same session)
+  _prefillX?: Float32Array;
+  _prefillLn?: Float32Array;
+  _prefillQ?: Float32Array;
+  _prefillK?: Float32Array;
+  _prefillV?: Float32Array;
+  _prefillAttn?: Float32Array;
+  _prefillScores?: Float32Array;
+  _prefillProj?: Float32Array;
+  _prefillMlpH?: Float32Array;
+  _prefillLastLn?: Float32Array;
+  _prefillMaxT?: number;      // max T these buffers were allocated for
 }
+
+/** @deprecated Use InferenceWeights + InferenceSession instead. */
+export type InferenceModel = InferenceWeights & InferenceSession;
 
 // ── Math primitives ────────────────────────────────────────────────────────
 
 const SQRT_2_OVER_PI = Math.sqrt(2 / Math.PI);
 
-/**
- * Layer normalization over a single vector of length N.
- * out[i] = (x[i] - mean) / sqrt(var + eps) * w[i] + b[i]
- */
 function layerNorm(
   out: Float32Array, outOff: number,
   x: Float32Array, xOff: number,
@@ -85,10 +106,6 @@ function layerNorm(
   }
 }
 
-/**
- * Matrix-vector multiply: out[j] = sum_k x[k] * W[j*K + k], j in 0..N
- * W is [N, K] row-major — each row j is dot-producted with x.
- */
 function matvecMul(
   out: Float32Array, oOff: number,
   x: Float32Array, xOff: number,
@@ -105,11 +122,6 @@ function matvecMul(
   }
 }
 
-/**
- * Tiled matmul: C[M,N] = A[M,K] @ B_T[N,K]^T
- * B_T is stored as [N, K] (pre-transposed), so C[i,j] = sum_k A[i,k] * B_T[j,k].
- * 32×32 tiles keep sub-blocks in L1 cache (~12KB per tile triple).
- */
 function tiledMatmul(
   out: Float32Array, oOff: number,
   A: Float32Array, aOff: number,
@@ -143,10 +155,6 @@ function tiledMatmul(
   }
 }
 
-/**
- * In-place GELU (tanh approximation, matching @alpha/autograd):
- * x[i] = 0.5 * x[i] * (1 + tanh(sqrt(2/π) * (x[i] + 0.044715 * x[i]³)))
- */
 function geluInPlace(x: Float32Array, off: number, N: number): void {
   for (let i = 0; i < N; i++) {
     const xi = x[off + i];
@@ -155,11 +163,6 @@ function geluInPlace(x: Float32Array, off: number, N: number): void {
   }
 }
 
-/**
- * Write a [nEmbd]-sized vector into the KV cache at a given position.
- * Cache layout: [nHead, blockSize, headDim].
- * The vector is [nEmbd] = [nHead * headDim], interleaved by head.
- */
 function writeCachePos(
   cache: Float32Array,
   vec: Float32Array, vecOff: number,
@@ -182,12 +185,12 @@ function extractF32(param: { data: Float32Array | number[] }): Float32Array {
   return new Float32Array(param.data);
 }
 
-export function prepareInferenceModel(
+/** Prepare immutable weights from checkpoint params. */
+export function prepareInferenceWeights(
   config: ModelConfig,
   params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
-): InferenceModel {
-  const { nLayer, nEmbd, nHead, blockSize, vocabSize } = config;
-  const headDim = nEmbd / nHead;
+): InferenceWeights {
+  const { nLayer } = config;
 
   const layers: InferenceLayer[] = [];
   for (let i = 0; i < nLayer; i++) {
@@ -213,12 +216,18 @@ export function prepareInferenceModel(
     lnFW: extractF32(params["lnF.weight"]),
     lnFB: extractF32(params["lnF.bias"]),
     lmHead: extractF32(params["lmHead"]),
+  };
+}
 
-    // KV cache: per layer, flat [nHead, blockSize, headDim]
+/** Create a mutable session with fresh KV cache and decode buffers. */
+export function createSession(weights: InferenceWeights): InferenceSession {
+  const { nLayer, nEmbd, nHead, blockSize, vocabSize } = weights.config;
+  const headDim = nEmbd / nHead;
+
+  return {
+    config: weights.config,
     kCache: Array.from({ length: nLayer }, () => new Float32Array(nHead * blockSize * headDim)),
     vCache: Array.from({ length: nLayer }, () => new Float32Array(nHead * blockSize * headDim)),
-
-    // Pre-allocated decode buffers
     _x: new Float32Array(nEmbd),
     _lnOut: new Float32Array(nEmbd),
     _q: new Float32Array(nEmbd),
@@ -231,13 +240,24 @@ export function prepareInferenceModel(
     _mlpOut: new Float32Array(nEmbd),
     _logits: new Float32Array(vocabSize),
     _sampleBuf: new Float32Array(vocabSize),
+    _prefillLastLn: new Float32Array(nEmbd),
   };
 }
 
-export function resetCache(model: InferenceModel): void {
-  for (let i = 0; i < model.kCache.length; i++) {
-    model.kCache[i].fill(0);
-    model.vCache[i].fill(0);
+/** @deprecated Use prepareInferenceWeights + createSession instead. */
+export function prepareInferenceModel(
+  config: ModelConfig,
+  params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
+): InferenceModel {
+  const weights = prepareInferenceWeights(config, params);
+  const session = createSession(weights);
+  return { ...weights, ...session };
+}
+
+export function resetCache(session: InferenceSession): void {
+  for (let i = 0; i < session.kCache.length; i++) {
+    session.kCache[i].fill(0);
+    session.vCache[i].fill(0);
   }
 }
 
@@ -256,27 +276,70 @@ export function countModelParams(
 
 // ── Prefill (batch process all prompt tokens) ──────────────────────────────
 
+function ensurePrefillBuffers(session: InferenceSession, T: number): void {
+  const { nEmbd } = session.config;
+  if (session._prefillMaxT && session._prefillMaxT >= T) return;
+  session._prefillX = new Float32Array(T * nEmbd);
+  session._prefillLn = new Float32Array(T * nEmbd);
+  session._prefillQ = new Float32Array(T * nEmbd);
+  session._prefillK = new Float32Array(T * nEmbd);
+  session._prefillV = new Float32Array(T * nEmbd);
+  session._prefillAttn = new Float32Array(T * nEmbd);
+  session._prefillScores = new Float32Array(T * T);
+  session._prefillProj = new Float32Array(T * nEmbd);
+  session._prefillMlpH = new Float32Array(T * 4 * nEmbd);
+  session._prefillMaxT = T;
+}
+
 /**
  * Process all prompt tokens at once, populating KV cache for each layer.
  * Returns logits for the last position only (shape [vocabSize]).
+ *
+ * Accepts either (weights, session, tokens) or legacy (model, tokens).
  */
-export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array {
-  const { config, wte, wpe, layers, lnFW, lnFB, lmHead, kCache, vCache } = model;
-  const { nEmbd, nHead, vocabSize, blockSize } = config;
+export function prefill(
+  weightsOrModel: InferenceWeights | InferenceModel,
+  sessionOrTokens: InferenceSession | Int32Array,
+  maybeTokens?: Int32Array,
+): Float32Array {
+  let weights: InferenceWeights;
+  let session: InferenceSession;
+  let tokens: Int32Array;
+
+  if (maybeTokens !== undefined) {
+    weights = weightsOrModel as InferenceWeights;
+    session = sessionOrTokens as InferenceSession;
+    tokens = maybeTokens;
+  } else {
+    // Legacy: model has both weights and session fields
+    const model = weightsOrModel as InferenceModel;
+    weights = model;
+    session = model;
+    tokens = sessionOrTokens as Int32Array;
+  }
+
+  const { wte, wpe, layers, lnFW, lnFB, lmHead } = weights;
+  const { nEmbd, nHead, vocabSize, blockSize } = weights.config;
   const headDim = nEmbd / nHead;
   const scaleVal = 1 / Math.sqrt(headDim);
   const T = tokens.length;
 
-  // Allocate prefill buffers (one-time per request, ~3MB for T=256)
-  const x = new Float32Array(T * nEmbd);
-  const lnBuf = new Float32Array(T * nEmbd);
-  const Q = new Float32Array(T * nEmbd);
-  const K = new Float32Array(T * nEmbd);
-  const V = new Float32Array(T * nEmbd);
-  const attnOut = new Float32Array(T * nEmbd);
-  const scores = new Float32Array(T * T);
-  const proj = new Float32Array(T * nEmbd);
-  const mlpH = new Float32Array(T * 4 * nEmbd);
+  if (T <= 0) throw new RangeError("prefill requires at least 1 token");
+  if (T > blockSize) throw new RangeError(`prefill token count (${T}) exceeds block size (${blockSize})`);
+
+  const { kCache, vCache } = session;
+
+  // Reuse prefill scratch buffers from session
+  ensurePrefillBuffers(session, T);
+  const x = session._prefillX!;
+  const lnBuf = session._prefillLn!;
+  const Q = session._prefillQ!;
+  const K = session._prefillK!;
+  const V = session._prefillV!;
+  const attnOut = session._prefillAttn!;
+  const scores = session._prefillScores!;
+  const proj = session._prefillProj!;
+  const mlpH = session._prefillMlpH!;
 
   // Token + position embeddings
   for (let t = 0; t < T; t++) {
@@ -317,7 +380,6 @@ export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array
         const qOff = t1 * nEmbd + h * headDim;
         let maxScore = -Infinity;
 
-        // Compute attention scores (causal: t2 <= t1 only)
         for (let t2 = 0; t2 <= t1; t2++) {
           let score = 0;
           const kOff = kHeadOff + t2 * headDim;
@@ -325,14 +387,12 @@ export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array
             score += Q[qOff + d] * kCache[l][kOff + d];
           }
           score *= scaleVal;
-          // Logit capping (PaLM/Gemma technique, matching training code)
           if (score > 30) score = 30;
           else if (score < -30) score = -30;
           scores[t1 * T + t2] = score;
           if (score > maxScore) maxScore = score;
         }
 
-        // Softmax over valid positions
         let sumExp = 0;
         for (let t2 = 0; t2 <= t1; t2++) {
           scores[t1 * T + t2] = Math.exp(scores[t1 * T + t2] - maxScore);
@@ -343,7 +403,6 @@ export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array
           scores[t1 * T + t2] *= invSum;
         }
 
-        // Weighted sum of V
         const outOff = t1 * nEmbd + h * headDim;
         for (let d = 0; d < headDim; d++) {
           let sum = 0;
@@ -373,11 +432,11 @@ export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array
 
   // Final layer norm — only for last position
   const lastOff = (T - 1) * nEmbd;
-  const lastLn = new Float32Array(nEmbd);
+  const lastLn = session._prefillLastLn ?? new Float32Array(nEmbd);
   layerNorm(lastLn, 0, x, lastOff, lnFW, lnFB, nEmbd);
 
-  // LM head — only for last position: [1, nEmbd] @ [vocabSize, nEmbd]^T
-  const logits = model._logits;
+  // LM head — only for last position
+  const logits = session._logits;
   matvecMul(logits, 0, lastLn, 0, lmHead, 0, vocabSize, nEmbd);
 
   return logits;
@@ -386,35 +445,55 @@ export function prefill(model: InferenceModel, tokens: Int32Array): Float32Array
 // ── Decode step (single token with KV cache) ──────────────────────────────
 
 /**
- * Forward pass for a single token at the given position, using cached K/V
- * from all prior positions. Returns logits (shape [vocabSize]).
+ * Forward pass for a single token at the given position, using cached K/V.
+ * Returns logits (shape [vocabSize]).
  *
- * The returned Float32Array is a pre-allocated buffer — use it before the
- * next decodeStep call.
+ * Accepts either (weights, session, token, pos) or legacy (model, token, pos).
  */
 export function decodeStep(
-  model: InferenceModel,
-  token: number,
-  pos: number,
+  weightsOrModel: InferenceWeights | InferenceModel,
+  sessionOrToken: InferenceSession | number,
+  tokenOrPos: number,
+  maybePos?: number,
 ): Float32Array {
-  const { config, wte, wpe, layers, lnFW, lnFB, lmHead, kCache, vCache } = model;
-  const { nEmbd, nHead, vocabSize, blockSize } = config;
+  let weights: InferenceWeights;
+  let session: InferenceSession;
+  let token: number;
+  let pos: number;
+
+  if (maybePos !== undefined) {
+    weights = weightsOrModel as InferenceWeights;
+    session = sessionOrToken as InferenceSession;
+    token = tokenOrPos;
+    pos = maybePos;
+  } else {
+    const model = weightsOrModel as InferenceModel;
+    weights = model;
+    session = model;
+    token = sessionOrToken as number;
+    pos = tokenOrPos;
+  }
+
+  const { wte, wpe, layers, lnFW, lnFB, lmHead } = weights;
+  const { nEmbd, nHead, vocabSize, blockSize } = weights.config;
   const headDim = nEmbd / nHead;
   const scaleVal = 1 / Math.sqrt(headDim);
-  const seqLen = pos + 1; // number of cached positions including current
+  const seqLen = pos + 1;
 
-  // Pre-allocated buffers (zero allocation in hot loop)
-  const x = model._x;
-  const lnOut = model._lnOut;
-  const q = model._q;
-  const k = model._k;
-  const v = model._v;
-  const attnScores = model._attnScores;
-  const attnOut = model._attnOut;
-  const projected = model._projected;
-  const mlpHidden = model._mlpHidden;
-  const mlpOut = model._mlpOut;
-  const logits = model._logits;
+  if (pos < 0 || pos >= blockSize) throw new RangeError(`decodeStep pos (${pos}) out of range [0, ${blockSize})`);
+
+  const { kCache, vCache } = session;
+  const x = session._x;
+  const lnOut = session._lnOut;
+  const q = session._q;
+  const k = session._k;
+  const v = session._v;
+  const attnScores = session._attnScores;
+  const attnOut = session._attnOut;
+  const projected = session._projected;
+  const mlpHidden = session._mlpHidden;
+  const mlpOut = session._mlpOut;
+  const logits = session._logits;
 
   // Token + position embedding
   const wteOff = token * nEmbd;
@@ -427,25 +506,20 @@ export function decodeStep(
   for (let l = 0; l < layers.length; l++) {
     const layer = layers[l];
 
-    // ── LN1 → Attention → Residual ──
     layerNorm(lnOut, 0, x, 0, layer.ln1W, layer.ln1B, nEmbd);
 
-    // Q, K, V projections: [nEmbd] → [nEmbd]
     matvecMul(q, 0, lnOut, 0, layer.wq, 0, nEmbd, nEmbd);
     matvecMul(k, 0, lnOut, 0, layer.wk, 0, nEmbd, nEmbd);
     matvecMul(v, 0, lnOut, 0, layer.wv, 0, nEmbd, nEmbd);
 
-    // Write K, V to cache at current position
     writeCachePos(kCache[l], k, 0, pos, nHead, blockSize, headDim);
     writeCachePos(vCache[l], v, 0, pos, nHead, blockSize, headDim);
 
-    // Multi-head attention over all cached positions
     for (let h = 0; h < nHead; h++) {
       const qOff = h * headDim;
       const kHeadOff = h * blockSize * headDim;
       const vHeadOff = h * blockSize * headDim;
 
-      // Compute attention scores: q_h · k_ht / sqrt(headDim)
       let maxScore = -Infinity;
       for (let t = 0; t < seqLen; t++) {
         let score = 0;
@@ -460,7 +534,6 @@ export function decodeStep(
         if (score > maxScore) maxScore = score;
       }
 
-      // Softmax
       let sumExp = 0;
       for (let t = 0; t < seqLen; t++) {
         attnScores[t] = Math.exp(attnScores[t] - maxScore);
@@ -471,7 +544,6 @@ export function decodeStep(
         attnScores[t] *= invSum;
       }
 
-      // Weighted sum of V: attnOut_h[d] = sum_t scores[t] * V_h[t, d]
       const outOff = h * headDim;
       for (let d = 0; d < headDim; d++) {
         let sum = 0;
@@ -482,11 +554,9 @@ export function decodeStep(
       }
     }
 
-    // Output projection + residual
     matvecMul(projected, 0, attnOut, 0, layer.wo, 0, nEmbd, nEmbd);
     for (let i = 0; i < nEmbd; i++) x[i] += projected[i];
 
-    // ── LN2 → MLP → Residual ──
     layerNorm(lnOut, 0, x, 0, layer.ln2W, layer.ln2B, nEmbd);
 
     matvecMul(mlpHidden, 0, lnOut, 0, layer.fc1, 0, 4 * nEmbd, nEmbd);
@@ -496,10 +566,7 @@ export function decodeStep(
     for (let i = 0; i < nEmbd; i++) x[i] += mlpOut[i];
   }
 
-  // Final layer norm
   layerNorm(lnOut, 0, x, 0, lnFW, lnFB, nEmbd);
-
-  // LM head: [1, nEmbd] @ [vocabSize, nEmbd]^T → [vocabSize]
   matvecMul(logits, 0, lnOut, 0, lmHead, 0, vocabSize, nEmbd);
 
   return logits;
@@ -509,17 +576,29 @@ export function decodeStep(
 
 /**
  * Sample a token from logits with temperature scaling and top-k filtering.
- * Uses the model's pre-allocated sample buffer to avoid allocations.
+ *
+ * Accepts either (session, logits, ...) or legacy (model, logits, ...).
+ * If temperature <= 0, returns argmax (greedy decoding).
  */
 export function sampleFromLogits(
-  model: InferenceModel,
+  sessionOrModel: InferenceSession | InferenceModel,
   logits: Float32Array,
   temperature: number,
   topk: number,
   rng: SeededRng,
 ): number {
-  const vocabSize = model.config.vocabSize;
-  const scaled = model._sampleBuf;
+  const vocabSize = sessionOrModel.config.vocabSize;
+  const scaled = sessionOrModel._sampleBuf;
+
+  // Greedy decoding
+  if (temperature <= 0) {
+    let bestIdx = 0;
+    let bestVal = logits[0];
+    for (let i = 1; i < vocabSize; i++) {
+      if (logits[i] > bestVal) { bestVal = logits[i]; bestIdx = i; }
+    }
+    return bestIdx;
+  }
 
   // Temperature scaling
   const invTemp = 1 / temperature;
@@ -527,13 +606,12 @@ export function sampleFromLogits(
     scaled[i] = logits[i] * invTemp;
   }
 
-  // Top-k filtering
+  // Top-k filtering via partial selection (O(V) average instead of O(V log V))
   if (topk > 0 && topk < vocabSize) {
-    // Find the k-th largest value via sorted copy
-    const sorted = new Float32Array(vocabSize);
-    sorted.set(scaled);
-    sorted.sort();
-    const threshold = sorted[vocabSize - topk];
+    // Find k-th largest using quickselect on a scratch copy
+    const buf = sessionOrModel._sampleBuf; // reuse same buffer — we already have values there
+    // We need the threshold value. Do nth_element-style partitioning.
+    const threshold = quickselectThreshold(scaled, vocabSize, topk);
     for (let i = 0; i < vocabSize; i++) {
       if (scaled[i] < threshold) scaled[i] = -Infinity;
     }
@@ -558,4 +636,62 @@ export function sampleFromLogits(
     if (r < cumsum) return i;
   }
   return vocabSize - 1;
+}
+
+/** Find the k-th largest value in arr[0..n) without full sort. O(V) average. */
+function quickselectThreshold(arr: Float32Array, n: number, k: number): number {
+  // For small k, use a simple max-heap approach: track the k largest values
+  if (k <= 64) {
+    // Min-heap of size k — keep the k largest values
+    const heap = new Float32Array(k);
+    heap.fill(-Infinity);
+    for (let i = 0; i < n; i++) {
+      if (arr[i] > heap[0]) {
+        heap[0] = arr[i];
+        // Sift down
+        let idx = 0;
+        while (true) {
+          const left = 2 * idx + 1;
+          const right = 2 * idx + 2;
+          let smallest = idx;
+          if (left < k && heap[left] < heap[smallest]) smallest = left;
+          if (right < k && heap[right] < heap[smallest]) smallest = right;
+          if (smallest === idx) break;
+          const tmp = heap[idx]; heap[idx] = heap[smallest]; heap[smallest] = tmp;
+          idx = smallest;
+        }
+      }
+    }
+    return heap[0]; // min of top-k = the threshold
+  }
+  // For larger k, fall back to sort (rare with typical topk=40)
+  const copy = new Float32Array(n);
+  copy.set(arr.subarray(0, n));
+  copy.sort();
+  return copy[n - k];
+}
+
+// ── Session pool ───────────────────────────────────────────────────────────
+
+/** Simple pool of inference sessions to avoid repeated allocation. */
+export class SessionPool {
+  private pool: InferenceSession[] = [];
+  private weights: InferenceWeights;
+
+  constructor(weights: InferenceWeights) {
+    this.weights = weights;
+  }
+
+  acquire(): InferenceSession {
+    const session = this.pool.pop();
+    if (session) {
+      resetCache(session);
+      return session;
+    }
+    return createSession(this.weights);
+  }
+
+  release(session: InferenceSession): void {
+    this.pool.push(session);
+  }
 }
