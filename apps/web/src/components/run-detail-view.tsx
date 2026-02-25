@@ -226,14 +226,23 @@ function detectOverfitStep(metrics: MetricData[]): number | null {
   // If minimum is at the end, val loss is still dropping — no overfit
   if (minIdx >= valPts.length - 2) return null;
 
-  // Check that val_loss has risen meaningfully after the minimum
+  // Check that val_loss has risen meaningfully after the minimum.
+  // Two signals (either triggers):
+  //   1. Average val_loss after min is >2% higher (percentage rise)
+  //   2. 3+ consecutive increases after the min (monotonic trend)
   const minVal = valPts[minIdx].val_loss!;
   const afterMin = valPts.slice(minIdx + 1);
   const avgAfter = afterMin.reduce((s, m) => s + m.val_loss!, 0) / afterMin.length;
-  const rise = (avgAfter - minVal) / minVal;
+  const pctRise = (avgAfter - minVal) / minVal;
 
-  // Need at least 3% average rise after minimum to call it overfit
-  if (rise < 0.03) return null;
+  let consecutive = 0;
+  let prev = minVal;
+  for (const m of afterMin) {
+    if (m.val_loss! > prev) { consecutive++; prev = m.val_loss!; }
+    else break;
+  }
+
+  if (pctRise < 0.02 && consecutive < 3) return null;
 
   return valPts[minIdx].step;
 }
