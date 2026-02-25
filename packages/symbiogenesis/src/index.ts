@@ -25,6 +25,16 @@ export {
 export { CusumMonitor } from "./monitor/cusum.js";
 export { CusumDashboard, type CusumResult } from "./monitor/dashboard.js";
 export { AdaptiveBatch } from "./monitor/adaptive-batch.js";
+export {
+  PopulationDynamicsController,
+  type PopulationDynamicsInput,
+  type PopulationDynamicsState,
+} from "./monitor/population-dynamics.js";
+export {
+  KuramotoFusionController,
+  type KuramotoFusionInput,
+  type KuramotoFusionState,
+} from "./monitor/kuramoto-fusion.js";
 
 // Metrics
 export { computeWeightEntropy } from "./metrics/weight-entropy.js";

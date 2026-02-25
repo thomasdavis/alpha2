@@ -11,13 +11,18 @@ import { shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
 import { Tape, DropoutRng } from "@alpha/autograd";
 import { initGPT, gptForward, collectParams, countParams, clearForwardCache, type GPTParams } from "@alpha/model";
 import {
-  CusumDashboard, AdaptiveBatch, SymbioMetricsCollector, SearchOrchestrator,
+  CusumDashboard, PopulationDynamicsController, KuramotoFusionController, SymbioMetricsCollector, SearchOrchestrator,
   defaultSymbioConfig, ffnDimForActivation, type SymbioConfig, type TrainerStepInfo,
   serializeGraph, nameGraph, type ActivationNode,
 } from "@alpha/symbiogenesis";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
 import { sample as runSample } from "./sample.js";
+import {
+  ConsensusFusionShadow,
+  carryOptimizerStateAcrossSwitch,
+  initGPTWithTransferredWeights,
+} from "./symbio-continuity.js";
 import { Effect } from "effect";
 
 // ── GPU stats ────────────────────────────────────────────────────────────
@@ -292,14 +297,28 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const symbioEnabled = !!trainConfig.symbio;
   const symbioConfig: SymbioConfig = (trainConfig.symbioConfig as unknown as SymbioConfig) ?? defaultSymbioConfig;
   const cusumDash = symbioEnabled ? new CusumDashboard(symbioConfig.cusumSensitivity, symbioConfig.cusumBaselineWindow) : null;
-  const adaptiveBatch = symbioEnabled && symbioConfig.adaptiveBatch
-    ? new AdaptiveBatch(trainConfig.batchSize, symbioConfig)
-    : null;
   const symbioCollector = symbioEnabled ? new SymbioMetricsCollector(symbioConfig) : null;
+  const populationDynamics = symbioEnabled && symbioConfig.populationAdaptation
+    ? new PopulationDynamicsController(symbioConfig.populationSize, symbioConfig.mutationRate, symbioConfig)
+    : null;
+  const kuramotoFusion = symbioEnabled && symbioConfig.fuseWeightsEachStep
+    ? new KuramotoFusionController(symbioConfig)
+    : null;
+  const fusionShadow = symbioEnabled && symbioConfig.fuseWeightsEachStep
+    ? new ConsensusFusionShadow(params)
+    : null;
   if (symbioEnabled) {
     const activation = modelConfig.ffnActivation ?? "gelu";
     console.log(`symbio: enabled | activation=${activation} | cusum_sens=${symbioConfig.cusumSensitivity} | metrics_interval=${symbioConfig.metricsInterval}`);
-    if (adaptiveBatch) console.log(`symbio: adaptive_batch=[${symbioConfig.batchMin},${symbioConfig.batchMax}] step=${symbioConfig.batchStep}`);
+    if (symbioConfig.populationAdaptation) {
+      console.log(`symbio: population_adaptation=ON scale=[${symbioConfig.populationScaleMin},${symbioConfig.populationScaleMax}] step=${symbioConfig.populationScaleStep} cooldown=${symbioConfig.populationAdaptationCooldown}`);
+    }
+    if (symbioConfig.preserveWeightsAcrossCandidates) {
+      console.log(`symbio: continuity=ON preserve_weights=true carry_optim=${symbioConfig.carryOptimizerStateAcrossCandidates} constant_ffn_dim=${symbioConfig.constantFfnDimAcrossCandidates}`);
+    }
+    if (symbioConfig.fuseWeightsEachStep) {
+      console.log(`symbio: fusion=ON kuramoto(K=${symbioConfig.kuramotoCoupling},dt=${symbioConfig.kuramotoDt},damp=${symbioConfig.kuramotoDamping}) alpha=[${symbioConfig.fusionBaseStrength},${symbioConfig.fusionMaxStrength}]`);
+    }
   }
 
   // FFN activation search orchestrator (both fixed and composed modes)
@@ -310,8 +329,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   if (searchOrchestrator) {
     const firstCandidate = searchOrchestrator.currentCandidate;
     if (firstCandidate) {
-      // Re-init model with first candidate's activation
-      const ffnDim = ffnDimForActivation(firstCandidate.activation, modelConfig.nEmbd, modelConfig.ffnDim);
+      // Initialize first candidate, optionally preserving overlap from the base model params.
+      const ffnDim = symbioConfig.constantFfnDimAcrossCandidates
+        ? (modelConfig.ffnDim ?? ffnDimForActivation(modelConfig.ffnActivation ?? "gelu", modelConfig.nEmbd, modelConfig.ffnDim))
+        : ffnDimForActivation(firstCandidate.activation, modelConfig.nEmbd, modelConfig.ffnDim);
       activeModelConfig = {
         ...modelConfig,
         ffnActivation: firstCandidate.activation as any,
@@ -319,14 +340,29 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         activationGraph: firstCandidate.activationGraph ?? undefined,
       };
       rng.seed(trainConfig.seed);
-      params = initGPT(activeModelConfig, backend, rng as any);
-      totalParams = countParams(params);
-      optimizer.loadStateDict({ step: 0, buffers: new Map() });
+      if (symbioConfig.preserveWeightsAcrossCandidates) {
+        const prevParams = params;
+        const transferred = initGPTWithTransferredWeights(activeModelConfig, backend, rng as any, prevParams);
+        params = transferred.params;
+        totalParams = countParams(params);
+        if (symbioConfig.carryOptimizerStateAcrossCandidates) {
+          const optCarry = carryOptimizerStateAcrossSwitch(optimizer, prevParams, params);
+          console.log(`symbio switch(init): params exact=${transferred.stats.exactCopies} partial=${transferred.stats.partialCopies} fresh=${transferred.stats.initializedFresh} | opt exact=${optCarry.copiedBuffers} partial=${optCarry.partialBuffers} fresh=${optCarry.freshBuffers}`);
+        } else {
+          optimizer.loadStateDict({ step: 0, buffers: new Map() });
+          console.log(`symbio switch(init): params exact=${transferred.stats.exactCopies} partial=${transferred.stats.partialCopies} fresh=${transferred.stats.initializedFresh} | opt reset`);
+        }
+      } else {
+        params = initGPT(activeModelConfig, backend, rng as any);
+        totalParams = countParams(params);
+        optimizer.loadStateDict({ step: 0, buffers: new Map() });
+      }
+      fusionShadow?.rebind(params);
       const graphName = firstCandidate.activationGraph ? nameGraph(firstCandidate.activationGraph) : firstCandidate.activation;
       console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.name} (${firstCandidate.id}) activation=${graphName} params=${totalParams.toLocaleString()}`);
     }
     const totalSearchSteps = symbioConfig.populationSize * symbioConfig.stepsPerCandidate * symbioConfig.generations;
-    console.log(`symbio search: mode=${symbioConfig.searchMode} | ${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens = ${totalSearchSteps} total steps`);
+    console.log(`symbio search: mode=${symbioConfig.searchMode} | base=${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens ≈ ${totalSearchSteps} total steps`);
   }
 
   // Training loop
@@ -706,14 +742,24 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         console.log(`  [symbio] CUSUM alert: ${cusumResult.cusum_alert_reason}`);
       }
 
-      // Adaptive batch sizing
-      if (adaptiveBatch) {
-        const newBatch = adaptiveBatch.onAlert(cusumResult.cusum_alerts);
-        metrics.adaptive_batch_size = newBatch;
-        if (adaptiveBatch.changeReason) {
-          metrics.batch_change_reason = adaptiveBatch.changeReason;
-          console.log(`  [symbio] batch size → ${newBatch} (${adaptiveBatch.changeReason})`);
-          adaptiveBatch.clearChangeReason();
+      // Population dynamics adaptation (loss + LR + CUSUM driven)
+      if (populationDynamics && searchOrchestrator) {
+        const dyn = populationDynamics.update({
+          step: step + 1,
+          loss: lossVal,
+          lr,
+          cusumAlerts: cusumResult.cusum_alerts,
+        });
+        searchOrchestrator.setAdaptiveControls({
+          populationSize: dyn.effectivePopulationSize,
+          mutationRate: dyn.mutationRate,
+        });
+        if (dyn.changed) {
+          console.log(
+            `  [symbio] population dynamics → pop=${dyn.effectivePopulationSize} (scale=${dyn.populationScale.toFixed(2)}) ` +
+            `mut=${dyn.mutationRate.toFixed(3)} | explore=${dyn.explorePressure.toFixed(2)} converge=${dyn.convergePressure.toFixed(2)} ` +
+            `plateau=${dyn.plateauPressure.toFixed(2)} cusum=${dyn.cusumPressure.toFixed(2)} (${dyn.reason})`,
+          );
         }
       }
 
@@ -759,27 +805,68 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           metrics.fitness_score,
         );
 
+        if (kuramotoFusion && fusionShadow) {
+          const fusionState = kuramotoFusion.update({
+            loss: lossVal,
+            lr,
+            cusumAlerts: metrics.cusum_alerts ?? 0,
+            switchedCandidate: candidateDone,
+          });
+          fusionShadow.step(params, fusionState.fusionAlpha, symbioConfig.fusionShadowEma);
+          if ((step + 1) % Math.max(1, symbioConfig.metricsInterval) === 0) {
+            console.log(
+              `  [symbio] fusion α=${fusionState.fusionAlpha.toFixed(4)} sync=${fusionState.sync.toFixed(3)} ` +
+              `order=${fusionState.order.toFixed(3)} Δθ=${fusionState.phaseGap.toFixed(3)}`,
+            );
+          }
+        }
+
         if (candidateDone) {
           console.log(`  [symbio search] candidate ${candidate.name} done: bestLoss=${candidate.bestLoss.toFixed(4)} bestVal=${candidate.bestValLoss === Infinity ? "N/A" : candidate.bestValLoss.toFixed(4)} fitness=${candidate.fitnessScore === -Infinity ? "N/A" : candidate.fitnessScore.toFixed(4)}`);
           const nextActivation = searchOrchestrator.advance();
 
           if (nextActivation !== null) {
-            // Switch to next candidate: re-init model with new activation
+            // Switch to next candidate: preserve weights/optimizer when possible.
             const nextCandidate = searchOrchestrator.currentCandidate;
-            const ffnDim = ffnDimForActivation(nextActivation, modelConfig.nEmbd, modelConfig.ffnDim);
+            const ffnDim = symbioConfig.constantFfnDimAcrossCandidates
+              ? (modelConfig.ffnDim ?? ffnDimForActivation(modelConfig.ffnActivation ?? "gelu", modelConfig.nEmbd, modelConfig.ffnDim))
+              : ffnDimForActivation(nextActivation, modelConfig.nEmbd, modelConfig.ffnDim);
             activeModelConfig = {
               ...modelConfig,
               ffnActivation: nextActivation as any,
               ffnDim,
               activationGraph: nextCandidate?.activationGraph ?? undefined,
             };
-            rng.seed(trainConfig.seed + (step + 1)); // different seed per candidate for fresh init
-            params = initGPT(activeModelConfig, backend, rng as any);
-            totalParams = countParams(params);
-            optimizer.loadStateDict({ step: 0, buffers: new Map() });
+            rng.seed(trainConfig.seed + (step + 1)); // seed only affects fresh/unmatched params
+            if (symbioConfig.preserveWeightsAcrossCandidates) {
+              const prevParams = params;
+              const transferred = initGPTWithTransferredWeights(activeModelConfig, backend, rng as any, prevParams);
+              params = transferred.params;
+              totalParams = countParams(params);
+              if (symbioConfig.carryOptimizerStateAcrossCandidates) {
+                const optCarry = carryOptimizerStateAcrossSwitch(optimizer, prevParams, params);
+                console.log(
+                  `  [symbio switch] params exact=${transferred.stats.exactCopies} partial=${transferred.stats.partialCopies} fresh=${transferred.stats.initializedFresh} ` +
+                  `| opt exact=${optCarry.copiedBuffers} partial=${optCarry.partialBuffers} fresh=${optCarry.freshBuffers}`,
+                );
+              } else {
+                optimizer.loadStateDict({ step: 0, buffers: new Map() });
+                console.log(
+                  `  [symbio switch] params exact=${transferred.stats.exactCopies} partial=${transferred.stats.partialCopies} fresh=${transferred.stats.initializedFresh} | opt reset`,
+                );
+              }
+            } else {
+              params = initGPT(activeModelConfig, backend, rng as any);
+              totalParams = countParams(params);
+              optimizer.loadStateDict({ step: 0, buffers: new Map() });
+            }
             clearForwardCache();
+            fusionShadow?.rebind(params);
             const graphName = nextCandidate?.activationGraph ? nameGraph(nextCandidate.activationGraph) : nextActivation;
-            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.name} (${nextCandidate?.id}) activation=${graphName} params=${totalParams.toLocaleString()}`);
+            console.log(
+              `  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.name} (${nextCandidate?.id}) ` +
+              `activation=${graphName} params=${totalParams.toLocaleString()} pop=${searchOrchestrator.effectivePopulationSize} mut=${searchOrchestrator.effectiveMutationRate.toFixed(3)}`,
+            );
           } else {
             // Search complete
             const winner = searchOrchestrator.getWinner();

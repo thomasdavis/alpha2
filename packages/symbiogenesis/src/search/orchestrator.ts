@@ -28,10 +28,17 @@ export interface SearchState {
   winner: SearchCandidate | null;
 }
 
+export interface SearchAdaptiveControls {
+  populationSize?: number;
+  mutationRate?: number;
+}
+
 export class SearchOrchestrator {
   private readonly config: SymbioConfig;
   private readonly composed: boolean;
   private readonly mutCfg: MutationConfig;
+  private adaptivePopulationSize: number;
+  private adaptiveMutationRate: number;
   private state: SearchState;
 
   constructor(config: SymbioConfig) {
@@ -47,6 +54,8 @@ export class SearchOrchestrator {
     const initial = this.composed
       ? generateComposedPopulation(this.mutCfg.basisPool, config.populationSize)
       : generateInitialPopulation(config.activationPool, config.populationSize);
+    this.adaptivePopulationSize = config.populationSize;
+    this.adaptiveMutationRate = config.mutationRate;
 
     this.state = {
       generation: 0,
@@ -93,6 +102,26 @@ export class SearchOrchestrator {
     return computeArchitectureDiversity(
       this.state.population.map(c => c.activation),
     );
+  }
+
+  /** Current effective population size (may be adapted at runtime). */
+  get effectivePopulationSize(): number {
+    return this.adaptivePopulationSize;
+  }
+
+  /** Current effective mutation rate (may be adapted at runtime). */
+  get effectiveMutationRate(): number {
+    return this.adaptiveMutationRate;
+  }
+
+  /** Apply runtime adaptation controls from the trainer. */
+  setAdaptiveControls(ctrl: SearchAdaptiveControls): void {
+    if (ctrl.populationSize != null && Number.isFinite(ctrl.populationSize)) {
+      this.adaptivePopulationSize = Math.max(2, Math.round(ctrl.populationSize));
+    }
+    if (ctrl.mutationRate != null && Number.isFinite(ctrl.mutationRate)) {
+      this.adaptiveMutationRate = Math.max(0, Math.min(1, ctrl.mutationRate));
+    }
   }
 
   /**
@@ -143,7 +172,9 @@ export class SearchOrchestrator {
     }
 
     // Select parents
-    const numParents = Math.ceil(this.config.populationSize / 2);
+    const targetPopulationSize = Math.max(2, this.adaptivePopulationSize);
+    const mutationRate = this.adaptiveMutationRate;
+    const numParents = Math.ceil(targetPopulationSize / 2);
     const parents = selectParents(this.state.population, numParents, this.config);
 
     // Mark old generation as done
@@ -155,10 +186,10 @@ export class SearchOrchestrator {
 
     if (this.composed) {
       // Composed mode: structural graph mutations
-      for (let i = 0; i < this.config.populationSize; i++) {
+      for (let i = 0; i < targetPopulationSize; i++) {
         const parentIdx = i % parents.length;
         const parent = parents[parentIdx];
-        if (Math.random() < this.config.mutationRate) {
+        if (Math.random() < mutationRate) {
           const child = mutateComposedCandidate(parent, this.state.generation, i, this.mutCfg);
           newPop.push(child);
           this.state.allCandidates.push(child);
@@ -170,10 +201,10 @@ export class SearchOrchestrator {
       }
     } else {
       // Fixed-activation mode: swap between pool
-      for (let i = 0; i < this.config.populationSize; i++) {
+      for (let i = 0; i < targetPopulationSize; i++) {
         const parentIdx = i % parents.length;
         const parent = parents[parentIdx];
-        if (Math.random() < this.config.mutationRate) {
+        if (Math.random() < mutationRate) {
           const child = mutateCandidate(parent, this.config.activationPool, this.state.generation, i);
           newPop.push(child);
           this.state.allCandidates.push(child);
