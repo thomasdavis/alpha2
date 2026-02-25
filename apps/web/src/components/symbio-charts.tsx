@@ -1204,8 +1204,18 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
 
-  const { roots, allNodes, maxGen, treeHeight } = useMemo(() => {
-    if (candidates.length === 0) return { roots: [] as TreeNode[], allNodes: [] as TreeNode[], maxGen: 0, treeHeight: 300 };
+  // Pan & zoom state
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const dragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
+
+  const NODE_W = 90;
+  const NODE_H = 56;
+  const H_GAP = 16;
+  const V_GAP = 40;
+
+  const { allNodes, maxGen, treeWidth, treeHeight } = useMemo(() => {
+    if (candidates.length === 0) return { allNodes: [] as TreeNode[], maxGen: 0, treeWidth: 400, treeHeight: 300 };
 
     const nodeMap = new Map<string, TreeNode>();
     for (const c of candidates) {
@@ -1226,21 +1236,10 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
       }
     }
 
-    // Sort roots by activation for consistent ordering
     rootNodes.sort((a, b) => a.activation.localeCompare(b.activation));
 
-    // Layout: assign x positions using a simple recursive walk
-    const NODE_W = 90;
-    const NODE_H = 56;
-    const H_GAP = 16;
-    const V_GAP = 40;
-
-    // Compute subtree widths bottom-up
     function computeWidth(node: TreeNode): number {
-      if (node.children.length === 0) {
-        node.width = NODE_W;
-        return NODE_W;
-      }
+      if (node.children.length === 0) { node.width = NODE_W; return NODE_W; }
       node.children.sort((a, b) => a.activation.localeCompare(b.activation));
       let total = 0;
       for (const child of node.children) {
@@ -1257,25 +1256,20 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
       totalWidth += computeWidth(root);
     }
 
-    // Assign positions
     function assignPositions(node: TreeNode, xStart: number, depth: number) {
       node.y = depth * (NODE_H + V_GAP) + 20;
-      if (node.children.length === 0) {
-        node.x = xStart + node.width / 2;
-        return;
-      }
+      if (node.children.length === 0) { node.x = xStart + node.width / 2; return; }
       let cx = xStart;
       for (const child of node.children) {
         assignPositions(child, cx, depth + 1);
         cx += child.width + H_GAP;
       }
-      // Center parent over children
       const first = node.children[0];
       const last = node.children[node.children.length - 1];
       node.x = (first.x + last.x) / 2;
     }
 
-    let xOff = 20;
+    let xOff = 40;
     for (const root of rootNodes) {
       assignPositions(root, xOff, 0);
       xOff += root.width + H_GAP;
@@ -1286,10 +1280,17 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
     rootNodes.forEach(collect);
 
     const mg = Math.max(0, ...all.map((n) => n.generation));
-    const th = (mg + 1) * (NODE_H + V_GAP) + 40;
+    const tw = totalWidth + 80;
+    const th = (mg + 1) * (NODE_H + V_GAP) + 60;
 
-    return { roots: rootNodes, allNodes: all, maxGen: mg, treeHeight: Math.max(300, th) };
+    return { allNodes: all, maxGen: mg, treeWidth: tw, treeHeight: th };
   }, [candidates]);
+
+  // Convert screen coords to world coords
+  const screenToWorld = useCallback((sx: number, sy: number) => ({
+    x: (sx - pan.x) / zoom,
+    y: (sy - pan.y) / zoom,
+  }), [pan, zoom]);
 
   // Draw
   const draw = useCallback(() => {
@@ -1307,19 +1308,20 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    const NODE_W = 90;
-    const NODE_H = 56;
+    // Apply pan & zoom
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+
     const RADIUS = 6;
 
-    // Draw links first (behind nodes)
-    ctx.lineWidth = 1.5;
+    // Draw links
+    ctx.lineWidth = 1.5 / zoom;
     for (const node of allNodes) {
       for (const child of node.children) {
         const col = actHex(child.activation);
-        ctx.strokeStyle = col + "60"; // 37% opacity
+        ctx.strokeStyle = col + "60";
         ctx.beginPath();
         ctx.moveTo(node.x, node.y + NODE_H);
-        // Curved bezier link
         const midY = (node.y + NODE_H + child.y) / 2;
         ctx.bezierCurveTo(node.x, midY, child.x, midY, child.x, child.y);
         ctx.stroke();
@@ -1334,16 +1336,15 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
       const x = node.x - NODE_W / 2;
       const y = node.y;
 
-      // Node background
       ctx.fillStyle = isSelected ? col + "30" : isHovered ? col + "20" : "#111118";
       ctx.strokeStyle = isSelected ? col : isHovered ? col + "bb" : col + "55";
-      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.lineWidth = (isSelected ? 2 : 1) / zoom;
       ctx.beginPath();
       ctx.roundRect(x, y, NODE_W, NODE_H, RADIUS);
       ctx.fill();
       ctx.stroke();
 
-      // Activation color bar at top
+      // Color bar
       ctx.fillStyle = col;
       ctx.beginPath();
       ctx.roundRect(x, y, NODE_W, 3, [RADIUS, RADIUS, 0, 0]);
@@ -1354,12 +1355,14 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
       ctx.font = "bold 9px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(node.name, node.x, y + 7);
+      const nameStr = node.name.length > 14 ? node.name.slice(0, 12) + ".." : node.name;
+      ctx.fillText(nameStr, node.x, y + 7);
 
-      // Activation type
+      // Activation
       ctx.fillStyle = "rgba(255,255,255,0.4)";
       ctx.font = "7px monospace";
-      ctx.fillText(node.activation, node.x, y + 19);
+      const actStr = node.activation.length > 16 ? node.activation.slice(0, 14) + ".." : node.activation;
+      ctx.fillText(actStr, node.x, y + 19);
 
       // Loss
       ctx.fillStyle = "rgba(255,255,255,0.6)";
@@ -1370,21 +1373,59 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
       // Steps
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.font = "7px monospace";
-      ctx.fillText(`${node.steps} steps · gen ${node.generation}`, node.x, y + 43);
+      ctx.fillText(`${node.steps}s · g${node.generation}`, node.x, y + 43);
     }
 
-    // Generation row labels on the left
+    // Generation labels (fixed to left in world space)
+    const viewLeft = -pan.x / zoom;
     ctx.fillStyle = "rgba(255,255,255,0.15)";
     ctx.font = "bold 8px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     for (let g = 0; g <= maxGen; g++) {
-      const y = g * (NODE_H + 40) + 20 + NODE_H / 2;
-      ctx.fillText(`Gen ${g}`, 4, y);
+      const y = g * (NODE_H + V_GAP) + 20 + NODE_H / 2;
+      ctx.fillText(`Gen ${g}`, viewLeft + 4, y);
     }
 
     ctx.restore();
-  }, [allNodes, maxGen, selectedCandidateId, hoveredNode]);
+
+    // Minimap (bottom-right corner, screen space)
+    const mmW = 120, mmH = 80, mmPad = 8;
+    const mmX = w - mmW - mmPad, mmY = h - mmH - mmPad;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(mmX, mmY, mmW, mmH, 4);
+    ctx.fill();
+    ctx.stroke();
+
+    // Scale tree to fit minimap
+    const scX = (mmW - 8) / Math.max(treeWidth, 1);
+    const scY = (mmH - 8) / Math.max(treeHeight, 1);
+    const sc = Math.min(scX, scY);
+    for (const node of allNodes) {
+      const nx = mmX + 4 + node.x * sc;
+      const ny = mmY + 4 + node.y * sc;
+      ctx.fillStyle = actHex(node.activation) + "80";
+      ctx.fillRect(nx - 1, ny - 1, 3, 2);
+    }
+
+    // Viewport rect on minimap
+    const vx1 = -pan.x / zoom, vy1 = -pan.y / zoom;
+    const vx2 = vx1 + w / zoom, vy2 = vy1 + h / zoom;
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      mmX + 4 + vx1 * sc,
+      mmY + 4 + vy1 * sc,
+      (vx2 - vx1) * sc,
+      (vy2 - vy1) * sc,
+    );
+    ctx.restore();
+  }, [allNodes, maxGen, selectedCandidateId, hoveredNode, pan, zoom, treeWidth, treeHeight]);
 
   useEffect(() => { draw(); }, [draw]);
   useEffect(() => {
@@ -1393,54 +1434,135 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
     return () => window.removeEventListener("resize", handleResize);
   }, [draw]);
 
-  // Mouse interaction — hit test nodes
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Auto-fit on first load or when tree structure changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || allNodes.length === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const fitZoomX = rect.width / Math.max(treeWidth, 1);
+    const fitZoomY = rect.height / Math.max(treeHeight, 1);
+    const fitZoom = Math.min(fitZoomX, fitZoomY, 1.5) * 0.9;
+    const cw = treeWidth * fitZoom;
+    const ch = treeHeight * fitZoom;
+    setPan({ x: (rect.width - cw) / 2, y: Math.max(8, (rect.height - ch) / 2) });
+    setZoom(fitZoom);
+  }, [allNodes.length, treeWidth, treeHeight]);
+
+  // Wheel zoom (centered on cursor)
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
 
-    const NODE_W = 90;
-    const NODE_H = 56;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const newZoom = Math.max(0.1, Math.min(5, zoom * factor));
+
+    // Zoom centered on cursor position
+    setPan(p => ({
+      x: mx - (mx - p.x) * (newZoom / zoom),
+      y: my - (my - p.y) * (newZoom / zoom),
+    }));
+    setZoom(newZoom);
+  }, [zoom]);
+
+  // Pan via drag
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Middle click or left click on empty space → start drag
+    if (e.button === 1 || (e.button === 0 && !hoveredNode)) {
+      dragRef.current = { startX: e.clientX, startY: e.clientY, startPanX: pan.x, startPanY: pan.y };
+    }
+  }, [pan, hoveredNode]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Handle drag
+    if (dragRef.current) {
+      const dx = e.clientX - dragRef.current.startX;
+      const dy = e.clientY - dragRef.current.startY;
+      setPan({ x: dragRef.current.startPanX + dx, y: dragRef.current.startPanY + dy });
+      return;
+    }
+
+    // Hit test in world coords
+    const rect = canvas.getBoundingClientRect();
+    const world = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+
     let found: TreeNode | null = null;
     for (const node of allNodes) {
-      if (mx >= node.x - NODE_W / 2 && mx <= node.x + NODE_W / 2 && my >= node.y && my <= node.y + NODE_H) {
+      if (world.x >= node.x - NODE_W / 2 && world.x <= node.x + NODE_W / 2 &&
+          world.y >= node.y && world.y <= node.y + NODE_H) {
         found = node;
         break;
       }
     }
     setHoveredNode(found);
     setTooltipPos(found ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : null);
-  }, [allNodes]);
+  }, [allNodes, screenToWorld]);
 
-  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (hoveredNode && onSelectCandidate) {
+  const handleMouseUp = useCallback(() => {
+    if (dragRef.current) {
+      dragRef.current = null;
+      return;
+    }
+  }, []);
+
+  const handleClick = useCallback(() => {
+    if (hoveredNode && onSelectCandidate && !dragRef.current) {
       onSelectCandidate(hoveredNode.id);
     }
   }, [hoveredNode, onSelectCandidate]);
 
+  // Fit-to-view button
+  const fitToView = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || allNodes.length === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const fitZoomX = rect.width / Math.max(treeWidth, 1);
+    const fitZoomY = rect.height / Math.max(treeHeight, 1);
+    const fitZoom = Math.min(fitZoomX, fitZoomY, 1.5) * 0.9;
+    const cw = treeWidth * fitZoom;
+    const ch = treeHeight * fitZoom;
+    setPan({ x: (rect.width - cw) / 2, y: Math.max(8, (rect.height - ch) / 2) });
+    setZoom(fitZoom);
+  }, [allNodes.length, treeWidth, treeHeight]);
+
   if (candidates.length === 0) return null;
 
   return (
-    <div className="relative w-full overflow-x-auto overflow-y-hidden rounded-lg bg-[#08080f]">
+    <div className="relative w-full rounded-lg bg-[#08080f]" style={{ height: 450 }}>
       <canvas
         ref={canvasRef}
-        className="w-full cursor-pointer"
-        style={{ height: treeHeight, minWidth: Math.max(400, allNodes.length * 50) }}
+        className="absolute inset-0 w-full h-full"
+        style={{ cursor: dragRef.current ? "grabbing" : hoveredNode ? "pointer" : "grab" }}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
-        onMouseLeave={() => { setHoveredNode(null); setTooltipPos(null); }}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => { dragRef.current = null; setHoveredNode(null); setTooltipPos(null); }}
         onClick={handleClick}
       />
+      {/* Zoom controls */}
+      <div className="absolute top-2 right-2 z-10 flex gap-1">
+        <button onClick={() => { setZoom(z => Math.min(5, z * 1.3)); }} className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6rem] text-white/60 hover:text-white/90 backdrop-blur-sm border border-white/10">+</button>
+        <button onClick={() => { setZoom(z => Math.max(0.1, z / 1.3)); }} className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6rem] text-white/60 hover:text-white/90 backdrop-blur-sm border border-white/10">−</button>
+        <button onClick={fitToView} className="rounded bg-black/60 px-1.5 py-0.5 text-[0.6rem] text-white/60 hover:text-white/90 backdrop-blur-sm border border-white/10">Fit</button>
+        <span className="rounded bg-black/40 px-1.5 py-0.5 text-[0.55rem] text-white/30 backdrop-blur-sm">{Math.round(zoom * 100)}%</span>
+      </div>
+      {/* Tooltip */}
       {hoveredNode && tooltipPos && (
         <div
           className="pointer-events-none absolute z-20 rounded border border-border bg-black/90 px-2.5 py-1.5 font-mono text-[0.6rem] leading-relaxed text-white/80 shadow-lg backdrop-blur-sm"
-          style={{ left: tooltipPos.x + 12, top: tooltipPos.y - 10, maxWidth: 200 }}
+          style={{ left: tooltipPos.x + 12, top: tooltipPos.y - 10, maxWidth: 240 }}
         >
-          <div className="font-bold" style={{ color: actHex(hoveredNode.activation) }}>
+          <div className="font-bold truncate" style={{ color: actHex(hoveredNode.activation) }}>
             {hoveredNode.name}
           </div>
-          <div>activation: {hoveredNode.activation}</div>
+          <div className="truncate">activation: {hoveredNode.activation}</div>
           <div>generation: {hoveredNode.generation}</div>
           <div>best loss: {hoveredNode.bestLoss === Infinity ? "—" : hoveredNode.bestLoss.toFixed(4)}</div>
           <div>fitness: {hoveredNode.bestFitness === -Infinity ? "—" : hoveredNode.bestFitness.toFixed(4)}</div>
