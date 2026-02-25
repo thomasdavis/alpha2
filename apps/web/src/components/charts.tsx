@@ -98,6 +98,18 @@ export const MARKER_LABELS: Record<MarkerType, string> = {
   evoOverfit: "Evo Overfit",
 };
 
+export const MARKER_HELP_TEXTS: Record<MarkerType, string> = {
+  checkpoints: "Vertical lines at checkpoint-save steps. Use these to align loss behavior with model snapshots you can load or compare later.",
+  bestVal: "Traditional best-validation marker (diamond) placed at the global minimum observed validation loss.",
+  warmupEnd: "Learning-rate warmup endpoint, detected as the step where LR reaches its peak (if that peak is not at the very start/end of the run).",
+  gradSpikes: "Gradient-norm spike markers. Triggered when grad_norm exceeds 3x its EMA baseline (alpha=0.05) after the initial warmup region and is above 0.5.",
+  lossSpikes: "Train-loss spike markers. Triggered when loss is >1.5x the rolling mean (window=20) or jumps by >0.3 from the previous step.",
+  overfit: "Traditional overfit onset estimate at the global validation-loss minimum, shown when post-min validation loss rises by >=2% on average or shows >=3 consecutive increases.",
+  activationSwitch: "Symbiogenesis activation/candidate switch events. Colored vertical lines mark transitions into the next activation/candidate during evolutionary search.",
+  evoValEnvelope: "Evolution-aware best-loss envelope. Uses a running-best train loss that snaps down on improvements, drifts up slowly otherwise (tau~200 steps), then EMA-smooths the result.",
+  evoOverfit: "Per-candidate evolutionary overfit bands. Shaded regions mark candidate windows where train loss rises for >=5 consecutive steps after that candidate's local minimum.",
+};
+
 export interface ActivationSwitchEvent {
   step: number;
   fromActivation: string | null;
@@ -434,6 +446,27 @@ interface LossTooltip {
   metric: ChartMetric;
   containerWidth: number;
   nearbySwitch?: ActivationSwitchEvent | null;
+}
+
+type LossChartPreset = "traditional" | "evolutionary";
+
+function markersForLossPreset(markers: MarkerVisibility, preset: LossChartPreset): MarkerVisibility {
+  if (preset === "traditional") {
+    return {
+      ...markers,
+      evoValEnvelope: false,
+      evoOverfit: false,
+      activationSwitch: false,
+    };
+  }
+  return {
+    ...markers,
+    bestVal: false,
+    warmupEnd: false,
+    gradSpikes: false,
+    lossSpikes: false,
+    overfit: false,
+  };
 }
 
 function drawLossChart(
@@ -872,30 +905,104 @@ function drawLossChart(
   }
 }
 
-export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinStep, activationSwitches }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedStep?: number | null; onPinStep?: (step: number) => void; activationSwitches?: ActivationSwitchEvent[] }) {
+function MarkerPillHelp({ marker }: { marker: MarkerType }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="flex h-4 w-4 items-center justify-center rounded-full border border-border/60 bg-surface-2 text-[0.58rem] font-bold text-text-muted transition-colors hover:border-border-2 hover:text-text-secondary"
+        aria-label={`Explain ${MARKER_LABELS[marker]}`}
+        title={`What is ${MARKER_LABELS[marker]}?`}
+      >
+        ?
+      </button>
+      {open && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-30 cursor-default"
+            onClick={() => setOpen(false)}
+            aria-label="Close marker help"
+          />
+          <div className="absolute right-0 top-6 z-40 w-72 rounded-lg border border-border-2 bg-surface-2 p-3 text-[0.68rem] leading-relaxed text-text-secondary shadow-xl">
+            <div className="mb-1 font-semibold text-text-primary">{MARKER_LABELS[marker]}</div>
+            <div>{MARKER_HELP_TEXTS[marker]}</div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function MarkerTogglePill({
+  marker,
+  enabled,
+  onToggle,
+}: {
+  marker: MarkerType;
+  enabled: boolean;
+  onToggle: (marker: MarkerType) => void;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-1 rounded-full border pr-1 ${
+        enabled
+          ? "border-border-2 bg-surface-2"
+          : "border-border/40 bg-transparent opacity-70"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onToggle(marker)}
+        className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.62rem] font-medium transition-colors ${
+          enabled ? "text-text-primary" : "text-text-muted"
+        }`}
+        aria-pressed={enabled}
+      >
+        <span
+          className="inline-block h-2 w-2 rounded-full"
+          style={{ backgroundColor: MARKER_COLORS[marker] }}
+        />
+        {MARKER_LABELS[marker]}
+      </button>
+      <MarkerPillHelp marker={marker} />
+    </div>
+  );
+}
+
+function LossChartPanel({
+  title,
+  subtitle,
+  preset,
+  metrics,
+  events,
+  markers,
+  pinnedStep,
+  onPinStep,
+}: {
+  title: string;
+  subtitle: string;
+  preset: LossChartPreset;
+  metrics: ChartMetric[];
+  events: ComputedEvents;
+  markers: MarkerVisibility;
+  pinnedStep?: number | null;
+  onPinStep?: (step: number) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tooltip, setTooltip] = useState<LossTooltip | null>(null);
   const hoverRef = useRef<number | null>(null);
-  const [markers, setMarkers] = useState<MarkerVisibility>(DEFAULT_MARKERS);
-
-  // Load from localStorage after mount to avoid SSR mismatch
-  useEffect(() => {
-    setMarkers(loadMarkerPrefs());
-  }, []);
-
-  const toggleMarker = useCallback((key: MarkerType) => {
-    setMarkers((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      saveMarkerPrefs(next);
-      return next;
-    });
-  }, []);
-
-  const events = useMemo(() => computeEvents(metrics, checkpoints, activationSwitches), [metrics, checkpoints, activationSwitches]);
+  const panelMarkers = useMemo(() => markersForLossPreset(markers, preset), [markers, preset]);
 
   const draw = useCallback((idx: number | null = null) => {
-    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, markers, pinnedStep ?? null);
-  }, [metrics, events, markers, pinnedStep]);
+    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, panelMarkers, pinnedStep ?? null);
+  }, [metrics, events, panelMarkers, pinnedStep]);
 
   useEffect(() => {
     draw();
@@ -940,10 +1047,12 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     const pointX = padL + ((m.step - minStep) / rangeS) * cw;
     // Check for nearby activation switch (within 2% of step range)
     const threshold = rangeS * 0.02;
-    const nearbySwitch = events.activationSwitches.find(sw => Math.abs(sw.step - m.step) <= threshold) ?? null;
+    const nearbySwitch = panelMarkers.activationSwitch
+      ? (events.activationSwitches.find((sw) => Math.abs(sw.step - m.step) <= threshold) ?? null)
+      : null;
     setTooltip({ pointX, mouseY, metric: m, containerWidth: w, nearbySwitch });
     draw(lo);
-  }, [metrics, draw, events]);
+  }, [metrics, draw, events, panelMarkers.activationSwitch]);
 
   const onLeave = useCallback(() => {
     hoverRef.current = null;
@@ -968,50 +1077,20 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     onPinStep(metrics[lo].step);
   }, [metrics, onPinStep]);
 
-  if (metrics.length < 2) {
-    return (
-      <div className="flex h-72 items-center justify-center rounded-lg border border-border/50 bg-[#0d0d0d] text-xs text-text-muted">
-        {metrics.length === 0 ? "No metrics data" : "Waiting for more data..."}
-      </div>
-    );
-  }
-
-  const markerKeys: MarkerType[] = [
-    "checkpoints",
-    "bestVal",
-    "evoValEnvelope",
-    "warmupEnd",
-    "overfit",
-    "evoOverfit",
-    "gradSpikes",
-    "lossSpikes",
-    "activationSwitch",
-  ];
-
   return (
     <div className="relative">
-      <div className="mb-2 flex flex-wrap gap-1.5">
-        {markerKeys.map((key) => (
-          <button
-            key={key}
-            onClick={() => toggleMarker(key)}
-            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.62rem] font-medium transition-colors ${
-              markers[key]
-                ? "border-border-2 bg-surface-2 text-text-primary"
-                : "border-border/40 bg-transparent text-text-muted opacity-50"
-            }`}
-          >
-            <span
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: MARKER_COLORS[key] }}
-            />
-            {MARKER_LABELS[key]}
-          </button>
-        ))}
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted">{title}</div>
+          <div className="text-[0.67rem] text-text-muted">{subtitle}</div>
+        </div>
+        <div className="rounded border border-border/40 bg-surface-2/60 px-2 py-1 text-[0.6rem] uppercase tracking-wider text-text-muted">
+          {preset === "traditional" ? "Classic heuristics" : "Symbio overlays"}
+        </div>
       </div>
       <canvas
         ref={canvasRef}
-        className="h-72 w-full cursor-crosshair rounded-lg"
+        className="h-56 w-full cursor-crosshair rounded-lg"
         onMouseMove={onMove}
         onMouseLeave={onLeave}
         onClick={onClick}
@@ -1091,6 +1170,93 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinStep, activationSwitches }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedStep?: number | null; onPinStep?: (step: number) => void; activationSwitches?: ActivationSwitchEvent[] }) {
+  const [markers, setMarkers] = useState<MarkerVisibility>(DEFAULT_MARKERS);
+
+  // Load from localStorage after mount to avoid SSR mismatch
+  useEffect(() => {
+    setMarkers(loadMarkerPrefs());
+  }, []);
+
+  const toggleMarker = useCallback((key: MarkerType) => {
+    setMarkers((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveMarkerPrefs(next);
+      return next;
+    });
+  }, []);
+
+  const events = useMemo(() => computeEvents(metrics, checkpoints, activationSwitches), [metrics, checkpoints, activationSwitches]);
+
+  if (metrics.length < 2) {
+    return (
+      <div className="flex h-72 items-center justify-center rounded-lg border border-border/50 bg-[#0d0d0d] text-xs text-text-muted">
+        {metrics.length === 0 ? "No metrics data" : "Waiting for more data..."}
+      </div>
+    );
+  }
+
+  const traditionalMarkerKeys: MarkerType[] = [
+    "checkpoints",
+    "bestVal",
+    "warmupEnd",
+    "overfit",
+    "gradSpikes",
+    "lossSpikes",
+  ];
+  const evolutionaryMarkerKeys: MarkerType[] = [
+    "activationSwitch",
+    "evoValEnvelope",
+    "evoOverfit",
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-border bg-surface-2/40 p-3">
+        <div className="mb-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
+          Traditional overlays
+        </div>
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {traditionalMarkerKeys.map((key) => (
+            <MarkerTogglePill key={`trad-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
+          ))}
+        </div>
+        <div className="mb-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
+          Evolutionary overlays
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {evolutionaryMarkerKeys.map((key) => (
+            <MarkerTogglePill key={`evo-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-4">
+        <LossChartPanel
+          title="Traditional Gradient + Loss"
+          subtitle="Train/val loss with classic markers (best val, warmup end, overfit, spikes)."
+          preset="traditional"
+          metrics={metrics}
+          events={events}
+          markers={markers}
+          pinnedStep={pinnedStep}
+          onPinStep={onPinStep}
+        />
+        <LossChartPanel
+          title="Evolutionary Gradient + Loss"
+          subtitle="Train/val loss with symbio overlays (activation switches, evo best envelope, evo overfit regions)."
+          preset="evolutionary"
+          metrics={metrics}
+          events={events}
+          markers={markers}
+          pinnedStep={pinnedStep}
+          onPinStep={onPinStep}
+        />
+      </div>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import {
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
   ResponsiveContainer, Area, AreaChart, ReferenceLine, BarChart, Bar,
-  Cell, ScatterChart, Scatter, Legend,
+  Cell, ScatterChart, Scatter, Legend, ReferenceArea,
 } from "recharts";
 import dynamic from "next/dynamic";
 
@@ -102,6 +102,7 @@ const HELP = {
   candidates: "All candidates ever created during the evolutionary activation search. Each was trained for stepsPerCandidate steps and ranked by validation loss or fitness. Includes learnable activations: 'universal' (per-channel SiLU gating) and 'kan_spline' (5-basis KAN approximator with silu/relu/gelu/identity/quadratic bases).",
   activationDist: "Shows how training steps are distributed across different activation functions over time. Includes fixed activations (gelu, silu, relu, swiglu) and learnable activations (universal, kan_spline). In a converging search, the winning activation accumulates more steps in later generations.",
   evolution: "Visualizes the evolutionary search progression across generations. Each generation evaluates candidates with unique IDs and names tracking their lineage. Parent-child relationships are shown in the tree chart. The fitness landscape shows how candidates improve or plateau over generations.",
+  convergence: "A convergence-vs-diversity tug-of-war view for symbio. Diversity pressure combines architecture diversity and recent switch rate (exploration pressure). Convergence momentum measures recent improvements in the running-best loss frontier. When diversity pressure stays high while convergence momentum drops, exploration is stalling convergence. When convergence momentum dominates, the search is locking onto a stronger activator family.",
   phaseChange: "Gelation/phase changes are detected via CUSUM monitors. When gradient norms, clipping rates, or throughput shift dramatically, the training has entered a new regime. Green = stable (no alerts), Yellow = mild instability (1-2 alerts), Red = regime shift (3+ alerts).",
   harmonic: "Analyzes the oscillatory behavior of training loss around its moving average. High-amplitude oscillations suggest an under-damped system (learning rate too high). The oscillation frequency and damping ratio characterize the training dynamics near equilibrium.",
   harmonicAmcharts: "Frequency-domain analysis of loss oscillations using a sliding-window FFT analogy. Shows the amplitude envelope of loss deviations from the moving average over time, revealing whether training dynamics are damping (converging) or amplifying (diverging). The heat capacity proxy (d(loss)/d(lr)) indicates critical points where training dynamics are most sensitive to hyperparameter changes.",
@@ -902,6 +903,288 @@ function EvolutionaryTimeline({ metrics, pinnedStep, onPinStep }: { metrics: Sym
           </ResponsiveContainer>
         </ChartPanel>
       )}
+    </div>
+  );
+}
+
+// ── Convergence vs Diversity (Tug-of-War) ─────────────────────
+
+function ConvergenceTugOfWarChart({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
+  const data = useMemo(() => {
+    const searchMetrics = metrics.filter((m) => m.symbio_candidate_id != null);
+    if (searchMetrics.length < 8) return [] as {
+      step: number;
+      loss: number;
+      runningBestLoss: number;
+      progress: number;
+      momentum: number;
+      diversity: number;
+      switchPressure: number;
+      diversityPressure: number;
+      tension: number;
+      generation: number;
+      candidateId: string;
+      activation: string;
+    }[];
+
+    const firstLoss = searchMetrics[0].loss;
+    const finalBest = Math.min(...searchMetrics.map((m) => m.loss));
+    const totalGain = Math.max(1e-9, firstLoss - finalBest);
+
+    const switchWindow = 40;
+    const momentumWindow = 40;
+    const switchFlags: number[] = [];
+    const runningBestHistory: number[] = [];
+    let prevId: string | null = null;
+    let runningBest = firstLoss;
+    let lastDiversity = 1;
+
+    const out: {
+      step: number;
+      loss: number;
+      runningBestLoss: number;
+      progress: number;
+      momentum: number;
+      diversity: number;
+      switchPressure: number;
+      diversityPressure: number;
+      tension: number;
+      generation: number;
+      candidateId: string;
+      activation: string;
+    }[] = [];
+
+    for (let i = 0; i < searchMetrics.length; i++) {
+      const m = searchMetrics[i];
+      if (m.loss < runningBest) runningBest = m.loss;
+      runningBestHistory.push(runningBest);
+
+      const switched = prevId !== null && m.symbio_candidate_id !== prevId ? 1 : 0;
+      switchFlags.push(switched);
+      prevId = m.symbio_candidate_id ?? prevId;
+
+      if (m.architecture_diversity != null) {
+        lastDiversity = Math.max(0, Math.min(1, m.architecture_diversity));
+      }
+      const diversity = lastDiversity;
+
+      const swStart = Math.max(0, i - switchWindow + 1);
+      let switchCount = 0;
+      for (let j = swStart; j <= i; j++) switchCount += switchFlags[j] ?? 0;
+      const rawSwitchRate = switchCount / Math.max(1, i - swStart + 1);
+      const switchPressure = Math.max(0, Math.min(1, rawSwitchRate * 12)); // scale sparse switches into [0,1]
+
+      const diversityPressure = Math.max(0, Math.min(1, diversity * 0.8 + switchPressure * 0.2));
+
+      const progress = Math.max(0, Math.min(1, (firstLoss - runningBest) / totalGain));
+
+      const momIdx = Math.max(0, i - momentumWindow);
+      const pastBest = runningBestHistory[momIdx] ?? runningBest;
+      const recentGain = Math.max(0, pastBest - runningBest);
+      const momentum = Math.max(0, Math.min(1, (recentGain / totalGain) * 8)); // emphasize local frontier movement
+
+      const tension = Math.max(-1, Math.min(1, momentum - diversityPressure));
+
+      out.push({
+        step: m.step,
+        loss: m.loss,
+        runningBestLoss: runningBest,
+        progress,
+        momentum,
+        diversity,
+        switchPressure,
+        diversityPressure,
+        tension,
+        generation: m.symbio_generation ?? 0,
+        candidateId: m.symbio_candidate_id ?? "?",
+        activation: m.symbio_candidate_activation ?? "?",
+      });
+    }
+
+    return out;
+  }, [metrics]);
+
+  if (data.length < 8) return null;
+
+  const latest = data[data.length - 1];
+  const maxProgress = data.reduce((best, d) => (d.progress > best.progress ? d : best), data[0]);
+  const strongestConvergence = data.reduce((best, d) => (d.tension > best.tension ? d : best), data[0]);
+  const strongestDiversity = data.reduce((best, d) => (d.tension < best.tension ? d : best), data[0]);
+  const pinnedPoint = pinnedStep != null ? data.find((d) => d.step === pinnedStep) ?? null : null;
+
+  let modeLabel = "Balanced";
+  let modeColor = "text-text-secondary";
+  if (latest.tension > 0.15 && latest.momentum > 0.15) {
+    modeLabel = "Converging";
+    modeColor = "text-green-400";
+  } else if (latest.tension < -0.15 && latest.diversityPressure > 0.35) {
+    modeLabel = "Exploration Dominant";
+    modeColor = "text-cyan-400";
+  } else if (latest.diversityPressure < 0.2 && latest.momentum < 0.08) {
+    modeLabel = "Stalled / Collapsed";
+    modeColor = "text-orange-400";
+  }
+
+  const pointColor = (tension: number) => {
+    if (tension > 0.2) return "#34d399";
+    if (tension < -0.2) return "#22d3ee";
+    return "#a78bfa";
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] uppercase tracking-wider text-text-muted">Current Mode</div>
+          <div className={`text-sm font-bold ${modeColor}`}>{modeLabel}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] uppercase tracking-wider text-text-muted">Diversity Pressure</div>
+          <div className="text-sm font-bold text-cyan-400">{(latest.diversityPressure * 100).toFixed(0)}%</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] uppercase tracking-wider text-text-muted">Convergence Momentum</div>
+          <div className="text-sm font-bold text-green-400">{(latest.momentum * 100).toFixed(0)}%</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-center">
+          <div className="text-[0.55rem] uppercase tracking-wider text-text-muted">Convergence Progress</div>
+          <div className="text-sm font-bold text-white">{(maxProgress.progress * 100).toFixed(0)}%</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-lg border border-border bg-surface-2/20 p-2">
+          <div className="mb-2 px-1 text-[0.58rem] uppercase tracking-wider text-text-muted">
+            Phase Portrait: Diversity Pressure vs Convergence Momentum
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ScatterChart
+              onClick={(e: any) => {
+                const step = e?.activePayload?.[0]?.payload?.step;
+                if (step != null && onPinStep) onPinStep(Number(step));
+              }}
+            >
+              <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
+              <ReferenceArea x1={0} x2={0.5} y1={0} y2={0.5} fill="rgba(239,68,68,0.04)" />
+              <ReferenceArea x1={0.5} x2={1} y1={0} y2={0.5} fill="rgba(34,211,238,0.04)" />
+              <ReferenceArea x1={0} x2={0.5} y1={0.5} y2={1} fill="rgba(52,211,153,0.04)" />
+              <ReferenceArea x1={0.5} x2={1} y1={0.5} y2={1} fill="rgba(167,139,250,0.04)" />
+              <XAxis
+                type="number"
+                dataKey="diversityPressure"
+                domain={[0, 1]}
+                stroke={CHART_THEME.axisText}
+                tick={{ fontSize: 10 }}
+                tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
+                name="Diversity Pressure"
+              />
+              <YAxis
+                type="number"
+                dataKey="momentum"
+                domain={[0, 1]}
+                stroke={CHART_THEME.axisText}
+                tick={{ fontSize: 10 }}
+                tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
+                name="Convergence Momentum"
+              />
+              <ReferenceLine x={0.5} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4" />
+              <ReferenceLine y={0.5} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4" />
+              <RTooltip content={({ active, payload }: any) => {
+                if (!active || !payload?.[0]) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="rounded-lg border border-border-2 bg-surface-2 p-2.5 shadow-xl text-[0.64rem]">
+                    <div className="font-mono font-bold text-white">Step {Number(d.step).toLocaleString()}</div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Candidate</span><span className="font-mono">{d.candidateId}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Activation</span><span className="font-mono" style={{ color: actHex(d.activation) }}>{d.activation}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Generation</span><span className="font-mono">{d.generation}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Diversity Pressure</span><span className="font-mono text-cyan-400">{(d.diversityPressure * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Convergence Momentum</span><span className="font-mono text-green">{(d.momentum * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Tension</span><span className="font-mono text-purple-300">{d.tension.toFixed(3)}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Best Frontier Loss</span><span className="font-mono text-white">{d.runningBestLoss.toFixed(4)}</span></div>
+                  </div>
+                );
+              }} />
+              <Scatter data={data} line={{ stroke: "rgba(148,163,184,0.25)", strokeWidth: 1 }}>
+                {data.map((d, i) => (
+                  <Cell key={i} fill={pointColor(d.tension)} />
+                ))}
+              </Scatter>
+              {pinnedPoint && (
+                <Scatter data={[pinnedPoint]} fill="#ffffff">
+                  <Cell fill="#ffffff" />
+                </Scatter>
+              )}
+            </ScatterChart>
+          </ResponsiveContainer>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[0.56rem]">
+            <div className="rounded border border-border/40 bg-surface-2/30 px-2 py-1 text-text-muted">Low diversity / high momentum = lock-in convergence</div>
+            <div className="rounded border border-border/40 bg-surface-2/30 px-2 py-1 text-text-muted">High diversity / high momentum = productive exploration</div>
+            <div className="rounded border border-border/40 bg-surface-2/30 px-2 py-1 text-text-muted">Low diversity / low momentum = stalled collapse</div>
+            <div className="rounded border border-border/40 bg-surface-2/30 px-2 py-1 text-text-muted">High diversity / low momentum = diversity stalling convergence</div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-surface-2/20 p-2">
+          <div className="mb-2 px-1 text-[0.58rem] uppercase tracking-wider text-text-muted">
+            Tug-of-War Trace (Time Domain)
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart
+              data={data}
+              onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}
+            >
+              <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
+              <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
+              <YAxis yAxisId="score" domain={[0, 1]} stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${Math.round(v * 100)}%`} />
+              <YAxis yAxisId="tension" orientation="right" domain={[-1, 1]} stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} />
+              <RTooltip content={({ active, payload, label }: any) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="rounded-lg border border-border-2 bg-surface-2 p-2.5 shadow-xl text-[0.64rem]">
+                    <div className="font-mono font-bold text-white">Step {Number(label).toLocaleString()}</div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Diversity Pressure</span><span className="font-mono text-cyan-400">{(d.diversityPressure * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Convergence Momentum</span><span className="font-mono text-green">{(d.momentum * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Convergence Progress</span><span className="font-mono text-white">{(d.progress * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Switch Pressure</span><span className="font-mono text-blue-300">{(d.switchPressure * 100).toFixed(1)}%</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-text-muted">Tension (conv-div)</span><span className="font-mono text-purple-300">{d.tension.toFixed(3)}</span></div>
+                  </div>
+                );
+              }} />
+              {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
+              <ReferenceLine yAxisId="tension" y={0} stroke="rgba(255,255,255,0.15)" strokeDasharray="4 4" />
+              <Area yAxisId="tension" type="monotone" dataKey="tension" stroke="transparent" fill="#a78bfa" fillOpacity={0.08} />
+              <Line yAxisId="score" type="monotone" dataKey="diversityPressure" name="Diversity Pressure" stroke="#22d3ee" strokeWidth={2} dot={false} />
+              <Line yAxisId="score" type="monotone" dataKey="momentum" name="Convergence Momentum" stroke="#34d399" strokeWidth={2} dot={false} />
+              <Line yAxisId="score" type="monotone" dataKey="progress" name="Convergence Progress" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="5 3" />
+              <Line yAxisId="tension" type="monotone" dataKey="tension" name="Tension (conv-div)" stroke="#a78bfa" strokeWidth={2} dot={false} />
+              <Legend wrapperStyle={{ fontSize: "10px" }} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="mt-2 rounded border border-border/40 bg-surface-2/30 px-2 py-1.5 text-[0.58rem] leading-relaxed text-text-muted">
+            Positive tension means recent frontier improvement is outpacing diversity pressure (search is converging). Negative tension means exploration pressure is dominating recent convergence momentum (search is broadening or getting “stumped”).
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 text-[0.58rem]">
+        <div className="rounded border border-border/40 bg-surface-2/20 px-2 py-1.5">
+          <div className="text-text-muted uppercase tracking-wider">Strongest Convergence</div>
+          <div className="font-mono text-green-400">step {fmtNum(strongestConvergence.step)}</div>
+          <div className="font-mono text-text-secondary">tension {strongestConvergence.tension.toFixed(3)}</div>
+        </div>
+        <div className="rounded border border-border/40 bg-surface-2/20 px-2 py-1.5">
+          <div className="text-text-muted uppercase tracking-wider">Strongest Diversity Push</div>
+          <div className="font-mono text-cyan-400">step {fmtNum(strongestDiversity.step)}</div>
+          <div className="font-mono text-text-secondary">tension {strongestDiversity.tension.toFixed(3)}</div>
+        </div>
+        <div className="rounded border border-border/40 bg-surface-2/20 px-2 py-1.5">
+          <div className="text-text-muted uppercase tracking-wider">Best Frontier</div>
+          <div className="font-mono text-white">{maxProgress.runningBestLoss.toFixed(4)}</div>
+          <div className="font-mono text-text-secondary">progress {(maxProgress.progress * 100).toFixed(0)}%</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2256,6 +2539,13 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
               <div className="mb-4">
                 <ChartPanel title="Evolutionary Search" helpText={HELP.evolution}>
                   <EvolutionaryTimeline metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
+                </ChartPanel>
+              </div>
+
+              {/* Convergence vs Diversity tug-of-war */}
+              <div className="mb-4">
+                <ChartPanel title="Convergence vs Diversity (Tug-of-War)" helpText={HELP.convergence}>
+                  <ConvergenceTugOfWarChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
                 </ChartPanel>
               </div>
 
