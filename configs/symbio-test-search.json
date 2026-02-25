@@ -1,9 +1,9 @@
 {
   "searchMode": "ffn-activation-search",
-  "activationPool": ["gelu", "silu", "relu", "swiglu"],
-  "populationSize": 4,
+  "activationPool": ["gelu", "silu", "relu", "swiglu", "universal", "kan_spline"],
+  "populationSize": 6,
   "generations": 2,
-  "stepsPerCandidate": 20,
+  "stepsPerCandidate": 3000,
   "selectionStrategy": "topk",
   "mutationRate": 0.5,
   "rankBy": "valLoss",
@@ -14,5 +14,7 @@
   "trackMIProfiles": true,
   "writeReport": true,
   "writeCandidates": true,
-  "writeSummary": true
+  "writeSummary": true,
+  "diversityBonus": 0.05,
+  "diversityDecay": "cosine"
 }
