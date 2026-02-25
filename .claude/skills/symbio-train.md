@@ -1,110 +1,76 @@
-# /symbio-train — Autonomous Symbiogenesis Training
+Run symbiogenesis training on historic.txt via GCP.
 
-Run `scripts/symbio-autonomous.py` to execute multi-phase evolutionary training
-on GCP. This skill orchestrates the full symbiogenesis lifecycle: population-based
-activation search, Kuramoto synchronization, free energy minimization, and
-inference-gated phase transitions.
+## Launch
 
-## Quick Start
+Export remote metrics env vars and run:
 
 ```bash
-# Default: historic.txt, 50k step budget
-source .env.local
-python scripts/symbio-autonomous.py --data data/historic.txt
-
-# Larger budget
-python scripts/symbio-autonomous.py --data data/historic.txt --budget 100000
-
-# Resume interrupted run
-python scripts/symbio-autonomous.py --resume runs/symbio-auto/state.json
+source .env.local && \
+  export ALPHA_REMOTE_URL="$ALPHA_REMOTE_URL" && \
+  export ALPHA_REMOTE_SECRET="$ALPHA_REMOTE_SECRET" && \
+  export DISCORD_WEBHOOK_URL="$DISCORD_WEBHOOK_URL" && \
+  python3 scripts/gcp_train.py \
+  --data data/historic.txt \
+  --domain chat \
+  --iters 50000 \
+  --batch 20 \
+  --block 512 \
+  --dim 384 \
+  --heads 8 \
+  --layers 8 \
+  --lr 5e-5 \
+  --backend helios \
+  --tokenizer bpe \
+  --warmup 1000 \
+  --beta2 0.95 \
+  --grad-clip 1.0 \
+  --eval-interval 500 \
+  --sample-interval 300 \
+  --symbio \
+  --symbio-config configs/symbio-composed-novels.json \
+  --zone us-central1-b \
+  --machine-type g2-standard-4
 ```
 
-## What It Does
+`gcp_train.py` reads `ALPHA_REMOTE_URL`, `ALPHA_REMOTE_SECRET`, and `DISCORD_WEBHOOK_URL` from `os.environ` and forwards them to the training process so live metrics stream to https://alpha.omegaai.dev/training and Discord gets notified. Inference samples post to Discord every 300 steps.
 
-The orchestrator runs 6 biological phases, each an independent training experiment:
+The instance stays running after training completes so you can download the checkpoint or upload it to the remote. Stop it manually when done:
 
-| Phase | Steps | Purpose | Key Config |
-|-------|-------|---------|------------|
-| **Abiogenesis** | 4% | Baseline with gelu, no evolution | High LR, establish reference |
-| **Primordial** | 16% | Explore: high mutation, wide search | Pop=6, mut=0.8, coupling=0.3 |
-| **Cambrian** | 24% | Diversify: grow population, refine | Pop=12, mut=0.5, deeper graphs |
-| **Oxidation** | 16% | Converge: strong coupling, prune | Pop=8, mut=0.3, coupling=0.8 |
-| **Endosymbiosis** | 30% | Deep training with winner activation | No search, cosine decay |
-| **Homeostasis** | 10% | Ultra-low LR, monitor regression | Final refinement |
+```bash
+python3 scripts/gcp_train.py --action stop
+```
 
-Between phases: comprehensive inference battery (20 prompts x 3 temperatures),
-overfitting detection, plateau detection, and adaptive config adjustment.
+## Monitoring
 
-## Understanding Overfitting in Symbiogenesis
+Check the training log:
 
-Standard overfitting (train/val gap) is just one signal. In evolutionary search,
-overfitting occurs at 5 levels:
+```bash
+gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+  --command="tail -50 ~/alpha/runs/train_*.log | tail -50"
+```
 
-1. **Candidate Memorization** — Single candidate overfits within its short eval window.
-   Masked by the evolutionary cycle. Detect via per-candidate train/val ratio.
+## If the run fails, plateaus, or overfits
 
-2. **Population Collapse** — All candidates converge to the same activation.
-   Diversity drops below 0.3. The search becomes a random walk around one point.
+1. **Kill the run:**
+   ```bash
+   gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+     --command="pkill -9 -f 'node.*train'"
+   ```
 
-3. **Fusion Trap** — The consensus shadow model memorizes, pulling all candidates
-   toward it. Weight entropy drops while val_loss stagnates. The shadow is parasitic.
+2. **Diagnose** by tailing the log. Look for:
+   - **Crash/failure:** stack trace or process exit in the log
+   - **Gradient instability:** >25% of steps showing spike skips or NaN grad_norm
+   - **Overfitting:** val_loss rising while train loss keeps dropping
+   - **Plateau:** loss stuck for 2000+ steps with no improvement
+   - **Symbio stagnation:** CUSUM "throughput collapse" on every step, no new candidates improving
 
-4. **Activation Complexity Overfitting** — Evolved graph is too complex (>6 nodes),
-   fitting training quirks. Complex candidates beat simple ones on train but lose on val.
+3. **Fix the issue** in the codebase — refactor the training loop, adjust the symbio config, add new algorithms, fix bugs, whatever is needed.
 
-5. **Transfer Interference** — Inherited weights from a previous candidate conflict with
-   the new activation's gradient direction. Model wastes eval budget un-learning.
+4. **Rebuild on the instance:**
+   ```bash
+   gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+     --command="cd ~/alpha && npm install --ignore-scripts && node packages/helios/native/build.mjs && npx turbo build --filter=@alpha/cli"
+   ```
+   Or just re-run `gcp_train.py` which syncs code and rebuilds automatically.
 
-The orchestrator detects these and adapts: boosting mutation, reducing coupling,
-expanding search space, or saving dormant checkpoints for later.
-
-## Understanding Evolutionary Loss Plateaus
-
-Loss plateaus in evolutionary search mean the search itself has stalled, not
-just the model:
-
-1. **Activation Space Exhaustion** — All promising structures explored. CUSUM fires
-   on throughput collapse. Response: expand basis pool, increase graph limits.
-
-2. **Punctuated Equilibrium** — Long stasis is NORMAL. If diversity is high, the
-   population is building capacity for a jump. Don't mistake this for failure.
-
-3. **Consensus Stagnation** — High Kuramoto sync + flat loss = the fusion shadow
-   trapped everyone in a local minimum. Response: perturb shadow, reduce coupling.
-
-4. **Learning Rate Mismatch** — Different activations have different gradient scales.
-   Persistent spike-skips are the symptom. Response: lower LR, stronger grad clip.
-
-## Monitoring a Run
-
-Check state: `cat runs/symbio-auto/state.json`
-Check GCP: `python scripts/gcp_train.py --action status`
-SSH in: `python scripts/gcp_train.py --action ssh`
-Tail log: `gcloud compute ssh alpha-train --zone=us-central1-b --command="tail -f ~/alpha/runs/train_symbio_*.log"`
-
-## When to Intervene
-
-- **35%+ spike skips**: Gradient instability is too severe. Kill and restart with lower LR.
-- **Quality regression**: If inference quality drops >30% from best, something broke.
-  The orchestrator will flag this but you may want to inspect manually.
-- **Phase stuck >2x expected time**: Training may have crashed silently. Check the log.
-- **Instance cost**: At ~$0.70/hr for L4, a 50k-step run is roughly 8-12 hours ($6-8).
-
-## Gaps This Fills
-
-Beyond the existing symbio TypeScript implementation, this orchestrator adds:
-
-- **Multi-phase lifecycle** with adaptive phase transitions
-- **Inference-gated progression** — quality must improve to advance
-- **Dormancy** — promising checkpoints saved for later if current path regresses
-- **Autopoiesis** — self-evaluation through inference battery
-- **Ecological pressure** — track loss improvement per GPU-second
-- **Niche construction** — phase configs reshape the selection landscape
-- **Punctuated equilibrium detection** — distinguish stasis from failure
-
-## Files
-
-- `scripts/symbio-autonomous.py` — Main orchestrator
-- `runs/symbio-auto/state.json` — Persistent state (for resume)
-- `runs/symbio-auto/final-report.json` — Post-training summary
-- Configs generated dynamically per phase (written to instance at `/tmp/symbio-*.json`)
+5. **Relaunch** using the command above.
