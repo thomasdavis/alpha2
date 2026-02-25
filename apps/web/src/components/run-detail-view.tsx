@@ -116,6 +116,11 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
   const [samples, setSamples] = useState(initialSamples);
   const [showModelConfig, setShowModelConfig] = useState(false);
   const [showTrainConfig, setShowTrainConfig] = useState(false);
+  const [pinnedStep, setPinnedStep] = useState<number | null>(null);
+
+  const handlePinStep = useCallback((step: number) => {
+    setPinnedStep(prev => prev === step ? null : step);
+  }, []);
 
   const poll = useCallback(async () => {
     try {
@@ -302,7 +307,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
           <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
             Loss Curve <Tip text={tips.lossChart} />
           </div>
-          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} />
+          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
         </div>
 
         <div className="space-y-3">
@@ -336,33 +341,49 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
       </div>
 
       {/* Mini charts */}
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MiniChart
-          metrics={metrics}
-          title="GPU & VRAM"
-          noDataMsg="No GPU data"
-          formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
-          formatRight={(v) => v.toFixed(0) + "%"}
-          buildSeries={buildGpuSeries}
-        />
-        <MiniChart
-          metrics={metrics}
-          title="Learning Rate"
-          formatLeft={(v) => v.toExponential(1)}
-          buildSeries={buildLrSeries}
-        />
-        <MiniChart
-          metrics={metrics}
-          title="Grad Norm"
-          logScale
-          formatLeft={(v) => v.toExponential(0)}
-          buildSeries={buildGradNormSeries}
-        />
-        <StepTimeChart metrics={metrics} />
+      <div className="mb-6 space-y-4">
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <MiniChart
+            metrics={metrics}
+            title="GPU & VRAM"
+            noDataMsg="No GPU data"
+            formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
+            formatRight={(v) => v.toFixed(0) + "%"}
+            buildSeries={buildGpuSeries}
+            pinnedStep={pinnedStep}
+            onPinStep={handlePinStep}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border border-border bg-surface p-4">
+            <MiniChart
+              metrics={metrics}
+              title="Learning Rate"
+              formatLeft={(v) => v.toExponential(1)}
+              buildSeries={buildLrSeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </div>
+          <div className="rounded-lg border border-border bg-surface p-4">
+            <MiniChart
+              metrics={metrics}
+              title="Grad Norm"
+              logScale
+              formatLeft={(v) => v.toExponential(0)}
+              buildSeries={buildGradNormSeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <StepTimeChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+        </div>
       </div>
 
       {/* Symbio section */}
-      <SymbioSection metrics={metrics as any} run={run} />
+      <SymbioSection metrics={metrics as any} run={run} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
 
       {/* Checkpoints */}
       <div className="mb-6 rounded-lg border border-border bg-surface">

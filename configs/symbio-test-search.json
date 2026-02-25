@@ -10,7 +10,8 @@
   "metricsInterval": 10,
   "cusumSensitivity": 4.0,
   "cusumBaselineWindow": 5,
-  "adaptiveBatch": false,
+  "adaptiveBatch": true,
+  "trackMIProfiles": true,
   "writeReport": true,
   "writeCandidates": true,
   "writeSummary": true
