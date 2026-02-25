@@ -100,11 +100,11 @@ export const MARKER_LABELS: Record<MarkerType, string> = {
 
 export const MARKER_HELP_TEXTS: Record<MarkerType, string> = {
   checkpoints: "Vertical lines at checkpoint-save steps. Use these to align loss behavior with model snapshots you can load or compare later.",
-  bestVal: "Traditional best-validation marker (diamond) placed at the global minimum observed validation loss.",
+  bestVal: "Best-validation marker (diamond) placed at the global minimum observed validation loss. On symbio runs this is the best point across all candidate windows (a global search winner marker, not a continuous single-model trajectory marker).",
   warmupEnd: "Learning-rate warmup endpoint, detected as the step where LR reaches its peak (if that peak is not at the very start/end of the run).",
   gradSpikes: "Gradient-norm spike markers. Triggered when grad_norm exceeds 3x its EMA baseline (alpha=0.05) after the initial warmup region and is above 0.5.",
   lossSpikes: "Train-loss spike markers. Triggered when loss is >1.5x the rolling mean (window=20) or jumps by >0.3 from the previous step.",
-  overfit: "Traditional overfit onset estimate at the global validation-loss minimum, shown when post-min validation loss rises by >=2% on average or shows >=3 consecutive increases.",
+  overfit: "Global overfit-onset heuristic anchored to the validation-loss minimum, shown when post-min validation rises by >=2% on average or shows >=3 consecutive increases. On symbio runs treat this as a stitched-series heuristic, not per-candidate overfit truth.",
   activationSwitch: "Symbiogenesis activation/candidate switch events. Colored vertical lines mark transitions into the next activation/candidate during evolutionary search.",
   evoValEnvelope: "Evolution-aware best-loss envelope. Uses a running-best train loss that snaps down on improvements, drifts up slowly otherwise (tau~200 steps), then EMA-smooths the result.",
   evoOverfit: "Per-candidate evolutionary overfit bands. Shaded regions mark candidate windows where train loss rises for >=5 consecutive steps after that candidate's local minimum.",
@@ -448,9 +448,12 @@ interface LossTooltip {
   nearbySwitch?: ActivationSwitchEvent | null;
 }
 
-type LossChartPreset = "traditional" | "evolutionary";
+type LossChartPreset = "traditional" | "evolutionary" | "unified";
 
 function markersForLossPreset(markers: MarkerVisibility, preset: LossChartPreset): MarkerVisibility {
+  if (preset === "unified") {
+    return markers;
+  }
   if (preset === "traditional") {
     return {
       ...markers,
@@ -467,6 +470,22 @@ function markersForLossPreset(markers: MarkerVisibility, preset: LossChartPreset
     lossSpikes: false,
     overfit: false,
   };
+}
+
+function splitIntoCandidateSegments(metrics: ChartMetric[]): Array<{ start: number; end: number }> {
+  if (metrics.length === 0) return [];
+  const segments: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (let i = 1; i < metrics.length; i++) {
+    const prevId = metrics[i - 1].symbio_candidate_id ?? null;
+    const curId = metrics[i].symbio_candidate_id ?? null;
+    if (curId !== prevId) {
+      segments.push({ start, end: i - 1 });
+      start = i;
+    }
+  }
+  segments.push({ start, end: metrics.length - 1 });
+  return segments;
 }
 
 function drawLossChart(
@@ -493,6 +512,8 @@ function drawLossChart(
 
   const losses = metrics.map((m) => m.loss);
   const valPts = metrics.filter((m) => m.val_loss != null);
+  const hasSymbioSearchData = metrics.some((m) => m.symbio_candidate_id != null);
+  const candidateSegments = splitIntoCandidateSegments(metrics);
   const allVals = [...losses, ...valPts.map((v) => v.val_loss!)];
   const minL = Math.min(...allVals);
   const maxL = Math.max(...allVals);
@@ -550,13 +571,28 @@ function drawLossChart(
   const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
   grad.addColorStop(0, "rgba(245, 158, 11, 0.15)");
   grad.addColorStop(1, "rgba(245, 158, 11, 0.0)");
-  ctx.beginPath();
-  ctx.moveTo(sx(metrics[0].step), pad.top + ch);
-  for (const m of metrics) ctx.lineTo(sx(m.step), sy(m.loss));
-  ctx.lineTo(sx(metrics[metrics.length - 1].step), pad.top + ch);
-  ctx.closePath();
-  ctx.fillStyle = grad;
-  ctx.fill();
+  if (hasSymbioSearchData && candidateSegments.length > 1) {
+    for (const seg of candidateSegments) {
+      if (seg.end <= seg.start) continue;
+      ctx.beginPath();
+      ctx.moveTo(sx(metrics[seg.start].step), pad.top + ch);
+      for (let i = seg.start; i <= seg.end; i++) {
+        ctx.lineTo(sx(metrics[i].step), sy(metrics[i].loss));
+      }
+      ctx.lineTo(sx(metrics[seg.end].step), pad.top + ch);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(sx(metrics[0].step), pad.top + ch);
+    for (const m of metrics) ctx.lineTo(sx(m.step), sy(m.loss));
+    ctx.lineTo(sx(metrics[metrics.length - 1].step), pad.top + ch);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
 
   // Train loss line
   ctx.shadowColor = "rgba(245, 158, 11, 0.4)";
@@ -565,9 +601,18 @@ function drawLossChart(
   ctx.strokeStyle = "#f59e0b";
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
-  for (let i = 0; i < metrics.length; i++) {
-    if (i === 0) ctx.moveTo(sx(metrics[i].step), sy(metrics[i].loss));
-    else ctx.lineTo(sx(metrics[i].step), sy(metrics[i].loss));
+  if (hasSymbioSearchData && candidateSegments.length > 1) {
+    for (const seg of candidateSegments) {
+      for (let i = seg.start; i <= seg.end; i++) {
+        if (i === seg.start) ctx.moveTo(sx(metrics[i].step), sy(metrics[i].loss));
+        else ctx.lineTo(sx(metrics[i].step), sy(metrics[i].loss));
+      }
+    }
+  } else {
+    for (let i = 0; i < metrics.length; i++) {
+      if (i === 0) ctx.moveTo(sx(metrics[i].step), sy(metrics[i].loss));
+      else ctx.lineTo(sx(metrics[i].step), sy(metrics[i].loss));
+    }
   }
   ctx.stroke();
   ctx.shadowBlur = 0;
@@ -583,7 +628,11 @@ function drawLossChart(
     for (let i = 0; i < valPts.length; i++) {
       const x = sx(valPts[i].step);
       const y = sy(valPts[i].val_loss!);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const newCandidateSegment =
+        hasSymbioSearchData &&
+        i > 0 &&
+        (valPts[i].symbio_candidate_id ?? null) !== (valPts[i - 1].symbio_candidate_id ?? null);
+      if (i === 0 || newCandidateSegment) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
     ctx.setLineDash([]);
@@ -870,8 +919,9 @@ function drawLossChart(
   ctx.fillStyle = "#666";
   ctx.font = "10px sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("train", lx + 18, ly + 3);
-  lx += 60;
+  const trainLegendLabel = hasSymbioSearchData ? "candidate loss" : "train";
+  ctx.fillText(trainLegendLabel, lx + 18, ly + 3);
+  lx += hasSymbioSearchData ? 102 : 60;
   if (valPts.length > 0) {
     ctx.fillStyle = "#60a5fa";
     ctx.beginPath();
@@ -999,6 +1049,12 @@ function LossChartPanel({
   const [tooltip, setTooltip] = useState<LossTooltip | null>(null);
   const hoverRef = useRef<number | null>(null);
   const panelMarkers = useMemo(() => markersForLossPreset(markers, preset), [markers, preset]);
+  const modeBadge =
+    preset === "traditional"
+      ? "Classic heuristics"
+      : preset === "evolutionary"
+        ? "Symbio overlays"
+        : "Search-aware view";
 
   const draw = useCallback((idx: number | null = null) => {
     if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, panelMarkers, pinnedStep ?? null);
@@ -1085,7 +1141,7 @@ function LossChartPanel({
           <div className="text-[0.67rem] text-text-muted">{subtitle}</div>
         </div>
         <div className="rounded border border-border/40 bg-surface-2/60 px-2 py-1 text-[0.6rem] uppercase tracking-wider text-text-muted">
-          {preset === "traditional" ? "Classic heuristics" : "Symbio overlays"}
+          {modeBadge}
         </div>
       </div>
       <canvas
@@ -1116,6 +1172,12 @@ function LossChartPanel({
               <div className="flex justify-between gap-4">
                 <span className="text-text-muted">Val Loss</span>
                 <span className="font-mono text-blue">{tooltip.metric.val_loss.toFixed(4)}</span>
+              </div>
+            )}
+            {tooltip.metric.symbio_candidate_id && (
+              <div className="flex justify-between gap-4">
+                <span className="text-text-muted">Candidate</span>
+                <span className="font-mono text-text-secondary">{tooltip.metric.symbio_candidate_id}</span>
               </div>
             )}
             <div className="my-1 border-t border-border/50" />
@@ -1191,6 +1253,10 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
   }, []);
 
   const events = useMemo(() => computeEvents(metrics, checkpoints, activationSwitches), [metrics, checkpoints, activationSwitches]);
+  const hasSymbioSearchData = useMemo(
+    () => metrics.some((m) => m.symbio_candidate_id != null) || events.activationSwitches.length > 0,
+    [metrics, events.activationSwitches.length],
+  );
 
   if (metrics.length < 2) {
     return (
@@ -1200,56 +1266,70 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     );
   }
 
-  const traditionalMarkerKeys: MarkerType[] = [
-    "checkpoints",
-    "bestVal",
-    "warmupEnd",
-    "overfit",
-    "gradSpikes",
-    "lossSpikes",
-  ];
-  const evolutionaryMarkerKeys: MarkerType[] = [
+  const searchMarkerKeys: MarkerType[] = [
     "activationSwitch",
     "evoValEnvelope",
     "evoOverfit",
+  ];
+  const validationMarkerKeys: MarkerType[] = [
+    "bestVal",
+    "overfit",
+  ];
+  const runDiagnosticMarkerKeys: MarkerType[] = [
+    "checkpoints",
+    "warmupEnd",
+    "gradSpikes",
+    "lossSpikes",
   ];
 
   return (
     <div className="space-y-3">
       <div className="rounded-lg border border-border bg-surface-2/40 p-3">
+        {hasSymbioSearchData && (
+          <div className="mb-3 rounded-lg border border-cyan-400/20 bg-cyan-400/5 px-3 py-2 text-[0.66rem] leading-relaxed text-text-secondary">
+            Symbio semantics: this chart stitches many <span className="font-semibold text-cyan-300">fresh candidate evaluations</span> onto one global step axis.
+            Loss resets near switches are expected because candidates are re-initialized. Compare local candidate shapes and the global frontier, not a single continuous model trajectory.
+          </div>
+        )}
+        {hasSymbioSearchData && (
+          <>
+            <div className="mb-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
+              Search semantics
+            </div>
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {searchMarkerKeys.map((key) => (
+                <MarkerTogglePill key={`search-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
+              ))}
+            </div>
+          </>
+        )}
         <div className="mb-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
-          Traditional overlays
+          Validation / selection
         </div>
         <div className="mb-3 flex flex-wrap gap-1.5">
-          {traditionalMarkerKeys.map((key) => (
-            <MarkerTogglePill key={`trad-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
+          {validationMarkerKeys.map((key) => (
+            <MarkerTogglePill key={`val-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
           ))}
         </div>
         <div className="mb-2 text-[0.62rem] font-semibold uppercase tracking-wider text-text-muted">
-          Evolutionary overlays
+          Run diagnostics
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {evolutionaryMarkerKeys.map((key) => (
-            <MarkerTogglePill key={`evo-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
+          {runDiagnosticMarkerKeys.map((key) => (
+            <MarkerTogglePill key={`diag-${key}`} marker={key} enabled={markers[key]} onToggle={toggleMarker} />
           ))}
         </div>
       </div>
 
       <div className="grid gap-4">
         <LossChartPanel
-          title="Traditional Gradient + Loss"
-          subtitle="Train/val loss with classic markers (best val, warmup end, overfit, spikes)."
-          preset="traditional"
-          metrics={metrics}
-          events={events}
-          markers={markers}
-          pinnedStep={pinnedStep}
-          onPinStep={onPinStep}
-        />
-        <LossChartPanel
-          title="Evolutionary Gradient + Loss"
-          subtitle="Train/val loss with symbio overlays (activation switches, evo best envelope, evo overfit regions)."
-          preset="evolutionary"
+          title={hasSymbioSearchData ? "Search Trajectory + Frontier" : "Gradient + Loss"}
+          subtitle={
+            hasSymbioSearchData
+              ? "Candidate-local train/val loss segments on a shared step axis, with switch events and global frontier overlays."
+              : "Train/val loss with validation, warmup, overfit, and instability markers."
+          }
+          preset="unified"
           metrics={metrics}
           events={events}
           markers={markers}
