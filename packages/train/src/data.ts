@@ -56,7 +56,12 @@ export class DataLoader {
   nextBatch(): DataBatch {
     const B = this.batchSize;
     const T = this.blockSize;
-    const maxStart = this.tokens.length - T - 1;
+    if (this.tokens.length <= T) {
+      throw new RangeError(
+        `Token count (${this.tokens.length}) must exceed block size (${T}) — need at least ${T + 1} tokens for input+target windows`
+      );
+    }
+    const maxStart = this.tokens.length - T;
 
     const inputs = new Int32Array(B * T);
     const targets = new Int32Array(B * T);
@@ -241,12 +246,18 @@ export async function loadOrCacheTokens(
   const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
   console.log(`  Tokenized: ${tokens.length.toLocaleString()} tokens in ${elapsed}s`);
 
-  // Write cache
+  // Write cache — stream header + token data to avoid doubling memory with Buffer.concat
   try {
     const header = Buffer.alloc(8);
     header.writeDoubleBE(srcStat.mtimeMs, 0);
     const tokenBuf = Buffer.from(tokens.buffer, tokens.byteOffset, tokens.byteLength);
-    await fs.writeFile(cacheFile, Buffer.concat([header, tokenBuf]));
+    const handle = await fs.open(cacheFile, "w");
+    try {
+      await handle.write(header);
+      await handle.write(tokenBuf);
+    } finally {
+      await handle.close();
+    }
     console.log(`  Cached tokens to ${pathMod.basename(cacheFile)} (${(tokenBuf.byteLength / 1024 / 1024).toFixed(0)}MB)`);
   } catch (e) {
     console.warn(`  Failed to cache tokens: ${(e as Error).message}`);

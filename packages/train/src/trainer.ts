@@ -8,7 +8,7 @@ import type {
   ModelConfig, TrainConfig, Backend, Tokenizer, Optimizer, Rng, TensorData, SampleConfig,
 } from "@alpha/core";
 import { shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
-import { Tape } from "@alpha/autograd";
+import { Tape, DropoutRng } from "@alpha/autograd";
 import { initGPT, gptForward, collectParams, countParams, type GPTParams } from "@alpha/model";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
@@ -110,7 +110,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     dataPath, valDataPath, resumePath, onStep, onStart,
   } = deps;
 
-  const rid = makeRunId();
+  const dataTag = dataPath.split("/").pop()?.replace(/\.[^.]+$/, "").replace(/-/g, "_");
+  const rid = makeRunId(dataTag);
   const configHash = hashConfig({ ...modelConfig, ...trainConfig } as any);
 
   // Set up run directory
@@ -302,7 +303,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
-      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision);
+      const dropoutRng = new DropoutRng(trainConfig.seed + step * 1000 + microStep);
+      const { loss } = gptForward(modelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 
@@ -497,6 +499,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       }
     }
 
+    const _t4b = performance.now();
+
     if (!nanDetected) {
       for (const [name, variable] of paramMap) {
         if (variable.grad) gradMap.set(name, variable.grad);
@@ -534,7 +538,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     if (trainConfig.trace) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
-      console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms optim=${(_t5-_t4).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
+      console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
 
     // GPU memory diagnostics (every 5 steps, every step for first 20)
@@ -560,8 +564,8 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       timing_fwd_ms: fwdMs,
       timing_bwd_ms: bwdMs,
       timing_grad_norm_ms: _t4 - _t3,
-      timing_grad_clip_ms: _t5 - _t4,
-      timing_optim_ms: _t5 - _t4,  // includes clip + step
+      timing_grad_clip_ms: _t4b - _t4,
+      timing_optim_ms: _t5 - _t4b,
       timing_flush_ms: _t6 - _t5,
       timing_data_ms: dataLoadMs,
       gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
@@ -633,6 +637,9 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     await metricsHandle.write(JSON.stringify(metrics) + "\n");
 
     if (onStep) onStep(metrics);
+
+    // Yield to event loop so async callbacks (remote metric reporting, etc.) can process
+    await new Promise<void>(resolve => setImmediate(resolve));
 
     // Checkpoint (save at every eval interval and at the end)
     if ((step + 1) % trainConfig.evalInterval === 0 || step + 1 === trainConfig.iters) {
