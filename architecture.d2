@@ -1,0 +1,659 @@
+direction: down
+
+title: |md
+  # Alpha — CPU / GPU Architecture
+  Hand-written GPT training system · Zero ML dependencies
+| {
+  near: top-center
+  style.font-size: 28
+}
+
+# ═══════════════════════════════════════
+# STYLES
+# ═══════════════════════════════════════
+
+classes: {
+  cpu: {
+    style: {
+      fill: "#0a2a3a"
+      stroke: "#00bcd4"
+      font-color: "#e0e4ec"
+      border-radius: 6
+    }
+  }
+  gpu: {
+    style: {
+      fill: "#2a1a0a"
+      stroke: "#ff9100"
+      font-color: "#e0e4ec"
+      border-radius: 6
+    }
+  }
+  dispatch: {
+    style: {
+      fill: "#1a0a2a"
+      stroke: "#b388ff"
+      font-color: "#b388ff"
+      border-radius: 6
+    }
+  }
+  phase: {
+    style: {
+      fill: "#0f1520"
+      stroke: "#2a3550"
+      font-color: "#6a7490"
+      border-radius: 8
+      stroke-dash: 3
+    }
+  }
+  kernel: {
+    style: {
+      fill: "#1a1005"
+      stroke: "#e65100"
+      font-color: "#ffab40"
+      border-radius: 4
+      font-size: 13
+    }
+  }
+  infra: {
+    style: {
+      fill: "#120e05"
+      stroke: "#bf360c"
+      font-color: "#e0e4ec"
+      border-radius: 4
+      font-size: 13
+      double-border: true
+    }
+  }
+}
+
+# ═══════════════════════════════════════
+# PHASE 1: CPU-ONLY OPERATIONS
+# ═══════════════════════════════════════
+
+cpu_only: CPU-Only Operations (always TypeScript) {
+  class: phase
+  style.font-color: "#00bcd4"
+
+  data_loading: |md
+    **Data Loading**
+    Tokenization (BPE / char / word)
+    Batch sampling · Text I/O
+    `DataLoader.nextBatch()` → \[B, T\]
+  | { class: cpu }
+
+  rng: |md
+    **RNG & Seeding**
+    Deterministic seeded RNG
+    Weight init N(0, 0.02)
+  | { class: cpu }
+
+  lr_schedule: |md
+    **Learning Rate Schedule**
+    Warmup: linear ramp ~10%
+    Cosine decay after warmup
+  | { class: cpu }
+
+  checkpoint: |md
+    **Checkpoint I/O**
+    Binary v2: ALPH magic + JSON
+    Params, optimizer, RNG state
+  | { class: cpu }
+
+  metrics: |md
+    **Metrics & Logging**
+    JSONL step metrics
+    Remote sync to dashboard
+  | { class: cpu }
+}
+
+# ═══════════════════════════════════════
+# BACKEND DISPATCH
+# ═══════════════════════════════════════
+
+dispatch: |md
+  **Backend Dispatch**
+  elements >= 1M → GPU
+  elements < 1M → CPU
+| {
+  class: dispatch
+  shape: diamond
+}
+
+cpu_only -> dispatch: "tokens [B, T]" {
+  style.stroke: "#00bcd4"
+  style.animated: true
+}
+
+# ═══════════════════════════════════════
+# PHASE 2: FORWARD PASS
+# ═══════════════════════════════════════
+
+forward: FORWARD PASS {
+  class: phase
+  style.font-color: "#00e676"
+
+  # ─── CPU SIDE ───
+  cpu: CPU — TypeScript {
+    style.fill: "#080e18"
+    style.stroke: "#006064"
+    style.border-radius: 8
+    style.font-color: "#00bcd4"
+
+    tok_emb: |md
+      **Token Embedding**
+      `embedding(wte, tokens)`
+      \[B, T\] → \[B, T, nEmbd\]
+    | { class: cpu }
+
+    pos_emb: |md
+      **Position Embedding**
+      `embedding(wpe, 0..T-1)`
+      \[B, T\] → \[B, T, nEmbd\]
+    | { class: cpu }
+
+    add_emb: |md
+      **Add Embeddings**
+      `tokEmb + posEmb`
+      \[B, T, nEmbd\]
+    | { class: cpu }
+
+    causal_mask: |md
+      **Causal Mask**
+      `causalMask(T)` → \[T, T\]
+      lower=0, upper=neg inf
+    | { class: cpu }
+
+    reshape: |md
+      **Reshape / Transpose**
+      View ops (no data copy)
+      Multi-head reshape
+    | { class: cpu }
+
+    residual: |md
+      **Residual Connections**
+      `x = x + attnOut`
+      `x = x + mlpOut`
+    | { class: cpu }
+
+    tape: |md
+      **Tape Recording**
+      Every op → {output,
+      inputs, backward fn}
+    | { class: cpu }
+
+    tok_emb -> pos_emb
+    pos_emb -> add_emb
+  }
+
+  # ─── GPU SIDE ───
+  gpu: GPU — Vulkan Compute {
+    style.fill: "#18100a"
+    style.stroke: "#e65100"
+    style.border-radius: 8
+    style.font-color: "#ff9100"
+
+    # ─── TRANSFORMER BLOCK ───
+    transformer: "TRANSFORMER BLOCK ×N layers" {
+      style.fill: "#0f0a18"
+      style.stroke: "#7c4dff"
+      style.border-radius: 8
+      style.font-color: "#b388ff"
+      style.stroke-dash: 3
+
+      attn_label: "— Multi-Head Attention —" {
+        style.fill: transparent
+        style.stroke: transparent
+        style.font-color: "#6a7490"
+        style.font-size: 13
+      }
+
+      qkv: |md
+        **Q, K, V Projections**
+        3x tiled matmul
+        \[B*T, nEmbd\] x \[nEmbd, nEmbd\]
+      | { class: gpu }
+
+      attn_scores: |md
+        **Attention Scores**
+        Q @ K^T / sqrt(headDim)
+        \[B, nHead, T, T\]
+      | { class: gpu }
+
+      softmax: |md
+        **Softmax** (fused kernel)
+        max, exp, sum, normalize
+        1 workgroup per row
+      | { class: gpu }
+
+      v_weight: |md
+        **Value Weighting**
+        scores @ V
+        \[B, nHead, T, headDim\]
+      | { class: gpu }
+
+      out_proj: |md
+        **Output Projection**
+        concat(heads) @ Wo
+        \[B*T, nEmbd\]
+      | { class: gpu }
+
+      attn_label -> qkv
+      qkv -> attn_scores
+      attn_scores -> softmax
+      softmax -> v_weight
+      v_weight -> out_proj
+
+      mlp_label: "— Feed-Forward MLP —" {
+        style.fill: transparent
+        style.stroke: transparent
+        style.font-color: "#6a7490"
+        style.font-size: 13
+      }
+
+      ln: |md
+        **LayerNorm** (x2 per layer)
+        Fused: mean, var, norm, scale
+        1 workgroup per token
+      | { class: gpu }
+
+      fc1: |md
+        **MLP FC1** (tiled matmul)
+        \[B*T, nEmbd\] → \[B*T, 4*nEmbd\]
+      | { class: gpu }
+
+      gelu: |md
+        **GELU Activation**
+        0.5x(1+tanh(sqrt(2/pi)(x+0.044715x^3)))
+        vec4 kernel when aligned
+      | { class: gpu }
+
+      fc2: |md
+        **MLP FC2** (tiled matmul)
+        \[B*T, 4*nEmbd\] → \[B*T, nEmbd\]
+      | { class: gpu }
+
+      mlp_label -> ln
+      out_proj -> ln: "+ residual" {
+        style.stroke: "#006064"
+        style.stroke-dash: 3
+      }
+      ln -> fc1
+      fc1 -> gelu
+      gelu -> fc2
+    }
+
+    final_ln: |md
+      **Final LayerNorm**
+      \[B, T, nEmbd\]
+    | { class: gpu }
+
+    lm_head: |md
+      **LM Head Projection**
+      matmul → \[B, T, vocabSize\]
+    | { class: gpu }
+
+    cross_entropy: |md
+      **Cross-Entropy Loss**
+      log-softmax + NLL → scalar
+    | { class: gpu }
+
+    transformer -> final_ln: "+ residual" {
+      style.stroke: "#006064"
+      style.stroke-dash: 3
+    }
+    final_ln -> lm_head
+    lm_head -> cross_entropy
+  }
+
+  cpu.add_emb -> gpu.transformer.qkv: "uploadBuffer" {
+    style.stroke: "#546e7a"
+    style.stroke-dash: 5
+    style.animated: true
+  }
+
+  cpu.causal_mask -> gpu.transformer.attn_scores: "mask fill" {
+    style.stroke: "#546e7a"
+    style.stroke-dash: 5
+  }
+}
+
+dispatch -> forward {
+  style.stroke: "#37474f"
+  style.animated: true
+}
+
+# ═══════════════════════════════════════
+# READBACK TRANSFER
+# ═══════════════════════════════════════
+
+readback: |md
+  **readBuffer** — loss scalar + activations for backward
+  GPU → CPU data transfer
+| {
+  style.fill: "#1a1a2a"
+  style.stroke: "#546e7a"
+  style.font-color: "#78909c"
+  style.border-radius: 4
+  style.stroke-dash: 5
+}
+
+forward -> readback {
+  style.stroke: "#546e7a"
+  style.animated: true
+}
+
+# ═══════════════════════════════════════
+# PHASE 3: BACKWARD PASS
+# ═══════════════════════════════════════
+
+backward: BACKWARD PASS — Reverse-Mode Autodiff {
+  class: phase
+  style.font-color: "#ff5252"
+
+  cpu: CPU — Tape Walker {
+    style.fill: "#080e18"
+    style.stroke: "#006064"
+    style.border-radius: 8
+    style.font-color: "#00bcd4"
+
+    init_grad: |md
+      **Initialize Loss Grad**
+      `loss.grad = ones(shape)`
+      Seed dL/dL = 1
+    | { class: cpu }
+
+    tape_walk: |md
+      **Reverse Tape Walk**
+      Newest → oldest entry
+      `entry.backward(grad, backend)`
+      Accumulate with +=
+    | { class: cpu }
+
+    reduce_bcast: |md
+      **Broadcasting Undo**
+      `reduceBroadcast(grad, shape)`
+      Sum over broadcast dims
+    | { class: cpu }
+
+    grad_clip: |md
+      **Gradient Norm & Clipping**
+      Global L2 norm of all params
+      If norm > clip: scale gradients
+    | { class: cpu }
+
+    init_grad -> tape_walk
+    tape_walk -> reduce_bcast
+    reduce_bcast -> grad_clip
+  }
+
+  gpu: GPU — Gradient Kernels {
+    style.fill: "#18100a"
+    style.stroke: "#e65100"
+    style.border-radius: 8
+    style.font-color: "#ff9100"
+
+    ce_back: |md
+      **CrossEntropy Backward**
+      softmax(logits) - oneHot / N
+    | { class: gpu }
+
+    matmul_back: |md
+      **MatMul Backward** (x8/layer)
+      dA = G @ B^T
+      dB = A^T @ G
+      Dominates backward compute
+    | { class: gpu }
+
+    ln_back: |md
+      **LayerNorm Backward**
+      Analytical gradient
+      Scale + bias updates
+    | { class: gpu }
+
+    act_back: |md
+      **Activation Backward**
+      GELU: tanh approx derivative
+      Softmax: s(g - sum(g*s))
+    | { class: gpu }
+
+    elem_back: |md
+      **Element-wise Backward**
+      add/sub/mul/div/exp/log/sqrt
+      Same vec4 kernels as forward
+    | { class: gpu }
+
+    ce_back -> matmul_back
+    matmul_back -> ln_back
+    ln_back -> act_back
+    act_back -> elem_back
+  }
+
+  cpu.tape_walk -> gpu.ce_back: "dispatches grad ops" {
+    style.stroke: "#546e7a"
+    style.stroke-dash: 5
+    style.animated: true
+  }
+}
+
+readback -> backward {
+  style.stroke: "#37474f"
+  style.animated: true
+}
+
+# ═══════════════════════════════════════
+# PHASE 4: OPTIMIZER
+# ═══════════════════════════════════════
+
+optimizer: OPTIMIZER — AdamW (CPU) {
+  class: phase
+  style.font-color: "#ffd600"
+
+  momentum: |md
+    **Momentum**
+    m = B1*m + (1-B1)*g
+    EMA of gradients
+  | { class: cpu }
+
+  variance: |md
+    **Variance**
+    v = B2*v + (1-B2)*g^2
+    EMA of squared gradients
+  | { class: cpu }
+
+  bias_correct: |md
+    **Bias Correction**
+    m_hat = m/(1-B1^t)
+    v_hat = v/(1-B2^t)
+  | { class: cpu }
+
+  param_update: |md
+    **Parameter Update**
+    p -= lr*(m_hat/(sqrt(v_hat)+eps) + wd*p)
+    Decoupled weight decay
+  | { class: cpu }
+
+  momentum -> variance
+  variance -> bias_correct
+  bias_correct -> param_update
+}
+
+backward -> optimizer {
+  style.stroke: "#37474f"
+  style.animated: true
+}
+
+optimizer -> cpu_only: "next training step" {
+  style.stroke: "#263238"
+  style.stroke-dash: 5
+  style.animated: true
+}
+
+# ═══════════════════════════════════════
+# GPU KERNEL INVENTORY
+# ═══════════════════════════════════════
+
+kernels: "GPU KERNEL INVENTORY — SPIR-V Compute Shaders" {
+  style.fill: "#0f0a05"
+  style.stroke: "#e65100"
+  style.border-radius: 10
+  style.font-color: "#ff9100"
+
+  elementwise: |md
+    **Element-wise Kernels**
+    add, sub, mul, div, neg
+    exp, log, sqrt, scale
+    + vec4 variants (4x throughput)
+  | { class: kernel }
+
+  activations: |md
+    **Activation Kernels**
+    relu, gelu, silu
+    + vec4 variants
+    GELU: fused tanh approx
+  | { class: kernel }
+
+  reductions: |md
+    **Reduction Kernels**
+    sum_reduce, max_reduce
+    Tree reduction in shared mem
+    log2(WG_SIZE) barrier steps
+  | { class: kernel }
+
+  fused_softmax: |md
+    **Fused Softmax**
+    Row-wise: max, exp, sum, norm
+    1 workgroup per row
+    No intermediate buffers
+  | { class: kernel }
+
+  fused_ln: |md
+    **Fused LayerNorm**
+    mean, var, normalize, scale+bias
+    1 workgroup per token
+  | { class: kernel }
+
+  tiled_matmul: |md
+    **Tiled MatMul**
+    16x16 shared memory tiles
+    Loop over K dimension
+    Barrier-synchronized loads
+  | { class: kernel }
+
+  mul_add: |md
+    **Fused Mul-Add**
+    D\[i\] = A\[i\]*B\[i\] + C\[i\]
+    Single-pass 3-input
+  | { class: kernel }
+
+  f16: |md
+    **F16 Storage Variants**
+    add_f16, sub_f16, mul_f16
+    div_f16, neg_f16, exp_f16
+    Compute f32, store f16
+  | { class: kernel }
+}
+
+# ═══════════════════════════════════════
+# GPU INFRASTRUCTURE
+# ═══════════════════════════════════════
+
+infra: "GPU INFRASTRUCTURE — Vulkan Native Layer" {
+  style.fill: "#0f0a05"
+  style.stroke: "#bf360c"
+  style.border-radius: 10
+  style.font-color: "#ff9100"
+  style.double-border: true
+
+  vulkan: |md
+    **Vulkan Native Addon**
+    C (~2000 LOC), N-API bridge
+    Dynamic loading via dlopen
+    No SDK headers needed
+  | { class: infra }
+
+  spirv: |md
+    **SPIR-V Assembler**
+    TypeScript (~2500 LOC)
+    Binary assembler — no glslc
+    Types, control flow, GLSL.std.450
+  | { class: infra }
+
+  memory: |md
+    **Slab Memory Allocator**
+    64MB slabs (up to 512MB)
+    Buffer pooling + recycling
+    FinalizationRegistry cleanup
+  | { class: infra }
+
+  timeline: |md
+    **Timeline Semaphores**
+    Vulkan 1.2 async dispatch
+    Record many, wait once
+    Pipelined execution
+  | { class: infra }
+
+  compute_graph: |md
+    **Compute Graph Batching**
+    Lazy eval, pending queue
+    Auto-flush at 64 ops
+    N*100us → 1*100us + N*2us
+  | { class: infra }
+
+  workgroups: |md
+    **Auto-Tuned Workgroups**
+    Benchmark {64, 128, 256, 512}
+    256K element add on init
+    Vec4 when elements % 4 == 0
+  | { class: infra }
+}
+
+kernels -> infra: "compiled to Vulkan pipelines" {
+  style.stroke: "#bf360c"
+  style.stroke-dash: 3
+}
+
+# ═══════════════════════════════════════
+# CROSS-LINKS: forward GPU uses kernels
+# ═══════════════════════════════════════
+
+forward.gpu.transformer.qkv -> kernels.tiled_matmul: "uses" {
+  style.stroke: "#4e342e"
+  style.stroke-dash: 5
+}
+
+forward.gpu.transformer.softmax -> kernels.fused_softmax: "uses" {
+  style.stroke: "#4e342e"
+  style.stroke-dash: 5
+}
+
+forward.gpu.transformer.ln -> kernels.fused_ln: "uses" {
+  style.stroke: "#4e342e"
+  style.stroke-dash: 5
+}
+
+forward.gpu.transformer.gelu -> kernels.activations: "uses" {
+  style.stroke: "#4e342e"
+  style.stroke-dash: 5
+}
+
+# ═══════════════════════════════════════
+# LEGEND
+# ═══════════════════════════════════════
+
+legend: |md
+  **Legend**
+  Cyan border = CPU (TypeScript)
+  Orange border = GPU (Vulkan / SPIR-V)
+  Purple = Backend dispatch decision
+  Dashed lines = Data transfer (CPU ↔ GPU)
+  Threshold: **>= 1M elements → GPU**
+  **40 CPU ops · 25+ GPU kernels · 0 deps**
+| {
+  near: top-right
+  style.fill: "#0c1018"
+  style.stroke: "#2a3550"
+  style.font-color: "#78909c"
+  style.border-radius: 6
+  style.font-size: 13
+}

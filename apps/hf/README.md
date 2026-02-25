@@ -4,7 +4,7 @@ emoji: "\U0001F9E0"
 colorFrom: indigo
 colorTo: purple
 sdk: docker
-app_port: 3000
+app_port: 7860
 models:
   - ajaxdavis/alpha-v0-historic
 ---
@@ -15,18 +15,26 @@ A scratch-built GPT language model trained from zero on historic chat data. Ever
 
 ## API
 
-OpenAI-compatible endpoint:
+OpenAI-compatible chat completions:
 
 ```bash
 curl -X POST https://ajaxdavis-alpha-v0-historic.hf.space/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "chat", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 100}'
 ```
 
-Simple generation:
+Streaming:
 
 ```bash
-curl "https://ajaxdavis-alpha-v0-historic.hf.space/api/generate?prompt=Hello&max_tokens=100"
+curl -X POST https://ajaxdavis-alpha-v0-historic.hf.space/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 100, "stream": true}'
+```
+
+List models:
+
+```bash
+curl https://ajaxdavis-alpha-v0-historic.hf.space/v1/models
 ```
 
 ## Model Details

@@ -32,6 +32,7 @@ packages/train      — training loop, checkpointing, data loading
 packages/db         — Turso/libsql database layer
 apps/server         — inference server (Hono, AI SDK provider)
 apps/web            — Next.js dashboard (Tailwind, App Router, dark theme)
+apps/hf             — HF Spaces inference server (standalone, optimized, no autograd)
 apps/tui            — terminal dashboard (Ink/React)
 apps/cli            — CLI commands
 ```
@@ -147,10 +148,47 @@ Set `DISCORD_WEBHOOK_URL` in `.env.local` on training pods. The remote reporter 
 
 ## Deploy
 
+### Railway (dashboard + API)
+
 All deployments are on **Railway** (project `REDACTED_PROJECT`).
 
 - **Single service** (web + API consolidated): `railway service alpha-web && railway up`
 - Training runs stored in `outputs/` locally, synced to Turso via `@alpha/db` syncFromDisk
+
+### HF Spaces (inference)
+
+Live at **https://ajaxdavis-alpha-v0-historic.hf.space** — OpenAI-compatible inference API on free `cpu-basic` (2 vCPU, 16GB RAM).
+
+**Architecture**: `apps/hf/` is a standalone Hono server with a dedicated inference engine (`inference.ts`) that bypasses all training machinery (no autograd, no tape). Uses KV cache, tiled matmul, zero-alloc decode loop. ~50ms/token on cpu-basic.
+
+**Deploy**: Push to the HF Space git repo. HF rebuilds the Docker image automatically.
+
+```bash
+# Clone, update, push
+git clone https://huggingface.co/spaces/ajaxdavis/alpha-v0-historic /tmp/hf-space
+# Copy updated files from apps/hf/ and packages/{core,tokenizers}/ into the clone
+# The HF repo mirrors: Dockerfile, README.md, package.json, turbo.json, tsconfig.base.json,
+# package-lock.json, packages/{core,tokenizers}/, apps/hf/
+cd /tmp/hf-space && git add -A && git commit -m "description" && git push
+```
+
+- Dockerfile downloads checkpoint from HF model repo `ajaxdavis/alpha-v0-historic` at build time
+- Only `@alpha/core` and `@alpha/tokenizers` are needed (no tensor/autograd/model)
+- Regenerate `package-lock.json` in the HF repo after changing deps: `npm install --package-lock-only`
+
+**Test**:
+```bash
+# Health
+curl https://ajaxdavis-alpha-v0-historic.hf.space/
+# Models
+curl https://ajaxdavis-alpha-v0-historic.hf.space/v1/models
+# Chat completion (timed)
+curl -w "\nTime: %{time_total}s\n" -X POST https://ajaxdavis-alpha-v0-historic.hf.space/v1/chat/completions \
+  -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30}'
+# Streaming
+curl -N -X POST https://ajaxdavis-alpha-v0-historic.hf.space/v1/chat/completions \
+  -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30,"stream":true}'
+```
 
 ## DB
 

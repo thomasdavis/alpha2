@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alpha — CPU / GPU Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #06080c;
+    --bg-raised: #0c1018;
+    --bg-card: #0f1520;
+    --cpu-primary: #00e5ff;
+    --cpu-dim: #00e5ff33;
+    --cpu-glow: #00e5ff18;
+    --gpu-primary: #ff9100;
+    --gpu-dim: #ff910033;
+    --gpu-glow: #ff910018;
+    --dispatch: #c158ff;
+    --dispatch-dim: #c158ff33;
+    --text: #e0e4ec;
+    --text-dim: #6a7490;
+    --text-code: #8892a8;
+    --border: #1a2030;
+    --border-cpu: #00e5ff22;
+    --border-gpu: #ff910022;
+    --green: #00e676;
+    --red: #ff5252;
+  }
+
+  html { font-size: 14px; scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Azeret Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* === BACKGROUND GRID === */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 60px 60px;
+    opacity: 0.3;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse 60% 40% at 20% 10%, var(--cpu-glow), transparent),
+                radial-gradient(ellipse 60% 40% at 80% 10%, var(--gpu-glow), transparent),
+                radial-gradient(ellipse 80% 30% at 50% 100%, #c158ff08, transparent);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* === HEADER === */
+  .header {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    padding: 3rem 2rem 2rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 2.8rem;
+    letter-spacing: -0.03em;
+    background: linear-gradient(135deg, var(--cpu-primary), var(--dispatch), var(--gpu-primary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .header .subtitle {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  /* === LEGEND === */
+  .legend {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    justify-content: center;
+    gap: 2rem;
+    padding: 1.5rem 2rem;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+  }
+
+  .legend-swatch.cpu { background: var(--cpu-primary); box-shadow: 0 0 8px var(--cpu-dim); }
+  .legend-swatch.gpu { background: var(--gpu-primary); box-shadow: 0 0 8px var(--gpu-dim); }
+  .legend-swatch.dispatch { background: var(--dispatch); box-shadow: 0 0 8px var(--dispatch-dim); }
+  .legend-swatch.transfer {
+    background: transparent;
+    border: 2px dashed var(--text-dim);
+    width: 24px;
+    height: 2px;
+    border-radius: 0;
+  }
+
+  /* === MAIN LAYOUT === */
+  .diagram {
+    position: relative;
+    z-index: 1;
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  /* === SECTION === */
+  .section {
+    margin-bottom: 2.5rem;
+  }
+
+  .section-label {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 1rem;
+  }
+
+  .section-label.cpu-label {
+    color: var(--cpu-primary);
+    background: var(--cpu-glow);
+    border: 1px solid var(--border-cpu);
+  }
+
+  .section-label.gpu-label {
+    color: var(--gpu-primary);
+    background: var(--gpu-glow);
+    border: 1px solid var(--border-gpu);
+  }
+
+  .section-label.dispatch-label {
+    color: var(--dispatch);
+    background: #c158ff0c;
+    border: 1px solid #c158ff22;
+  }
+
+  /* === SWIM LANES === */
+  .lanes {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    gap: 0;
+    align-items: start;
+  }
+
+  .lane {
+    padding: 0 0.5rem;
+  }
+
+  .lane-header {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding-bottom: 1rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .lane-header.cpu-header {
+    color: var(--cpu-primary);
+    border-bottom: 2px solid var(--cpu-primary);
+  }
+
+  .lane-header.gpu-header {
+    color: var(--gpu-primary);
+    border-bottom: 2px solid var(--gpu-primary);
+  }
+
+  .lane-divider {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100%;
+  }
+
+  .lane-divider::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--border) 0px,
+      var(--border) 6px,
+      transparent 6px,
+      transparent 12px
+    );
+  }
+
+  /* === CARD === */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 1rem;
+    transition: border-color 0.25s, transform 0.2s, box-shadow 0.25s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+  }
+
+  .card:hover {
+    transform: translateY(-1px);
+  }
+
+  .card.cpu-card { border-color: var(--border-cpu); }
+  .card.cpu-card::before { background: linear-gradient(90deg, var(--cpu-primary), transparent); }
+  .card.cpu-card:hover { border-color: #00e5ff44; box-shadow: 0 4px 24px var(--cpu-glow); }
+
+  .card.gpu-card { border-color: var(--border-gpu); }
+  .card.gpu-card::before { background: linear-gradient(90deg, var(--gpu-primary), transparent); }
+  .card.gpu-card:hover { border-color: #ff910044; box-shadow: 0 4px 24px var(--gpu-glow); }
+
+  .card.dispatch-card {
+    border-color: #c158ff22;
+    background: linear-gradient(135deg, #0f1520, #130f20);
+  }
+  .card.dispatch-card::before { background: linear-gradient(90deg, var(--dispatch), transparent); }
+  .card.dispatch-card:hover { border-color: #c158ff44; box-shadow: 0 4px 24px #c158ff18; }
+
+  .card-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .card.cpu-card .card-title { color: var(--cpu-primary); }
+  .card.gpu-card .card-title { color: var(--gpu-primary); }
+  .card.dispatch-card .card-title { color: var(--dispatch); }
+
+  .card-body {
+    font-size: 0.72rem;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  .card-body code {
+    background: #ffffff08;
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    color: var(--text-code);
+    font-size: 0.7rem;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 0.15em 0.5em;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  .tag-cpu { background: var(--cpu-dim); color: var(--cpu-primary); }
+  .tag-gpu { background: var(--gpu-dim); color: var(--gpu-primary); }
+  .tag-dispatch { background: var(--dispatch-dim); color: var(--dispatch); }
+
+  /* === TRANSFORMER BLOCK === */
+  .transformer-block {
+    border: 1px solid #c158ff30;
+    border-radius: 8px;
+    padding: 1.2rem;
+    margin: 1rem 0;
+    position: relative;
+    background: linear-gradient(180deg, #c158ff06, transparent);
+  }
+
+  .transformer-block::after {
+    content: '×N layers';
+    position: absolute;
+    top: -0.6rem;
+    right: 1rem;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.7rem;
+    color: var(--dispatch);
+    background: var(--bg);
+    padding: 0 0.5rem;
+    letter-spacing: 0.05em;
+  }
+
+  .transformer-label {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.7rem;
+    color: var(--dispatch);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+
+  /* === OP LIST === */
+  .op-list {
+    list-style: none;
+  }
+
+  .op-list li {
+    position: relative;
+    padding: 0.35rem 0 0.35rem 1.2rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    border-left: 1px solid var(--border);
+    margin-left: 0.3rem;
+  }
+
+  .op-list li::before {
+    content: '';
+    position: absolute;
+    left: -4px;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    transform: translateY(-50%);
+  }
+
+  .op-list.cpu-ops li::before { background: var(--cpu-primary); box-shadow: 0 0 6px var(--cpu-dim); }
+  .op-list.gpu-ops li::before { background: var(--gpu-primary); box-shadow: 0 0 6px var(--gpu-dim); }
+  .op-list.dispatch-ops li::before { background: var(--dispatch); box-shadow: 0 0 6px var(--dispatch-dim); }
+
+  .op-list li strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  /* === FLOW ARROW === */
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 0;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    gap: 0.5rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .flow-arrow .arrow-line {
+    width: 40px;
+    height: 1px;
+    position: relative;
+  }
+
+  .flow-arrow .arrow-line::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: -3px;
+    border: solid;
+    border-width: 0 1px 1px 0;
+    padding: 3px;
+    transform: rotate(-45deg);
+  }
+
+  .flow-arrow.cpu-flow .arrow-line { background: var(--cpu-primary); }
+  .flow-arrow.cpu-flow .arrow-line::after { border-color: var(--cpu-primary); }
+
+  .flow-arrow.gpu-flow .arrow-line { background: var(--gpu-primary); }
+  .flow-arrow.gpu-flow .arrow-line::after { border-color: var(--gpu-primary); }
+
+  /* === TRANSFER STRIP === */
+  .transfer-strip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    gap: 0.75rem;
+    position: relative;
+  }
+
+  .transfer-strip.upload {
+    background: linear-gradient(90deg, var(--cpu-glow), var(--gpu-glow));
+    border: 1px dashed #ffffff15;
+  }
+
+  .transfer-strip.download {
+    background: linear-gradient(270deg, var(--cpu-glow), var(--gpu-glow));
+    border: 1px dashed #ffffff15;
+  }
+
+  .transfer-arrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .transfer-arrow .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  .transfer-arrow .dot:nth-child(2) { animation-delay: 0.15s; }
+  .transfer-arrow .dot:nth-child(3) { animation-delay: 0.3s; }
+  .transfer-arrow .dot:nth-child(4) { animation-delay: 0.45s; }
+
+  .transfer-strip.upload .dot { background: var(--gpu-primary); }
+  .transfer-strip.download .dot { background: var(--cpu-primary); }
+
+  /* === DISPATCH DIAMOND === */
+  .dispatch-zone {
+    text-align: center;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    position: relative;
+  }
+
+  .diamond {
+    width: 80px;
+    height: 80px;
+    background: var(--bg-card);
+    border: 2px solid var(--dispatch);
+    transform: rotate(45deg);
+    margin: 0 auto 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 20px var(--dispatch-dim), inset 0 0 20px #c158ff08;
+    position: relative;
+  }
+
+  .diamond-text {
+    transform: rotate(-45deg);
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.55rem;
+    color: var(--dispatch);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-align: center;
+    line-height: 1.3;
+  }
+
+  .threshold-label {
+    font-size: 0.65rem;
+    color: var(--dispatch);
+    margin-top: 0.5rem;
+    font-weight: 500;
+  }
+
+  .threshold-label code {
+    background: var(--dispatch-dim);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-size: 0.65rem;
+  }
+
+  .dispatch-branches {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.75rem;
+    font-size: 0.65rem;
+  }
+
+  .dispatch-branch {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 4px;
+  }
+
+  .dispatch-branch.to-cpu {
+    color: var(--cpu-primary);
+    background: var(--cpu-glow);
+    border: 1px solid var(--border-cpu);
+  }
+
+  .dispatch-branch.to-gpu {
+    color: var(--gpu-primary);
+    background: var(--gpu-glow);
+    border: 1px solid var(--border-gpu);
+  }
+
+  /* === KERNEL GRID === */
+  .kernel-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    margin-top: 0.75rem;
+  }
+
+  .kernel-chip {
+    background: #ff910008;
+    border: 1px solid var(--border-gpu);
+    border-radius: 4px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.65rem;
+    transition: all 0.2s;
+  }
+
+  .kernel-chip:hover {
+    border-color: #ff910044;
+    background: #ff910012;
+    transform: translateY(-1px);
+  }
+
+  .kernel-chip .kernel-name {
+    color: var(--gpu-primary);
+    font-weight: 700;
+    font-size: 0.7rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .kernel-chip .kernel-desc {
+    color: var(--text-dim);
+    font-size: 0.6rem;
+    line-height: 1.4;
+  }
+
+  /* === FULL WIDTH SECTIONS === */
+  .full-width-section {
+    margin: 2rem 0;
+  }
+
+  .full-width-section .section-inner {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+  }
+
+  /* === INFRA STRIP === */
+  .infra-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
+    margin-top: 0.75rem;
+  }
+
+  .infra-chip {
+    background: #ff910005;
+    border: 1px solid var(--border-gpu);
+    border-radius: 4px;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .infra-chip strong {
+    color: var(--gpu-primary);
+    display: block;
+    font-size: 0.65rem;
+    margin-bottom: 0.2rem;
+  }
+
+  /* === VERTICAL FLOW CONNECTOR === */
+  .flow-connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0.8rem 0;
+    position: relative;
+  }
+
+  .flow-connector .vline {
+    width: 1px;
+    height: 28px;
+    background: var(--text-dim);
+    position: relative;
+  }
+
+  .flow-connector .vline::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: -3px;
+    border: solid var(--text-dim);
+    border-width: 0 1px 1px 0;
+    padding: 3px;
+    transform: rotate(45deg);
+  }
+
+  .flow-connector .flow-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 0.3rem;
+  }
+
+  /* === BACKWARD SECTION === */
+  .backward-block {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem;
+    margin: 1rem 0;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 10px,
+      #ffffff02 10px,
+      #ffffff02 20px
+    );
+    position: relative;
+  }
+
+  .backward-block .backward-badge {
+    position: absolute;
+    top: -0.5rem;
+    left: 1rem;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.6rem;
+    color: var(--red);
+    background: var(--bg);
+    padding: 0 0.5rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* === PHASE LABELS === */
+  .phase-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+  }
+
+  .phase-badge.forward {
+    color: var(--green);
+    background: #00e67612;
+    border: 1px solid #00e67622;
+  }
+
+  .phase-badge.backward {
+    color: var(--red);
+    background: #ff525212;
+    border: 1px solid #ff525222;
+  }
+
+  .phase-badge.optimize {
+    color: #ffea00;
+    background: #ffea0012;
+    border: 1px solid #ffea0022;
+  }
+
+  /* === FOOTER === */
+  .footer {
+    text-align: center;
+    padding: 3rem 2rem;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    position: relative;
+    z-index: 1;
+  }
+
+  .footer strong { color: var(--text); }
+
+  /* === ANIMATIONS === */
+  .card, .kernel-chip, .infra-chip {
+    opacity: 0;
+    transform: translateY(12px);
+    animation: fadeUp 0.5s ease forwards;
+  }
+
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .diamond {
+    animation: diamondPulse 3s ease-in-out infinite;
+  }
+
+  @keyframes diamondPulse {
+    0%, 100% { box-shadow: 0 0 20px var(--dispatch-dim), inset 0 0 20px #c158ff08; }
+    50% { box-shadow: 0 0 30px #c158ff28, inset 0 0 30px #c158ff12; }
+  }
+
+  /* stagger animations */
+  .card:nth-child(1) { animation-delay: 0.05s; }
+  .card:nth-child(2) { animation-delay: 0.1s; }
+  .card:nth-child(3) { animation-delay: 0.15s; }
+  .card:nth-child(4) { animation-delay: 0.2s; }
+  .card:nth-child(5) { animation-delay: 0.25s; }
+  .kernel-chip:nth-child(1) { animation-delay: 0.05s; }
+  .kernel-chip:nth-child(2) { animation-delay: 0.1s; }
+  .kernel-chip:nth-child(3) { animation-delay: 0.15s; }
+  .kernel-chip:nth-child(4) { animation-delay: 0.2s; }
+  .kernel-chip:nth-child(5) { animation-delay: 0.25s; }
+  .kernel-chip:nth-child(6) { animation-delay: 0.3s; }
+  .infra-chip:nth-child(1) { animation-delay: 0.05s; }
+  .infra-chip:nth-child(2) { animation-delay: 0.1s; }
+  .infra-chip:nth-child(3) { animation-delay: 0.15s; }
+  .infra-chip:nth-child(4) { animation-delay: 0.2s; }
+  .infra-chip:nth-child(5) { animation-delay: 0.25s; }
+  .infra-chip:nth-child(6) { animation-delay: 0.3s; }
+
+  /* === RESPONSIVE === */
+  @media (max-width: 900px) {
+    .lanes { grid-template-columns: 1fr; gap: 1rem; }
+    .lane-divider { display: none; }
+    .kernel-grid { grid-template-columns: 1fr; }
+    .infra-grid { grid-template-columns: 1fr 1fr; }
+    .dispatch-branches { flex-direction: column; gap: 0.5rem; }
+    .header h1 { font-size: 2rem; }
+  }
+
+  @media (max-width: 600px) {
+    .infra-grid { grid-template-columns: 1fr; }
+    .full-width-section .section-inner { grid-template-columns: 1fr; }
+  }
+
+  /* === HOVER DETAIL EXPAND === */
+  .expandable .expand-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease;
+  }
+
+  .expandable:hover .expand-content,
+  .expandable.active .expand-content {
+    max-height: 600px;
+  }
+
+  .expand-hint {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    opacity: 0.5;
+    margin-top: 0.3rem;
+    transition: opacity 0.2s;
+  }
+
+  .expandable:hover .expand-hint { opacity: 0; }
+
+  /* shapes indicator */
+  .shape-tag {
+    display: inline-block;
+    font-size: 0.58rem;
+    padding: 0.1em 0.4em;
+    border-radius: 2px;
+    background: #ffffff08;
+    color: var(--text-code);
+    font-family: 'Azeret Mono', monospace;
+    margin-left: 0.3rem;
+  }
+</style>
+</head>
+<body>
+
+<!-- ===== HEADER ===== -->
+<header class="header">
+  <h1>ALPHA ARCHITECTURE</h1>
+  <div class="subtitle">CPU / GPU Computation Map &mdash; Hand-Written GPT Training System</div>
+</header>
+
+<!-- ===== LEGEND ===== -->
+<nav class="legend">
+  <div class="legend-item"><div class="legend-swatch cpu"></div>CPU Operations</div>
+  <div class="legend-item"><div class="legend-swatch gpu"></div>GPU Kernels (Vulkan)</div>
+  <div class="legend-item"><div class="legend-swatch dispatch"></div>Backend Dispatch</div>
+  <div class="legend-item"><div class="legend-swatch transfer"></div>Data Transfer</div>
+</nav>
+
+<main class="diagram">
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- PHASE 1: CPU-ONLY OPERATIONS                -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section">
+    <div class="section-label cpu-label">Phase 1 &mdash; CPU-Only Operations</div>
+
+    <div class="full-width-section">
+      <div class="section-inner">
+
+        <div class="card cpu-card">
+          <div class="card-title">Data Loading</div>
+          <div class="card-body">
+            Tokenization (BPE / char / word), batch sampling, text I/O.
+            <code>DataLoader.nextBatch()</code> picks random offsets,
+            extracts <code>[B, T]</code> token windows, shifts targets by 1.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">RNG &amp; Seeding</div>
+          <div class="card-body">
+            Deterministic seeded RNG (<code>seed=42</code>) for reproducible
+            weight init (<code>N(0, 0.02)</code>), dropout masks, and data sampling.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Learning Rate Schedule</div>
+          <div class="card-body">
+            <strong>Warmup</strong>: linear ramp over first ~10% steps.<br>
+            <strong>Cosine decay</strong>: <code>lr × 0.5 × (1 + cos(π × decay))</code>
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Checkpoint I/O</div>
+          <div class="card-body">
+            Binary format v2: <code>ALPH</code> magic + JSON header + packed Float32.
+            Saves params, optimizer state (m/v buffers), RNG state, tokenizer artifacts.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Metrics &amp; Logging</div>
+          <div class="card-body">
+            JSONL step metrics (loss, lr, grad norm, tokens/sec).
+            Remote sync to <code>alpha.omegaai.dev/training</code> via
+            <code>ALPHA_REMOTE_URL</code>.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- DISPATCH DECISION                           -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section">
+    <div class="dispatch-zone">
+      <div class="diamond">
+        <div class="diamond-text">Backend<br>Dispatch</div>
+      </div>
+      <div class="threshold-label">
+        Element count threshold: <code>&ge; 1,000,000</code> &rarr; GPU &nbsp;|&nbsp; <code>&lt; 1M</code> &rarr; CPU
+      </div>
+      <div class="dispatch-branches">
+        <div class="dispatch-branch to-cpu">&larr; CPU path <span class="tag tag-cpu">TypeScript</span></div>
+        <div class="dispatch-branch to-gpu">GPU path &rarr; <span class="tag tag-gpu">SPIR-V / Vulkan</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- DATA TRANSFER: CPU → GPU                    -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="transfer-strip upload">
+    <span style="color:var(--cpu-primary)">CPU</span>
+    <span class="transfer-arrow">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </span>
+    <span style="color:var(--text-dim)">uploadBuffer &mdash; staging → device-local</span>
+    <span class="transfer-arrow">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </span>
+    <span style="color:var(--gpu-primary)">GPU</span>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- PHASE 2: FORWARD PASS (SWIM LANES)          -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section" style="margin-top: 2rem;">
+    <div class="phase-badge forward">&#9654; Forward Pass</div>
+
+    <div class="lanes">
+      <!-- ─── CPU LANE ─── -->
+      <div class="lane">
+        <div class="lane-header cpu-header">CPU &mdash; TypeScript</div>
+
+        <div class="card cpu-card expandable">
+          <div class="card-title">Token Embedding <span class="shape-tag">[B, T] → [B, T, nEmbd]</span></div>
+          <div class="card-body">
+            <code>embedding(wte, tokens)</code> — gather rows from weight table.
+            Tape records backward for gradient scatter.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Position Embedding <span class="shape-tag">[B, T] → [B, T, nEmbd]</span></div>
+          <div class="card-body"><code>embedding(wpe, positions)</code> — positional encoding lookup, indices 0..T-1.</div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Add Embeddings <span class="shape-tag">[B, T, nEmbd]</span></div>
+          <div class="card-body"><code>add(tokEmb, posEmb)</code> — element-wise sum. Small models stay on CPU.</div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Causal Mask <span class="shape-tag">[T, T]</span></div>
+          <div class="card-body"><code>causalMask(T)</code> — lower triangle = 0, upper = -∞. Always CPU (small, created once).</div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Reshape / Transpose</div>
+          <div class="card-body">
+            View operations: reshape to multi-head <code>[B, nHead, T, headDim]</code>,
+            transpose for attention, concat heads back. No computation — pointer reinterpretation.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Residual Connections</div>
+          <div class="card-body"><code>add(x, attnOut)</code>, <code>add(x, mlpOut)</code> — identity shortcuts stabilizing deep nets.</div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Tape Recording</div>
+          <div class="card-body">
+            Every op appends to global <code>Tape</code> — stores output Variable,
+            input Variables, backward closure. Enables reverse-mode autodiff.
+          </div>
+        </div>
+      </div>
+
+      <!-- ─── DIVIDER ─── -->
+      <div class="lane-divider"></div>
+
+      <!-- ─── GPU LANE ─── -->
+      <div class="lane">
+        <div class="lane-header gpu-header">GPU &mdash; Vulkan Compute</div>
+
+        <div class="card gpu-card">
+          <div class="card-title">MatMul — Q, K, V Projections <span class="shape-tag">[B·T, nEmbd]²</span></div>
+          <div class="card-body">
+            3× tiled matmul: <code>x @ Wq</code>, <code>x @ Wk</code>, <code>x @ Wv</code>.
+            16×16 shared memory tiles, loop over K dimension.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Attention Scores <span class="shape-tag">[B, nHead, T, T]</span></div>
+          <div class="card-body">
+            <code>Q @ K^T / √headDim</code> — batched matmul + fused scale.
+            Largest tensor in the forward pass.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Softmax <span class="shape-tag">[B·nHead, T, T]</span></div>
+          <div class="card-body">
+            Fused row-wise kernel: max → subtract → exp → sum → normalize.
+            One workgroup per row, tree reduction in shared memory.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Value Weighting <span class="shape-tag">[B, nHead, T, headDim]</span></div>
+          <div class="card-body"><code>scores @ V</code> — tiled matmul combining attention weights with value vectors.</div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Output Projection <span class="shape-tag">[B·T, nEmbd]</span></div>
+          <div class="card-body"><code>concat(heads) @ Wo</code> — final attention matmul.</div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">LayerNorm (×2 per layer) <span class="shape-tag">[B·T, nEmbd]</span></div>
+          <div class="card-body">
+            Fused kernel: mean → variance → normalize → scale + bias.
+            One workgroup per token position. Pre-norm architecture.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">MLP FC1 <span class="shape-tag">[B·T, nEmbd] → [B·T, 4·nEmbd]</span></div>
+          <div class="card-body">Tiled matmul expanding to 4× hidden dim.</div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">GELU Activation <span class="shape-tag">[B·T, 4·nEmbd]</span></div>
+          <div class="card-body">
+            Fused tanh approximation: <code>0.5x(1+tanh(√(2/π)(x+0.044715x³)))</code>.
+            Uses vec4 kernel variant when aligned.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">MLP FC2 <span class="shape-tag">[B·T, 4·nEmbd] → [B·T, nEmbd]</span></div>
+          <div class="card-body">Tiled matmul projecting back to model dim.</div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">LM Head <span class="shape-tag">[B·T, nEmbd] → [B·T, vocabSize]</span></div>
+          <div class="card-body">Final projection to vocabulary logits.</div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Cross-Entropy Loss <span class="shape-tag">→ scalar</span></div>
+          <div class="card-body">
+            Log-softmax + NLL. <code>-log(softmax(logits)[target])</code> averaged over B×T tokens.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- transformer layer annotation -->
+    <div style="text-align:center; margin: 1.5rem 0;">
+      <div class="transformer-block" style="max-width: 700px; margin: 0 auto;">
+        <div class="transformer-label">Transformer Block — repeated ×N layers</div>
+        <div class="card-body" style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.8;">
+          <strong style="color:var(--text)">Attention:</strong> LN → Q/K/V matmul → reshape → scores → mask → softmax → V-weight → out proj → residual<br>
+          <strong style="color:var(--text)">MLP:</strong> LN → FC1 matmul → GELU → FC2 matmul → residual<br>
+          <span style="font-size: 0.65rem; color: var(--text-dim);">
+            Each layer: 8 matmuls + 2 layernorms + 1 softmax + 1 GELU + 2 residual adds + mask fill
+          </span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- DATA TRANSFER: GPU → CPU (loss readback)    -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="transfer-strip download">
+    <span style="color:var(--gpu-primary)">GPU</span>
+    <span class="transfer-arrow">
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+    </span>
+    <span style="color:var(--text-dim)">readBuffer &mdash; loss scalar + activations for backward</span>
+    <span class="transfer-arrow">
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+      <span class="dot" style="background:var(--cpu-primary)"></span>
+    </span>
+    <span style="color:var(--cpu-primary)">CPU</span>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- PHASE 3: BACKWARD PASS                      -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section" style="margin-top: 2rem;">
+    <div class="phase-badge backward">&#9664; Backward Pass</div>
+
+    <div class="lanes">
+      <div class="lane">
+        <div class="lane-header cpu-header">CPU &mdash; Tape Walker</div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Initialize Loss Gradient</div>
+          <div class="card-body"><code>loss.grad = ones(loss.shape)</code> — seed the backward pass with dL/dL = 1.</div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Reverse Tape Walk</div>
+          <div class="card-body">
+            Walk recorded tape from newest → oldest entry.
+            Each entry calls its backward closure: <code>entry.backward(outputGrad, backend)</code>.
+            Gradients accumulate with <code>+=</code> for multi-use variables (residuals).
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Broadcasting Undo</div>
+          <div class="card-body">
+            <code>reduceBroadcast(grad, originalShape)</code> — sums over broadcast dims.
+            E.g., [1, 512] broadcast to [64, 512] → sum over batch in backward.
+          </div>
+        </div>
+
+        <div class="card cpu-card">
+          <div class="card-title">Gradient Norm &amp; Clipping</div>
+          <div class="card-body">
+            Collect all param gradients → compute global L2 norm.
+            If <code>norm > gradClip</code>: scale by <code>gradClip / norm</code>.
+          </div>
+        </div>
+      </div>
+
+      <div class="lane-divider"></div>
+
+      <div class="lane">
+        <div class="lane-header gpu-header">GPU &mdash; Gradient Kernels</div>
+
+        <div class="card gpu-card">
+          <div class="card-title">CrossEntropy Backward</div>
+          <div class="card-body">
+            <code>grad = (softmax(logits) - oneHot(targets)) / N</code><br>
+            Reuses forward softmax values.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">MatMul Backward (×8 per layer)</div>
+          <div class="card-body">
+            <code>dA = G @ B^T</code>, <code>dB = A^T @ G</code>.
+            Each forward matmul produces 2 backward matmuls.
+            Dominates backward compute.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">LayerNorm Backward</div>
+          <div class="card-body">
+            Full analytical gradient: normalized input, scale/bias updates.
+            Fused kernel matching forward structure.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">GELU / Softmax Backward</div>
+          <div class="card-body">
+            GELU: derivative of tanh approximation.<br>
+            Softmax: <code>s × (g - sum(g × s))</code>.
+          </div>
+        </div>
+
+        <div class="card gpu-card">
+          <div class="card-title">Element-wise Backward</div>
+          <div class="card-body">
+            add/sub/mul/div/exp/log/sqrt — each has trivial derivative.
+            Uses same vec4 kernel variants as forward.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- PHASE 4: OPTIMIZER                          -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section" style="margin-top: 2rem;">
+    <div class="phase-badge optimize">&#8635; Optimizer — AdamW</div>
+
+    <div class="full-width-section">
+      <div class="section-inner" style="grid-template-columns: repeat(4, 1fr);">
+        <div class="card cpu-card">
+          <div class="card-title">Momentum Update</div>
+          <div class="card-body">
+            <code>m = β₁·m + (1-β₁)·g</code><br>
+            Exponential moving average of gradients.
+            Per-parameter buffer.
+          </div>
+        </div>
+        <div class="card cpu-card">
+          <div class="card-title">Variance Update</div>
+          <div class="card-body">
+            <code>v = β₂·v + (1-β₂)·g²</code><br>
+            EMA of squared gradients (RMSprop component).
+          </div>
+        </div>
+        <div class="card cpu-card">
+          <div class="card-title">Bias Correction</div>
+          <div class="card-body">
+            <code>m̂ = m/(1-β₁ᵗ)</code><br>
+            <code>v̂ = v/(1-β₂ᵗ)</code><br>
+            Corrects for zero-initialization bias.
+          </div>
+        </div>
+        <div class="card cpu-card">
+          <div class="card-title">Parameter Update</div>
+          <div class="card-body">
+            <code>p -= lr·(m̂/(√v̂+ε) + wd·p)</code><br>
+            Decoupled weight decay applied directly to params.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow-connector">
+    <div class="vline"></div>
+    <div class="flow-label">next training step</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- GPU KERNEL DETAILS                          -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section" style="margin-top: 2rem;">
+    <div class="section-label gpu-label">GPU Kernel Inventory &mdash; SPIR-V Compute Shaders</div>
+
+    <div class="kernel-grid">
+      <div class="kernel-chip">
+        <div class="kernel-name">Element-wise</div>
+        <div class="kernel-desc">
+          <code>add</code> <code>sub</code> <code>mul</code> <code>div</code> <code>neg</code>
+          <code>exp</code> <code>log</code> <code>sqrt</code> <code>scale</code><br>
+          + vec4 variants (4× throughput via 128-bit loads)
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Activations</div>
+        <div class="kernel-desc">
+          <code>relu</code> <code>gelu</code> <code>silu</code><br>
+          + vec4 variants. GELU uses fused tanh approx.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Reductions</div>
+        <div class="kernel-desc">
+          <code>sum_reduce</code> <code>max_reduce</code><br>
+          Parallel tree reduction in shared memory.
+          Log₂(WG_SIZE) barrier steps.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Fused Softmax</div>
+        <div class="kernel-desc">
+          Row-wise: max → exp(x-max) → sum → normalize.<br>
+          One workgroup per row. No intermediate buffers.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Fused LayerNorm</div>
+        <div class="kernel-desc">
+          Row-wise: mean → var → (x-μ)/√(σ²+ε) → γx+β.<br>
+          One workgroup per token. Scale + bias fused.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Tiled MatMul</div>
+        <div class="kernel-desc">
+          16×16 shared memory tiles. Loop over K dim.<br>
+          <code>M×K @ K×N → M×N</code>. Barrier-synchronized loads.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">Fused Mul-Add</div>
+        <div class="kernel-desc">
+          <code>D[i] = A[i] × B[i] + C[i]</code><br>
+          Single-pass 3-input kernel.
+        </div>
+      </div>
+      <div class="kernel-chip">
+        <div class="kernel-name">F16 Storage</div>
+        <div class="kernel-desc">
+          <code>add_f16</code> <code>sub_f16</code> <code>mul_f16</code> <code>div_f16</code>
+          <code>neg_f16</code> <code>exp_f16</code> <code>log_f16</code> <code>sqrt_f16</code><br>
+          Compute in f32, store as f16. 2× memory savings.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- GPU INFRASTRUCTURE                          -->
+  <!-- ═══════════════════════════════════════════ -->
+  <section class="section" style="margin-top: 2rem;">
+    <div class="section-label gpu-label">GPU Infrastructure &mdash; Vulkan Native Layer</div>
+
+    <div class="infra-grid">
+      <div class="infra-chip">
+        <strong>Vulkan Native Addon</strong>
+        C (~2000 LOC), N-API bridge. Dynamic Vulkan loading via <code>dlopen</code> — no SDK headers needed. Physical device selection + compute queue.
+      </div>
+      <div class="infra-chip">
+        <strong>SPIR-V Assembler</strong>
+        Hand-written in TypeScript (~2500 LOC). Binary assembler — no <code>glslc</code> or <code>glslangValidator</code>. Types, decorations, control flow, GLSL.std.450 extended instructions.
+      </div>
+      <div class="infra-chip">
+        <strong>Slab Memory Allocator</strong>
+        Bump-pointer allocation in 64MB slabs (up to 512MB per slab). Buffer pooling + recycling via <code>FinalizationRegistry</code>.
+      </div>
+      <div class="infra-chip">
+        <strong>Timeline Semaphores</strong>
+        Vulkan 1.2 timeline semaphores for async dispatch. Record many ops → wait only when results needed. Enables pipelined execution.
+      </div>
+      <div class="infra-chip">
+        <strong>Compute Graph Batching</strong>
+        Lazy evaluation — ops recorded to pending queue. Auto-flush at 64 ops. Single command buffer submit: N ops go from N×100μs to 1×100μs + N×2μs.
+      </div>
+      <div class="infra-chip">
+        <strong>Auto-Tuned Workgroups</strong>
+        Benchmarks {64, 128, 256, 512} on init via 256K element add. Optimal WG_SIZE cached for session. Vec4 kernels when elements % 4 == 0.
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ===== FOOTER ===== -->
+<footer class="footer">
+  <strong>Alpha</strong> &mdash; 40 CPU ops &middot; 25+ GPU kernels &middot; 0 external ML dependencies &middot; Pure TypeScript + Hand-written SPIR-V
+</footer>
+
+<script>
+  // Intersection Observer for scroll-triggered animations
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.style.animationPlayState = 'running';
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.card, .kernel-chip, .infra-chip').forEach(el => {
+    el.style.animationPlayState = 'paused';
+    observer.observe(el);
+  });
+
+  // Click to toggle expandable cards on mobile
+  document.querySelectorAll('.expandable').forEach(el => {
+    el.addEventListener('click', () => el.classList.toggle('active'));
+  });
+</script>
+
+</body>
+</html>

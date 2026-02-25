@@ -8,12 +8,10 @@ import {
   OUTPUTS_DIR, modelsCache, MODELS_CACHE_TTL, invalidateModelsCache, setModelsCache,
   checkAuth, jsonResponse,
 } from "@/lib/server-state";
-import { ensureInit } from "@/lib/init";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  await ensureInit();
   if (modelsCache && Date.now() - modelsCache.ts < MODELS_CACHE_TTL) {
     return new Response(modelsCache.json, {
       headers: { "Content-Type": "application/json" },
