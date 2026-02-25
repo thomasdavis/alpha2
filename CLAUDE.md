@@ -150,6 +150,8 @@ Training posts to Discord via `DISCORD_WEBHOOK_URL` (set in `.env.local`) when:
 - Inference samples are generated (at each checkpoint interval)
 - Training completes
 
+When the user asks to "post to Discord", always post to the **#training-and-evals** channel (ID: `1473468557680705547`, guild: `1349727923434815519`). This channel is used for training updates, run summaries, eval results, and team communication about model progress.
+
 ## Deploy
 
 ### Railway (dashboard + API)

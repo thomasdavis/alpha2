@@ -10,6 +10,12 @@ import {
   ResponsiveContainer, Area, AreaChart, ReferenceLine, BarChart, Bar,
   Cell, ScatterChart, Scatter, Legend,
 } from "recharts";
+import dynamic from "next/dynamic";
+
+const RadialTrainingViz = dynamic(
+  () => import("@/components/radial-viz").then((m) => m.RadialTrainingViz),
+  { ssr: false },
+);
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -1463,6 +1469,15 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
             <div className="mb-4">
               <ChartPanel title="Oscillation & Heat Capacity (amcharts)" helpText={HELP.harmonicAmcharts}>
                 <AmchartsOscillatorChart metrics={metrics} />
+              </ChartPanel>
+            </div>
+          )}
+
+          {/* 3D Radial Training Visualization */}
+          {metrics.length > 10 && (
+            <div className="mb-4">
+              <ChartPanel title="Radial Training Dynamics" helpText="Interactive 3D visualization of training state. Concentric rings represent different metrics (loss, gradient norm, learning rate, throughput, entropy) mapped radially around the training timeline. The central orb pulses with current loss (red=high, cyan=low). Ring heights show metric values — spikes and oscillations are visible as 3D terrain. Particle field intensity reflects gradient flow. Color-coded by activation type during evolutionary search. Generation transitions appear as pulse rings. Drag to orbit, scroll to zoom.">
+                <RadialTrainingViz metrics={metrics} />
               </ChartPanel>
             </div>
           )}
