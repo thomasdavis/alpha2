@@ -664,7 +664,7 @@ function ActivationSwitchLog({ metrics }: { metrics: SymbioMetric[] }) {
 
 // ── Evolutionary Metrics Section ─────────────────────────────
 
-function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
+function EvolutionaryTimeline({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
   if (candidates.length === 0) return null;
 
@@ -737,7 +737,7 @@ function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
       {fitnessData.length > 1 && (
         <ChartPanel title="Fitness Progression" helpText={HELP.evolution}>
           <ResponsiveContainer width="100%" height={200}>
-            <ScatterChart>
+            <ScatterChart onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
               <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
               <XAxis dataKey="step" name="Step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
               <YAxis dataKey="fitness" name="Fitness" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} />
@@ -753,6 +753,7 @@ function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
                   </div>
                 );
               }} />
+              {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
               <Scatter data={fitnessData} fill="#34d399">
                 {fitnessData.map((d, i) => (
                   <Cell key={i} fill={ACTIVATION_HEX[d.activation] ?? "#888"} />
@@ -767,7 +768,7 @@ function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
       {diversityData.length > 1 && (
         <ChartPanel title="Architecture Diversity" helpText={HELP.diversity}>
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={diversityData}>
+            <AreaChart data={diversityData} onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
               <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
               <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
               <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
@@ -780,6 +781,7 @@ function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
                   </div>
                 );
               }} />
+              {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
               <Area type="monotone" dataKey="diversity" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.15} strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
@@ -791,7 +793,7 @@ function EvolutionaryTimeline({ metrics }: { metrics: SymbioMetric[] }) {
 
 // ── Phase Change / Gelation Visualization ────────────────────
 
-function PhaseChangeTimeline({ metrics }: { metrics: SymbioMetric[] }) {
+function PhaseChangeTimeline({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
   // Aggregate alert density over windows of 50 steps
   const windowSize = 50;
   const data: { step: number; alertDensity: number; channels: number; reason: string }[] = [];
@@ -808,7 +810,7 @@ function PhaseChangeTimeline({ metrics }: { metrics: SymbioMetric[] }) {
 
   return (
     <ResponsiveContainer width="100%" height={120}>
-      <BarChart data={data}>
+      <BarChart data={data} onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
         <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
         <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
         <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
@@ -824,6 +826,7 @@ function PhaseChangeTimeline({ metrics }: { metrics: SymbioMetric[] }) {
             </div>
           );
         }} />
+        {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
         <Bar dataKey="alertDensity" name="Alert Density">
           {data.map((d, i) => (
             <Cell key={i} fill={d.alertDensity > 0.5 ? "#ef4444" : d.alertDensity > 0.2 ? "#f59e0b" : d.alertDensity > 0 ? "#facc15" : "#34d399"} fillOpacity={0.7} />
@@ -836,7 +839,7 @@ function PhaseChangeTimeline({ metrics }: { metrics: SymbioMetric[] }) {
 
 // ── Harmonic Oscillator Analysis ─────────────────────────────
 
-function HarmonicOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
+function HarmonicOscillatorChart({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
   // Compute loss oscillation around moving average
   const windowSize = 20;
   if (metrics.length < windowSize * 2) return null;
@@ -859,11 +862,13 @@ function HarmonicOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
     envelope.push({ step: data[i].step, amplitude: maxAmp });
   }
 
+  const handleClick = (e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); };
+
   return (
     <div className="space-y-3">
       {/* Oscillation */}
       <ResponsiveContainer width="100%" height={160}>
-        <AreaChart data={data}>
+        <AreaChart data={data} onClick={handleClick}>
           <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
           <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
           <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => v.toFixed(3)} />
@@ -879,6 +884,7 @@ function HarmonicOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
             );
           }} />
           <ReferenceLine y={0} stroke="#555" />
+          {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
           <Area type="monotone" dataKey="deviation" name="Oscillation" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.1} strokeWidth={1.5} />
         </AreaChart>
       </ResponsiveContainer>
@@ -886,10 +892,11 @@ function HarmonicOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
       {/* Amplitude envelope - damping analysis */}
       {envelope.length > 2 && (
         <ResponsiveContainer width="100%" height={100}>
-          <AreaChart data={envelope}>
+          <AreaChart data={envelope} onClick={handleClick}>
             <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
             <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
             <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} />
+            {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
             <Area type="monotone" dataKey="amplitude" name="Amplitude Envelope" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} strokeWidth={1.5} />
           </AreaChart>
         </ResponsiveContainer>
@@ -900,7 +907,7 @@ function HarmonicOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
 
 // ── Activation Distribution Over Time ────────────────────────
 
-function ActivationDistributionChart({ metrics }: { metrics: SymbioMetric[] }) {
+function ActivationDistributionChart({ metrics, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
   // Build a time series of activation distribution
   const data: { step: number; [k: string]: number }[] = [];
   for (const m of metrics) {
@@ -952,11 +959,12 @@ function ActivationDistributionChart({ metrics }: { metrics: SymbioMetric[] }) {
       {/* Stacked area of distribution over time */}
       {data.length > 2 && activations.length > 0 && (
         <ResponsiveContainer width="100%" height={140}>
-          <AreaChart data={data}>
+          <AreaChart data={data} onClick={(e: any) => { if (e?.activeLabel != null && onPinStep) onPinStep(Number(e.activeLabel)); }}>
             <CartesianGrid stroke={CHART_THEME.grid} strokeDasharray="3 3" />
             <XAxis dataKey="step" stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmtNum(v)} />
             <YAxis stroke={CHART_THEME.axisText} tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
             <RTooltip content={<CustomTooltipContent />} />
+            {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
             {activations.map(act => (
               <Area key={act} type="monotone" dataKey={act} stackId="1" stroke={ACTIVATION_HEX[act] ?? "#888"} fill={ACTIVATION_HEX[act] ?? "#888"} fillOpacity={0.3} strokeWidth={0} />
             ))}
@@ -1063,7 +1071,7 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
           {hasCusumData && (
             <div className="mb-4">
               <ChartPanel title="Phase Change / Gelation" helpText={HELP.phaseChange}>
-                <PhaseChangeTimeline metrics={metrics} />
+                <PhaseChangeTimeline metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
               </ChartPanel>
             </div>
           )}
@@ -1072,7 +1080,7 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
           {metrics.length > 60 && (
             <div className="mb-4">
               <ChartPanel title="Loss Oscillation (Harmonic Analysis)" helpText={HELP.harmonic}>
-                <HarmonicOscillatorChart metrics={metrics} />
+                <HarmonicOscillatorChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
               </ChartPanel>
             </div>
           )}
@@ -1082,7 +1090,7 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
               {/* Evolutionary Metrics */}
               <div className="mb-4">
                 <ChartPanel title="Evolutionary Search" helpText={HELP.evolution}>
-                  <EvolutionaryTimeline metrics={metrics} />
+                  <EvolutionaryTimeline metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
                 </ChartPanel>
               </div>
 
@@ -1111,7 +1119,7 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
               {/* Activation Distribution */}
               <div className="mb-4">
                 <ChartPanel title="Activation Distribution" helpText={HELP.activationDist}>
-                  <ActivationDistributionChart metrics={metrics} />
+                  <ActivationDistributionChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
                 </ChartPanel>
               </div>
             </>
