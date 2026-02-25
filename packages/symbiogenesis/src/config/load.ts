@@ -50,7 +50,7 @@ export function validateSymbioConfig(config: SymbioConfig): void {
   if (config.stepsPerCandidate < 1) {
     throw new Error(`stepsPerCandidate must be >= 1, got ${config.stepsPerCandidate}`);
   }
-  const validActivations = new Set(["gelu", "relu", "silu", "swiglu"]);
+  const validActivations = new Set(["gelu", "relu", "silu", "swiglu", "universal", "kan_spline"]);
   for (const act of config.activationPool) {
     if (!validActivations.has(act)) {
       throw new Error(`Invalid activation in pool: "${act}". Valid: ${[...validActivations].join(", ")}`);
