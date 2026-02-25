@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, mul, matmul, sum, softmax, crossEntropy, relu, gelu } from "@alpha/autograd";
+import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu } from "@alpha/autograd";
 
 describe("Autograd", () => {
   const B = new CpuRefBackend();
@@ -99,6 +99,44 @@ describe("Autograd", () => {
     // d(x*y)/dx = y = 4, d(x*y)/dy = x = 3
     expect(numGradX).toBeCloseTo(4.0, 2);
     expect(numGradY).toBeCloseTo(3.0, 2);
+  });
+
+  it("broadcast [3,1] + [1,4] produces correct result and gradients", () => {
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+
+    // a: [3,1] = [[1],[2],[3]], b: [1,4] = [[10,20,30,40]]
+    const a = makeVar([1, 2, 3], [3, 1]);
+    const b = makeVar([10, 20, 30, 40], [1, 4]);
+    const c = add(ctx, a, b); // [3,4]
+    const loss = sum(ctx, c);
+
+    tape.backward(loss, B);
+
+    // c = [[11,21,31,41],[12,22,32,42],[13,23,33,43]]
+    // sum = 11+21+31+41 + 12+22+32+42 + 13+23+33+43 = 324
+    expect((loss.data.data as Float32Array)[0]).toBeCloseTo(324, 2);
+
+    // da/d(a[i,0]) = 4 (broadcast along dim 1, 4 elements)
+    expect(Array.from(a.grad!.data)).toEqual([4, 4, 4]);
+    // db/d(b[0,j]) = 3 (broadcast along dim 0, 3 elements)
+    expect(Array.from(b.grad!.data)).toEqual([3, 3, 3, 3]);
+  });
+
+  it("broadcast [3,1] → [3,4] in mean backward", () => {
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+
+    // a: [3,4], mean over axis=1 keepdims → [3,1], then broadcast back
+    const a = makeVar([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4]);
+    const m = mean(ctx, a, 1, true); // [3,1]
+    const loss = sum(ctx, m);
+
+    tape.backward(loss, B);
+
+    // Each element of a gets grad 1/4 (mean over 4 elements, then sum of 3)
+    const ga = Array.from(a.grad!.data as Float32Array);
+    for (const g of ga) expect(g).toBeCloseTo(0.25, 5);
   });
 
   it("cross entropy backward produces gradients", () => {

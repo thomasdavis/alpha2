@@ -15,6 +15,8 @@ import {
   shapeStrides,
   dtypeArray,
   SeededRng,
+  broadcastShapes,
+  broadcastIndices,
 } from "@alpha/core";
 
 // ---------------------------------------------------------------------------
@@ -48,62 +50,6 @@ function commonDtype(a: Dtype, b: Dtype): Dtype {
   if (a === "f64" || b === "f64") return "f64";
   if (a === "f32" || b === "f32") return "f32";
   return "i32";
-}
-
-/**
- * Broadcast two shapes and return [resultShape, stridesA, stridesB].
- * Supports: same shape, scalar broadcast, and trailing-dimension broadcast.
- */
-function broadcastShapes(sa: Shape, sb: Shape): [Shape, number[], number[]] {
-  const ndim = Math.max(sa.length, sb.length);
-  const result: number[] = new Array(ndim);
-  const padA = ndim - sa.length;
-  const padB = ndim - sb.length;
-
-  for (let i = 0; i < ndim; i++) {
-    const da = i < padA ? 1 : sa[i - padA];
-    const db = i < padB ? 1 : sb[i - padB];
-    if (da !== db && da !== 1 && db !== 1) {
-      throw new Error(`Cannot broadcast shapes [${sa}] and [${sb}]`);
-    }
-    result[i] = Math.max(da, db);
-  }
-
-  // Build strides: if a dimension is 1 (and needs broadcasting), stride = 0.
-  const stridesA = new Array(ndim);
-  const stridesB = new Array(ndim);
-  let strA = 1;
-  let strB = 1;
-  for (let i = ndim - 1; i >= 0; i--) {
-    const da = i < padA ? 1 : sa[i - padA];
-    const db = i < padB ? 1 : sb[i - padB];
-    stridesA[i] = da === 1 && result[i] !== 1 ? 0 : strA;
-    stridesB[i] = db === 1 && result[i] !== 1 ? 0 : strB;
-    strA *= da;
-    strB *= db;
-  }
-
-  return [result, stridesA, stridesB];
-}
-
-/** Convert a flat index in the result to flat indices in a and b using broadcast strides. */
-function broadcastIndices(
-  flatIdx: number,
-  resultShape: Shape,
-  stridesA: number[],
-  stridesB: number[],
-): [number, number] {
-  const ndim = resultShape.length;
-  let idxA = 0;
-  let idxB = 0;
-  let remainder = flatIdx;
-  for (let d = ndim - 1; d >= 0; d--) {
-    const coord = remainder % resultShape[d];
-    remainder = (remainder - coord) / resultShape[d];
-    idxA += coord * stridesA[d];
-    idxB += coord * stridesB[d];
-  }
-  return [idxA, idxB];
 }
 
 function binaryOp(
