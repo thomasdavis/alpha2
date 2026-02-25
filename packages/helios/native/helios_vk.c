@@ -677,8 +677,9 @@ static VkResult submitCmdBufSync(VkCommandBuffer cmdBuf) {
 }
 
 // Submit a command buffer with timeline semaphore signal (async — no host wait)
+// Returns signalValue on success, 0 on failure (0 is never a valid timeline signal).
 static uint64_t submitCmdBufAsync(VkCommandBuffer cmdBuf) {
-  uint64_t signalValue = nextTimelineValue++;
+  uint64_t signalValue = nextTimelineValue; // tentative — only commit on success
   VkTimelineSemaphoreSubmitInfo tsInfo = {
     .sType = 1000207003, // VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
     .signalSemaphoreValueCount = 1,
@@ -693,7 +694,12 @@ static uint64_t submitCmdBufAsync(VkCommandBuffer cmdBuf) {
     .signalSemaphoreCount = 1,
     .pSignalSemaphores = &timelineSem,
   };
-  fp_vkQueueSubmit(computeQueue, 1, &submitInfo, 0);
+  VkResult res = fp_vkQueueSubmit(computeQueue, 1, &submitInfo, 0);
+  if (res != VK_SUCCESS) {
+    // Don't advance timeline — the semaphore was never signaled.
+    return 0;
+  }
+  nextTimelineValue = signalValue + 1; // commit — advance past the value we just signaled
   return signalValue;
 }
 
@@ -1568,8 +1574,13 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
   uint32_t bufCount;
   napi_get_array_length(env, args[1], &bufCount);
 
+  if (bufCount == 0 || bufCount > 32) {
+    napi_throw_range_error(env, NULL, "dispatch: bufCount must be 1..32");
+    return NULL;
+  }
+
   int32_t bufSlots[32];
-  for (uint32_t i = 0; i < bufCount && i < 32; i++) {
+  for (uint32_t i = 0; i < bufCount; i++) {
     napi_value elem;
     napi_get_element(env, args[1], i, &elem);
     napi_get_value_int32(env, elem, &bufSlots[i]);
@@ -1671,6 +1682,11 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
 
   // Submit async — signal timeline semaphore, don't wait
   uint64_t tv = submitCmdBufAsync(dispatchCmdBuf);
+  if (tv == 0) {
+    dispatchCacheValid = 0; // cmd buffer state is indeterminate after failed submit
+    napi_throw_error(env, NULL, "dispatch: vkQueueSubmit failed");
+    return NULL;
+  }
   lastDispatchTimeline = tv;
 
   // Mark the last buffer (output) with the timeline value
@@ -1732,8 +1748,13 @@ static napi_value napi_batchDispatch(napi_env env, napi_callback_info info) {
   uint32_t bufCount;
   napi_get_array_length(env, args[1], &bufCount);
 
+  if (bufCount == 0 || bufCount > 32) {
+    napi_throw_range_error(env, NULL, "batchDispatch: bufCount must be 1..32");
+    return NULL;
+  }
+
   int32_t bufSlots[32];
-  for (uint32_t i = 0; i < bufCount && i < 32; i++) {
+  for (uint32_t i = 0; i < bufCount; i++) {
     napi_value elem;
     napi_get_element(env, args[1], i, &elem);
     napi_get_value_int32(env, elem, &bufSlots[i]);
@@ -1823,6 +1844,12 @@ static napi_value napi_batchSubmit(napi_env env, napi_callback_info info) {
   uint64_t tv = 0;
   if (batchDispatchCount > 0) {
     tv = submitCmdBufAsync(batchCmdBuf);
+    if (tv == 0) {
+      batchRecording = 0;
+      batchDispatchCount = 0;
+      napi_throw_error(env, NULL, "batchSubmit: vkQueueSubmit failed");
+      return NULL;
+    }
     lastDispatchTimeline = tv;
   }
 
@@ -1883,8 +1910,13 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
   uint32_t bufCount;
   napi_get_array_length(env, args[1], &bufCount);
 
+  if (bufCount == 0 || bufCount > 32) {
+    napi_throw_range_error(env, NULL, "gpuTime: bufCount must be 1..32");
+    return NULL;
+  }
+
   int32_t bufSlots[32];
-  for (uint32_t i = 0; i < bufCount && i < 32; i++) {
+  for (uint32_t i = 0; i < bufCount; i++) {
     napi_value elem;
     napi_get_element(env, args[1], i, &elem);
     napi_get_value_int32(env, elem, &bufSlots[i]);

@@ -20,6 +20,9 @@ import {
   shapeStrides,
   dtypeArray,
   SeededRng,
+  broadcastShapes,
+  broadcastIndices,
+  broadcastStrides,
 } from "@alpha/core";
 
 import { getNative, initDevice, getDeviceInfo, type NativeAddon } from "./device.js";
@@ -647,6 +650,13 @@ export class HeliosBackend implements Backend {
    */
   purgeBufferPools(): void {
     const vk = getNative();
+
+    // Sync GPU first — output pool regions, buffer pool handles, and pending
+    // destroys may all reference buffers still in use by in-flight GPU work.
+    // Destroying them without waiting would cause undefined behavior.
+    const tv = graph.flush();
+    if (tv > 0) vk.waitTimeline(tv);
+
     // Drain the output pool — release all regions back to the buffer pool
     for (const [, regions] of outputPool) {
       for (const region of regions) {
@@ -663,11 +673,8 @@ export class HeliosBackend implements Backend {
     }
     bufferPool.clear();
 
-    // Flush pending destroys (wait for GPU if needed)
-    for (const pd of pendingDestroys) {
-      vk.destroyBuffer(pd.handle);
-    }
-    pendingDestroys.length = 0;
+    // Safe to destroy now — GPU sync above guarantees all work has completed
+    processPendingDestroys(vk);
   }
 
   /**
@@ -2202,11 +2209,24 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, targetShape, region);
     }
 
-    // CPU fallback
+    // CPU fallback — stride-based for correct non-trailing broadcasts
     const out = new Float32Array(dstSize);
     const src = a.data as Float32Array;
     if (srcSize === 1) { out.fill(src[0]); }
-    else { for (let i = 0; i < dstSize; i++) out[i] = src[i % srcSize]; }
+    else {
+      const strides = broadcastStrides(a.shape, targetShape);
+      const ndim = targetShape.length;
+      for (let i = 0; i < dstSize; i++) {
+        let srcIdx = 0;
+        let remainder = i;
+        for (let d = ndim - 1; d >= 0; d--) {
+          const coord = remainder % targetShape[d];
+          remainder = (remainder - coord) / targetShape[d];
+          srcIdx += coord * strides[d];
+        }
+        out[i] = src[srcIdx];
+      }
+    }
     return { shape: targetShape, dtype: a.dtype, data: out };
   }
 
@@ -2544,16 +2564,23 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuBinaryOp(a: TensorData, b: TensorData, fn: (x: number, y: number) => number): TensorData {
-    const size = shapeSize(a.shape);
-    const Ctor = dtypeArray(a.dtype);
-    const out = new Ctor(size);
     if (this.shapesEqual(a.shape, b.shape)) {
+      const size = shapeSize(a.shape);
+      const Ctor = dtypeArray(a.dtype);
+      const out = new Ctor(size);
       for (let i = 0; i < size; i++) out[i] = fn(a.data[i], b.data[i]);
       return makeTensor(a.shape, a.dtype, out);
     }
-    const bSize = shapeSize(b.shape);
-    for (let i = 0; i < size; i++) out[i] = fn(a.data[i], b.data[i % bSize]);
-    return makeTensor(a.shape, a.dtype, out);
+    // Stride-based broadcast for correct non-trailing dimension handling
+    const [resultShape, stridesA, stridesB] = broadcastShapes(a.shape, b.shape);
+    const size = shapeSize(resultShape);
+    const Ctor = dtypeArray(a.dtype);
+    const out = new Ctor(size);
+    for (let i = 0; i < size; i++) {
+      const [ia, ib] = broadcastIndices(i, resultShape, stridesA, stridesB);
+      out[i] = fn(a.data[ia], b.data[ib]);
+    }
+    return makeTensor(resultShape, a.dtype, out);
   }
 
   private cpuMatmul(a: TensorData, b: TensorData): TensorData {
