@@ -4,7 +4,7 @@
   "maxGraphDepth": 4,
   "maxGraphNodes": 10,
   "populationSize": 8,
-  "generations": 50,
+  "generations": 250,
   "stepsPerCandidate": 25,
   "selectionStrategy": "topk",
   "mutationRate": 0.7,
