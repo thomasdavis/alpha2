@@ -108,7 +108,7 @@ const DOMAIN_STYLES: Record<string, string> = {
 
 // ── Main Component ───────────────────────────────────────────────
 
-const POLL_INTERVAL = 60_000;
+const POLL_INTERVAL = 15_000;
 
 export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initialCheckpoints, samples: initialSamples }: RunDetailProps) {
   const [metrics, setMetrics] = useState(initialMetrics);
