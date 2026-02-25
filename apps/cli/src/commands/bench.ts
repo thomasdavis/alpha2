@@ -269,6 +269,8 @@ async function benchTrain(iters: number): Promise<void> {
     warmupIters: -1, // disable warmup for bench
     sampleInterval: 0, // no samples during bench
     spikeThreshold: 0,
+    syncEvery: 1,
+    gcEvery: 0,
   };
 
   const backends = ["cpu_ref", "helios"] as const;

@@ -60,6 +60,8 @@ export async function trainCmd(args: string[]): Promise<void> {
     gradAccumSteps: intArg(kv, "accumSteps", tDefaults.gradAccumSteps ?? defaultTrainConfig.gradAccumSteps),
     sampleInterval: intArg(kv, "sampleInterval", tDefaults.sampleInterval ?? defaultTrainConfig.sampleInterval),
     spikeThreshold: floatArg(kv, "spikeThreshold", tDefaults.spikeThreshold ?? defaultTrainConfig.spikeThreshold),
+    syncEvery: intArg(kv, "syncEvery", tDefaults.syncEvery ?? defaultTrainConfig.syncEvery),
+    gcEvery: intArg(kv, "gcEvery", tDefaults.gcEvery ?? defaultTrainConfig.gcEvery),
   };
 
   console.log(`Implementations available:\n${listImplementations()}\n`);

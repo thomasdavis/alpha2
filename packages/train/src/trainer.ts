@@ -126,9 +126,16 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
     JSON.stringify(configObj, null, 2),
   );
 
-  // Open metrics log
+  // Buffered metrics log — flushes every 50 steps, on checkpoint, and on exit
   const metricsPath = path.join(runDir, "metrics.jsonl");
   const metricsHandle = await fs.open(metricsPath, "a");
+  let metricsBuffer: string[] = [];
+  async function flushMetrics(): Promise<void> {
+    if (metricsBuffer.length === 0) return;
+    const chunk = metricsBuffer.join("");
+    metricsBuffer = [];
+    await metricsHandle.write(chunk);
+  }
 
   // Load data — use chunked tokenization for large files to avoid V8 string limit
   const fileStat = await fs.stat(dataPath);
@@ -520,19 +527,39 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     // Flush pending GPU ops (optimizer commands + deferred buffer releases).
     if ("flush" in backend) (backend as any).flush();
-    // GC to clean up backward closure-internal intermediates via FinalizationRegistry.
-    if (typeof globalThis.gc === "function") {
+
+    // Adaptive sync/GC policy: configurable cadence instead of every step.
+    // syncEvery=1 (default) preserves original every-step behavior.
+    // syncEvery=0 triggers sync only on pool pressure (deferred releases or pending destroys).
+    const syncEvery = trainConfig.syncEvery;
+    const gcEvery = trainConfig.gcEvery;
+    const stepNum = step + 1;
+
+    const needGc = typeof globalThis.gc === "function" && (
+      gcEvery > 0 ? stepNum % gcEvery === 0 :
+      // Adaptive: GC when deferred releases pile up
+      ("gpuMemStats" in backend && (backend as any).gpuMemStats().deferredReleases > 50)
+    );
+    if (needGc) {
       (globalThis as any).gc();
       await new Promise<void>(resolve => setImmediate(resolve));
     }
+
     // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
-    // This ensures all output pool regions have readyValue <= getCompleted(),
-    // so step N+1's acquireOutputRegion can reuse them instead of allocating
-    // fresh VRAM (which would OOM at high utilization like batch=32 on L4).
-    if ("syncGpu" in backend) {
-      (backend as any).syncGpu();
-    } else if ("flush" in backend) {
-      (backend as any).flush();
+    // This ensures output pool regions are reusable without OOM.
+    const needSync = syncEvery === 1 ? true :
+      syncEvery > 0 ? stepNum % syncEvery === 0 :
+      // Adaptive: sync when pool pressure is high (many pending destroys or deferred releases)
+      ("gpuMemStats" in backend && (() => {
+        const s = (backend as any).gpuMemStats();
+        return (s.deferredReleases > 20 || (s.pendingDestroys ?? 0) > 10);
+      })());
+    if (needSync) {
+      if ("syncGpu" in backend) {
+        (backend as any).syncGpu();
+      } else if ("flush" in backend) {
+        (backend as any).flush();
+      }
     }
     const _t6 = performance.now();
 
@@ -633,8 +660,9 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
       `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
     );
 
-    // Write metrics JSONL
-    await metricsHandle.write(JSON.stringify(metrics) + "\n");
+    // Buffer metrics JSONL (flush every 50 steps and on checkpoint)
+    metricsBuffer.push(JSON.stringify(metrics) + "\n");
+    if (metricsBuffer.length >= 50) await flushMetrics();
 
     if (onStep) onStep(metrics);
 
@@ -643,6 +671,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
 
     // Checkpoint (save at every eval interval and at the end)
     if ((step + 1) % trainConfig.evalInterval === 0 || step + 1 === trainConfig.iters) {
+      await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${step + 1}.json`);
       const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, modelConfig, deps.tokenizerArtifacts);
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
@@ -690,6 +719,7 @@ export async function train(deps: TrainerDeps): Promise<GPTParams> {
   console.log(`\n── training complete ──`);
   console.log(`total time: ${(totalTime / 1000).toFixed(1)}s`);
 
+  await flushMetrics();
   await metricsHandle.close();
   return params;
 }

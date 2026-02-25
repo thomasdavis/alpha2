@@ -89,6 +89,10 @@ export interface TrainConfig {
   readonly gradAccumSteps: number;
   readonly sampleInterval: number;
   readonly spikeThreshold: number;
+  /** GPU sync cadence: sync every N steps (0 = adaptive based on pool pressure) */
+  readonly syncEvery: number;
+  /** GC cadence: run gc() every N steps (0 = disabled, requires --expose-gc) */
+  readonly gcEvery: number;
 }
 
 export const defaultTrainConfig: TrainConfig = {
@@ -113,6 +117,8 @@ export const defaultTrainConfig: TrainConfig = {
   gradAccumSteps: 1,
   sampleInterval: 100,
   spikeThreshold: 0,
+  syncEvery: 1,
+  gcEvery: 0,
 };
 
 // ── Sampling config ────────────────────────────────────────────────────────
