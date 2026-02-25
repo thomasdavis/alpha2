@@ -43,6 +43,10 @@ export interface LayerParams {
     fc1: Variable; fc2: Variable;
     /** SwiGLU: gate [ffnDim, nEmbd], up [ffnDim, nEmbd], proj [nEmbd, ffnDim] */
     fc_gate?: Variable; fc_up?: Variable; fc_proj?: Variable;
+    /** Universal Approximator: learnable gating — f(x) = silu(x)*gate + x*skip */
+    act_gate?: Variable; act_skip?: Variable;
+    /** KAN Spline: learnable basis coefficients — f(x) = c0*silu(x) + c1*relu(x) + c2*gelu(x) + c3*x + c4*x^2 */
+    kan_c0?: Variable; kan_c1?: Variable; kan_c2?: Variable; kan_c3?: Variable; kan_c4?: Variable;
   };
 }
 
@@ -62,6 +66,10 @@ function initZeros(backend: Backend, shape: number[]): Variable {
   return new Variable(backend.zeros(shape, "f32"), true);
 }
 
+function initFull(backend: Backend, shape: number[], value: number): Variable {
+  return new Variable(backend.full(shape, value, "f32"), true);
+}
+
 export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): GPTParams {
   const { vocabSize, blockSize, nLayer, nEmbd, nHead } = config;
   const activation = config.ffnActivation ?? "gelu";
@@ -78,21 +86,46 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
 
   const layers: LayerParams[] = [];
   for (let i = 0; i < nLayer; i++) {
-    const mlp: LayerParams["mlp"] = activation === "swiglu"
-      ? {
-          // SwiGLU: 3 weight matrices (gate, up, proj)
-          // fc1/fc2 unused but required by interface — point to gate/proj
-          fc_gate: initWeight(backend, rng, [ffnDim, nEmbd], std),
-          fc_up: initWeight(backend, rng, [ffnDim, nEmbd], std),
-          fc_proj: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
-          // Satisfy interface — alias to gate/proj so collectParams doesn't double-count
-          get fc1() { return this.fc_gate!; },
-          get fc2() { return this.fc_proj!; },
-        }
-      : {
-          fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
-          fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
-        };
+    let mlp: LayerParams["mlp"];
+    if (activation === "swiglu") {
+      mlp = {
+        // SwiGLU: 3 weight matrices (gate, up, proj)
+        fc_gate: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc_up: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc_proj: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+        // Satisfy interface — alias to gate/proj so collectParams doesn't double-count
+        get fc1() { return this.fc_gate!; },
+        get fc2() { return this.fc_proj!; },
+      };
+    } else if (activation === "universal") {
+      // Universal Approximator: standard fc1/fc2 + learnable gating params
+      // f(x) = silu(x) * act_gate + x * act_skip
+      // Init: gate=1, skip=0 → starts as SiLU. Can learn any blend.
+      mlp = {
+        fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+        act_gate: initFull(backend, [1, ffnDim], 1.0),
+        act_skip: initFull(backend, [1, ffnDim], 0.0),
+      };
+    } else if (activation === "kan_spline") {
+      // KAN Spline: standard fc1/fc2 + learnable basis function coefficients
+      // f(x) = c0*silu(x) + c1*relu(x) + c2*gelu(x) + c3*x + c4*x^2
+      // Init: c0=0.5, c1=0, c2=0.5, c3=0, c4=0 → starts as (silu+gelu)/2
+      mlp = {
+        fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+        kan_c0: initFull(backend, [1, ffnDim], 0.5),  // silu weight
+        kan_c1: initFull(backend, [1, ffnDim], 0.0),  // relu weight
+        kan_c2: initFull(backend, [1, ffnDim], 0.5),  // gelu weight
+        kan_c3: initFull(backend, [1, ffnDim], 0.0),  // identity weight
+        kan_c4: initFull(backend, [1, ffnDim], 0.0),  // quadratic weight
+      };
+    } else {
+      mlp = {
+        fc1: initWeight(backend, rng, [ffnDim, nEmbd], std),
+        fc2: initWeight(backend, rng, [nEmbd, ffnDim], std / Math.sqrt(2 * nLayer)),
+      };
+    }
 
     layers.push({
       ln1: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
@@ -212,6 +245,28 @@ function transformerBlock(
     const gate = silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc_gate!));
     const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);
     mlpH = matmulTransposed(ctx, mul(ctx, gate, up), layer.mlp.fc_proj!);
+  } else if (activation === "universal") {
+    // Universal Approximator: f(x) = silu(x) * gate + x * skip
+    // Learnable per-channel gating — can represent any blend of SiLU and identity.
+    // At gate=1,skip=0 → SiLU. At gate=0,skip=1 → linear. Gradients flow to gate/skip params.
+    const h = matmulTransposed(ctx, flat, layer.mlp.fc1);
+    const h_silu = silu(ctx, h);
+    const gated = mul(ctx, h_silu, layer.mlp.act_gate!);   // [B*T, ffnDim] * [1, ffnDim] broadcast
+    const skipped = mul(ctx, h, layer.mlp.act_skip!);       // residual path
+    const h_act = add(ctx, gated, skipped);
+    mlpH = matmulTransposed(ctx, h_act, layer.mlp.fc2);
+  } else if (activation === "kan_spline") {
+    // KAN Spline: f(x) = c0*silu(x) + c1*relu(x) + c2*gelu(x) + c3*x + c4*x²
+    // 5-basis universal approximator inspired by Kolmogorov-Arnold representation.
+    // Each coefficient is [1, ffnDim] — per-channel learnable blend of activation bases.
+    const h = matmulTransposed(ctx, flat, layer.mlp.fc1);
+    const h_silu = mul(ctx, silu(ctx, h), layer.mlp.kan_c0!);
+    const h_relu = mul(ctx, relu(ctx, h), layer.mlp.kan_c1!);
+    const h_gelu = mul(ctx, gelu(ctx, h), layer.mlp.kan_c2!);
+    const h_id = mul(ctx, h, layer.mlp.kan_c3!);
+    const h_sq = mul(ctx, mul(ctx, h, h), layer.mlp.kan_c4!);  // x² basis
+    const h_act = add(ctx, add(ctx, add(ctx, add(ctx, h_silu, h_relu), h_gelu), h_id), h_sq);
+    mlpH = matmulTransposed(ctx, h_act, layer.mlp.fc2);
   } else if (activation === "silu") {
     mlpH = matmulTransposed(ctx, silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc1)), layer.mlp.fc2);
   } else if (activation === "relu") {
@@ -344,6 +399,15 @@ export function collectParams(params: GPTParams): Map<string, Variable> {
       map.set(`layer.${i}.mlp.fc1`, l.mlp.fc1);
       map.set(`layer.${i}.mlp.fc2`, l.mlp.fc2);
     }
+    // Universal Approximator learnable params
+    if (l.mlp.act_gate) map.set(`layer.${i}.mlp.act_gate`, l.mlp.act_gate);
+    if (l.mlp.act_skip) map.set(`layer.${i}.mlp.act_skip`, l.mlp.act_skip);
+    // KAN Spline basis coefficients
+    if (l.mlp.kan_c0) map.set(`layer.${i}.mlp.kan_c0`, l.mlp.kan_c0);
+    if (l.mlp.kan_c1) map.set(`layer.${i}.mlp.kan_c1`, l.mlp.kan_c1);
+    if (l.mlp.kan_c2) map.set(`layer.${i}.mlp.kan_c2`, l.mlp.kan_c2);
+    if (l.mlp.kan_c3) map.set(`layer.${i}.mlp.kan_c3`, l.mlp.kan_c3);
+    if (l.mlp.kan_c4) map.set(`layer.${i}.mlp.kan_c4`, l.mlp.kan_c4);
   }
   return map;
 }

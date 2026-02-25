@@ -31,7 +31,10 @@ interface SymbioMetric extends ChartMetric {
   clip_coef?: number | null;
   clip_pct?: number | null;
   symbio_candidate_id?: string | null;
+  symbio_candidate_name?: string | null;
   symbio_candidate_activation?: string | null;
+  symbio_candidate_parent_id?: string | null;
+  symbio_candidate_parent_name?: string | null;
   symbio_generation?: number | null;
   architecture_diversity?: number | null;
   activation_distribution?: string | null;
@@ -52,15 +55,18 @@ interface ChartTooltip {
 
 const ACTIVATION_COLORS: Record<string, string> = {
   gelu: "#60a5fa", silu: "#34d399", relu: "#f59e0b", swiglu: "#a78bfa",
+  universal: "#f472b6", kan_spline: "#22d3ee",
 };
 
 const ACTIVATION_BG: Record<string, string> = {
   gelu: "bg-blue-500/10 border-blue-500/20", silu: "bg-green-500/10 border-green-500/20",
   relu: "bg-yellow-500/10 border-yellow-500/20", swiglu: "bg-purple-500/10 border-purple-500/20",
+  universal: "bg-pink-500/10 border-pink-500/20", kan_spline: "bg-cyan-500/10 border-cyan-500/20",
 };
 
 const ACTIVATION_HEX: Record<string, string> = {
   gelu: "#60a5fa", silu: "#34d399", relu: "#f59e0b", swiglu: "#a78bfa",
+  universal: "#f472b6", kan_spline: "#22d3ee",
 };
 
 // ── Help Text ────────────────────────────────────────────────
@@ -73,16 +79,18 @@ const HELP = {
   freeEnergy: "A thermodynamic analogy: F = loss + beta * weight_entropy. Balances model fit (loss) against complexity (entropy). Lower free energy means a better trade-off between accuracy and model simplicity.",
   fitness: "Multi-objective score combining accuracy and complexity: fitness = alpha * (1/(1+loss)) - complexity_penalty. Used to rank candidates in the evolutionary search. Higher is better.",
   adaptiveBatch: "Dynamically adjusts batch size in response to CUSUM alerts. Reduces batch on gradient instability or throughput drops (smaller batches recover faster). Increases batch when clipping is persistent (larger batches smooth gradients). Gradually restores to baseline during calm periods.",
-  switchLog: "Records every time the evolutionary search switches from one activation function candidate to another. Shows the outgoing candidate's performance metrics (loss, fitness, throughput) and any stability issues detected during its evaluation.",
-  candidates: "All candidates ever created during the evolutionary activation search. Each was trained for a fixed number of steps and ranked by validation loss or fitness score. Duplicates occur when elite parents are cloned into the next generation or when mutation selects the same activation.",
-  activationDist: "Shows how training steps are distributed across different activation functions over time. In a converging search, the winning activation should accumulate more steps in later generations.",
-  evolution: "Visualizes the evolutionary search progression across generations. Each generation evaluates multiple candidates, selects the best performers as parents, and generates offspring with potential mutations. The fitness landscape shows how candidates improve or plateau over generations.",
+  switchLog: "Records every activation function switch during evolutionary search. Shows the 'from' and 'to' activation with the outgoing candidate's performance. Hover any row for detailed metrics (loss, fitness, throughput, stability). Click a row to navigate to that candidate's position in the evolutionary tree chart.",
+  candidates: "All candidates ever created during the evolutionary activation search. Each was trained for stepsPerCandidate steps and ranked by validation loss or fitness. Includes learnable activations: 'universal' (per-channel SiLU gating) and 'kan_spline' (5-basis KAN approximator with silu/relu/gelu/identity/quadratic bases).",
+  activationDist: "Shows how training steps are distributed across different activation functions over time. Includes fixed activations (gelu, silu, relu, swiglu) and learnable activations (universal, kan_spline). In a converging search, the winning activation accumulates more steps in later generations.",
+  evolution: "Visualizes the evolutionary search progression across generations. Each generation evaluates candidates with unique IDs and names tracking their lineage. Parent-child relationships are shown in the tree chart. The fitness landscape shows how candidates improve or plateau over generations.",
   phaseChange: "Gelation/phase changes are detected via CUSUM monitors. When gradient norms, clipping rates, or throughput shift dramatically, the training has entered a new regime. Green = stable (no alerts), Yellow = mild instability (1-2 alerts), Red = regime shift (3+ alerts).",
   harmonic: "Analyzes the oscillatory behavior of training loss around its moving average. High-amplitude oscillations suggest an under-damped system (learning rate too high). The oscillation frequency and damping ratio characterize the training dynamics near equilibrium.",
-  diversity: "Architecture diversity measures what fraction of the current population uses unique activations (0 = all same, 1 = all different). In a healthy search, diversity starts high and gradually decreases as the search converges on the best-performing activation.",
+  harmonicAmcharts: "Frequency-domain analysis of loss oscillations using a sliding-window FFT analogy. Shows the amplitude envelope of loss deviations from the moving average over time, revealing whether training dynamics are damping (converging) or amplifying (diverging). The heat capacity proxy (d(loss)/d(lr)) indicates critical points where training dynamics are most sensitive to hyperparameter changes.",
+  diversity: "Architecture diversity measures what fraction of the current population uses unique activations (0 = all same, 1 = all different). With 6 activation types (gelu, silu, relu, swiglu, universal, kan_spline), diversity starts high and gradually decreases as the search converges. Diversity bonus (cosine decay) encourages exploration early, exploitation late.",
   populationEntropy: "Shannon entropy of the softmax-normalized recent loss distribution (50-step window). Higher entropy means loss values are spread widely (unstable). Lower entropy means loss is concentrated (stable). Rapid entropy changes indicate training phase transitions.",
   mi: "Mutual Information (MI) estimates measure how much information flows through the model. mi_input_repr: how much input info the hidden layers capture. mi_repr_output: how much the representations predict the output. mi_compression: the ratio, tracking information bottleneck behavior.",
   batchSize: "When adaptive batch sizing is enabled, this shows the dynamically adjusted batch size. It differs from the training config batch size (shown above) when CUSUM detects instability. The config batch size is the baseline; adaptive batch varies around it in response to training dynamics.",
+  lineageTree: "Evolutionary tree showing parent-child relationships between candidates across generations. Each node is a candidate with its activation type color-coded. The tree grows upward from generation 0 (roots) to the latest generation. Click any node to see detailed metrics. Nodes are named by lineage: e.g., 'S-Alpha' = SiLU, generation 0; 'G-Alpha.1' = GELU mutation of Alpha, generation 1.",
 };
 
 // ── Shared Helpers ────────────────────────────────────────────
@@ -348,8 +356,11 @@ function MIProfilesChart({ metrics, pinnedStep, onPinStep }: {
 
 interface CandidateStats {
   id: string;
+  name: string;
   activation: string;
   generation: number;
+  parentId: string | null;
+  parentName: string | null;
   steps: number;
   bestLoss: number;
   bestValLoss: number;
@@ -364,7 +375,9 @@ interface CandidateStats {
 
 function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
   const candidates = new Map<string, {
-    activation: string; generation: number; losses: number[]; valLosses: number[];
+    name: string; activation: string; generation: number;
+    parentId: string | null; parentName: string | null;
+    losses: number[]; valLosses: number[];
     fitnesses: number[]; tps: number[]; steps: number; cusumAlerts: number;
     lastClipPct: number | null; startStep: number; endStep: number;
   }>();
@@ -375,7 +388,10 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
     let entry = candidates.get(id);
     if (!entry) {
       entry = {
+        name: m.symbio_candidate_name ?? id,
         activation: m.symbio_candidate_activation ?? "?", generation: m.symbio_generation ?? 0,
+        parentId: m.symbio_candidate_parent_id ?? null,
+        parentName: m.symbio_candidate_parent_name ?? null,
         losses: [], valLosses: [], fitnesses: [], tps: [], steps: 0, cusumAlerts: 0,
         lastClipPct: null, startStep: m.step, endStep: m.step,
       };
@@ -393,8 +409,11 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
 
   return Array.from(candidates.entries()).map(([id, e]) => ({
     id,
+    name: e.name,
     activation: e.activation,
     generation: e.generation,
+    parentId: e.parentId,
+    parentName: e.parentName,
     steps: e.steps,
     bestLoss: Math.min(...e.losses),
     bestValLoss: e.valLosses.length > 0 ? Math.min(...e.valLosses) : Infinity,
@@ -520,9 +539,10 @@ function SearchCandidateTable({ metrics }: { metrics: SymbioMetric[] }) {
         <thead>
           <tr className="border-b border-border/50 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
             <th className="px-3 py-2 text-left">#</th>
-            <th className="px-3 py-2 text-left">ID</th>
+            <th className="px-3 py-2 text-left">Name</th>
             <th className="px-3 py-2 text-left">Activation</th>
             <th className="px-3 py-2 text-center">Gen</th>
+            <th className="px-3 py-2 text-left">Parent</th>
             <th className="px-3 py-2 text-right">Steps</th>
             <th className="px-3 py-2 text-right">Best Loss</th>
             <th className="px-3 py-2 text-right">Best Val</th>
@@ -536,11 +556,12 @@ function SearchCandidateTable({ metrics }: { metrics: SymbioMetric[] }) {
           {sorted.map((c, i) => (
             <tr key={c.id} className={`border-b border-border/20 last:border-0 ${c.id === bestId ? "bg-green-500/5" : ""}`}>
               <td className="px-3 py-2 font-mono font-semibold text-text-muted">{i + 1}</td>
-              <td className="px-3 py-2 truncate font-mono text-text-secondary" title={c.id}>{c.id}</td>
+              <td className="px-3 py-2 truncate font-mono text-text-secondary" title={`${c.name} (${c.id})`}>{c.name}</td>
               <td className="px-3 py-2">
                 <span className={`inline-block rounded border px-1.5 py-0.5 text-[0.62rem] font-semibold ${ACTIVATION_BG[c.activation] ?? "bg-surface-2 border-border"} ${ACTIVATION_COLORS[c.activation] ?? "text-text-secondary"}`}>{c.activation}</span>
               </td>
               <td className="px-3 py-2 text-center text-text-muted">{c.generation}</td>
+              <td className="px-3 py-2 text-text-muted text-[0.6rem]">{c.parentName ?? "-"}</td>
               <td className="px-3 py-2 text-right font-mono text-text-secondary">{c.steps}</td>
               <td className="px-3 py-2 text-right font-mono text-white">{c.bestLoss.toFixed(4)}</td>
               <td className="px-3 py-2 text-right font-mono text-blue-400">{c.bestValLoss === Infinity ? "-" : c.bestValLoss.toFixed(4)}</td>
@@ -563,7 +584,7 @@ function SearchCandidateTable({ metrics }: { metrics: SymbioMetric[] }) {
 
 // ── Activation Switch Log (Expandable) ──────────────────────
 
-function ActivationSwitchLog({ metrics }: { metrics: SymbioMetric[] }) {
+function ActivationSwitchLog({ metrics, onNavigateToTree }: { metrics: SymbioMetric[]; onNavigateToTree?: (candidateId: string) => void }) {
   const events = extractSwitchEvents(metrics);
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -584,6 +605,7 @@ function ActivationSwitchLog({ metrics }: { metrics: SymbioMetric[] }) {
             <th className="px-3 py-2 text-right">Best Loss</th>
             <th className="px-3 py-2 text-right">Final Loss</th>
             <th className="px-3 py-2 text-right">Fitness</th>
+            <th className="px-3 py-2 text-center">Tree</th>
           </tr>
         </thead>
         <tbody>
@@ -606,10 +628,19 @@ function ActivationSwitchLog({ metrics }: { metrics: SymbioMetric[] }) {
                   <td className="px-3 py-2 text-right font-mono text-white">{e.fromBestLoss != null ? e.fromBestLoss.toFixed(4) : "-"}</td>
                   <td className="px-3 py-2 text-right font-mono text-text-secondary">{e.fromFinalLoss != null ? e.fromFinalLoss.toFixed(4) : "-"}</td>
                   <td className="px-3 py-2 text-right font-mono text-green">{e.fromBestFitness != null ? e.fromBestFitness.toFixed(4) : "-"}</td>
+                  <td className="px-3 py-2 text-center">
+                    <button
+                      className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[0.56rem] text-purple-400 hover:bg-purple-500/30 transition-colors"
+                      onClick={(ev) => { ev.stopPropagation(); if (onNavigateToTree) onNavigateToTree(e.toId); }}
+                      title="Navigate to this candidate in the lineage tree"
+                    >
+                      tree
+                    </button>
+                  </td>
                 </tr>
                 {isExpanded && (
                   <tr className="bg-purple-500/5 border-b border-purple-500/20">
-                    <td colSpan={9} className="px-4 py-3">
+                    <td colSpan={10} className="px-4 py-3">
                       <div className="grid grid-cols-2 gap-6 text-[0.64rem]">
                         {/* From candidate details */}
                         <div>
@@ -979,6 +1010,292 @@ function ActivationDistributionChart({ metrics, pinnedStep, onPinStep }: { metri
 // ── Fragment import ──────────────────────────────────────────
 import { Fragment } from "react";
 
+// ── Amcharts Evolutionary Lineage Tree ───────────────────────
+
+function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
+  metrics: SymbioMetric[];
+  selectedCandidateId?: string | null;
+  onSelectCandidate?: (id: string) => void;
+}) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<any>(null);
+  const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
+
+  useEffect(() => {
+    if (!chartRef.current || candidates.length === 0) return;
+    let root: any;
+
+    // Dynamic import amcharts (client-side only)
+    const initChart = async () => {
+      const am5 = await import("@amcharts/amcharts5");
+      const am5hierarchy = await import("@amcharts/amcharts5/hierarchy");
+      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+
+      // Dispose previous instance
+      if (rootRef.current) rootRef.current.dispose();
+
+      root = am5.Root.new(chartRef.current!);
+      rootRef.current = root;
+      root.setThemes([am5themes.default.new(root)]);
+
+      const container = root.container.children.push(
+        am5.Container.new(root, { width: am5.percent(100), height: am5.percent(100), layout: root.verticalLayout })
+      );
+
+      const series = container.children.push(
+        am5hierarchy.ForceDirected.new(root, {
+          singleBranchOnly: false,
+          downDepth: 10,
+          topDepth: 1,
+          initialDepth: 10,
+          valueField: "value",
+          categoryField: "name",
+          childDataField: "children",
+          idField: "id",
+          linkWithStrength: 0.5,
+          minRadius: 16,
+          maxRadius: 40,
+          manyBodyStrength: -15,
+          centerStrength: 0.5,
+        })
+      );
+
+      series.get("colors")!.set("colors", [
+        am5.color("#60a5fa"), am5.color("#34d399"), am5.color("#f59e0b"),
+        am5.color("#a78bfa"), am5.color("#f472b6"), am5.color("#22d3ee"),
+      ]);
+
+      // Build tree data from candidates
+      const rootNodes: any[] = [];
+      const nodeMap = new Map<string, any>();
+
+      // Create nodes for all candidates
+      for (const c of candidates) {
+        const node: any = {
+          id: c.id,
+          name: c.name,
+          value: Math.max(1, c.steps),
+          activation: c.activation,
+          generation: c.generation,
+          bestLoss: c.bestLoss,
+          bestFitness: c.bestFitness,
+          parentId: c.parentId,
+          children: [],
+          nodeSettings: {
+            fill: am5.color(ACTIVATION_HEX[c.activation] ?? "#888"),
+          },
+        };
+        nodeMap.set(c.id, node);
+      }
+
+      // Build parent-child relationships
+      for (const c of candidates) {
+        const node = nodeMap.get(c.id);
+        if (!node) continue;
+        if (c.parentId && nodeMap.has(c.parentId)) {
+          nodeMap.get(c.parentId)!.children.push(node);
+        } else {
+          rootNodes.push(node);
+        }
+      }
+
+      // Wrap in a virtual root
+      const treeData = {
+        id: "root",
+        name: "Evolution",
+        value: 0,
+        children: rootNodes,
+      };
+
+      series.data.setAll([treeData]);
+      series.set("selectedDataItem", series.dataItems[0]);
+
+      // Configure node appearance
+      series.nodes.template.setAll({ toggleKey: "none", cursorOverStyle: "pointer" });
+
+      series.nodes.template.setup = (target: any) => {
+        const circle = target.children.getIndex(0);
+        if (circle) {
+          circle.setAll({ strokeWidth: 2, stroke: am5.color("#333") });
+        }
+      };
+
+      // Custom node colors based on activation
+      series.nodes.template.adapters.add("fill", (_fill: any, target: any) => {
+        const dataItem = target.dataItem;
+        if (dataItem && dataItem.dataContext) {
+          const ctx = dataItem.dataContext as any;
+          const hexColor = ACTIVATION_HEX[ctx.activation];
+          if (hexColor) return am5.color(hexColor);
+        }
+        return _fill;
+      });
+
+      // Tooltip
+      series.nodes.template.set("tooltipText", "[bold]{name}[/]\nActivation: {activation}\nGen: {generation}\nBest Loss: {bestLoss}\nFitness: {bestFitness}");
+
+      // Click handler
+      series.nodes.template.events.on("click", (ev: any) => {
+        const dataItem = ev.target.dataItem;
+        if (dataItem?.dataContext && onSelectCandidate) {
+          onSelectCandidate((dataItem.dataContext as any).id);
+        }
+      });
+
+      // Links styling
+      series.links.template.setAll({ strokeWidth: 1.5, strokeOpacity: 0.4 });
+
+      // Labels
+      series.labels.template.setAll({ fontSize: 9, fill: am5.color("#ccc"), oversizedBehavior: "truncate", maxWidth: 80 });
+
+      series.appear(1000, 100);
+    };
+
+    initChart();
+
+    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
+  }, [candidates, onSelectCandidate]);
+
+  if (candidates.length === 0) return null;
+
+  return <div ref={chartRef} style={{ width: "100%", height: 400 }} />;
+}
+
+// ── Amcharts Oscillator / Damping Analysis ───────────────────
+
+function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!chartRef.current || metrics.length < 40) return;
+
+    const initChart = async () => {
+      const am5 = await import("@amcharts/amcharts5");
+      const am5xy = await import("@amcharts/amcharts5/xy");
+      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+
+      if (rootRef.current) rootRef.current.dispose();
+
+      const root = am5.Root.new(chartRef.current!);
+      rootRef.current = root;
+      root.setThemes([am5themes.default.new(root)]);
+
+      const chart = root.container.children.push(
+        am5xy.XYChart.new(root, { panX: true, panY: false, wheelX: "panX", wheelY: "zoomX" })
+      );
+
+      // Compute oscillation data: deviation from exponential moving average
+      const windowSize = 20;
+      const data: { step: number; deviation: number; amplitude: number; ema: number; heatCapacity: number }[] = [];
+      let ema = metrics[0].loss;
+      const alpha = 2 / (windowSize + 1);
+
+      for (let i = 1; i < metrics.length; i++) {
+        ema = alpha * metrics[i].loss + (1 - alpha) * ema;
+        const deviation = metrics[i].loss - ema;
+        const amplitude = Math.abs(deviation);
+
+        // Heat capacity proxy: |d(loss)/d(lr)| over a small window
+        let heatCapacity = 0;
+        if (i >= 5) {
+          const lossChange = Math.abs(metrics[i].loss - metrics[i - 5].loss);
+          const lrChange = Math.abs(metrics[i].lr - metrics[i - 5].lr);
+          heatCapacity = lrChange > 1e-10 ? lossChange / lrChange : 0;
+        }
+
+        data.push({
+          step: metrics[i].step,
+          deviation,
+          amplitude,
+          ema,
+          heatCapacity: Math.min(heatCapacity, 1e6), // cap for display
+        });
+      }
+
+      // X Axis
+      const xAxis = chart.xAxes.push(am5xy.ValueAxis.new(root, {
+        renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }),
+        tooltip: am5.Tooltip.new(root, {}),
+      }));
+      xAxis.get("renderer").labels.template.setAll({ fill: am5.color("#666"), fontSize: 10 });
+      xAxis.get("renderer").grid.template.setAll({ stroke: am5.color("#1a1a1a") });
+
+      // Y Axis for deviation
+      const yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, {
+        renderer: am5xy.AxisRendererY.new(root, {}),
+        tooltip: am5.Tooltip.new(root, {}),
+      }));
+      yAxis.get("renderer").labels.template.setAll({ fill: am5.color("#666"), fontSize: 10 });
+      yAxis.get("renderer").grid.template.setAll({ stroke: am5.color("#1a1a1a") });
+
+      // Y Axis for heat capacity (opposite side)
+      const yAxis2 = chart.yAxes.push(am5xy.ValueAxis.new(root, {
+        renderer: am5xy.AxisRendererY.new(root, { opposite: true }),
+      }));
+      yAxis2.get("renderer").labels.template.setAll({ fill: am5.color("#f59e0b"), fontSize: 10 });
+
+      // Deviation area series (oscillation)
+      const deviationSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
+        name: "Loss Oscillation",
+        xAxis, yAxis,
+        valueYField: "deviation",
+        valueXField: "step",
+        tooltip: am5.Tooltip.new(root, { labelText: "Step {valueX}\nDeviation: {valueY.formatNumber('#.####')}" }),
+      }));
+      deviationSeries.strokes.template.setAll({ strokeWidth: 1.5, stroke: am5.color("#22d3ee") });
+      deviationSeries.fills.template.setAll({ fillOpacity: 0.08, fill: am5.color("#22d3ee"), visible: true });
+
+      // Amplitude envelope series
+      const ampSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
+        name: "Amplitude Envelope",
+        xAxis, yAxis,
+        valueYField: "amplitude",
+        valueXField: "step",
+        tooltip: am5.Tooltip.new(root, { labelText: "Amplitude: {valueY.formatNumber('#.####')}" }),
+      }));
+      ampSeries.strokes.template.setAll({ strokeWidth: 2, stroke: am5.color("#f472b6"), strokeDasharray: [4, 2] });
+
+      // Heat capacity series (secondary axis)
+      const heatSeries = chart.series.push(am5xy.SmoothedXLineSeries.new(root, {
+        name: "Heat Capacity",
+        xAxis, yAxis: yAxis2,
+        valueYField: "heatCapacity",
+        valueXField: "step",
+        tooltip: am5.Tooltip.new(root, { labelText: "Heat Capacity: {valueY.formatNumber('#.##')}" }),
+      }));
+      heatSeries.strokes.template.setAll({ strokeWidth: 1.5, stroke: am5.color("#f59e0b"), strokeOpacity: 0.6 });
+
+      // Zero reference line
+      const rangeDataItem = yAxis.createAxisRange(yAxis.makeDataItem({ value: 0 }));
+      rangeDataItem.get("grid")!.setAll({ stroke: am5.color("#555"), strokeWidth: 1, strokeDasharray: [4, 4] });
+
+      // Cursor
+      chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "zoomX", xAxis }));
+
+      // Legend
+      const legend = chart.children.push(am5.Legend.new(root, { x: am5.percent(50), centerX: am5.percent(50), y: 0 }));
+      legend.labels.template.setAll({ fill: am5.color("#888"), fontSize: 10 });
+      legend.data.setAll(chart.series.values);
+
+      // Set data
+      deviationSeries.data.setAll(data);
+      ampSeries.data.setAll(data);
+      heatSeries.data.setAll(data);
+
+      chart.appear(1000, 100);
+    };
+
+    initChart();
+
+    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
+  }, [metrics]);
+
+  if (metrics.length < 40) return null;
+
+  return <div ref={chartRef} style={{ width: "100%", height: 300 }} />;
+}
+
 // ── Symbio Section (composite) ───────────────────────────────
 
 export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
@@ -995,6 +1312,8 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
   const hasSearchData = metrics.some(m => m.symbio_candidate_id != null);
   const hasMI = metrics.some(m => m.mi_input_repr != null);
   const hasPopEntropy = metrics.some(m => m.population_entropy != null);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   let symbioConfig: Record<string, unknown> | null = null;
   try { if (run.symbio_config) symbioConfig = JSON.parse(run.symbio_config); } catch { /* ignore */ }
@@ -1094,7 +1413,18 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
                 </ChartPanel>
               </div>
 
-              {/* Activation Switch Log */}
+              {/* Evolutionary Lineage Tree (amcharts) */}
+              <div className="mb-4" ref={treeRef}>
+                <ChartPanel title="Evolutionary Lineage Tree" helpText={HELP.lineageTree}>
+                  <EvolutionaryTreeChart
+                    metrics={metrics}
+                    selectedCandidateId={selectedCandidateId}
+                    onSelectCandidate={setSelectedCandidateId}
+                  />
+                </ChartPanel>
+              </div>
+
+              {/* Activation Switch Log — click navigates to tree */}
               <div className="mb-4 rounded-lg border border-border bg-surface">
                 <div className="flex items-center justify-between border-b border-border px-4 py-3">
                   <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
@@ -1102,7 +1432,10 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
                   </span>
                   <ChartHelpIcon text={HELP.switchLog} />
                 </div>
-                <ActivationSwitchLog metrics={metrics} />
+                <ActivationSwitchLog metrics={metrics} onNavigateToTree={(candidateId: string) => {
+                  setSelectedCandidateId(candidateId);
+                  treeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }} />
               </div>
 
               {/* Search Candidates */}
@@ -1123,6 +1456,15 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
                 </ChartPanel>
               </div>
             </>
+          )}
+
+          {/* Amcharts Oscillator / Damping Analysis */}
+          {metrics.length > 40 && (
+            <div className="mb-4">
+              <ChartPanel title="Oscillation & Heat Capacity (amcharts)" helpText={HELP.harmonicAmcharts}>
+                <AmchartsOscillatorChart metrics={metrics} />
+              </ChartPanel>
+            </div>
           )}
 
           {symbioConfig && (

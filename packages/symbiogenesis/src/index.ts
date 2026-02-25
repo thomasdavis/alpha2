@@ -9,7 +9,7 @@
 // Config
 export { type SymbioConfig, defaultSymbioConfig } from "./config/schema.js";
 export { loadSymbioConfig, validateSymbioConfig } from "./config/load.js";
-export { applySymbioModelPreset, applySymbioTrainPreset } from "./config/preset.js";
+export { applySymbioModelPreset, applySymbioTrainPreset, ffnDimForActivation } from "./config/preset.js";
 
 // Types
 export {

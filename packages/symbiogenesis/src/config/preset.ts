@@ -14,6 +14,14 @@ export function applySymbioModelPreset(config: ModelConfig): ModelConfig {
   };
 }
 
+/** Calculate the correct ffnDim for a given activation type and embedding dim. */
+export function ffnDimForActivation(activation: string, nEmbd: number, configFfnDim?: number): number {
+  if (activation === "swiglu") {
+    return Math.ceil((8 / 3) * nEmbd / 64) * 64;
+  }
+  return configFfnDim ?? 4 * nEmbd;
+}
+
 /** Apply symbio preset to TrainConfig. Returns a new config. */
 export function applySymbioTrainPreset(config: TrainConfig): TrainConfig {
   return {

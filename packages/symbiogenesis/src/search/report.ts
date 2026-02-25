@@ -54,13 +54,13 @@ export function generateReport(summary: SearchSummary): string {
   }
 
   lines.push("## All Candidates\n");
-  lines.push("| Rank | ID | Activation | Gen | Val Loss | Fitness | Steps |");
-  lines.push("|------|----|------------|-----|----------|---------|-------|");
+  lines.push("| Rank | Name | Activation | Gen | Parent | Val Loss | Fitness | Steps |");
+  lines.push("|------|------|------------|-----|--------|----------|---------|-------|");
 
   for (let i = 0; i < summary.rankedCandidates.length; i++) {
     const c = summary.rankedCandidates[i];
     lines.push(
-      `| ${i + 1} | ${c.id} | ${c.activation} | ${c.generation} | ${c.bestValLoss === Infinity ? "N/A" : c.bestValLoss.toFixed(4)} | ${c.fitnessScore === -Infinity ? "N/A" : c.fitnessScore.toFixed(4)} | ${c.steps} |`,
+      `| ${i + 1} | ${c.name} | ${c.activation} | ${c.generation} | ${c.parentName ?? "-"} | ${c.bestValLoss === Infinity ? "N/A" : c.bestValLoss.toFixed(4)} | ${c.fitnessScore === -Infinity ? "N/A" : c.fitnessScore.toFixed(4)} | ${c.steps} |`,
     );
   }
 

@@ -12,7 +12,7 @@ import { Tape, DropoutRng } from "@alpha/autograd";
 import { initGPT, gptForward, collectParams, countParams, clearForwardCache, type GPTParams } from "@alpha/model";
 import {
   CusumDashboard, AdaptiveBatch, SymbioMetricsCollector, SearchOrchestrator,
-  defaultSymbioConfig, type SymbioConfig, type TrainerStepInfo,
+  defaultSymbioConfig, ffnDimForActivation, type SymbioConfig, type TrainerStepInfo,
 } from "@alpha/symbiogenesis";
 import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
@@ -102,7 +102,10 @@ export interface StepMetrics {
   batch_change_reason?: string;
   // Search candidate
   symbio_candidate_id?: string;
+  symbio_candidate_name?: string;
   symbio_candidate_activation?: string;
+  symbio_candidate_parent_id?: string;
+  symbio_candidate_parent_name?: string;
   symbio_generation?: number;
   architecture_diversity?: number;
 }
@@ -305,15 +308,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const firstCandidate = searchOrchestrator.currentCandidate;
     if (firstCandidate) {
       // Re-init model with first candidate's activation
-      const ffnDim = firstCandidate.activation === "swiglu"
-        ? Math.ceil((8 / 3) * modelConfig.nEmbd / 64) * 64
-        : modelConfig.ffnDim ?? 4 * modelConfig.nEmbd;
+      const ffnDim = ffnDimForActivation(firstCandidate.activation, modelConfig.nEmbd, modelConfig.ffnDim);
       activeModelConfig = { ...modelConfig, ffnActivation: firstCandidate.activation as any, ffnDim };
       rng.seed(trainConfig.seed);
       params = initGPT(activeModelConfig, backend, rng as any);
       totalParams = countParams(params);
       optimizer.loadStateDict({ step: 0, buffers: new Map() });
-      console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.id} activation=${firstCandidate.activation} params=${totalParams.toLocaleString()}`);
+      console.log(`symbio search: gen=${firstCandidate.generation} candidate=${firstCandidate.name} (${firstCandidate.id}) activation=${firstCandidate.activation} params=${totalParams.toLocaleString()}`);
     }
     const totalSearchSteps = symbioConfig.populationSize * symbioConfig.stepsPerCandidate * symbioConfig.generations;
     console.log(`symbio search: ${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens = ${totalSearchSteps} total steps`);
@@ -729,7 +730,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const candidate = searchOrchestrator.currentCandidate;
       if (candidate) {
         metrics.symbio_candidate_id = candidate.id;
+        metrics.symbio_candidate_name = candidate.name;
         metrics.symbio_candidate_activation = candidate.activation;
+        metrics.symbio_candidate_parent_id = candidate.parentId ?? undefined;
+        metrics.symbio_candidate_parent_name = candidate.parentName ?? undefined;
         metrics.symbio_generation = searchOrchestrator.generation;
         metrics.architecture_diversity = searchOrchestrator.architectureDiversity;
 
@@ -740,14 +744,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         );
 
         if (candidateDone) {
-          console.log(`  [symbio search] candidate ${candidate.id} done: bestLoss=${candidate.bestLoss.toFixed(4)} bestVal=${candidate.bestValLoss === Infinity ? "N/A" : candidate.bestValLoss.toFixed(4)} fitness=${candidate.fitnessScore === -Infinity ? "N/A" : candidate.fitnessScore.toFixed(4)}`);
+          console.log(`  [symbio search] candidate ${candidate.name} done: bestLoss=${candidate.bestLoss.toFixed(4)} bestVal=${candidate.bestValLoss === Infinity ? "N/A" : candidate.bestValLoss.toFixed(4)} fitness=${candidate.fitnessScore === -Infinity ? "N/A" : candidate.fitnessScore.toFixed(4)}`);
           const nextActivation = searchOrchestrator.advance();
 
           if (nextActivation !== null) {
             // Switch to next candidate: re-init model with new activation
-            const ffnDim = nextActivation === "swiglu"
-              ? Math.ceil((8 / 3) * activeModelConfig.nEmbd / 64) * 64
-              : modelConfig.ffnDim ?? 4 * activeModelConfig.nEmbd;
+            const ffnDim = ffnDimForActivation(nextActivation, modelConfig.nEmbd, modelConfig.ffnDim);
             activeModelConfig = { ...modelConfig, ffnActivation: nextActivation as any, ffnDim };
             rng.seed(trainConfig.seed + (step + 1)); // different seed per candidate for fresh init
             params = initGPT(activeModelConfig, backend, rng as any);
@@ -755,7 +757,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
             optimizer.loadStateDict({ step: 0, buffers: new Map() });
             clearForwardCache();
             const nextCandidate = searchOrchestrator.currentCandidate;
-            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.id} activation=${nextActivation} params=${totalParams.toLocaleString()}`);
+            console.log(`  [symbio search] → gen=${searchOrchestrator.generation} candidate=${nextCandidate?.name} (${nextCandidate?.id}) activation=${nextActivation} params=${totalParams.toLocaleString()}`);
           } else {
             // Search complete
             const winner = searchOrchestrator.getWinner();

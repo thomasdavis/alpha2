@@ -124,16 +124,17 @@ export class SearchOrchestrator {
       parent.alive = false; // Mark old generation as done
     }
 
-    // Generate children via mutation
+    // Generate children via mutation — track parent lineage for tree visualization
     for (let i = 0; i < this.config.populationSize; i++) {
       const parentIdx = i % parents.length;
+      const parent = parents[parentIdx];
       if (Math.random() < this.config.mutationRate) {
-        const child = mutateCandidate(parents[parentIdx], this.config.activationPool, this.state.generation);
+        const child = mutateCandidate(parent, this.config.activationPool, this.state.generation, i);
         newPop.push(child);
         this.state.allCandidates.push(child);
       } else {
         // Clone parent's activation for new generation
-        const child = createCandidate(parents[parentIdx].activation, this.state.generation);
+        const child = createCandidate(parent.activation, this.state.generation, parent.id, parent.name, parent.lineage, i);
         newPop.push(child);
         this.state.allCandidates.push(child);
       }

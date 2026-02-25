@@ -55,7 +55,7 @@ export interface ModelConfig {
   readonly nEmbd: number;
   readonly nHead: number;
   readonly dropout: number;
-  readonly ffnActivation?: "gelu" | "silu" | "relu" | "swiglu";
+  readonly ffnActivation?: "gelu" | "silu" | "relu" | "swiglu" | "universal" | "kan_spline";
   readonly ffnDim?: number;
 }
 
