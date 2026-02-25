@@ -186,4 +186,9 @@ export const migrations: string[][] = [
     `ALTER TABLE metrics ADD COLUMN symbio_activation_graph TEXT`,
     `ALTER TABLE metrics ADD COLUMN symbio_mutation_applied TEXT`,
   ],
+
+  // Version 9: per-layer gradient norms (JSON text)
+  [
+    `ALTER TABLE metrics ADD COLUMN per_layer_grad_norms TEXT`,
+  ],
 ];

@@ -11,6 +11,7 @@ import {
   fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
 } from "@/components/charts";
 import { SymbioSection, extractActivationSwitchEvents } from "@/components/symbio-charts";
+import { LayersSection } from "@/components/layer-charts";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -402,6 +403,9 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Symbio section */}
       <SymbioSection metrics={metrics as any} run={run as any} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+
+      {/* Per-layer analysis */}
+      <LayersSection metrics={metrics as any} />
 
       {/* Checkpoints */}
       <div className="mb-6 rounded-lg border border-border bg-surface">

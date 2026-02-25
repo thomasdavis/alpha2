@@ -99,6 +99,7 @@ function toChartMetric(m: StepMetric): ChartMetric {
     timing_grad_norm_ms: m.timing_grad_norm_ms ?? null,
     timing_grad_clip_ms: m.timing_grad_clip_ms ?? null,
     gpu_ops_count: m.gpu_ops_count ?? null,
+    per_layer_grad_norms: (m as any).per_layer_grad_norms ?? undefined,
   };
 }
 

@@ -108,6 +108,8 @@ export interface DbMetric {
   architecture_diversity: number | null;
   symbio_activation_graph: string | null;
   symbio_mutation_applied: string | null;
+  // Per-layer gradient norms
+  per_layer_grad_norms: string | null;
 }
 
 export interface DbCheckpoint {

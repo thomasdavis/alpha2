@@ -116,6 +116,8 @@ export interface StepMetrics {
   architecture_diversity?: number;
   symbio_activation_graph?: string;
   symbio_mutation_applied?: string;
+  // Per-layer gradient norms (JSON: Record<layerIndex, norm>)
+  per_layer_grad_norms?: string;
 }
 
 // ── Trainer ────────────────────────────────────────────────────────────────
@@ -480,6 +482,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const paramDataMap = new Map<string, TensorData>();
     const gradMap = new Map<string, TensorData>();
 
+    let perLayerGradNorms: Record<string, number> = {};
+
     if (!nanDetected) {
       // Compute gradient norm: record all GPU ops first, then single flush + CPU sum.
       // Use fused sumOfSquares when available (1 dispatch vs 2 for mul+sum per param).
@@ -511,6 +515,28 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         perParamNorms.push({ name: sqNormNames[pi], normSq: val });
       }
       gradNorm = Math.sqrt(gradNormSq);
+
+      // Aggregate per-layer gradient norms (layer.N.* → layerN norm)
+      const layerNormSqs = new Map<number, number>();
+      let embedNormSq = 0;
+      let headNormSq = 0;
+      for (const { name, normSq } of perParamNorms) {
+        const layerMatch = name.match(/^layer\.(\d+)\./);
+        if (layerMatch) {
+          const idx = parseInt(layerMatch[1], 10);
+          layerNormSqs.set(idx, (layerNormSqs.get(idx) ?? 0) + normSq);
+        } else if (name.startsWith("head.")) {
+          headNormSq += normSq;
+        } else {
+          embedNormSq += normSq;
+        }
+      }
+      perLayerGradNorms = {};
+      if (embedNormSq > 0) perLayerGradNorms["embed"] = Math.sqrt(embedNormSq);
+      for (const [idx, sq] of [...layerNormSqs.entries()].sort((a, b) => a[0] - b[0])) {
+        perLayerGradNorms[String(idx)] = Math.sqrt(sq);
+      }
+      if (headNormSq > 0) perLayerGradNorms["head"] = Math.sqrt(headNormSq);
 
       // Per-layer gradient diagnostics (when trace enabled)
       if (trainConfig.trace) {
@@ -716,6 +742,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Clipping telemetry
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / (step + 1)) * 100,
+      // Per-layer gradient norms
+      per_layer_grad_norms: Object.keys(perLayerGradNorms).length > 0 ? JSON.stringify(perLayerGradNorms) : undefined,
     };
 
     // Symbio metrics (only when symbio is enabled — zero overhead otherwise)
