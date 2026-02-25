@@ -633,6 +633,24 @@ export class CpuRefBackend implements Backend {
     return makeTensor(outShape, a.dtype, out);
   }
 
+  scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {
+    const ndim = origShape.length;
+    const outSize = shapeSize(origShape);
+    const Ctor = dtypeArray(grad.dtype);
+    const out = new Ctor(outSize) as NumericArray; // zero-initialized
+    const origStrides = shapeStrides(origShape);
+    const gradData = numData(grad);
+    const gradSize = shapeSize(grad.shape);
+
+    for (let i = 0; i < gradSize; i++) {
+      const coords = flatToMulti(i, grad.shape);
+      let outFlat = 0;
+      for (let d = 0; d < ndim; d++) outFlat += (coords[d] + starts[d]) * origStrides[d];
+      out[outFlat] = gradData[i];
+    }
+    return makeTensor([...origShape], grad.dtype, out);
+  }
+
   cat(tensors: TensorData[], axis: number): TensorData {
     if (tensors.length === 0) throw new Error("cat: empty tensor list");
     const ndim = tensors[0].shape.length;

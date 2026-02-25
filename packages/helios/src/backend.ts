@@ -2307,6 +2307,41 @@ export class HeliosBackend implements Backend {
     const ndim = a.shape.length;
     const outShape = starts.map((s, d) => ends[d] - s);
     const outSize = shapeSize(outShape);
+
+    // GPU path for 2D tensors above threshold
+    if (ndim === 2 && outSize >= this._minGpuSize) {
+      const vk = this.init();
+      const inputBuf = ensureGpu(vk, a);
+
+      const pushF = new Float32Array(5);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = outSize;
+      pushU[1] = outShape[1];  // outCols
+      pushU[2] = a.shape[1];   // srcCols
+      pushU[3] = starts[0];    // startRow
+      pushU[4] = starts[1];    // startCol
+
+      const pipeline = getPipeline(vk, "slice_2d", 2, 5 * 4);
+      const outRegion = acquireOutputRegion(vk, outSize * 4);
+      const groups = Math.ceil(outSize / WG_SIZE);
+
+      graph.record({
+        kind: "unary",
+        kernel: "slice_2d",
+        pipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 5 * 4,
+        shape: outShape,
+        allBufs: [inputBuf, outRegion.handle],
+      });
+
+      return graphLazyTensor(vk, outShape, outRegion);
+    }
+
+    // CPU fallback
     const Ctor = dtypeArray(a.dtype);
     const out = new Ctor(outSize);
     const srcStrides = shapeStrides(a.shape);
@@ -2317,6 +2352,96 @@ export class HeliosBackend implements Backend {
       out[i] = a.data[srcFlat];
     }
     return makeTensor(outShape, a.dtype, out);
+  }
+
+  scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {
+    const ndim = origShape.length;
+    const outSize = shapeSize(origShape);
+
+    // GPU path for 2D tensors above threshold
+    if (ndim === 2 && outSize >= this._minGpuSize) {
+      const vk = this.init();
+      const gradBuf = ensureGpu(vk, grad);
+
+      const sliceRows = ends[0] - starts[0];
+      const sliceCols = ends[1] - starts[1];
+
+      const pushF = new Float32Array(6);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = outSize;
+      pushU[1] = origShape[1];  // totalCols
+      pushU[2] = sliceCols;
+      pushU[3] = starts[0];     // startRow
+      pushU[4] = starts[1];     // startCol
+      pushU[5] = sliceRows;
+
+      const pipeline = getPipeline(vk, "scatter_slice_2d", 2, 6 * 4);
+      const outRegion = acquireOutputRegion(vk, outSize * 4);
+      const groups = Math.ceil(outSize / WG_SIZE);
+
+      graph.record({
+        kind: "unary",
+        kernel: "scatter_slice_2d",
+        pipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 6 * 4,
+        shape: [...origShape],
+        allBufs: [gradBuf, outRegion.handle],
+      });
+
+      return graphLazyTensor(vk, [...origShape], outRegion);
+    }
+
+    // CPU fallback
+    const Ctor = dtypeArray(grad.dtype);
+    const out = new Ctor(outSize);
+    const origStrides = shapeStrides(origShape);
+    const gradStrides = shapeStrides(grad.shape);
+    const gradSize = shapeSize(grad.shape);
+    for (let i = 0; i < gradSize; i++) {
+      const coords = flatToMulti(i, grad.shape);
+      let outFlat = 0;
+      for (let d = 0; d < ndim; d++) outFlat += (coords[d] + starts[d]) * origStrides[d];
+      out[outFlat] = grad.data[i];
+    }
+    return makeTensor([...origShape], grad.dtype, out);
+  }
+
+  dropoutMask(shape: Shape, seed: number, counter: number, p: number): TensorData {
+    const size = shapeSize(shape);
+    const scaleVal = 1 / (1 - p);
+    const vk = this.init();
+
+    const pushF = new Float32Array(5);
+    const pushU = new Uint32Array(pushF.buffer);
+    pushU[0] = size;
+    pushU[1] = (seed | 0) >>> 0;    // seed as u32
+    pushU[2] = (counter | 0) >>> 0;  // counter as u32
+    // p and scale as f32 bit patterns stored in u32 slots
+    pushF[3] = p;
+    pushF[4] = scaleVal;
+
+    const pipeline = getPipeline(vk, "dropout_mask", 1, 5 * 4);
+    const outRegion = acquireOutputRegion(vk, size * 4);
+    const groups = Math.ceil(size / WG_SIZE);
+
+    graph.record({
+      kind: "unary",
+      kernel: "dropout_mask",
+      pipeline,
+      inputBufs: [],
+      outputRegion: outRegion,
+      groups: [groups, 1, 1],
+      push: pushF,
+      pushSize: 5 * 4,
+      shape: [...shape],
+      allBufs: [outRegion.handle],
+    });
+
+    return graphLazyTensor(vk, [...shape], outRegion);
   }
 
   cat(tensors: TensorData[], axis: number): TensorData {

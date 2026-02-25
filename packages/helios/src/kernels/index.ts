@@ -42,7 +42,7 @@ import {
   kernelSumReduce, kernelSumOfSquares, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
 } from "./reduction.js";
 
-// NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd)
+// NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
   kernelSoftmax, kernelLayerNorm, kernelLayerNormBackward,
   kernelBroadcast, kernelMaskedFill,
@@ -51,6 +51,7 @@ export {
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
+  kernelDropoutMask,
 } from "./nn.js";
 
 import {
@@ -61,6 +62,7 @@ import {
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
+  kernelDropoutMask,
 } from "./nn.js";
 
 // Matmul kernels
@@ -97,6 +99,11 @@ import {
   kernelFlashAttentionBackwardDQ,
   kernelFlashAttentionBackwardDKV,
 } from "./attention.js";
+
+// Copy / slice kernels
+export { kernelSlice2D, kernelScatterSlice2D } from "./copy.js";
+
+import { kernelSlice2D, kernelScatterSlice2D } from "./copy.js";
 
 // F16 storage variant kernels + cast kernels
 export { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
@@ -176,6 +183,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "cross_entropy_backward": spirv = kernelCrossEntropyBackward(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
+    case "slice_2d": spirv = kernelSlice2D(wgSize); break;
+    case "scatter_slice_2d": spirv = kernelScatterSlice2D(wgSize); break;
+    case "dropout_mask": spirv = kernelDropoutMask(wgSize); break;
     case "softcap_forward": spirv = kernelSoftCapForward(wgSize); break;
     case "softcap_backward": spirv = kernelSoftCapBackward(wgSize); break;
     case "softcap_forward_vec4": spirv = kernelSoftCapForwardVec4(wgSize); break;

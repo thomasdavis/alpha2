@@ -107,6 +107,14 @@ export interface Backend {
   matmulTransposed?(a: TensorData, b: TensorData): TensorData;
   addInplace?(a: TensorData, b: TensorData): void;
 
+  // scatter-slice backward (GPU-optimized, optional)
+  // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
+  scatterSlice?(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData;
+
+  // GPU dropout mask generation (GPU-optimized, optional)
+  // Generates deterministic mask using splitmix32 hash (same as DropoutRng on CPU).
+  dropoutMask?(shape: Shape, seed: number, counter: number, p: number): TensorData;
+
   // flash attention (GPU-optimized, optional)
   // Q,K,V: [B*H, T, D], returns { output: [B*H, T, D], lse: [B*H, T] }
   flashAttention?(Q: TensorData, K: TensorData, V: TensorData,

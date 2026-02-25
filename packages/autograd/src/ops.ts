@@ -44,6 +44,16 @@ export class DropoutRng {
     return mask;
   }
 
+  /**
+   * Return seed + counter for GPU mask generation, then advance counter.
+   * The GPU kernel reproduces the same hash, producing an identical mask.
+   */
+  nextMaskParams(): { seed: number; counter: number } {
+    const result = { seed: this.seed, counter: this.counter };
+    this.counter++;
+    return result;
+  }
+
   /** Save counter position for later restore (activation checkpointing). */
   saveCounter(): number {
     return this.counter;
@@ -456,18 +466,26 @@ export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Va
   if (!training || p === 0) return a;
   const aData = a.data;
   const size = shapeSize(aData.shape);
-  // Use deterministic RNG when available (required for activation checkpointing)
-  const maskArr = ctx.dropoutRng
-    ? ctx.dropoutRng.nextMask(size, p)
-    : (() => {
-        const m = new Float32Array(size);
-        const scaleVal = 1 / (1 - p);
-        for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
-        return m;
-      })();
-  const cpuMask: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: maskArr };
-  // Clone mask into backend storage so it's GPU-resident when using GPU backend
-  const mask = ctx.backend.clone(cpuMask);
+
+  let mask: TensorData;
+  if (ctx.backend.dropoutMask && ctx.dropoutRng) {
+    // GPU-native mask generation — no CPU→GPU transfer
+    const params = ctx.dropoutRng.nextMaskParams();
+    mask = ctx.backend.dropoutMask(aData.shape, params.seed, params.counter, p);
+  } else {
+    // CPU mask generation
+    const maskArr = ctx.dropoutRng
+      ? ctx.dropoutRng.nextMask(size, p)
+      : (() => {
+          const m = new Float32Array(size);
+          const scaleVal = 1 / (1 - p);
+          for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
+          return m;
+        })();
+    const cpuMask: TensorData = { shape: [...aData.shape], dtype: aData.dtype, data: maskArr };
+    mask = ctx.backend.clone(cpuMask);
+  }
+
   const out = ctx.backend.mul(aData, mask);
   return record(ctx, out, [a], (g, B) => {
     return [B.mul(g, mask)];
@@ -493,17 +511,24 @@ export function residualDropoutAdd(
   const resData = residual.data;
   const size = shapeSize(projData.shape);
 
-  // Use deterministic RNG when available (required for activation checkpointing)
-  const maskArr = ctx.dropoutRng
-    ? ctx.dropoutRng.nextMask(size, p)
-    : (() => {
-        const m = new Float32Array(size);
-        const scaleVal = 1 / (1 - p);
-        for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
-        return m;
-      })();
-  const cpuMask: TensorData = { shape: [...projData.shape], dtype: projData.dtype, data: maskArr };
-  const mask = ctx.backend.clone(cpuMask);
+  let mask: TensorData;
+  if (ctx.backend.dropoutMask && ctx.dropoutRng) {
+    // GPU-native mask generation — no CPU→GPU transfer
+    const params = ctx.dropoutRng.nextMaskParams();
+    mask = ctx.backend.dropoutMask(projData.shape, params.seed, params.counter, p);
+  } else {
+    // CPU mask generation
+    const maskArr = ctx.dropoutRng
+      ? ctx.dropoutRng.nextMask(size, p)
+      : (() => {
+          const m = new Float32Array(size);
+          const scaleVal = 1 / (1 - p);
+          for (let i = 0; i < size; i++) m[i] = Math.random() > p ? scaleVal : 0;
+          return m;
+        })();
+    const cpuMask: TensorData = { shape: [...projData.shape], dtype: projData.dtype, data: maskArr };
+    mask = ctx.backend.clone(cpuMask);
+  }
 
   // Use fused kernel if backend supports it
   if (ctx.backend.residualDropoutAdd) {
@@ -600,8 +625,12 @@ export function flashAttention(
 export function slice(ctx: Ctx, a: Variable, starts: number[], ends: number[]): Variable {
   const origShape = [...a.data.shape];
   return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release) => {
-    // Backward: pad gradient with zeros to reconstruct original shape.
-    // For each sliced dimension, cat zeros on left/right.
+    // Fast path: use GPU scatterSlice if backend supports it
+    if (B.scatterSlice) {
+      return [B.scatterSlice(g, origShape, starts, ends)];
+    }
+
+    // Fallback: pad gradient with zeros using cat to reconstruct original shape.
     const ndim = origShape.length;
     let padded: TensorData = g;
     for (let d = ndim - 1; d >= 0; d--) {
