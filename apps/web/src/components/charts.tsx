@@ -9,6 +9,7 @@ export interface ChartMetric {
   step: number;
   loss: number;
   val_loss: number | null;
+  symbio_candidate_id?: string | null;
   lr: number;
   grad_norm: number;
   elapsed_ms: number;
@@ -58,7 +59,7 @@ interface StepTimeTooltip {
 
 // ── Event Marker Types ──────────────────────────────────────────
 
-export type MarkerType = "checkpoints" | "bestVal" | "warmupEnd" | "gradSpikes" | "lossSpikes" | "overfit" | "activationSwitch";
+export type MarkerType = "checkpoints" | "bestVal" | "warmupEnd" | "gradSpikes" | "lossSpikes" | "overfit" | "activationSwitch" | "evoValEnvelope" | "evoOverfit";
 export type MarkerVisibility = Record<MarkerType, boolean>;
 
 export const DEFAULT_MARKERS: MarkerVisibility = {
@@ -69,6 +70,8 @@ export const DEFAULT_MARKERS: MarkerVisibility = {
   gradSpikes: false,
   lossSpikes: false,
   activationSwitch: true,
+  evoValEnvelope: true,
+  evoOverfit: true,
 };
 
 export const MARKER_COLORS: Record<MarkerType, string> = {
@@ -79,6 +82,8 @@ export const MARKER_COLORS: Record<MarkerType, string> = {
   lossSpikes: "#f472b6",
   overfit: "#ef4444",
   activationSwitch: "#e879f9",
+  evoValEnvelope: "#10b981",
+  evoOverfit: "#f97316",
 };
 
 export const MARKER_LABELS: Record<MarkerType, string> = {
@@ -89,6 +94,8 @@ export const MARKER_LABELS: Record<MarkerType, string> = {
   lossSpikes: "Loss Spikes",
   overfit: "Overfit",
   activationSwitch: "Activation Switch",
+  evoValEnvelope: "Evo Best",
+  evoOverfit: "Evo Overfit",
 };
 
 export interface ActivationSwitchEvent {
@@ -109,6 +116,8 @@ export interface ComputedEvents {
   lossSpikeSteps: number[];
   overfitStep: number | null;
   activationSwitches: ActivationSwitchEvent[];
+  evoValEnvelope: { step: number; loss: number }[];
+  evoOverfitRegions: { startStep: number; endStep: number }[];
 }
 
 export const MARKERS_STORAGE_KEY = "alpha-chart-markers";
@@ -283,6 +292,62 @@ function detectOverfitStep(metrics: ChartMetric[]): number | null {
   return valPts[minIdx].step;
 }
 
+/** Evo best-val envelope: smoothed running-best that snaps down on improvements, drifts up slowly otherwise. */
+function computeEvoValEnvelope(metrics: ChartMetric[]): { step: number; loss: number }[] {
+  if (metrics.length < 10) return [];
+  const decay = 1 - 1 / 200;
+  const smoothAlpha = 0.05;
+  let best = metrics[0].loss;
+  const raw: number[] = [];
+  for (const m of metrics) {
+    if (m.loss < best) best = m.loss;
+    else best = best * decay + m.loss * (1 - decay);
+    raw.push(best);
+  }
+  const out: { step: number; loss: number }[] = [];
+  let ema = raw[0];
+  for (let i = 0; i < raw.length; i++) {
+    ema = smoothAlpha * raw[i] + (1 - smoothAlpha) * ema;
+    out.push({ step: metrics[i].step, loss: ema });
+  }
+  return out;
+}
+
+/** Evo overfit: per-candidate regions where loss rises 5+ consecutive steps after local min. */
+function computeEvoOverfitRegions(metrics: ChartMetric[]): { startStep: number; endStep: number }[] {
+  // Group by candidate id
+  const byCandidate = new Map<string, ChartMetric[]>();
+  for (const m of metrics) {
+    const cid = m.symbio_candidate_id;
+    if (!cid) continue;
+    const arr = byCandidate.get(cid) ?? [];
+    arr.push(m);
+    byCandidate.set(cid, arr);
+  }
+  const regions: { startStep: number; endStep: number }[] = [];
+  for (const [, cMetrics] of byCandidate) {
+    if (cMetrics.length < 8) continue;
+    let minLoss = Infinity, minIdx = 0;
+    for (let i = 0; i < cMetrics.length; i++) {
+      if (cMetrics[i].loss < minLoss) { minLoss = cMetrics[i].loss; minIdx = i; }
+    }
+    if (minIdx >= cMetrics.length - 3) continue;
+    let consecutive = 0, regionStart = -1, prev = minLoss;
+    for (let i = minIdx + 1; i < cMetrics.length; i++) {
+      if (cMetrics[i].loss > prev + 0.0001) {
+        consecutive++;
+        if (consecutive === 5 && regionStart < 0) regionStart = cMetrics[i - 4].step;
+        prev = cMetrics[i].loss;
+      } else {
+        if (regionStart >= 0 && consecutive >= 5) regions.push({ startStep: regionStart, endStep: cMetrics[i - 1].step });
+        consecutive = 0; regionStart = -1; prev = cMetrics[i].loss;
+      }
+    }
+    if (regionStart >= 0 && consecutive >= 5) regions.push({ startStep: regionStart, endStep: cMetrics[cMetrics.length - 1].step });
+  }
+  return regions;
+}
+
 function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[], activationSwitches?: ActivationSwitchEvent[]): ComputedEvents {
   const bestVal = detectBestValStep(metrics);
   return {
@@ -294,6 +359,8 @@ function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[], a
     lossSpikeSteps: detectLossSpikes(metrics),
     overfitStep: detectOverfitStep(metrics),
     activationSwitches: activationSwitches ?? [],
+    evoValEnvelope: computeEvoValEnvelope(metrics),
+    evoOverfitRegions: computeEvoOverfitRegions(metrics),
   };
 }
 
@@ -493,6 +560,71 @@ function drawLossChart(
       ctx.beginPath();
       ctx.arc(sx(v.step), sy(v.val_loss!), 3, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  // ── Evo Best Envelope (thick green line) ───────────────────────
+  if (markers.evoValEnvelope && events.evoValEnvelope.length > 2) {
+    const env = events.evoValEnvelope;
+    // Gradient fill under the envelope
+    const evoGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
+    evoGrad.addColorStop(0, "rgba(16, 185, 129, 0.12)");
+    evoGrad.addColorStop(1, "rgba(16, 185, 129, 0.0)");
+    ctx.beginPath();
+    ctx.moveTo(sx(env[0].step), pad.top + ch);
+    for (const pt of env) ctx.lineTo(sx(pt.step), sy(pt.loss));
+    ctx.lineTo(sx(env[env.length - 1].step), pad.top + ch);
+    ctx.closePath();
+    ctx.fillStyle = evoGrad;
+    ctx.fill();
+    // Thick glowing line
+    ctx.save();
+    ctx.shadowColor = "rgba(16, 185, 129, 0.6)";
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.strokeStyle = "#10b981";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    for (let i = 0; i < env.length; i++) {
+      if (i === 0) ctx.moveTo(sx(env[i].step), sy(env[i].loss));
+      else ctx.lineTo(sx(env[i].step), sy(env[i].loss));
+    }
+    ctx.stroke();
+    ctx.restore();
+    // Label at the end
+    const last = env[env.length - 1];
+    ctx.fillStyle = "#10b981";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("evo best", sx(last.step) + 4, sy(last.loss) - 2);
+  }
+
+  // ── Evo Overfit Regions (orange shaded bands) ─────────────────
+  if (markers.evoOverfit && events.evoOverfitRegions.length > 0) {
+    for (const region of events.evoOverfitRegions) {
+      const x1 = sx(Math.max(region.startStep, minStep));
+      const x2 = sx(Math.min(region.endStep, maxStep));
+      if (x2 <= x1) continue;
+      // Shaded band
+      ctx.fillStyle = "rgba(249, 115, 22, 0.08)";
+      ctx.fillRect(x1, pad.top, x2 - x1, ch);
+      // Border lines
+      ctx.save();
+      ctx.strokeStyle = "rgba(249, 115, 22, 0.4)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x1, pad.top); ctx.lineTo(x1, pad.top + ch);
+      ctx.moveTo(x2, pad.top); ctx.lineTo(x2, pad.top + ch);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      // Label
+      const midX = (x1 + x2) / 2;
+      ctx.fillStyle = "rgba(249, 115, 22, 0.7)";
+      ctx.font = "bold 8px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("evo overfit", midX, pad.top + 10);
     }
   }
 
@@ -697,21 +829,46 @@ function drawLossChart(
     ctx.stroke();
   }
 
-  // Legend (train + val only; markers are the toggle chips)
+  // Legend (core curves; overlays also have toggle chips)
   const ly = h - 8;
+  let lx = pad.left;
   ctx.fillStyle = "#f59e0b";
-  ctx.fillRect(pad.left, ly - 1, 14, 2);
+  ctx.fillRect(lx, ly - 1, 14, 2);
   ctx.fillStyle = "#666";
   ctx.font = "10px sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("train", pad.left + 18, ly + 3);
+  ctx.fillText("train", lx + 18, ly + 3);
+  lx += 60;
   if (valPts.length > 0) {
     ctx.fillStyle = "#60a5fa";
     ctx.beginPath();
-    ctx.arc(pad.left + 60, ly, 3, 0, Math.PI * 2);
+    ctx.arc(lx, ly, 3, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "#666";
-    ctx.fillText("val", pad.left + 67, ly + 3);
+    ctx.fillText("val", lx + 7, ly + 3);
+    lx += 42;
+  }
+  if (markers.evoValEnvelope && events.evoValEnvelope.length > 2) {
+    ctx.save();
+    ctx.strokeStyle = MARKER_COLORS.evoValEnvelope;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(lx, ly);
+    ctx.lineTo(lx + 14, ly);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = "#666";
+    ctx.fillText("evo best", lx + 18, ly + 3);
+    lx += 58;
+  }
+  if (markers.evoOverfit && events.evoOverfitRegions.length > 0) {
+    ctx.fillStyle = "rgba(249, 115, 22, 0.15)";
+    ctx.fillRect(lx, ly - 5, 14, 10);
+    ctx.strokeStyle = "rgba(249, 115, 22, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(lx + 0.5, ly - 4.5, 13, 9);
+    ctx.fillStyle = "#666";
+    ctx.fillText("evo overfit", lx + 18, ly + 3);
   }
 }
 
@@ -819,7 +976,17 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
     );
   }
 
-  const markerKeys: MarkerType[] = ["checkpoints", "bestVal", "warmupEnd", "gradSpikes", "lossSpikes", "overfit"];
+  const markerKeys: MarkerType[] = [
+    "checkpoints",
+    "bestVal",
+    "evoValEnvelope",
+    "warmupEnd",
+    "overfit",
+    "evoOverfit",
+    "gradSpikes",
+    "lossSpikes",
+    "activationSwitch",
+  ];
 
   return (
     <div className="relative">
