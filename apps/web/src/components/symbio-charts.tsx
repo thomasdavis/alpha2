@@ -514,13 +514,6 @@ function SearchCandidateTable({ metrics }: { metrics: SymbioMetric[] }) {
 
   const bestId = sorted[0]?.id;
 
-  const ACTIVATION_COLORS: Record<string, string> = {
-    gelu: "text-blue-400",
-    silu: "text-green-400",
-    relu: "text-yellow-400",
-    swiglu: "text-purple-400",
-  };
-
   return (
     <div className="mb-4 rounded-lg border border-border bg-surface">
       <div className="border-b border-border px-4 py-3">
@@ -544,6 +537,196 @@ function SearchCandidateTable({ metrics }: { metrics: SymbioMetric[] }) {
           <span className="font-mono text-green">{c.bestFitness === -Infinity ? "-" : c.bestFitness.toFixed(4)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Activation Switch Log ─────────────────────────────────────
+
+interface SwitchEvent {
+  step: number;
+  fromId: string | null;
+  fromActivation: string | null;
+  fromGeneration: number | null;
+  toId: string;
+  toActivation: string;
+  toGeneration: number;
+  // Stats about the outgoing candidate
+  fromSteps: number;
+  fromBestLoss: number | null;
+  fromFinalLoss: number | null;
+  fromBestFitness: number | null;
+  fromAvgTokPerSec: number | null;
+  fromCusumAlerts: number;
+  fromLastAlertReason: string | null;
+  fromGradSpikes: number;
+  fromClipPctAtEnd: number | null;
+  lossAtSwitch: number;
+}
+
+function extractSwitchEvents(metrics: SymbioMetric[]): SwitchEvent[] {
+  const events: SwitchEvent[] = [];
+  let prevId: string | null = null;
+  let prevActivation: string | null = null;
+  let prevGeneration: number | null = null;
+
+  // Track per-candidate running stats
+  let candSteps = 0;
+  let candLosses: number[] = [];
+  let candFitnesses: number[] = [];
+  let candTps: number[] = [];
+  let candCusumAlerts = 0;
+  let candLastAlertReason: string | null = null;
+  let candGradSpikes = 0;
+  let candLastClipPct: number | null = null;
+
+  for (const m of metrics) {
+    const id = m.symbio_candidate_id;
+    if (!id) continue;
+
+    if (id !== prevId) {
+      // Switch detected
+      events.push({
+        step: m.step,
+        fromId: prevId,
+        fromActivation: prevActivation,
+        fromGeneration: prevGeneration,
+        toId: id,
+        toActivation: m.symbio_candidate_activation ?? "?",
+        toGeneration: m.symbio_generation ?? 0,
+        fromSteps: candSteps,
+        fromBestLoss: candLosses.length > 0 ? Math.min(...candLosses) : null,
+        fromFinalLoss: candLosses.length > 0 ? candLosses[candLosses.length - 1] : null,
+        fromBestFitness: candFitnesses.length > 0 ? Math.max(...candFitnesses) : null,
+        fromAvgTokPerSec: candTps.length > 0 ? candTps.reduce((a, b) => a + b, 0) / candTps.length : null,
+        fromCusumAlerts: candCusumAlerts,
+        fromLastAlertReason: candLastAlertReason,
+        fromGradSpikes: candGradSpikes,
+        fromClipPctAtEnd: candLastClipPct,
+        lossAtSwitch: m.loss,
+      });
+
+      // Reset for new candidate
+      prevId = id;
+      prevActivation = m.symbio_candidate_activation ?? "?";
+      prevGeneration = m.symbio_generation ?? 0;
+      candSteps = 0;
+      candLosses = [];
+      candFitnesses = [];
+      candTps = [];
+      candCusumAlerts = 0;
+      candLastAlertReason = null;
+      candGradSpikes = 0;
+      candLastClipPct = null;
+    }
+
+    candSteps++;
+    candLosses.push(m.loss);
+    if (m.fitness_score != null) candFitnesses.push(m.fitness_score);
+    if (m.tokens_per_sec != null) candTps.push(m.tokens_per_sec);
+    if ((m.cusum_alerts ?? 0) > 0) {
+      candCusumAlerts++;
+      if (m.cusum_alert_reason) candLastAlertReason = m.cusum_alert_reason;
+    }
+    if (m.grad_norm > 10) candGradSpikes++;
+    if (m.clip_pct != null) candLastClipPct = m.clip_pct;
+  }
+
+  return events;
+}
+
+const ACTIVATION_COLORS: Record<string, string> = {
+  gelu: "text-blue-400",
+  silu: "text-green-400",
+  relu: "text-yellow-400",
+  swiglu: "text-purple-400",
+};
+
+const ACTIVATION_BG: Record<string, string> = {
+  gelu: "bg-blue-500/10 border-blue-500/20",
+  silu: "bg-green-500/10 border-green-500/20",
+  relu: "bg-yellow-500/10 border-yellow-500/20",
+  swiglu: "bg-purple-500/10 border-purple-500/20",
+};
+
+function ActivationSwitchLog({ metrics }: { metrics: SymbioMetric[] }) {
+  const events = extractSwitchEvents(metrics);
+  if (events.length === 0) return null;
+
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-surface">
+      <div className="border-b border-border px-4 py-3">
+        <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
+          Activation Switch Log ({events.length} transitions)
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border/50 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">
+              <th className="px-3 py-2 text-left">Step</th>
+              <th className="px-3 py-2 text-left">From</th>
+              <th className="px-3 py-2 text-center"></th>
+              <th className="px-3 py-2 text-left">To</th>
+              <th className="px-3 py-2 text-left">Gen</th>
+              <th className="px-3 py-2 text-right">Prev Steps</th>
+              <th className="px-3 py-2 text-right">Best Loss</th>
+              <th className="px-3 py-2 text-right">Final Loss</th>
+              <th className="px-3 py-2 text-right">Fitness</th>
+              <th className="px-3 py-2 text-right">Avg tok/s</th>
+              <th className="px-3 py-2 text-right">Clip %</th>
+              <th className="px-3 py-2 text-left">Alerts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((e, i) => (
+              <tr key={i} className={`border-b border-border/20 last:border-0 ${i === 0 ? "bg-surface-2/30" : ""}`}>
+                <td className="px-3 py-2 font-mono font-semibold text-white">{e.step}</td>
+                <td className="px-3 py-2">
+                  {e.fromActivation ? (
+                    <span className={`inline-block rounded border px-1.5 py-0.5 text-[0.62rem] font-semibold ${ACTIVATION_BG[e.fromActivation] ?? "bg-surface-2 border-border"} ${ACTIVATION_COLORS[e.fromActivation] ?? "text-text-secondary"}`}>
+                      {e.fromActivation}
+                    </span>
+                  ) : (
+                    <span className="text-text-muted">-</span>
+                  )}
+                </td>
+                <td className="px-1 py-2 text-center text-text-muted">→</td>
+                <td className="px-3 py-2">
+                  <span className={`inline-block rounded border px-1.5 py-0.5 text-[0.62rem] font-semibold ${ACTIVATION_BG[e.toActivation] ?? "bg-surface-2 border-border"} ${ACTIVATION_COLORS[e.toActivation] ?? "text-text-secondary"}`}>
+                    {e.toActivation}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-text-muted">{e.toGeneration}</td>
+                <td className="px-3 py-2 text-right font-mono text-text-secondary">{e.fromSteps > 0 ? e.fromSteps : "-"}</td>
+                <td className="px-3 py-2 text-right font-mono text-white">{e.fromBestLoss != null ? e.fromBestLoss.toFixed(4) : "-"}</td>
+                <td className="px-3 py-2 text-right font-mono text-text-secondary">{e.fromFinalLoss != null ? e.fromFinalLoss.toFixed(4) : "-"}</td>
+                <td className="px-3 py-2 text-right font-mono text-green">{e.fromBestFitness != null ? e.fromBestFitness.toFixed(4) : "-"}</td>
+                <td className="px-3 py-2 text-right font-mono text-text-secondary">{e.fromAvgTokPerSec != null ? Math.round(e.fromAvgTokPerSec).toLocaleString() : "-"}</td>
+                <td className="px-3 py-2 text-right font-mono text-text-secondary">{e.fromClipPctAtEnd != null ? `${e.fromClipPctAtEnd.toFixed(0)}%` : "-"}</td>
+                <td className="px-3 py-2">
+                  {(e.fromCusumAlerts > 0 || e.fromGradSpikes > 0) ? (
+                    <div className="flex flex-wrap gap-1">
+                      {e.fromCusumAlerts > 0 && (
+                        <span className="rounded bg-orange-500/10 px-1.5 py-0.5 text-[0.58rem] text-orange-400" title={e.fromLastAlertReason ?? undefined}>
+                          {e.fromCusumAlerts} cusum
+                        </span>
+                      )}
+                      {e.fromGradSpikes > 0 && (
+                        <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[0.58rem] text-red-400">
+                          {e.fromGradSpikes} spike{e.fromGradSpikes > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-text-muted">-</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -689,9 +872,10 @@ export function SymbioSection({ metrics, run }: { metrics: SymbioMetric[]; run: 
             </div>
           )}
 
-          {/* Search candidate comparison */}
+          {/* Search: activation switch log + candidate comparison */}
           {hasSearchData && (
             <>
+              <ActivationSwitchLog metrics={metrics} />
               <SearchCandidateTable metrics={metrics} />
               <div className="mb-4 rounded-lg border border-border bg-surface p-4">
                 <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
