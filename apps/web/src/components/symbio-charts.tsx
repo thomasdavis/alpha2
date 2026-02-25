@@ -47,6 +47,8 @@ interface SymbioMetric extends ChartMetric {
   mi_input_repr?: number | null;
   mi_repr_output?: number | null;
   mi_compression?: number | null;
+  symbio_activation_graph?: string | null;
+  symbio_mutation_applied?: string | null;
 }
 
 interface ChartTooltip {
@@ -388,6 +390,8 @@ interface CandidateStats {
   lastClipPct: number | null;
   startStep: number;
   endStep: number;
+  activationGraph: unknown | null;
+  mutationApplied: string | null;
 }
 
 function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
@@ -397,6 +401,7 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
     losses: number[]; valLosses: number[];
     fitnesses: number[]; tps: number[]; steps: number; cusumAlerts: number;
     lastClipPct: number | null; startStep: number; endStep: number;
+    activationGraph: unknown | null; mutationApplied: string | null;
   }>();
 
   for (const m of metrics) {
@@ -404,6 +409,8 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
     if (!id) continue;
     let entry = candidates.get(id);
     if (!entry) {
+      let graph: unknown | null = null;
+      try { if (m.symbio_activation_graph) graph = JSON.parse(m.symbio_activation_graph); } catch { /* ignore */ }
       entry = {
         name: m.symbio_candidate_name ?? id,
         activation: m.symbio_candidate_activation ?? "?", generation: m.symbio_generation ?? 0,
@@ -411,6 +418,7 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
         parentName: m.symbio_candidate_parent_name ?? null,
         losses: [], valLosses: [], fitnesses: [], tps: [], steps: 0, cusumAlerts: 0,
         lastClipPct: null, startStep: m.step, endStep: m.step,
+        activationGraph: graph, mutationApplied: m.symbio_mutation_applied ?? null,
       };
       candidates.set(id, entry);
     }
@@ -441,6 +449,8 @@ function extractCandidateStats(metrics: SymbioMetric[]): CandidateStats[] {
     lastClipPct: e.lastClipPct,
     startStep: e.startStep,
     endStep: e.endStep,
+    activationGraph: e.activationGraph,
+    mutationApplied: e.mutationApplied,
   }));
 }
 
@@ -1036,29 +1046,86 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+  const prevCandidateIdsRef = useRef<Set<string>>(new Set());
+  const onSelectRef = useRef(onSelectCandidate);
+  onSelectRef.current = onSelectCandidate;
   const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
 
+  // Build tree data from candidates (reusable for init + incremental)
+  const buildTreeData = useCallback((cands: CandidateStats[], am5: any) => {
+    const allLosses = cands.filter(c => c.bestLoss < Infinity).map(c => c.bestLoss);
+    const minLoss = Math.min(...allLosses, 1);
+    const maxLoss = Math.max(...allLosses, 10);
+    const lossRange = maxLoss - minLoss || 1;
+
+    const rootNodes: any[] = [];
+    const nodeMap = new Map<string, any>();
+
+    for (const c of cands) {
+      const lossScore = c.bestLoss < Infinity ? 1 - (c.bestLoss - minLoss) / lossRange : 0;
+      const nodeValue = Math.max(2, Math.round(lossScore * 30 + Math.sqrt(c.steps) * 2));
+
+      const node: any = {
+        id: c.id,
+        name: c.name,
+        value: nodeValue,
+        activation: c.activation,
+        generation: c.generation,
+        bestLoss: c.bestLoss === Infinity ? "N/A" : c.bestLoss.toFixed(4),
+        bestFitness: c.bestFitness === -Infinity ? "N/A" : c.bestFitness.toFixed(4),
+        steps: c.steps,
+        mutation: c.mutationApplied ?? "origin",
+        parentId: c.parentId,
+        children: [],
+        nodeSettings: {
+          fill: am5.color(actHex(c.activation)),
+        },
+      };
+      nodeMap.set(c.id, node);
+    }
+
+    for (const c of cands) {
+      const node = nodeMap.get(c.id);
+      if (!node) continue;
+      if (c.parentId && nodeMap.has(c.parentId)) {
+        nodeMap.get(c.parentId)!.children.push(node);
+      } else {
+        rootNodes.push(node);
+      }
+    }
+
+    return { id: "root", name: "Evolution", value: 0, children: rootNodes };
+  }, []);
+
+  // Initialize chart once
   useEffect(() => {
     if (!chartRef.current || candidates.length === 0) return;
-    let root: any;
 
-    // Dynamic import amcharts (client-side only)
     const initChart = async () => {
       const am5 = await import("@amcharts/amcharts5");
       const am5hierarchy = await import("@amcharts/amcharts5/hierarchy");
       const am5themes = await import("@amcharts/amcharts5/themes/Dark");
 
-      // Dispose previous instance
       if (rootRef.current) rootRef.current.dispose();
-
       if (!chartRef.current) return;
-      root = am5.Root.new(chartRef.current);
+      const root = am5.Root.new(chartRef.current);
       rootRef.current = root;
       root.setThemes([am5themes.default.new(root)]);
 
       const container = root.container.children.push(
         am5.Container.new(root, { width: am5.percent(100), height: am5.percent(100), layout: root.verticalLayout })
       );
+
+      const maxGen = Math.max(0, ...candidates.map(c => c.generation));
+      const popPerGen = candidates.length / Math.max(1, maxGen + 1);
+      const allLosses = candidates.filter(c => c.bestLoss < Infinity).map(c => c.bestLoss);
+      const minLoss = Math.min(...allLosses, 1);
+      const maxLoss = Math.max(...allLosses, 10);
+      const lossRange = maxLoss - minLoss || 1;
+
+      const repulsion = -Math.max(8, Math.min(30, popPerGen * 3));
+      const centerPull = Math.min(0.8, 0.3 + candidates.length * 0.005);
 
       const series = container.children.push(
         am5hierarchy.ForceDirected.new(root, {
@@ -1070,112 +1137,149 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
           categoryField: "name",
           childDataField: "children",
           idField: "id",
-          linkWithStrength: 0.5,
-          minRadius: 16,
-          maxRadius: 40,
-          manyBodyStrength: -15,
-          centerStrength: 0.5,
+          linkWithStrength: 0.7,
+          minRadius: 10,
+          maxRadius: 36,
+          manyBodyStrength: repulsion,
+          centerStrength: centerPull,
+          velocityDecay: 0.65,
         })
       );
+      seriesRef.current = series;
 
-      series.get("colors")!.set("colors", [
-        am5.color("#60a5fa"), am5.color("#34d399"), am5.color("#f59e0b"),
-        am5.color("#a78bfa"), am5.color("#f472b6"), am5.color("#22d3ee"),
-      ]);
-
-      // Build tree data from candidates
-      const rootNodes: any[] = [];
-      const nodeMap = new Map<string, any>();
-
-      // Create nodes for all candidates
-      for (const c of candidates) {
-        const node: any = {
-          id: c.id,
-          name: c.name,
-          value: Math.max(1, c.steps),
-          activation: c.activation,
-          generation: c.generation,
-          bestLoss: c.bestLoss,
-          bestFitness: c.bestFitness,
-          parentId: c.parentId,
-          children: [],
-          nodeSettings: {
-            fill: am5.color(actHex(c.activation)),
-          },
-        };
-        nodeMap.set(c.id, node);
-      }
-
-      // Build parent-child relationships
-      for (const c of candidates) {
-        const node = nodeMap.get(c.id);
-        if (!node) continue;
-        if (c.parentId && nodeMap.has(c.parentId)) {
-          nodeMap.get(c.parentId)!.children.push(node);
-        } else {
-          rootNodes.push(node);
-        }
-      }
-
-      // Wrap in a virtual root
-      const treeData = {
-        id: "root",
-        name: "Evolution",
-        value: 0,
-        children: rootNodes,
-      };
-
+      const treeData = buildTreeData(candidates, am5);
       series.data.setAll([treeData]);
       series.set("selectedDataItem", series.dataItems[0]);
+      prevCandidateIdsRef.current = new Set(candidates.map(c => c.id));
 
-      // Configure node appearance
+      // Node appearance
       series.nodes.template.setAll({ toggleKey: "none", cursorOverStyle: "pointer" });
-
       series.nodes.template.setup = (target: any) => {
         const circle = target.children.getIndex(0);
         if (circle) {
-          circle.setAll({ strokeWidth: 2, stroke: am5.color("#333") });
+          circle.setAll({ strokeWidth: 1.5, stroke: am5.color("#222") });
+          circle.adapters.add("strokeWidth", (_sw: number, t: any) => {
+            const ctx = t.dataItem?.dataContext as any;
+            if (ctx?.bestLoss !== "N/A" && parseFloat(ctx?.bestLoss) < minLoss + lossRange * 0.25) return 3;
+            return 1.5;
+          });
+          circle.adapters.add("stroke", (_s: any, t: any) => {
+            const ctx = t.dataItem?.dataContext as any;
+            if (ctx?.bestLoss !== "N/A" && parseFloat(ctx?.bestLoss) < minLoss + lossRange * 0.25) {
+              return am5.color("#fbbf24");
+            }
+            return am5.color("#333");
+          });
         }
       };
 
-      // Custom node colors based on activation
-      series.nodes.template.adapters.add("fill", (_fill: any, target: any) => {
-        const dataItem = target.dataItem;
-        if (dataItem && dataItem.dataContext) {
-          const ctx = dataItem.dataContext as any;
-          return am5.color(actHex(ctx.activation));
-        }
-        return _fill;
+      (series.nodes.template as any).adapters.add("fill", (_fill: any, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        return ctx?.activation ? am5.color(actHex(ctx.activation)) : _fill;
       });
 
-      // Tooltip
-      series.nodes.template.set("tooltipText", "[bold]{name}[/]\nActivation: {activation}\nGen: {generation}\nBest Loss: {bestLoss}\nFitness: {bestFitness}");
+      series.nodes.template.set("tooltipText",
+        "[bold]{name}[/]\n" +
+        "Activation: {activation}\n" +
+        "Generation: {generation}\n" +
+        "Mutation: {mutation}\n" +
+        "Best Loss: {bestLoss}\n" +
+        "Fitness: {bestFitness}\n" +
+        "Steps: {steps}"
+      );
 
-      // Click handler
       series.nodes.template.events.on("click", (ev: any) => {
-        const dataItem = ev.target.dataItem;
-        if (dataItem?.dataContext && onSelectCandidate) {
-          onSelectCandidate((dataItem.dataContext as any).id);
-        }
+        const ctx = ev.target.dataItem?.dataContext as any;
+        if (ctx?.id && onSelectRef.current) onSelectRef.current(ctx.id);
       });
 
-      // Links styling
-      series.links.template.setAll({ strokeWidth: 1.5, strokeOpacity: 0.4 });
+      series.links.template.setAll({ strokeWidth: 1.5, strokeOpacity: 0.35 });
+      (series.links.template as any).adapters.add("strokeOpacity", (_o: number, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        if (ctx?.generation != null) return Math.min(0.7, 0.2 + ctx.generation / Math.max(1, maxGen) * 0.5);
+        return 0.35;
+      });
+      (series.links.template as any).adapters.add("strokeWidth", (_w: number, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        if (ctx?.generation != null && ctx.generation >= maxGen - 1) return 2.5;
+        return 1.5;
+      });
 
-      // Labels
-      series.labels.template.setAll({ fontSize: 9, fill: am5.color("#ccc"), oversizedBehavior: "truncate", maxWidth: 80 });
+      series.labels.template.setAll({
+        fontSize: 8, fill: am5.color("#aaa"),
+        oversizedBehavior: "truncate", maxWidth: 70,
+        centerX: am5.percent(50), centerY: am5.percent(110),
+      });
 
       series.appear(1000, 100);
     };
 
     initChart();
+    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; seriesRef.current = null; } };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Init once only
 
-    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
-  }, [candidates, onSelectCandidate]);
+  // Incremental data update: only push new tree data when candidates change
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || candidates.length === 0) return;
+
+    // Check if any new candidates appeared
+    const currentIds = new Set(candidates.map(c => c.id));
+    const prevIds = prevCandidateIdsRef.current;
+    let hasNew = currentIds.size !== prevIds.size;
+    if (!hasNew) {
+      for (const id of currentIds) {
+        if (!prevIds.has(id)) { hasNew = true; break; }
+      }
+    }
+    if (!hasNew) return; // No new candidates, skip
+
+    // Update tree data without disposing the chart
+    import("@amcharts/amcharts5").then((am5) => {
+      const treeData = buildTreeData(candidates, am5);
+      series.data.setAll([treeData]);
+      prevCandidateIdsRef.current = currentIds;
+    });
+  }, [candidates, buildTreeData]);
 
   if (candidates.length === 0) return null;
+  return <div ref={chartRef} style={{ width: "100%", height: 500 }} />;
+}
 
-  return <div ref={chartRef} style={{ width: "100%", height: 400 }} />;
+// ── Activation Graph Composition Parser ──────────────────────
+
+interface BasisWeight { basis: string; weight: number; }
+
+/** Recursively extract leaf basis ops and their effective weights from an activation graph. */
+function extractComposition(node: any, scale = 1): BasisWeight[] {
+  if (!node || typeof node !== "object") return [];
+  if (node.type === "basis") return [{ basis: node.op ?? "?", weight: scale }];
+  if (node.type === "scale") return extractComposition(node.child, scale * (node.factor ?? 1));
+  if (node.type === "add") return [...extractComposition(node.left, scale), ...extractComposition(node.right, scale)];
+  if (node.type === "mul") {
+    // For mul, both branches get full weight (gating)
+    return [...extractComposition(node.left, scale), ...extractComposition(node.right, scale)];
+  }
+  return [];
+}
+
+/** Merge basis weights by name, normalize to sum=1. */
+function normalizeComposition(raw: BasisWeight[]): BasisWeight[] {
+  const map = new Map<string, number>();
+  for (const { basis, weight } of raw) {
+    map.set(basis, (map.get(basis) ?? 0) + Math.abs(weight));
+  }
+  const total = Array.from(map.values()).reduce((a, b) => a + b, 0) || 1;
+  return Array.from(map.entries())
+    .map(([basis, w]) => ({ basis, weight: w / total }))
+    .sort((a, b) => b.weight - a.weight);
+}
+
+/** For non-graph activations, return single-basis composition. */
+function simpleComposition(activation: string): BasisWeight[] {
+  const basis = activation === "swiglu" ? "silu" : activation === "kan_spline" ? "silu" : activation === "universal" ? "silu" : activation;
+  return [{ basis, weight: 1 }];
 }
 
 // ── Traditional Tree Layout (Canvas) ─────────────────────────
@@ -1192,6 +1296,8 @@ interface TreeNode {
   x: number;
   y: number;
   width: number;
+  composition: BasisWeight[];
+  mutationApplied: string | null;
 }
 
 function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
@@ -1209,20 +1315,25 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
   const [zoom, setZoom] = useState(1);
   const dragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null);
 
-  const NODE_W = 90;
-  const NODE_H = 56;
-  const H_GAP = 16;
-  const V_GAP = 40;
+  const PIE_R = 20;
+  const NODE_W = 80;
+  const NODE_H = PIE_R * 2 + 32; // pie diameter + labels below
+  const H_GAP = 20;
+  const V_GAP = 36;
 
   const { allNodes, maxGen, treeWidth, treeHeight } = useMemo(() => {
     if (candidates.length === 0) return { allNodes: [] as TreeNode[], maxGen: 0, treeWidth: 400, treeHeight: 300 };
 
     const nodeMap = new Map<string, TreeNode>();
     for (const c of candidates) {
+      const composition = c.activationGraph
+        ? normalizeComposition(extractComposition(c.activationGraph))
+        : simpleComposition(c.activation);
       nodeMap.set(c.id, {
         id: c.id, name: c.name, activation: c.activation, generation: c.generation,
         bestLoss: c.bestLoss, bestFitness: c.bestFitness, steps: c.steps,
         children: [], x: 0, y: 0, width: 0,
+        composition, mutationApplied: c.mutationApplied,
       });
     }
 
@@ -1312,71 +1423,154 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
-    const RADIUS = 6;
-
-    // Draw links
+    // ── Parent→child links ──
     ctx.lineWidth = 1.5 / zoom;
     for (const node of allNodes) {
+      const parentBot = node.y + PIE_R * 2 + 4;
       for (const child of node.children) {
+        const childTop = child.y + 2;
         const col = actHex(child.activation);
         ctx.strokeStyle = col + "60";
         ctx.beginPath();
-        ctx.moveTo(node.x, node.y + NODE_H);
-        const midY = (node.y + NODE_H + child.y) / 2;
-        ctx.bezierCurveTo(node.x, midY, child.x, midY, child.x, child.y);
+        ctx.moveTo(node.x, parentBot);
+        const midY = (parentBot + childTop) / 2;
+        ctx.bezierCurveTo(node.x, midY, child.x, midY, child.x, childTop);
         ctx.stroke();
       }
     }
 
-    // Draw nodes
+    // ── Hereditary dotted lines (composed nodes → gen-0 basis ancestors) ──
+    const gen0Map = new Map<string, TreeNode[]>();
+    for (const node of allNodes) {
+      if (node.generation === 0) {
+        const existing = gen0Map.get(node.activation) ?? [];
+        existing.push(node);
+        gen0Map.set(node.activation, existing);
+      }
+    }
+    ctx.save();
+    ctx.setLineDash([4 / zoom, 4 / zoom]);
+    ctx.lineWidth = 1 / zoom;
+    ctx.globalAlpha = 0.25;
+    for (const node of allNodes) {
+      if (node.composition.length <= 1) continue;
+      const pieCY = node.y + PIE_R + 2;
+      for (const bw of node.composition) {
+        const ancestors = gen0Map.get(bw.basis);
+        if (!ancestors) continue;
+        // Connect to closest gen-0 ancestor of this basis
+        let closest = ancestors[0];
+        let bestDist = Math.abs(ancestors[0].x - node.x);
+        for (let i = 1; i < ancestors.length; i++) {
+          const d = Math.abs(ancestors[i].x - node.x);
+          if (d < bestDist) { closest = ancestors[i]; bestDist = d; }
+        }
+        const col = actHex(bw.basis);
+        ctx.strokeStyle = col;
+        ctx.beginPath();
+        const ancestorBot = closest.y + PIE_R * 2 + 4;
+        ctx.moveTo(closest.x, ancestorBot);
+        const cpY1 = ancestorBot + (pieCY - ancestorBot) * 0.3;
+        const cpY2 = ancestorBot + (pieCY - ancestorBot) * 0.7;
+        ctx.bezierCurveTo(closest.x, cpY1, node.x, cpY2, node.x, pieCY);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+
+    // ── Draw nodes as pie charts ──
     for (const node of allNodes) {
       const col = actHex(node.activation);
       const isSelected = node.id === selectedCandidateId;
       const isHovered = hoveredNode?.id === node.id;
-      const x = node.x - NODE_W / 2;
-      const y = node.y;
+      const cx = node.x;
+      const cy = node.y + PIE_R + 2;
 
-      ctx.fillStyle = isSelected ? col + "30" : isHovered ? col + "20" : "#111118";
-      ctx.strokeStyle = isSelected ? col : isHovered ? col + "bb" : col + "55";
-      ctx.lineWidth = (isSelected ? 2 : 1) / zoom;
+      // Glow for selected/hovered
+      if (isSelected || isHovered) {
+        ctx.save();
+        ctx.shadowColor = col;
+        ctx.shadowBlur = isSelected ? 14 / zoom : 8 / zoom;
+        ctx.beginPath();
+        ctx.arc(cx, cy, PIE_R + 2, 0, Math.PI * 2);
+        ctx.fillStyle = "transparent";
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Background circle
       ctx.beginPath();
-      ctx.roundRect(x, y, NODE_W, NODE_H, RADIUS);
+      ctx.arc(cx, cy, PIE_R + 1, 0, Math.PI * 2);
+      ctx.fillStyle = "#111118";
       ctx.fill();
+
+      // Pie slices
+      if (node.composition.length <= 1) {
+        // Single basis — full circle
+        ctx.beginPath();
+        ctx.arc(cx, cy, PIE_R, 0, Math.PI * 2);
+        ctx.fillStyle = col + "cc";
+        ctx.fill();
+      } else {
+        // Multi-basis — pie slices
+        let angle = -Math.PI / 2;
+        for (const bw of node.composition) {
+          const sliceAngle = bw.weight * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.arc(cx, cy, PIE_R, angle, angle + sliceAngle);
+          ctx.closePath();
+          ctx.fillStyle = actHex(bw.basis) + "cc";
+          ctx.fill();
+          // Slice separator
+          ctx.strokeStyle = "#111118";
+          ctx.lineWidth = 1 / zoom;
+          ctx.stroke();
+          angle += sliceAngle;
+        }
+      }
+
+      // Border ring — colored by primary activation
+      ctx.beginPath();
+      ctx.arc(cx, cy, PIE_R, 0, Math.PI * 2);
+      ctx.strokeStyle = isSelected ? col : isHovered ? col + "dd" : col + "88";
+      ctx.lineWidth = (isSelected ? 2.5 : 1.5) / zoom;
       ctx.stroke();
 
-      // Color bar
-      ctx.fillStyle = col;
-      ctx.beginPath();
-      ctx.roundRect(x, y, NODE_W, 3, [RADIUS, RADIUS, 0, 0]);
-      ctx.fill();
+      // Generation number at center
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.font = `bold ${Math.max(8, 10 / Math.max(zoom, 0.5))}px monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`${node.generation}`, cx, cy);
+
+      // Labels below pie
+      const labelY = cy + PIE_R + 5;
 
       // Name
       ctx.fillStyle = col;
-      ctx.font = "bold 9px monospace";
+      ctx.font = `bold ${8 / Math.max(zoom, 0.4)}px monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      const nameStr = node.name.length > 14 ? node.name.slice(0, 12) + ".." : node.name;
-      ctx.fillText(nameStr, node.x, y + 7);
-
-      // Activation
-      ctx.fillStyle = "rgba(255,255,255,0.4)";
-      ctx.font = "7px monospace";
-      const actStr = node.activation.length > 16 ? node.activation.slice(0, 14) + ".." : node.activation;
-      ctx.fillText(actStr, node.x, y + 19);
+      const nameStr = node.name.length > 12 ? node.name.slice(0, 10) + ".." : node.name;
+      ctx.fillText(nameStr, cx, labelY);
 
       // Loss
-      ctx.fillStyle = "rgba(255,255,255,0.6)";
-      ctx.font = "8px monospace";
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.font = `${7 / Math.max(zoom, 0.4)}px monospace`;
       const lossStr = node.bestLoss === Infinity ? "—" : node.bestLoss.toFixed(4);
-      ctx.fillText(`loss ${lossStr}`, node.x, y + 31);
+      ctx.fillText(lossStr, cx, labelY + 11 / Math.max(zoom, 0.4));
 
-      // Steps
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      ctx.font = "7px monospace";
-      ctx.fillText(`${node.steps}s · g${node.generation}`, node.x, y + 43);
+      // Mutation badge (if any)
+      if (node.mutationApplied) {
+        ctx.fillStyle = "#e879f9" + "88";
+        ctx.font = `${6 / Math.max(zoom, 0.4)}px monospace`;
+        const mutStr = node.mutationApplied.length > 14 ? node.mutationApplied.slice(0, 12) + ".." : node.mutationApplied;
+        ctx.fillText(`⚡${mutStr}`, cx, labelY + 21 / Math.max(zoom, 0.4));
+      }
     }
 
-    // Generation labels (fixed to left in world space)
+    // ── Generation labels (fixed to left in world space) ──
     const viewLeft = -pan.x / zoom;
     ctx.fillStyle = "rgba(255,255,255,0.15)";
     ctx.font = "bold 8px monospace";
@@ -1494,8 +1688,11 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
 
     let found: TreeNode | null = null;
     for (const node of allNodes) {
-      if (world.x >= node.x - NODE_W / 2 && world.x <= node.x + NODE_W / 2 &&
-          world.y >= node.y && world.y <= node.y + NODE_H) {
+      const cx = node.x;
+      const cy = node.y + PIE_R + 2;
+      const dx = world.x - cx;
+      const dy = world.y - cy;
+      if (dx * dx + dy * dy <= (PIE_R + 4) * (PIE_R + 4)) {
         found = node;
         break;
       }
@@ -1562,11 +1759,26 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
           <div className="font-bold truncate" style={{ color: actHex(hoveredNode.activation) }}>
             {hoveredNode.name}
           </div>
-          <div className="truncate">activation: {hoveredNode.activation}</div>
+          <div className="truncate font-semibold" style={{ color: actHex(hoveredNode.activation) + "cc" }}>⚙ {hoveredNode.activation}</div>
           <div>generation: {hoveredNode.generation}</div>
           <div>best loss: {hoveredNode.bestLoss === Infinity ? "—" : hoveredNode.bestLoss.toFixed(4)}</div>
           <div>fitness: {hoveredNode.bestFitness === -Infinity ? "—" : hoveredNode.bestFitness.toFixed(4)}</div>
           <div>steps: {hoveredNode.steps}</div>
+          {hoveredNode.mutationApplied && (
+            <div className="text-purple-400">⚡ {hoveredNode.mutationApplied}</div>
+          )}
+          {hoveredNode.composition.length > 1 && (
+            <div className="mt-1 border-t border-white/10 pt-1">
+              <div className="text-white/40 text-[0.55rem]">composition:</div>
+              {hoveredNode.composition.map((bw, i) => (
+                <div key={i} className="flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: actHex(bw.basis) }} />
+                  <span style={{ color: actHex(bw.basis) }}>{bw.basis}</span>
+                  <span className="text-white/40">{(bw.weight * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1709,6 +1921,138 @@ function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
   return <div ref={chartRef} style={{ width: "100%", height: 300 }} />;
 }
 
+// ── Activation Sankey Diagram ─────────────────────────────────
+
+function ActivationSankeyChart({ metrics }: { metrics: SymbioMetric[] }) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<any>(null);
+  const candidates = useMemo(() => extractCandidateStats(metrics), [metrics]);
+
+  useEffect(() => {
+    if (!chartRef.current || candidates.length < 2) return;
+
+    const initChart = async () => {
+      const am5 = await import("@amcharts/amcharts5");
+      const am5flow = await import("@amcharts/amcharts5/flow");
+      const am5themes = await import("@amcharts/amcharts5/themes/Dark");
+
+      if (rootRef.current) rootRef.current.dispose();
+
+      const root = am5.Root.new(chartRef.current!);
+      rootRef.current = root;
+      root.setThemes([am5themes.default.new(root)]);
+
+      const series = root.container.children.push(
+        am5flow.Sankey.new(root, {
+          sourceIdField: "from",
+          targetIdField: "to",
+          valueField: "value",
+          paddingRight: 60,
+          nodePadding: 12,
+        })
+      );
+
+      // Build sankey data: group by generation+activation
+      // Nodes: "Gen0:silu", "Gen1:silu+gelu", etc.
+      // Links: parent activation group → child activation group with count
+      const linkCounts = new Map<string, number>();
+      const nodeSet = new Set<string>();
+
+      for (const c of candidates) {
+        // For composed activations, create a readable group key
+        let actKey = c.activation;
+        if (c.activationGraph) {
+          const comp = normalizeComposition(extractComposition(c.activationGraph));
+          if (comp.length > 1) {
+            actKey = comp.map(bw => bw.basis).sort().join("+");
+          }
+        }
+        const nodeKey = `Gen${c.generation}:${actKey}`;
+        nodeSet.add(nodeKey);
+
+        if (c.parentId) {
+          const parent = candidates.find(p => p.id === c.parentId);
+          if (parent) {
+            let parentActKey = parent.activation;
+            if (parent.activationGraph) {
+              const pComp = normalizeComposition(extractComposition(parent.activationGraph));
+              if (pComp.length > 1) parentActKey = pComp.map(bw => bw.basis).sort().join("+");
+            }
+            const parentNodeKey = `Gen${parent.generation}:${parentActKey}`;
+            nodeSet.add(parentNodeKey);
+            const linkKey = `${parentNodeKey}→${nodeKey}`;
+            linkCounts.set(linkKey, (linkCounts.get(linkKey) ?? 0) + 1);
+          }
+        }
+      }
+
+      const data: { from: string; to: string; value: number }[] = [];
+      for (const [key, count] of linkCounts) {
+        const [from, to] = key.split("→");
+        data.push({ from, to, value: count });
+      }
+
+      // Style nodes by activation color
+      series.nodes.rectangles.template.setAll({
+        fillOpacity: 0.85,
+        strokeOpacity: 0,
+        cornerRadiusTL: 3,
+        cornerRadiusTR: 3,
+        cornerRadiusBL: 3,
+        cornerRadiusBR: 3,
+      });
+      series.nodes.rectangles.template.adapters.add("fill", (_fill: any, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        const id = ctx?.id ?? "";
+        // Extract activation from "GenN:activation"
+        const act = typeof id === "string" ? id.split(":")[1] ?? "" : "";
+        // Get primary color from first basis in the group
+        const primary = act.split("+")[0] ?? act;
+        return am5.color(actHex(primary));
+      });
+
+      series.nodes.labels.template.setAll({
+        fill: am5.color("#ccc"),
+        fontSize: 10,
+        fontFamily: "monospace",
+      });
+      series.nodes.labels.template.adapters.add("text", (_text: any, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        const id = ctx?.id ?? "";
+        if (typeof id === "string") {
+          const parts = id.split(":");
+          return `${parts[0]}\n${parts[1] ?? ""}`;
+        }
+        return id;
+      });
+
+      // Link colors follow source node
+      series.links.template.setAll({
+        fillOpacity: 0.3,
+        strokeOpacity: 0,
+        controlPointDistance: 0.4,
+      });
+      series.links.template.adapters.add("fill", (_fill: any, target: any) => {
+        const ctx = target.dataItem?.dataContext as any;
+        const from = ctx?.from ?? "";
+        const act = typeof from === "string" ? (from.split(":")[1] ?? "").split("+")[0] : "";
+        return am5.color(actHex(act));
+      });
+
+      series.data.setAll(data);
+      series.appear(1000, 100);
+    };
+
+    initChart();
+
+    return () => { if (rootRef.current) { rootRef.current.dispose(); rootRef.current = null; } };
+  }, [candidates]);
+
+  if (candidates.length < 2) return null;
+
+  return <div ref={chartRef} style={{ width: "100%", height: 350 }} />;
+}
+
 // ── Symbio Section (composite) ───────────────────────────────
 
 export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
@@ -1845,6 +2189,13 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: {
                     selectedCandidateId={selectedCandidateId}
                     onSelectCandidate={setSelectedCandidateId}
                   />
+                </ChartPanel>
+              </div>
+
+              {/* Activation Flow Sankey */}
+              <div className="mb-4">
+                <ChartPanel title="Activation Flow (Sankey)" helpText="Sankey diagram showing how activation types flow across generations. Columns represent generations, nodes represent activation groups (e.g., silu, gelu, silu+gelu for composed). Link width = number of candidates sharing that parent→child activation path. Colors follow the activation type. Composed activations show their basis ops joined with +.">
+                  <ActivationSankeyChart metrics={metrics} />
                 </ChartPanel>
               </div>
 
