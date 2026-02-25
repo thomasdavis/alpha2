@@ -26,8 +26,20 @@ interface MetricPoint {
 
 const ACT_COLORS: Record<string, string> = {
   gelu: "#60a5fa", silu: "#34d399", relu: "#f59e0b", swiglu: "#a78bfa",
-  universal: "#f472b6", kan_spline: "#22d3ee",
+  universal: "#f472b6", kan_spline: "#22d3ee", composed: "#e879f9",
+  identity: "#94a3b8", square: "#fb923c",
 };
+
+/** Get color for an activation name (may be a composed formula). */
+function actColor(name: string | null | undefined): string {
+  if (!name) return "#888888";
+  if (ACT_COLORS[name]) return ACT_COLORS[name];
+  // For composed formulas, pick color based on dominant basis
+  for (const [key, col] of Object.entries(ACT_COLORS)) {
+    if (name.includes(key)) return col;
+  }
+  return "#e879f9"; // default purple for composed
+}
 
 const ACT_SHORT: Record<string, string> = {
   gelu: "GE", silu: "SI", relu: "RE", swiglu: "SW",
@@ -55,9 +67,11 @@ function emaSmooth(arr: number[], alpha = 0.08): number[] {
 }
 
 function hexToRgba(hex: string, a: number): string {
+  if (!hex || hex.length < 7 || hex[0] !== "#") return `rgba(136,136,136,${a})`;
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return `rgba(136,136,136,${a})`;
   return `rgba(${r},${g},${b},${a})`;
 }
 
@@ -117,7 +131,7 @@ function drawActivatorRadial(
   for (const seg of segments) {
     const a1 = angleOf(seg.startIdx);
     const a2 = angleOf(Math.min(seg.endIdx + 1, n));
-    const col = ACT_COLORS[seg.activation] || "#555";
+    const col = actColor(seg.activation);
 
     // Filled arc segment
     ctx.fillStyle = hexToRgba(col, 0.25);
@@ -204,7 +218,7 @@ function drawActivatorRadial(
 
   // Fill with activation colors
   for (const seg of segments) {
-    const col = ACT_COLORS[seg.activation] || "#555";
+    const col = actColor(seg.activation);
     ctx.fillStyle = hexToRgba(col, 0.06);
     ctx.beginPath();
     ctx.moveTo(cx, cy);
@@ -219,7 +233,7 @@ function drawActivatorRadial(
 
   // Stroke per segment with activation color
   for (const seg of segments) {
-    const col = ACT_COLORS[seg.activation] || "#666";
+    const col = actColor(seg.activation);
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.8;
     ctx.beginPath();
@@ -256,7 +270,7 @@ function drawActivatorRadial(
 
     // Stroke colored by activation
     for (const seg of segments) {
-      const col = ACT_COLORS[seg.activation] || "#666";
+      const col = actColor(seg.activation);
       ctx.strokeStyle = hexToRgba(col, 0.6);
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -347,7 +361,7 @@ function drawActivatorRadial(
     const r = lossBase + lossSmoothed[idx] * lossAmp;
     const px = cx + Math.cos(a) * r;
     const py = cy + Math.sin(a) * r;
-    const col = ACT_COLORS[segments[s].activation] || "#fff";
+    const col = actColor(segments[s].activation);
 
     ctx.fillStyle = col;
     ctx.beginPath();
@@ -370,7 +384,7 @@ function drawActivatorRadial(
   // ─── Center: current candidate info ───────────────────
   const lastM = metrics[n - 1];
   const lastSeg = segments[segments.length - 1];
-  const actCol = (lastM?.symbio_candidate_activation && ACT_COLORS[lastM.symbio_candidate_activation]) || "#888";
+  const actCol = actColor(lastM?.symbio_candidate_activation);
 
   // Center glow
   const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, 28);
@@ -418,7 +432,7 @@ function drawActivatorRadial(
     const lr = lossBase + lossSmoothed[hoveredIdx] * lossAmp;
     const hx = cx + Math.cos(a) * lr;
     const hy = cy + Math.sin(a) * lr;
-    const hCol = (m.symbio_candidate_activation && ACT_COLORS[m.symbio_candidate_activation]) || "#fff";
+    const hCol = actColor(m.symbio_candidate_activation);
     ctx.fillStyle = hCol;
     ctx.beginPath();
     ctx.arc(hx, hy, 3, 0, Math.PI * 2);
@@ -675,8 +689,8 @@ export function RadialTrainingViz({ metrics }: { metrics: MetricPoint[] }) {
       {/* Activation legend with step counts */}
       <div className="absolute top-2 right-2 z-10 flex flex-wrap gap-1 pointer-events-none">
         {actList.map(([name, count]) => (
-          <span key={name} className="flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[0.55rem] backdrop-blur-sm" style={{ color: ACT_COLORS[name] || "#888" }}>
-            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: ACT_COLORS[name] || "#888" }} />
+          <span key={name} className="flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 text-[0.55rem] backdrop-blur-sm" style={{ color: actColor(name) }}>
+            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: actColor(name) }} />
             {name}
             <span className="text-white/30">{count}</span>
           </span>

@@ -72,8 +72,19 @@ const ACTIVATION_BG: Record<string, string> = {
 
 const ACTIVATION_HEX: Record<string, string> = {
   gelu: "#60a5fa", silu: "#34d399", relu: "#f59e0b", swiglu: "#a78bfa",
-  universal: "#f472b6", kan_spline: "#22d3ee",
+  universal: "#f472b6", kan_spline: "#22d3ee", composed: "#e879f9",
+  identity: "#94a3b8", square: "#fb923c",
 };
+
+/** Get hex color for an activation name (may be a composed formula). Always returns 7-char hex. */
+function actHex(name: string | null | undefined): string {
+  if (!name) return "#888888";
+  if (ACTIVATION_HEX[name]) return ACTIVATION_HEX[name];
+  for (const [key, col] of Object.entries(ACTIVATION_HEX)) {
+    if (name.includes(key)) return col;
+  }
+  return "#e879f9";
+}
 
 // ── Help Text ────────────────────────────────────────────────
 
@@ -793,7 +804,7 @@ function EvolutionaryTimeline({ metrics, pinnedStep, onPinStep }: { metrics: Sym
               {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
               <Scatter data={fitnessData} fill="#34d399">
                 {fitnessData.map((d, i) => (
-                  <Cell key={i} fill={ACTIVATION_HEX[d.activation] ?? "#888"} />
+                  <Cell key={i} fill={actHex(d.activation)} />
                 ))}
               </Scatter>
             </ScatterChart>
@@ -984,7 +995,7 @@ function ActivationDistributionChart({ metrics, pinnedStep, onPinStep }: { metri
               <div className="flex-1 h-4 rounded bg-surface-2 overflow-hidden">
                 <div
                   className="h-full rounded transition-all"
-                  style={{ width: `${d.pct * 100}%`, backgroundColor: ACTIVATION_HEX[d.activation] ?? "#888", opacity: 0.7 }}
+                  style={{ width: `${d.pct * 100}%`, backgroundColor: actHex(d.activation), opacity: 0.7 }}
                 />
               </div>
               <span className="w-16 text-right font-mono text-[0.6rem] text-text-muted">{d.steps} ({(d.pct * 100).toFixed(0)}%)</span>
@@ -1003,7 +1014,7 @@ function ActivationDistributionChart({ metrics, pinnedStep, onPinStep }: { metri
             <RTooltip content={<CustomTooltipContent />} />
             {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
             {activations.map(act => (
-              <Area key={act} type="monotone" dataKey={act} stackId="1" stroke={ACTIVATION_HEX[act] ?? "#888"} fill={ACTIVATION_HEX[act] ?? "#888"} fillOpacity={0.3} strokeWidth={0} />
+              <Area key={act} type="monotone" dataKey={act} stackId="1" stroke={actHex(act)} fill={actHex(act)} fillOpacity={0.3} strokeWidth={0} />
             ))}
             <Legend wrapperStyle={{ fontSize: "10px" }} />
           </AreaChart>
@@ -1040,7 +1051,8 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
       // Dispose previous instance
       if (rootRef.current) rootRef.current.dispose();
 
-      root = am5.Root.new(chartRef.current!);
+      if (!chartRef.current) return;
+      root = am5.Root.new(chartRef.current);
       rootRef.current = root;
       root.setThemes([am5themes.default.new(root)]);
 
@@ -1088,7 +1100,7 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
           parentId: c.parentId,
           children: [],
           nodeSettings: {
-            fill: am5.color(ACTIVATION_HEX[c.activation] ?? "#888"),
+            fill: am5.color(actHex(c.activation)),
           },
         };
         nodeMap.set(c.id, node);
@@ -1131,8 +1143,7 @@ function EvolutionaryTreeChart({ metrics, selectedCandidateId, onSelectCandidate
         const dataItem = target.dataItem;
         if (dataItem && dataItem.dataContext) {
           const ctx = dataItem.dataContext as any;
-          const hexColor = ACTIVATION_HEX[ctx.activation];
-          if (hexColor) return am5.color(hexColor);
+          return am5.color(actHex(ctx.activation));
         }
         return _fill;
       });
@@ -1304,7 +1315,7 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
     ctx.lineWidth = 1.5;
     for (const node of allNodes) {
       for (const child of node.children) {
-        const col = ACTIVATION_HEX[child.activation] ?? "#888";
+        const col = actHex(child.activation);
         ctx.strokeStyle = col + "60"; // 37% opacity
         ctx.beginPath();
         ctx.moveTo(node.x, node.y + NODE_H);
@@ -1317,7 +1328,7 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
 
     // Draw nodes
     for (const node of allNodes) {
-      const col = ACTIVATION_HEX[node.activation] ?? "#888";
+      const col = actHex(node.activation);
       const isSelected = node.id === selectedCandidateId;
       const isHovered = hoveredNode?.id === node.id;
       const x = node.x - NODE_W / 2;
@@ -1426,7 +1437,7 @@ function LineageTreeChart({ metrics, selectedCandidateId, onSelectCandidate }: {
           className="pointer-events-none absolute z-20 rounded border border-border bg-black/90 px-2.5 py-1.5 font-mono text-[0.6rem] leading-relaxed text-white/80 shadow-lg backdrop-blur-sm"
           style={{ left: tooltipPos.x + 12, top: tooltipPos.y - 10, maxWidth: 200 }}
         >
-          <div className="font-bold" style={{ color: ACTIVATION_HEX[hoveredNode.activation] ?? "#888" }}>
+          <div className="font-bold" style={{ color: actHex(hoveredNode.activation) }}>
             {hoveredNode.name}
           </div>
           <div>activation: {hoveredNode.activation}</div>
@@ -1456,7 +1467,8 @@ function AmchartsOscillatorChart({ metrics }: { metrics: SymbioMetric[] }) {
 
       if (rootRef.current) rootRef.current.dispose();
 
-      const root = am5.Root.new(chartRef.current!);
+      if (!chartRef.current) return;
+      const root = am5.Root.new(chartRef.current);
       rootRef.current = root;
       root.setThemes([am5themes.default.new(root)]);
 
