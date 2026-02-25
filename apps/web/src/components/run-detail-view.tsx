@@ -12,6 +12,12 @@ import {
 } from "@/components/charts";
 import { SymbioSection, extractActivationSwitchEvents } from "@/components/symbio-charts";
 import { LayersSection } from "@/components/layer-charts";
+import dynamic from "next/dynamic";
+
+const SymbioRiver = dynamic(
+  () => import("@/components/symbio-river").then(m => m.SymbioRiver),
+  { ssr: false },
+);
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -406,6 +412,9 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Per-layer analysis */}
       <LayersSection metrics={metrics as any} />
+
+      {/* Symbio Evolution River (3D) */}
+      {run.symbio ? <SymbioRiver metrics={metrics as any} /> : null}
 
       {/* Checkpoints */}
       <div className="mb-6 rounded-lg border border-border bg-surface">
