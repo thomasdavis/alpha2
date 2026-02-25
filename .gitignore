@@ -13,3 +13,6 @@ data/
 *.db-wal
 *.db-shm
 build-info.json
+.vercel/
+__pycache__/
+*.node
