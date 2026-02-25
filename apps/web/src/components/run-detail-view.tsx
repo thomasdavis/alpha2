@@ -209,6 +209,35 @@ function DetailRow({ label, value, tip }: {
   );
 }
 
+// ── Overfit Detection ────────────────────────────────────────────
+
+/** Find the step where val_loss bottoms out (overfitting onset).
+ *  Returns null if val_loss is still improving or insufficient data. */
+function detectOverfitStep(metrics: MetricData[]): number | null {
+  const valPts = metrics.filter((m) => m.val_loss != null);
+  if (valPts.length < 3) return null;
+
+  // Find global minimum val_loss
+  let minIdx = 0;
+  for (let i = 1; i < valPts.length; i++) {
+    if (valPts[i].val_loss! < valPts[minIdx].val_loss!) minIdx = i;
+  }
+
+  // If minimum is at the end, val loss is still dropping — no overfit
+  if (minIdx >= valPts.length - 2) return null;
+
+  // Check that val_loss has risen meaningfully after the minimum
+  const minVal = valPts[minIdx].val_loss!;
+  const afterMin = valPts.slice(minIdx + 1);
+  const avgAfter = afterMin.reduce((s, m) => s + m.val_loss!, 0) / afterMin.length;
+  const rise = (avgAfter - minVal) / minVal;
+
+  // Need at least 3% average rise after minimum to call it overfit
+  if (rise < 0.03) return null;
+
+  return valPts[minIdx].step;
+}
+
 // ── Interactive Loss Chart ───────────────────────────────────────
 
 interface LossTooltip {
@@ -342,6 +371,28 @@ function drawLossChart(
     }
   }
 
+  // Overfit onset line
+  const overfitStep = detectOverfitStep(metrics);
+  if (overfitStep != null) {
+    const ox = sx(overfitStep);
+    ctx.save();
+    ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(ox, pad.top);
+    ctx.lineTo(ox, pad.top + ch);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Label
+    ctx.fillStyle = "rgba(239, 68, 68, 0.85)";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("overfit", ox, pad.top - 4);
+    ctx.restore();
+  }
+
   // Hover crosshair
   if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < metrics.length) {
     const m = metrics[hoverIdx];
@@ -414,6 +465,19 @@ function drawLossChart(
     ctx.fill();
     ctx.fillStyle = "#666";
     ctx.fillText("val", pad.left + 67, ly + 3);
+    if (overfitStep != null) {
+      const olx = pad.left + 92;
+      ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(olx, ly - 4);
+      ctx.lineTo(olx, ly + 4);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#666";
+      ctx.fillText("overfit", olx + 6, ly + 3);
+    }
   }
 }
 
