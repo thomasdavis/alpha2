@@ -127,8 +127,8 @@ async function sendDiscord(webhookUrl: string, embeds: Array<{
 
 export function createRemoteReporter(config: RemoteReporterConfig): RemoteReporter {
   const { url, secret, discordWebhook } = config;
-  const batchSize = config.batchSize ?? 1;
-  const flushInterval = config.flushInterval ?? 5000;
+  const batchSize = config.batchSize ?? 10;
+  const flushInterval = config.flushInterval ?? 30_000;
 
   let runId = "";
   let domain: string | undefined;
@@ -153,7 +153,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15_000), // 15s timeout — never block training
+        signal: AbortSignal.timeout(120_000), // 120s — event loop may be blocked by GPU training steps
       });
       if (!res.ok) {
         postErrorCount++;

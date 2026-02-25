@@ -63,26 +63,29 @@ function saveBinary(
 
   const headerBuf = Buffer.from(header, "utf-8");
 
-  // Build file: magic(4) + headerLen(4) + header + tensor data
-  const dataSize = f32Arrays.reduce((acc, a) => acc + a.byteLength, 0);
-  const totalSize = 4 + 4 + headerBuf.length + dataSize;
-  const file = Buffer.alloc(totalSize);
-
-  let offset = 0;
-  MAGIC.copy(file, offset); offset += 4;
-  file.writeUInt32LE(headerBuf.length, offset); offset += 4;
-  headerBuf.copy(file, offset); offset += headerBuf.length;
-
-  for (const f32 of f32Arrays) {
-    // Use byteOffset/byteLength to handle typed array views correctly
-    Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).copy(file, offset);
-    offset += f32.byteLength;
-  }
-
+  // Stream writes: magic(4) + headerLen(4) + header + tensor data
+  // Avoids allocating a single buffer for the entire file (can be 200MB+).
   return import("node:fs/promises").then(async (fs) => {
     const fspath = await import("node:path");
     await fs.mkdir(fspath.dirname(path), { recursive: true });
-    await fs.writeFile(path, file);
+
+    const handle = await fs.open(path, "w");
+    try {
+      // Write magic
+      await handle.write(MAGIC);
+      // Write header length (uint32 LE)
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32LE(headerBuf.length, 0);
+      await handle.write(lenBuf);
+      // Write header JSON
+      await handle.write(headerBuf);
+      // Write each tensor chunk sequentially
+      for (const f32 of f32Arrays) {
+        await handle.write(Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength));
+      }
+    } finally {
+      await handle.close();
+    }
   });
 }
 
