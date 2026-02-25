@@ -81,6 +81,50 @@ export interface RunDetailProps {
   samples: SampleData[];
 }
 
+// ── Event Marker Types ──────────────────────────────────────────
+
+type MarkerType = "checkpoints" | "bestVal" | "warmupEnd" | "gradSpikes" | "lossSpikes" | "overfit";
+type MarkerVisibility = Record<MarkerType, boolean>;
+
+const DEFAULT_MARKERS: MarkerVisibility = {
+  checkpoints: true,
+  bestVal: true,
+  warmupEnd: true,
+  overfit: true,
+  gradSpikes: false,
+  lossSpikes: false,
+};
+
+const MARKER_COLORS: Record<MarkerType, string> = {
+  checkpoints: "#34d399",
+  bestVal: "#22d3ee",
+  warmupEnd: "#a78bfa",
+  gradSpikes: "#fb923c",
+  lossSpikes: "#f472b6",
+  overfit: "#ef4444",
+};
+
+const MARKER_LABELS: Record<MarkerType, string> = {
+  checkpoints: "Checkpoints",
+  bestVal: "Best Val",
+  warmupEnd: "Warmup End",
+  gradSpikes: "Grad Spikes",
+  lossSpikes: "Loss Spikes",
+  overfit: "Overfit",
+};
+
+interface ComputedEvents {
+  checkpointSteps: number[];
+  bestValStep: number | null;
+  bestValLoss: number | null;
+  warmupEndStep: number | null;
+  gradSpikeSteps: number[];
+  lossSpikeSteps: number[];
+  overfitStep: number | null;
+}
+
+const MARKERS_STORAGE_KEY = "alpha-chart-markers";
+
 // ── Constants ────────────────────────────────────────────────────
 
 const STATUS_STYLES: Record<string, { badge: string; bar: string; gradient: string }> = {
@@ -182,6 +226,92 @@ function fmtDate(iso: string | null): string {
     + " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
+// ── Marker Persistence ──────────────────────────────────────────
+
+function loadMarkerPrefs(): MarkerVisibility {
+  if (typeof window === "undefined") return DEFAULT_MARKERS;
+  try {
+    const raw = localStorage.getItem(MARKERS_STORAGE_KEY);
+    if (!raw) return DEFAULT_MARKERS;
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_MARKERS, ...parsed };
+  } catch {
+    return DEFAULT_MARKERS;
+  }
+}
+
+function saveMarkerPrefs(m: MarkerVisibility) {
+  try { localStorage.setItem(MARKERS_STORAGE_KEY, JSON.stringify(m)); } catch {}
+}
+
+// ── Event Detection ─────────────────────────────────────────────
+
+function detectBestValStep(metrics: MetricData[]): { step: number; loss: number } | null {
+  const valPts = metrics.filter((m) => m.val_loss != null);
+  if (valPts.length === 0) return null;
+  let best = valPts[0];
+  for (let i = 1; i < valPts.length; i++) {
+    if (valPts[i].val_loss! < best.val_loss!) best = valPts[i];
+  }
+  return { step: best.step, loss: best.val_loss! };
+}
+
+function detectWarmupEnd(metrics: MetricData[]): number | null {
+  if (metrics.length < 3) return null;
+  let peakIdx = 0;
+  for (let i = 1; i < metrics.length; i++) {
+    if (metrics[i].lr > metrics[peakIdx].lr) peakIdx = i;
+  }
+  // Skip if peak is at very start or very end (no real warmup)
+  if (peakIdx <= 1 || peakIdx >= metrics.length - 2) return null;
+  return metrics[peakIdx].step;
+}
+
+function detectGradNormSpikes(metrics: MetricData[]): number[] {
+  if (metrics.length < 15) return [];
+  const spikes: number[] = [];
+  let ema = metrics[0].grad_norm;
+  const alpha = 0.05;
+  for (let i = 1; i < metrics.length; i++) {
+    const gn = metrics[i].grad_norm;
+    ema = alpha * gn + (1 - alpha) * ema;
+    if (i >= 10 && gn > 3 * ema && gn > 0.5) {
+      spikes.push(metrics[i].step);
+    }
+  }
+  return spikes;
+}
+
+function detectLossSpikes(metrics: MetricData[]): number[] {
+  if (metrics.length < 25) return [];
+  const spikes: number[] = [];
+  const winSize = 20;
+  for (let i = winSize; i < metrics.length; i++) {
+    let sum = 0;
+    for (let j = i - winSize; j < i; j++) sum += metrics[j].loss;
+    const mean = sum / winSize;
+    const cur = metrics[i].loss;
+    const prev = metrics[i - 1].loss;
+    if (cur > 1.5 * mean || (cur - prev) > 0.3) {
+      spikes.push(metrics[i].step);
+    }
+  }
+  return spikes;
+}
+
+function computeEvents(metrics: MetricData[], checkpoints: CheckpointData[]): ComputedEvents {
+  const bestVal = detectBestValStep(metrics);
+  return {
+    checkpointSteps: checkpoints.map((c) => c.step),
+    bestValStep: bestVal?.step ?? null,
+    bestValLoss: bestVal?.loss ?? null,
+    warmupEndStep: detectWarmupEnd(metrics),
+    gradSpikeSteps: detectGradNormSpikes(metrics),
+    lossSpikeSteps: detectLossSpikes(metrics),
+    overfitStep: detectOverfitStep(metrics),
+  };
+}
+
 // ── Small Components ─────────────────────────────────────────────
 
 function Stat({ label, value, sub, color, tip }: {
@@ -260,6 +390,8 @@ function drawLossChart(
   canvas: HTMLCanvasElement,
   metrics: MetricData[],
   hoverIdx: number | null,
+  events: ComputedEvents,
+  markers: MarkerVisibility,
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx || metrics.length < 2) return;
@@ -380,10 +512,48 @@ function drawLossChart(
     }
   }
 
-  // Overfit onset line
-  const overfitStep = detectOverfitStep(metrics);
-  if (overfitStep != null) {
-    const ox = sx(overfitStep);
+  // ── Event Markers ──────────────────────────────────────────────
+
+  // Checkpoint vertical lines
+  if (markers.checkpoints && events.checkpointSteps.length > 0) {
+    ctx.save();
+    ctx.strokeStyle = MARKER_COLORS.checkpoints + "80";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    for (const step of events.checkpointSteps) {
+      if (step < minStep || step > maxStep) continue;
+      const cx2 = sx(step);
+      ctx.beginPath();
+      ctx.moveTo(cx2, pad.top);
+      ctx.lineTo(cx2, pad.top + ch);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // LR warmup end
+  if (markers.warmupEnd && events.warmupEndStep != null) {
+    const wx = sx(events.warmupEndStep);
+    ctx.save();
+    ctx.strokeStyle = MARKER_COLORS.warmupEnd + "99";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(wx, pad.top);
+    ctx.lineTo(wx, pad.top + ch);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = MARKER_COLORS.warmupEnd;
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("warmup", wx, pad.top - 4);
+    ctx.restore();
+  }
+
+  // Overfit onset
+  if (markers.overfit && events.overfitStep != null) {
+    const ox = sx(events.overfitStep);
     ctx.save();
     ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
     ctx.lineWidth = 1.5;
@@ -393,13 +563,57 @@ function drawLossChart(
     ctx.lineTo(ox, pad.top + ch);
     ctx.stroke();
     ctx.setLineDash([]);
-
-    // Label
     ctx.fillStyle = "rgba(239, 68, 68, 0.85)";
     ctx.font = "bold 9px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("overfit", ox, pad.top - 4);
     ctx.restore();
+  }
+
+  // Grad norm spike markers (downward triangles at top)
+  if (markers.gradSpikes && events.gradSpikeSteps.length > 0) {
+    ctx.fillStyle = MARKER_COLORS.gradSpikes;
+    for (const step of events.gradSpikeSteps) {
+      if (step < minStep || step > maxStep) continue;
+      const tx = sx(step);
+      const ty = pad.top + 6;
+      ctx.beginPath();
+      ctx.moveTo(tx - 4, ty - 5);
+      ctx.lineTo(tx + 4, ty - 5);
+      ctx.lineTo(tx, ty + 3);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Loss spike markers (downward triangles, offset below grad spikes)
+  if (markers.lossSpikes && events.lossSpikeSteps.length > 0) {
+    ctx.fillStyle = MARKER_COLORS.lossSpikes;
+    for (const step of events.lossSpikeSteps) {
+      if (step < minStep || step > maxStep) continue;
+      const tx = sx(step);
+      const ty = pad.top + 18;
+      ctx.beginPath();
+      ctx.moveTo(tx - 4, ty - 5);
+      ctx.lineTo(tx + 4, ty - 5);
+      ctx.lineTo(tx, ty + 3);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // Best val loss diamond
+  if (markers.bestVal && events.bestValStep != null && events.bestValLoss != null) {
+    const bx = sx(events.bestValStep);
+    const by = sy(events.bestValLoss);
+    ctx.fillStyle = MARKER_COLORS.bestVal;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 6);
+    ctx.lineTo(bx + 5, by);
+    ctx.lineTo(bx, by + 6);
+    ctx.lineTo(bx - 5, by);
+    ctx.closePath();
+    ctx.fill();
   }
 
   // Hover crosshair
@@ -459,7 +673,7 @@ function drawLossChart(
     ctx.stroke();
   }
 
-  // Legend
+  // Legend (train + val only; markers are the toggle chips)
   const ly = h - 8;
   ctx.fillStyle = "#f59e0b";
   ctx.fillRect(pad.left, ly - 1, 14, 2);
@@ -474,30 +688,33 @@ function drawLossChart(
     ctx.fill();
     ctx.fillStyle = "#666";
     ctx.fillText("val", pad.left + 67, ly + 3);
-    if (overfitStep != null) {
-      const olx = pad.left + 92;
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.moveTo(olx, ly - 4);
-      ctx.lineTo(olx, ly + 4);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#666";
-      ctx.fillText("overfit", olx + 6, ly + 3);
-    }
   }
 }
 
-function InteractiveLossChart({ metrics }: { metrics: MetricData[] }) {
+function InteractiveLossChart({ metrics, checkpoints }: { metrics: MetricData[]; checkpoints: CheckpointData[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tooltip, setTooltip] = useState<LossTooltip | null>(null);
   const hoverRef = useRef<number | null>(null);
+  const [markers, setMarkers] = useState<MarkerVisibility>(DEFAULT_MARKERS);
+
+  // Load from localStorage after mount to avoid SSR mismatch
+  useEffect(() => {
+    setMarkers(loadMarkerPrefs());
+  }, []);
+
+  const toggleMarker = useCallback((key: MarkerType) => {
+    setMarkers((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveMarkerPrefs(next);
+      return next;
+    });
+  }, []);
+
+  const events = useMemo(() => computeEvents(metrics, checkpoints), [metrics, checkpoints]);
 
   const draw = useCallback((idx: number | null = null) => {
-    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx);
-  }, [metrics]);
+    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, markers);
+  }, [metrics, events, markers]);
 
   useEffect(() => {
     draw();
@@ -558,8 +775,29 @@ function InteractiveLossChart({ metrics }: { metrics: MetricData[] }) {
     );
   }
 
+  const markerKeys: MarkerType[] = ["checkpoints", "bestVal", "warmupEnd", "gradSpikes", "lossSpikes", "overfit"];
+
   return (
     <div className="relative">
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {markerKeys.map((key) => (
+          <button
+            key={key}
+            onClick={() => toggleMarker(key)}
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.62rem] font-medium transition-colors ${
+              markers[key]
+                ? "border-border-2 bg-surface-2 text-text-primary"
+                : "border-border/40 bg-transparent text-text-muted opacity-50"
+            }`}
+          >
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: MARKER_COLORS[key] }}
+            />
+            {MARKER_LABELS[key]}
+          </button>
+        ))}
+      </div>
       <canvas
         ref={canvasRef}
         className="h-72 w-full cursor-crosshair rounded-lg"
@@ -1092,7 +1330,7 @@ export function RunDetailView({ run, metrics, checkpoints, samples }: RunDetailP
           <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
             Loss Curve <Tip text={tips.lossChart} />
           </div>
-          <InteractiveLossChart metrics={metrics} />
+          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} />
         </div>
 
         <div className="space-y-3">
