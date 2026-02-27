@@ -31,6 +31,12 @@ export class DropoutRng {
     this.counter = 0;
   }
 
+  /** Reset RNG stream (used to reuse one DropoutRng instance in hot loops). */
+  reset(seed: number, counter = 0): void {
+    this.seed = seed | 0;
+    this.counter = counter | 0;
+  }
+
   /** Generate a dropout mask: values are 1/(1-p) where kept, 0 where dropped. */
   nextMask(size: number, p: number): Float32Array {
     const mask = new Float32Array(size);

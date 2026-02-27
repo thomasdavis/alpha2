@@ -485,6 +485,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
+  const dropoutRng = new DropoutRng(trainConfig.seed);
 
   for (let step = startStep; step < trainConfig.iters; step++) {
     const stepStart = performance.now();
@@ -524,7 +525,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
-      const dropoutRng = new DropoutRng(trainConfig.seed + step * 1000 + microStep);
+      dropoutRng.reset(trainConfig.seed + step * 1000 + microStep, 0);
       const { loss } = gptForward(activeModelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
