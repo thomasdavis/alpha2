@@ -59,6 +59,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     tokenizer: domain ? domain.tokenizer : strArg(kv, "tokenizer", defaultTrainConfig.tokenizer),
     optimizer: strArg(kv, "optim", tDefaults.optimizer ?? defaultTrainConfig.optimizer),
     logLevel: strArg(kv, "log", (tDefaults.logLevel ?? defaultTrainConfig.logLevel)) as any,
+    logEvery: intArg(kv, "logEvery", tDefaults.logEvery ?? defaultTrainConfig.logEvery ?? 1),
     trace: boolArg(kv, "trace", tDefaults.trace ?? defaultTrainConfig.trace),
     gradAccumSteps: intArg(kv, "accumSteps", tDefaults.gradAccumSteps ?? defaultTrainConfig.gradAccumSteps),
     sampleInterval: intArg(kv, "sampleInterval", tDefaults.sampleInterval ?? defaultTrainConfig.sampleInterval),

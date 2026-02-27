@@ -414,6 +414,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   // Dynamic loss scaling for mixed precision training
   const useLossScaling = !!deps.mixedPrecision;
+  const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
@@ -1081,11 +1082,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const gpuStr = "gpuOpsThisStep" in backend ? ` | ${(backend as any).gpuOpsThisStep} gpu_ops` : "";
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
     const scaleStr = useLossScaling ? ` | scale=${lossScale}` : "";
-    console.log(
-      `step ${metrics.step}/${trainConfig.iters} | loss=${lossStr}${valStr} ` +
-      `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
-      `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
-    );
+    const shouldLogStep = metrics.step === 1 ||
+      metrics.step === trainConfig.iters ||
+      metrics.valLoss !== undefined ||
+      (metrics.step % logEvery === 0);
+    if (shouldLogStep) {
+      console.log(
+        `step ${metrics.step}/${trainConfig.iters} | loss=${lossStr}${valStr} ` +
+        `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
+        `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
+      );
+    }
 
     // Buffer metrics JSONL (flush every 50 steps and on checkpoint)
     metricsBuffer.push(JSON.stringify(metrics) + "\n");

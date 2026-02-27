@@ -90,6 +90,8 @@ export interface TrainConfig {
   readonly tokenizer: string;
   readonly optimizer: string;
   readonly logLevel: "debug" | "info" | "warn" | "error";
+  /** Logging cadence for step summaries (1 = every step). */
+  readonly logEvery?: number;
   readonly trace: boolean;
   readonly gradAccumSteps: number;
   readonly sampleInterval: number;
@@ -122,6 +124,7 @@ export const defaultTrainConfig: TrainConfig = {
   tokenizer: "bpe",
   optimizer: "adamw",
   logLevel: "info",
+  logEvery: 1,
   trace: false,
   gradAccumSteps: 1,
   sampleInterval: 100,

@@ -12,6 +12,7 @@ BLOCK="${BLOCK:-64}"
 LAYERS="${LAYERS:-2}"
 DIM="${DIM:-128}"
 HEADS="${HEADS:-4}"
+LOG_EVERY="${LOG_EVERY:-1}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -58,6 +59,7 @@ set +e
   --evalInterval="${STEPS}" \
   --evalIters=1 \
   --sampleInterval=0 \
+  --logEvery="${LOG_EVERY}" \
   --postSamples=false \
   --remote=false \
   --trace=false \
