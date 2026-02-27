@@ -901,21 +901,25 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       elapsed_ms: stepElapsed,
       tokens_per_sec: tokensProcessedPerStep / (stepElapsed / 1000),
       ms_per_iter: stepElapsed,
-      // Per-step timing breakdown (always recorded)
-      timing_fwd_ms: capturePhaseTimings ? fwdMs : undefined,
-      timing_bwd_ms: capturePhaseTimings ? bwdMs : undefined,
-      timing_grad_norm_ms: capturePhaseTimings ? _t4 - _t3 : undefined,
-      timing_grad_clip_ms: capturePhaseTimings ? _t4b - _t4 : undefined,
-      timing_optim_ms: capturePhaseTimings ? _t5 - _t4b : undefined,
-      timing_flush_ms: capturePhaseTimings ? _t6 - _t5 : undefined,
-      timing_data_ms: capturePhaseTimings ? dataLoadMs : undefined,
-      gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
       // Clipping telemetry
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / stepNum) * 100,
-      // Per-layer gradient norms
-      per_layer_grad_norms: perLayerGradNorms ? JSON.stringify(perLayerGradNorms) : undefined,
     };
+    if (capturePhaseTimings) {
+      metrics.timing_fwd_ms = fwdMs;
+      metrics.timing_bwd_ms = bwdMs;
+      metrics.timing_grad_norm_ms = _t4 - _t3;
+      metrics.timing_grad_clip_ms = _t4b - _t4;
+      metrics.timing_optim_ms = _t5 - _t4b;
+      metrics.timing_flush_ms = _t6 - _t5;
+      metrics.timing_data_ms = dataLoadMs;
+    }
+    if ("gpuOpsThisStep" in backend) {
+      metrics.gpu_ops_count = (backend as any).gpuOpsThisStep;
+    }
+    if (perLayerGradNorms) {
+      metrics.per_layer_grad_norms = JSON.stringify(perLayerGradNorms);
+    }
 
     // Symbio metrics (only when symbio is enabled — zero overhead otherwise)
     if (symbioEnabled && cusumDash && symbioCollector) {
