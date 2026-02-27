@@ -532,18 +532,12 @@ class ComputeGraph {
   get lastFlushTimeline(): number { return this._lastFlushTimeline; }
 
   record(op: PendingOp): void {
-    // Normalize per-op metadata once to avoid repeated allocation/work in flush().
-    if (!op.allBufs) {
-      const n = op.inputBufs.length + 1;
-      const bufs = new Array<number>(n);
-      for (let i = 0; i < op.inputBufs.length; i++) bufs[i] = op.inputBufs[i];
-      bufs[n - 1] = op.outputRegion.handle;
-      op.allBufs = bufs;
-    }
+    // Normalize per-op metadata once to avoid repeated work in flush().
+    const bufCount = op.allBufs ? op.allBufs.length : (op.inputBufs.length + 1);
     if (op.writeMask === undefined) {
       op.writeMask = (op.kind === "inplace" || op.kind === "optimizer")
         ? 1
-        : (1 << (op.allBufs.length - 1));
+        : (1 << (bufCount - 1));
     }
     if (op.hasGZ === undefined) op.hasGZ = op.groups[2] !== 1;
     if (op.flags === undefined) op.flags = ((op.groups[1] & 0x7FFF) << 1) | (op.hasGZ ? 1 : 0);
@@ -552,7 +546,7 @@ class ComputeGraph {
         4 + 2 + 2 + 4 +                 // pipeSlot, bufCount, flags, gX
         (op.hasGZ ? 4 : 0) +            // optional gZ
         4 +                             // writeMask
-        op.allBufs.length * 4 +         // buf handles
+        bufCount * 4 +                  // buf handles
         op.pushSize;                    // push constants bytes
     }
 
@@ -604,13 +598,14 @@ class ComputeGraph {
       let offset = 0;
 
       for (const op of ops) {
-        const bufs = op.allBufs!;
+        const bufs = op.allBufs;
+        const bufCount = bufs ? bufs.length : (op.inputBufs.length + 1);
         const hasGZ = op.hasGZ!;
         const writeMask = op.writeMask!;
         const flags = op.flags!;
 
         view.setInt32(offset, op.pipeline, true); offset += 4;
-        view.setUint16(offset, bufs.length, true); offset += 2;
+        view.setUint16(offset, bufCount, true); offset += 2;
         view.setUint16(offset, flags, true); offset += 2;
         view.setUint32(offset, op.groups[0], true); offset += 4;
         if (hasGZ) {
@@ -619,8 +614,18 @@ class ComputeGraph {
         view.setUint32(offset, writeMask, true); offset += 4;
 
         // Buffer handles
-        for (let i = 0; i < bufs.length; i++) {
-          view.setInt32(offset, bufs[i], true); offset += 4;
+        if (bufs) {
+          for (let i = 0; i < bufs.length; i++) {
+            view.setInt32(offset, bufs[i], true);
+            offset += 4;
+          }
+        } else {
+          for (let i = 0; i < op.inputBufs.length; i++) {
+            view.setInt32(offset, op.inputBufs[i], true);
+            offset += 4;
+          }
+          view.setInt32(offset, op.outputRegion.handle, true);
+          offset += 4;
         }
 
         // Push constants (raw bytes from Float32Array)
@@ -638,8 +643,8 @@ class ComputeGraph {
       // Fallback: per-dispatch N-API calls
       const wmBuf = new Uint32Array(1);
       for (const op of ops) {
-        const bufs = op.allBufs!;
         wmBuf[0] = op.writeMask!;
+        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
         vk.batchDispatch(
           op.pipeline,
           bufs,
