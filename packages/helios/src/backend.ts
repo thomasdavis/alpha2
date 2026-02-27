@@ -503,6 +503,9 @@ interface PendingOp {
   shape: Shape;             // output shape
   allBufs?: number[];       // Override: use these buffers instead of inputBufs + outputRegion
   writeMask?: number;       // precomputed storage-buffer write mask for dispatch
+  hasGZ?: boolean;          // whether packed dispatch stores explicit z group count
+  flags?: number;           // packed dispatch flags (gY + hasGZ bit)
+  packedBytes?: number;     // encoded byte size for batchDispatchMany payload
 }
 
 /**
@@ -513,6 +516,7 @@ interface PendingOp {
  */
 class ComputeGraph {
   private pending: PendingOp[] = [];
+  private pendingPackedBytes = 0;
   private vk: NativeAddon | null = null;
   private _lastFlushTimeline = 0;
   private deferredReleases: OutputRegion[] = [];
@@ -539,7 +543,19 @@ class ComputeGraph {
         ? 1
         : (1 << (op.allBufs.length - 1));
     }
+    if (op.hasGZ === undefined) op.hasGZ = op.groups[2] !== 1;
+    if (op.flags === undefined) op.flags = ((op.groups[1] & 0x7FFF) << 1) | (op.hasGZ ? 1 : 0);
+    if (op.packedBytes === undefined) {
+      op.packedBytes =
+        4 + 2 + 2 + 4 +                 // pipeSlot, bufCount, flags, gX
+        (op.hasGZ ? 4 : 0) +            // optional gZ
+        4 +                             // writeMask
+        op.allBufs.length * 4 +         // buf handles
+        op.pushSize;                    // push constants bytes
+    }
+
     this.pending.push(op);
+    this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
     this.opsThisStep++;
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
@@ -571,38 +587,25 @@ class ComputeGraph {
     const vk = this.vk;
     const ops = this.pending;
     this.pending = [];
+    const packedTotalBytes = this.pendingPackedBytes;
+    this.pendingPackedBytes = 0;
 
     vk.batchBegin();
 
     if (typeof vk.batchDispatchMany === "function") {
-      // Packed binary path: single N-API call for all dispatches
+      // Packed binary path: single N-API call for all dispatches.
       // Per dispatch format:
       //   int32 pipelineSlot, uint16 bufCount, uint16 flags, uint32 gX,
       //   [uint32 gZ], uint32 writeMask, int32 bufHandles[bufCount], uint8 pushData[pushSize]
-      // Calculate total byte size
-      let totalBytes = 0;
-      for (const op of ops) {
-        const bufs = op.allBufs!;
-        const hasGZ = op.groups[2] !== 1;
-        totalBytes += 4 + 2 + 2 + 4; // pipeSlot, bufCount, flags, gX
-        if (hasGZ) totalBytes += 4;   // gZ
-        totalBytes += 4;              // writeMask
-        totalBytes += bufs.length * 4; // bufHandles
-        totalBytes += op.pushSize;     // pushData
-      }
-
-      const packed = new ArrayBuffer(totalBytes);
+      const packed = new ArrayBuffer(packedTotalBytes);
       const view = new DataView(packed);
       let offset = 0;
 
       for (const op of ops) {
         const bufs = op.allBufs!;
-        const hasGZ = op.groups[2] !== 1;
-        const gY = op.groups[1];
+        const hasGZ = op.hasGZ!;
         const writeMask = op.writeMask!;
-
-        // flags: bits [15:1] = gY, bit 0 = hasGZ
-        const flags = ((gY & 0x7FFF) << 1) | (hasGZ ? 1 : 0);
+        const flags = op.flags!;
 
         view.setInt32(offset, op.pipeline, true); offset += 4;
         view.setUint16(offset, bufs.length, true); offset += 2;
