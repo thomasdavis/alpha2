@@ -211,6 +211,8 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 
 const POOL_MAX_PER_SIZE = 8;
 const bufferPool = new Map<number, number[]>();
+let bufferPoolEntries = 0;
+let bufferPoolBytes = 0;
 
 let _totalAllocCount = 0;
 let _totalAllocBytes = 0;
@@ -218,7 +220,12 @@ let _liveAllocCount = 0;
 
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
   const pool = bufferPool.get(byteSize);
-  if (pool && pool.length > 0) return pool.pop()!;
+  if (pool && pool.length > 0) {
+    const handle = pool.pop()!;
+    bufferPoolEntries--;
+    bufferPoolBytes -= byteSize;
+    return handle;
+  }
   _totalAllocCount++;
   _totalAllocBytes += byteSize;
   _liveAllocCount++;
@@ -243,6 +250,8 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
   if (!pool) { pool = []; bufferPool.set(byteSize, pool); }
   if (pool.length < POOL_MAX_PER_SIZE) {
     pool.push(handle);
+    bufferPoolEntries++;
+    bufferPoolBytes += byteSize;
   } else {
     vk.destroyBuffer(handle);
     _liveAllocCount--;
@@ -370,6 +379,8 @@ interface OutputRegion {
 }
 
 const outputPool = new Map<number, OutputRegion[]>();
+let outputPoolEntries = 0;
+let outputPoolBytes = 0;
 
 /**
  * Round allocation size up to coarse bins to reduce pool fragmentation.
@@ -388,7 +399,10 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
   if (pool) {
     for (let i = 0; i < pool.length; i++) {
       if (pool[i].readyValue <= completed) {
-        return pool.splice(i, 1)[0];
+        const region = pool.splice(i, 1)[0];
+        outputPoolEntries--;
+        outputPoolBytes -= rounded;
+        return region;
       }
     }
   }
@@ -409,6 +423,8 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
   if (pool.length < POOL_MAX_PER_SIZE) {
     pool.push(region);
+    outputPoolEntries++;
+    outputPoolBytes += region.byteSize;
   } else {
     // Pool full — defer buffer destruction until GPU has finished using it.
     // The buffer's memory may still be referenced by the just-submitted batch.
@@ -759,6 +775,8 @@ export class HeliosBackend implements Backend {
       }
     }
     outputPool.clear();
+    outputPoolEntries = 0;
+    outputPoolBytes = 0;
 
     // Drain the buffer pool — destroy all cached buffers
     for (const [, handles] of bufferPool) {
@@ -767,6 +785,8 @@ export class HeliosBackend implements Backend {
       }
     }
     bufferPool.clear();
+    bufferPoolEntries = 0;
+    bufferPoolBytes = 0;
 
     // Safe to destroy now — GPU sync above guarantees all work has completed
     processPendingDestroys(vk);
@@ -784,13 +804,9 @@ export class HeliosBackend implements Backend {
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
   gpuMemStats(): { bufferPoolEntries: number; bufferPoolBytes: number; outputPoolEntries: number; outputPoolBytes: number; deferredReleases: number; pendingDestroys: number; outputPoolSizeClasses: number; totalAllocs: number; totalAllocMB: number; liveAllocs: number } {
-    let bpEntries = 0, bpBytes = 0;
-    for (const [size, handles] of bufferPool) { bpEntries += handles.length; bpBytes += handles.length * size; }
-    let opEntries = 0, opBytes = 0;
-    for (const [size, regions] of outputPool) { opEntries += regions.length; opBytes += regions.length * size; }
     return {
-      bufferPoolEntries: bpEntries, bufferPoolBytes: bpBytes,
-      outputPoolEntries: opEntries, outputPoolBytes: opBytes,
+      bufferPoolEntries, bufferPoolBytes,
+      outputPoolEntries, outputPoolBytes,
       deferredReleases: graph.deferredReleaseCount,
       pendingDestroys: pendingDestroys.length,
       outputPoolSizeClasses: outputPool.size,

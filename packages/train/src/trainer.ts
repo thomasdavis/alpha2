@@ -499,6 +499,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const gradTensors: TensorData[] = [];
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
+  const ADAPTIVE_MEM_STATS_POLL_EVERY = 4;
+  let memStatsCache: any | null = null;
+  let lastMemStatsProbeStep = 0;
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
@@ -849,7 +852,26 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // syncEvery>0 forces periodic sync every N steps.
     const syncEvery = trainConfig.syncEvery;
     const gcEvery = trainConfig.gcEvery;
-    let memStatsStep: any | null = gpuMemStatsFn ? gpuMemStatsFn() : null;
+    // GPU memory diagnostics:
+    // - trace mode: detailed cadence for debugging
+    // - non-trace mode: sparse snapshots to minimize training-loop overhead
+    const shouldLogGpuMem = !!gpuMemStatsFn && (
+      traceEnabled
+        ? (stepNum <= 20 || stepNum % 5 === 0)
+        : (stepNum === 1 || stepNum === totalIters || stepNum % 25 === 0)
+    );
+    let memStatsStep: any | null = memStatsCache;
+    const adaptiveMemControl = gcEvery <= 0 || syncEvery <= 0;
+    const shouldProbeAdaptiveMem = adaptiveMemControl && (
+      stepNum === 1 ||
+      stepNum === totalIters ||
+      stepNum - lastMemStatsProbeStep >= ADAPTIVE_MEM_STATS_POLL_EVERY
+    );
+    if (gpuMemStatsFn && (shouldLogGpuMem || shouldProbeAdaptiveMem)) {
+      memStatsStep = gpuMemStatsFn();
+      memStatsCache = memStatsStep;
+      lastMemStatsProbeStep = stepNum;
+    }
 
     const needGc = typeof globalThis.gc === "function" && (
       gcEvery > 0 ? stepNum % gcEvery === 0 :
@@ -859,7 +881,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (needGc) {
       (globalThis as any).gc();
       await new Promise<void>(resolve => setImmediate(resolve));
-      if (gpuMemStatsFn) memStatsStep = gpuMemStatsFn();
+      if (gpuMemStatsFn) {
+        memStatsStep = gpuMemStatsFn();
+        memStatsCache = memStatsStep;
+        lastMemStatsProbeStep = stepNum;
+      }
     }
 
     // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
@@ -882,14 +908,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
 
-    // GPU memory diagnostics:
-    // - trace mode: detailed cadence for debugging
-    // - non-trace mode: sparse snapshots to minimize training-loop overhead
-    const shouldLogGpuMem = !!gpuMemStatsFn && (
-      traceEnabled
-        ? (stepNum <= 20 || stepNum % 5 === 0)
-        : (stepNum === 1 || stepNum === totalIters || stepNum % 25 === 0)
-    );
     if (shouldLogGpuMem) {
       const stats = memStatsStep ?? gpuMemStatsFn!();
       const breakdown = poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
