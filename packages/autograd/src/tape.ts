@@ -147,11 +147,12 @@ export class Tape {
         if (entry.output.grad) {
           releaseTensor(entry.output.grad);
         }
+        entry.output.grad = null;
       }
-    }
-    // Clear JS references
-    for (const entry of this.entries) {
-      entry.output.grad = null;
+    } else {
+      for (const entry of this.entries) {
+        entry.output.grad = null;
+      }
     }
     this.entries = [];
   }
