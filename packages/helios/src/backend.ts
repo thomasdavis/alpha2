@@ -502,6 +502,7 @@ interface PendingOp {
   pushSize: number;
   shape: Shape;             // output shape
   allBufs?: number[];       // Override: use these buffers instead of inputBufs + outputRegion
+  writeMask?: number;       // precomputed storage-buffer write mask for dispatch
 }
 
 /**
@@ -525,6 +526,19 @@ class ComputeGraph {
   get lastFlushTimeline(): number { return this._lastFlushTimeline; }
 
   record(op: PendingOp): void {
+    // Normalize per-op metadata once to avoid repeated allocation/work in flush().
+    if (!op.allBufs) {
+      const n = op.inputBufs.length + 1;
+      const bufs = new Array<number>(n);
+      for (let i = 0; i < op.inputBufs.length; i++) bufs[i] = op.inputBufs[i];
+      bufs[n - 1] = op.outputRegion.handle;
+      op.allBufs = bufs;
+    }
+    if (op.writeMask === undefined) {
+      op.writeMask = (op.kind === "inplace" || op.kind === "optimizer")
+        ? 1
+        : (1 << (op.allBufs.length - 1));
+    }
     this.pending.push(op);
     this.totalOpsRecorded++;
     this.opsThisStep++;
@@ -568,7 +582,7 @@ class ComputeGraph {
       // Calculate total byte size
       let totalBytes = 0;
       for (const op of ops) {
-        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+        const bufs = op.allBufs!;
         const hasGZ = op.groups[2] !== 1;
         totalBytes += 4 + 2 + 2 + 4; // pipeSlot, bufCount, flags, gX
         if (hasGZ) totalBytes += 4;   // gZ
@@ -582,17 +596,10 @@ class ComputeGraph {
       let offset = 0;
 
       for (const op of ops) {
-        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+        const bufs = op.allBufs!;
         const hasGZ = op.groups[2] !== 1;
         const gY = op.groups[1];
-
-        // Compute write mask
-        let writeMask = 0;
-        if (op.kind === "inplace" || op.kind === "optimizer") {
-          writeMask = 1;
-        } else {
-          writeMask = 1 << (bufs.length - 1);
-        }
+        const writeMask = op.writeMask!;
 
         // flags: bits [15:1] = gY, bit 0 = hasGZ
         const flags = ((gY & 0x7FFF) << 1) | (hasGZ ? 1 : 0);
@@ -624,14 +631,8 @@ class ComputeGraph {
       // Fallback: per-dispatch N-API calls
       const wmBuf = new Uint32Array(1);
       for (const op of ops) {
-        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
-        let writeMask = 0;
-        if (op.kind === "inplace" || op.kind === "optimizer") {
-          writeMask = 1;
-        } else {
-          writeMask = 1 << (bufs.length - 1);
-        }
-        wmBuf[0] = writeMask;
+        const bufs = op.allBufs!;
+        wmBuf[0] = op.writeMask!;
         vk.batchDispatch(
           op.pipeline,
           bufs,
