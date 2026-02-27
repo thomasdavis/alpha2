@@ -36,6 +36,7 @@ const cmd = [
   "-fPIC",
   "-O3",
   "-DNDEBUG",
+  "-flto",
   "-Wall",
   `-I${nodeDir}`,
   "-o", out,
