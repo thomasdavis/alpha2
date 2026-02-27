@@ -19,7 +19,10 @@ GRAD_CLIP="${GRAD_CLIP:-0}"
 COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-60}"
 COMPILE_RETRIES="${COMPILE_RETRIES:-2}"
 RUN_RETRIES="${RUN_RETRIES:-2}"
-RUN_RETRY_ON_SMOKE_FAIL="${RUN_RETRY_ON_SMOKE_FAIL:-0}"
+RUN_CONTINUE_ON_OK="${RUN_CONTINUE_ON_OK:-0}"
+RUN_RETRY_ON_SMOKE_FAIL="${RUN_RETRY_ON_SMOKE_FAIL:-auto}"
+SMOKE_FAIL_MIN_PCT_OF_PREV="${SMOKE_FAIL_MIN_PCT_OF_PREV:-90}"
+BASELINE_WINDOW_OK="${BASELINE_WINDOW_OK:-5}"
 SKIP_COMPILE_IF_FRESH="${SKIP_COMPILE_IF_FRESH:-1}"
 
 timestamp_utc() {
@@ -28,6 +31,29 @@ timestamp_utc() {
 
 now_ms() {
   date +%s%3N
+}
+
+median_recent_ok_tok_s() {
+  awk -F, -v steps="$STEPS" -v backend="$BACKEND" -v win="$BASELINE_WINDOW_OK" '
+    NR>1 && $3==steps && $4==backend && $12=="ok" {vals[++n]=$7}
+    END {
+      if (n == 0) { print ""; exit }
+      start = n - win + 1;
+      if (start < 1) start = 1;
+      m = 0;
+      for (i = start; i <= n; i++) a[++m] = vals[i] + 0;
+      for (i = 1; i <= m; i++) {
+        for (j = i + 1; j <= m; j++) {
+          if (a[i] > a[j]) { t = a[i]; a[i] = a[j]; a[j] = t; }
+        }
+      }
+      if (m % 2 == 1) {
+        printf "%.3f", a[(m + 1) / 2];
+      } else {
+        printf "%.3f", (a[m / 2] + a[m / 2 + 1]) / 2;
+      }
+    }
+  ' "$HISTORY_FILE"
 }
 
 TS="$(timestamp_utc)"
@@ -118,6 +144,8 @@ selected_avg_tok_s="0.000"
 selected_last_tok_s="0.000"
 selected_run_dir="${RUN_DIR_BASE}"
 selected_run_log="${PERF_DIR}/run-${TS}.log"
+selected_rank=-1
+prev_avg_tok_s="$(median_recent_ok_tok_s)"
 
 run_attempts="$((RUN_RETRIES + 1))"
 for run_try in $(seq 1 "$run_attempts"); do
@@ -182,19 +210,57 @@ for run_try in $(seq 1 "$run_attempts"); do
     status_label="smoke_fail"
   fi
 
-  selected_run_status="$run_status"
-  selected_status_label="$status_label"
-  selected_run_ms="$run_ms"
-  selected_avg_tok_s="$avg_tok_s"
-  selected_last_tok_s="$last_tok_s"
-  selected_run_dir="$run_dir"
-  selected_run_log="$run_log"
+  run_rank=0
+  case "$status_label" in
+    ok) run_rank=3 ;;
+    smoke_fail) run_rank=2 ;;
+    unstable) run_rank=1 ;;
+    failed) run_rank=0 ;;
+  esac
+
+  update_selected="0"
+  if [[ "$run_rank" -gt "$selected_rank" ]]; then
+    update_selected="1"
+  elif [[ "$run_rank" -eq "$selected_rank" ]]; then
+    if awk -v a="$avg_tok_s" -v b="$selected_avg_tok_s" 'BEGIN{exit !(a>b)}'; then
+      update_selected="1"
+    fi
+  fi
+  if [[ "$update_selected" == "1" ]]; then
+    selected_rank="$run_rank"
+    selected_run_status="$run_status"
+    selected_status_label="$status_label"
+    selected_run_ms="$run_ms"
+    selected_avg_tok_s="$avg_tok_s"
+    selected_last_tok_s="$last_tok_s"
+    selected_run_dir="$run_dir"
+    selected_run_log="$run_log"
+  fi
 
   retry_this_attempt="1"
   if [[ "$status_label" == "ok" ]]; then
-    retry_this_attempt="0"
-  elif [[ "$status_label" == "smoke_fail" && "$RUN_RETRY_ON_SMOKE_FAIL" != "1" ]]; then
-    retry_this_attempt="0"
+    if [[ "$RUN_CONTINUE_ON_OK" == "1" && "$run_try" -lt "$run_attempts" ]]; then
+      retry_this_attempt="1"
+    else
+      retry_this_attempt="0"
+    fi
+  elif [[ "$status_label" == "smoke_fail" ]]; then
+    if [[ "$RUN_RETRY_ON_SMOKE_FAIL" == "1" ]]; then
+      retry_this_attempt="1"
+    elif [[ "$RUN_RETRY_ON_SMOKE_FAIL" == "0" ]]; then
+      retry_this_attempt="0"
+    else
+      if [[ -n "$prev_avg_tok_s" && "$prev_avg_tok_s" != "0" && "$prev_avg_tok_s" != "0.000" ]]; then
+        smoke_floor="$(awk -v prev="$prev_avg_tok_s" -v pct="$SMOKE_FAIL_MIN_PCT_OF_PREV" 'BEGIN{printf "%.3f", prev * (pct / 100.0)}')"
+        if awk -v cur="$avg_tok_s" -v floor="$smoke_floor" 'BEGIN{exit !(cur < floor)}'; then
+          retry_this_attempt="1"
+        else
+          retry_this_attempt="0"
+        fi
+      else
+        retry_this_attempt="1"
+      fi
+    fi
   fi
 
   if [[ "$retry_this_attempt" == "0" ]]; then
@@ -212,8 +278,6 @@ avg_tok_s="$selected_avg_tok_s"
 last_tok_s="$selected_last_tok_s"
 RUN_DIR="$selected_run_dir"
 RUN_LOG="$selected_run_log"
-
-prev_avg_tok_s="$(awk -F, -v steps="$STEPS" -v backend="$BACKEND" 'NR>1 && $3==steps && $4==backend && $12=="ok" {v=$7} END{print v}' "$HISTORY_FILE")"
 
 speedup_pct="0.00"
 if [[ -n "$prev_avg_tok_s" && "$prev_avg_tok_s" != "0" && "$prev_avg_tok_s" != "0.000" ]]; then
