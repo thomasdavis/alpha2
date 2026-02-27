@@ -36,38 +36,72 @@ interface GpuStats {
 let _gpuStatsCache: GpuStats | null = null;
 let _gpuStatsLastQuery = 0;
 let _gpuStatsDisabled = false;
+let _gpuStatsInFlight: Promise<void> | null = null;
 const GPU_STATS_INTERVAL_MS = 5000; // query nvidia-smi at most every 5s
 
-async function queryGpuStats(): Promise<GpuStats | null> {
+async function readGpuStatsOnce(): Promise<GpuStats | null> {
+  try {
+    const { execFile } = await import("node:child_process");
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "nvidia-smi",
+        ["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+        { timeout: 2000, encoding: "utf-8" },
+        (err, stdout) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve((stdout ?? "").trim());
+        },
+      );
+    });
+    if (!out) {
+      return null;
+    }
+    const line = out.split(/\r?\n/, 1)[0];
+    const [util, used, total] = line.split(",").map(s => parseFloat(s.trim()));
+    if (isFinite(util) && isFinite(used) && isFinite(total)) {
+      return { utilPct: util, vramUsedMb: used, vramTotalMb: total };
+    }
+  } catch { /* caller handles disable policy */ }
+  return null;
+}
+
+async function queryGpuStats(blocking = false): Promise<GpuStats | null> {
   if (_gpuStatsDisabled) return null;
 
   const now = performance.now();
   // Rate-limit regardless of whether previous query succeeded.
-  // When nvidia-smi is unavailable, this avoids spawning a failing shell each step.
+  // When nvidia-smi is unavailable, this avoids repeated failing probes.
   if (now - _gpuStatsLastQuery < GPU_STATS_INTERVAL_MS) {
     return _gpuStatsCache;
   }
   _gpuStatsLastQuery = now;
-  try {
-    const { execSync } = await import("node:child_process");
-    const out = execSync(
-      "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits || true",
-      { timeout: 2000, encoding: "utf-8" },
-    ).trim();
-    if (!out) {
-      _gpuStatsDisabled = true;
-      return null;
-    }
-    const [util, used, total] = out.split(",").map(s => parseFloat(s.trim()));
-    if (isFinite(util) && isFinite(used) && isFinite(total)) {
-      _gpuStatsCache = { utilPct: util, vramUsedMb: used, vramTotalMb: total };
+
+  if (blocking) {
+    const stats = await readGpuStatsOnce();
+    if (stats) {
+      _gpuStatsCache = stats;
       return _gpuStatsCache;
     }
-  } catch {
-    // Disable further probing to keep training hot path clean on unsupported hosts.
     _gpuStatsDisabled = true;
+    return null;
   }
-  return null;
+
+  if (!_gpuStatsInFlight) {
+    _gpuStatsInFlight = (async () => {
+      const stats = await readGpuStatsOnce();
+      if (stats) {
+        _gpuStatsCache = stats;
+        return;
+      }
+      _gpuStatsDisabled = true;
+    })().finally(() => {
+      _gpuStatsInFlight = null;
+    });
+  }
+  return _gpuStatsCache;
 }
 
 // ── Step metrics ───────────────────────────────────────────────────────────
@@ -259,7 +293,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         // nvidia-smi is NVIDIA-only; disable probe path on other vendors.
         _gpuStatsDisabled = true;
       }
-      const gpuStats = await queryGpuStats();
+      const gpuStats = await queryGpuStats(true);
       infra = {
         gpuName: gpu.deviceName,
         gpuVendor: vendorName,
