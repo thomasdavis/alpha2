@@ -40,6 +40,7 @@ const DEFAULT_MIN_GPU_SIZE = 4096;
 const COOP_PAD_MAX_OVERHEAD = 0.20; // max tolerated element overhead from coop padding
 const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core win can amortize padding
 const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
+const LARGE_TILE_THRESHOLD = 65_536; // prefer tile=32 once output plane reaches this size
 
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
@@ -2032,7 +2033,7 @@ export class HeliosBackend implements Backend {
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
     // All discrete GPUs we target (A100, L4, etc.) support 1024 invocations per workgroup
-    const useLargeTile = M * N >= 100_000;
+    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
     const TILE = useLargeTile ? 32 : 16;
     const suffix = useLargeTile ? "_T32" : "";
 
@@ -2152,7 +2153,7 @@ export class HeliosBackend implements Backend {
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = M * N >= 100_000;
+    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
     const TILE = useLargeTile ? 32 : 16;
     const suffix = useLargeTile ? "_T32" : "";
 
@@ -2237,7 +2238,7 @@ export class HeliosBackend implements Backend {
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = outM * N >= 100_000;
+    const useLargeTile = outM * N >= LARGE_TILE_THRESHOLD;
     const TILE = useLargeTile ? 32 : 16;
     const suffix = useLargeTile ? "_T32" : "";
 
