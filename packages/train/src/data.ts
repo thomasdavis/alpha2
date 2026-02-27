@@ -108,10 +108,9 @@ export class DataLoader {
 
     for (let b = 0; b < B; b++) {
       const start = Math.floor(this.rng.next() * maxStart);
-      for (let t = 0; t < T; t++) {
-        inputs[b * T + t] = this.tokens[start + t];
-        targets[b * T + t] = this.tokens[start + t + 1];
-      }
+      const dst = b * T;
+      inputs.set(this.tokens.subarray(start, start + T), dst);
+      targets.set(this.tokens.subarray(start + 1, start + T + 1), dst);
     }
 
     return batch;
@@ -139,12 +138,23 @@ export class DataLoader {
 
     for (let b = 0; b < B; b++) {
       let pos = cursors[b];
-      for (let t = 0; t < T; t++) {
-        inputs[b * T + t] = this.tokens[pos % N];
-        targets[b * T + t] = this.tokens[(pos + 1) % N];
-        pos++;
+      let remaining = T;
+      let dst = b * T;
+      while (remaining > 0) {
+        const span = Math.min(remaining, N - pos);
+        inputs.set(this.tokens.subarray(pos, pos + span), dst);
+        if (pos + span < N) {
+          targets.set(this.tokens.subarray(pos + 1, pos + span + 1), dst);
+        } else {
+          if (span > 1) targets.set(this.tokens.subarray(pos + 1, N), dst);
+          targets[dst + span - 1] = this.tokens[0];
+        }
+        dst += span;
+        remaining -= span;
+        pos += span;
+        if (pos === N) pos = 0;
       }
-      cursors[b] = pos % N;
+      cursors[b] = pos;
     }
 
     return batch;
