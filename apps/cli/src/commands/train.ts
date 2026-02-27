@@ -11,6 +11,8 @@ import { loadArtifacts } from "@alpha/tokenizers";
 import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deserializeGraph } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
+type GpuProfile = "auto" | "none" | "l4";
+
 export async function trainCmd(args: string[]): Promise<void> {
   let kv = parseKV(args);
   kv = await loadConfig(kv);
@@ -26,6 +28,12 @@ export async function trainCmd(args: string[]): Promise<void> {
     console.error(`Unknown domain: "${domainId}". Available: ${available}`);
     process.exit(1);
   }
+  const gpuProfileRaw = strArg(kv, "gpuProfile", "auto").toLowerCase();
+  if (gpuProfileRaw !== "auto" && gpuProfileRaw !== "none" && gpuProfileRaw !== "l4") {
+    console.error(`Unknown gpuProfile: "${gpuProfileRaw}". Use auto|none|l4.`);
+    process.exit(1);
+  }
+  const gpuProfile = gpuProfileRaw as GpuProfile;
 
   const mDefaults = domain?.modelDefaults ?? {};
   const tDefaults = domain?.trainDefaults ?? {};
@@ -96,6 +104,40 @@ export async function trainCmd(args: string[]): Promise<void> {
 
   // Resolve implementations
   const backend = resolveBackend(trainConfig.backend);
+  let mixedPrecisionEnabled = boolArg(kv, "fp16", false);
+  const minGpuSizeOverride = kv["minGpuSize"] !== undefined ? intArg(kv, "minGpuSize", 0) : null;
+  const backendAny = backend as any;
+  const setMinGpuSize: ((n: number) => void) | null =
+    typeof backendAny.setMinGpuSize === "function"
+      ? backendAny.setMinGpuSize.bind(backendAny)
+      : null;
+  const getDeviceInfo: (() => { deviceName: string; vendorId: number; f16Supported: boolean; minGpuSize: number }) | null =
+    typeof backendAny.getDeviceInfo === "function"
+      ? backendAny.getDeviceInfo.bind(backendAny)
+      : null;
+  const deviceInfo = getDeviceInfo ? getDeviceInfo() : null;
+  const isL4Gpu = !!(deviceInfo && deviceInfo.vendorId === 0x10de && /\bL4\b/i.test(deviceInfo.deviceName));
+  const useL4Profile = gpuProfile === "l4" || (gpuProfile === "auto" && isL4Gpu);
+  if (useL4Profile) {
+    if (!kv["fp16"] && !!deviceInfo?.f16Supported) mixedPrecisionEnabled = true;
+    if (!kv["packed"]) trainConfig = { ...trainConfig, packed: true };
+    if (!kv["logEvery"]) trainConfig = { ...trainConfig, logEvery: Math.max(trainConfig.logEvery ?? 1, 25) };
+    if (!kv["minGpuSize"] && setMinGpuSize) setMinGpuSize(2048);
+    const mode = gpuProfile === "auto" ? "auto-detected" : "explicit";
+    console.log(`GPU profile: l4 (${mode})`);
+    console.log(`  tuned: fp16=${mixedPrecisionEnabled} packed=${trainConfig.packed} logEvery=${trainConfig.logEvery} minGpuSize=${kv["minGpuSize"] ?? "2048"}`);
+  }
+  if (minGpuSizeOverride !== null) {
+    if (minGpuSizeOverride <= 0) {
+      console.error(`Invalid minGpuSize: ${minGpuSizeOverride}. Must be > 0.`);
+      process.exit(1);
+    }
+    if (setMinGpuSize) {
+      setMinGpuSize(minGpuSizeOverride);
+    } else {
+      console.warn(`minGpuSize ignored: backend "${backend.name}" does not expose setMinGpuSize().`);
+    }
+  }
   let tokenizer = resolveTokenizer(trainConfig.tokenizer);
   // Build no-decay set: embeddings + LayerNorm weights/biases should skip weight decay
   const noDecayNames = new Set<string>();
@@ -178,7 +220,7 @@ export async function trainCmd(args: string[]): Promise<void> {
       ? (samples, step) => reporter.sendSamples(samples, step)
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
-    mixedPrecision: boolArg(kv, "fp16", false),
+    mixedPrecision: mixedPrecisionEnabled,
   });
 
   // Post-training sample generation

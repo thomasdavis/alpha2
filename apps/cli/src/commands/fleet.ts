@@ -450,6 +450,7 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   const inst = getInstance(config, name);
   const dir = config.deployDir;
   const kv = parseTrainKV(trainArgs);
+  const isL4Instance = /\bl4\b/i.test(inst.gpu);
 
   // Detect train command
   const prefix = await trainPrefix(config, inst.host);
@@ -476,10 +477,23 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   await ssh(config, inst.host, "pgrep -x Xvfb >/dev/null || (Xvfb :99 -screen 0 1024x768x24 &>/dev/null &)");
 
   // Build the training command
-  const flagStr = trainArgs.filter(a => a.startsWith("--") && !a.startsWith("--force")).join(" ");
-  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; nohup ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
+  const effectiveArgs = trainArgs.filter(a => a.startsWith("--") && !a.startsWith("--force"));
+  if (isL4Instance) {
+    if (!kv["gpuProfile"]) effectiveArgs.push("--gpuProfile=l4");
+    if (!kv["backend"]) effectiveArgs.push("--backend=helios");
+    if (!kv["minGpuSize"]) effectiveArgs.push("--minGpuSize=2048");
+    if (!kv["logEvery"]) effectiveArgs.push("--logEvery=25");
+  }
+  const flagStr = effectiveArgs.join(" ");
+  const l4Env = isL4Instance
+    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
+    : "";
+  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
 
   console.log(bold(`\n  Starting training on ${name}`) + dim(` (${inst.host})\n`));
+  if (isL4Instance && !kv["gpuProfile"]) {
+    console.log(dim("  auto-tuning for L4: --gpuProfile=l4 --backend=helios --minGpuSize=2048 --logEvery=25"));
+  }
   console.log(dim(`  ${prefix} train ${flagStr}\n`));
 
   const { stdout, code } = await ssh(config, inst.host, trainCmd);
@@ -500,6 +514,7 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
 async function fleetResume(config: FleetConfig, name: string, kv: Record<string, string>, extraArgs: string[]): Promise<void> {
   const inst = getInstance(config, name);
   const dir = config.deployDir;
+  const isL4Instance = /\bl4\b/i.test(inst.gpu);
 
   // Find run directory
   let runDir: string;
@@ -591,6 +606,13 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
   } else {
     originalFlags = extraArgs.filter(a => a.startsWith("--") && !a.startsWith("--run")).join(" ");
   }
+  if (isL4Instance) {
+    if (!/\s--gpuProfile=/.test(` ${originalFlags} `)) originalFlags += " --gpuProfile=l4";
+    if (!/\s--backend=/.test(` ${originalFlags} `)) originalFlags += " --backend=helios";
+    if (!/\s--minGpuSize=/.test(` ${originalFlags} `)) originalFlags += " --minGpuSize=2048";
+    if (!/\s--logEvery=/.test(` ${originalFlags} `)) originalFlags += " --logEvery=25";
+    originalFlags = originalFlags.trim();
+  }
 
   console.log(bold(`\n  Resuming training on ${name}`));
   console.log(`  Run:        ${dim(runDir)}`);
@@ -616,7 +638,10 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
   // Ensure Xvfb
   await ssh(config, inst.host, "pgrep -x Xvfb >/dev/null || (Xvfb :99 -screen 0 1024x768x24 &>/dev/null &)");
 
-  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; nohup ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
+  const l4Env = isL4Instance
+    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
+    : "";
+  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
 
   console.log(dim(`\n  ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags}\n`));
 
