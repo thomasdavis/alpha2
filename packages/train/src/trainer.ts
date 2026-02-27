@@ -843,15 +843,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // syncEvery>0 forces periodic sync every N steps.
     const syncEvery = trainConfig.syncEvery;
     const gcEvery = trainConfig.gcEvery;
+    let memStatsStep: any | null = gpuMemStatsFn ? gpuMemStatsFn() : null;
 
     const needGc = typeof globalThis.gc === "function" && (
       gcEvery > 0 ? stepNum % gcEvery === 0 :
       // Adaptive: GC when deferred releases pile up
-      !!(gpuMemStatsFn && gpuMemStatsFn().deferredReleases > 50)
+      !!(memStatsStep && memStatsStep.deferredReleases > 50)
     );
     if (needGc) {
       (globalThis as any).gc();
       await new Promise<void>(resolve => setImmediate(resolve));
+      if (gpuMemStatsFn) memStatsStep = gpuMemStatsFn();
     }
 
     // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
@@ -859,10 +861,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const needSync = syncEvery === 1 ? true :
       syncEvery > 0 ? stepNum % syncEvery === 0 :
       // Adaptive: sync when pool pressure is high (many pending destroys or deferred releases)
-      !!(gpuMemStatsFn && (() => {
-        const s = gpuMemStatsFn();
-        return (s.deferredReleases > 20 || (s.pendingDestroys ?? 0) > 10);
-      })());
+      !!(memStatsStep && (memStatsStep.deferredReleases > 20 || (memStatsStep.pendingDestroys ?? 0) > 10));
     if (needSync) {
       if (syncGpuFn) {
         syncGpuFn();
@@ -886,7 +885,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         : (stepNum === 1 || stepNum === totalIters || stepNum % 25 === 0)
     );
     if (shouldLogGpuMem) {
-      const stats = gpuMemStatsFn!();
+      const stats = memStatsStep ?? gpuMemStatsFn!();
       const breakdown = poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
       console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${breakdown}`);
@@ -1118,7 +1117,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.step === totalIters ||
       (metrics.step % Math.max(logEvery, 5) === 0);
     if (gpuMemStatsFn && shouldSampleGpuMemMetric) {
-      const memStats = gpuMemStatsFn();
+      const memStats = memStatsStep ?? gpuMemStatsFn();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
     }
 
