@@ -565,7 +565,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
 
-    let perLayerGradNorms: Record<string, number> = {};
+    let perLayerGradNorms: Record<string, number> | undefined;
 
     if (!nanDetected) {
       const hasSumSq = !!backend.sumOfSquares;
@@ -625,6 +625,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (releaseFn) for (const part of sqNormParts) releaseFn(part);
 
         // Aggregate per-layer gradient norms (layer.N.* → layerN norm)
+        perLayerGradNorms = {};
         const layerNormSqs = new Map<number, number>();
         let embedNormSq = 0;
         let headNormSq = 0;
@@ -890,7 +891,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / (step + 1)) * 100,
       // Per-layer gradient norms
-      per_layer_grad_norms: Object.keys(perLayerGradNorms).length > 0 ? JSON.stringify(perLayerGradNorms) : undefined,
+      per_layer_grad_norms: perLayerGradNorms ? JSON.stringify(perLayerGradNorms) : undefined,
     };
 
     // Symbio metrics (only when symbio is enabled — zero overhead otherwise)
