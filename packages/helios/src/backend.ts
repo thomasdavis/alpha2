@@ -41,6 +41,16 @@ const DEFAULT_MIN_GPU_SIZE = 4096;
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
 let wgAutoTuned = false;
+const WG_ENV = process.env.HELIOS_WG_SIZE;
+if (WG_ENV) {
+  const parsed = Number(WG_ENV);
+  if (Number.isFinite(parsed) && WG_CANDIDATES.includes(parsed as any)) {
+    WG_SIZE = parsed;
+    wgAutoTuned = true;
+  } else {
+    console.warn(`[helios] ignoring HELIOS_WG_SIZE=${WG_ENV}; expected one of ${WG_CANDIDATES.join(", ")}`);
+  }
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

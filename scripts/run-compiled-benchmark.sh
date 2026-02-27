@@ -13,6 +13,9 @@ LAYERS="${LAYERS:-2}"
 DIM="${DIM:-128}"
 HEADS="${HEADS:-4}"
 LOG_EVERY="${LOG_EVERY:-25}"
+HELIOS_WG_SIZE="${HELIOS_WG_SIZE:-256}"
+LR="${LR:-0.0001}"
+GRAD_CLIP="${GRAD_CLIP:-0}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -44,18 +47,20 @@ compile_end_ms="$(now_ms)"
 compile_ms="$((compile_end_ms - compile_start_ms))"
 echo "[bench] compile done in ${compile_ms} ms"
 
-echo "[bench] run start (log: ${RUN_LOG})"
+echo "[bench] run start (log: ${RUN_LOG}, helios_wg=${HELIOS_WG_SIZE})"
 run_start_ms="$(now_ms)"
 set +e
-./.bun-out/alpha train \
+HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
   --data="${DATA_PATH}" \
   --backend="${BACKEND}" \
   --steps="${STEPS}" \
+  --lr="${LR}" \
   --batch="${BATCH}" \
   --block="${BLOCK}" \
   --layers="${LAYERS}" \
   --dim="${DIM}" \
   --heads="${HEADS}" \
+  --gradClip="${GRAD_CLIP}" \
   --accumSteps=1 \
   --evalInterval="${STEPS}" \
   --evalIters=1 \
@@ -115,6 +120,9 @@ LAST_TOK_S=${last_tok_s}
 SPEEDUP_PCT=${speedup_pct}
 RUN_DIR=${RUN_DIR}
 RUN_LOG=${RUN_LOG}
+HELIOS_WG_SIZE=${HELIOS_WG_SIZE}
+LR=${LR}
+GRAD_CLIP=${GRAD_CLIP}
 STATUS=${status_label}
 EOF
 
