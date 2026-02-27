@@ -16,6 +16,7 @@ LOG_EVERY="${LOG_EVERY:-25}"
 HELIOS_WG_SIZE="${HELIOS_WG_SIZE:-256}"
 LR="${LR:-0.0001}"
 GRAD_CLIP="${GRAD_CLIP:-0}"
+COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-180}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -42,7 +43,33 @@ fi
 
 echo "[bench] compile start (steps=${STEPS}, backend=${BACKEND})"
 compile_start_ms="$(now_ms)"
-npm run bun:compile >"$COMPILE_LOG" 2>&1
+if ! timeout "${COMPILE_TIMEOUT_SEC}" npm run bun:compile >"$COMPILE_LOG" 2>&1; then
+  compile_end_ms="$(now_ms)"
+  compile_ms="$((compile_end_ms - compile_start_ms))"
+  git_commit="$(git rev-parse --short HEAD)"
+  echo "${TS},${git_commit},${STEPS},${BACKEND},${compile_ms},0,0.000,0.000,0.00,${RUN_DIR},${COMPILE_LOG},compile_failed" >> "$HISTORY_FILE"
+  cat > "$SUMMARY_FILE" <<EOF
+TIMESTAMP=${TS}
+GIT_COMMIT=${git_commit}
+STEPS=${STEPS}
+BACKEND=${BACKEND}
+COMPILE_MS=${compile_ms}
+RUN_MS=0
+AVG_TOK_S=0.000
+LAST_TOK_S=0.000
+SPEEDUP_PCT=0.00
+RUN_DIR=${RUN_DIR}
+RUN_LOG=${COMPILE_LOG}
+HELIOS_WG_SIZE=${HELIOS_WG_SIZE}
+LR=${LR}
+GRAD_CLIP=${GRAD_CLIP}
+STATUS=compile_failed
+EOF
+  echo "[bench] compile failed or timed out after ${COMPILE_TIMEOUT_SEC}s"
+  echo "[bench] compile log tail:"
+  tail -n 40 "$COMPILE_LOG"
+  exit 1
+fi
 compile_end_ms="$(now_ms)"
 compile_ms="$((compile_end_ms - compile_start_ms))"
 echo "[bench] compile done in ${compile_ms} ms"
