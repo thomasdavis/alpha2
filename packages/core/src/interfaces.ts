@@ -141,7 +141,7 @@ export interface Backend {
 
   // optimizer (GPU-optimized, optional)
   adamwStep?(params: TensorData, grads: TensorData, m: TensorData, v: TensorData,
-    lr: number, beta1: number, beta2: number, eps: number, weightDecay: number, bc1: number, bc2: number): void;
+    lr: number, beta1: number, beta2: number, eps: number, weightDecay: number, bc1: number, bc2: number, gradScale?: number): void;
 }
 
 export class BackendService extends Context.Tag("BackendService")<
@@ -157,7 +157,7 @@ export interface OptimizerState {
 
 export interface Optimizer {
   readonly name: string;
-  step(params: Map<string, TensorData>, grads: Map<string, TensorData>): void;
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale?: number): void;
   stateDict(): OptimizerState;
   loadStateDict(state: OptimizerState): void;
 }

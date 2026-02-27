@@ -39,8 +39,21 @@ let _native: NativeAddon | null = null;
 let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } | null = null;
 
 function findNativeAddon(): string {
+  const envOverride = process.env.HELIOS_NATIVE_ADDON;
+  if (envOverride && existsSync(envOverride)) return envOverride;
+
+  const execDir = dirname(process.execPath);
+  const cwd = process.cwd();
+
   // Try multiple locations: native/ dir relative to source, or dist/
   const candidates = [
+    // Bun compiled binary sidecar (preferred for distribution)
+    join(execDir, "helios_vk.node"),
+    // Common workspace locations
+    join(cwd, "packages", "helios", "native", "helios_vk.node"),
+    join(cwd, "packages", "helios", "dist", "helios_vk.node"),
+    join(cwd, ".bun-out", "helios_vk.node"),
+    // Node/ts runtime locations
     join(__dirname, "..", "native", "helios_vk.node"),
     join(__dirname, "helios_vk.node"),
     join(__dirname, "..", "..", "native", "helios_vk.node"),

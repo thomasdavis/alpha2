@@ -41,7 +41,7 @@ export class AdamW implements Optimizer {
     };
   }
 
-  step(params: Map<string, TensorData>, grads: Map<string, TensorData>): void {
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
     this._step++;
     const { lr, beta1, beta2, eps, weightDecay } = this.config;
     const bc1 = 1 - Math.pow(beta1, this._step);
@@ -66,7 +66,7 @@ export class AdamW implements Optimizer {
         const mTd = this._mTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._m.get(name)! };
         const vTd = this._vTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._v.get(name)! };
         if (!this._mTd.has(name)) { this._mTd.set(name, mTd); this._vTd.set(name, vTd); }
-        this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, wd, bc1, bc2);
+        this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, wd, bc1, bc2, gradScale);
         continue;
       }
 
@@ -77,9 +77,10 @@ export class AdamW implements Optimizer {
       const v = this._v.get(name)!;
 
       for (let i = 0; i < size; i++) {
+        const g = gData[i] * gradScale;
         if (wd > 0) pData[i] -= lr * wd * pData[i];
-        m[i] = beta1 * m[i] + (1 - beta1) * gData[i];
-        v[i] = beta2 * v[i] + (1 - beta2) * gData[i] * gData[i];
+        m[i] = beta1 * m[i] + (1 - beta1) * g;
+        v[i] = beta2 * v[i] + (1 - beta2) * g * g;
         const mHat = m[i] / bc1;
         const vHat = v[i] / bc2;
         pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
@@ -128,7 +129,7 @@ export class SGD implements Optimizer {
     this.lr = lr;
   }
 
-  step(params: Map<string, TensorData>, grads: Map<string, TensorData>): void {
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
     this._step++;
     for (const [name, param] of params) {
       const grad = grads.get(name);
@@ -136,7 +137,7 @@ export class SGD implements Optimizer {
       const pData = param.data as Float32Array;
       const gData = grad.data as Float32Array;
       for (let i = 0; i < pData.length; i++) {
-        pData[i] -= this.lr * gData[i];
+        pData[i] -= this.lr * (gData[i] * gradScale);
       }
     }
   }

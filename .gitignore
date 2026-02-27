@@ -17,3 +17,6 @@ build-info.json
 .vercel/
 __pycache__/
 *.node
+.bun-out/
+perf/*.log
+perf/last-benchmark.env

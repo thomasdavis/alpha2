@@ -1,0 +1,2 @@
+timestamp,git_commit,steps,backend,compile_ms,run_ms,avg_tok_s,last_tok_s,speedup_pct,run_dir,log_file,status
+20260227T091858Z,8688de6,100,helios,1365,6443,3583.380,2844.000,0.00,runs/compiled-binary-helios-20260227T091858Z,perf/run-20260227T091858Z.log,ok

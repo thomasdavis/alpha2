@@ -374,13 +374,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     console.log(`symbio search: mode=${symbioConfig.searchMode} | base=${symbioConfig.populationSize} candidates × ${symbioConfig.stepsPerCandidate} steps × ${symbioConfig.generations} gens ≈ ${totalSearchSteps} total steps`);
   }
 
-  // Stable parameter traversal for hot loops; refresh whenever `params` is replaced.
-  let paramEntries = collectParamEntries(params);
-  const refreshParamEntries = (): void => {
-    paramEntries = collectParamEntries(params);
-  };
   const paramDataMap = new Map<string, TensorData>();
   const gradMap = new Map<string, TensorData>();
+  // Stable parameter traversal for hot loops; refresh whenever `params` is replaced.
+  let paramEntries: ReturnType<typeof collectParamEntries> = [];
+  const refreshParamCaches = (): void => {
+    paramEntries = collectParamEntries(params);
+    // Parameter data references are stable between switches; rebuild only on refresh.
+    paramDataMap.clear();
+    for (const [name, variable] of paramEntries) {
+      paramDataMap.set(name, variable.data);
+    }
+  };
+  refreshParamCaches();
 
   // Training loop
   const startTime = performance.now();
@@ -496,56 +502,39 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (releaseFn) releaseFn(lossAccum);
     }
 
-    // Scale accumulated gradients: combine 1/accumSteps and 1/lossScale into one op.
-    // accumSteps > 1: backward summed micro-batch gradients → divide by accumSteps.
-    // lossScale != 1: gradients were amplified by loss scaling → divide by lossScale.
+    // Keep gradients unmodified and fold scaling/clipping into optimizer update.
+    // This avoids one or two full tensor passes over all parameter gradients.
     const gradScaleFactor = 1.0 / (accumSteps * lossScale);
-    if (!nanDetected && gradScaleFactor !== 1.0) {
-      const canScaleInplace = !!backend.scaleInplace;
-      for (const [, variable] of paramEntries) {
-        if (variable.grad) {
-          if (canScaleInplace) {
-            backend.scaleInplace!(variable.grad, gradScaleFactor);
-          } else {
-            const oldGrad = variable.grad;
-            variable.grad = backend.scale(variable.grad, gradScaleFactor);
-            if (releaseFn) releaseFn(oldGrad);
-          }
-        }
-      }
-    }
+    const gradScaleAbs = Math.abs(gradScaleFactor);
+    const gradScaleSq = gradScaleAbs * gradScaleAbs;
     let gradNorm = 0;
     const _t3 = performance.now();
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
     // Reuse maps across steps to reduce JS allocation churn.
-    paramDataMap.clear();
     gradMap.clear();
-    for (const [name, variable] of paramEntries) {
-      paramDataMap.set(name, variable.data);
-    }
 
     let perLayerGradNorms: Record<string, number> = {};
 
     if (!nanDetected) {
       const hasSumSq = !!backend.sumOfSquares;
       const hasTotalSumSq = !!backend.totalSumOfSquares;
-      const gradNames: string[] = [];
+      const collectPerParamNorms = trainConfig.trace || ((step + 1) % 500 === 0);
+      const gradNames = collectPerParamNorms ? [] as string[] : null;
       const grads: TensorData[] = [];
       for (const [name, variable] of paramEntries) {
         if (variable.grad) {
-          gradNames.push(name);
+          if (gradNames) gradNames.push(name);
           grads.push(variable.grad);
         }
       }
 
-      const collectPerParamNorms = trainConfig.trace || ((step + 1) % 500 === 0);
       const perParamNorms: { name: string; normSq: number }[] = [];
 
       if (hasTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
         const totalSq = backend.totalSumOfSquares!(grads);
-        gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]);
+        gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]) * gradScaleAbs;
         if (releaseFn) releaseFn(totalSq);
       } else {
         // Fallback: compute per-parameter scalars and sum on CPU.
@@ -565,9 +554,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         for (let i = 0; i < sqNormParts.length; i++) {
           const val = (sqNormParts[i].data as Float32Array)[0];
           gradNormSq += val;
-          if (collectPerParamNorms) perParamNorms.push({ name: gradNames[i], normSq: val });
+          if (collectPerParamNorms && gradNames) perParamNorms.push({ name: gradNames[i], normSq: val * gradScaleSq });
         }
-        gradNorm = Math.sqrt(gradNormSq);
+        gradNorm = Math.sqrt(gradNormSq) * gradScaleAbs;
         if (releaseFn) {
           for (const g2 of g2Intermediates) releaseFn(g2);
           for (const part of sqNormParts) releaseFn(part);
@@ -580,7 +569,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         const sqNormParts: TensorData[] = [];
         for (const g of grads) sqNormParts.push(backend.sumOfSquares!(g));
         for (let i = 0; i < sqNormParts.length; i++) {
-          perParamNorms.push({ name: gradNames[i], normSq: (sqNormParts[i].data as Float32Array)[0] });
+          perParamNorms.push({ name: gradNames![i], normSq: (sqNormParts[i].data as Float32Array)[0] * gradScaleSq });
         }
         if (releaseFn) for (const part of sqNormParts) releaseFn(part);
 
@@ -665,27 +654,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     const _t4 = performance.now();
 
-    // Clip gradients using backend.scale (stays on GPU)
+    // Clip coefficient for optimizer-side gradient scaling.
     let clipCoef = 1.0;
+    let effectiveGradScale = gradScaleFactor;
     if (!nanDetected && trainConfig.gradClip > 0 && gradNorm > trainConfig.gradClip) {
       clipCoef = trainConfig.gradClip / gradNorm;
       clippedSteps++;
-      const canScaleInplace = !!backend.scaleInplace;
-      for (const [, variable] of paramEntries) {
-        if (variable.grad) {
-          if (canScaleInplace) {
-            backend.scaleInplace!(variable.grad, clipCoef);
-          } else {
-            const oldGrad = variable.grad;
-            variable.grad = backend.scale(variable.grad, clipCoef);
-            if (releaseFn) releaseFn(oldGrad);
-          }
-        }
-      }
+      effectiveGradScale *= clipCoef;
 
-      // Post-clip safety: spot-check the largest gradient tensors for Inf values.
-      // In f16, Inf * clip_ratio = Inf — clipping cannot fix f16 overflow.
-      // Check 3 largest tensors by computing their sum-of-squares on GPU.
+      // Safety: spot-check the largest gradient tensors for Inf/NaN values.
+      // In f16, Inf * scale = Inf — scaling/clipping cannot fix overflow.
+      // Check 3 largest tensors by computing finite checks on GPU.
       // Batch all GPU ops first, then single flush on first .data access.
       const topGradEntries: { grad: TensorData; size: number }[] = [];
       const pushTopGrad = (grad: TensorData, size: number): void => {
@@ -714,7 +693,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         // Single flush on first .data access (all checks recorded above)
         for (const chk of finiteChecks) {
           if ((chk.data as Float32Array)[0] !== 0) {
-            console.warn(`  [warn] Inf/NaN in gradients after clipping (pre-clip norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
+            console.warn(`  [warn] Inf/NaN in gradients (norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
             nanDetected = true;
             break;
           }
@@ -730,7 +709,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         // Single flush on first .data access (all ops recorded above)
         for (const { s } of spotResults) {
           if (!isFinite((s.data as Float32Array)[0])) {
-            console.warn(`  [warn] Inf in gradients after clipping (pre-clip norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
+            console.warn(`  [warn] Inf in gradients (norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
             nanDetected = true;
             break;
           }
@@ -750,7 +729,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
 
       // Optimizer step
-      optimizer.step(paramDataMap, gradMap);
+      optimizer.step(paramDataMap, gradMap, effectiveGradScale);
     }
     const _t5 = performance.now();
 
@@ -964,7 +943,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
               const transferred = initGPTWithTransferredWeights(activeModelConfig, backend, rng as any, prevParams);
               params = transferred.params;
               totalParams = countParams(params);
-              refreshParamEntries();
+              refreshParamCaches();
               if (symbioConfig.carryOptimizerStateAcrossCandidates) {
                 const optCarry = carryOptimizerStateAcrossSwitch(optimizer, prevParams, params);
                 console.log(
@@ -980,7 +959,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
             } else {
               params = initGPT(activeModelConfig, backend, rng as any);
               totalParams = countParams(params);
-              refreshParamEntries();
+              refreshParamCaches();
               optimizer.loadStateDict({ step: 0, buffers: new Map() });
             }
             clearForwardCache();

@@ -3182,7 +3182,7 @@ export class HeliosBackend implements Backend {
   adamwStep(
     params: TensorData, grads: TensorData, m: TensorData, v: TensorData,
     lr: number, beta1: number, beta2: number, eps: number,
-    weightDecay: number, bc1: number, bc2: number,
+    weightDecay: number, bc1: number, bc2: number, gradScale = 1.0,
   ): void {
     const vk = this.init();
     const size = shapeSize(params.shape);
@@ -3194,9 +3194,10 @@ export class HeliosBackend implements Backend {
       const mData = m.data as Float32Array;
       const vData = v.data as Float32Array;
       for (let i = 0; i < size; i++) {
+        const g = gData[i] * gradScale;
         pData[i] -= lr * weightDecay * pData[i];
-        mData[i] = beta1 * mData[i] + (1 - beta1) * gData[i];
-        vData[i] = beta2 * vData[i] + (1 - beta2) * gData[i] * gData[i];
+        mData[i] = beta1 * mData[i] + (1 - beta1) * g;
+        vData[i] = beta2 * vData[i] + (1 - beta2) * g * g;
         const mHat = mData[i] / bc1;
         const vHat = vData[i] / bc2;
         pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
@@ -3210,8 +3211,8 @@ export class HeliosBackend implements Backend {
     const bufM = ensureGpu(vk, m);
     const bufV = ensureGpu(vk, v);
 
-    const pipeline = getPipeline(vk, "adamw_step", 4, 8 * 4);
-    const push = new Float32Array([size, lr, beta1, beta2, eps, weightDecay, bc1, bc2]);
+    const pipeline = getPipeline(vk, "adamw_step", 4, 9 * 4);
+    const push = new Float32Array([size, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale]);
     const groups = Math.ceil(size / WG_SIZE);
 
     // Use a dummy output region since this is an in-place op
@@ -3223,7 +3224,7 @@ export class HeliosBackend implements Backend {
       outputRegion: { handle: bufP, byteSize: 0, readyValue: 0 },
       groups: [groups, 1, 1],
       push,
-      pushSize: 8 * 4,
+      pushSize: 9 * 4,
       shape: params.shape,
       allBufs: [bufP, bufG, bufM, bufV],
     });

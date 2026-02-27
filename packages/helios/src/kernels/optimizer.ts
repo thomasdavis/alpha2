@@ -16,7 +16,7 @@ import {
 /**
  * In-place AdamW update on GPU. One thread per parameter element.
  * Bindings: 0=params(rw), 1=grads(r), 2=m(rw), 3=v(rw)
- * Push constants: { len, lr, beta1, beta2, eps, weightDecay, bc1, bc2 } (8 x f32)
+ * Push constants: { len, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale } (9 x f32)
  *
  * For each element i:
  *   params[i] -= lr * weightDecay * params[i]          // decoupled weight decay
@@ -36,8 +36,8 @@ export function kernelAdamW(wgSize = 256): Uint32Array {
   const bufM      = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
   const bufV      = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
 
-  // 8 push constants: len, lr, beta1, beta2, eps, weightDecay, bc1, bc2
-  const pc = declareParamsPushConstant(b, p.tF32, 8);
+  // 9 push constants: len, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale
+  const pc = declareParamsPushConstant(b, p.tF32, 9);
 
   // Constants
   const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
@@ -68,6 +68,7 @@ export function kernelAdamW(wgSize = 256): Uint32Array {
   const idx5 = b.id(); b.constant(p.tU32, idx5, 5);
   const idx6 = b.id(); b.constant(p.tU32, idx6, 6);
   const idx7 = b.id(); b.constant(p.tU32, idx7, 7);
+  const idx8 = b.id(); b.constant(p.tU32, idx8, 8);
 
   const ptrB1 = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrB1, pc.varId, idx2]);
   const beta1 = b.id(); b.emit(Op.Load, [p.tF32, beta1, ptrB1]);
@@ -87,6 +88,9 @@ export function kernelAdamW(wgSize = 256): Uint32Array {
   const ptrBc2 = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrBc2, pc.varId, idx7]);
   const bc2 = b.id(); b.emit(Op.Load, [p.tF32, bc2, ptrBc2]);
 
+  const ptrGradScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrGradScale, pc.varId, idx8]);
+  const gradScale = b.id(); b.emit(Op.Load, [p.tF32, gradScale, ptrGradScale]);
+
   // Bounds check
   emitBoundsCheck(b, p, lenF, gidX, labelEnd);
 
@@ -101,6 +105,7 @@ export function kernelAdamW(wgSize = 256): Uint32Array {
   // Load grads[i]
   const ptrG = b.id(); b.emit(Op.AccessChain, [bufGrads.tPtrF32, ptrG, bufGrads.varId, p.const0u, gidX]);
   const gradVal = b.id(); b.emit(Op.Load, [p.tF32, gradVal, ptrG]);
+  const gradScaled = b.id(); b.emit(Op.FMul, [p.tF32, gradScaled, gradVal, gradScale]);
 
   // Load m[i], v[i]
   const ptrM = b.id(); b.emit(Op.AccessChain, [bufM.tPtrF32, ptrM, bufM.varId, p.const0u, gidX]);
@@ -116,11 +121,11 @@ export function kernelAdamW(wgSize = 256): Uint32Array {
 
   // m[i] = beta1 * m[i] + (1 - beta1) * grads[i]
   const mBeta = b.id(); b.emit(Op.FMul, [p.tF32, mBeta, beta1, mVal]);
-  const mGrad = b.id(); b.emit(Op.FMul, [p.tF32, mGrad, oneMinusB1, gradVal]);
+  const mGrad = b.id(); b.emit(Op.FMul, [p.tF32, mGrad, oneMinusB1, gradScaled]);
   const mNew = b.id(); b.emit(Op.FAdd, [p.tF32, mNew, mBeta, mGrad]);
 
   // v[i] = beta2 * v[i] + (1 - beta2) * grads[i]^2
-  const g2 = b.id(); b.emit(Op.FMul, [p.tF32, g2, gradVal, gradVal]);
+  const g2 = b.id(); b.emit(Op.FMul, [p.tF32, g2, gradScaled, gradScaled]);
   const vBeta = b.id(); b.emit(Op.FMul, [p.tF32, vBeta, beta2, vVal]);
   const vGrad = b.id(); b.emit(Op.FMul, [p.tF32, vGrad, oneMinusB2, g2]);
   const vNew = b.id(); b.emit(Op.FAdd, [p.tF32, vNew, vBeta, vGrad]);

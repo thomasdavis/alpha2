@@ -130,12 +130,14 @@ export async function trainCmd(args: string[]): Promise<void> {
   };
 
   // Set up remote reporter if env vars are configured
+  const enableRemote = boolArg(kv, "remote", true);
   const remoteUrl = process.env.ALPHA_REMOTE_URL;
   const remoteSecret = process.env.ALPHA_REMOTE_SECRET;
   const discordWebhook = process.env.DISCORD_WEBHOOK_URL;
-  const reporter = remoteUrl && remoteSecret
+  const reporter = enableRemote && remoteUrl && remoteSecret
     ? createRemoteReporter({ url: remoteUrl, secret: remoteSecret, discordWebhook })
     : null;
+  const postSamples = boolArg(kv, "postSamples", true);
 
   if (reporter) {
     console.log(`Remote reporting: ${remoteUrl}`);
@@ -187,26 +189,32 @@ export async function trainCmd(args: string[]): Promise<void> {
     : undefined;
   const flushFn = "flush" in backend ? () => (backend as any).flush() : undefined;
 
-  console.log("\n── sample generations ──");
   const samples: SampleGeneration[] = [];
-  for (const prompt of allPrompts) {
-    // Flush GPU between samples to reclaim buffers
-    if (flushFn) flushFn();
-    const output = runSample(
-      trainedModelConfig, params, backend, rng,
-      (t) => tokenizer.encode(t),
-      (t) => tokenizer.decode(t),
-      prompt,
-      { steps: 100, temperature: 0.8, topk: 40 },
-      releaseFn, flushFn,
-    );
-    console.log(`\n  prompt: "${prompt}"`);
-    console.log(`  output: ${output}`);
-    samples.push({ prompt, output });
+  if (postSamples) {
+    console.log("\n── sample generations ──");
+    for (const prompt of allPrompts) {
+      // Flush GPU between samples to reclaim buffers
+      if (flushFn) flushFn();
+      const output = runSample(
+        trainedModelConfig, params, backend, rng,
+        (t) => tokenizer.encode(t),
+        (t) => tokenizer.decode(t),
+        prompt,
+        { steps: 100, temperature: 0.8, topk: 40 },
+        releaseFn, flushFn,
+      );
+      console.log(`\n  prompt: "${prompt}"`);
+      console.log(`  output: ${output}`);
+      samples.push({ prompt, output });
+    }
+  } else {
+    console.log("\nSkipping post-training sample generation (--postSamples=false)");
   }
 
   if (reporter) {
-    await reporter.sendSamples(samples, trainConfig.iters);
+    if (samples.length > 0) {
+      await reporter.sendSamples(samples, trainConfig.iters);
+    }
 
     // Upload final checkpoint to remote server for inference
     const runDir = kv["runDir"] ?? `runs/${reporter.runId}`;

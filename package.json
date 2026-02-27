@@ -29,7 +29,8 @@
     "demo": "npx tsx scripts/demo.ts",
     "server": "npm run dev -w @alpha/web",
     "web": "npm run dev -w @alpha/web",
-    "tui": "npm run dev -w @alpha/tui"
+    "tui": "npm run dev -w @alpha/tui",
+    "bun:compile": "npm run build -w @alpha/helios && mkdir -p .bun-out && bun build --compile ./apps/cli/src/main.ts --outfile ./.bun-out/alpha && cp packages/helios/native/helios_vk.node ./.bun-out/helios_vk.node"
   },
   "devDependencies": {
     "turbo": "^2.4.0",
