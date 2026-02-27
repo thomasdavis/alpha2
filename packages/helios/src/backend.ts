@@ -1253,24 +1253,29 @@ export class HeliosBackend implements Backend {
     }
     if (tensors.length === 1) return this.sumOfSquares(tensors[0]);
 
-    let partials = tensors.map((t) => this.sumOfSquares(t));
+    const partials = new Array<TensorData>(tensors.length);
+    for (let i = 0; i < tensors.length; i++) {
+      partials[i] = this.sumOfSquares(tensors[i]);
+    }
 
     // Pairwise tree reduction on GPU (forced scalar GPU add) to keep one final readback.
-    while (partials.length > 1) {
-      const next: TensorData[] = [];
-      for (let i = 0; i < partials.length; i += 2) {
-        if (i + 1 < partials.length) {
+    // Reduce in place to avoid per-level array allocations.
+    let count = partials.length;
+    while (count > 1) {
+      let write = 0;
+      for (let i = 0; i < count; i += 2) {
+        if (i + 1 < count) {
           const a = partials[i];
           const b = partials[i + 1];
-          next.push(this.gpuBinaryOp(a, b, "add", true));
+          partials[write++] = this.gpuBinaryOp(a, b, "add", true);
           // Safe: release is deferred until timeline completion.
           releaseGpuBufferFor(a);
           releaseGpuBufferFor(b);
         } else {
-          next.push(partials[i]);
+          partials[write++] = partials[i];
         }
       }
-      partials = next;
+      count = write;
     }
     return partials[0];
   }
