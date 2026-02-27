@@ -645,8 +645,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       spikeThreshold > 0 ||
       useLossScaling ||
       traceEnabled ||
-      stepNum % logEvery === 0 ||
-      stepNum % 500 === 0;
+      symbioEnabled ||
+      stepNum % 500 === 0 ||
+      !!(valLoader && stepNum % evalInterval === 0);
     const _t3 = capturePhaseTimings ? performance.now() : 0;
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
@@ -1241,6 +1242,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const toksStr = (metrics.tokens_per_sec).toFixed(0);
     const gpuStr = "gpuOpsThisStep" in backend ? ` | ${(backend as any).gpuOpsThisStep} gpu_ops` : "";
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
+    const gradNormStr = needsGradNorm ? gradNorm.toFixed(3) : "n/a";
     const scaleStr = useLossScaling ? ` | scale=${lossScale}` : "";
     const shouldLogStep = metrics.step === 1 ||
       metrics.step === totalIters ||
@@ -1249,7 +1251,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (shouldLogStep) {
       console.log(
         `step ${metrics.step}/${totalIters} | loss=${lossStr}${valStr} ` +
-        `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
+        `| lr=${lr.toExponential(2)} | grad_norm=${gradNormStr}${clipStr} ` +
         `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
       );
     }
