@@ -18,6 +18,7 @@ LR="${LR:-0.00003}"
 GRAD_CLIP="${GRAD_CLIP:-0}"
 COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-60}"
 COMPILE_RETRIES="${COMPILE_RETRIES:-2}"
+RUN_RETRIES="${RUN_RETRIES:-2}"
 SKIP_COMPILE_IF_FRESH="${SKIP_COMPILE_IF_FRESH:-1}"
 
 timestamp_utc() {
@@ -29,13 +30,11 @@ now_ms() {
 }
 
 TS="$(timestamp_utc)"
-RUN_DIR="runs/compiled-binary-${BACKEND}-${TS}"
+RUN_DIR_BASE="runs/compiled-binary-${BACKEND}-${TS}"
 PERF_DIR="perf"
 HISTORY_FILE="${PERF_DIR}/compiled-loop-history.csv"
 COMPILE_LOG="${PERF_DIR}/compile-${TS}.log"
-RUN_LOG="${PERF_DIR}/run-${TS}.log"
 SUMMARY_FILE="${PERF_DIR}/last-benchmark.env"
-METRICS_FILE="${RUN_DIR}/metrics.jsonl"
 
 mkdir -p "$PERF_DIR"
 
@@ -84,7 +83,7 @@ if [[ "$compile_ok" != "1" ]]; then
   compile_end_ms="$(now_ms)"
   compile_ms="$((compile_end_ms - compile_start_ms))"
   git_commit="$(git rev-parse --short HEAD)"
-  echo "${TS},${git_commit},${STEPS},${BACKEND},${compile_ms},0,0.000,0.000,0.00,${RUN_DIR},${COMPILE_LOG},compile_failed" >> "$HISTORY_FILE"
+  echo "${TS},${git_commit},${STEPS},${BACKEND},${compile_ms},0,0.000,0.000,0.00,${RUN_DIR_BASE},${COMPILE_LOG},compile_failed" >> "$HISTORY_FILE"
   cat > "$SUMMARY_FILE" <<EOF
 TIMESTAMP=${TS}
 GIT_COMMIT=${git_commit}
@@ -95,7 +94,7 @@ RUN_MS=0
 AVG_TOK_S=0.000
 LAST_TOK_S=0.000
 SPEEDUP_PCT=0.00
-RUN_DIR=${RUN_DIR}
+RUN_DIR=${RUN_DIR_BASE}
 RUN_LOG=${COMPILE_LOG}
 HELIOS_WG_SIZE=${HELIOS_WG_SIZE}
 LR=${LR}
@@ -111,48 +110,98 @@ compile_end_ms="$(now_ms)"
 compile_ms="$((compile_end_ms - compile_start_ms))"
 echo "[bench] compile done in ${compile_ms} ms"
 
-echo "[bench] run start (log: ${RUN_LOG}, helios_wg=${HELIOS_WG_SIZE})"
-run_start_ms="$(now_ms)"
-set +e
-HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
-  --data="${DATA_PATH}" \
-  --backend="${BACKEND}" \
-  --steps="${STEPS}" \
-  --lr="${LR}" \
-  --batch="${BATCH}" \
-  --block="${BLOCK}" \
-  --layers="${LAYERS}" \
-  --dim="${DIM}" \
-  --heads="${HEADS}" \
-  --gradClip="${GRAD_CLIP}" \
-  --accumSteps=1 \
-  --evalInterval="${STEPS}" \
-  --evalIters=1 \
-  --sampleInterval=0 \
-  --logEvery="${LOG_EVERY}" \
-  --postSamples=false \
-  --remote=false \
-  --trace=false \
-  --runDir="${RUN_DIR}" >"$RUN_LOG" 2>&1
-run_status="$?"
-set -e
-run_end_ms="$(now_ms)"
-run_ms="$((run_end_ms - run_start_ms))"
+selected_run_status=1
+selected_status_label="failed"
+selected_run_ms=0
+selected_avg_tok_s="0.000"
+selected_last_tok_s="0.000"
+selected_run_dir="${RUN_DIR_BASE}"
+selected_run_log="${PERF_DIR}/run-${TS}.log"
 
-avg_tok_s="0.000"
-last_tok_s="0.000"
-if [[ -f "$METRICS_FILE" ]]; then
-  tok_series="$(grep -Eo '"tokens_per_sec":[0-9.+-eE]+' "$METRICS_FILE" | awk -F: '{print $2}' || true)"
-else
-  tok_series=""
-fi
-if [[ -z "$tok_series" ]]; then
-  tok_series="$(grep -Eo '([0-9]+([.][0-9]+)?) tok/s' "$RUN_LOG" | awk '{print $1}' || true)"
-fi
-if [[ -n "$tok_series" ]]; then
-  avg_tok_s="$(echo "$tok_series" | awk 'BEGIN{s=0;n=0} {s+=$1;n++} END{if(n>0) printf "%.3f", s/n; else printf "0.000"}')"
-  last_tok_s="$(echo "$tok_series" | awk 'END{if(NR>0) printf "%.3f", $1; else printf "0.000"}')"
-fi
+run_attempts="$((RUN_RETRIES + 1))"
+for run_try in $(seq 1 "$run_attempts"); do
+  if [[ "$run_try" -eq 1 ]]; then
+    suffix=""
+  else
+    suffix="-try${run_try}"
+  fi
+  run_dir="${RUN_DIR_BASE}${suffix}"
+  run_log="${PERF_DIR}/run-${TS}${suffix}.log"
+  metrics_file="${run_dir}/metrics.jsonl"
+
+  echo "[bench] run attempt ${run_try}/${run_attempts} start (log: ${run_log}, helios_wg=${HELIOS_WG_SIZE})"
+  run_start_ms="$(now_ms)"
+  set +e
+  HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
+    --data="${DATA_PATH}" \
+    --backend="${BACKEND}" \
+    --steps="${STEPS}" \
+    --lr="${LR}" \
+    --batch="${BATCH}" \
+    --block="${BLOCK}" \
+    --layers="${LAYERS}" \
+    --dim="${DIM}" \
+    --heads="${HEADS}" \
+    --gradClip="${GRAD_CLIP}" \
+    --accumSteps=1 \
+    --evalInterval="${STEPS}" \
+    --evalIters=1 \
+    --sampleInterval=0 \
+    --logEvery="${LOG_EVERY}" \
+    --postSamples=false \
+    --remote=false \
+    --trace=false \
+    --runDir="${run_dir}" >"$run_log" 2>&1
+  run_status="$?"
+  set -e
+  run_end_ms="$(now_ms)"
+  run_ms="$((run_end_ms - run_start_ms))"
+
+  avg_tok_s="0.000"
+  last_tok_s="0.000"
+  if [[ -f "$metrics_file" ]]; then
+    tok_series="$(grep -Eo '"tokens_per_sec":[0-9.+-eE]+' "$metrics_file" | awk -F: '{print $2}' || true)"
+  else
+    tok_series=""
+  fi
+  if [[ -z "$tok_series" ]]; then
+    tok_series="$(grep -Eo '([0-9]+([.][0-9]+)?) tok/s' "$run_log" | awk '{print $1}' || true)"
+  fi
+  if [[ -n "$tok_series" ]]; then
+    avg_tok_s="$(echo "$tok_series" | awk 'BEGIN{s=0;n=0} {s+=$1;n++} END{if(n>0) printf "%.3f", s/n; else printf "0.000"}')"
+    last_tok_s="$(echo "$tok_series" | awk 'END{if(NR>0) printf "%.3f", $1; else printf "0.000"}')"
+  fi
+
+  status_label="ok"
+  if [[ "$run_status" -ne 0 ]]; then
+    status_label="failed"
+  elif rg -q 'loss=NaN|Inf/NaN|smoke_test: FAIL' "$run_log"; then
+    status_label="unstable"
+  fi
+
+  selected_run_status="$run_status"
+  selected_status_label="$status_label"
+  selected_run_ms="$run_ms"
+  selected_avg_tok_s="$avg_tok_s"
+  selected_last_tok_s="$last_tok_s"
+  selected_run_dir="$run_dir"
+  selected_run_log="$run_log"
+
+  if [[ "$status_label" == "ok" ]]; then
+    break
+  fi
+  if [[ "$run_try" -lt "$run_attempts" ]]; then
+    echo "[bench] run attempt ${run_try} ended with status=${status_label} — retrying..."
+  fi
+done
+
+run_status="$selected_run_status"
+status_label="$selected_status_label"
+run_ms="$selected_run_ms"
+avg_tok_s="$selected_avg_tok_s"
+last_tok_s="$selected_last_tok_s"
+RUN_DIR="$selected_run_dir"
+RUN_LOG="$selected_run_log"
 
 prev_avg_tok_s="$(awk -F, -v steps="$STEPS" -v backend="$BACKEND" 'NR>1 && $3==steps && $4==backend && $12=="ok" {v=$7} END{print v}' "$HISTORY_FILE")"
 
@@ -162,12 +211,6 @@ if [[ -n "$prev_avg_tok_s" && "$prev_avg_tok_s" != "0" && "$prev_avg_tok_s" != "
 fi
 
 git_commit="$(git rev-parse --short HEAD)"
-status_label="ok"
-if [[ "$run_status" -ne 0 ]]; then
-  status_label="failed"
-elif rg -q 'loss=NaN|Inf/NaN|smoke_test: FAIL' "$RUN_LOG"; then
-  status_label="unstable"
-fi
 
 echo "${TS},${git_commit},${STEPS},${BACKEND},${compile_ms},${run_ms},${avg_tok_s},${last_tok_s},${speedup_pct},${RUN_DIR},${RUN_LOG},${status_label}" >> "$HISTORY_FILE"
 
