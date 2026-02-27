@@ -27,6 +27,14 @@ export class AdamW implements Optimizer {
   private _v = new Map<string, Float32Array>();
   private _mTd = new Map<string, TensorData>(); // TensorData wrappers for GPU residence
   private _vTd = new Map<string, TensorData>();
+  private _entryCacheRef: readonly [string, { data: TensorData; grad: TensorData | null }][] | null = null;
+  private _entrySlots: {
+    useWeightDecay: boolean;
+    m: Float32Array;
+    v: Float32Array;
+    mTd: TensorData;
+    vTd: TensorData;
+  }[] = [];
   private config: AdamWConfig;
   private backend: Backend;
   private noDecayNames: Set<string>;
@@ -46,12 +54,42 @@ export class AdamW implements Optimizer {
   stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
     const { lr, beta1, beta2, eps, weightDecay } = this.config;
     const { bc1, bc2 } = this.nextBiasCorrections(beta1, beta2);
+    if (this._entryCacheRef !== entries) this.rebuildEntryCache(entries);
+    const slots = this._entrySlots;
 
-    for (const [name, variable] of entries) {
-      const param = variable.data;
+    if (this.backend.adamwStep) {
+      for (let i = 0; i < entries.length; i++) {
+        const variable = entries[i][1];
+        const grad = variable.grad;
+        if (!grad) continue;
+        const slot = slots[i];
+        const wd = slot.useWeightDecay ? weightDecay : 0;
+        this.backend.adamwStep(variable.data, grad, slot.mTd, slot.vTd, lr, beta1, beta2, eps, wd, bc1, bc2, gradScale);
+      }
+      return;
+    }
+
+    for (let i = 0; i < entries.length; i++) {
+      const variable = entries[i][1];
       const grad = variable.grad;
       if (!grad) continue;
-      this.stepTensor(name, param, grad, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale);
+      const slot = slots[i];
+      const wd = slot.useWeightDecay ? weightDecay : 0;
+
+      const pData = variable.data.data as Float32Array;
+      const gData = grad.data as Float32Array;
+      const m = slot.m;
+      const v = slot.v;
+      const size = pData.length;
+      for (let j = 0; j < size; j++) {
+        const g = gData[j] * gradScale;
+        if (wd > 0) pData[j] -= lr * wd * pData[j];
+        m[j] = beta1 * m[j] + (1 - beta1) * g;
+        v[j] = beta2 * v[j] + (1 - beta2) * g * g;
+        const mHat = m[j] / bc1;
+        const vHat = v[j] / bc2;
+        pData[j] -= lr * mHat / (Math.sqrt(vHat) + eps);
+      }
     }
   }
 
@@ -125,6 +163,42 @@ export class AdamW implements Optimizer {
     }
   }
 
+  private rebuildEntryCache(entries: readonly [string, { data: TensorData; grad: TensorData | null }][]): void {
+    this._entryCacheRef = entries;
+    this._entrySlots = new Array(entries.length);
+    for (let i = 0; i < entries.length; i++) {
+      const [name, variable] = entries[i];
+      const param = variable.data;
+      const size = shapeSize(param.shape);
+      let m = this._m.get(name);
+      let v = this._v.get(name);
+      if (!m) {
+        m = new Float32Array(size);
+        v = new Float32Array(size);
+        this._m.set(name, m);
+        this._v.set(name, v);
+      } else if (!v) {
+        v = new Float32Array(size);
+        this._v.set(name, v);
+      }
+      let mTd = this._mTd.get(name);
+      let vTd = this._vTd.get(name);
+      if (!mTd || !vTd) {
+        mTd = { shape: param.shape, dtype: "f32", data: m };
+        vTd = { shape: param.shape, dtype: "f32", data: v };
+        this._mTd.set(name, mTd);
+        this._vTd.set(name, vTd);
+      }
+      this._entrySlots[i] = {
+        useWeightDecay: !this.noDecayNames.has(name),
+        m,
+        v,
+        mTd,
+        vTd,
+      };
+    }
+  }
+
   stateDict(): OptimizerState {
     const buffers = new Map<string, TensorData>();
     for (const [name, m] of this._m) {
@@ -143,6 +217,8 @@ export class AdamW implements Optimizer {
     this._v.clear();
     this._mTd.clear();
     this._vTd.clear();
+    this._entryCacheRef = null;
+    this._entrySlots = [];
     for (const [key, td] of state.buffers) {
       if (key.endsWith(".m")) {
         this._m.set(key.slice(0, -2), new Float32Array(td.data));
