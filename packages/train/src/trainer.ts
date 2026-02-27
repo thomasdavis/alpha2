@@ -39,7 +39,9 @@ const GPU_STATS_INTERVAL_MS = 5000; // query nvidia-smi at most every 5s
 
 async function queryGpuStats(): Promise<GpuStats | null> {
   const now = performance.now();
-  if (now - _gpuStatsLastQuery < GPU_STATS_INTERVAL_MS && _gpuStatsCache) {
+  // Rate-limit regardless of whether previous query succeeded.
+  // When nvidia-smi is unavailable, this avoids spawning a failing shell each step.
+  if (now - _gpuStatsLastQuery < GPU_STATS_INTERVAL_MS) {
     return _gpuStatsCache;
   }
   _gpuStatsLastQuery = now;
@@ -724,12 +726,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const _t4b = performance.now();
 
     if (!nanDetected) {
-      for (const [name, variable] of paramEntries) {
-        if (variable.grad) gradMap.set(name, variable.grad);
+      // Fast path: consume cached param entries directly to avoid per-step gradMap fills.
+      const stepParamEntries = (optimizer as any).stepParamEntries;
+      if (typeof stepParamEntries === "function") {
+        stepParamEntries.call(optimizer, paramEntries, effectiveGradScale);
+      } else {
+        for (const [name, variable] of paramEntries) {
+          if (variable.grad) gradMap.set(name, variable.grad);
+        }
+        optimizer.step(paramDataMap, gradMap, effectiveGradScale);
       }
-
-      // Optimizer step
-      optimizer.step(paramDataMap, gradMap, effectiveGradScale);
     }
     const _t5 = performance.now();
 

@@ -41,6 +41,20 @@ export class AdamW implements Optimizer {
     };
   }
 
+  stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
+    this._step++;
+    const { lr, beta1, beta2, eps, weightDecay } = this.config;
+    const bc1 = 1 - Math.pow(beta1, this._step);
+    const bc2 = 1 - Math.pow(beta2, this._step);
+
+    for (const [name, variable] of entries) {
+      const param = variable.data;
+      const grad = variable.grad;
+      if (!grad) continue;
+      this.stepTensor(name, param, grad, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale);
+    }
+  }
+
   step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
     this._step++;
     const { lr, beta1, beta2, eps, weightDecay } = this.config;
@@ -50,41 +64,56 @@ export class AdamW implements Optimizer {
     for (const [name, param] of params) {
       const grad = grads.get(name);
       if (!grad) continue;
+      this.stepTensor(name, param, grad, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale);
+    }
+  }
 
-      const size = shapeSize(param.shape);
+  private stepTensor(
+    name: string,
+    param: TensorData,
+    grad: TensorData,
+    lr: number,
+    beta1: number,
+    beta2: number,
+    eps: number,
+    weightDecay: number,
+    bc1: number,
+    bc2: number,
+    gradScale: number,
+  ): void {
+    const size = shapeSize(param.shape);
 
-      // Lazy init moment buffers
-      if (!this._m.has(name)) {
-        this._m.set(name, new Float32Array(size));
-        this._v.set(name, new Float32Array(size));
-      }
+    // Lazy init moment buffers
+    if (!this._m.has(name)) {
+      this._m.set(name, new Float32Array(size));
+      this._v.set(name, new Float32Array(size));
+    }
 
-      const wd = this.noDecayNames.has(name) ? 0 : weightDecay;
+    const wd = this.noDecayNames.has(name) ? 0 : weightDecay;
 
-      // Try GPU path if backend supports it
-      if (this.backend.adamwStep) {
-        const mTd = this._mTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._m.get(name)! };
-        const vTd = this._vTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._v.get(name)! };
-        if (!this._mTd.has(name)) { this._mTd.set(name, mTd); this._vTd.set(name, vTd); }
-        this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, wd, bc1, bc2, gradScale);
-        continue;
-      }
+    // Try GPU path if backend supports it
+    if (this.backend.adamwStep) {
+      const mTd = this._mTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._m.get(name)! };
+      const vTd = this._vTd.get(name) ?? { shape: param.shape, dtype: "f32" as const, data: this._v.get(name)! };
+      if (!this._mTd.has(name)) { this._mTd.set(name, mTd); this._vTd.set(name, vTd); }
+      this.backend.adamwStep(param, grad, mTd, vTd, lr, beta1, beta2, eps, wd, bc1, bc2, gradScale);
+      return;
+    }
 
-      // CPU path
-      const pData = param.data as Float32Array;
-      const gData = grad.data as Float32Array;
-      const m = this._m.get(name)!;
-      const v = this._v.get(name)!;
+    // CPU path
+    const pData = param.data as Float32Array;
+    const gData = grad.data as Float32Array;
+    const m = this._m.get(name)!;
+    const v = this._v.get(name)!;
 
-      for (let i = 0; i < size; i++) {
-        const g = gData[i] * gradScale;
-        if (wd > 0) pData[i] -= lr * wd * pData[i];
-        m[i] = beta1 * m[i] + (1 - beta1) * g;
-        v[i] = beta2 * v[i] + (1 - beta2) * g * g;
-        const mHat = m[i] / bc1;
-        const vHat = v[i] / bc2;
-        pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
-      }
+    for (let i = 0; i < size; i++) {
+      const g = gData[i] * gradScale;
+      if (wd > 0) pData[i] -= lr * wd * pData[i];
+      m[i] = beta1 * m[i] + (1 - beta1) * g;
+      v[i] = beta2 * v[i] + (1 - beta2) * g * g;
+      const mHat = m[i] / bc1;
+      const vHat = v[i] / bc2;
+      pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
     }
   }
 
@@ -127,6 +156,19 @@ export class SGD implements Optimizer {
 
   constructor(_backend: Backend, lr = 0.01) {
     this.lr = lr;
+  }
+
+  stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
+    this._step++;
+    for (const [, variable] of entries) {
+      const grad = variable.grad;
+      if (!grad) continue;
+      const pData = variable.data.data as Float32Array;
+      const gData = grad.data as Float32Array;
+      for (let i = 0; i < pData.length; i++) {
+        pData[i] -= this.lr * (gData[i] * gradScale);
+      }
+    }
   }
 
   step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {

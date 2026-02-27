@@ -7,9 +7,10 @@ Ship safe throughput improvements quickly with a tight local validation loop.
 1. Identify the current bottleneck.
 2. Implement one focused optimization.
 3. Build native + compiled binary.
-4. Run a 5-iteration local GPU smoke test with the compiled binary.
-5. If it passes, commit.
-6. Pick the next bottleneck and repeat.
+4. Run a 100-iteration local GPU benchmark with the compiled binary.
+5. Run a compiled-binary inference check with 3 fixed questions.
+6. If both pass, commit.
+7. Pick the next bottleneck and repeat.
 
 ## 1) Identify Issues
 - Use recent training logs and trace timings (`fwd`, `bwd`, `gradnorm`, `clip`, `optim`, `flush`, `gpu_ops`).
@@ -58,20 +59,38 @@ Quick smoke alternative (5 iterations) for sanity checks:
   --runDir=runs/feedback-loop
 ```
 
-Pass criteria:
-- Binary starts and runs all 5 iterations.
+Pass criteria (required):
+- `scripts/run-compiled-benchmark.sh 100` completes all 100 iterations.
 - No crash/OOM/native-load failure.
 - Loss/grad_norm values are finite.
 - No obvious performance regression in per-step timing breakdown.
 
-## 4) Commit Rules
-- Commit only after the compiled-binary GPU test passes.
+Optional smoke criteria (if you also run the 5-step command):
+- Binary starts and runs all 5 iterations.
+
+## 4) End-of-Loop Inference Check (3 Questions)
+Run a final inference sanity check from the latest checkpoint using exactly 3 prompts.
+
+```bash
+CKPT="$(ls -t runs/feedback-loop/checkpoint-*.json | head -n1)"
+./.bun-out/alpha sample --checkpoint="$CKPT" --prompt="What is 2+2?" --steps=64
+./.bun-out/alpha sample --checkpoint="$CKPT" --prompt="Finish: The quick brown fox" --steps=64
+./.bun-out/alpha sample --checkpoint="$CKPT" --prompt="Name one GPU optimization idea." --steps=64
+```
+
+Pass criteria:
+- All 3 sample commands complete successfully.
+- No crash/OOM/native-load failure.
+- Each output is non-empty and not obviously corrupted/repeating a single token forever.
+
+## 5) Commit Rules
+- Commit only after both gates pass: 100-iteration compiled benchmark + 3-question inference check.
 - Commit message must include speedup percentage vs previous benchmark run.
 - Commit message format:
   - `perf: <short optimization summary> (+X.XX% tok/s)`
 - Include what changed, why, and validation command/output summary.
 
-## 5) Next Optimization Selection
+## 6) Next Optimization Selection
 - Re-rank bottlenecks after each successful cycle.
 - Prefer wins that remove full-tensor passes, reduce dispatch count, or reduce sync/readback.
 - Keep sampling behavior unchanged during training.
