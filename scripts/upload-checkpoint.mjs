@@ -8,10 +8,14 @@ import { readFile as readFileAsync } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 
-const REMOTE_URL = process.env.ALPHA_REMOTE_URL || "ALPHA_REMOTE_URL";
+const REMOTE_URL = process.env.ALPHA_REMOTE_URL;
 const REMOTE_SECRET = process.env.ALPHA_REMOTE_SECRET;
 const CHUNK_SIZE = 1536 * 1024; // 1.5MB
 
+if (!REMOTE_URL) {
+  console.error("ALPHA_REMOTE_URL not set");
+  process.exit(1);
+}
 if (!REMOTE_SECRET) {
   console.error("ALPHA_REMOTE_SECRET not set");
   process.exit(1);

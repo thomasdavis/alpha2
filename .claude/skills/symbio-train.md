@@ -45,7 +45,7 @@ python3 scripts/gcp_train.py --action stop
 Check the training log:
 
 ```bash
-gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+gcloud compute ssh alpha-train --project=$GCP_PROJECT --zone=us-central1-b \
   --command="tail -50 ~/alpha/runs/train_*.log | tail -50"
 ```
 
@@ -53,7 +53,7 @@ gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
 
 1. **Kill the run:**
    ```bash
-   gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+   gcloud compute ssh alpha-train --project=$GCP_PROJECT --zone=us-central1-b \
      --command="pkill -9 -f 'node.*train'"
    ```
 
@@ -68,7 +68,7 @@ gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
 
 4. **Rebuild on the instance:**
    ```bash
-   gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=us-central1-b \
+   gcloud compute ssh alpha-train --project=$GCP_PROJECT --zone=us-central1-b \
      --command="cd ~/alpha && npm install --ignore-scripts && node packages/helios/native/build.mjs && npx turbo build --filter=@alpha/cli"
    ```
    Or just re-run `gcp_train.py` which syncs code and rebuilds automatically.

@@ -140,6 +140,9 @@ function sshInteractive(config: FleetConfig, host: string): Promise<number> {
 // Pattern that matches real training processes but not pgrep/bash -c wrappers
 const TRAIN_PGREP = `ps aux | grep -E '[a]lpha train|[n]ode.*train' | grep -v 'bash -c'`;
 
+// Source Nix profile for non-interactive SSH sessions (nix isn't on PATH otherwise)
+const NIX_SOURCE = `[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ] && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh;`;
+
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 function pad(s: string, n: number): string {
@@ -153,14 +156,15 @@ function red(s: string): string { return `\x1b[31m${s}\x1b[0m`; }
 function yellow(s: string): string { return `\x1b[33m${s}\x1b[0m`; }
 function cyan(s: string): string { return `\x1b[36m${s}\x1b[0m`; }
 
-// Detect whether instance has full repo or compiled binary.
-// Prefer repo (node) since bun-compiled binary may have Vulkan init issues.
+// Detect whether instance has compiled binary or full repo.
+// Prefer binary — it's always freshly deployed, and uses the system linker
+// which can find system Vulkan libs (Nix's node uses a Nix linker that can't).
 async function trainPrefix(config: FleetConfig, host: string): Promise<string> {
   const dir = config.deployDir;
-  const { code: hasRepo } = await ssh(config, host, `test -f ${dir}/apps/cli/dist/main.js`);
-  if (hasRepo === 0) return `node apps/cli/dist/main.js`;
   const { code: hasBin } = await ssh(config, host, `test -x ${dir}/alpha`);
   if (hasBin === 0) return `./alpha`;
+  const { code: hasRepo } = await ssh(config, host, `test -f ${dir}/apps/cli/dist/main.js`);
+  if (hasRepo === 0) return `node apps/cli/dist/main.js`;
   return "";
 }
 
@@ -363,31 +367,45 @@ async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string,
     console.log("  Creating remote directory...");
     await ssh(config, inst.host, `mkdir -p ${dir}`);
 
-    // Step 3: Upload binary
+    // Step 3: Upload Nix flake files
+    const flakePath = join(process.cwd(), "flake.nix");
+    const flakeLockPath = join(process.cwd(), "flake.lock");
+    if (existsSync(flakePath)) {
+      console.log("  Uploading flake.nix...");
+      await scp(config, flakePath, inst.host, `${dir}/flake.nix`);
+    }
+    if (existsSync(flakeLockPath)) {
+      console.log("  Uploading flake.lock...");
+      await scp(config, flakeLockPath, inst.host, `${dir}/flake.lock`);
+    }
+
+    // Step 4: Upload binary
     console.log("  Uploading binary...");
     await scp(config, binaryPath, inst.host, `${dir}/alpha`);
     await ssh(config, inst.host, `chmod +x ${dir}/alpha`);
 
-    // Step 4: Upload helios_vk.c and compile
+    // Step 5: Upload helios_vk.c and compile (Nix shell if available, bare gcc fallback)
     console.log("  Uploading helios_vk.c...");
     await scp(config, nativeSrc, inst.host, `${dir}/helios_vk.c`);
 
     console.log("  Compiling helios_vk.node on instance...");
-    const nodeHeaders = "$(node -p 'require(\"path\").resolve(process.execPath, \"..\", \"..\", \"include\", \"node\")')";
-    const gccCmd = `gcc -shared -fPIC -O2 -Wall -I${nodeHeaders} -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl`;
+    const nixGcc = `${NIX_SOURCE} command -v nix >/dev/null 2>&1 && nix develop path:${dir}#train --command bash -c 'gcc -shared -fPIC -O2 -Wall -I$NODE_HEADERS -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl'`;
+    const bareNodeHeaders = "$(node -p 'require(\"path\").resolve(process.execPath, \"..\", \"..\", \"include\", \"node\")')";
+    const bareGcc = `gcc -shared -fPIC -O2 -Wall -I${bareNodeHeaders} -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl`;
+    const gccCmd = `${nixGcc} || ${bareGcc}`;
     const { code: gccCode, stderr: gccErr } = await ssh(config, inst.host, gccCmd, { stream: true });
     if (gccCode !== 0) {
       console.error(red(`\n  gcc failed on ${n}. Run 'alpha fleet setup ${n}' first.`));
       continue;
     }
 
-    // Step 5: Upload .env.local if exists
+    // Step 6: Upload .env.local if exists
     if (existsSync(envPath)) {
       console.log("  Uploading .env.local...");
       await scp(config, envPath, inst.host, `${dir}/.env.local`);
     }
 
-    // Step 6: Verify
+    // Step 7: Verify
     const { stdout } = await ssh(config, inst.host, `ls -la ${dir}/alpha ${dir}/helios_vk.node`);
     console.log(green("\n  Deploy successful:"));
     console.log(dim("  " + stdout.trim().split("\n").join("\n  ")));
@@ -399,36 +417,27 @@ async function fleetSetup(config: FleetConfig, name: string): Promise<void> {
   const inst = getInstance(config, name);
   console.log(bold(`\n  Setting up ${name}`) + dim(` (${inst.host})\n`));
 
+  const dir = config.deployDir;
   const script = `
 set -e
 
-# System packages
-sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential gcc git curl wget unzip
-
-# Vulkan runtime + ICD
-sudo apt-get install -y -qq libvulkan1 vulkan-tools mesa-vulkan-drivers
-if [ -d /usr/share/nvidia ]; then
-  echo "NVIDIA drivers detected"
-  sudo apt-get install -y -qq nvidia-vulkan-common 2>/dev/null || true
+# Install Nix (Determinate Systems installer — idempotent)
+if ! command -v nix &>/dev/null; then
+  echo "Installing Nix..."
+  curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm
 fi
 
-# Node.js (v22 LTS)
-if ! command -v node &>/dev/null; then
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-  sudo apt-get install -y -qq nodejs
-fi
-echo "node: $(node --version)"
+# Source nix profile for this session
+[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ] && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+echo "nix: $(nix --version)"
 
-# Xvfb for headless Vulkan
-sudo apt-get install -y -qq xvfb
-if ! pgrep -x Xvfb >/dev/null; then
-  Xvfb :99 -screen 0 1024x768x24 &
-  echo "Started Xvfb on :99"
+# Pre-warm the Nix store with the train shell
+if [ -f ${dir}/flake.nix ]; then
+  echo "Pre-warming train shell..."
+  nix develop path:${dir}#train --command echo "ready"
+else
+  echo "Warning: flake.nix not found in ${dir}. Run 'alpha fleet deploy' first."
 fi
-
-# Verify Vulkan
-DISPLAY=:99 vulkaninfo --summary 2>/dev/null | head -20 || echo "vulkaninfo not available (may still work)"
 
 echo ""
 echo "Setup complete!"
@@ -473,9 +482,6 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
     }
   }
 
-  // Ensure Xvfb running
-  await ssh(config, inst.host, "pgrep -x Xvfb >/dev/null || (Xvfb :99 -screen 0 1024x768x24 &>/dev/null &)");
-
   // Build the training command
   const effectiveArgs = trainArgs.filter(a => a.startsWith("--") && !a.startsWith("--force"));
   if (isL4Instance) {
@@ -488,7 +494,9 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   const l4Env = isL4Instance
     ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
     : "";
-  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
+  const nixCmd = `${NIX_SOURCE} nix develop path:${dir}#train --command bash -c`;
+  const inner = `source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
+  const trainCmd = `cd ${dir} && ${nixCmd} '${inner}'`;
 
   console.log(bold(`\n  Starting training on ${name}`) + dim(` (${inst.host})\n`));
   if (isL4Instance && !kv["gpuProfile"]) {
@@ -635,13 +643,12 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
     process.exit(1);
   }
 
-  // Ensure Xvfb
-  await ssh(config, inst.host, "pgrep -x Xvfb >/dev/null || (Xvfb :99 -screen 0 1024x768x24 &>/dev/null &)");
-
   const l4Env = isL4Instance
     ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
     : "";
-  const trainCmd = `cd ${dir} && export DISPLAY=:99; source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
+  const nixCmd = `${NIX_SOURCE} nix develop path:${dir}#train --command bash -c`;
+  const inner = `source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
+  const trainCmd = `cd ${dir} && ${nixCmd} '${inner}'`;
 
   console.log(dim(`\n  ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags}\n`));
 
@@ -812,7 +819,7 @@ Commands:
   fleet status [name]          GPU, processes, disk, latest run
   fleet gpuinfo <name> [--all] Full GPU/Vulkan diagnostics, saved to docs/gpu/
   fleet deploy <name> [--all]  Build bun binary + ship + compile .node
-  fleet setup <name>           Install node, gcc, vulkan on fresh instance
+  fleet setup <name>           Install Nix + pre-warm train shell on instance
   fleet train <name> [--flags] Start detached training via nohup
   fleet resume <name> [--run=X]  Find latest checkpoint, resume training
   fleet stop <name>            Kill training process

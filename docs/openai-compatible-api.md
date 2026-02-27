@@ -454,7 +454,7 @@ The AI SDK integration (`AlphaLanguageModel` class in `engine.ts`) implements th
 
 ## Deployment
 
-Both the inference server and web dashboard run on **Railway** (project: `REDACTED_PROJECT`).
+Both the inference server and web dashboard run on **Railway**.
 
 ```bash
 # Deploy server (includes /v1/chat/completions endpoint)

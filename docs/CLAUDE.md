@@ -88,14 +88,14 @@ See **`training-runs.md`** for active/recent run tracking and GPU quota status.
 
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"
-gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=<zone> --command="<cmd>"
+gcloud compute ssh alpha-train --project=$GCP_PROJECT --zone=<zone> --command="<cmd>"
 ```
 
 Code: `~/alpha/`, logs: `~/alpha/runs/<run_dir>.log`, checkpoints: `~/alpha/runs/<run_dir>/checkpoint-<step>.json`
 
 Inference from checkpoint while training (use `cpu_ref` — GPU is locked):
 ```bash
-gcloud compute ssh alpha-train --project=GCP_PROJECT --zone=<zone> \
+gcloud compute ssh alpha-train --project=$GCP_PROJECT --zone=<zone> \
   --command="cd ~/alpha && node apps/cli/dist/main.js sample \
     --checkpoint=runs/<run_dir>/checkpoint-<step>.json \
     --backend=cpu_ref --steps=80 --temp=0.8 --topk=40 \
@@ -150,13 +150,13 @@ Training posts to Discord via `DISCORD_WEBHOOK_URL` (set in `.env.local`) when:
 - Inference samples are generated (at each checkpoint interval)
 - Training completes
 
-When the user asks to "post to Discord", always post to the **#training-and-evals** channel (ID: `1473468557680705547`, guild: `1349727923434815519`). This channel is used for training updates, run summaries, eval results, and team communication about model progress.
+When the user asks to "post to Discord", always post to the **#training-and-evals** channel. Channel and guild IDs are configured via environment variables. This channel is used for training updates, run summaries, eval results, and team communication about model progress.
 
 ## Deploy
 
 ### Railway (dashboard + API)
 
-All deployments are on **Railway** (project `REDACTED_PROJECT`).
+All deployments are on **Railway**.
 
 - **Single service** (web + API consolidated): `railway service alpha-web && railway up`
 - Training runs stored in `outputs/` locally, synced to Turso via `@alpha/db` syncFromDisk
@@ -198,7 +198,7 @@ curl -N -X POST https://ajaxdavis-alpha-v0-historic.hf.space/v1/chat/completions
 
 ## DB
 
-Turso cloud: `TURSO_DATABASE_URL`
+Turso cloud: set via `TURSO_DATABASE_URL` env var (see `.env.local`)
 
 Tables: `runs`, `metrics` (WITHOUT ROWID), `checkpoints` (WITHOUT ROWID), `domains`, `schema_version`
 

@@ -94,12 +94,11 @@ The inter-batch barrier costs roughly the throughput gained by the ring overlap,
 ## Current Training Run
 
 ```
-ssh ajax@<instance-ip>
+ssh <user>@<instance-ip>
 # Run dir: ~/alpha/runs/concordance_300m_v3/
 # Log: ~/alpha/runs/concordance_300m_v3/train.log
 # Config: dim=1024, layers=21, heads=16, block=512, batch=1, accumSteps=4
 # LR: 6e-4 (concordance domain default), warmup=1000, total iters=20000
-# Run ID: concordance_v2_20260227082149_my7x
 # sampleInterval=200 (Discord inference samples)
 ```
 

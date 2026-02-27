@@ -131,7 +131,7 @@ Step     Loss     LR          GradNorm  Tok/s   GPU%  VRAM(MB)
 - **CUDA:** 12.8
 - **RAM:** 16GB (1.6GB used)
 - **Uptime:** 2h 59m
-- **Remote metrics:** Streaming to alpha2-production.up.railway.app
+- **Remote metrics:** Streaming to ALPHA_REMOTE_URL
 
 ## Conclusion
 

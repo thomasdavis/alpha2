@@ -15,7 +15,7 @@ Active and recent training runs tracked here.
 | **Model** | 17.4M params — 384d, 8 heads, 8 layers, vocab 4000, block 512 |
 | **Training** | 50k iters, batch 20, lr 5e-5, beta2 0.95, warmup 1000, grad clip 1.0 |
 | **Backend** | helios |
-| **Remote metrics** | Yes — streaming to alpha2-production.up.railway.app |
+| **Remote metrics** | Yes — streaming to ALPHA_REMOTE_URL |
 | **Discord** | Yes |
 | **Started** | 2025-02-25 ~14:32 UTC |
 | **Status** | Provisioning |
@@ -38,7 +38,7 @@ Active and recent training runs tracked here.
 | **Checkpoint** | `runs/checkpoint-l4-historic-chat-v2-step4000.json` (local) |
 | **Diagnostic** | `L4_RUN_DIAGNOSTIC_20260225.md` |
 
-## GPU Quota (GCP_PROJECT project)
+## GPU Quota
 
 | GPU | Limit | Notes |
 |-----|-------|-------|
