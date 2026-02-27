@@ -12,7 +12,7 @@ BLOCK="${BLOCK:-64}"
 LAYERS="${LAYERS:-2}"
 DIM="${DIM:-128}"
 HEADS="${HEADS:-4}"
-LOG_EVERY="${LOG_EVERY:-1}"
+LOG_EVERY="${LOG_EVERY:-25}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -29,6 +29,7 @@ HISTORY_FILE="${PERF_DIR}/compiled-loop-history.csv"
 COMPILE_LOG="${PERF_DIR}/compile-${TS}.log"
 RUN_LOG="${PERF_DIR}/run-${TS}.log"
 SUMMARY_FILE="${PERF_DIR}/last-benchmark.env"
+METRICS_FILE="${RUN_DIR}/metrics.jsonl"
 
 mkdir -p "$PERF_DIR"
 
@@ -69,9 +70,16 @@ set -e
 run_end_ms="$(now_ms)"
 run_ms="$((run_end_ms - run_start_ms))"
 
-tok_series="$(grep -Eo '([0-9]+([.][0-9]+)?) tok/s' "$RUN_LOG" | awk '{print $1}' || true)"
 avg_tok_s="0.000"
 last_tok_s="0.000"
+if [[ -f "$METRICS_FILE" ]]; then
+  tok_series="$(grep -Eo '"tokens_per_sec":[0-9.+-eE]+' "$METRICS_FILE" | awk -F: '{print $2}' || true)"
+else
+  tok_series=""
+fi
+if [[ -z "$tok_series" ]]; then
+  tok_series="$(grep -Eo '([0-9]+([.][0-9]+)?) tok/s' "$RUN_LOG" | awk '{print $1}' || true)"
+fi
 if [[ -n "$tok_series" ]]; then
   avg_tok_s="$(echo "$tok_series" | awk 'BEGIN{s=0;n=0} {s+=$1;n++} END{if(n>0) printf "%.3f", s/n; else printf "0.000"}')"
   last_tok_s="$(echo "$tok_series" | awk 'END{if(NR>0) printf "%.3f", $1; else printf "0.000"}')"
