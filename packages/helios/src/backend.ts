@@ -39,6 +39,7 @@ import { getKernelSpirv } from "./kernels.js";
 const DEFAULT_MIN_GPU_SIZE = 4096;
 const COOP_PAD_MAX_OVERHEAD = 0.20; // max tolerated element overhead from coop padding
 const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core win can amortize padding
+const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
 
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
@@ -2149,6 +2150,15 @@ export class HeliosBackend implements Backend {
     // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
     const outM = K;
     const loopK = M;
+
+    // Generic tensor-core route for large transposed-A GEMMs:
+    // A^T @ B == (transpose(A)) @ (transpose(B))^T.
+    // This allows reuse of the cooperative matmul-transposed path.
+    if (this._coopMatSupported && outM * N * loopK >= COOP_TRANSPOSED_A_MIN_FLOPS) {
+      const aT = this.transpose(a, aNdim - 2, aNdim - 1);               // [..., K, M]
+      const bT = this.transpose(b, b.shape.length - 2, b.shape.length - 1); // [..., N, M]
+      return this.gpuMatmulTransposed(aT, bT, outM, N, loopK);
+    }
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
