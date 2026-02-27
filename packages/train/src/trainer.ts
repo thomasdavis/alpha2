@@ -646,8 +646,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       useLossScaling ||
       traceEnabled ||
       symbioEnabled ||
-      stepNum % 500 === 0 ||
-      !!(valLoader && stepNum % evalInterval === 0);
+      stepNum % 500 === 0;
     const _t3 = capturePhaseTimings ? performance.now() : 0;
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
@@ -1231,7 +1230,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       console.log(
         `  [diag] eval step ${stepNum}: loss=${lossVal.toFixed(4)}, ` +
         `val_loss=${metrics.valLoss.toFixed(4)}, ` +
-        `grad_norm=${gradNorm.toFixed(2)}, ` +
+        `grad_norm=${needsGradNorm ? gradNorm.toFixed(2) : "n/a"}, ` +
         `clip_pct=${((clippedSteps / stepNum) * 100).toFixed(1)}%`
       );
     }

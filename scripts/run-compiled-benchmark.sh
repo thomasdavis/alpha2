@@ -54,7 +54,7 @@ if [[ "$SKIP_COMPILE_IF_FRESH" == "1" && -x ".bun-out/alpha" && -f ".bun-out/hel
     find apps/cli/src packages scripts \
       -type f \
       \( -name '*.ts' -o -name '*.js' -o -name '*.mjs' -o -name '*.c' -o -name '*.h' \) \
-      -printf '%T@\n' | sort -nr | head -n1
+      -printf '%T@\n' | awk '($1 > max) { max = $1 } END { if (max == "") max = 0; print max }'
   )"
   alpha_mtime="$(stat -c '%Y' .bun-out/alpha 2>/dev/null || echo 0)"
   native_mtime="$(stat -c '%Y' .bun-out/helios_vk.node 2>/dev/null || echo 0)"
@@ -154,7 +154,7 @@ if [[ -n "$tok_series" ]]; then
   last_tok_s="$(echo "$tok_series" | awk 'END{if(NR>0) printf "%.3f", $1; else printf "0.000"}')"
 fi
 
-prev_avg_tok_s="$(awk -F, 'NR>1 && $12=="ok" {v=$7} END{print v}' "$HISTORY_FILE")"
+prev_avg_tok_s="$(awk -F, -v steps="$STEPS" -v backend="$BACKEND" 'NR>1 && $3==steps && $4==backend && $12=="ok" {v=$7} END{print v}' "$HISTORY_FILE")"
 
 speedup_pct="0.00"
 if [[ -n "$prev_avg_tok_s" && "$prev_avg_tok_s" != "0" && "$prev_avg_tok_s" != "0.000" ]]; then
