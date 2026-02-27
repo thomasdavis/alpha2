@@ -398,8 +398,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : null;
   // Stable parameter traversal for hot loops; refresh whenever `params` is replaced.
   let paramEntries: ReturnType<typeof collectParamEntries> = [];
+  let paramSizes: number[] = [];
   const refreshParamCaches = (): void => {
     paramEntries = collectParamEntries(params);
+    paramSizes = new Array(paramEntries.length);
+    for (let i = 0; i < paramEntries.length; i++) {
+      paramSizes[i] = shapeSize(paramEntries[i][1].data.shape);
+    }
     // Map-based optimizer path only.
     if (!optimizerStepParamEntries) {
       // Parameter data references are stable between switches; rebuild only on refresh.
@@ -724,9 +729,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           topGradEntries[minIdx] = { grad, size };
         }
       };
-      for (const [, variable] of paramEntries) {
+      for (let i = 0; i < paramEntries.length; i++) {
+        const variable = paramEntries[i][1];
         if (variable.grad) {
-          pushTopGrad(variable.grad, shapeSize(variable.grad.shape));
+          pushTopGrad(variable.grad, paramSizes[i]);
         }
       }
       topGradEntries.sort((a, b) => b.size - a.size);
