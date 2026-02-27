@@ -378,14 +378,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   const paramDataMap = new Map<string, TensorData>();
   const gradMap = new Map<string, TensorData>();
+  const optimizerStepParamEntries: ((entries: ReturnType<typeof collectParamEntries>, gradScale?: number) => void) | null =
+    typeof (optimizer as any).stepParamEntries === "function"
+      ? (optimizer as any).stepParamEntries.bind(optimizer)
+      : null;
   // Stable parameter traversal for hot loops; refresh whenever `params` is replaced.
   let paramEntries: ReturnType<typeof collectParamEntries> = [];
   const refreshParamCaches = (): void => {
     paramEntries = collectParamEntries(params);
-    // Parameter data references are stable between switches; rebuild only on refresh.
-    paramDataMap.clear();
-    for (const [name, variable] of paramEntries) {
-      paramDataMap.set(name, variable.data);
+    // Map-based optimizer path only.
+    if (!optimizerStepParamEntries) {
+      // Parameter data references are stable between switches; rebuild only on refresh.
+      paramDataMap.clear();
+      for (const [name, variable] of paramEntries) {
+        paramDataMap.set(name, variable.data);
+      }
     }
   };
   refreshParamCaches();
@@ -513,8 +520,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const _t3 = performance.now();
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
-    // Reuse maps across steps to reduce JS allocation churn.
-    gradMap.clear();
 
     let perLayerGradNorms: Record<string, number> = {};
 
@@ -726,11 +731,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const _t4b = performance.now();
 
     if (!nanDetected) {
-      // Fast path: consume cached param entries directly to avoid per-step gradMap fills.
-      const stepParamEntries = (optimizer as any).stepParamEntries;
-      if (typeof stepParamEntries === "function") {
-        stepParamEntries.call(optimizer, paramEntries, effectiveGradScale);
+      // Fast path: consume cached param entries directly.
+      if (optimizerStepParamEntries) {
+        optimizerStepParamEntries(paramEntries, effectiveGradScale);
       } else {
+        // Map fallback path for optimizers that don't support entry stepping.
+        gradMap.clear();
         for (const [name, variable] of paramEntries) {
           if (variable.grad) gradMap.set(name, variable.grad);
         }
@@ -789,8 +795,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
 
-    // GPU memory diagnostics (every 5 steps, every step for first 20)
-    if ("gpuMemStats" in backend && ((step + 1) <= 20 || (step + 1) % 5 === 0)) {
+    // GPU memory diagnostics:
+    // - trace mode: detailed cadence for debugging
+    // - non-trace mode: sparse snapshots to minimize training-loop overhead
+    const shouldLogGpuMem = "gpuMemStats" in backend && (
+      trainConfig.trace
+        ? ((step + 1) <= 20 || (step + 1) % 5 === 0)
+        : ((step + 1) === 1 || (step + 1) === trainConfig.iters || (step + 1) % 25 === 0)
+    );
+    if (shouldLogGpuMem) {
       const stats = (backend as any).gpuMemStats();
       const breakdown = "poolBreakdown" in backend ? ` | ${(backend as any).poolBreakdown(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
