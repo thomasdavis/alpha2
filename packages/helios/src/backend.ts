@@ -37,6 +37,8 @@ import { getKernelSpirv } from "./kernels.js";
  * For element-wise ops on modern GPUs, crossover is ~1K-4K elements.
  */
 const DEFAULT_MIN_GPU_SIZE = 4096;
+const COOP_PAD_MAX_OVERHEAD = 0.20; // max tolerated element overhead from coop padding
+const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core win can amortize padding
 
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
@@ -144,6 +146,10 @@ function multiToFlat(coords: number[], strides: number[]): number {
   let idx = 0;
   for (let d = 0; d < coords.length; d++) idx += coords[d] * strides[d];
   return idx;
+}
+
+function alignUp(x: number, multiple: number): number {
+  return Math.ceil(x / multiple) * multiple;
 }
 
 // ── Auto-tune workgroup size ────────────────────────────────────────────────
@@ -1969,6 +1975,10 @@ export class HeliosBackend implements Backend {
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, false);
     }
+    // For large 2D GEMMs, opportunistically pad to coop tile sizes so we can still
+    // use tensor cores on non-aligned shapes (generic, non-device-specific path).
+    const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, false, batchSize);
+    if (coopPadded) return coopPadded;
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
@@ -2075,6 +2085,8 @@ export class HeliosBackend implements Backend {
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, true);
     }
+    const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, true, batchSize);
+    if (coopPadded) return coopPadded;
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
@@ -2223,6 +2235,40 @@ export class HeliosBackend implements Backend {
     });
 
     return graphLazyTensor(vk, [...aBatch, M, N], region);
+  }
+
+  private tryPaddedCoopMatmul2D(
+    vk: NativeAddon,
+    a: TensorData,
+    b: TensorData,
+    M: number,
+    N: number,
+    K: number,
+    transposed: boolean,
+    batchSize: number,
+  ): TensorData | null {
+    if (!this._coopMatSupported) return null;
+    if (batchSize !== 1) return null;
+    if (a.shape.length !== 2 || b.shape.length !== 2) return null;
+    if (a.dtype !== "f32" || b.dtype !== "f32") return null;
+    if (M * N * K < COOP_PAD_MIN_FLOPS) return null;
+
+    const alignedM = alignUp(M, this._coopM);
+    const alignedN = alignUp(N, this._coopN);
+    const alignedK = alignUp(K, this._coopK);
+    if (alignedM === M && alignedN === N && alignedK === K) return null;
+
+    const baseElems = M * K + K * N + M * N;
+    const paddedElems = alignedM * alignedK + alignedK * alignedN + alignedM * alignedN;
+    const overhead = (paddedElems - baseElems) / baseElems;
+    if (overhead > COOP_PAD_MAX_OVERHEAD) return null;
+
+    const paddedA = this.scatterSlice(a, [alignedM, alignedK], [0, 0], [M, K]);
+    const paddedB = transposed
+      ? this.scatterSlice(b, [alignedN, alignedK], [0, 0], [N, K])
+      : this.scatterSlice(b, [alignedK, alignedN], [0, 0], [K, N]);
+    const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [], 1, transposed);
+    return this.slice(paddedOut, [0, 0], [M, N]);
   }
 
   // ── In-place add: A += B on GPU ────────────────────────────────────────────

@@ -109,3 +109,5 @@ timestamp,git_commit,steps,backend,compile_ms,run_ms,avg_tok_s,last_tok_s,speedu
 20260227T120905Z,33a331e,100,helios,1529,7415,2656.792,2952.445,18.76,runs/compiled-binary-helios-20260227T120905Z,perf/run-20260227T120905Z.log,unstable
 20260227T120923Z,33a331e,100,helios,1449,7678,2456.485,2021.353,9.81,runs/compiled-binary-helios-20260227T120923Z,perf/run-20260227T120923Z.log,unstable
 20260227T120945Z,33a331e,100,helios,1504,8414,2208.946,2570.076,-1.26,runs/compiled-binary-helios-20260227T120945Z,perf/run-20260227T120945Z.log,ok
+20260227T121625Z,b7988f1,100,helios,1646,8568,2185.327,1442.197,-1.07,runs/compiled-binary-helios-20260227T121625Z,perf/run-20260227T121625Z.log,unstable
+20260227T121717Z,b7988f1,100,helios,1431,7969,2457.343,2318.261,11.25,runs/compiled-binary-helios-20260227T121717Z,perf/run-20260227T121717Z.log,unstable

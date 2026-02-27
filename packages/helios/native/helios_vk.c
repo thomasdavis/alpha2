@@ -1199,19 +1199,37 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
           props[i].pNext = NULL;
         }
         fp_getCoopMatProps(physDevice, &propCount, props);
-        // Find a combination with f16 A/B, f32 C/Result, subgroup scope
+        // Pick the best available f16x f16 -> f32 cooperative shape.
+        // Some drivers expose multiple shapes; first-match ordering is not
+        // guaranteed to be optimal.
+        uint64_t bestScore = 0;
+        int32_t bestIdx = -1;
         for (uint32_t i = 0; i < propCount; i++) {
-          if (props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-              props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-              props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-              props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
-              props[i].scope == VK_SCOPE_SUBGROUP_KHR) {
-            coopMatSupported = 1;
-            coopMatM = props[i].MSize;
-            coopMatN = props[i].NSize;
-            coopMatK = props[i].KSize;
-            break;
+          if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+              props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
+              props[i].CType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
+              props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
+              props[i].scope != VK_SCOPE_SUBGROUP_KHR) {
+            continue;
           }
+
+          uint64_t m = props[i].MSize;
+          uint64_t n = props[i].NSize;
+          uint64_t k = props[i].KSize;
+          uint64_t score = m * n * k;
+          if (bestIdx < 0 ||
+              score > bestScore ||
+              (score == bestScore &&
+               (m * n > ((uint64_t)props[bestIdx].MSize * (uint64_t)props[bestIdx].NSize)))) {
+            bestIdx = (int32_t)i;
+            bestScore = score;
+          }
+        }
+        if (bestIdx >= 0) {
+          coopMatSupported = 1;
+          coopMatM = props[bestIdx].MSize;
+          coopMatN = props[bestIdx].NSize;
+          coopMatK = props[bestIdx].KSize;
         }
         free(props);
       }
