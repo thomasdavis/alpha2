@@ -623,9 +623,11 @@ class ComputeGraph {
 
         // Push constants (raw bytes from Float32Array)
         if (op.pushSize > 0) {
-          const pushBytes = new Uint8Array(op.push.buffer, op.push.byteOffset, op.pushSize);
-          new Uint8Array(packed, offset, op.pushSize).set(pushBytes);
-          offset += op.pushSize;
+          const words = op.pushSize >>> 2;
+          for (let i = 0; i < words; i++) {
+            view.setFloat32(offset, op.push[i], true);
+            offset += 4;
+          }
         }
       }
 
