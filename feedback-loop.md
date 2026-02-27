@@ -9,8 +9,9 @@ Ship safe throughput improvements quickly with a tight local validation loop.
 3. Build native + compiled binary.
 4. Run a 100-iteration local GPU benchmark with the compiled binary.
 5. Run a compiled-binary inference check with 3 fixed questions.
-6. If both pass, commit.
-7. Pick the next bottleneck and repeat.
+6. Record cooperative-matmul hit telemetry (`coop_matmul`) from the run log.
+7. If both pass, commit.
+8. Pick the next bottleneck and repeat.
 
 ## 1) Identify Issues
 - Use recent training logs and trace timings (`fwd`, `bwd`, `gradnorm`, `clip`, `optim`, `flush`, `gpu_ops`).
@@ -36,6 +37,7 @@ Outputs:
 - `perf/compiled-loop-history.csv` (benchmark history)
 - `perf/last-benchmark.env` (latest metrics for commit message)
 - `perf/run-<timestamp>.log` (full run log)
+- `coop_matmul` line in run log (direct/padded/rewrite coop dispatch counts + hit rate)
 
 Quick smoke alternative (5 iterations) for sanity checks:
 
@@ -64,6 +66,7 @@ Pass criteria (required):
 - No crash/OOM/native-load failure.
 - Loss/grad_norm values are finite.
 - No obvious performance regression in per-step timing breakdown.
+- `coop_matmul` telemetry is present and parseable in the run log.
 
 Optional smoke criteria (if you also run the 5-step command):
 - Binary starts and runs all 5 iterations.

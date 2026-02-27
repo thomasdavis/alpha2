@@ -17,18 +17,28 @@ Not fully utilizing L4 tensor-core/cooperative-matrix capability before this loo
 2. Improved cooperative tile selection in native Vulkan probe (`packages/helios/native/helios_vk.c`):
    - Scans all valid `f16 x f16 -> f32` subgroup cooperative properties.
    - Picks best candidate by highest `M*N*K` score (tie-break by larger `M*N`), instead of first-match.
+3. Added batched padded-coop matmul support:
+   - Extended GPU `slice`/`scatterSlice` with 3D kernels (`slice_3d`, `scatter_slice_3d`) for on-GPU batched pad/crop.
+   - Added batched coop padding path in matmul dispatch (`padded_batched` accounting).
+4. Added direct cooperative path for `matmulTransposedA`:
+   - New coop kernel variants: `transposed_a` and `transposed_a_batched`.
+   - Dispatch now uses direct coop for aligned dimensions and keeps rewrite path as fallback.
+5. Added coop-hit telemetry:
+   - `HeliosBackend.getMatmulCoopStats()` reports direct/padded/rewrite dispatch counts and hit rate.
+   - CLI train prints `coop_matmul: ...` summary after training.
 
 ## Validation
 - Build: `npm run build -w @alpha/helios`
 - Benchmark: `scripts/run-compiled-benchmark.sh 100`
 - Inference sanity: 3 compiled-binary prompts completed successfully.
 
-Latest benchmark snapshot in this loop:
-- avg tok/s: `2457.343`
-- speedup vs previous stable benchmark: `+11.25%`
+Latest benchmark snapshots in this loop series:
+- `+11.25%` (`2cfbe7d`) — padded coop coverage expansion.
+- `+0.82%` (`88acdb5`) — transposed-A coop rewrite route.
+- `+4.17%` (`6c518ea`) — rewrite gating by viable coop coverage.
+- `+4.96%` (current working tree) — batched coop padding + direct transposed-A coop + telemetry.
 
 ## Remaining Gaps (Next Loops)
-1. No padded coop path for batched matmul (currently 2D only).
-2. No cooperative path yet for `matmulTransposedA` kernel family.
-3. Tile-size policy for non-coop matmul is static (`16`/`32` threshold by `M*N`) and not yet shape+device auto-tuned.
-4. No runtime telemetry for “coop hit rate” per step; adding this would quantify tensor-core usage directly.
+1. Benchmarks in this workspace are on Intel iGPU; L4-specific gains still need direct measurement on GCloud L4.
+2. Tile-size policy for non-coop matmul is static (`16`/`32` threshold by `M*N`) and not yet shape+device auto-tuned.
+3. No per-op trace-level attribution for coop hit/miss reasons yet (only aggregate counters).

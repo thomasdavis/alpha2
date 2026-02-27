@@ -105,9 +105,9 @@ import {
 } from "./attention.js";
 
 // Copy / slice kernels
-export { kernelSlice2D, kernelScatterSlice2D } from "./copy.js";
+export { kernelSlice2D, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
 
-import { kernelSlice2D, kernelScatterSlice2D } from "./copy.js";
+import { kernelSlice2D, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
 
 // F16 storage variant kernels + cast kernels
 export { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
@@ -118,11 +118,13 @@ import { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16T
 export {
   kernelCoopMatmulBasic, kernelCoopMatmulBatched,
   kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
+  kernelCoopMatmulTransposedA, kernelCoopMatmulTransposedABatched,
 } from "./matmul-coop.js";
 
 import {
   kernelCoopMatmulBasic, kernelCoopMatmulBatched,
   kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
+  kernelCoopMatmulTransposedA, kernelCoopMatmulTransposedABatched,
 } from "./matmul-coop.js";
 
 // Validation kernels
@@ -211,6 +213,8 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
     case "slice_2d": spirv = kernelSlice2D(wgSize); break;
     case "scatter_slice_2d": spirv = kernelScatterSlice2D(wgSize); break;
+    case "slice_3d": spirv = kernelSlice3D(wgSize); break;
+    case "scatter_slice_3d": spirv = kernelScatterSlice3D(wgSize); break;
     case "dropout_mask": spirv = kernelDropoutMask(wgSize); break;
     case "softcap_forward": spirv = kernelSoftCapForward(wgSize); break;
     case "softcap_backward": spirv = kernelSoftCapBackward(wgSize); break;
@@ -243,7 +247,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
       }
       // Cooperative matrix matmul — name encodes: matmul_coop_{variant}_{M}_{N}_{K}
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched)_(\d+)_(\d+)_(\d+)$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)$/);
         if (coopMatch) {
           const [, variant, mS, nS, kS] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
@@ -252,6 +256,8 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
             case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK); break;
             case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK); break;
             case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK); break;
+            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK); break;
+            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK); break;
           }
         }
       }

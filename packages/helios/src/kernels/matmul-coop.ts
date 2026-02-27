@@ -29,14 +29,16 @@ import {
  * @param coopN - Cooperative matrix N tile size (cols of C)
  * @param coopK - Cooperative matrix K tile size (inner dimension)
  * @param batched - If true, dispatch z = batch index
- * @param transposed - If true, B is stored as [N,K] (row-major for each row of B^T)
+ * @param transposedB - If true, B is stored as [N,K] (row-major for each row of B^T)
+ * @param transposedA - If true, A is stored as [K,M] while logical multiply uses A^T view
  */
 function buildCoopMatmul(
   coopM: number,
   coopN: number,
   coopK: number,
   batched: boolean,
-  transposed: boolean,
+  transposedB: boolean,
+  transposedA: boolean,
 ): Uint32Array {
   const b = new SpirVBuilder();
 
@@ -219,7 +221,7 @@ function buildCoopMatmul(
   b.emit(Op.IMul, [tU32, MN, M, N]);
 
   let NK: number | undefined;
-  if (!transposed) {
+  if (!transposedB) {
     NK = b.id(); // K * N for B stride
     b.emit(Op.IMul, [tU32, NK, K, N]);
   }
@@ -230,7 +232,7 @@ function buildCoopMatmul(
     batchOffsetA = b.id();
     b.emit(Op.IMul, [tU32, batchOffsetA, batchIdx!, MK]);
     batchOffsetB = b.id();
-    if (transposed) {
+    if (transposedB) {
       // B is [N, K], batch stride is N*K
       const NKb = b.id();
       b.emit(Op.IMul, [tU32, NKb, N, K]);
@@ -304,15 +306,15 @@ function buildCoopMatmul(
       b.emit(Op.Label, [labelLoad]);
 
       emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, pc,
-        elemOffset, kVal, globalRowBase, N, K, tileA,
-        const0u, coopK, batchOffsetA, batched);
+        elemOffset, kVal, globalRowBase, M, K, tileA,
+        const0u, coopK, batchOffsetA, batched, transposedA);
 
       b.emit(Op.Branch, [labelSkip]);
       b.emit(Op.Label, [labelSkip]);
     } else {
       emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, pc,
-        elemOffset, kVal, globalRowBase, N, K, tileA,
-        const0u, coopK, batchOffsetA, batched);
+        elemOffset, kVal, globalRowBase, M, K, tileA,
+        const0u, coopK, batchOffsetA, batched, transposedA);
     }
   }
 
@@ -343,14 +345,14 @@ function buildCoopMatmul(
 
       emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, pc,
         elemOffset, kVal, globalColBase, N, K, tileB,
-        const0u, coopN, batchOffsetB, batched, transposed);
+        const0u, coopN, batchOffsetB, batched, transposedB);
 
       b.emit(Op.Branch, [labelSkip]);
       b.emit(Op.Label, [labelSkip]);
     } else {
       emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, pc,
         elemOffset, kVal, globalColBase, N, K, tileB,
-        const0u, coopN, batchOffsetB, batched, transposed);
+        const0u, coopN, batchOffsetB, batched, transposedB);
     }
   }
 
@@ -428,6 +430,7 @@ function buildCoopMatmul(
 /**
  * Emit code to load one element from A[global] into shared tileA[offset].
  * A is row-major [M, K], element at (row, col) = A[row * K + col].
+ * For transposedA path, A is interpreted as [K, M] and loaded as A[col, row].
  * Tile element offset maps to (localRow, localCol) within the coopM x coopK tile.
  */
 function emitLoadTileA(
@@ -438,10 +441,11 @@ function emitLoadTileA(
   elemOffset: number,
   kVal: number,
   globalRowBase: number,
-  N: number, K: number,
+  M: number, K: number,
   tileA: number,
   const0u: number, coopK: number,
   batchOffsetA: number | undefined, batched: boolean,
+  transposedA: boolean,
 ): void {
   const constCoopK = b.id();
   b.constant(tU32, constCoopK, coopK);
@@ -460,11 +464,21 @@ function emitLoadTileA(
   const globalCol = b.id();
   b.emit(Op.IAdd, [tU32, globalCol, kVal, localCol]);
 
-  // A index = globalRow * K + globalCol
-  const rowTimesK = b.id();
-  b.emit(Op.IMul, [tU32, rowTimesK, globalRow, K]);
-  let aIdx = b.id();
-  b.emit(Op.IAdd, [tU32, aIdx, rowTimesK, globalCol]);
+  // A index:
+  //   regular:     A[globalRow, globalCol] => globalRow * K + globalCol
+  //   transposedA: A[globalCol, globalRow] => globalCol * M + globalRow
+  let aIdx: number;
+  if (transposedA) {
+    const colTimesM = b.id();
+    b.emit(Op.IMul, [tU32, colTimesM, globalCol, M]);
+    aIdx = b.id();
+    b.emit(Op.IAdd, [tU32, aIdx, colTimesM, globalRow]);
+  } else {
+    const rowTimesK = b.id();
+    b.emit(Op.IMul, [tU32, rowTimesK, globalRow, K]);
+    aIdx = b.id();
+    b.emit(Op.IAdd, [tU32, aIdx, rowTimesK, globalCol]);
+  }
 
   if (batched) {
     const aIdxBatch = b.id();
@@ -565,17 +579,25 @@ function emitLoadTileB(
 // ── Exported kernel generators ──────────────────────────────────────────────
 
 export function kernelCoopMatmulBasic(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false);
 }
 
 export function kernelCoopMatmulBatched(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, false);
 }
 
 export function kernelCoopMatmulTransposed(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true);
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false);
 }
 
 export function kernelCoopMatmulTransposedBatched(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, true);
+  return buildCoopMatmul(coopM, coopN, coopK, true, true, false);
+}
+
+export function kernelCoopMatmulTransposedA(coopM: number, coopN: number, coopK: number): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true);
+}
+
+export function kernelCoopMatmulTransposedABatched(coopM: number, coopN: number, coopK: number): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, true);
 }

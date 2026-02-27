@@ -721,6 +721,16 @@ export interface GpuDeviceInfo {
   minGpuSize: number;
 }
 
+export interface CoopMatmulStats {
+  totalMatmulDispatches: number;
+  coopDispatches: number;
+  coopDirectDispatches: number;
+  coopPadded2DDispatches: number;
+  coopPaddedBatchedDispatches: number;
+  coopTransposedARewriteDispatches: number;
+  coopHitRate: number;
+}
+
 export class HeliosBackend implements Backend {
   readonly name = "helios";
   private readonly rng = new SeededRng(42);
@@ -734,6 +744,12 @@ export class HeliosBackend implements Backend {
   private _coopM = 0;
   private _coopN = 0;
   private _coopK = 0;
+  private _matmulDispatches = 0;
+  private _coopDispatches = 0;
+  private _coopDirectDispatches = 0;
+  private _coopPadded2DDispatches = 0;
+  private _coopPaddedBatchedDispatches = 0;
+  private _coopTransposedARewriteDispatches = 0;
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
@@ -858,6 +874,19 @@ export class HeliosBackend implements Backend {
       hasAsyncTransfer: this._hasAsyncTransfer,
       workgroupSize: WG_SIZE,
       minGpuSize: this._minGpuSize,
+    };
+  }
+
+  getMatmulCoopStats(): CoopMatmulStats {
+    const hit = this._matmulDispatches > 0 ? this._coopDispatches / this._matmulDispatches : 0;
+    return {
+      totalMatmulDispatches: this._matmulDispatches,
+      coopDispatches: this._coopDispatches,
+      coopDirectDispatches: this._coopDirectDispatches,
+      coopPadded2DDispatches: this._coopPadded2DDispatches,
+      coopPaddedBatchedDispatches: this._coopPaddedBatchedDispatches,
+      coopTransposedARewriteDispatches: this._coopTransposedARewriteDispatches,
+      coopHitRate: hit,
     };
   }
 
@@ -1965,6 +1994,7 @@ export class HeliosBackend implements Backend {
 
   private gpuMatmul(a: TensorData, b: TensorData): TensorData {
     const vk = this.init();
+    this._matmulDispatches++;
     const aNdim = a.shape.length, bNdim = b.shape.length;
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
     const aBatch = a.shape.slice(0, aNdim - 2);
@@ -1974,12 +2004,24 @@ export class HeliosBackend implements Backend {
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (this._coopMatSupported &&
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+      this._coopDispatches++;
+      this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, false);
+    }
+    const coopPaddedBatched = this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, false);
+    if (coopPaddedBatched) {
+      this._coopDispatches++;
+      this._coopPaddedBatchedDispatches++;
+      return coopPaddedBatched;
     }
     // For large 2D GEMMs, opportunistically pad to coop tile sizes so we can still
     // use tensor cores on non-aligned shapes (generic, non-device-specific path).
     const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, false, batchSize);
-    if (coopPadded) return coopPadded;
+    if (coopPadded) {
+      this._coopDispatches++;
+      this._coopPadded2DDispatches++;
+      return coopPadded;
+    }
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
@@ -2076,6 +2118,7 @@ export class HeliosBackend implements Backend {
 
   private gpuMatmulTransposed(a: TensorData, b: TensorData, M: number, N: number, K: number): TensorData {
     const vk = this.init();
+    this._matmulDispatches++;
     const aNdim = a.shape.length;
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
@@ -2084,10 +2127,22 @@ export class HeliosBackend implements Backend {
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (this._coopMatSupported &&
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+      this._coopDispatches++;
+      this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, true);
     }
+    const coopPaddedBatched = this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, true);
+    if (coopPaddedBatched) {
+      this._coopDispatches++;
+      this._coopPaddedBatchedDispatches++;
+      return coopPaddedBatched;
+    }
     const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, true, batchSize);
-    if (coopPadded) return coopPadded;
+    if (coopPadded) {
+      this._coopDispatches++;
+      this._coopPadded2DDispatches++;
+      return coopPadded;
+    }
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
@@ -2142,6 +2197,7 @@ export class HeliosBackend implements Backend {
 
   private gpuMatmulTransposedA(a: TensorData, b: TensorData, M: number, N: number, K: number): TensorData {
     const vk = this.init();
+    this._matmulDispatches++;
     const aNdim = a.shape.length;
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
@@ -2151,14 +2207,25 @@ export class HeliosBackend implements Backend {
     const outM = K;
     const loopK = M;
 
+    // Direct cooperative path for aligned transposed-A GEMMs.
+    if (this._coopMatSupported &&
+        outM % this._coopM === 0 && N % this._coopN === 0 && loopK % this._coopK === 0) {
+      this._coopDispatches++;
+      this._coopDirectDispatches++;
+      return this.gpuMatmulCoopTransposedA(vk, a, b, outM, N, loopK, aBatch, batchSize);
+    }
+
     // Generic tensor-core route for large transposed-A GEMMs:
     // A^T @ B == (transpose(A)) @ (transpose(B))^T.
     // This allows reuse of the cooperative matmul-transposed path.
     if (this._coopMatSupported &&
         outM * N * loopK >= COOP_TRANSPOSED_A_MIN_FLOPS &&
         this.canUseCoopWithOptionalPadding(outM, N, loopK)) {
+      this._coopTransposedARewriteDispatches++;
       const aT = this.transpose(a, aNdim - 2, aNdim - 1);               // [..., K, M]
       const bT = this.transpose(b, b.shape.length - 2, b.shape.length - 1); // [..., N, M]
+      // gpuMatmulTransposed() maintains its own matmul dispatch accounting.
+      this._matmulDispatches--;
       return this.gpuMatmulTransposed(aT, bT, outM, N, loopK);
     }
 
@@ -2249,6 +2316,37 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, [...aBatch, M, N], region);
   }
 
+  private gpuMatmulCoopTransposedA(
+    vk: NativeAddon, a: TensorData, b: TensorData,
+    outM: number, N: number, loopK: number,
+    aBatch: number[], batchSize: number,
+  ): TensorData {
+    const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
+    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    const pipeline = getPipeline(vk, kernelName, 3, 16);
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const outBytes = batchSize * outM * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const push = new Float32Array([outM, N, loopK, 0]);
+    const gX = Math.ceil(N / this._coopN);
+    const gY = Math.ceil(outM / this._coopM);
+
+    graph.record({
+      kind: "matmul",
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [bufA, bufB],
+      outputRegion: region,
+      groups: [gX, gY, batchSize],
+      push,
+      pushSize: 16,
+      shape: [...aBatch, outM, N],
+    });
+
+    return graphLazyTensor(vk, [...aBatch, outM, N], region);
+  }
+
   private tryPaddedCoopMatmul2D(
     vk: NativeAddon,
     a: TensorData,
@@ -2282,6 +2380,43 @@ export class HeliosBackend implements Backend {
       : this.scatterSlice(b, [alignedK, alignedN], [0, 0], [K, N]);
     const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [], 1, transposed);
     return this.slice(paddedOut, [0, 0], [M, N]);
+  }
+
+  private tryPaddedCoopMatmulBatched(
+    vk: NativeAddon,
+    a: TensorData,
+    b: TensorData,
+    M: number,
+    N: number,
+    K: number,
+    aBatch: number[],
+    batchSize: number,
+    transposed: boolean,
+  ): TensorData | null {
+    if (!this._coopMatSupported) return null;
+    if (batchSize <= 1) return null;
+    if (a.dtype !== "f32" || b.dtype !== "f32") return null;
+    if (M * N * K < COOP_PAD_MIN_FLOPS) return null;
+    if (!this.canUseCoopWithOptionalPadding(M, N, K)) return null;
+
+    const alignedM = alignUp(M, this._coopM);
+    const alignedN = alignUp(N, this._coopN);
+    const alignedK = alignUp(K, this._coopK);
+    if (alignedM === M && alignedN === N && alignedK === K) return null;
+
+    const a3 = this.reshape(a, [batchSize, M, K]);
+    const b3 = transposed
+      ? this.reshape(b, [batchSize, N, K])
+      : this.reshape(b, [batchSize, K, N]);
+
+    const paddedA = this.scatterSlice(a3, [batchSize, alignedM, alignedK], [0, 0, 0], [batchSize, M, K]);
+    const paddedB = transposed
+      ? this.scatterSlice(b3, [batchSize, alignedN, alignedK], [0, 0, 0], [batchSize, N, K])
+      : this.scatterSlice(b3, [batchSize, alignedK, alignedN], [0, 0, 0], [batchSize, K, N]);
+
+    const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [batchSize], batchSize, transposed);
+    const cropped = this.slice(paddedOut, [0, 0, 0], [batchSize, M, N]);
+    return this.reshape(cropped, [...aBatch, M, N]);
   }
 
   private canUseCoopWithOptionalPadding(M: number, N: number, K: number): boolean {
@@ -2787,6 +2922,42 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, outShape, outRegion);
     }
 
+    // GPU path for 3D tensors above threshold
+    if (ndim === 3 && outSize >= this._minGpuSize) {
+      const vk = this.init();
+      const inputBuf = ensureGpu(vk, a);
+
+      const pushF = new Float32Array(8);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = outSize;
+      pushU[1] = outShape[1];
+      pushU[2] = outShape[2];
+      pushU[3] = a.shape[1];
+      pushU[4] = a.shape[2];
+      pushU[5] = starts[0];
+      pushU[6] = starts[1];
+      pushU[7] = starts[2];
+
+      const pipeline = getPipeline(vk, "slice_3d", 2, 8 * 4);
+      const outRegion = acquireOutputRegion(vk, outSize * 4);
+      const groups = Math.ceil(outSize / WG_SIZE);
+
+      graph.record({
+        kind: "unary",
+        kernel: "slice_3d",
+        pipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 8 * 4,
+        shape: outShape,
+        allBufs: [inputBuf, outRegion.handle],
+      });
+
+      return graphLazyTensor(vk, outShape, outRegion);
+    }
+
     // CPU fallback
     const Ctor = dtypeArray(a.dtype);
     const out = new Ctor(outSize);
@@ -2834,6 +3005,47 @@ export class HeliosBackend implements Backend {
         groups: [groups, 1, 1],
         push: pushF,
         pushSize: 6 * 4,
+        shape: [...origShape],
+        allBufs: [gradBuf, outRegion.handle],
+      });
+
+      return graphLazyTensor(vk, [...origShape], outRegion);
+    }
+
+    // GPU path for 3D tensors above threshold
+    if (ndim === 3 && outSize >= this._minGpuSize) {
+      const vk = this.init();
+      const gradBuf = ensureGpu(vk, grad);
+
+      const sliceD0 = ends[0] - starts[0];
+      const sliceD1 = ends[1] - starts[1];
+      const sliceD2 = ends[2] - starts[2];
+
+      const pushF = new Float32Array(9);
+      const pushU = new Uint32Array(pushF.buffer);
+      pushU[0] = outSize;
+      pushU[1] = origShape[1];
+      pushU[2] = origShape[2];
+      pushU[3] = sliceD0;
+      pushU[4] = sliceD1;
+      pushU[5] = sliceD2;
+      pushU[6] = starts[0];
+      pushU[7] = starts[1];
+      pushU[8] = starts[2];
+
+      const pipeline = getPipeline(vk, "scatter_slice_3d", 2, 9 * 4);
+      const outRegion = acquireOutputRegion(vk, outSize * 4);
+      const groups = Math.ceil(outSize / WG_SIZE);
+
+      graph.record({
+        kind: "unary",
+        kernel: "scatter_slice_3d",
+        pipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [groups, 1, 1],
+        push: pushF,
+        pushSize: 9 * 4,
         shape: [...origShape],
         allBufs: [gradBuf, outRegion.handle],
       });

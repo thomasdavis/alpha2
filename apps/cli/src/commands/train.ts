@@ -224,6 +224,20 @@ export async function trainCmd(args: string[]): Promise<void> {
     mixedPrecision: mixedPrecisionEnabled,
   });
 
+  const coopStats = typeof backendAny.getMatmulCoopStats === "function"
+    ? backendAny.getMatmulCoopStats()
+    : null;
+  if (coopStats && coopStats.totalMatmulDispatches > 0) {
+    const pct = (coopStats.coopHitRate * 100).toFixed(1);
+    console.log(
+      `coop_matmul: ${coopStats.coopDispatches}/${coopStats.totalMatmulDispatches} (${pct}%)` +
+      ` direct=${coopStats.coopDirectDispatches}` +
+      ` padded2d=${coopStats.coopPadded2DDispatches}` +
+      ` padded_batched=${coopStats.coopPaddedBatchedDispatches}` +
+      ` transposed_a_rewrite=${coopStats.coopTransposedARewriteDispatches}`,
+    );
+  }
+
   // Post-training sample generation
   const samplePrompts = domain?.samplePrompts ?? ["The ", "Once upon a time", "He walked into"];
   const extraPrompts = ["In the beginning ", "We the People of "];
