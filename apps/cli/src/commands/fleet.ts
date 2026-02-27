@@ -232,6 +232,102 @@ async function fleetStatus(config: FleetConfig, name: string): Promise<void> {
   console.log(stdout);
 }
 
+async function fleetGpuInfo(config: FleetConfig, name: string, kv: Record<string, string>): Promise<void> {
+  const names = kv["all"] === "true" ? Object.keys(config.instances) : [name];
+  if (names.length === 1 && !names[0]) {
+    console.error("Usage: alpha fleet gpuinfo <name> [--all]");
+    process.exit(1);
+  }
+
+  const script = `
+echo '=== nvidia-smi ==='
+nvidia-smi 2>/dev/null || echo 'nvidia-smi not found'
+
+echo ''
+echo '=== GPU Device Info ==='
+nvidia-smi -q 2>/dev/null | grep -A2 'Product Name\|Product Brand\|Product Architecture\|GPU UUID\|Serial Number\|VBIOS Version\|Bus Id\|GPU Part Number' | head -30
+
+echo ''
+echo '=== Compute & Memory ==='
+nvidia-smi --query-gpu=name,driver_version,pci.bus_id,compute_cap,memory.total,memory.free,memory.used,clocks.max.sm,clocks.max.mem,power.max_limit,power.default_limit,temperature.gpu,fan.speed --format=csv,noheader 2>/dev/null || echo 'query failed'
+
+echo ''
+echo '=== Clock Speeds ==='
+nvidia-smi -q -d CLOCK 2>/dev/null | head -30
+
+echo ''
+echo '=== Performance State ==='
+nvidia-smi -q -d PERFORMANCE 2>/dev/null | head -20
+
+echo ''
+echo '=== ECC & Retired Pages ==='
+nvidia-smi -q -d ECC,RETIRED_PAGES 2>/dev/null | head -20 || echo 'N/A'
+
+echo ''
+echo '=== PCIe Link ==='
+nvidia-smi -q -d PIDS 2>/dev/null | grep -A5 'PCI\|Link' | head -20 || true
+nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max --format=csv 2>/dev/null || echo 'pcie query failed'
+
+echo ''
+echo '=== Vulkan ==='
+DISPLAY=:99 vulkaninfo --summary 2>/dev/null || echo 'vulkaninfo not available'
+
+echo ''
+echo '=== Vulkan Device Properties ==='
+DISPLAY=:99 vulkaninfo 2>/dev/null | grep -A30 'VkPhysicalDeviceProperties' | head -35 || true
+
+echo ''
+echo '=== Vulkan Memory ==='
+DISPLAY=:99 vulkaninfo 2>/dev/null | grep -A20 'VkPhysicalDeviceMemoryProperties' | head -25 || true
+
+echo ''
+echo '=== Vulkan Compute Capabilities ==='
+DISPLAY=:99 vulkaninfo 2>/dev/null | grep -i 'maxComputeWorkGroup\|maxComputeShared\|maxStorageBuffer\|maxPushConstants\|maxBoundDescriptor\|subgroupSize\|subgroupSupported' | head -20 || true
+
+echo ''
+echo '=== CUDA Version ==='
+nvcc --version 2>/dev/null || echo 'nvcc not installed'
+cat /usr/local/cuda/version.txt 2>/dev/null || true
+
+echo ''
+echo '=== Driver ==='
+cat /proc/driver/nvidia/version 2>/dev/null || echo 'N/A'
+
+echo ''
+echo '=== Kernel Modules ==='
+lsmod | grep -i nvidia 2>/dev/null | head -10
+
+echo ''
+echo '=== System ==='
+uname -r
+cat /etc/os-release 2>/dev/null | grep -E 'PRETTY_NAME|VERSION_ID'
+nproc
+free -h | head -2
+`.trim();
+
+  for (const n of names) {
+    const inst = getInstance(config, n);
+    console.log(bold(`\n  GPU Diagnostics: ${n}`) + dim(` (${inst.host} — ${inst.machine})\n`));
+
+    const { stdout, code } = await ssh(config, inst.host, script);
+    if (code !== 0) {
+      console.log(red("  Could not reach instance."));
+      continue;
+    }
+    console.log(stdout);
+
+    // Save to file if requested
+    const save = kv["save"] !== "false"; // save by default
+    if (save) {
+      const outDir = join(process.cwd(), "docs", "gpu");
+      execSync(`mkdir -p "${outDir}"`, { stdio: "ignore" });
+      const outPath = join(outDir, `${n}.txt`);
+      writeFileSync(outPath, `# GPU Diagnostics: ${n}\n# Host: ${inst.host}\n# Machine: ${inst.machine}\n# Date: ${new Date().toISOString()}\n\n${stdout}`);
+      console.log(green(`  Saved to ${outPath}\n`));
+    }
+  }
+}
+
 async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string, string>): Promise<void> {
   const names = kv["all"] === "true" ? Object.keys(config.instances) : [name];
   if (names.length === 1 && !names[0]) {
@@ -689,6 +785,7 @@ alpha fleet — manage remote training instances
 Commands:
   fleet                        Dashboard: all instances + status
   fleet status [name]          GPU, processes, disk, latest run
+  fleet gpuinfo <name> [--all] Full GPU/Vulkan diagnostics, saved to docs/gpu/
   fleet deploy <name> [--all]  Build bun binary + ship + compile .node
   fleet setup <name>           Install node, gcc, vulkan on fresh instance
   fleet train <name> [--flags] Start detached training via nohup
@@ -726,6 +823,10 @@ export async function fleetCmd(args: string[]): Promise<void> {
       } else {
         await fleetStatus(config, name);
       }
+      break;
+
+    case "gpuinfo":
+      await fleetGpuInfo(config, name, { ...kv, ...parseTrainKV([args[1] || ""].filter(a => a.startsWith("--"))) });
       break;
 
     case "deploy":

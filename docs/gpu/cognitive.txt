@@ -1,0 +1,124 @@
+# GPU Diagnostics: cognitive
+# Host: <instance-ip>
+# Machine: g2-standard-4
+# Date: 2026-02-27T12:00:03.487Z
+
+=== nvidia-smi ===
+Fri Feb 27 12:00:01 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.211.01             Driver Version: 570.211.01     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA L4                      On  |   00000000:00:03.0 Off |                    0 |
+| N/A   72C    P0             41W /   72W |    8994MiB /  23034MiB |     29%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A           33210    C+G   node                                   8983MiB |
++-----------------------------------------------------------------------------------------+
+
+=== GPU Device Info ===
+
+=== Compute & Memory ===
+NVIDIA L4, 570.211.01, 00000000:00:03.0, 8.9, 23034 MiB, 13508 MiB, 9067 MiB, 2040 MHz, 6251 MHz, 72.00 W, 72.00 W, 71, [N/A]
+
+=== Clock Speeds ===
+
+==============NVSMI LOG==============
+
+Timestamp                                 : Fri Feb 27 12:00:01 2026
+Driver Version                            : 570.211.01
+CUDA Version                              : 12.8
+
+Attached GPUs                             : 1
+GPU 00000000:00:03.0
+    Clocks
+        Graphics                          : 1950 MHz
+        SM                                : 1950 MHz
+        Memory                            : 6251 MHz
+        Video                             : 1770 MHz
+    Applications Clocks
+        Graphics                          : 2040 MHz
+        Memory                            : 6251 MHz
+    Default Applications Clocks
+        Graphics                          : 2040 MHz
+        Memory                            : 6251 MHz
+    Deferred Clocks
+        Memory                            : N/A
+    Max Clocks
+        Graphics                          : 2040 MHz
+        SM                                : 2040 MHz
+        Memory                            : 6251 MHz
+        Video                             : 1770 MHz
+    Max Customer Boost Clocks
+        Graphics                          : 2040 MHz
+    SM Clock Samples
+
+=== Performance State ===
+
+==============NVSMI LOG==============
+
+Timestamp                                 : Fri Feb 27 12:00:01 2026
+Driver Version                            : 570.211.01
+CUDA Version                              : 12.8
+
+Attached GPUs                             : 1
+GPU 00000000:00:03.0
+    Performance State                     : P0
+    Clocks Event Reasons
+        Idle                              : Active
+        Applications Clocks Setting       : Not Active
+        SW Power Cap                      : Not Active
+        HW Slowdown                       : Not Active
+            HW Thermal Slowdown           : Not Active
+            HW Power Brake Slowdown       : Not Active
+        Sync Boost                        : Not Active
+        SW Thermal Slowdown               : Not Active
+        Display Clock Setting             : Not Active
+
+=== ECC & Retired Pages ===
+Failed to parse --display/-d flags
+
+=== PCIe Link ===
+pcie.link.gen.current, pcie.link.gen.max, pcie.link.width.current, pcie.link.width.max
+3, 3, 16, 16
+
+=== Vulkan ===
+vulkaninfo not available
+
+=== Vulkan Device Properties ===
+
+=== Vulkan Memory ===
+
+=== Vulkan Compute Capabilities ===
+
+=== CUDA Version ===
+nvcc not installed
+
+=== Driver ===
+NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  570.211.01  Release Build  (dvs-builder@U22-I3-AM27-29-5)  Tue Nov 25 16:23:07 UTC 2025
+GCC version:  gcc version 12.3.0 (Ubuntu 12.3.0-1ubuntu1~22.04.2) 
+
+=== Kernel Modules ===
+nvidia_uvm           2142208  0
+nvidia_drm            135168  0
+nvidia_modeset       1728512  2 nvidia_drm
+nvidia              11657216  108 nvidia_uvm,nvidia_modeset
+video                  77824  1 nvidia_modeset
+ecc                    45056  1 nvidia
+
+=== System ===
+6.8.0-1047-gcp
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+VERSION_ID="22.04"
+4
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi        10Gi       731Mi       1.0Mi       4.4Gi       4.7Gi
