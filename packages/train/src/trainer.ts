@@ -411,6 +411,34 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   };
   refreshParamCaches();
 
+  const backendAny = backend as any;
+  const resetStepOpsFn: (() => void) | undefined =
+    typeof backendAny.resetStepOps === "function"
+      ? backendAny.resetStepOps.bind(backendAny)
+      : undefined;
+  // Explicit GPU buffer release function — deterministic cleanup instead of
+  // relying on FinalizationRegistry which is unreliable for timely VRAM reclaim.
+  const releaseFn: ((td: TensorData) => void) | undefined =
+    typeof backendAny.releaseGpuTensor === "function"
+      ? (td: TensorData) => backendAny.releaseGpuTensor(td)
+      : undefined;
+  const flushFn: (() => void) | undefined =
+    typeof backendAny.flush === "function"
+      ? backendAny.flush.bind(backendAny)
+      : undefined;
+  const syncGpuFn: (() => void) | undefined =
+    typeof backendAny.syncGpu === "function"
+      ? backendAny.syncGpu.bind(backendAny)
+      : undefined;
+  const gpuMemStatsFn: (() => any) | undefined =
+    typeof backendAny.gpuMemStats === "function"
+      ? backendAny.gpuMemStats.bind(backendAny)
+      : undefined;
+  const poolBreakdownFn: ((topN?: number) => string) | undefined =
+    typeof backendAny.poolBreakdown === "function"
+      ? backendAny.poolBreakdown.bind(backendAny)
+      : undefined;
+
   // Training loop
   const startTime = performance.now();
   let spikeSkips = 0;
@@ -448,13 +476,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Reset per-step GPU ops counter
-    if ("resetStepOps" in backend) (backend as any).resetStepOps();
-
-    // Explicit GPU buffer release function — deterministic cleanup instead of
-    // relying on FinalizationRegistry which is unreliable for timely VRAM reclaim.
-    const releaseFn = "releaseGpuTensor" in backend
-      ? (td: TensorData) => (backend as any).releaseGpuTensor(td)
-      : undefined;
+    if (resetStepOpsFn) resetStepOpsFn();
 
     // Gradient accumulation: run K forward+backward passes, accumulating
     // gradients on parameter Variables. Each micro-batch contributes 1/K
@@ -768,7 +790,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // Note: tape intermediates already released in the accumulation loop above
 
     // Flush pending GPU ops (optimizer commands + deferred buffer releases).
-    if ("flush" in backend) (backend as any).flush();
+    if (flushFn) flushFn();
 
     // Adaptive sync/GC policy: configurable cadence instead of every step.
     // syncEvery=0 (default) triggers sync only on pool pressure.
@@ -780,7 +802,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const needGc = typeof globalThis.gc === "function" && (
       gcEvery > 0 ? stepNum % gcEvery === 0 :
       // Adaptive: GC when deferred releases pile up
-      ("gpuMemStats" in backend && (backend as any).gpuMemStats().deferredReleases > 50)
+      !!(gpuMemStatsFn && gpuMemStatsFn().deferredReleases > 50)
     );
     if (needGc) {
       (globalThis as any).gc();
@@ -792,15 +814,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const needSync = syncEvery === 1 ? true :
       syncEvery > 0 ? stepNum % syncEvery === 0 :
       // Adaptive: sync when pool pressure is high (many pending destroys or deferred releases)
-      ("gpuMemStats" in backend && (() => {
-        const s = (backend as any).gpuMemStats();
+      !!(gpuMemStatsFn && (() => {
+        const s = gpuMemStatsFn();
         return (s.deferredReleases > 20 || (s.pendingDestroys ?? 0) > 10);
       })());
     if (needSync) {
-      if ("syncGpu" in backend) {
-        (backend as any).syncGpu();
-      } else if ("flush" in backend) {
-        (backend as any).flush();
+      if (syncGpuFn) {
+        syncGpuFn();
+      } else if (flushFn) {
+        flushFn();
       }
     }
     const _t6 = performance.now();
@@ -813,14 +835,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // GPU memory diagnostics:
     // - trace mode: detailed cadence for debugging
     // - non-trace mode: sparse snapshots to minimize training-loop overhead
-    const shouldLogGpuMem = "gpuMemStats" in backend && (
+    const shouldLogGpuMem = !!gpuMemStatsFn && (
       trainConfig.trace
         ? ((step + 1) <= 20 || (step + 1) % 5 === 0)
         : ((step + 1) === 1 || (step + 1) === trainConfig.iters || (step + 1) % 25 === 0)
     );
     if (shouldLogGpuMem) {
-      const stats = (backend as any).gpuMemStats();
-      const breakdown = "poolBreakdown" in backend ? ` | ${(backend as any).poolBreakdown(8)}` : "";
+      const stats = gpuMemStatsFn!();
+      const breakdown = poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
       console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${breakdown}`);
     }
@@ -1044,20 +1066,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.step === 1 ||
       metrics.step === trainConfig.iters ||
       (metrics.step % Math.max(logEvery, 5) === 0);
-    if ("gpuMemStats" in backend && shouldSampleGpuMemMetric) {
-      const memStats = (backend as any).gpuMemStats();
+    if (gpuMemStatsFn && shouldSampleGpuMemMetric) {
+      const memStats = gpuMemStatsFn();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
     if (valLoader && (step + 1) % trainConfig.evalInterval === 0) {
-      if ("flush" in backend) (backend as any).flush();
+      if (flushFn) flushFn();
       if (typeof globalThis.gc === "function") {
         (globalThis as any).gc();
         await new Promise<void>(resolve => setImmediate(resolve));
       }
       // Second flush to process deferred releases from GC's FinalizationRegistry
-      if ("flush" in backend) (backend as any).flush();
+      if (flushFn) flushFn();
 
       let valLossSum = 0;
       for (let ei = 0; ei < trainConfig.evalIters; ei++) {
@@ -1070,7 +1092,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         }
         evalTape.clear(releaseFn);
         // Flush between eval iters to process deferred releases
-        if ("flush" in backend) (backend as any).flush();
+        if (flushFn) flushFn();
       }
       metrics.valLoss = valLossSum / trainConfig.evalIters;
 
@@ -1131,15 +1153,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (deps.samplePrompts && deps.samplePrompts.length > 0) {
         try {
           // Flush GPU before sampling to maximize free VRAM
-          if ("flush" in backend) (backend as any).flush();
+          if (flushFn) flushFn();
           if (typeof globalThis.gc === "function") {
             (globalThis as any).gc();
             await new Promise<void>(resolve => setImmediate(resolve));
           }
-          if ("flush" in backend) (backend as any).flush();
+          if (flushFn) flushFn();
 
           const sampleCfg: SampleConfig = { steps: 50, temperature: 0.8, topk: 40 };
-          const flushFn = "flush" in backend ? () => (backend as any).flush() : undefined;
           const samples: { prompt: string; output: string }[] = [];
 
           for (const prompt of deps.samplePrompts.slice(0, 3)) {
