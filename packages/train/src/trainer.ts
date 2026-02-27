@@ -473,6 +473,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
   const totalIters = trainConfig.iters;
   const traceEnabled = trainConfig.trace;
+  const capturePhaseTimings = traceEnabled;
   const gradAccumSteps = trainConfig.gradAccumSteps;
   const gradClip = trainConfig.gradClip;
   const spikeThreshold = trainConfig.spikeThreshold;
@@ -523,21 +524,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let dataLoadMs = 0;
     let fwdMs = 0;
     let bwdMs = 0;
-    const _t0 = performance.now();
 
     // GPU-side loss accumulation: avoid per-microstep CPU readback.
     // Accumulate scaled loss on GPU, single readback after the loop.
     let lossAccum: TensorData | null = null;
 
     for (let microStep = 0; microStep < accumSteps; microStep++) {
-      const _dl0 = performance.now();
+      const _dl0 = capturePhaseTimings ? performance.now() : 0;
       const batch = trainLoader.nextBatch();
-      const _dl1 = performance.now();
-      dataLoadMs += _dl1 - _dl0;
+      const _dl1 = capturePhaseTimings ? performance.now() : 0;
+      if (capturePhaseTimings) dataLoadMs += _dl1 - _dl0;
       dropoutRng.reset(trainConfig.seed + step * 1000 + microStep, 0);
       const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
-      const _fwd1 = performance.now();
-      fwdMs += _fwd1 - _dl1;
+      const _fwd1 = capturePhaseTimings ? performance.now() : 0;
+      if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
 
       if (!loss) throw new Error("Loss is undefined");
 
@@ -566,8 +566,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       } else {
         trainTape.backward(loss, backend, releaseFn);
       }
-      const _bwd1 = performance.now();
-      bwdMs += _bwd1 - _fwd1;
+      const _bwd1 = capturePhaseTimings ? performance.now() : 0;
+      if (capturePhaseTimings) bwdMs += _bwd1 - _fwd1;
       // Release tape intermediates but keep param gradients for accumulation
       trainTape.clear(releaseFn);
     }
@@ -588,7 +588,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const gradScaleAbs = Math.abs(gradScaleFactor);
     const gradScaleSq = gradScaleAbs * gradScaleAbs;
     let gradNorm = 0;
-    const _t3 = performance.now();
+    const _t3 = capturePhaseTimings ? performance.now() : 0;
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
 
@@ -729,7 +729,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
     }
 
-    const _t4 = performance.now();
+    const _t4 = capturePhaseTimings ? performance.now() : 0;
 
     // Clip coefficient for optimizer-side gradient scaling.
     let clipCoef = 1.0;
@@ -810,7 +810,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
     }
 
-    const _t4b = performance.now();
+    const _t4b = capturePhaseTimings ? performance.now() : 0;
 
     if (!nanDetected) {
       // Fast path: consume cached param entries directly.
@@ -825,7 +825,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         optimizer.step(paramDataMap, gradMap, effectiveGradScale);
       }
     }
-    const _t5 = performance.now();
+    const _t5 = capturePhaseTimings ? performance.now() : 0;
 
     // Zero gradients — explicitly release GPU buffers for param grads
     for (const [, variable] of paramEntries) {
@@ -869,7 +869,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         flushFn();
       }
     }
-    const _t6 = performance.now();
+    const _t6 = capturePhaseTimings ? performance.now() : 0;
 
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
@@ -902,13 +902,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       tokens_per_sec: tokensProcessedPerStep / (stepElapsed / 1000),
       ms_per_iter: stepElapsed,
       // Per-step timing breakdown (always recorded)
-      timing_fwd_ms: fwdMs,
-      timing_bwd_ms: bwdMs,
-      timing_grad_norm_ms: _t4 - _t3,
-      timing_grad_clip_ms: _t4b - _t4,
-      timing_optim_ms: _t5 - _t4b,
-      timing_flush_ms: _t6 - _t5,
-      timing_data_ms: dataLoadMs,
+      timing_fwd_ms: capturePhaseTimings ? fwdMs : undefined,
+      timing_bwd_ms: capturePhaseTimings ? bwdMs : undefined,
+      timing_grad_norm_ms: capturePhaseTimings ? _t4 - _t3 : undefined,
+      timing_grad_clip_ms: capturePhaseTimings ? _t4b - _t4 : undefined,
+      timing_optim_ms: capturePhaseTimings ? _t5 - _t4b : undefined,
+      timing_flush_ms: capturePhaseTimings ? _t6 - _t5 : undefined,
+      timing_data_ms: capturePhaseTimings ? dataLoadMs : undefined,
       gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
       // Clipping telemetry
       clip_coef: clipCoef,
