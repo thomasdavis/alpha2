@@ -1093,7 +1093,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // GPU stats (queried at most every 5s via nvidia-smi)
-    const gpuStats = await queryGpuStats();
+    let gpuStats: GpuStats | null = null;
+    if (!_gpuStatsDisabled) {
+      gpuStats = await queryGpuStats();
+    }
     if (gpuStats) {
       metrics.gpu_util_pct = gpuStats.utilPct;
       metrics.gpu_vram_used_mb = gpuStats.vramUsedMb;
