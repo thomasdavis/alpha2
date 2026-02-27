@@ -2154,7 +2154,9 @@ export class HeliosBackend implements Backend {
     // Generic tensor-core route for large transposed-A GEMMs:
     // A^T @ B == (transpose(A)) @ (transpose(B))^T.
     // This allows reuse of the cooperative matmul-transposed path.
-    if (this._coopMatSupported && outM * N * loopK >= COOP_TRANSPOSED_A_MIN_FLOPS) {
+    if (this._coopMatSupported &&
+        outM * N * loopK >= COOP_TRANSPOSED_A_MIN_FLOPS &&
+        this.canUseCoopWithOptionalPadding(outM, N, loopK)) {
       const aT = this.transpose(a, aNdim - 2, aNdim - 1);               // [..., K, M]
       const bT = this.transpose(b, b.shape.length - 2, b.shape.length - 1); // [..., N, M]
       return this.gpuMatmulTransposed(aT, bT, outM, N, loopK);
@@ -2262,6 +2264,7 @@ export class HeliosBackend implements Backend {
     if (a.shape.length !== 2 || b.shape.length !== 2) return null;
     if (a.dtype !== "f32" || b.dtype !== "f32") return null;
     if (M * N * K < COOP_PAD_MIN_FLOPS) return null;
+    if (!this.canUseCoopWithOptionalPadding(M, N, K)) return null;
 
     const alignedM = alignUp(M, this._coopM);
     const alignedN = alignUp(N, this._coopN);
@@ -2279,6 +2282,18 @@ export class HeliosBackend implements Backend {
       : this.scatterSlice(b, [alignedK, alignedN], [0, 0], [K, N]);
     const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [], 1, transposed);
     return this.slice(paddedOut, [0, 0], [M, N]);
+  }
+
+  private canUseCoopWithOptionalPadding(M: number, N: number, K: number): boolean {
+    if (!this._coopMatSupported) return false;
+    if (M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) return true;
+    const alignedM = alignUp(M, this._coopM);
+    const alignedN = alignUp(N, this._coopN);
+    const alignedK = alignUp(K, this._coopK);
+    const baseElems = M * K + K * N + M * N;
+    const paddedElems = alignedM * alignedK + alignedK * alignedN + alignedM * alignedN;
+    const overhead = (paddedElems - baseElems) / baseElems;
+    return overhead <= COOP_PAD_MAX_OVERHEAD;
   }
 
   // ── In-place add: A += B on GPU ────────────────────────────────────────────
