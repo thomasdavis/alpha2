@@ -43,7 +43,7 @@ const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should onl
 const LARGE_TILE_THRESHOLD = 65_536; // prefer tile=32 once output plane reaches this size
 const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
 
-const WG_CANDIDATES = [64, 128, 256, 512] as const;
+const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
 let wgAutoTuned = false;
 const WG_ENV = process.env.HELIOS_WG_SIZE;
@@ -55,6 +55,24 @@ if (WG_ENV) {
   } else {
     console.warn(`[helios] ignoring HELIOS_WG_SIZE=${WG_ENV}; expected one of ${WG_CANDIDATES.join(", ")}`);
   }
+}
+
+let lastPush4A = NaN;
+let lastPush4B = NaN;
+let lastPush4C = NaN;
+let lastPush4D = NaN;
+let lastPush4Arr: Float32Array | null = null;
+
+function push4Memo(a: number, b: number, c: number, d = 0): Float32Array {
+  if (lastPush4Arr && a === lastPush4A && b === lastPush4B && c === lastPush4C && d === lastPush4D) {
+    return lastPush4Arr;
+  }
+  lastPush4A = a;
+  lastPush4B = b;
+  lastPush4C = c;
+  lastPush4D = d;
+  lastPush4Arr = new Float32Array([a, b, c, d]);
+  return lastPush4Arr;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -172,31 +190,37 @@ function autoTuneWgSize(vk: NativeAddon): void {
 
     let bestTime = Infinity;
     let bestWg = 256;
+    let anyCandidate = false;
 
     for (const wg of WG_CANDIDATES) {
-      // Create a pipeline with this WG size
-      const spirv = getKernelSpirv("add_vec4", wg);
-      const pipe = vk.createPipeline(spirv, 3, PUSH_SIZE);
+      try {
+        // Create a pipeline with this WG size
+        const spirv = getKernelSpirv("add_vec4", wg);
+        const pipe = vk.createPipeline(spirv, 3, PUSH_SIZE);
 
-      const vecSize = testSize >> 2;
-      pushBuf[0] = vecSize;
-      pushBuf[1] = 0;
-      const groups = Math.ceil(vecSize / wg);
+        const vecSize = testSize >> 2;
+        pushBuf[0] = vecSize;
+        pushBuf[1] = 0;
+        const groups = Math.ceil(vecSize / wg);
 
-      // Warm up
-      vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
+        // Warm up
+        vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
 
-      // Timed runs
-      let total = 0;
-      const iters = 5;
-      for (let i = 0; i < iters; i++) {
-        total += vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
-      }
-      const avg = total / iters;
+        // Timed runs
+        let total = 0;
+        const iters = 5;
+        for (let i = 0; i < iters; i++) {
+          total += vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
+        }
+        const avg = total / iters;
+        anyCandidate = true;
 
-      if (avg < bestTime) {
-        bestTime = avg;
-        bestWg = wg;
+        if (avg < bestTime) {
+          bestTime = avg;
+          bestWg = wg;
+        }
+      } catch {
+        // Skip unsupported WG sizes and continue tuning.
       }
     }
 
@@ -204,7 +228,7 @@ function autoTuneWgSize(vk: NativeAddon): void {
     vk.destroyBuffer(bufB);
     vk.destroyBuffer(bufC);
 
-    WG_SIZE = bestWg;
+    WG_SIZE = anyCandidate ? bestWg : 256;
   } catch {
     // If timestamp queries aren't supported, keep default WG_SIZE=256
     WG_SIZE = 256;
@@ -2050,7 +2074,7 @@ export class HeliosBackend implements Backend {
       const outBytes = M * N * 4;
       const region = acquireOutputRegion(vk, outBytes);
 
-      const push = new Float32Array([M, N, K, 0]);
+      const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
       const gY = Math.ceil(M / TILE);
 
@@ -2075,7 +2099,7 @@ export class HeliosBackend implements Backend {
       const outBytes = batchSize * M * N * 4;
       const region = acquireOutputRegion(vk, outBytes);
 
-      const push = new Float32Array([M, N, K, 0]);
+      const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
       const gY = Math.ceil(M / TILE);
 
@@ -2167,7 +2191,7 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, b);
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(M / TILE);
-    const push = new Float32Array([M, N, K, 0]);
+    const push = push4Memo(M, N, K, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed${suffix}`, 3, 16);
@@ -2252,7 +2276,7 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, b);
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(outM / TILE);
-    const push = new Float32Array([outM, N, loopK, 0]);
+    const push = push4Memo(outM, N, loopK, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed_a${suffix}`, 3, 16);
@@ -2310,7 +2334,7 @@ export class HeliosBackend implements Backend {
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
 
-    const push = new Float32Array([M, N, K, 0]);
+    const push = push4Memo(M, N, K, 0);
     const gX = Math.ceil(N / this._coopN);
     const gY = Math.ceil(M / this._coopM);
 
@@ -2341,7 +2365,7 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, b);
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const push = new Float32Array([outM, N, loopK, 0]);
+    const push = push4Memo(outM, N, loopK, 0);
     const gX = Math.ceil(N / this._coopN);
     const gY = Math.ceil(outM / this._coopM);
 
