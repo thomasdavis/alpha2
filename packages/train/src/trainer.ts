@@ -519,6 +519,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // of the total gradient. Increases effective batch size by K without
     // increasing VRAM usage (only one micro-batch is live at a time).
     const accumSteps = gradAccumSteps;
+    const stepSeedBase = trainConfig.seed + step * 1000;
     let nanDetected = false;
     let lossVal = 0;
     let dataLoadMs = 0;
@@ -534,7 +535,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const batch = trainLoader.nextBatch();
       const _dl1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) dataLoadMs += _dl1 - _dl0;
-      dropoutRng.reset(trainConfig.seed + step * 1000 + microStep, 0);
+      dropoutRng.reset(stepSeedBase + microStep, 0);
       const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
       const _fwd1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
