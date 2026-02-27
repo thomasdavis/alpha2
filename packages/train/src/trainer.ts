@@ -735,7 +735,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           pushTopGrad(variable.grad, paramSizes[i]);
         }
       }
-      topGradEntries.sort((a, b) => b.size - a.size);
       if (backend.checkFinite) {
         const finiteChecks: TensorData[] = [];
         for (let i = 0; i < topGradEntries.length; i++) {
