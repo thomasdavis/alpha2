@@ -640,13 +640,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const gradScaleFactor = 1.0 / (accumSteps * lossScale);
     const gradScaleAbs = Math.abs(gradScaleFactor);
     let gradNorm = 0;
+    const needsGradNorm =
+      gradClip > 0 ||
+      spikeThreshold > 0 ||
+      useLossScaling ||
+      traceEnabled ||
+      stepNum % logEvery === 0 ||
+      stepNum % 500 === 0;
     const _t3 = capturePhaseTimings ? performance.now() : 0;
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
 
     let perLayerGradNorms: Record<string, number> | undefined;
 
-    if (!nanDetected) {
+    if (!nanDetected && needsGradNorm) {
       const collectPerParamNorms = traceEnabled || (stepNum % 500 === 0);
       const gradScaleSq = collectPerParamNorms ? (gradScaleAbs * gradScaleAbs) : 0;
       const gradNames = collectPerParamNorms ? gradNamesBuf : null;
