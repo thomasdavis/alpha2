@@ -471,6 +471,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const evalInterval = trainConfig.evalInterval;
+  const sampleInterval = trainConfig.sampleInterval;
   const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * trainConfig.gradAccumSteps;
   const warmup = trainConfig.warmupIters > 0
     ? trainConfig.warmupIters
@@ -1107,7 +1109,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
-    if (valLoader && (step + 1) % trainConfig.evalInterval === 0) {
+    if (valLoader && (step + 1) % evalInterval === 0) {
       if (flushFn) flushFn();
       if (typeof globalThis.gc === "function") {
         (globalThis as any).gc();
@@ -1171,7 +1173,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Checkpoint (save at every eval interval and at the end)
-    if ((step + 1) % trainConfig.evalInterval === 0 || step + 1 === trainConfig.iters) {
+    if ((step + 1) % evalInterval === 0 || step + 1 === trainConfig.iters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${step + 1}.json`);
       const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, activeModelConfig, deps.tokenizerArtifacts);
@@ -1185,7 +1187,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Generate inference samples at sampleInterval (decoupled from checkpointing)
-    const sampleInterval = trainConfig.sampleInterval;
     if (sampleInterval > 0 && ((step + 1) % sampleInterval === 0 || step + 1 === trainConfig.iters)) {
       if (deps.samplePrompts && deps.samplePrompts.length > 0) {
         try {
