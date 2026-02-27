@@ -41,6 +41,7 @@ const COOP_PAD_MAX_OVERHEAD = 0.20; // max tolerated element overhead from coop 
 const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core win can amortize padding
 const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
 const LARGE_TILE_THRESHOLD = 65_536; // prefer tile=32 once output plane reaches this size
+const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
 
 const WG_CANDIDATES = [64, 128, 256, 512] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
@@ -1172,7 +1173,7 @@ export class HeliosBackend implements Backend {
       const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
       // Use compute FLOPs (M*N*K) not output size (M*N) — matmul is compute-bound.
       // GPU wins when there's enough arithmetic to hide dispatch latency (~100K FLOPs).
-      if (M * N * K >= 100_000) return this.gpuMatmul(a, b);
+      if (M * N * K >= MATMUL_GPU_FLOPS_THRESHOLD) return this.gpuMatmul(a, b);
     }
     return this.cpuMatmul(a, b);
   }
@@ -2101,7 +2102,7 @@ export class HeliosBackend implements Backend {
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
     const N = b.shape[bNdim - 2]; // B is [N, K], so N is dim -2
     // Use compute FLOPs threshold like regular matmul
-    if (M * N * K >= 100_000) return this.gpuMatmulTransposed(a, b, M, N, K);
+    if (M * N * K >= MATMUL_GPU_FLOPS_THRESHOLD) return this.gpuMatmulTransposed(a, b, M, N, K);
     // CPU fallback: materialize transpose then multiply
     const bT = this.transpose(b, bNdim - 2, bNdim - 1);
     return this.cpuMatmul(a, bT);
@@ -2117,7 +2118,7 @@ export class HeliosBackend implements Backend {
     const bM = b.shape[bNdim - 2], N = b.shape[bNdim - 1];
     if (bM !== M) throw new Error("matmulTransposedA shape mismatch");
     // Use compute FLOPs threshold like regular matmul
-    if (M * N * K >= 100_000) return this.gpuMatmulTransposedA(a, b, M, N, K);
+    if (M * N * K >= MATMUL_GPU_FLOPS_THRESHOLD) return this.gpuMatmulTransposedA(a, b, M, N, K);
     // CPU fallback: materialize transpose then multiply
     const aT = this.transpose(a, aNdim - 2, aNdim - 1);
     return this.cpuMatmul(aT, b);
