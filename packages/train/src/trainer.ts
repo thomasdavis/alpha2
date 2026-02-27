@@ -453,6 +453,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * trainConfig.gradAccumSteps;
   const warmup = trainConfig.warmupIters > 0
     ? trainConfig.warmupIters
     : trainConfig.warmupIters < 0
@@ -869,14 +870,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     // Metrics
     const stepElapsed = performance.now() - stepStart;
-    const tokensProcessed = trainConfig.batchSize * modelConfig.blockSize * trainConfig.gradAccumSteps;
     const metrics: StepMetrics = {
       step: step + 1,
       loss: lossVal,
       lr,
       gradNorm,
       elapsed_ms: stepElapsed,
-      tokens_per_sec: tokensProcessed / (stepElapsed / 1000),
+      tokens_per_sec: tokensProcessedPerStep / (stepElapsed / 1000),
       ms_per_iter: stepElapsed,
       // Per-step timing breakdown (always recorded)
       timing_fwd_ms: fwdMs,
