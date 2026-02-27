@@ -547,6 +547,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
   const ADAPTIVE_MEM_STATS_POLL_EVERY = 4;
   const ADAPTIVE_SYNC_MIN_INTERVAL = 8;
+  const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = 32;
+  const ADAPTIVE_SYNC_PENDING_THRESHOLD = 24;
   let memStatsCache: any | null = null;
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
@@ -959,7 +961,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
     // This ensures output pool regions are reusable without OOM.
-    const adaptiveSyncPressure = !!(memStatsStep && (memStatsStep.deferredReleases > 20 || (memStatsStep.pendingDestroys ?? 0) > 10));
+    const adaptiveSyncPressure = !!(
+      memStatsStep &&
+      (
+        memStatsStep.deferredReleases > ADAPTIVE_SYNC_DEFERRED_THRESHOLD ||
+        (memStatsStep.pendingDestroys ?? 0) > ADAPTIVE_SYNC_PENDING_THRESHOLD
+      )
+    );
     const needSync = syncEvery === 1 ? true :
       syncEvery > 0 ? stepNum % syncEvery === 0 :
       // Adaptive: rate-limit syncs under sustained pressure to avoid serializing every step.
