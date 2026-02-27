@@ -471,25 +471,31 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const totalIters = trainConfig.iters;
+  const traceEnabled = trainConfig.trace;
+  const gradAccumSteps = trainConfig.gradAccumSteps;
+  const gradClip = trainConfig.gradClip;
+  const spikeThreshold = trainConfig.spikeThreshold;
+  const evalIters = trainConfig.evalIters;
   const evalInterval = trainConfig.evalInterval;
   const sampleInterval = trainConfig.sampleInterval;
-  const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * trainConfig.gradAccumSteps;
+  const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * gradAccumSteps;
   const warmup = trainConfig.warmupIters > 0
     ? trainConfig.warmupIters
     : trainConfig.warmupIters < 0
       ? 0  // negative = explicitly disabled
-      : Math.min(2000, Math.floor(trainConfig.iters / 5));
+      : Math.min(2000, Math.floor(totalIters / 5));
   const lrMin = (trainConfig.lrMin ?? 0) === 0
     ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
     : trainConfig.lrMin;
-  const decayDenom = Math.max(1, trainConfig.iters - warmup);
+  const decayDenom = Math.max(1, totalIters - warmup);
   let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
   const dropoutRng = new DropoutRng(trainConfig.seed);
 
-  for (let step = startStep; step < trainConfig.iters; step++) {
+  for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
 
     // Learning rate schedule: linear warmup + cosine decay to lrMin
@@ -509,7 +515,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // gradients on parameter Variables. Each micro-batch contributes 1/K
     // of the total gradient. Increases effective batch size by K without
     // increasing VRAM usage (only one micro-batch is live at a time).
-    const accumSteps = trainConfig.gradAccumSteps;
+    const accumSteps = gradAccumSteps;
     let nanDetected = false;
     let lossVal = 0;
     let dataLoadMs = 0;
@@ -588,7 +594,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let perLayerGradNorms: Record<string, number> | undefined;
 
     if (!nanDetected) {
-      const collectPerParamNorms = trainConfig.trace || ((step + 1) % 500 === 0);
+      const collectPerParamNorms = traceEnabled || ((step + 1) % 500 === 0);
       const gradNames = collectPerParamNorms ? [] as string[] : null;
       const grads: TensorData[] = [];
       for (const [name, variable] of paramEntries) {
@@ -664,7 +670,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         }
         if (headNormSq > 0) perLayerGradNorms["head"] = Math.sqrt(headNormSq);
 
-        if (trainConfig.trace) {
+        if (traceEnabled) {
           const sorted = [...perParamNorms]
             .map(({ name: n, normSq: sq }) => [n, Math.sqrt(sq)] as const)
             .sort((a, b) => b[1] - a[1]);
@@ -715,9 +721,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Spike detection: skip optimizer step when grad_norm exceeds absolute threshold.
       // This prevents pathological batches from disrupting Adam's momentum estimates.
       // spikeThreshold is an absolute grad_norm cap (e.g. 50 means skip when > 50).
-      if (!nanDetected && trainConfig.spikeThreshold > 0 && gradNorm > trainConfig.spikeThreshold) {
+      if (!nanDetected && spikeThreshold > 0 && gradNorm > spikeThreshold) {
         spikeSkips++;
-        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${trainConfig.spikeThreshold} — skipping step ${step + 1} (${spikeSkips} total skips)`);
+        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${spikeThreshold} — skipping step ${step + 1} (${spikeSkips} total skips)`);
         nanDetected = true; // reuse the skip path
       }
     }
@@ -727,8 +733,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // Clip coefficient for optimizer-side gradient scaling.
     let clipCoef = 1.0;
     let effectiveGradScale = gradScaleFactor;
-    if (!nanDetected && trainConfig.gradClip > 0 && gradNorm > trainConfig.gradClip) {
-      clipCoef = trainConfig.gradClip / gradNorm;
+    if (!nanDetected && gradClip > 0 && gradNorm > gradClip) {
+      clipCoef = gradClip / gradNorm;
       clippedSteps++;
       effectiveGradScale *= clipCoef;
 
@@ -865,7 +871,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
     const _t6 = performance.now();
 
-    if (trainConfig.trace) {
+    if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
       console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
     }
@@ -874,9 +880,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // - trace mode: detailed cadence for debugging
     // - non-trace mode: sparse snapshots to minimize training-loop overhead
     const shouldLogGpuMem = !!gpuMemStatsFn && (
-      trainConfig.trace
+      traceEnabled
         ? ((step + 1) <= 20 || (step + 1) % 5 === 0)
-        : ((step + 1) === 1 || (step + 1) === trainConfig.iters || (step + 1) % 25 === 0)
+        : ((step + 1) === 1 || (step + 1) === totalIters || (step + 1) % 25 === 0)
     );
     if (shouldLogGpuMem) {
       const stats = gpuMemStatsFn!();
@@ -1102,9 +1108,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_vram_used_mb = gpuStats.vramUsedMb;
       metrics.gpu_vram_total_mb = gpuStats.vramTotalMb;
     }
-    const shouldSampleGpuMemMetric = trainConfig.trace ||
+      const shouldSampleGpuMemMetric = traceEnabled ||
       metrics.step === 1 ||
-      metrics.step === trainConfig.iters ||
+      metrics.step === totalIters ||
       (metrics.step % Math.max(logEvery, 5) === 0);
     if (gpuMemStatsFn && shouldSampleGpuMemMetric) {
       const memStats = gpuMemStatsFn();
@@ -1122,7 +1128,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (flushFn) flushFn();
 
       let valLossSum = 0;
-      for (let ei = 0; ei < trainConfig.evalIters; ei++) {
+      for (let ei = 0; ei < evalIters; ei++) {
         const valBatch = valLoader.nextBatch();
         const evalTape = new Tape();
         const { loss: vl } = gptForward(activeModelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets);
@@ -1134,7 +1140,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         // Flush between eval iters to process deferred releases
         if (flushFn) flushFn();
       }
-      metrics.valLoss = valLossSum / trainConfig.evalIters;
+      metrics.valLoss = valLossSum / evalIters;
 
       // Eval-time diagnostic summary
       console.log(
@@ -1153,12 +1159,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
     const scaleStr = useLossScaling ? ` | scale=${lossScale}` : "";
     const shouldLogStep = metrics.step === 1 ||
-      metrics.step === trainConfig.iters ||
+      metrics.step === totalIters ||
       metrics.valLoss !== undefined ||
       (metrics.step % logEvery === 0);
     if (shouldLogStep) {
       console.log(
-        `step ${metrics.step}/${trainConfig.iters} | loss=${lossStr}${valStr} ` +
+        `step ${metrics.step}/${totalIters} | loss=${lossStr}${valStr} ` +
         `| lr=${lr.toExponential(2)} | grad_norm=${gradNorm.toFixed(3)}${clipStr} ` +
         `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
       );
@@ -1176,7 +1182,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Checkpoint (save at every eval interval and at the end)
-    if ((step + 1) % evalInterval === 0 || step + 1 === trainConfig.iters) {
+    if ((step + 1) % evalInterval === 0 || step + 1 === totalIters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${step + 1}.json`);
       const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, activeModelConfig, deps.tokenizerArtifacts);
@@ -1190,7 +1196,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Generate inference samples at sampleInterval (decoupled from checkpointing)
-    if (sampleInterval > 0 && ((step + 1) % sampleInterval === 0 || step + 1 === trainConfig.iters)) {
+    if (sampleInterval > 0 && ((step + 1) % sampleInterval === 0 || step + 1 === totalIters)) {
       if (deps.samplePrompts && deps.samplePrompts.length > 0) {
         try {
           // Flush GPU before sampling to maximize free VRAM
