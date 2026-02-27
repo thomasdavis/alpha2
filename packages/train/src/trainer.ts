@@ -929,7 +929,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const shouldLogGpuMem = !!gpuMemStatsFn && (
       traceEnabled
         ? (stepNum <= 20 || stepNum % 5 === 0)
-        : (stepNum === 1 || stepNum === totalIters || stepNum % 25 === 0)
+        : (stepNum === 1 || stepNum === totalIters || stepNum % 50 === 0)
     );
     let memStatsStep: any | null = memStatsCache;
     const adaptiveMemControl = gcEvery <= 0 || syncEvery <= 0;
@@ -1220,7 +1220,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const shouldSampleGpuMemMetric = traceEnabled ||
       metrics.step === 1 ||
       metrics.step === totalIters ||
-      (metrics.step % Math.max(logEvery, 5) === 0);
+      (metrics.step % Math.max(logEvery, 50) === 0);
     if (gpuMemStatsFn && shouldSampleGpuMemMetric) {
       const memStats = memStatsStep ?? gpuMemStatsFn();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
