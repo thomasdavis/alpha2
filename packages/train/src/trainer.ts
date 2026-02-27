@@ -447,6 +447,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   // Dynamic loss scaling for mixed precision training
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
+  const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
   let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
@@ -1130,8 +1131,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     if (onStep) onStep(metrics);
 
-    // Yield to event loop so async callbacks (remote metric reporting, etc.) can process
-    await new Promise<void>(resolve => setImmediate(resolve));
+    // Yield only when async callbacks are attached; otherwise avoid per-step event-loop overhead.
+    if (shouldYieldEachStep) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
 
     // Checkpoint (save at every eval interval and at the end)
     if ((step + 1) % trainConfig.evalInterval === 0 || step + 1 === trainConfig.iters) {
