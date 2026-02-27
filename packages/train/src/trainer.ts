@@ -255,6 +255,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         : gpu.vendorId === 0x1002 ? "AMD"
         : gpu.vendorId === 0x8086 ? "Intel"
         : `0x${gpu.vendorId.toString(16)}`;
+      if (gpu.vendorId !== 0x10de) {
+        // nvidia-smi is NVIDIA-only; disable probe path on other vendors.
+        _gpuStatsDisabled = true;
+      }
       const gpuStats = await queryGpuStats();
       infra = {
         gpuName: gpu.deviceName,
