@@ -120,12 +120,13 @@ export async function trainCmd(args: string[]): Promise<void> {
   const useL4Profile = gpuProfile === "l4" || (gpuProfile === "auto" && isL4Gpu);
   if (useL4Profile) {
     if (!kv["fp16"] && !!deviceInfo?.f16Supported) mixedPrecisionEnabled = true;
+    if (!kv["batch"]) trainConfig = { ...trainConfig, batchSize: Math.max(trainConfig.batchSize, 8) };
     if (!kv["packed"]) trainConfig = { ...trainConfig, packed: true };
     if (!kv["logEvery"]) trainConfig = { ...trainConfig, logEvery: Math.max(trainConfig.logEvery ?? 1, 25) };
     if (!kv["minGpuSize"] && setMinGpuSize) setMinGpuSize(2048);
     const mode = gpuProfile === "auto" ? "auto-detected" : "explicit";
     console.log(`GPU profile: l4 (${mode})`);
-    console.log(`  tuned: fp16=${mixedPrecisionEnabled} packed=${trainConfig.packed} logEvery=${trainConfig.logEvery} minGpuSize=${kv["minGpuSize"] ?? "2048"}`);
+    console.log(`  tuned: batch=${trainConfig.batchSize} fp16=${mixedPrecisionEnabled} packed=${trainConfig.packed} logEvery=${trainConfig.logEvery} minGpuSize=${kv["minGpuSize"] ?? "2048"}`);
   }
   if (minGpuSizeOverride !== null) {
     if (minGpuSizeOverride <= 0) {
