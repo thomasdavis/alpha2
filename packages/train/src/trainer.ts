@@ -717,30 +717,39 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // In f16, Inf * scale = Inf — scaling/clipping cannot fix overflow.
       // Check 3 largest tensors by computing finite checks on GPU.
       // Batch all GPU ops first, then single flush on first .data access.
-      const topGradEntries: { grad: TensorData; size: number }[] = [];
-      const pushTopGrad = (grad: TensorData, size: number): void => {
-        if (topGradEntries.length < 3) {
-          topGradEntries.push({ grad, size });
+      let top1: TensorData | null = null;
+      let top2: TensorData | null = null;
+      let top3: TensorData | null = null;
+      let top1Size = -1;
+      let top2Size = -1;
+      let top3Size = -1;
+      const considerTopGrad = (grad: TensorData, size: number): void => {
+        if (size > top1Size) {
+          top3 = top2; top3Size = top2Size;
+          top2 = top1; top2Size = top1Size;
+          top1 = grad; top1Size = size;
           return;
         }
-        let minIdx = 0;
-        if (topGradEntries[1].size < topGradEntries[minIdx].size) minIdx = 1;
-        if (topGradEntries[2].size < topGradEntries[minIdx].size) minIdx = 2;
-        if (size > topGradEntries[minIdx].size) {
-          topGradEntries[minIdx] = { grad, size };
+        if (size > top2Size) {
+          top3 = top2; top3Size = top2Size;
+          top2 = grad; top2Size = size;
+          return;
+        }
+        if (size > top3Size) {
+          top3 = grad; top3Size = size;
         }
       };
       for (let i = 0; i < paramEntries.length; i++) {
         const variable = paramEntries[i][1];
         if (variable.grad) {
-          pushTopGrad(variable.grad, paramSizes[i]);
+          considerTopGrad(variable.grad, paramSizes[i]);
         }
       }
       if (backend.checkFinite) {
         const finiteChecks: TensorData[] = [];
-        for (let i = 0; i < topGradEntries.length; i++) {
-          finiteChecks.push(backend.checkFinite(topGradEntries[i].grad));
-        }
+        if (top1) finiteChecks.push(backend.checkFinite(top1));
+        if (top2) finiteChecks.push(backend.checkFinite(top2));
+        if (top3) finiteChecks.push(backend.checkFinite(top3));
         // Single flush on first .data access (all checks recorded above)
         for (const chk of finiteChecks) {
           if ((chk.data as Float32Array)[0] !== 0) {
@@ -752,11 +761,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (releaseFn) for (const chk of finiteChecks) releaseFn(chk);
       } else {
         const spotResults: { s: TensorData; g2: TensorData }[] = [];
-        for (let i = 0; i < topGradEntries.length; i++) {
-          const g = topGradEntries[i].grad;
+        const pushSpotResult = (g: TensorData | null): void => {
+          if (!g) return;
           const g2 = backend.mul(g, g);
           spotResults.push({ s: backend.sum(g2), g2 });
-        }
+        };
+        pushSpotResult(top1);
+        pushSpotResult(top2);
+        pushSpotResult(top3);
         // Single flush on first .data access (all ops recorded above)
         for (const { s } of spotResults) {
           if (!isFinite((s.data as Float32Array)[0])) {
