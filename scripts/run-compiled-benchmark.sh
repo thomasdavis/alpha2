@@ -19,6 +19,7 @@ GRAD_CLIP="${GRAD_CLIP:-0}"
 COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-60}"
 COMPILE_RETRIES="${COMPILE_RETRIES:-2}"
 RUN_RETRIES="${RUN_RETRIES:-2}"
+RUN_RETRY_ON_SMOKE_FAIL="${RUN_RETRY_ON_SMOKE_FAIL:-0}"
 SKIP_COMPILE_IF_FRESH="${SKIP_COMPILE_IF_FRESH:-1}"
 
 timestamp_utc() {
@@ -175,8 +176,10 @@ for run_try in $(seq 1 "$run_attempts"); do
   status_label="ok"
   if [[ "$run_status" -ne 0 ]]; then
     status_label="failed"
-  elif rg -q 'loss=NaN|Inf/NaN|smoke_test: FAIL' "$run_log"; then
+  elif rg -q 'loss=NaN|Inf/NaN' "$run_log"; then
     status_label="unstable"
+  elif rg -q 'smoke_test: FAIL' "$run_log"; then
+    status_label="smoke_fail"
   fi
 
   selected_run_status="$run_status"
@@ -187,7 +190,14 @@ for run_try in $(seq 1 "$run_attempts"); do
   selected_run_dir="$run_dir"
   selected_run_log="$run_log"
 
+  retry_this_attempt="1"
   if [[ "$status_label" == "ok" ]]; then
+    retry_this_attempt="0"
+  elif [[ "$status_label" == "smoke_fail" && "$RUN_RETRY_ON_SMOKE_FAIL" != "1" ]]; then
+    retry_this_attempt="0"
+  fi
+
+  if [[ "$retry_this_attempt" == "0" ]]; then
     break
   fi
   if [[ "$run_try" -lt "$run_attempts" ]]; then
