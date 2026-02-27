@@ -496,6 +496,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let lossScaleReductions = 0;
   const dropoutRng = new DropoutRng(trainConfig.seed);
   const trainTape = new Tape();
+  const gradTensors: TensorData[] = [];
+  const gradNamesBuf: string[] = [];
+  const perParamNormsBuf: { name: string; normSq: number }[] = [];
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
@@ -597,16 +600,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (!nanDetected) {
       const collectPerParamNorms = traceEnabled || (stepNum % 500 === 0);
       const gradScaleSq = collectPerParamNorms ? (gradScaleAbs * gradScaleAbs) : 0;
-      const gradNames = collectPerParamNorms ? [] as string[] : null;
-      const grads: TensorData[] = [];
+      const gradNames = collectPerParamNorms ? gradNamesBuf : null;
+      if (gradNames) gradNames.length = 0;
+      gradTensors.length = 0;
       for (const [name, variable] of paramEntries) {
         if (variable.grad) {
           if (gradNames) gradNames.push(name);
-          grads.push(variable.grad);
+          gradTensors.push(variable.grad);
         }
       }
+      const grads = gradTensors;
 
-      const perParamNorms: { name: string; normSq: number }[] = [];
+      const perParamNorms = perParamNormsBuf;
+      perParamNorms.length = 0;
 
       if (hasTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
