@@ -546,8 +546,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
   const ADAPTIVE_MEM_STATS_POLL_EVERY = 4;
+  const ADAPTIVE_SYNC_MIN_INTERVAL = 8;
   let memStatsCache: any | null = null;
   let lastMemStatsProbeStep = 0;
+  let lastAdaptiveSyncStep = 0;
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
@@ -594,6 +596,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
 
       if (!loss) throw new Error("Loss is undefined");
+      const lossDataRef = !useGpuLossAccum ? loss.data : null;
 
       if (useGpuLossAccum) {
         // Accumulate loss on GPU: scale by 1/accumSteps and add to accumulator.
@@ -623,7 +626,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         trainTape.backward(loss, backend, releaseFn);
       }
       if (!useGpuLossAccum) {
-        lossVal = (loss.data.data as Float32Array)[0];
+        lossVal = (lossDataRef!.data as Float32Array)[0];
         if (!isFinite(lossVal)) {
           console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
           nanDetected = true;
@@ -956,15 +959,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     // SyncGpu: flush GC'd deferred releases, then WAIT for GPU completion.
     // This ensures output pool regions are reusable without OOM.
+    const adaptiveSyncPressure = !!(memStatsStep && (memStatsStep.deferredReleases > 20 || (memStatsStep.pendingDestroys ?? 0) > 10));
     const needSync = syncEvery === 1 ? true :
       syncEvery > 0 ? stepNum % syncEvery === 0 :
-      // Adaptive: sync when pool pressure is high (many pending destroys or deferred releases)
-      !!(memStatsStep && (memStatsStep.deferredReleases > 20 || (memStatsStep.pendingDestroys ?? 0) > 10));
+      // Adaptive: rate-limit syncs under sustained pressure to avoid serializing every step.
+      (adaptiveSyncPressure && (stepNum - lastAdaptiveSyncStep >= ADAPTIVE_SYNC_MIN_INTERVAL || stepNum === totalIters));
     if (needSync) {
       if (syncGpuFn) {
         syncGpuFn();
       } else if (flushFn) {
         flushFn();
+      }
+      if (syncEvery <= 0) {
+        lastAdaptiveSyncStep = stepNum;
       }
     }
     const _t6 = capturePhaseTimings ? performance.now() : 0;
