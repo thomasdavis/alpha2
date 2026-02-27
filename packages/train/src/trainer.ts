@@ -35,9 +35,12 @@ interface GpuStats {
 
 let _gpuStatsCache: GpuStats | null = null;
 let _gpuStatsLastQuery = 0;
+let _gpuStatsDisabled = false;
 const GPU_STATS_INTERVAL_MS = 5000; // query nvidia-smi at most every 5s
 
 async function queryGpuStats(): Promise<GpuStats | null> {
+  if (_gpuStatsDisabled) return null;
+
   const now = performance.now();
   // Rate-limit regardless of whether previous query succeeded.
   // When nvidia-smi is unavailable, this avoids spawning a failing shell each step.
@@ -48,15 +51,22 @@ async function queryGpuStats(): Promise<GpuStats | null> {
   try {
     const { execSync } = await import("node:child_process");
     const out = execSync(
-      "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
+      "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits || true",
       { timeout: 2000, encoding: "utf-8" },
     ).trim();
+    if (!out) {
+      _gpuStatsDisabled = true;
+      return null;
+    }
     const [util, used, total] = out.split(",").map(s => parseFloat(s.trim()));
     if (isFinite(util) && isFinite(used) && isFinite(total)) {
       _gpuStatsCache = { utilPct: util, vramUsedMb: used, vramTotalMb: total };
       return _gpuStatsCache;
     }
-  } catch { /* nvidia-smi not available — skip */ }
+  } catch {
+    // Disable further probing to keep training hot path clean on unsupported hosts.
+    _gpuStatsDisabled = true;
+  }
   return null;
 }
 
