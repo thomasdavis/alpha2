@@ -30,7 +30,18 @@
     "server": "npm run dev -w @alpha/web",
     "web": "npm run dev -w @alpha/web",
     "tui": "npm run dev -w @alpha/tui",
-    "bun:compile": "npm run build -w @alpha/helios && mkdir -p .bun-out && bun build --compile ./apps/cli/src/main.ts --outfile ./.bun-out/alpha && cp packages/helios/native/helios_vk.node ./.bun-out/helios_vk.node"
+    "bun:compile": "npm run build -w @alpha/helios && mkdir -p .bun-out && bun build --compile ./apps/cli/src/main.ts --outfile ./.bun-out/alpha && cp packages/helios/native/helios_vk.node ./.bun-out/helios_vk.node",
+    "fleet": "node apps/cli/dist/main.js fleet",
+    "fleet:status": "node apps/cli/dist/main.js fleet status",
+    "fleet:deploy": "node apps/cli/dist/main.js fleet deploy",
+    "fleet:setup": "node apps/cli/dist/main.js fleet setup",
+    "fleet:train": "node apps/cli/dist/main.js fleet train",
+    "fleet:resume": "node apps/cli/dist/main.js fleet resume",
+    "fleet:stop": "node apps/cli/dist/main.js fleet stop",
+    "fleet:logs": "node apps/cli/dist/main.js fleet logs",
+    "fleet:ssh": "node apps/cli/dist/main.js fleet ssh",
+    "fleet:run": "node apps/cli/dist/main.js fleet run",
+    "fleet:download": "node apps/cli/dist/main.js fleet download"
   },
   "devDependencies": {
     "turbo": "^2.4.0",
