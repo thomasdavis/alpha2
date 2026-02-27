@@ -65,8 +65,14 @@ export class Tape {
       const outGrad = entry.output.grad;
       if (!outGrad) continue;
 
-      // Compute needsGrad mask so backward closures can skip dead gradients
-      const needsGrad = entry.inputs.map(inp => inp.requiresGrad);
+      // Compute needsGrad mask only when at least one input does not require grads.
+      let needsGrad: boolean[] | undefined = undefined;
+      for (const inp of entry.inputs) {
+        if (!inp.requiresGrad) {
+          needsGrad = entry.inputs.map(v => v.requiresGrad);
+          break;
+        }
+      }
       const inputGrads = entry.backward(outGrad, backend, releaseTensor, needsGrad);
 
       for (let j = 0; j < entry.inputs.length; j++) {
