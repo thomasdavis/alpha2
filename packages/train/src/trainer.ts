@@ -417,6 +417,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   refreshParamCaches();
 
   const backendAny = backend as any;
+  const setOptimizerLrFn: ((lr: number) => void) | undefined =
+    typeof (optimizer as any).setLr === "function"
+      ? (optimizer as any).setLr.bind(optimizer)
+      : undefined;
   const resetStepOpsFn: (() => void) | undefined =
     typeof backendAny.resetStepOps === "function"
       ? backendAny.resetStepOps.bind(backendAny)
@@ -443,6 +447,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     typeof backendAny.poolBreakdown === "function"
       ? backendAny.poolBreakdown.bind(backendAny)
       : undefined;
+  const sumOfSquaresFn: ((data: TensorData) => TensorData) | undefined =
+    typeof backend.sumOfSquares === "function"
+      ? backend.sumOfSquares.bind(backend)
+      : undefined;
+  const totalSumOfSquaresFn: ((tensors: TensorData[]) => TensorData) | undefined =
+    typeof backend.totalSumOfSquares === "function"
+      ? backend.totalSumOfSquares.bind(backend)
+      : undefined;
+  const checkFiniteFn: ((data: TensorData) => TensorData) | undefined =
+    typeof backend.checkFinite === "function"
+      ? backend.checkFinite.bind(backend)
+      : undefined;
+  const hasSumSq = !!sumOfSquaresFn;
+  const hasTotalSumSq = !!totalSumOfSquaresFn;
 
   // Training loop
   const startTime = performance.now();
@@ -479,9 +497,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const decay = (step - warmup) / decayDenom;
       lr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
     }
-    if (optimizer && "setLr" in optimizer) {
-      (optimizer as any).setLr(lr);
-    }
+    if (setOptimizerLrFn) setOptimizerLrFn(lr);
 
     // Reset per-step GPU ops counter
     if (resetStepOpsFn) resetStepOpsFn();
@@ -569,8 +585,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let perLayerGradNorms: Record<string, number> | undefined;
 
     if (!nanDetected) {
-      const hasSumSq = !!backend.sumOfSquares;
-      const hasTotalSumSq = !!backend.totalSumOfSquares;
       const collectPerParamNorms = trainConfig.trace || ((step + 1) % 500 === 0);
       const gradNames = collectPerParamNorms ? [] as string[] : null;
       const grads: TensorData[] = [];
@@ -585,7 +599,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
       if (hasTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
-        const totalSq = backend.totalSumOfSquares!(grads);
+        const totalSq = totalSumOfSquaresFn!(grads);
         gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]) * gradScaleAbs;
         if (releaseFn) releaseFn(totalSq);
       } else {
@@ -595,7 +609,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         for (let i = 0; i < grads.length; i++) {
           const g = grads[i];
           if (hasSumSq) {
-            sqNormParts.push(backend.sumOfSquares!(g));
+            sqNormParts.push(sumOfSquaresFn!(g));
           } else {
             const g2 = backend.mul(g, g);
             g2Intermediates.push(g2);
@@ -619,7 +633,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // unless trace mode is enabled or it's a periodic diagnostic step.
       if (collectPerParamNorms && hasSumSq && perParamNorms.length === 0) {
         const sqNormParts: TensorData[] = [];
-        for (const g of grads) sqNormParts.push(backend.sumOfSquares!(g));
+        for (const g of grads) sqNormParts.push(sumOfSquaresFn!(g));
         for (let i = 0; i < sqNormParts.length; i++) {
           perParamNorms.push({ name: gradNames![i], normSq: (sqNormParts[i].data as Float32Array)[0] * gradScaleSq });
         }
@@ -747,11 +761,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           considerTopGrad(variable.grad, paramSizes[i]);
         }
       }
-      if (backend.checkFinite) {
+      if (checkFiniteFn) {
         const finiteChecks: TensorData[] = [];
-        if (top1) finiteChecks.push(backend.checkFinite(top1));
-        if (top2) finiteChecks.push(backend.checkFinite(top2));
-        if (top3) finiteChecks.push(backend.checkFinite(top3));
+        if (top1) finiteChecks.push(checkFiniteFn(top1));
+        if (top2) finiteChecks.push(checkFiniteFn(top2));
+        if (top3) finiteChecks.push(checkFiniteFn(top3));
         // Single flush on first .data access (all checks recorded above)
         for (const chk of finiteChecks) {
           if ((chk.data as Float32Array)[0] !== 0) {
