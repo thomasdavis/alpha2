@@ -62,6 +62,17 @@ let lastPush4B = NaN;
 let lastPush4C = NaN;
 let lastPush4D = NaN;
 let lastPush4Arr: Float32Array | null = null;
+let lastPush2A = NaN;
+let lastPush2B = NaN;
+let lastPush2Arr: Float32Array | null = null;
+
+function push2Memo(a: number, b: number): Float32Array {
+  if (lastPush2Arr && a === lastPush2A && b === lastPush2B) return lastPush2Arr;
+  lastPush2A = a;
+  lastPush2B = b;
+  lastPush2Arr = new Float32Array([a, b]);
+  return lastPush2Arr;
+}
 
 function push4Memo(a: number, b: number, c: number, d = 0): Float32Array {
   if (lastPush4Arr && a === lastPush4A && b === lastPush4B && c === lastPush4C && d === lastPush4D) {
@@ -992,7 +1003,7 @@ export class HeliosBackend implements Backend {
 
     // Push constants: [len, unused] — must snapshot since pushData is reused
     const effectiveSize = useVec4 ? size >> 2 : size;
-    const push = new Float32Array([effectiveSize, 0]);
+    const push = push2Memo(effectiveSize, 0);
     const groups = Math.ceil(effectiveSize / WG_SIZE);
 
     // Record to compute graph — deferred execution
@@ -1026,7 +1037,7 @@ export class HeliosBackend implements Backend {
 
     // Push constants: [len, scalar] — must snapshot
     const effectiveSize = useVec4 ? size >> 2 : size;
-    const push = new Float32Array([effectiveSize, scalar]);
+    const push = push2Memo(effectiveSize, scalar);
     const groups = Math.ceil(effectiveSize / WG_SIZE);
 
     // Record to compute graph — deferred execution
@@ -1251,7 +1262,7 @@ export class HeliosBackend implements Backend {
       const outByteSize = numGroups * 4;
       const region = acquireOutputRegion(vk, outByteSize);
 
-      const push = new Float32Array([remaining, 0]);
+      const push = push2Memo(remaining, 0);
 
       graph.record({
         kind: "reduce_sum",
@@ -1398,7 +1409,7 @@ export class HeliosBackend implements Backend {
       const outByteSize = numGroups * 4;
       const region = acquireOutputRegion(vk, outByteSize);
 
-      const push = new Float32Array([remaining, 0]);
+      const push = push2Memo(remaining, 0);
       const pipeline = isFirstPass ? sqPipeline : sumPipeline;
       const kernel = isFirstPass ? "sum_sq_reduce" : "sum_reduce";
 
@@ -1455,7 +1466,7 @@ export class HeliosBackend implements Backend {
     // Zero the output buffer (so multi-workgroup writes work via store-if-nonfinite)
     vk.uploadBuffer(region.handle, new Float32Array([0.0]));
 
-    const push = new Float32Array([size, 0]);
+    const push = push2Memo(size, 0);
     const groups = Math.ceil(size / WG_SIZE);
 
     graph.record({
@@ -1488,7 +1499,7 @@ export class HeliosBackend implements Backend {
       const pipeline = getPipeline(vk, "cast_f32_to_f16", 2);
       const outBytes = size * 2; // f16 = 2 bytes per element
       const region = acquireOutputRegion(vk, outBytes);
-      const push = new Float32Array([size, 0]);
+      const push = push2Memo(size, 0);
 
       graph.record({
         kind: "unary",
@@ -1512,7 +1523,7 @@ export class HeliosBackend implements Backend {
       const pipeline = getPipeline(vk, "cast_f16_to_f32", 2);
       const outBytes = size * 4; // f32 = 4 bytes per element
       const region = acquireOutputRegion(vk, outBytes);
-      const push = new Float32Array([size, 0]);
+      const push = push2Memo(size, 0);
 
       graph.record({
         kind: "unary",
@@ -1578,7 +1589,7 @@ export class HeliosBackend implements Backend {
     const bufA = ensureGpu(vk, a);
     const region = acquireOutputRegion(vk, byteSize);
 
-    const push = new Float32Array([dim, numRows]);
+    const push = push2Memo(dim, numRows);
 
     graph.record({
       kind: "softmax",
@@ -1607,7 +1618,7 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, bias);
     const region = acquireOutputRegion(vk, byteSize);
 
-    const push = new Float32Array([dim, eps]);
+    const push = push2Memo(dim, eps);
 
     graph.record({
       kind: "layernorm",
@@ -1935,7 +1946,7 @@ export class HeliosBackend implements Backend {
 
       // Main backward kernel (6 bindings) — recorded to graph
       const pipeline1 = getPipeline(vk, "layernorm_backward", 6);
-      const push1 = new Float32Array([dim, eps]);
+      const push1 = push2Memo(dim, eps);
       graph.record({
         kind: "backward",
         kernel: "layernorm_backward",
@@ -1951,7 +1962,7 @@ export class HeliosBackend implements Backend {
 
       // Column sum to reduce partials: [numRows, dim] → [dim]
       const pipeline2 = getPipeline(vk, "column_sum", 2);
-      const push2 = new Float32Array([dim, numRows]);
+      const push2 = push2Memo(dim, numRows);
       const groups = Math.ceil(dim / WG_SIZE);
       graph.record({
         kind: "backward",
@@ -1972,7 +1983,7 @@ export class HeliosBackend implements Backend {
         inputBufs: [],
         outputRegion: dbRegion,
         groups: [groups, 1, 1],
-        push: new Float32Array([dim, numRows]),
+        push: push2Memo(dim, numRows),
         pushSize: 2 * 4,
         shape: weight.shape,
         allBufs: [dbPartialRegion.handle, dbRegion.handle],
@@ -2481,7 +2492,7 @@ export class HeliosBackend implements Backend {
       const effectiveSize = useVec4 ? size >> 2 : size;
       const pipeline = getPipeline(vk, kernelName, 2);
       const groups = Math.ceil(effectiveSize / WG_SIZE);
-      const push = new Float32Array([effectiveSize, 0]);
+      const push = push2Memo(effectiveSize, 0);
 
       graph.record({
         kind: "inplace",
@@ -2515,7 +2526,7 @@ export class HeliosBackend implements Backend {
       const effectiveSize = useVec4 ? size >> 2 : size;
       const pipeline = getPipeline(vk, kernelName, 1);
       const groups = Math.ceil(effectiveSize / WG_SIZE);
-      const push = new Float32Array([effectiveSize, scalar]);
+      const push = push2Memo(effectiveSize, scalar);
 
       graph.record({
         kind: "inplace",
