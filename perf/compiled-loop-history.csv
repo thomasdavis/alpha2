@@ -173,3 +173,7 @@ timestamp,git_commit,steps,backend,compile_ms,run_ms,avg_tok_s,last_tok_s,speedu
 20260227T140209Z,9bdd701,100,helios,1812,8932,2161.352,2345.454,6.12,runs/compiled-binary-helios-20260227T140209Z,perf/run-20260227T140209Z.log,unstable
 20260227T140338Z,6ce4b15,100,helios,1632,8553,2370.487,2560.213,16.39,runs/compiled-binary-helios-20260227T140338Z,perf/run-20260227T140338Z.log,unstable
 20260227T140358Z,6ce4b15,100,helios,975,9603,2121.688,2054.281,4.17,runs/compiled-binary-helios-20260227T140358Z,perf/run-20260227T140358Z.log,unstable
+20260227T140631Z,eaccbef,100,helios,3841,10214,2088.755,1274.651,2.55,runs/compiled-binary-helios-20260227T140631Z,perf/run-20260227T140631Z.log,ok
+20260227T140655Z,eaccbef,100,helios,478,5454,3429.832,2898.467,64.20,runs/compiled-binary-helios-20260227T140655Z,perf/run-20260227T140655Z.log,unstable
+20260227T140709Z,eaccbef,100,helios,511,5284,3675.490,3414.524,75.97,runs/compiled-binary-helios-20260227T140709Z,perf/run-20260227T140709Z.log,unstable
+20260227T140752Z,eaccbef,100,helios,2400,5272,3640.573,3836.619,74.29,runs/compiled-binary-helios-20260227T140752Z,perf/run-20260227T140752Z.log,unstable
