@@ -21,6 +21,8 @@ export interface AdamWConfig {
 export class AdamW implements Optimizer {
   readonly name = "adamw";
   private _step = 0;
+  private _beta1Pow = 1;
+  private _beta2Pow = 1;
   private _m = new Map<string, Float32Array>();
   private _v = new Map<string, Float32Array>();
   private _mTd = new Map<string, TensorData>(); // TensorData wrappers for GPU residence
@@ -42,10 +44,8 @@ export class AdamW implements Optimizer {
   }
 
   stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
-    this._step++;
     const { lr, beta1, beta2, eps, weightDecay } = this.config;
-    const bc1 = 1 - Math.pow(beta1, this._step);
-    const bc2 = 1 - Math.pow(beta2, this._step);
+    const { bc1, bc2 } = this.nextBiasCorrections(beta1, beta2);
 
     for (const [name, variable] of entries) {
       const param = variable.data;
@@ -56,16 +56,24 @@ export class AdamW implements Optimizer {
   }
 
   step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
-    this._step++;
     const { lr, beta1, beta2, eps, weightDecay } = this.config;
-    const bc1 = 1 - Math.pow(beta1, this._step);
-    const bc2 = 1 - Math.pow(beta2, this._step);
+    const { bc1, bc2 } = this.nextBiasCorrections(beta1, beta2);
 
     for (const [name, param] of params) {
       const grad = grads.get(name);
       if (!grad) continue;
       this.stepTensor(name, param, grad, lr, beta1, beta2, eps, weightDecay, bc1, bc2, gradScale);
     }
+  }
+
+  private nextBiasCorrections(beta1: number, beta2: number): { bc1: number; bc2: number } {
+    this._step++;
+    this._beta1Pow *= beta1;
+    this._beta2Pow *= beta2;
+    return {
+      bc1: 1 - this._beta1Pow,
+      bc2: 1 - this._beta2Pow,
+    };
   }
 
   private stepTensor(
@@ -129,6 +137,8 @@ export class AdamW implements Optimizer {
 
   loadStateDict(state: OptimizerState): void {
     this._step = state.step;
+    this._beta1Pow = Math.pow(this.config.beta1, this._step);
+    this._beta2Pow = Math.pow(this.config.beta2, this._step);
     this._m.clear();
     this._v.clear();
     this._mTd.clear();
