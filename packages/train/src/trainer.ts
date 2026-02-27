@@ -497,11 +497,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
+    const stepNum = step + 1;
 
     // Learning rate schedule: linear warmup + cosine decay to lrMin
     let lr: number;
     if (step < warmup) {
-      lr = lrMin + (trainConfig.lr - lrMin) * (step + 1) / warmup;
+      lr = lrMin + (trainConfig.lr - lrMin) * stepNum / warmup;
     } else {
       const decay = (step - warmup) / decayDenom;
       lr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
@@ -575,7 +576,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (lossAccum) {
       lossVal = (lossAccum.data as Float32Array)[0];
       if (!isFinite(lossVal)) {
-        console.warn(`  [warn] loss=NaN at step ${step + 1} — skipping`);
+        console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
         nanDetected = true;
       }
       if (releaseFn) releaseFn(lossAccum);
@@ -594,7 +595,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let perLayerGradNorms: Record<string, number> | undefined;
 
     if (!nanDetected) {
-      const collectPerParamNorms = traceEnabled || ((step + 1) % 500 === 0);
+      const collectPerParamNorms = traceEnabled || (stepNum % 500 === 0);
       const gradNames = collectPerParamNorms ? [] as string[] : null;
       const grads: TensorData[] = [];
       for (const [name, variable] of paramEntries) {
@@ -678,12 +679,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           console.log(`  [trace] grad norms (top 5): ${top5}`);
         }
 
-        if ((step + 1) % 500 === 0 && perParamNorms.length > 0) {
+        if (stepNum % 500 === 0 && perParamNorms.length > 0) {
           const layerNorms = perParamNorms
             .map(({ name, normSq }) => ({ name, norm: Math.sqrt(normSq) }))
             .sort((a, b) => b.norm - a.norm);
 
-          console.log(`  [diag] per-layer grad norms (step ${step + 1}):`);
+          console.log(`  [diag] per-layer grad norms (step ${stepNum}):`);
           const top10 = layerNorms.slice(0, 10);
           for (const { name, norm } of top10) {
             console.log(`    ${name}: ${norm.toFixed(4)}`);
@@ -703,10 +704,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           // Dynamic loss scaling: halve the scale and retry
           lossScale /= 2;
           lossScaleReductions++;
-          console.warn(`  [loss_scale] grad overflow at step ${step + 1} — reducing scale to ${lossScale}`);
+          console.warn(`  [loss_scale] grad overflow at step ${stepNum} — reducing scale to ${lossScale}`);
           scaleSuccessCount = 0;
         } else {
-          console.warn(`  [warn] grad_norm=NaN at step ${step + 1} — skipping optimizer update`);
+          console.warn(`  [warn] grad_norm=NaN at step ${stepNum} — skipping optimizer update`);
         }
         nanDetected = true;
       } else if (useLossScaling) {
@@ -723,7 +724,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // spikeThreshold is an absolute grad_norm cap (e.g. 50 means skip when > 50).
       if (!nanDetected && spikeThreshold > 0 && gradNorm > spikeThreshold) {
         spikeSkips++;
-        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${spikeThreshold} — skipping step ${step + 1} (${spikeSkips} total skips)`);
+        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${spikeThreshold} — skipping step ${stepNum} (${spikeSkips} total skips)`);
         nanDetected = true; // reuse the skip path
       }
     }
@@ -841,7 +842,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // syncEvery>0 forces periodic sync every N steps.
     const syncEvery = trainConfig.syncEvery;
     const gcEvery = trainConfig.gcEvery;
-    const stepNum = step + 1;
 
     const needGc = typeof globalThis.gc === "function" && (
       gcEvery > 0 ? stepNum % gcEvery === 0 :
@@ -881,8 +881,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // - non-trace mode: sparse snapshots to minimize training-loop overhead
     const shouldLogGpuMem = !!gpuMemStatsFn && (
       traceEnabled
-        ? ((step + 1) <= 20 || (step + 1) % 5 === 0)
-        : ((step + 1) === 1 || (step + 1) === totalIters || (step + 1) % 25 === 0)
+        ? (stepNum <= 20 || stepNum % 5 === 0)
+        : (stepNum === 1 || stepNum === totalIters || stepNum % 25 === 0)
     );
     if (shouldLogGpuMem) {
       const stats = gpuMemStatsFn!();
@@ -894,7 +894,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // Metrics
     const stepElapsed = performance.now() - stepStart;
     const metrics: StepMetrics = {
-      step: step + 1,
+      step: stepNum,
       loss: lossVal,
       lr,
       gradNorm,
@@ -912,16 +912,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       gpu_ops_count: "gpuOpsThisStep" in backend ? (backend as any).gpuOpsThisStep : undefined,
       // Clipping telemetry
       clip_coef: clipCoef,
-      clip_pct: (clippedSteps / (step + 1)) * 100,
+      clip_pct: (clippedSteps / stepNum) * 100,
       // Per-layer gradient norms
       per_layer_grad_norms: perLayerGradNorms ? JSON.stringify(perLayerGradNorms) : undefined,
     };
 
     // Symbio metrics (only when symbio is enabled — zero overhead otherwise)
     if (symbioEnabled && cusumDash && symbioCollector) {
-      const clipPctVal = (clippedSteps / (step + 1)) * 100;
+      const clipPctVal = (clippedSteps / stepNum) * 100;
       const stepInfo: TrainerStepInfo = {
-        step: step + 1,
+        step: stepNum,
         loss: lossVal,
         gradNorm,
         clipPct: clipPctVal,
@@ -944,7 +944,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Population dynamics adaptation (loss + LR + CUSUM driven)
       if (populationDynamics && searchOrchestrator) {
         const dyn = populationDynamics.update({
-          step: step + 1,
+          step: stepNum,
           loss: lossVal,
           lr,
           cusumAlerts: cusumResult.cusum_alerts,
@@ -966,7 +966,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       symbioCollector.recordLoss(lossVal);
 
       // Expensive metrics (every metricsInterval steps)
-      if ((step + 1) % symbioConfig.metricsInterval === 0) {
+      if (stepNum % symbioConfig.metricsInterval === 0) {
         // Collect TensorData for weight params
         const paramTDs = new Map<string, TensorData>();
         for (const [name, v] of paramEntries) paramTDs.set(name, v.data);
@@ -1118,7 +1118,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
-    if (valLoader && (step + 1) % evalInterval === 0) {
+    if (valLoader && stepNum % evalInterval === 0) {
       if (flushFn) flushFn();
       if (typeof globalThis.gc === "function") {
         (globalThis as any).gc();
@@ -1144,10 +1144,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
       // Eval-time diagnostic summary
       console.log(
-        `  [diag] eval step ${step + 1}: loss=${lossVal.toFixed(4)}, ` +
+        `  [diag] eval step ${stepNum}: loss=${lossVal.toFixed(4)}, ` +
         `val_loss=${metrics.valLoss.toFixed(4)}, ` +
         `grad_norm=${gradNorm.toFixed(2)}, ` +
-        `clip_pct=${((clippedSteps / (step + 1)) * 100).toFixed(1)}%`
+        `clip_pct=${((clippedSteps / stepNum) * 100).toFixed(1)}%`
       );
     }
 
@@ -1182,21 +1182,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Checkpoint (save at every eval interval and at the end)
-    if ((step + 1) % evalInterval === 0 || step + 1 === totalIters) {
+    if (stepNum % evalInterval === 0 || stepNum === totalIters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
-      const ckptPath = path.join(runDir, `checkpoint-${step + 1}.json`);
-      const state = buildCheckpointState(params, optimizer, rng.state(), configHash, step + 1, activeModelConfig, deps.tokenizerArtifacts);
+      const ckptPath = path.join(runDir, `checkpoint-${stepNum}.json`);
+      const state = buildCheckpointState(params, optimizer, rng.state(), configHash, stepNum, activeModelConfig, deps.tokenizerArtifacts);
       // Save current symbio activation graph so resume can seed the search correctly
       if (searchOrchestrator?.currentCandidate?.activationGraph) {
         (state as any).symbioActivationGraph = searchOrchestrator.currentCandidate.activationGraph;
       }
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
-      if (deps.onCheckpoint) deps.onCheckpoint({ step: step + 1, path: ckptPath, runId: rid });
+      if (deps.onCheckpoint) deps.onCheckpoint({ step: stepNum, path: ckptPath, runId: rid });
     }
 
     // Generate inference samples at sampleInterval (decoupled from checkpointing)
-    if (sampleInterval > 0 && ((step + 1) % sampleInterval === 0 || step + 1 === totalIters)) {
+    if (sampleInterval > 0 && (stepNum % sampleInterval === 0 || stepNum === totalIters)) {
       if (deps.samplePrompts && deps.samplePrompts.length > 0) {
         try {
           // Flush GPU before sampling to maximize free VRAM
@@ -1221,7 +1221,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
             samples.push({ prompt, output });
           }
 
-          if (deps.onSamples) await deps.onSamples(samples, step + 1);
+          if (deps.onSamples) await deps.onSamples(samples, stepNum);
         } catch (e) {
           console.warn(`  sample generation failed: ${(e as Error).message}`);
         }
