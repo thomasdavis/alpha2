@@ -430,21 +430,33 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     typeof (optimizer as any).stepParamEntries === "function"
       ? (optimizer as any).stepParamEntries.bind(optimizer)
       : null;
+  type ParamEntry = ReturnType<typeof collectParamEntries>[number];
+  type ParamVariable = ParamEntry[1];
   // Stable parameter traversal for hot loops; refresh whenever `params` is replaced.
   let paramEntries: ReturnType<typeof collectParamEntries> = [];
+  let paramNames: string[] = [];
+  let paramVars: ParamVariable[] = [];
   let paramSizes: number[] = [];
   const refreshParamCaches = (): void => {
     paramEntries = collectParamEntries(params);
-    paramSizes = new Array(paramEntries.length);
-    for (let i = 0; i < paramEntries.length; i++) {
-      paramSizes[i] = shapeSize(paramEntries[i][1].data.shape);
+    const paramCount = paramEntries.length;
+    paramNames = new Array(paramCount);
+    paramVars = new Array(paramCount);
+    paramSizes = new Array(paramCount);
+    for (let i = 0; i < paramCount; i++) {
+      const entry = paramEntries[i];
+      const name = entry[0];
+      const variable = entry[1];
+      paramNames[i] = name;
+      paramVars[i] = variable;
+      paramSizes[i] = shapeSize(variable.data.shape);
     }
     // Map-based optimizer path only.
     if (!optimizerStepParamEntries) {
       // Parameter data references are stable between switches; rebuild only on refresh.
       paramDataMap.clear();
-      for (const [name, variable] of paramEntries) {
-        paramDataMap.set(name, variable.data);
+      for (let i = 0; i < paramCount; i++) {
+        paramDataMap.set(paramNames[i], paramVars[i].data);
       }
     }
   };
@@ -640,10 +652,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const gradNames = collectPerParamNorms ? gradNamesBuf : null;
       if (gradNames) gradNames.length = 0;
       gradTensors.length = 0;
-      for (const [name, variable] of paramEntries) {
-        if (variable.grad) {
-          if (gradNames) gradNames.push(name);
-          gradTensors.push(variable.grad);
+      for (let i = 0; i < paramVars.length; i++) {
+        const grad = paramVars[i].grad;
+        if (grad) {
+          if (gradNames) gradNames.push(paramNames[i]);
+          gradTensors.push(grad);
         }
       }
       const grads = gradTensors;
@@ -863,8 +876,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       } else {
         // Map fallback path for optimizers that don't support entry stepping.
         gradMap.clear();
-        for (const [name, variable] of paramEntries) {
-          if (variable.grad) gradMap.set(name, variable.grad);
+        for (let i = 0; i < paramVars.length; i++) {
+          const grad = paramVars[i].grad;
+          if (grad) gradMap.set(paramNames[i], grad);
         }
         optimizer.step(paramDataMap, gradMap, effectiveGradScale);
       }
@@ -872,7 +886,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const _t5 = capturePhaseTimings ? performance.now() : 0;
 
     // Zero gradients — explicitly release GPU buffers for param grads
-    for (const [, variable] of paramEntries) {
+    for (let i = 0; i < paramVars.length; i++) {
+      const variable = paramVars[i];
       if (variable.grad && releaseFn) releaseFn(variable.grad);
       variable.grad = null;
     }
