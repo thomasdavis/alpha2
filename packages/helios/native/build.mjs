@@ -8,11 +8,23 @@
 import { execSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = join(__dirname, "helios_vk.c");
 const out = join(__dirname, "helios_vk.node");
+const script = fileURLToPath(import.meta.url);
+
+function isUpToDate() {
+  if (!existsSync(out)) return false;
+  const outMtime = statSync(out).mtimeMs;
+  return outMtime >= statSync(src).mtimeMs && outMtime >= statSync(script).mtimeMs;
+}
+
+if (process.env.HELIOS_NATIVE_FORCE_REBUILD !== "1" && isUpToDate()) {
+  console.log(`Helios: native addon up-to-date (${out})`);
+  process.exit(0);
+}
 
 // Find Node.js include directory
 const nodeDir = join(dirname(process.execPath), "..", "include", "node");
