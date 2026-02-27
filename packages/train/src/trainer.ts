@@ -1040,7 +1040,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_vram_used_mb = gpuStats.vramUsedMb;
       metrics.gpu_vram_total_mb = gpuStats.vramTotalMb;
     }
-    if ("gpuMemStats" in backend) {
+    const shouldSampleGpuMemMetric = trainConfig.trace ||
+      metrics.step === 1 ||
+      metrics.step === trainConfig.iters ||
+      (metrics.step % Math.max(logEvery, 5) === 0);
+    if ("gpuMemStats" in backend && shouldSampleGpuMemMetric) {
       const memStats = (backend as any).gpuMemStats();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
     }
