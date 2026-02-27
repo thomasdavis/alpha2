@@ -17,6 +17,7 @@ HELIOS_WG_SIZE="${HELIOS_WG_SIZE:-256}"
 LR="${LR:-0.0001}"
 GRAD_CLIP="${GRAD_CLIP:-0}"
 COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-180}"
+COMPILE_RETRIES="${COMPILE_RETRIES:-1}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -43,7 +44,20 @@ fi
 
 echo "[bench] compile start (steps=${STEPS}, backend=${BACKEND})"
 compile_start_ms="$(now_ms)"
-if ! timeout "${COMPILE_TIMEOUT_SEC}" npm run bun:compile >"$COMPILE_LOG" 2>&1; then
+compile_ok="0"
+attempts="$((COMPILE_RETRIES + 1))"
+: >"$COMPILE_LOG"
+for attempt in $(seq 1 "$attempts"); do
+  echo "[bench] compile attempt ${attempt}/${attempts}" | tee -a "$COMPILE_LOG"
+  if timeout "${COMPILE_TIMEOUT_SEC}" npm run bun:compile >>"$COMPILE_LOG" 2>&1; then
+    compile_ok="1"
+    break
+  fi
+  if [[ "$attempt" -lt "$attempts" ]]; then
+    echo "[bench] compile attempt ${attempt} failed (timeout ${COMPILE_TIMEOUT_SEC}s) — retrying..." | tee -a "$COMPILE_LOG"
+  fi
+done
+if [[ "$compile_ok" != "1" ]]; then
   compile_end_ms="$(now_ms)"
   compile_ms="$((compile_end_ms - compile_start_ms))"
   git_commit="$(git rev-parse --short HEAD)"
@@ -65,7 +79,7 @@ LR=${LR}
 GRAD_CLIP=${GRAD_CLIP}
 STATUS=compile_failed
 EOF
-  echo "[bench] compile failed or timed out after ${COMPILE_TIMEOUT_SEC}s"
+  echo "[bench] compile failed after ${attempts} attempt(s), timeout ${COMPILE_TIMEOUT_SEC}s each"
   echo "[bench] compile log tail:"
   tail -n 40 "$COMPILE_LOG"
   exit 1
