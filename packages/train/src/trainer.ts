@@ -586,7 +586,6 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // This avoids one or two full tensor passes over all parameter gradients.
     const gradScaleFactor = 1.0 / (accumSteps * lossScale);
     const gradScaleAbs = Math.abs(gradScaleFactor);
-    const gradScaleSq = gradScaleAbs * gradScaleAbs;
     let gradNorm = 0;
     const _t3 = capturePhaseTimings ? performance.now() : 0;
 
@@ -596,6 +595,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     if (!nanDetected) {
       const collectPerParamNorms = traceEnabled || (stepNum % 500 === 0);
+      const gradScaleSq = collectPerParamNorms ? (gradScaleAbs * gradScaleAbs) : 0;
       const gradNames = collectPerParamNorms ? [] as string[] : null;
       const grads: TensorData[] = [];
       for (const [name, variable] of paramEntries) {
