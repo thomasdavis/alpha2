@@ -19,7 +19,7 @@
 import type { Backend, TensorData } from "@alpha/core";
 import { Variable, Tape } from "./tape.js";
 
-type Ctx = { tape: Tape; backend: Backend };
+type Ctx = { tape: Tape; backend: Backend; release?: (td: TensorData) => void };
 
 /**
  * Checkpoint a segment of computation.
@@ -44,13 +44,13 @@ export function checkpoint(
   const tmpCtx: Ctx = { tape: tmpTape, backend: B };
   const tmpOutput = fn(tmpCtx, input);
 
-  // Clone the output data — we're about to discard the throwaway tape
-  // and all its intermediate activations.
-  const outputData = B.clone(tmpOutput.data);
+  // Keep ownership of the computed output buffer and release only intermediates.
+  const outputData = tmpOutput.data;
 
-  // Discard the throwaway tape (JS references cleared, GPU buffers
-  // become garbage for FinalizationRegistry to collect).
-  tmpTape.clear();
+  // Discard the throwaway tape — explicitly release GPU buffers for
+  // intermediate activations. Without passing release here, all
+  // intermediates leak until FinalizationRegistry fires (too slow).
+  tmpTape.clear(ctx.release, tmpOutput);
 
   // Record a single entry on the outer tape: saves only input + fn reference.
   // This replaces what would be ~30 entries per transformer layer.

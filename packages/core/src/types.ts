@@ -126,7 +126,7 @@ export const defaultTrainConfig: TrainConfig = {
   gradAccumSteps: 1,
   sampleInterval: 100,
   spikeThreshold: 0,
-  syncEvery: 1,
+  syncEvery: 0,
   gcEvery: 0,
   packed: false,
   symbio: false,

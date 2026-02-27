@@ -106,7 +106,9 @@ export interface Backend {
   // fused ops (GPU-optimized, optional)
   residualDropoutAdd?(residual: TensorData, projected: TensorData, mask: TensorData): TensorData;
   matmulTransposed?(a: TensorData, b: TensorData): TensorData;
+  matmulTransposedA?(a: TensorData, b: TensorData): TensorData;
   addInplace?(a: TensorData, b: TensorData): void;
+  scaleInplace?(a: TensorData, scalar: number): void;
 
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
@@ -134,6 +136,8 @@ export interface Backend {
 
   // reduction (GPU-optimized, optional)
   sumOfSquares?(data: TensorData): TensorData;
+  totalSumOfSquares?(tensors: TensorData[]): TensorData;
+  checkFinite?(data: TensorData): TensorData;
 
   // optimizer (GPU-optimized, optional)
   adamwStep?(params: TensorData, grads: TensorData, m: TensorData, v: TensorData,

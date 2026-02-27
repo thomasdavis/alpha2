@@ -14,7 +14,7 @@ import { Effect } from "effect";
 import type { CheckpointState, Checkpoint, TensorData, OptimizerState, TokenizerArtifacts } from "@alpha/core";
 import { CheckpointError } from "@alpha/core";
 import type { GPTParams } from "@alpha/model";
-import { collectParams } from "@alpha/model";
+import { collectParamEntries } from "@alpha/model";
 import type { Optimizer } from "@alpha/core";
 
 const MAGIC = Buffer.from("ALPH");
@@ -58,6 +58,7 @@ function saveBinary(
     step: state.step,
     tokenizerArtifacts: state.tokenizerArtifacts,
     optimizerStep: state.optimizerState?.step ?? 0,
+    symbioActivationGraph: (state as any).symbioActivationGraph ?? undefined,
     tensors,
   });
 
@@ -113,7 +114,7 @@ function loadBinary(data: Buffer): CheckpointState {
     }
   }
 
-  return {
+  const result: any = {
     modelConfig: header.modelConfig,
     params,
     optimizerState: { step: header.optimizerStep ?? 0, buffers: optBuffers },
@@ -122,6 +123,10 @@ function loadBinary(data: Buffer): CheckpointState {
     configHash: header.configHash,
     step: header.step,
   };
+  if (header.symbioActivationGraph) {
+    result.symbioActivationGraph = header.symbioActivationGraph;
+  }
+  return result;
 }
 
 // ── Legacy JSON helpers ──────────────────────────────────────────────────────
@@ -195,9 +200,8 @@ export function buildCheckpointState(
   modelConfig: any,
   tokenizerArtifacts?: TokenizerArtifacts,
 ): CheckpointState {
-  const paramMap = collectParams(gptParams);
   const params: Record<string, { shape: number[]; data: number[] }> = {};
-  for (const [name, v] of paramMap) {
+  for (const [name, v] of collectParamEntries(gptParams)) {
     // Pass Float32Array directly — saveBinary handles it, cast for interface
     params[name] = { shape: [...v.data.shape], data: v.data.data as any };
   }
@@ -217,8 +221,7 @@ export function restoreParams(
   gptParams: GPTParams,
   checkpointParams: Record<string, { shape: number[]; data: number[] }>,
 ): void {
-  const paramMap = collectParams(gptParams);
-  for (const [name, variable] of paramMap) {
+  for (const [name, variable] of collectParamEntries(gptParams)) {
     const saved = checkpointParams[name];
     if (saved) {
       const arr = variable.data.data as Float32Array;

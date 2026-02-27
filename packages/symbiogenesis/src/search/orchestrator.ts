@@ -41,7 +41,7 @@ export class SearchOrchestrator {
   private adaptiveMutationRate: number;
   private state: SearchState;
 
-  constructor(config: SymbioConfig) {
+  constructor(config: SymbioConfig, resumeActivationGraph?: ActivationNode) {
     this.config = config;
     this.composed = config.searchMode === "composed-activation-search";
 
@@ -51,9 +51,25 @@ export class SearchOrchestrator {
       basisPool: (config.basisPool ?? BASIS_POOL) as BasisOp[],
     };
 
-    const initial = this.composed
-      ? generateComposedPopulation(this.mutCfg.basisPool, config.populationSize)
-      : generateInitialPopulation(config.activationPool, config.populationSize);
+    let initial: SearchCandidate[];
+    if (resumeActivationGraph && this.composed) {
+      // Seed population with the resumed activation as the first candidate,
+      // then fill remaining slots with mutations of it for diversity.
+      const seed = createCandidate(
+        "composed", 0, null, null, [], 0,
+        resumeActivationGraph, "resume",
+      );
+      initial = [seed];
+      for (let i = 1; i < config.populationSize; i++) {
+        const child = mutateComposedCandidate(seed, 0, i, this.mutCfg);
+        initial.push(child);
+      }
+      console.log(`  [symbio] resumed with activation: ${nameGraph(resumeActivationGraph)} + ${config.populationSize - 1} mutations`);
+    } else if (this.composed) {
+      initial = generateComposedPopulation(this.mutCfg.basisPool, config.populationSize);
+    } else {
+      initial = generateInitialPopulation(config.activationPool, config.populationSize);
+    }
     this.adaptivePopulationSize = config.populationSize;
     this.adaptiveMutationRate = config.mutationRate;
 

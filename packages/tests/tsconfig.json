@@ -13,6 +13,7 @@
     { "path": "../autograd" },
     { "path": "../tokenizers" },
     { "path": "../model" },
-    { "path": "../train" }
+    { "path": "../train" },
+    { "path": "../helios" }
   ]
 }

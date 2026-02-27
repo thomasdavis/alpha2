@@ -8,7 +8,7 @@ import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
 import { loadArtifacts } from "@alpha/tokenizers";
-import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset } from "@alpha/symbiogenesis";
+import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deserializeGraph } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
 export async function trainCmd(args: string[]): Promise<void> {
@@ -153,6 +153,9 @@ export async function trainCmd(args: string[]): Promise<void> {
     tokenizerArtifacts,
     runDir: kv["runDir"],
     resumePath: kv["resume"],
+    resumeActivationGraph: kv["symbio-resume-graph"]
+      ? JSON.parse(kv["symbio-resume-graph"])
+      : undefined,
     domain: domainId,
     samplePrompts: (domain?.samplePrompts ?? ["The ", "Once upon a time", "He walked into"]),
     onStart: reporter

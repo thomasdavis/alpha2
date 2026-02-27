@@ -222,7 +222,20 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
   _totalAllocCount++;
   _totalAllocBytes += byteSize;
   _liveAllocCount++;
-  return vk.createBuffer(byteSize, 0); // device-local (staging handled in C)
+  try {
+    return vk.createBuffer(byteSize, 0); // device-local (staging handled in C)
+  } catch (e) {
+    console.error(`[helios OOM] acquireBuffer failed: requesting ${(byteSize / 1048576).toFixed(1)}MB`);
+    console.error(`[helios OOM] total allocated: ${(_totalAllocBytes / 1048576).toFixed(1)}MB across ${_totalAllocCount} allocs (${_liveAllocCount} live)`);
+    // Count pool sizes
+    let poolBytes = 0, poolCount = 0;
+    for (const [sz, bufs] of bufferPool) { poolCount += bufs.length; poolBytes += sz * bufs.length; }
+    console.error(`[helios OOM] buffer pool: ${poolCount} buffers, ${(poolBytes / 1048576).toFixed(1)}MB`);
+    let outPoolBytes = 0, outPoolCount = 0;
+    for (const [sz, regs] of outputPool) { outPoolCount += regs.length; outPoolCount += regs.length; outPoolBytes += sz * regs.length; }
+    console.error(`[helios OOM] output pool: ${outPoolCount} regions, ${(outPoolBytes / 1048576).toFixed(1)}MB`);
+    throw e;
+  }
 }
 
 function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void {
@@ -441,7 +454,7 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 // ── Compute graph / lazy evaluation ──────────────────────────────────────────
 
-const MAX_PENDING_OPS = 256; // auto-flush when this many ops are pending
+const MAX_PENDING_OPS = 2048; // auto-flush when this many ops are pending
 
 type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
 
@@ -513,15 +526,89 @@ class ComputeGraph {
     this.pending = [];
 
     vk.batchBegin();
-    for (const op of ops) {
-      const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
-      vk.batchDispatch(
-        op.pipeline,
-        bufs,
-        op.groups[0], op.groups[1], op.groups[2],
-        op.push,
-      );
+
+    if (typeof vk.batchDispatchMany === "function") {
+      // Packed binary path: single N-API call for all dispatches
+      // Per dispatch format:
+      //   int32 pipelineSlot, uint16 bufCount, uint16 flags, uint32 gX,
+      //   [uint32 gZ], uint32 writeMask, int32 bufHandles[bufCount], uint8 pushData[pushSize]
+      // Calculate total byte size
+      let totalBytes = 0;
+      for (const op of ops) {
+        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+        const hasGZ = op.groups[2] !== 1;
+        totalBytes += 4 + 2 + 2 + 4; // pipeSlot, bufCount, flags, gX
+        if (hasGZ) totalBytes += 4;   // gZ
+        totalBytes += 4;              // writeMask
+        totalBytes += bufs.length * 4; // bufHandles
+        totalBytes += op.pushSize;     // pushData
+      }
+
+      const packed = new ArrayBuffer(totalBytes);
+      const view = new DataView(packed);
+      let offset = 0;
+
+      for (const op of ops) {
+        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+        const hasGZ = op.groups[2] !== 1;
+        const gY = op.groups[1];
+
+        // Compute write mask
+        let writeMask = 0;
+        if (op.kind === "inplace" || op.kind === "optimizer") {
+          writeMask = 1;
+        } else {
+          writeMask = 1 << (bufs.length - 1);
+        }
+
+        // flags: bits [15:1] = gY, bit 0 = hasGZ
+        const flags = ((gY & 0x7FFF) << 1) | (hasGZ ? 1 : 0);
+
+        view.setInt32(offset, op.pipeline, true); offset += 4;
+        view.setUint16(offset, bufs.length, true); offset += 2;
+        view.setUint16(offset, flags, true); offset += 2;
+        view.setUint32(offset, op.groups[0], true); offset += 4;
+        if (hasGZ) {
+          view.setUint32(offset, op.groups[2], true); offset += 4;
+        }
+        view.setUint32(offset, writeMask, true); offset += 4;
+
+        // Buffer handles
+        for (let i = 0; i < bufs.length; i++) {
+          view.setInt32(offset, bufs[i], true); offset += 4;
+        }
+
+        // Push constants (raw bytes from Float32Array)
+        if (op.pushSize > 0) {
+          const pushBytes = new Uint8Array(op.push.buffer, op.push.byteOffset, op.pushSize);
+          new Uint8Array(packed, offset, op.pushSize).set(pushBytes);
+          offset += op.pushSize;
+        }
+      }
+
+      vk.batchDispatchMany(packed, ops.length);
+    } else {
+      // Fallback: per-dispatch N-API calls
+      const wmBuf = new Uint32Array(1);
+      for (const op of ops) {
+        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+        let writeMask = 0;
+        if (op.kind === "inplace" || op.kind === "optimizer") {
+          writeMask = 1;
+        } else {
+          writeMask = 1 << (bufs.length - 1);
+        }
+        wmBuf[0] = writeMask;
+        vk.batchDispatch(
+          op.pipeline,
+          bufs,
+          op.groups[0], op.groups[1], op.groups[2],
+          op.push,
+          wmBuf,
+        );
+      }
     }
+
     const tv = vk.batchSubmit();
     this._lastFlushTimeline = tv;
 
@@ -610,6 +697,10 @@ export class HeliosBackend implements Backend {
   private _deviceName = "";
   private _vendorId = 0;
   private _hasAsyncTransfer = false;
+  private _coopMatSupported = false;
+  private _coopM = 0;
+  private _coopN = 0;
+  private _coopK = 0;
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
@@ -621,6 +712,10 @@ export class HeliosBackend implements Backend {
       this._deviceName = info.deviceName;
       this._vendorId = info.vendorId;
       this._hasAsyncTransfer = info.hasAsyncTransfer;
+      this._coopMatSupported = info.coopMatSupported;
+      this._coopM = info.coopMatM;
+      this._coopN = info.coopMatN;
+      this._coopK = info.coopMatK;
       const vk = getNative();
       graph.attach(vk);
       autoTuneWgSize(vk);
@@ -1148,6 +1243,38 @@ export class HeliosBackend implements Backend {
     return makeTensor([], data.dtype, dtypeArray(data.dtype).from([acc]));
   }
 
+  /**
+   * Sum of squared norms across many tensors with a single scalar readback.
+   * This keeps the accumulation on GPU instead of reading one scalar per tensor.
+   */
+  totalSumOfSquares(tensors: TensorData[]): TensorData {
+    if (tensors.length === 0) {
+      return makeTensor([], "f32", Float32Array.from([0]));
+    }
+    if (tensors.length === 1) return this.sumOfSquares(tensors[0]);
+
+    let partials = tensors.map((t) => this.sumOfSquares(t));
+
+    // Pairwise tree reduction on GPU (forced scalar GPU add) to keep one final readback.
+    while (partials.length > 1) {
+      const next: TensorData[] = [];
+      for (let i = 0; i < partials.length; i += 2) {
+        if (i + 1 < partials.length) {
+          const a = partials[i];
+          const b = partials[i + 1];
+          next.push(this.gpuBinaryOp(a, b, "add", true));
+          // Safe: release is deferred until timeline completion.
+          releaseGpuBufferFor(a);
+          releaseGpuBufferFor(b);
+        } else {
+          next.push(partials[i]);
+        }
+      }
+      partials = next;
+    }
+    return partials[0];
+  }
+
   private gpuReduceSumOfSquares(a: TensorData): TensorData {
     const vk = this.init();
     const totalSize = shapeSize(a.shape);
@@ -1196,6 +1323,51 @@ export class HeliosBackend implements Backend {
     if (!finalRegion) return a; // single element, already reduced
 
     return graphLazyTensor(vk, [], finalRegion);
+  }
+
+  // ── GPU checkFinite ─────────────────────────────────────────────────────
+
+  /**
+   * Check if a tensor contains any Inf or NaN values.
+   * Returns a scalar TensorData: 0.0 = all finite, 1.0 = contains Inf/NaN.
+   * Runs entirely on GPU via parallel reduction.
+   */
+  checkFinite(t: TensorData): TensorData {
+    const size = shapeSize(t.shape);
+    if (size < this._minGpuSize) {
+      // CPU fallback
+      const arr = t.data as Float32Array;
+      for (let i = 0; i < arr.length; i++) {
+        if (!isFinite(arr[i])) return makeTensor([], "f32", Float32Array.from([1.0]));
+      }
+      return makeTensor([], "f32", Float32Array.from([0.0]));
+    }
+
+    const vk = this.init();
+    const pipeline = getPipeline(vk, "check_finite", 2);
+    const bufIn = ensureGpu(vk, t);
+    const region = acquireOutputRegion(vk, 4); // scalar f32
+
+    // Zero the output buffer (so multi-workgroup writes work via store-if-nonfinite)
+    vk.uploadBuffer(region.handle, new Float32Array([0.0]));
+
+    const push = new Float32Array([size, 0]);
+    const groups = Math.ceil(size / WG_SIZE);
+
+    graph.record({
+      kind: "reduce_sum",
+      kernel: "check_finite",
+      pipeline,
+      inputBufs: [],
+      outputRegion: region,
+      groups: [groups, 1, 1],
+      push,
+      pushSize: PUSH_SIZE,
+      shape: [],
+      allBufs: [bufIn, region.handle],
+    });
+
+    return graphLazyTensor(vk, [], region);
   }
 
   // ── Dtype casting ────────────────────────────────────────────────────────
@@ -1761,6 +1933,12 @@ export class HeliosBackend implements Backend {
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
 
+    // Try cooperative matrix (tensor core) path for aligned dimensions
+    if (this._coopMatSupported &&
+        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+      return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, false);
+    }
+
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
     // All discrete GPUs we target (A100, L4, etc.) support 1024 invocations per workgroup
@@ -1838,12 +2016,34 @@ export class HeliosBackend implements Backend {
     return this.cpuMatmul(a, bT);
   }
 
+  /**
+   * GPU matmul where A is transposed: computes A[M,K]^T × B[M,N] = C[K,N].
+   * A is stored as [M,K] but read in transposed layout directly in the kernel.
+   */
+  matmulTransposedA(a: TensorData, b: TensorData): TensorData {
+    const aNdim = a.shape.length, bNdim = b.shape.length;
+    const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
+    const bM = b.shape[bNdim - 2], N = b.shape[bNdim - 1];
+    if (bM !== M) throw new Error("matmulTransposedA shape mismatch");
+    // Use compute FLOPs threshold like regular matmul
+    if (M * N * K >= 100_000) return this.gpuMatmulTransposedA(a, b, M, N, K);
+    // CPU fallback: materialize transpose then multiply
+    const aT = this.transpose(a, aNdim - 2, aNdim - 1);
+    return this.cpuMatmul(aT, b);
+  }
+
   private gpuMatmulTransposed(a: TensorData, b: TensorData, M: number, N: number, K: number): TensorData {
     const vk = this.init();
     const aNdim = a.shape.length;
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
+
+    // Try cooperative matrix (tensor core) path for aligned dimensions
+    if (this._coopMatSupported &&
+        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+      return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, true);
+    }
 
     // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
     // Tile=16 for small matrices (better occupancy when parallelism is limited)
@@ -1896,6 +2096,104 @@ export class HeliosBackend implements Backend {
     }
   }
 
+  private gpuMatmulTransposedA(a: TensorData, b: TensorData, M: number, N: number, K: number): TensorData {
+    const vk = this.init();
+    const aNdim = a.shape.length;
+    const aBatch = a.shape.slice(0, aNdim - 2);
+    let batchSize = 1;
+    for (const d of aBatch) batchSize *= d;
+
+    // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
+    const outM = K;
+    const loopK = M;
+
+    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
+    // Tile=16 for small matrices (better occupancy when parallelism is limited)
+    const useLargeTile = outM * N >= 100_000;
+    const TILE = useLargeTile ? 32 : 16;
+    const suffix = useLargeTile ? "_T32" : "";
+
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const gX = Math.ceil(N / TILE);
+    const gY = Math.ceil(outM / TILE);
+    const push = new Float32Array([outM, N, loopK, 0]);
+
+    if (batchSize === 1) {
+      const pipeline = getPipeline(vk, `matmul_transposed_a${suffix}`, 3, 16);
+      const outBytes = outM * N * 4;
+      const region = acquireOutputRegion(vk, outBytes);
+
+      graph.record({
+        kind: "matmul",
+        kernel: `matmul_transposed_a${suffix}`,
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [gX, gY, 1],
+        push,
+        pushSize: 16,
+        shape: [...aBatch, outM, N],
+      });
+
+      return graphLazyTensor(vk, [...aBatch, outM, N], region);
+    } else {
+      const pipeline = getPipeline(vk, `matmul_transposed_a_batched${suffix}`, 3, 16);
+      const outBytes = batchSize * outM * N * 4;
+      const region = acquireOutputRegion(vk, outBytes);
+
+      graph.record({
+        kind: "matmul",
+        kernel: `matmul_transposed_a_batched${suffix}`,
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [gX, gY, batchSize],
+        push,
+        pushSize: 16,
+        shape: [...aBatch, outM, N],
+      });
+
+      return graphLazyTensor(vk, [...aBatch, outM, N], region);
+    }
+  }
+
+  // ── Cooperative matrix matmul dispatch ───────────────────────────────────────
+
+  private gpuMatmulCoop(
+    vk: NativeAddon, a: TensorData, b: TensorData,
+    M: number, N: number, K: number,
+    aBatch: number[], batchSize: number, transposed: boolean,
+  ): TensorData {
+    const variant = transposed
+      ? (batchSize > 1 ? "transposed_batched" : "transposed")
+      : (batchSize > 1 ? "batched" : "basic");
+    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    const pipeline = getPipeline(vk, kernelName, 3, 16);
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const outBytes = batchSize * M * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+
+    const push = new Float32Array([M, N, K, 0]);
+    const gX = Math.ceil(N / this._coopN);
+    const gY = Math.ceil(M / this._coopM);
+
+    graph.record({
+      kind: "matmul",
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [bufA, bufB],
+      outputRegion: region,
+      groups: [gX, gY, batchSize],
+      push,
+      pushSize: 16,
+      shape: [...aBatch, M, N],
+    });
+
+    return graphLazyTensor(vk, [...aBatch, M, N], region);
+  }
+
   // ── In-place add: A += B on GPU ────────────────────────────────────────────
 
   addInplace(a: TensorData, b: TensorData): void {
@@ -1929,6 +2227,52 @@ export class HeliosBackend implements Backend {
     const aArr = a.data as Float32Array;
     const bArr = b.data as Float32Array;
     for (let i = 0; i < size; i++) aArr[i] += bArr[i];
+  }
+
+  // ── In-place scale: A *= scalar on GPU ─────────────────────────────────────
+
+  scaleInplace(a: TensorData, scalar: number): void {
+    const size = shapeSize(a.shape);
+    if (a.dtype === "f32" && size >= this._minGpuSize) {
+      const vk = this.init();
+      const bufA = ensureGpu(vk, a);
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "scale_inplace_vec4" : "scale_inplace";
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const pipeline = getPipeline(vk, kernelName, 1);
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      const push = new Float32Array([effectiveSize, scalar]);
+
+      graph.record({
+        kind: "inplace",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [],
+        outputRegion: null as any,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape as number[],
+        allBufs: [bufA],
+      });
+
+      invalidateCache(a);
+      return;
+    }
+    if (a.dtype === "f32") {
+      const arr = a.data as Float32Array;
+      for (let i = 0; i < size; i++) arr[i] *= scalar;
+      return;
+    }
+    // Generic fallback for non-f32 dtypes: compute out-of-place then copy back.
+    const scaled = this.scale(a, scalar);
+    const src = scaled.data as any;
+    const dst = a.data as any;
+    if (typeof dst.set === "function") {
+      dst.set(src);
+    } else {
+      for (let i = 0; i < size; i++) dst[i] = src[i];
+    }
   }
 
   // ── Flash Attention (fused forward + backward) ─────────────────────────

@@ -69,22 +69,26 @@ import {
 export {
   kernelMatmul, kernelMatmulBatched,
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
+  kernelMatmulTransposedA, kernelMatmulTransposedABatched,
 } from "./matmul.js";
 
 import {
   kernelMatmul, kernelMatmulBatched,
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
+  kernelMatmulTransposedA, kernelMatmulTransposedABatched,
 } from "./matmul.js";
 
 // Optimizer / utility kernels
 export {
   kernelAdamW, kernelTranspose,
   kernelAddInplace, kernelAddInplaceVec4,
+  kernelScaleInplace, kernelScaleInplaceVec4,
 } from "./optimizer.js";
 
 import {
   kernelAdamW, kernelTranspose,
   kernelAddInplace, kernelAddInplaceVec4,
+  kernelScaleInplace, kernelScaleInplaceVec4,
 } from "./optimizer.js";
 
 // Attention kernels (Flash Attention forward + backward)
@@ -109,6 +113,22 @@ import { kernelSlice2D, kernelScatterSlice2D } from "./copy.js";
 export { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
 
 import { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
+
+// Cooperative matrix matmul kernels
+export {
+  kernelCoopMatmulBasic, kernelCoopMatmulBatched,
+  kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
+} from "./matmul-coop.js";
+
+import {
+  kernelCoopMatmulBasic, kernelCoopMatmulBatched,
+  kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
+} from "./matmul-coop.js";
+
+// Validation kernels
+export { kernelCheckFinite } from "./validate.js";
+
+import { kernelCheckFinite } from "./validate.js";
 
 // ── Kernel cache ────────────────────────────────────────────────────────────
 
@@ -161,13 +181,19 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "matmul_batched": spirv = kernelMatmulBatched(); break;
     case "matmul_transposed": spirv = kernelMatmulTransposed(); break;
     case "matmul_transposed_batched": spirv = kernelMatmulTransposedBatched(); break;
+    case "matmul_transposed_a": spirv = kernelMatmulTransposedA(); break;
+    case "matmul_transposed_a_batched": spirv = kernelMatmulTransposedABatched(); break;
     // Tile-size variants (tile=32 for large matrices)
     case "matmul_T32": spirv = kernelMatmul(32 * 32, 32); break;
     case "matmul_batched_T32": spirv = kernelMatmulBatched(32 * 32, 32); break;
     case "matmul_transposed_T32": spirv = kernelMatmulTransposed(32 * 32, 32); break;
     case "matmul_transposed_batched_T32": spirv = kernelMatmulTransposedBatched(32 * 32, 32); break;
+    case "matmul_transposed_a_T32": spirv = kernelMatmulTransposedA(32 * 32, 32); break;
+    case "matmul_transposed_a_batched_T32": spirv = kernelMatmulTransposedABatched(32 * 32, 32); break;
     case "add_inplace": spirv = kernelAddInplace(wgSize); break;
     case "add_inplace_vec4": spirv = kernelAddInplaceVec4(wgSize); break;
+    case "scale_inplace": spirv = kernelScaleInplace(wgSize); break;
+    case "scale_inplace_vec4": spirv = kernelScaleInplaceVec4(wgSize); break;
     case "gelu_backward": spirv = kernelGeluBackward(wgSize); break;
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;
     case "clamp_backward": spirv = kernelClampBackward(wgSize); break;
@@ -202,6 +228,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     // f16 ↔ f32 cast kernels
     case "cast_f32_to_f16": spirv = kernelCastF32ToF16(wgSize); break;
     case "cast_f16_to_f32": spirv = kernelCastF16ToF32(wgSize); break;
+    case "check_finite": spirv = kernelCheckFinite(wgSize); break;
     default: {
       // Flash attention kernels — name encodes params: flash_attn_{variant}_{Br}_{Bc}_{D}
       const flashMatch = name.match(/^flash_attn_(fwd|bwd_dq|bwd_dkv)_(\d+)_(\d+)_(\d+)$/);
@@ -212,6 +239,20 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           case "fwd":     spirv = kernelFlashAttentionForward(Br, Bc, D); break;
           case "bwd_dq":  spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D); break;
           case "bwd_dkv": spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D); break;
+        }
+      }
+      // Cooperative matrix matmul — name encodes: matmul_coop_{variant}_{M}_{N}_{K}
+      if (!spirv) {
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched)_(\d+)_(\d+)_(\d+)$/);
+        if (coopMatch) {
+          const [, variant, mS, nS, kS] = coopMatch;
+          const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
+          switch (variant) {
+            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK); break;
+            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK); break;
+            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK); break;
+            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK); break;
+          }
         }
       }
       if (!spirv) throw new Error(`Helios: unknown kernel "${name}"`);

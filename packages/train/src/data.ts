@@ -23,6 +23,9 @@ export class DataLoader {
   private packed: boolean;
   /** Packed mode: B cursors spread evenly across the corpus. */
   private cursors?: number[];
+  /** Reusable batch buffers to avoid per-step allocations. */
+  private batchRing: DataBatch[] = [];
+  private batchRingIdx = 0;
 
   constructor(tokens: Int32Array, rng: Rng, batchSize: number, blockSize: number, packed = false) {
     this.tokens = tokens;
@@ -40,6 +43,18 @@ export class DataLoader {
       for (let b = 0; b < batchSize; b++) {
         this.cursors.push(b * stride);
       }
+    }
+
+    // Double-buffer batches so callers that retain a returned batch for a short
+    // time won't be clobbered by the next call.
+    const elems = batchSize * blockSize;
+    for (let i = 0; i < 2; i++) {
+      const inputs = new Int32Array(elems);
+      const targets = new Int32Array(elems);
+      this.batchRing.push({
+        inputs: { shape: [batchSize, blockSize], dtype: "i32", data: inputs },
+        targets: { shape: [batchSize, blockSize], dtype: "i32", data: targets },
+      });
     }
   }
 
@@ -86,8 +101,10 @@ export class DataLoader {
     }
     const maxStart = this.tokens.length - T;
 
-    const inputs = new Int32Array(B * T);
-    const targets = new Int32Array(B * T);
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
 
     for (let b = 0; b < B; b++) {
       const start = Math.floor(this.rng.next() * maxStart);
@@ -97,10 +114,7 @@ export class DataLoader {
       }
     }
 
-    return {
-      inputs: { shape: [B, T], dtype: "i32", data: inputs },
-      targets: { shape: [B, T], dtype: "i32", data: targets },
-    };
+    return batch;
   }
 
   /**
@@ -118,8 +132,10 @@ export class DataLoader {
     const N = this.tokens.length;
     const cursors = this.cursors!;
 
-    const inputs = new Int32Array(B * T);
-    const targets = new Int32Array(B * T);
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
 
     for (let b = 0; b < B; b++) {
       let pos = cursors[b];
@@ -131,10 +147,7 @@ export class DataLoader {
       cursors[b] = pos % N;
     }
 
-    return {
-      inputs: { shape: [B, T], dtype: "i32", data: inputs },
-      targets: { shape: [B, T], dtype: "i32", data: targets },
-    };
+    return batch;
   }
 
   /** Steps per epoch (approximate, for logging). */

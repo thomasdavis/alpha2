@@ -412,3 +412,126 @@ export function kernelAddInplaceVec4(wgSize: number): Uint32Array {
 
   return b.build();
 }
+
+// ── Kernel: scale_inplace ───────────────────────────────────────────────────
+
+/**
+ * In-place scale: A[i] *= scalar
+ *
+ * Push: [len, scalar]
+ * Bindings: 0=A(rw)
+ */
+export function kernelScaleInplace(wgSize: number): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, false); // read-write
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gid = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gid, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  const len = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, len, lenF]);
+  const scalar = loadPushScalar(b, p, pc);
+
+  const inBounds = b.id();
+  b.emit(Op.ULessThan, [p.tBool, inBounds, gid, len]);
+  const labelDo = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [inBounds, labelDo, labelEnd]);
+
+  b.emit(Op.Label, [labelDo]);
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gid]);
+  const aVal = b.id();
+  b.emit(Op.Load, [p.tF32, aVal, ptrA]);
+  const scaled = b.id();
+  b.emit(Op.FMul, [p.tF32, scaled, aVal, scalar]);
+  b.emit(Op.Store, [ptrA, scaled]);
+  b.emit(Op.Branch, [labelEnd]);
+
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * In-place scale vec4: A[i:i+4] *= scalar
+ *
+ * Push: [lenVec4, scalar]
+ * Bindings: 0=A(rw)
+ */
+export function kernelScaleInplaceVec4(wgSize: number): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+  const bufA = declareStorageBuffer(b, tVec4F32, p.tU32, 0, 0, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const tPtrBufVec4A = b.id();
+  b.typePointer(tPtrBufVec4A, StorageClass.Uniform, tVec4F32);
+
+  const tVec4Scalar = b.id();
+  b.typeVector(tVec4Scalar, p.tF32, 4);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gid = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gid, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  const len = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, len, lenF]);
+  const scalar = loadPushScalar(b, p, pc);
+
+  const inBounds = b.id();
+  b.emit(Op.ULessThan, [p.tBool, inBounds, gid, len]);
+  const labelDo = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [inBounds, labelDo, labelEnd]);
+
+  b.emit(Op.Label, [labelDo]);
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [tPtrBufVec4A, ptrA, bufA.varId, p.const0u, gid]);
+  const aVal = b.id();
+  b.emit(Op.Load, [tVec4F32, aVal, ptrA]);
+
+  const vecScalar = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4Scalar, vecScalar, scalar, scalar, scalar, scalar]);
+  const scaled = b.id();
+  b.emit(Op.FMul, [tVec4F32, scaled, aVal, vecScalar]);
+  b.emit(Op.Store, [ptrA, scaled]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}

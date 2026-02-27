@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Native addon interface ──────────────────────────────────────────────────
 
 export interface NativeAddon {
-  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean };
+  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean };
   createBuffer(byteLength: number, hostVisible?: number): number;
   uploadBuffer(handle: number, data: Float32Array): void;
   readBuffer(handle: number): Float32Array;
@@ -23,7 +23,8 @@ export interface NativeAddon {
   createPipeline(spirv: Uint32Array, numBindings: number, pushConstantSize?: number): number;
   dispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
   batchBegin(): void;
-  batchDispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): void;
+  batchDispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array, writeMask?: Uint32Array): void;
+  batchDispatchMany(packed: ArrayBuffer, count: number): void;
   batchSubmit(): number;
   waitTimeline(value: number): void;
   getCompleted(): number;
@@ -35,7 +36,7 @@ export interface NativeAddon {
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 let _native: NativeAddon | null = null;
-let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } | null = null;
+let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } | null = null;
 
 function findNativeAddon(): string {
   // Try multiple locations: native/ dir relative to source, or dist/
@@ -56,7 +57,7 @@ function findNativeAddon(): string {
 }
 
 /** Load the native addon and initialize the Vulkan device. */
-export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } {
+export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } {
   if (_deviceInfo) return _deviceInfo;
 
   const addonPath = findNativeAddon();
@@ -76,7 +77,7 @@ export function getNative(): NativeAddon {
 }
 
 /** Get device info. */
-export function getDeviceInfo(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean } {
+export function getDeviceInfo(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } {
   if (!_deviceInfo) initDevice();
   return _deviceInfo!;
 }

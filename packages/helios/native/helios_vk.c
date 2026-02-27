@@ -211,6 +211,20 @@ typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; } VkFe
 
 typedef struct { VkStructureType sType; const void* pNext; VkFlags srcAccessMask; VkFlags dstAccessMask; } VkMemoryBarrier;
 
+// VkBufferMemoryBarrier for per-buffer hazard tracking
+// VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER = 44
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkFlags srcAccessMask;
+  VkFlags dstAccessMask;
+  uint32_t srcQueueFamilyIndex;
+  uint32_t dstQueueFamilyIndex;
+  VkBuffer buffer;
+  VkDeviceSize offset;
+  VkDeviceSize size;
+} VkBufferMemoryBarrier;
+
 // Timeline semaphore structs (Vulkan 1.2)
 typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; } VkSemaphoreCreateInfo;
 typedef struct { VkStructureType sType; const void* pNext; uint32_t semaphoreType; uint64_t initialValue; } VkSemaphoreTypeCreateInfo;
@@ -237,6 +251,40 @@ typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; uint32
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 1000059001
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES 49
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES 51
+
+// Cooperative matrix (VK_KHR_cooperative_matrix)
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR 1000506000
+#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR 1000506002
+
+// VkComponentTypeKHR values
+#define VK_COMPONENT_TYPE_FLOAT16_KHR 0
+#define VK_COMPONENT_TYPE_FLOAT32_KHR 1
+
+// VkScopeKHR
+#define VK_SCOPE_SUBGROUP_KHR 3
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkBool32 cooperativeMatrix;
+  VkBool32 cooperativeMatrixRobustBufferAccess;
+} VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t MSize;
+  uint32_t NSize;
+  uint32_t KSize;
+  uint32_t AType;  // VkComponentTypeKHR
+  uint32_t BType;
+  uint32_t CType;
+  uint32_t ResultType;
+  VkBool32 saturatingAccumulation;
+  uint32_t scope;  // VkScopeKHR
+} VkCooperativeMatrixPropertiesKHR;
+
+typedef struct { char extensionName[256]; uint32_t specVersion; } VkExtensionProperties;
 
 // VkPhysicalDeviceVulkan11Features — storageBuffer16BitAccess is the first bool field
 typedef struct {
@@ -346,6 +394,12 @@ typedef void     (*PFN_vkDestroyQueryPool)(VkDevice, VkQueryPool, const void*);
 typedef void     (*PFN_vkCmdWriteTimestamp)(VkCommandBuffer, VkFlags, VkQueryPool, uint32_t);
 typedef void     (*PFN_vkCmdResetQueryPool)(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t);
 typedef VkResult (*PFN_vkGetQueryPoolResults)(VkDevice, VkQueryPool, uint32_t, uint32_t, size_t, void*, VkDeviceSize, VkFlags);
+typedef VkResult (*PFN_vkEnumerateDeviceExtensionProperties)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
+typedef VkResult (*PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)(VkPhysicalDevice, uint32_t*, VkCooperativeMatrixPropertiesKHR*);
+
+// Push descriptors (VK_KHR_push_descriptor)
+typedef void (*PFN_vkCmdPushDescriptorSetKHR)(VkCommandBuffer, uint32_t /*bindPoint*/, VkPipelineLayout, uint32_t /*set*/, uint32_t /*writeCount*/, const VkWriteDescriptorSet*);
+#define VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR 0x00000001
 
 // Push constant range
 typedef struct { VkFlags stageFlags; uint32_t offset; uint32_t size; } VkPushConstantRange;
@@ -361,16 +415,31 @@ static VkPhysicalDevice physDevice = NULL;
 static VkDevice device = NULL;
 static VkQueue computeQueue = NULL;
 static VkCommandPool cmdPool = NULL;
-static VkDescriptorPool persistentDescPool = 0;
 static VkCommandBuffer dispatchCmdBuf = NULL;
 static VkCommandBuffer transferCmdBuf = NULL;
-static VkCommandBuffer batchCmdBuf = NULL;
+
+// Multi-frame-in-flight ring: CPU records batch N+1 while GPU executes batch N
+#define RING_SIZE 3
+typedef struct {
+  VkCommandPool   cmdPool;
+  VkCommandBuffer cmd;
+  VkDescriptorPool descPool;    // NULL if push descriptors available
+  uint64_t        timelineValue;
+} BatchCtx;
+static BatchCtx g_ring[RING_SIZE];
+static uint32_t g_ringHead = 0;
+
+// Legacy single descriptor pool for single-dispatch path (dispatchCmdBuf)
+static VkDescriptorPool singleDescPool = 0;
 static VkFence persistentFence = 0;
 static VkSemaphore timelineSem = 0;
 static uint64_t nextTimelineValue = 1;
 static uint64_t lastDispatchTimeline = 0;  // timeline value of last async dispatch
 static int batchRecording = 0;
 static uint32_t batchDispatchCount = 0;
+
+// Per-buffer write tracking generation counter (arrays declared after MAX_BUFFERS)
+static uint32_t bufWriteGeneration = 0;        // bumped on batchBegin
 
 // Dispatch state cache — skip re-recording when pipeline+buffers+groups unchanged
 static int dispatchCacheValid = 0;
@@ -382,11 +451,24 @@ static uint8_t cachedPushData[128];
 static uint32_t cachedPushSize = 0;
 static uint32_t computeQueueFamily = 0;
 
-// Staging buffer for device-local transfers
+// Legacy staging buffer for device-local transfers (fallback for large uploads)
 static VkBuffer stagingBuffer = 0;
 static VkDeviceMemory stagingMemory = 0;
 static void* stagingMapped = NULL;
 static VkDeviceSize stagingSize = 0;
+
+// Async staging ring: 4 slots × 16MB each, persistently mapped
+#define STAGING_RING_SIZE 4
+#define STAGING_SLOT_BYTES (16 * 1024 * 1024)
+typedef struct {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+  void* mapped;
+  VkDeviceSize capacity;
+  uint64_t timelineValue;  // 0 = free, >0 = in-flight until timeline reaches this
+} StagingSlot;
+static StagingSlot stagingRing[STAGING_RING_SIZE];
+static int stagingRingInited = 0;
 static VkPhysicalDeviceMemoryProperties memProps;
 static char deviceNameStr[256] = {0};
 static uint32_t vendorId = 0;
@@ -396,6 +478,10 @@ static float timestampPeriodNs = 1.0f;  // ns per tick (most GPUs = 1.0)
 static int f16Supported = 0;            // can use f16 storage buffers
 static PFN_vkGetPhysicalDeviceFeatures2 fp_vkGetPhysicalDeviceFeatures2;
 
+// Push descriptors (VK_KHR_push_descriptor)
+static int hasPushDescriptors = 0;
+static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
+
 // Async transfer queue (separate DMA engine)
 static VkQueue transferQueue = NULL;
 static uint32_t transferQueueFamily = UINT32_MAX;
@@ -403,6 +489,10 @@ static VkCommandPool transferCmdPool = NULL;
 static VkCommandBuffer xferCmdBuf = NULL;
 static VkFence transferFence = 0;
 static int hasAsyncTransfer = 0;
+
+// Cooperative matrix state
+static int coopMatSupported = 0;
+static uint32_t coopMatM = 0, coopMatN = 0, coopMatK = 0;
 
 // Function pointers
 static PFN_vkCreateInstance                       fp_vkCreateInstance;
@@ -584,6 +674,10 @@ typedef struct {
 static BufferSlot   buffers[MAX_BUFFERS];
 static PipelineSlot pipelines[MAX_PIPELINES];
 
+// Per-buffer write tracking for fine-grained barriers within a batch (O(1) lookup)
+static uint32_t bufWriteDispatch[MAX_BUFFERS]; // dispatch index of last write per buffer slot
+static uint32_t bufWriteGen[MAX_BUFFERS];      // generation stamp per buffer slot
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 #define LOAD_VK(name) do { \
@@ -660,6 +754,42 @@ static VkResult ensureStagingBuffer(VkDeviceSize needed) {
   fp_vkMapMemory(device, stagingMemory, 0, newSize, 0, &stagingMapped);
   stagingSize = newSize;
   return VK_SUCCESS;
+}
+
+// Initialize the async staging ring (called lazily on first device-local upload)
+static int initStagingRing(void) {
+  if (stagingRingInited) return 1;
+  uint32_t stageFamilies[2] = {computeQueueFamily, transferQueueFamily};
+  for (int i = 0; i < STAGING_RING_SIZE; i++) {
+    VkBufferCreateInfo bi = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = STAGING_SLOT_BYTES,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = hasAsyncTransfer ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+      .queueFamilyIndexCount = hasAsyncTransfer ? 2 : 0,
+      .pQueueFamilyIndices = hasAsyncTransfer ? stageFamilies : NULL,
+    };
+    VkResult r = fp_vkCreateBuffer(device, &bi, NULL, &stagingRing[i].buffer);
+    if (r != VK_SUCCESS) return 0;
+    VkMemoryRequirements req;
+    fp_vkGetBufferMemoryRequirements(device, stagingRing[i].buffer, &req);
+    VkFlags memFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uint32_t mt = findMemoryType(req.memoryTypeBits, memFlags);
+    if (mt == UINT32_MAX) return 0;
+    VkMemoryAllocateInfo ai = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = req.size,
+      .memoryTypeIndex = mt,
+    };
+    r = fp_vkAllocateMemory(device, &ai, NULL, &stagingRing[i].memory);
+    if (r != VK_SUCCESS) return 0;
+    fp_vkBindBufferMemory(device, stagingRing[i].buffer, stagingRing[i].memory, 0);
+    fp_vkMapMemory(device, stagingRing[i].memory, 0, STAGING_SLOT_BYTES, 0, &stagingRing[i].mapped);
+    stagingRing[i].capacity = STAGING_SLOT_BYTES;
+    stagingRing[i].timelineValue = 0;
+  }
+  stagingRingInited = 1;
+  return 1;
 }
 
 // Submit a command buffer with fence-based sync (used for transfers)
@@ -795,6 +925,10 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   // Optional: load vkGetPhysicalDeviceFeatures2 (for f16 probing)
   fp_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)dlsym(vk_lib, "vkGetPhysicalDeviceFeatures2");
 
+  // Optional: load extension enumeration (for cooperative matrix probing)
+  PFN_vkEnumerateDeviceExtensionProperties fp_vkEnumerateDeviceExtensionProperties =
+    (PFN_vkEnumerateDeviceExtensionProperties)dlsym(vk_lib, "vkEnumerateDeviceExtensionProperties");
+
   // Create instance
   VkApplicationInfo appInfo = {
     .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -903,6 +1037,50 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
 
+  // Probe device extensions (cooperative matrix, push descriptors)
+  coopMatSupported = 0;
+  int hasCoopMatExt = 0;
+  hasPushDescriptors = 0;
+  if (fp_vkEnumerateDeviceExtensionProperties) {
+    uint32_t extCount = 0;
+    fp_vkEnumerateDeviceExtensionProperties(physDevice, NULL, &extCount, NULL);
+    if (extCount > 0) {
+      VkExtensionProperties* exts = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * extCount);
+      fp_vkEnumerateDeviceExtensionProperties(physDevice, NULL, &extCount, exts);
+      for (uint32_t i = 0; i < extCount; i++) {
+        if (strcmp(exts[i].extensionName, "VK_KHR_cooperative_matrix") == 0) {
+          hasCoopMatExt = 1;
+        }
+        if (strcmp(exts[i].extensionName, "VK_KHR_push_descriptor") == 0) {
+          hasPushDescriptors = 1;
+        }
+      }
+      free(exts);
+    }
+  }
+
+  // If extension present, probe the feature
+  VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures = {0};
+  if (hasCoopMatExt && fp_vkGetPhysicalDeviceFeatures2) {
+    coopMatFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+    // Re-probe features with coop matrix chained in
+    Vk12Features feat12b = {0};
+    feat12b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    feat12b.pNext = &coopMatFeatures;
+    Vk11Features feat11b = {0};
+    feat11b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    feat11b.pNext = &feat12b;
+    VkPhysicalDeviceFeatures2 features2b = {0};
+    features2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2b.pNext = &feat11b;
+    fp_vkGetPhysicalDeviceFeatures2(physDevice, &features2b);
+    if (coopMatFeatures.cooperativeMatrix) {
+      hasCoopMatExt = 2; // confirmed feature support
+    } else {
+      hasCoopMatExt = 0;
+    }
+  }
+
   // Create logical device (with f16 features if supported)
   float priority = 1.0f;
   VkDeviceQueueCreateInfo queueCreates[2];
@@ -925,6 +1103,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   // Enable f16 features in pNext chain
   Vk11Features enableFeat11 = {0};
   Vk12Features enableFeat12 = {0};
+  VkPhysicalDeviceCooperativeMatrixFeaturesKHR enableCoopMat = {0};
   void* devicePNext = NULL;
   if (f16Supported) {
     enableFeat12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -935,20 +1114,48 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     devicePNext = &enableFeat11;
   }
 
+  // Enable push descriptors if supported
+  const char* enabledExtensions[4];
+  uint32_t enabledExtCount = 0;
+  if (hasPushDescriptors) {
+    enabledExtensions[enabledExtCount++] = "VK_KHR_push_descriptor";
+  }
+
+  // Chain cooperative matrix features if supported
+  if (hasCoopMatExt == 2) {
+    enableCoopMat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+    enableCoopMat.cooperativeMatrix = 1;
+    // Chain into pNext
+    if (devicePNext) {
+      enableFeat12.pNext = &enableCoopMat;
+    } else if (f16Supported) {
+      enableFeat11.pNext = &enableFeat12;
+      enableFeat12.pNext = &enableCoopMat;
+      devicePNext = &enableFeat11;
+    } else {
+      devicePNext = &enableCoopMat;
+    }
+    enabledExtensions[enabledExtCount++] = "VK_KHR_cooperative_matrix";
+  }
+
   VkDeviceCreateInfo devCreate = {
     .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
     .pNext = devicePNext,
     .queueCreateInfoCount = queueCreateCount,
     .pQueueCreateInfos = queueCreates,
+    .enabledExtensionCount = enabledExtCount,
+    .ppEnabledExtensionNames = enabledExtCount > 0 ? enabledExtensions : NULL,
   };
   res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
   if (res != VK_SUCCESS) {
-    // If f16 features caused failure, retry without
-    if (f16Supported) {
-      f16Supported = 0;
-      devCreate.pNext = NULL;
-      res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
-    }
+    // Retry without optional features
+    f16Supported = 0;
+    hasCoopMatExt = 0;
+    hasPushDescriptors = 0;
+    devCreate.pNext = NULL;
+    devCreate.enabledExtensionCount = 0;
+    devCreate.ppEnabledExtensionNames = NULL;
+    res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
     if (res != VK_SUCCESS) {
       napi_throw_error(env, NULL, "vkCreateDevice failed");
       return NULL;
@@ -957,6 +1164,18 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   fp_vkGetDeviceQueue(device, computeQueueFamily, 0, &computeQueue);
 
+  // Load push descriptor function pointer if extension was enabled
+  if (hasPushDescriptors) {
+    typedef void* (*PFN_vkGetDeviceProcAddr)(VkDevice, const char*);
+    PFN_vkGetDeviceProcAddr fp_getDevProcAddr = (PFN_vkGetDeviceProcAddr)dlsym(vk_lib, "vkGetDeviceProcAddr");
+    if (fp_getDevProcAddr) {
+      fp_vkCmdPushDescriptorSetKHR = (PFN_vkCmdPushDescriptorSetKHR)fp_getDevProcAddr(device, "vkCmdPushDescriptorSetKHR");
+      if (!fp_vkCmdPushDescriptorSetKHR) hasPushDescriptors = 0;
+    } else {
+      hasPushDescriptors = 0;
+    }
+  }
+
   // Get transfer queue if separate family found
   hasAsyncTransfer = 0;
   if (transferQueueFamily != UINT32_MAX) {
@@ -964,7 +1183,42 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     hasAsyncTransfer = 1;
   }
 
-  // Create command pool
+  // Query cooperative matrix properties to find supported tile sizes
+  if (hasCoopMatExt == 2) {
+    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR fp_getCoopMatProps =
+      (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)dlsym(vk_lib,
+        "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+    if (fp_getCoopMatProps) {
+      uint32_t propCount = 0;
+      fp_getCoopMatProps(physDevice, &propCount, NULL);
+      if (propCount > 0) {
+        VkCooperativeMatrixPropertiesKHR* props =
+          (VkCooperativeMatrixPropertiesKHR*)malloc(sizeof(VkCooperativeMatrixPropertiesKHR) * propCount);
+        for (uint32_t i = 0; i < propCount; i++) {
+          props[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+          props[i].pNext = NULL;
+        }
+        fp_getCoopMatProps(physDevice, &propCount, props);
+        // Find a combination with f16 A/B, f32 C/Result, subgroup scope
+        for (uint32_t i = 0; i < propCount; i++) {
+          if (props[i].AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+              props[i].BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+              props[i].CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+              props[i].ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+              props[i].scope == VK_SCOPE_SUBGROUP_KHR) {
+            coopMatSupported = 1;
+            coopMatM = props[i].MSize;
+            coopMatN = props[i].NSize;
+            coopMatK = props[i].KSize;
+            break;
+          }
+        }
+        free(props);
+      }
+    }
+  }
+
+  // Create command pool for single-dispatch and transfer paths
   VkCommandPoolCreateInfo poolInfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
     .flags = 0x00000002, // VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
@@ -976,30 +1230,76 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  // Create persistent descriptor pool (reused across all dispatches)
-  VkDescriptorPoolSize persistPoolSize = {
+  // Create small descriptor pool for single-dispatch path
+  VkDescriptorPoolSize singlePoolSize = {
     .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-    .descriptorCount = 2048,
+    .descriptorCount = 256,
   };
-  VkDescriptorPoolCreateInfo persistDpInfo = {
+  VkDescriptorPoolCreateInfo singleDpInfo = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-    .maxSets = 256,
+    .maxSets = 32,
     .poolSizeCount = 1,
-    .pPoolSizes = &persistPoolSize,
+    .pPoolSizes = &singlePoolSize,
   };
-  res = fp_vkCreateDescriptorPool(device, &persistDpInfo, NULL, &persistentDescPool);
+  res = fp_vkCreateDescriptorPool(device, &singleDpInfo, NULL, &singleDescPool);
   if (res != VK_SUCCESS) {
-    napi_throw_error(env, NULL, "vkCreateDescriptorPool (persistent) failed");
+    napi_throw_error(env, NULL, "vkCreateDescriptorPool (single) failed");
     return NULL;
   }
 
-  // Pre-allocate three command buffers: dispatch (cacheable), transfer, batch
-  VkCommandBuffer cmdBufs[3];
+  // Create multi-frame-in-flight ring: 3 slots with independent cmdPool + descPool
+  memset(g_ring, 0, sizeof(g_ring));
+  g_ringHead = 0;
+  for (int ri = 0; ri < RING_SIZE; ri++) {
+    VkCommandPoolCreateInfo ringPoolInfo = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = 0x00000002, // VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+      .queueFamilyIndex = computeQueueFamily,
+    };
+    res = fp_vkCreateCommandPool(device, &ringPoolInfo, NULL, &g_ring[ri].cmdPool);
+    if (res != VK_SUCCESS) {
+      napi_throw_error(env, NULL, "vkCreateCommandPool (ring) failed");
+      return NULL;
+    }
+    VkCommandBufferAllocateInfo ringCbInfo = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = g_ring[ri].cmdPool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1,
+    };
+    res = fp_vkAllocateCommandBuffers(device, &ringCbInfo, &g_ring[ri].cmd);
+    if (res != VK_SUCCESS) {
+      napi_throw_error(env, NULL, "vkAllocateCommandBuffers (ring) failed");
+      return NULL;
+    }
+    // Only create descriptor pool if push descriptors not available
+    if (!hasPushDescriptors) {
+      VkDescriptorPoolSize ringDescSize = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 16384,
+      };
+      VkDescriptorPoolCreateInfo ringDpInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 2048,
+        .poolSizeCount = 1,
+        .pPoolSizes = &ringDescSize,
+      };
+      res = fp_vkCreateDescriptorPool(device, &ringDpInfo, NULL, &g_ring[ri].descPool);
+      if (res != VK_SUCCESS) {
+        napi_throw_error(env, NULL, "vkCreateDescriptorPool (ring) failed");
+        return NULL;
+      }
+    }
+    g_ring[ri].timelineValue = 0;
+  }
+
+  // Pre-allocate command buffers for single-dispatch and transfer paths
+  VkCommandBuffer cmdBufs[2];
   VkCommandBufferAllocateInfo persistCbInfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
     .commandPool = cmdPool,
     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-    .commandBufferCount = 3,
+    .commandBufferCount = 2,
   };
   res = fp_vkAllocateCommandBuffers(device, &persistCbInfo, cmdBufs);
   if (res != VK_SUCCESS) {
@@ -1008,7 +1308,6 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   }
   dispatchCmdBuf = cmdBufs[0];
   transferCmdBuf = cmdBufs[1];
-  batchCmdBuf = cmdBufs[2];
 
   // Create persistent fence for synchronization (used for transfers)
   VkFenceCreateInfo fenceInfo = { .sType = 8 /* VK_STRUCTURE_TYPE_FENCE_CREATE_INFO */ };
@@ -1148,6 +1447,21 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_get_boolean(env, hasAsyncTransfer, &val);
   napi_set_named_property(env, result, "hasAsyncTransfer", val);
+
+  napi_get_boolean(env, coopMatSupported, &val);
+  napi_set_named_property(env, result, "coopMatSupported", val);
+
+  napi_create_uint32(env, coopMatM, &val);
+  napi_set_named_property(env, result, "coopMatM", val);
+
+  napi_create_uint32(env, coopMatN, &val);
+  napi_set_named_property(env, result, "coopMatN", val);
+
+  napi_create_uint32(env, coopMatK, &val);
+  napi_set_named_property(env, result, "coopMatK", val);
+
+  napi_get_boolean(env, hasPushDescriptors, &val);
+  napi_set_named_property(env, result, "hasPushDescriptors", val);
 
   return result;
 }
@@ -1303,14 +1617,72 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
     // Host-visible: direct memcpy (still need to wait if GPU is writing to this buffer)
     waitTimelineValue(buffers[slot].lastWriteTimeline);
     memcpy(buffers[slot].mapped, data, copyLen);
+  } else if (copyLen <= STAGING_SLOT_BYTES && initStagingRing()) {
+    // Device-local + fits in a staging ring slot: async copy (no blocking wait)
+    // Find a free staging slot
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    int found = -1;
+    for (int si = 0; si < STAGING_RING_SIZE; si++) {
+      if (stagingRing[si].timelineValue == 0 || stagingRing[si].timelineValue <= completed) {
+        found = si;
+        break;
+      }
+    }
+    if (found < 0) {
+      // All staging slots in flight — wait for the oldest one
+      uint64_t oldest = stagingRing[0].timelineValue;
+      found = 0;
+      for (int si = 1; si < STAGING_RING_SIZE; si++) {
+        if (stagingRing[si].timelineValue < oldest) {
+          oldest = stagingRing[si].timelineValue;
+          found = si;
+        }
+      }
+      waitTimelineValue(stagingRing[found].timelineValue);
+    }
+
+    memcpy(stagingRing[found].mapped, data, copyLen);
+
+    // If a batch is currently recording, record the copy into the batch command buffer
+    if (batchRecording) {
+      VkBufferCopy region = { 0, 0, copyLen };
+      fp_vkCmdCopyBuffer(g_ring[g_ringHead].cmd, stagingRing[found].buffer, buffers[slot].buffer, 1, &region);
+      // Add a transfer→compute barrier so subsequent dispatches see the copy
+      VkBufferMemoryBarrier xferBarrier = {
+        .sType = 44,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = 0xFFFFFFFF,
+        .dstQueueFamilyIndex = 0xFFFFFFFF,
+        .buffer = buffers[slot].buffer,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+      };
+      fp_vkCmdPipelineBarrier(g_ring[g_ringHead].cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 1, &xferBarrier, 0, NULL);
+      // Staging slot will be marked with the batch's timeline value in batchSubmit
+      stagingRing[found].timelineValue = nextTimelineValue; // tentative — will be committed on submit
+    } else {
+      // No batch recording — submit a standalone async copy
+      fp_vkResetCommandBuffer(transferCmdBuf, 0);
+      VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+      fp_vkBeginCommandBuffer(transferCmdBuf, &bi);
+      VkBufferCopy region = { 0, 0, copyLen };
+      fp_vkCmdCopyBuffer(transferCmdBuf, stagingRing[found].buffer, buffers[slot].buffer, 1, &region);
+      fp_vkEndCommandBuffer(transferCmdBuf);
+      uint64_t tv = submitCmdBufAsync(transferCmdBuf);
+      stagingRing[found].timelineValue = tv;
+      if (tv > 0) lastDispatchTimeline = tv;
+    }
   } else {
-    // Device-local: stage and copy — must wait for in-flight dispatches first
+    // Device-local, large buffer: blocking staging copy (fallback)
     waitTimelineValue(lastDispatchTimeline);
     VkResult r = ensureStagingBuffer(copyLen);
     if (r != VK_SUCCESS) { napi_throw_error(env, NULL, "staging buffer alloc failed"); return NULL; }
     memcpy(stagingMapped, data, copyLen);
 
-    // Use dedicated transfer queue if available (frees compute queue)
     VkCommandBuffer cb = hasAsyncTransfer ? xferCmdBuf : transferCmdBuf;
     VkQueue q = hasAsyncTransfer ? transferQueue : computeQueue;
     VkFence f = hasAsyncTransfer ? transferFence : persistentFence;
@@ -1489,6 +1861,7 @@ static napi_value napi_createPipeline(napi_env env, napi_callback_info info) {
   }
   VkDescriptorSetLayoutCreateInfo descLayoutInfo = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    .flags = hasPushDescriptors ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0,
     .bindingCount = numBindings,
     .pBindings = bindings,
   };
@@ -1616,12 +1989,12 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     waitTimelineValue(lastDispatchTimeline);
 
     // Reset persistent descriptor pool (frees all prior sets)
-    fp_vkResetDescriptorPool(device, persistentDescPool, 0);
+    fp_vkResetDescriptorPool(device, singleDescPool, 0);
 
     // Allocate descriptor set from persistent pool
     VkDescriptorSetAllocateInfo dsAllocInfo = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-      .descriptorPool = persistentDescPool,
+      .descriptorPool = singleDescPool,
       .descriptorSetCount = 1,
       .pSetLayouts = &ps->descLayout,
     };
@@ -1704,27 +2077,49 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
 // ── N-API: batchBegin() ─────────────────────────────────────────────────────
 
 static napi_value napi_batchBegin(napi_env env, napi_callback_info info) {
-  // Wait for any in-flight batch to finish before resetting the descriptor pool
-  // and command buffer. Without this, we'd destroy descriptors still in use by the GPU.
-  if (lastDispatchTimeline > 0) {
-    waitTimelineValue(lastDispatchTimeline);
+  uint32_t slot = g_ringHead;
+  // Only wait if THIS ring slot's GPU work hasn't completed yet
+  if (g_ring[slot].timelineValue > 0) {
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed < g_ring[slot].timelineValue) {
+      waitTimelineValue(g_ring[slot].timelineValue);
+    }
   }
 
-  fp_vkResetDescriptorPool(device, persistentDescPool, 0);
+  if (g_ring[slot].descPool) {
+    fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
+  }
   dispatchCacheValid = 0; // batch uses the descriptor pool, invalidate single-dispatch cache
 
-  fp_vkResetCommandBuffer(batchCmdBuf, 0);
+  fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
   VkCommandBufferBeginInfo beginInfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
-  fp_vkBeginCommandBuffer(batchCmdBuf, &beginInfo);
+  fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+
+  // Global memory barrier: ensure all shader writes from previously submitted
+  // batches are visible to this batch. Without this, the ring's partial-wait
+  // (only waiting on this slot, not the most recent batch) would allow stale reads.
+  {
+    VkMemoryBarrier memBarrier = {
+      .sType = 46, // VK_STRUCTURE_TYPE_MEMORY_BARRIER
+      .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+    };
+    fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &memBarrier, 0, NULL, 0, NULL);
+  }
+
   batchRecording = 1;
   batchDispatchCount = 0;
+  bufWriteGeneration++;
   return NULL;
 }
 
-// ── N-API: batchDispatch(pipeline, buffers[], gX, gY, gZ, pushConstants?) ───
+// ── N-API: batchDispatch(pipeline, buffers[], gX, gY, gZ, pushConstants?, writeMask?) ──
 
 static napi_value napi_batchDispatch(napi_env env, napi_callback_info info) {
   if (!batchRecording) {
@@ -1732,8 +2127,8 @@ static napi_value napi_batchDispatch(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  size_t argc = 6;
-  napi_value args[6];
+  size_t argc = 7;
+  napi_value args[7];
   napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 
   int32_t pipeSlot;
@@ -1773,59 +2168,139 @@ static napi_value napi_batchDispatch(napi_env env, napi_callback_info info) {
     pushSize = 0;
   }
 
-  // Insert pipeline barrier between dispatches (compute RAW hazard)
+  // Parse optional write mask (7th argument): bit i = buffer i is written
+  uint32_t writeMask = 0;
+  int hasWriteMask = 0;
+  if (argc > 6) {
+    void* wmData = NULL;
+    size_t wmLen = 0;
+    napi_status wmStatus = napi_get_typedarray_info(env, args[6], NULL, &wmLen, &wmData, NULL, NULL);
+    if (wmStatus == napi_ok && wmData && wmLen > 0) {
+      writeMask = ((uint32_t*)wmData)[0];
+      hasWriteMask = 1;
+    }
+  }
+
+  // Per-buffer barrier: only insert barriers for buffers that have RAW/WAR hazards
   if (batchDispatchCount > 0) {
-    VkMemoryBarrier barrier = {
-      .sType = 46, // VK_STRUCTURE_TYPE_MEMORY_BARRIER
-      .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-    };
-    fp_vkCmdPipelineBarrier(batchCmdBuf,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0, 1, &barrier, 0, NULL, 0, NULL);
+    if (!hasWriteMask) {
+      // Legacy fallback: global memory barrier (safe but conservative)
+      VkMemoryBarrier barrier = {
+        .sType = 46, // VK_STRUCTURE_TYPE_MEMORY_BARRIER
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+      };
+      fp_vkCmdPipelineBarrier(g_ring[g_ringHead].cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &barrier, 0, NULL, 0, NULL);
+    } else {
+      // Fine-grained: emit VkBufferMemoryBarrier only for buffers with actual hazards
+      // O(1) per buffer: check bufWriteGen[slot] == bufWriteGeneration
+      VkBufferMemoryBarrier bufBarriers[32];
+      uint32_t barrierCount = 0;
+
+      for (uint32_t i = 0; i < bufCount; i++) {
+        int32_t slot = bufSlots[i];
+        if (slot >= 0 && slot < MAX_BUFFERS && bufWriteGen[slot] == bufWriteGeneration) {
+          bufBarriers[barrierCount] = (VkBufferMemoryBarrier){
+            .sType = 44, // VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = ((writeMask >> i) & 1)
+              ? (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
+              : VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = 0xFFFFFFFF, // VK_QUEUE_FAMILY_IGNORED
+            .dstQueueFamilyIndex = 0xFFFFFFFF,
+            .buffer = buffers[slot].buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+          };
+          barrierCount++;
+        }
+      }
+
+      if (barrierCount > 0) {
+        fp_vkCmdPipelineBarrier(g_ring[g_ringHead].cmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 0, NULL, barrierCount, bufBarriers, 0, NULL);
+      }
+    }
   }
 
-  // Allocate descriptor set
-  VkDescriptorSetAllocateInfo dsAllocInfo = {
-    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    .descriptorPool = persistentDescPool,
-    .descriptorSetCount = 1,
-    .pSetLayouts = &ps->descLayout,
-  };
-  VkDescriptorSet descSet;
-  VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
-  if (res != VK_SUCCESS) {
-    napi_throw_error(env, NULL, "batch: vkAllocateDescriptorSets failed");
-    return NULL;
+  // Record write tracking: O(1) per buffer via direct-indexed arrays
+  if (hasWriteMask) {
+    for (uint32_t i = 0; i < bufCount; i++) {
+      if ((writeMask >> i) & 1) {
+        bufWriteDispatch[bufSlots[i]] = batchDispatchCount;
+        bufWriteGen[bufSlots[i]] = bufWriteGeneration;
+      }
+    }
+  } else {
+    // Without write mask, conservatively mark all buffers as written
+    for (uint32_t i = 0; i < bufCount; i++) {
+      bufWriteDispatch[bufSlots[i]] = batchDispatchCount;
+      bufWriteGen[bufSlots[i]] = bufWriteGeneration;
+    }
   }
 
-  // Write descriptors
+  // Descriptors + dispatch into ring slot's command buffer
   VkDescriptorBufferInfo bufInfos[32];
   VkWriteDescriptorSet writes[32];
-  for (uint32_t i = 0; i < bufCount; i++) {
-    bufInfos[i] = (VkDescriptorBufferInfo){
-      .buffer = buffers[bufSlots[i]].buffer,
-      .offset = 0,
-      .range = VK_WHOLE_SIZE,
-    };
-    writes[i] = (VkWriteDescriptorSet){
-      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = descSet,
-      .dstBinding = i,
-      .descriptorCount = 1,
-      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      .pBufferInfo = &bufInfos[i],
-    };
-  }
-  fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+  VkCommandBuffer ringCmd = g_ring[g_ringHead].cmd;
+  fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
 
-  // Record dispatch
-  fp_vkCmdBindPipeline(batchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
-  fp_vkCmdBindDescriptorSets(batchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
-  if (pushSize > 0) {
-    fp_vkCmdPushConstants(batchCmdBuf, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushData);
+  if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+    for (uint32_t i = 0; i < bufCount; i++) {
+      bufInfos[i] = (VkDescriptorBufferInfo){
+        .buffer = buffers[bufSlots[i]].buffer,
+        .offset = 0,
+        .range = VK_WHOLE_SIZE,
+      };
+      writes[i] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = 0,
+        .dstBinding = i,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &bufInfos[i],
+      };
+    }
+    fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+      ps->layout, 0, bufCount, writes);
+  } else {
+    VkDescriptorSetAllocateInfo dsAllocInfo = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = g_ring[g_ringHead].descPool,
+      .descriptorSetCount = 1,
+      .pSetLayouts = &ps->descLayout,
+    };
+    VkDescriptorSet descSet;
+    VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+    if (res != VK_SUCCESS) {
+      napi_throw_error(env, NULL, "batch: vkAllocateDescriptorSets failed");
+      return NULL;
+    }
+    for (uint32_t i = 0; i < bufCount; i++) {
+      bufInfos[i] = (VkDescriptorBufferInfo){
+        .buffer = buffers[bufSlots[i]].buffer,
+        .offset = 0,
+        .range = VK_WHOLE_SIZE,
+      };
+      writes[i] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = descSet,
+        .dstBinding = i,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &bufInfos[i],
+      };
+    }
+    fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+    fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
   }
-  fp_vkCmdDispatch(batchCmdBuf, gX, gY, gZ);
+  if (pushSize > 0) {
+    fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushData);
+  }
+  fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
   batchDispatchCount++;
 
   return NULL;
@@ -1839,26 +2314,217 @@ static napi_value napi_batchSubmit(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  fp_vkEndCommandBuffer(batchCmdBuf);
+  uint32_t slot = g_ringHead;
+  fp_vkEndCommandBuffer(g_ring[slot].cmd);
 
   uint64_t tv = 0;
   if (batchDispatchCount > 0) {
-    tv = submitCmdBufAsync(batchCmdBuf);
+    tv = submitCmdBufAsync(g_ring[slot].cmd);
     if (tv == 0) {
       batchRecording = 0;
       batchDispatchCount = 0;
       napi_throw_error(env, NULL, "batchSubmit: vkQueueSubmit failed");
       return NULL;
     }
+    g_ring[slot].timelineValue = tv;
     lastDispatchTimeline = tv;
   }
 
+  // Advance ring head for the next batch
+  g_ringHead = (g_ringHead + 1) % RING_SIZE;
   batchRecording = 0;
   batchDispatchCount = 0;
 
   napi_value result;
   napi_create_double(env, (double)tv, &result);
   return result;
+}
+
+// ── N-API: batchDispatchMany(packed: ArrayBuffer, count: number) ──────────────
+//
+// Packed binary format (little-endian), per dispatch, contiguous:
+//   int32   pipelineSlot
+//   uint16  bufCount
+//   uint16  flags          // bits [15:1] = gY, bit 0 = hasGZ
+//   uint32  gX
+//   [uint32 gZ]            // only if hasGZ (bit 0 of flags)
+//   uint32  writeMask
+//   int32   bufHandles[bufCount]
+//   uint8   pushData[pushSize]   // size from pipeline's pushConstantSize
+
+static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) {
+  if (!batchRecording) {
+    napi_throw_error(env, NULL, "batchDispatchMany called without batchBegin");
+    return NULL;
+  }
+
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  void* packedData;
+  size_t packedLen;
+  napi_get_arraybuffer_info(env, args[0], &packedData, &packedLen);
+
+  uint32_t count;
+  napi_get_value_uint32(env, args[1], &count);
+
+  VkCommandBuffer ringCmd = g_ring[g_ringHead].cmd;
+  VkDescriptorPool ringDescPool = g_ring[g_ringHead].descPool;
+
+  const uint8_t* ptr = (const uint8_t*)packedData;
+  const uint8_t* end = ptr + packedLen;
+
+  for (uint32_t d = 0; d < count; d++) {
+    if (ptr + 12 > end) break; // minimum header: 4+2+2+4 = 12 bytes
+
+    // Parse header
+    int32_t pipeSlot;
+    memcpy(&pipeSlot, ptr, 4); ptr += 4;
+
+    uint16_t bufCount, flags;
+    memcpy(&bufCount, ptr, 2); ptr += 2;
+    memcpy(&flags, ptr, 2); ptr += 2;
+
+    uint32_t gX;
+    memcpy(&gX, ptr, 4); ptr += 4;
+
+    uint32_t gY = (flags >> 1) & 0x7FFF;
+    if (gY == 0) gY = 1;
+
+    uint32_t gZ = 1;
+    if (flags & 1) {
+      if (ptr + 4 > end) break;
+      memcpy(&gZ, ptr, 4); ptr += 4;
+    }
+
+    if (ptr + 4 > end) break;
+    uint32_t writeMask;
+    memcpy(&writeMask, ptr, 4); ptr += 4;
+
+    // Parse buffer handles
+    if (bufCount > 32 || ptr + bufCount * 4 > end) break;
+    int32_t bufSlots[32];
+    memcpy(bufSlots, ptr, bufCount * 4); ptr += bufCount * 4;
+
+    // Validate pipeline
+    if (pipeSlot < 0 || pipeSlot >= MAX_PIPELINES || !pipelines[pipeSlot].active) continue;
+    PipelineSlot* ps = &pipelines[pipeSlot];
+
+    // Parse push constants
+    uint32_t pushSize = ps->pushConstantSize;
+    const void* pushPtr = NULL;
+    if (pushSize > 0) {
+      if (ptr + pushSize > end) break;
+      pushPtr = ptr;
+      ptr += pushSize;
+    }
+
+    // ── Barriers: O(1) per buffer ──
+    if (batchDispatchCount > 0) {
+      VkBufferMemoryBarrier bufBarriers[32];
+      uint32_t barrierCount = 0;
+
+      for (uint32_t i = 0; i < bufCount; i++) {
+        int32_t slot = bufSlots[i];
+        if (slot >= 0 && slot < MAX_BUFFERS && bufWriteGen[slot] == bufWriteGeneration) {
+          bufBarriers[barrierCount] = (VkBufferMemoryBarrier){
+            .sType = 44, // VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = ((writeMask >> i) & 1)
+              ? (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
+              : VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = 0xFFFFFFFF,
+            .dstQueueFamilyIndex = 0xFFFFFFFF,
+            .buffer = buffers[slot].buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+          };
+          barrierCount++;
+        }
+      }
+
+      if (barrierCount > 0) {
+        fp_vkCmdPipelineBarrier(ringCmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 0, NULL, barrierCount, bufBarriers, 0, NULL);
+      }
+    }
+
+    // ── Write tracking: O(1) per buffer ──
+    for (uint32_t i = 0; i < bufCount; i++) {
+      if ((writeMask >> i) & 1) {
+        bufWriteDispatch[bufSlots[i]] = batchDispatchCount;
+        bufWriteGen[bufSlots[i]] = bufWriteGeneration;
+      }
+    }
+
+    // ── Descriptors + dispatch ──
+    VkDescriptorBufferInfo bufInfos[32];
+    VkWriteDescriptorSet writes[32];
+
+    fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
+
+    if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+      // Push descriptors: write directly into command buffer, no pool allocation
+      for (uint32_t i = 0; i < bufCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = 0, // ignored for push descriptors
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        ps->layout, 0, bufCount, writes);
+    } else {
+      // Fallback: allocate from ring descriptor pool
+      VkDescriptorSetAllocateInfo dsAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = ringDescPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &ps->descLayout,
+      };
+      VkDescriptorSet descSet;
+      VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      if (res != VK_SUCCESS) {
+        napi_throw_error(env, NULL, "batchDispatchMany: vkAllocateDescriptorSets failed");
+        return NULL;
+      }
+      for (uint32_t i = 0; i < bufCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = descSet,
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+      fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    }
+
+    if (pushSize > 0 && pushPtr) {
+      fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushPtr);
+    }
+    fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
+    batchDispatchCount++;
+  }
+
+  return NULL;
 }
 
 // ── N-API: waitTimeline(value) ───────────────────────────────────────────────
@@ -1939,12 +2605,12 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
   waitTimelineValue(lastDispatchTimeline);
 
   // Reset descriptor pool and allocate set
-  fp_vkResetDescriptorPool(device, persistentDescPool, 0);
+  fp_vkResetDescriptorPool(device, singleDescPool, 0);
   dispatchCacheValid = 0;
 
   VkDescriptorSetAllocateInfo dsAllocInfo = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    .descriptorPool = persistentDescPool,
+    .descriptorPool = singleDescPool,
     .descriptorSetCount = 1,
     .pSetLayouts = &ps->descLayout,
   };
@@ -2057,7 +2723,18 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
     }
   }
 
-  // Destroy staging buffer
+  // Destroy staging ring
+  for (int si = 0; si < STAGING_RING_SIZE; si++) {
+    if (stagingRing[si].buffer) {
+      fp_vkUnmapMemory(device, stagingRing[si].memory);
+      fp_vkDestroyBuffer(device, stagingRing[si].buffer, NULL);
+      fp_vkFreeMemory(device, stagingRing[si].memory, NULL);
+      memset(&stagingRing[si], 0, sizeof(StagingSlot));
+    }
+  }
+  stagingRingInited = 0;
+
+  // Destroy legacy staging buffer
   if (stagingBuffer != 0) {
     fp_vkUnmapMemory(device, stagingMemory);
     fp_vkDestroyBuffer(device, stagingBuffer, NULL);
@@ -2080,11 +2757,19 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   if (timelineSem) { fp_vkDestroySemaphore(device, timelineSem, NULL); timelineSem = 0; }
   nextTimelineValue = 1;
   lastDispatchTimeline = 0;
-  fp_vkDestroyDescriptorPool(device, persistentDescPool, NULL);
-  persistentDescPool = 0;
+
+  // Destroy ring resources
+  for (int ri = 0; ri < RING_SIZE; ri++) {
+    if (g_ring[ri].descPool) { fp_vkDestroyDescriptorPool(device, g_ring[ri].descPool, NULL); g_ring[ri].descPool = 0; }
+    if (g_ring[ri].cmdPool) { fp_vkDestroyCommandPool(device, g_ring[ri].cmdPool, NULL); g_ring[ri].cmdPool = NULL; }
+    g_ring[ri].cmd = NULL;
+    g_ring[ri].timelineValue = 0;
+  }
+  g_ringHead = 0;
+
+  if (singleDescPool) { fp_vkDestroyDescriptorPool(device, singleDescPool, NULL); singleDescPool = 0; }
   dispatchCmdBuf = NULL;
   transferCmdBuf = NULL;
-  batchCmdBuf = NULL;
   batchRecording = 0;
   batchDispatchCount = 0;
   dispatchCacheValid = 0;
@@ -2113,6 +2798,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "dispatch",        NULL, napi_dispatch,        NULL, NULL, NULL, napi_default, NULL },
     { "batchBegin",      NULL, napi_batchBegin,      NULL, NULL, NULL, napi_default, NULL },
     { "batchDispatch",   NULL, napi_batchDispatch,   NULL, NULL, NULL, napi_default, NULL },
+    { "batchDispatchMany", NULL, napi_batchDispatchMany, NULL, NULL, NULL, napi_default, NULL },
     { "batchSubmit",     NULL, napi_batchSubmit,     NULL, NULL, NULL, napi_default, NULL },
     { "waitTimeline",    NULL, napi_waitTimeline,    NULL, NULL, NULL, napi_default, NULL },
     { "getCompleted",    NULL, napi_getCompleted,    NULL, NULL, NULL, napi_default, NULL },

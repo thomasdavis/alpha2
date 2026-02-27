@@ -353,8 +353,9 @@ export function gptForward(
   activationCheckpointing = false,
   mixedPrecision = false,
   dropoutRng?: DropoutRng,
+  release?: (td: TensorData) => void,
 ): GPTForwardResult {
-  const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng } = { tape, backend, dropoutRng };
+  const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void } = { tape, backend, dropoutRng, release };
   const { nEmbd } = config;
   const [B, T] = tokens.shape;
 
@@ -428,46 +429,52 @@ export function gptForward(
 
 // ── Parameter collection helpers ───────────────────────────────────────────
 
-export function collectParams(params: GPTParams): Map<string, Variable> {
-  const map = new Map<string, Variable>();
-  map.set("wte", params.wte);
-  map.set("wpe", params.wpe);
-  map.set("lmHead", params.lmHead);
-  map.set("lnF.weight", params.lnF.weight);
-  map.set("lnF.bias", params.lnF.bias);
+export type ParamEntry = readonly [string, Variable];
+
+export function collectParamEntries(params: GPTParams): ParamEntry[] {
+  const entries: ParamEntry[] = [];
+  entries.push(["wte", params.wte]);
+  entries.push(["wpe", params.wpe]);
+  entries.push(["lmHead", params.lmHead]);
+  entries.push(["lnF.weight", params.lnF.weight]);
+  entries.push(["lnF.bias", params.lnF.bias]);
   for (let i = 0; i < params.layers.length; i++) {
     const l = params.layers[i];
-    map.set(`layer.${i}.ln1.weight`, l.ln1.weight);
-    map.set(`layer.${i}.ln1.bias`, l.ln1.bias);
-    map.set(`layer.${i}.attn.wqkv`, l.attn.wqkv);
-    map.set(`layer.${i}.attn.wo`, l.attn.wo);
-    map.set(`layer.${i}.ln2.weight`, l.ln2.weight);
-    map.set(`layer.${i}.ln2.bias`, l.ln2.bias);
+    entries.push([`layer.${i}.ln1.weight`, l.ln1.weight]);
+    entries.push([`layer.${i}.ln1.bias`, l.ln1.bias]);
+    entries.push([`layer.${i}.attn.wqkv`, l.attn.wqkv]);
+    entries.push([`layer.${i}.attn.wo`, l.attn.wo]);
+    entries.push([`layer.${i}.ln2.weight`, l.ln2.weight]);
+    entries.push([`layer.${i}.ln2.bias`, l.ln2.bias]);
     if (l.mlp.fc_gate) {
       // SwiGLU: 3 separate weight matrices
-      map.set(`layer.${i}.mlp.fc_gate`, l.mlp.fc_gate);
-      map.set(`layer.${i}.mlp.fc_up`, l.mlp.fc_up!);
-      map.set(`layer.${i}.mlp.fc_proj`, l.mlp.fc_proj!);
+      entries.push([`layer.${i}.mlp.fc_gate`, l.mlp.fc_gate]);
+      entries.push([`layer.${i}.mlp.fc_up`, l.mlp.fc_up!]);
+      entries.push([`layer.${i}.mlp.fc_proj`, l.mlp.fc_proj!]);
     } else {
-      map.set(`layer.${i}.mlp.fc1`, l.mlp.fc1);
-      map.set(`layer.${i}.mlp.fc2`, l.mlp.fc2);
+      entries.push([`layer.${i}.mlp.fc1`, l.mlp.fc1]);
+      entries.push([`layer.${i}.mlp.fc2`, l.mlp.fc2]);
     }
     // Universal Approximator learnable params
-    if (l.mlp.act_gate) map.set(`layer.${i}.mlp.act_gate`, l.mlp.act_gate);
-    if (l.mlp.act_skip) map.set(`layer.${i}.mlp.act_skip`, l.mlp.act_skip);
+    if (l.mlp.act_gate) entries.push([`layer.${i}.mlp.act_gate`, l.mlp.act_gate]);
+    if (l.mlp.act_skip) entries.push([`layer.${i}.mlp.act_skip`, l.mlp.act_skip]);
     // KAN Spline basis coefficients
-    if (l.mlp.kan_c0) map.set(`layer.${i}.mlp.kan_c0`, l.mlp.kan_c0);
-    if (l.mlp.kan_c1) map.set(`layer.${i}.mlp.kan_c1`, l.mlp.kan_c1);
-    if (l.mlp.kan_c2) map.set(`layer.${i}.mlp.kan_c2`, l.mlp.kan_c2);
-    if (l.mlp.kan_c3) map.set(`layer.${i}.mlp.kan_c3`, l.mlp.kan_c3);
-    if (l.mlp.kan_c4) map.set(`layer.${i}.mlp.kan_c4`, l.mlp.kan_c4);
+    if (l.mlp.kan_c0) entries.push([`layer.${i}.mlp.kan_c0`, l.mlp.kan_c0]);
+    if (l.mlp.kan_c1) entries.push([`layer.${i}.mlp.kan_c1`, l.mlp.kan_c1]);
+    if (l.mlp.kan_c2) entries.push([`layer.${i}.mlp.kan_c2`, l.mlp.kan_c2]);
+    if (l.mlp.kan_c3) entries.push([`layer.${i}.mlp.kan_c3`, l.mlp.kan_c3]);
+    if (l.mlp.kan_c4) entries.push([`layer.${i}.mlp.kan_c4`, l.mlp.kan_c4]);
   }
-  return map;
+  return entries;
+}
+
+export function collectParams(params: GPTParams): Map<string, Variable> {
+  return new Map(collectParamEntries(params));
 }
 
 export function countParams(params: GPTParams): number {
   let total = 0;
-  for (const [, v] of collectParams(params)) {
+  for (const [, v] of collectParamEntries(params)) {
     total += shapeSize(v.data.shape);
   }
   return total;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu } from "@alpha/autograd";
+import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu, checkpoint } from "@alpha/autograd";
 
 describe("Autograd", () => {
   const B = new CpuRefBackend();
@@ -152,5 +152,38 @@ describe("Autograd", () => {
     expect(logits.grad).not.toBeNull();
     // Gradient shape should match logits
     expect(logits.grad!.shape).toEqual([2, 3]);
+  });
+
+  it("checkpoint matches non-checkpoint gradients", () => {
+    const run = (useCheckpoint: boolean) => {
+      const tape = new Tape();
+      const ctx = { tape, backend: B };
+
+      const x = makeVar([1, -2, 3, 0.5], [2, 2]);
+      const w = makeVar([0.5, -1.5, 2, 1], [2, 2]);
+
+      const forward = (innerCtx: any, input: Variable): Variable => {
+        const y = mul(innerCtx, input, w);
+        const z = relu(innerCtx, y);
+        return add(innerCtx, z, w);
+      };
+
+      const out = useCheckpoint ? checkpoint(ctx as any, forward, x) : forward(ctx, x);
+      const loss = sum(ctx, out);
+      tape.backward(loss, B);
+
+      return {
+        xGrad: Array.from(x.grad!.data as Float32Array),
+        wGrad: Array.from(w.grad!.data as Float32Array),
+        loss: (loss.data.data as Float32Array)[0],
+      };
+    };
+
+    const base = run(false);
+    const chk = run(true);
+
+    expect(chk.loss).toBeCloseTo(base.loss, 6);
+    for (let i = 0; i < base.xGrad.length; i++) expect(chk.xGrad[i]).toBeCloseTo(base.xGrad[i], 6);
+    for (let i = 0; i < base.wGrad.length; i++) expect(chk.wGrad[i]).toBeCloseTo(base.wGrad[i], 6);
   });
 });

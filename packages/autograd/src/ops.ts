@@ -8,7 +8,7 @@ import type { TensorData, Backend, Shape } from "@alpha/core";
 import { shapeSize, broadcastStrides } from "@alpha/core";
 import { Variable, type Tape } from "./tape.js";
 
-type Ctx = { tape: Tape; backend: Backend; dropoutRng?: DropoutRng };
+type Ctx = { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void };
 
 // ── Deterministic dropout RNG ─────────────────────────────────────────────
 
@@ -90,12 +90,10 @@ function record(
 // ── Arithmetic ─────────────────────────────────────────────────────────────
 
 export function add(ctx: Ctx, a: Variable, b: Variable): Variable {
-  return record(ctx, ctx.backend.add(a.data, b.data), [a, b], (g, B) => {
-    let ga = g;
-    let gb = g;
-    // Handle broadcasting: sum over broadcasted dims
-    ga = reduceBroadcast(B, g, a.data.shape);
-    gb = reduceBroadcast(B, g, b.data.shape);
+  const aShape = a.data.shape, bShape = b.data.shape;
+  return record(ctx, ctx.backend.add(a.data, b.data), [a, b], (g, B, release) => {
+    const ga = reduceBroadcast(B, g, aShape, release);
+    const gb = reduceBroadcast(B, g, bShape, release);
     return [ga, gb];
   });
 }
@@ -104,9 +102,9 @@ export function sub(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aShape = a.data.shape, bShape = b.data.shape;
   return record(ctx, ctx.backend.sub(a.data, b.data), [a, b], (g, B, release) => {
     const negG = B.neg(g);
-    const gb = reduceBroadcast(B, negG, bShape);
+    const gb = reduceBroadcast(B, negG, bShape, release);
     if (release && gb !== negG) release(negG);
-    return [reduceBroadcast(B, g, aShape), gb];
+    return [reduceBroadcast(B, g, aShape, release), gb];
   });
 }
 
@@ -115,8 +113,8 @@ export function mul(ctx: Ctx, a: Variable, b: Variable): Variable {
   return record(ctx, ctx.backend.mul(aData, bData), [a, b], (g, B, release) => {
     const gTimesB = B.mul(g, bData);
     const gTimesA = B.mul(g, aData);
-    const ga = reduceBroadcast(B, gTimesB, aData.shape);
-    const gb = reduceBroadcast(B, gTimesA, bData.shape);
+    const ga = reduceBroadcast(B, gTimesB, aData.shape, release);
+    const gb = reduceBroadcast(B, gTimesA, bData.shape, release);
     if (release) {
       if (ga !== gTimesB) release(gTimesB);
       if (gb !== gTimesA) release(gTimesA);
@@ -135,7 +133,13 @@ export function div(ctx: Ctx, a: Variable, b: Variable): Variable {
     const ratio = B.div(gTimesA, bSq);
     const gb = B.neg(ratio);
     if (release) { release(gTimesA); release(bSq); release(ratio); }
-    return [reduceBroadcast(B, ga, aData.shape), reduceBroadcast(B, gb, bData.shape)];
+    const gaR = reduceBroadcast(B, ga, aData.shape, release);
+    const gbR = reduceBroadcast(B, gb, bData.shape, release);
+    if (release) {
+      if (gaR !== ga) release(ga);
+      if (gbR !== gb) release(gb);
+    }
+    return [gaR, gbR];
   });
 }
 
@@ -165,9 +169,13 @@ export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
       if (release) release(tB);
     }
     if (!needsGrad || needsGrad[1]) {
-      const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
-      gb = B.matmul(tA, g);
-      if (release) release(tA);
+      if (B.matmulTransposedA) {
+        gb = B.matmulTransposedA(aData, g);
+      } else {
+        const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
+        gb = B.matmul(tA, g);
+        if (release) release(tA);
+      }
     }
     return [ga!, gb!];
   });
@@ -195,11 +203,15 @@ export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
       ga = B.matmul(g, bData);
     }
     if (!needsGrad || needsGrad[1]) {
-      // dL/dB = G^T @ A (G^T is [..., N, M], A is [..., M, K] → result [..., N, K])
-      const ndimG = g.shape.length;
-      const tG = B.transpose(g, ndimG - 2, ndimG - 1);
-      gb = B.matmul(tG, aData);
-      if (release) release(tG);
+      // dL/dB = G^T @ A (result [..., N, K])
+      if (B.matmulTransposedA) {
+        gb = B.matmulTransposedA(g, aData);
+      } else {
+        const ndimG = g.shape.length;
+        const tG = B.transpose(g, ndimG - 2, ndimG - 1);
+        gb = B.matmul(tG, aData);
+        if (release) release(tG);
+      }
     }
     return [ga!, gb!];
   });
@@ -218,8 +230,11 @@ export function sum(ctx: Ctx, a: Variable, axis?: number, keepdims?: boolean): V
 export function mean(ctx: Ctx, a: Variable, axis?: number, keepdims?: boolean): Variable {
   const aShape = a.data.shape;
   const n = axis !== undefined ? aShape[axis < 0 ? aShape.length + axis : axis] : shapeSize(aShape);
-  return record(ctx, ctx.backend.mean(a.data, axis, keepdims), [a], (g, B) => {
-    return [B.scale(broadcastTo(B, g, aShape), 1 / n)];
+  return record(ctx, ctx.backend.mean(a.data, axis, keepdims), [a], (g, B, release) => {
+    const expanded = broadcastTo(B, g, aShape);
+    const result = B.scale(expanded, 1 / n);
+    if (release && expanded !== g) release(expanded);
+    return [result];
   });
 }
 
@@ -385,10 +400,14 @@ export function matmulTransposedGelu(ctx: Ctx, a: Variable, b: Variable): Variab
       ga = B2.matmul(dMM, bData);
     }
     if (!needsGrad || needsGrad[1]) {
-      const ndim = dMM.shape.length;
-      const tG = B2.transpose(dMM, ndim - 2, ndim - 1);
-      gb = B2.matmul(tG, aData);
-      if (release) release(tG);
+      if (B2.matmulTransposedA) {
+        gb = B2.matmulTransposedA(dMM, aData);
+      } else {
+        const ndim = dMM.shape.length;
+        const tG = B2.transpose(dMM, ndim - 2, ndim - 1);
+        gb = B2.matmul(tG, aData);
+        if (release) release(tG);
+      }
     }
     if (release) release(dMM);
     return [ga!, gb!];
@@ -552,7 +571,7 @@ export function residualDropoutAdd(
     const out = ctx.backend.residualDropoutAdd(resData, projData, mask);
     return record(ctx, out, [residual, projected], (g, B, release) => {
       // grad_residual = upstream_grad (pass-through via broadcast reduction)
-      const ga = reduceBroadcast(B, g, resData.shape);
+      const ga = reduceBroadcast(B, g, resData.shape, release);
       // grad_projected = upstream_grad * mask
       const gb = B.mul(g, mask);
       return [ga, gb];
@@ -563,7 +582,7 @@ export function residualDropoutAdd(
   const dropOut = ctx.backend.mul(projData, mask);
   const out = ctx.backend.add(resData, dropOut);
   return record(ctx, out, [residual, projected], (g, B, release) => {
-    const ga = reduceBroadcast(B, g, resData.shape);
+    const ga = reduceBroadcast(B, g, resData.shape, release);
     const gb = B.mul(g, mask);
     if (release) release(dropOut);
     return [ga, gb];
@@ -693,7 +712,7 @@ export function transpose(ctx: Ctx, a: Variable, dim0: number, dim1: number): Va
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Reduce grad to match target shape (undo broadcasting). */
-function reduceBroadcast(B: Backend, grad: TensorData, targetShape: Shape): TensorData {
+function reduceBroadcast(B: Backend, grad: TensorData, targetShape: Shape, release?: (td: TensorData) => void): TensorData {
   if (arraysEqual(grad.shape, targetShape)) return grad;
   // Scalar target
   if (targetShape.length === 0 || (targetShape.length === 1 && targetShape[0] === 1 && grad.shape.length > 1)) {
@@ -702,12 +721,16 @@ function reduceBroadcast(B: Backend, grad: TensorData, targetShape: Shape): Tens
   let result = grad;
   // Sum over leading dims that were broadcast
   while (result.shape.length > targetShape.length) {
+    const prev = result;
     result = B.sum(result, 0);
+    if (release && prev !== grad) release(prev);
   }
   // Sum over dims that are 1 in target
   for (let i = 0; i < targetShape.length; i++) {
     if (targetShape[i] === 1 && result.shape[i] !== 1) {
+      const prev = result;
       result = B.sum(result, i, true);
+      if (release && prev !== grad) release(prev);
     }
   }
   return result;

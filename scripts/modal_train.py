@@ -228,6 +228,7 @@ def main(
     domain: str = "",
     upload: bool = False,
     download_dir: str = "runs",
+    extra: str = "",
 ):
     """
     Train an Alpha model on Modal H100 GPU.
@@ -282,6 +283,8 @@ def main(
     ]
     if domain:
         args_parts.append(f"--domain={domain}")
+    if extra:
+        args_parts.extend(extra.split())
     train_args = " ".join(args_parts)
 
     # ── Step 3: Launch training on Modal H100 ────────────────────────────

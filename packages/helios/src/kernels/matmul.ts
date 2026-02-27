@@ -1115,3 +1115,552 @@ export function kernelMatmulTransposedBatched(wgSize = DEFAULT_TILE * DEFAULT_TI
 
   return b.build();
 }
+
+// ── Kernel: matmul_transposed_a ──────────────────────────────────────────────
+
+/**
+ * Tiled matmul with A transposed: C = A^T × B
+ *
+ * A is stored as [M, K] (row-major), used as A^T = [K, M].
+ * B is stored as [M, N].
+ * Result C is [K, N].
+ *
+ * Push constants encode generic matmul dims for the transposed-A view:
+ *   { M: f32, N: f32, K: f32, _pad: f32 }
+ * where:
+ *   M = output rows (= original K),
+ *   N = output cols,
+ *   K = reduction dim (= original M).
+ *
+ * Bindings: 0=A(in), 1=B(in), 2=C(out)
+ * Dispatch: (ceil(N/TILE), ceil(M/TILE), 1)
+ */
+export function kernelMatmulTransposedA(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
+  const b = new SpirVBuilder();
+  const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 4);
+
+  // Shared memory tiles
+  const constTileSize = b.id();
+  b.constant(p.tU32, constTileSize, TILE_SIZE);
+  const constTileSizeSq = b.id();
+  b.constant(p.tU32, constTileSizeSq, TILE_SIZE * TILE_SIZE);
+  const tArrayTile = b.id();
+  b.typeArray(tArrayTile, p.tF32, constTileSizeSq);
+  const tPtrSharedArr = b.id();
+  b.typePointer(tPtrSharedArr, StorageClass.Workgroup, tArrayTile);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const tileA = b.id();
+  b.variable(tPtrSharedArr, tileA, StorageClass.Workgroup);
+  const tileB = b.id();
+  b.variable(tPtrSharedArr, tileB, StorageClass.Workgroup);
+
+  // Built-in variables
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, TILE_SIZE, TILE_SIZE, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varT = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varT, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  // Local thread coords
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const tx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, tx, lidVec, 0]);
+  const ty = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, ty, lidVec, 1]);
+
+  // Workgroup coords
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const bx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, bx, wgIdVec, 0]);
+  const by = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, by, wgIdVec, 1]);
+
+  // Load generic matmul dims from push constants:
+  // M = output rows, N = output cols, K = reduction dim
+  const MF = loadPushLen(b, p, pc);
+  const NF = loadPushScalar(b, p, pc);
+  const ptrK = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrK, pc.varId, p.const2u]);
+  const KF = b.id();
+  b.emit(Op.Load, [p.tF32, KF, ptrK]);
+
+  const M = b.id(); b.emit(Op.ConvertFToU, [p.tU32, M, MF]);
+  const N = b.id(); b.emit(Op.ConvertFToU, [p.tU32, N, NF]);
+  const K = b.id(); b.emit(Op.ConvertFToU, [p.tU32, K, KF]);
+
+  // Global output row/col
+  const globalRow = b.id();
+  const byTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, byTimesT, by, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, globalRow, byTimesT, ty]);
+  const globalCol = b.id();
+  const bxTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, bxTimesT, bx, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, globalCol, bxTimesT, tx]);
+
+  // acc = 0
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  // Tile index in shared memory
+  const localTileIdx = b.id();
+  const tyTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, tyTimesT, ty, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, localTileIdx, tyTimesT, tx]);
+
+  // Loop: for (t = 0; t < K; t += TILE_SIZE)
+  b.emit(Op.Store, [varT, p.const0u]);
+
+  const labelHead = b.id();
+  const labelBody = b.id();
+  const labelMerge = b.id();
+  const labelCont = b.id();
+
+  b.emit(Op.Branch, [labelHead]);
+  b.emit(Op.Label, [labelHead]);
+  const t = b.id();
+  b.emit(Op.Load, [p.tU32, t, varT]);
+  const cmp = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmp, t, K]);
+  b.emit(Op.LoopMerge, [labelMerge, labelCont, 0]);
+  b.emit(Op.BranchConditional, [cmp, labelBody, labelMerge]);
+
+  b.emit(Op.Label, [labelBody]);
+
+  // Load tile of A transposed:
+  // A^T[globalRow, t+tx] = A[t+tx, globalRow], A stored as [K, M]
+  const aRow = b.id();
+  b.emit(Op.IAdd, [p.tU32, aRow, t, tx]);
+  const aInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, aInBoundsR, aRow, K]);
+  const aInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, aInBoundsC, globalRow, M]);
+  const aInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, aInBounds, aInBoundsR, aInBoundsC]);
+  const aLinear = b.id();
+  const arTimesM = b.id();
+  b.emit(Op.IMul, [p.tU32, arTimesM, aRow, M]);
+  b.emit(Op.IAdd, [p.tU32, aLinear, arTimesM, globalRow]);
+  const ptrAElem = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrAElem, bufA.varId, p.const0u, aLinear]);
+  const aRaw = b.id();
+  b.emit(Op.Load, [p.tF32, aRaw, ptrAElem]);
+  const aVal = b.id();
+  b.emit(Op.Select, [p.tF32, aVal, aInBounds, aRaw, p.const0f]);
+  const ptrTileA = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrTileA, tileA, localTileIdx]);
+  b.emit(Op.Store, [ptrTileA, aVal]);
+
+  // Load tile of B: B[t+ty, globalCol], B stored as [K, N]
+  const bRow = b.id();
+  b.emit(Op.IAdd, [p.tU32, bRow, t, ty]);
+  const bInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, bInBoundsR, bRow, K]);
+  const bInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, bInBoundsC, globalCol, N]);
+  const bInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, bInBounds, bInBoundsR, bInBoundsC]);
+  const bLinear = b.id();
+  const brTimesN = b.id();
+  b.emit(Op.IMul, [p.tU32, brTimesN, bRow, N]);
+  b.emit(Op.IAdd, [p.tU32, bLinear, brTimesN, globalCol]);
+  const ptrBElem = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrBElem, bufB.varId, p.const0u, bLinear]);
+  const bRaw = b.id();
+  b.emit(Op.Load, [p.tF32, bRaw, ptrBElem]);
+  const bVal = b.id();
+  b.emit(Op.Select, [p.tF32, bVal, bInBounds, bRaw, p.const0f]);
+  const ptrTileB = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrTileB, tileB, localTileIdx]);
+  b.emit(Op.Store, [ptrTileB, bVal]);
+
+  // Barrier
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Accumulate: acc += tileA[ty][k] * tileB[k][tx]
+  for (let k = 0; k < TILE_SIZE; k++) {
+    const kConst = b.id();
+    b.constant(p.tU32, kConst, k);
+    const aIdx = b.id();
+    const tyT = b.id();
+    b.emit(Op.IMul, [p.tU32, tyT, ty, constTileSize]);
+    b.emit(Op.IAdd, [p.tU32, aIdx, tyT, kConst]);
+    const pA = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pA, tileA, aIdx]);
+    const aV = b.id();
+    b.emit(Op.Load, [p.tF32, aV, pA]);
+
+    const bIdx = b.id();
+    const kT = b.id();
+    b.emit(Op.IMul, [p.tU32, kT, kConst, constTileSize]);
+    b.emit(Op.IAdd, [p.tU32, bIdx, kT, tx]);
+    const pB = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pB, tileB, bIdx]);
+    const bV = b.id();
+    b.emit(Op.Load, [p.tF32, bV, pB]);
+
+    const curAcc = b.id();
+    b.emit(Op.Load, [p.tF32, curAcc, varAcc]);
+    const prod = b.id();
+    b.emit(Op.FMul, [p.tF32, prod, aV, bV]);
+    const newAcc = b.id();
+    b.emit(Op.FAdd, [p.tF32, newAcc, curAcc, prod]);
+    b.emit(Op.Store, [varAcc, newAcc]);
+  }
+
+  // Barrier before next tile
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  b.emit(Op.Branch, [labelCont]);
+  b.emit(Op.Label, [labelCont]);
+  const nextT = b.id();
+  b.emit(Op.Load, [p.tU32, nextT, varT]);
+  const incT = b.id();
+  b.emit(Op.IAdd, [p.tU32, incT, nextT, constTileSize]);
+  b.emit(Op.Store, [varT, incT]);
+  b.emit(Op.Branch, [labelHead]);
+
+  b.emit(Op.Label, [labelMerge]);
+
+  // Write output C[globalRow, globalCol]
+  const outInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, outInBoundsR, globalRow, M]);
+  const outInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, outInBoundsC, globalCol, N]);
+  const outInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, outInBounds, outInBoundsR, outInBoundsC]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [outInBounds, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+  const outLinear = b.id();
+  const grTimesN = b.id();
+  b.emit(Op.IMul, [p.tU32, grTimesN, globalRow, N]);
+  b.emit(Op.IAdd, [p.tU32, outLinear, grTimesN, globalCol]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrOut, bufC.varId, p.const0u, outLinear]);
+  const finalAcc = b.id();
+  b.emit(Op.Load, [p.tF32, finalAcc, varAcc]);
+  b.emit(Op.Store, [ptrOut, finalAcc]);
+  b.emit(Op.Branch, [labelEnd]);
+
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * Batched tiled matmul with A transposed: C[b] = A[b]^T × B[b].
+ *
+ * A is [batch, M, K] (stored row-major), used as [batch, K, M].
+ * B is [batch, M, N].
+ * Result C is [batch, K, N].
+ *
+ * Push constants use transposed-A generic dims:
+ *   M = output rows (= original K), N = output cols, K = reduction (= original M)
+ */
+export function kernelMatmulTransposedABatched(wgSize = DEFAULT_TILE * DEFAULT_TILE, tileSize = DEFAULT_TILE): Uint32Array {
+  const TILE_SIZE = tileSize;
+  const b = new SpirVBuilder();
+  const p = preamble(b, TILE_SIZE, TILE_SIZE, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 4);
+
+  // Shared memory tiles
+  const constTileSize = b.id();
+  b.constant(p.tU32, constTileSize, TILE_SIZE);
+  const constTileSizeSq = b.id();
+  b.constant(p.tU32, constTileSizeSq, TILE_SIZE * TILE_SIZE);
+  const tArrayTile = b.id();
+  b.typeArray(tArrayTile, p.tF32, constTileSizeSq);
+  const tPtrSharedArr = b.id();
+  b.typePointer(tPtrSharedArr, StorageClass.Workgroup, tArrayTile);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const tileA = b.id();
+  b.variable(tPtrSharedArr, tileA, StorageClass.Workgroup);
+  const tileB = b.id();
+  b.variable(tPtrSharedArr, tileB, StorageClass.Workgroup);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, TILE_SIZE, TILE_SIZE, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varT = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varT, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  // Local thread coords
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const tx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, tx, lidVec, 0]);
+  const ty = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, ty, lidVec, 1]);
+
+  // Workgroup coords
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const bx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, bx, wgIdVec, 0]);
+  const by = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, by, wgIdVec, 1]);
+  const batchIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, batchIdx, wgIdVec, 2]);
+
+  // Load generic dims: M=output rows, N=output cols, K=reduction
+  const MF = loadPushLen(b, p, pc);
+  const NF = loadPushScalar(b, p, pc);
+  const ptrK = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrK, pc.varId, p.const2u]);
+  const KF = b.id();
+  b.emit(Op.Load, [p.tF32, KF, ptrK]);
+
+  const M = b.id(); b.emit(Op.ConvertFToU, [p.tU32, M, MF]);
+  const N = b.id(); b.emit(Op.ConvertFToU, [p.tU32, N, NF]);
+  const K = b.id(); b.emit(Op.ConvertFToU, [p.tU32, K, KF]);
+
+  // Batch offsets:
+  // A [batch, K, M], B [batch, K, N], C [batch, M, N]
+  const KM = b.id(); b.emit(Op.IMul, [p.tU32, KM, K, M]);
+  const KN = b.id(); b.emit(Op.IMul, [p.tU32, KN, K, N]);
+  const MN = b.id(); b.emit(Op.IMul, [p.tU32, MN, M, N]);
+  const aOff = b.id(); b.emit(Op.IMul, [p.tU32, aOff, batchIdx, KM]);
+  const bOff = b.id(); b.emit(Op.IMul, [p.tU32, bOff, batchIdx, KN]);
+  const cOff = b.id(); b.emit(Op.IMul, [p.tU32, cOff, batchIdx, MN]);
+
+  // Global output row/col
+  const globalRow = b.id();
+  const byTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, byTimesT, by, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, globalRow, byTimesT, ty]);
+  const globalCol = b.id();
+  const bxTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, bxTimesT, bx, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, globalCol, bxTimesT, tx]);
+
+  // acc = 0
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  // Tile index in shared memory
+  const localTileIdx = b.id();
+  const tyTimesT = b.id();
+  b.emit(Op.IMul, [p.tU32, tyTimesT, ty, constTileSize]);
+  b.emit(Op.IAdd, [p.tU32, localTileIdx, tyTimesT, tx]);
+
+  // Loop: for (t = 0; t < K; t += TILE_SIZE)
+  b.emit(Op.Store, [varT, p.const0u]);
+
+  const labelHead = b.id();
+  const labelBody = b.id();
+  const labelMerge = b.id();
+  const labelCont = b.id();
+
+  b.emit(Op.Branch, [labelHead]);
+  b.emit(Op.Label, [labelHead]);
+  const t = b.id();
+  b.emit(Op.Load, [p.tU32, t, varT]);
+  const cmp = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmp, t, K]);
+  b.emit(Op.LoopMerge, [labelMerge, labelCont, 0]);
+  b.emit(Op.BranchConditional, [cmp, labelBody, labelMerge]);
+
+  b.emit(Op.Label, [labelBody]);
+
+  // Load tile of A transposed from stored [K, M]:
+  // A^T[globalRow, t+tx] = A[t+tx, globalRow]
+  const aRow = b.id();
+  b.emit(Op.IAdd, [p.tU32, aRow, t, tx]);
+  const aInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, aInBoundsR, aRow, K]);
+  const aInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, aInBoundsC, globalRow, M]);
+  const aInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, aInBounds, aInBoundsR, aInBoundsC]);
+  const aLinear = b.id();
+  const arTimesM = b.id();
+  b.emit(Op.IMul, [p.tU32, arTimesM, aRow, M]);
+  b.emit(Op.IAdd, [p.tU32, aLinear, arTimesM, globalRow]);
+  const aIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, aIdx, aOff, aLinear]);
+  const ptrAElem = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrAElem, bufA.varId, p.const0u, aIdx]);
+  const aRaw = b.id();
+  b.emit(Op.Load, [p.tF32, aRaw, ptrAElem]);
+  const aVal = b.id();
+  b.emit(Op.Select, [p.tF32, aVal, aInBounds, aRaw, p.const0f]);
+  const ptrTileA = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrTileA, tileA, localTileIdx]);
+  b.emit(Op.Store, [ptrTileA, aVal]);
+
+  // Load tile of B: B[bOff + (t+ty) * N + globalCol], B stored [K, N]
+  const bRow = b.id();
+  b.emit(Op.IAdd, [p.tU32, bRow, t, ty]);
+  const bInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, bInBoundsR, bRow, K]);
+  const bInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, bInBoundsC, globalCol, N]);
+  const bInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, bInBounds, bInBoundsR, bInBoundsC]);
+  const bLinear = b.id();
+  const brTimesN = b.id();
+  b.emit(Op.IMul, [p.tU32, brTimesN, bRow, N]);
+  b.emit(Op.IAdd, [p.tU32, bLinear, brTimesN, globalCol]);
+  const bIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, bIdx, bOff, bLinear]);
+  const ptrBElem = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrBElem, bufB.varId, p.const0u, bIdx]);
+  const bRaw = b.id();
+  b.emit(Op.Load, [p.tF32, bRaw, ptrBElem]);
+  const bVal = b.id();
+  b.emit(Op.Select, [p.tF32, bVal, bInBounds, bRaw, p.const0f]);
+  const ptrTileB = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrTileB, tileB, localTileIdx]);
+  b.emit(Op.Store, [ptrTileB, bVal]);
+
+  // Barrier
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Accumulate
+  for (let k = 0; k < TILE_SIZE; k++) {
+    const kConst = b.id();
+    b.constant(p.tU32, kConst, k);
+    const aI = b.id();
+    const tyT = b.id();
+    b.emit(Op.IMul, [p.tU32, tyT, ty, constTileSize]);
+    b.emit(Op.IAdd, [p.tU32, aI, tyT, kConst]);
+    const pA = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pA, tileA, aI]);
+    const aV = b.id();
+    b.emit(Op.Load, [p.tF32, aV, pA]);
+
+    const bI = b.id();
+    const kT = b.id();
+    b.emit(Op.IMul, [p.tU32, kT, kConst, constTileSize]);
+    b.emit(Op.IAdd, [p.tU32, bI, kT, tx]);
+    const pB = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pB, tileB, bI]);
+    const bV = b.id();
+    b.emit(Op.Load, [p.tF32, bV, pB]);
+
+    const curAcc = b.id();
+    b.emit(Op.Load, [p.tF32, curAcc, varAcc]);
+    const prod = b.id();
+    b.emit(Op.FMul, [p.tF32, prod, aV, bV]);
+    const newAcc = b.id();
+    b.emit(Op.FAdd, [p.tF32, newAcc, curAcc, prod]);
+    b.emit(Op.Store, [varAcc, newAcc]);
+  }
+
+  // Barrier
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  b.emit(Op.Branch, [labelCont]);
+  b.emit(Op.Label, [labelCont]);
+  const nextT = b.id();
+  b.emit(Op.Load, [p.tU32, nextT, varT]);
+  const incT = b.id();
+  b.emit(Op.IAdd, [p.tU32, incT, nextT, constTileSize]);
+  b.emit(Op.Store, [varT, incT]);
+  b.emit(Op.Branch, [labelHead]);
+
+  b.emit(Op.Label, [labelMerge]);
+
+  // Write output
+  const outInBoundsR = b.id();
+  b.emit(Op.ULessThan, [p.tBool, outInBoundsR, globalRow, M]);
+  const outInBoundsC = b.id();
+  b.emit(Op.ULessThan, [p.tBool, outInBoundsC, globalCol, N]);
+  const outInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, outInBounds, outInBoundsR, outInBoundsC]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [outInBounds, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+  const outLinear = b.id();
+  const grTimesN = b.id();
+  b.emit(Op.IMul, [p.tU32, grTimesN, globalRow, N]);
+  b.emit(Op.IAdd, [p.tU32, outLinear, grTimesN, globalCol]);
+  const outIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, outIdx, cOff, outLinear]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrOut, bufC.varId, p.const0u, outIdx]);
+  const finalAcc = b.id();
+  b.emit(Op.Load, [p.tF32, finalAcc, varAcc]);
+  b.emit(Op.Store, [ptrOut, finalAcc]);
+  b.emit(Op.Branch, [labelEnd]);
+
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}

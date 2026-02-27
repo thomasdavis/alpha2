@@ -121,17 +121,20 @@ export class Tape {
    * for intermediate TensorData objects. Without this, GPU buffers are only
    * freed when V8's FinalizationRegistry fires, which is unreliable for
    * timely cleanup and leads to GPU OOM during multi-step training.
+   * @param keepOutput — Optional output Variable whose data buffer should be
+   * retained while clearing all other intermediates.
    *
    * All entry.output Variables are intermediates created by record() — never
    * model parameters — so releasing their .data and .grad buffers is safe
    * after backward() has completed.
    */
-  clear(releaseTensor?: (td: TensorData) => void): void {
+  clear(releaseTensor?: (td: TensorData) => void, keepOutput?: Variable): void {
     if (releaseTensor) {
       for (const entry of this.entries) {
+        const keep = !!keepOutput && entry.output.id === keepOutput.id;
         // Release intermediate output GPU buffers (forward pass results)
         // Skip if already released by backward() (data nulled out)
-        if (entry.output.data) {
+        if (!keep && entry.output.data) {
           releaseTensor(entry.output.data);
         }
         // Release accumulated gradient GPU buffers on intermediates

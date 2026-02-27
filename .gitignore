@@ -6,6 +6,7 @@ dist/
 artifacts/
 outputs/
 data/
+cognitive/cognitive-v1.txt
 .turbo/
 .next/
 .env*.local

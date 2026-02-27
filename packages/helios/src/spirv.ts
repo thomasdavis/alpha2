@@ -71,6 +71,7 @@ export const Op = {
   VectorTimesScalar:    142,
   CompositeExtract:     81,
   CompositeConstruct:   80,
+  CopyObject:           83,
   ULessThan:            176,
   SLessThan:            177,
   UGreaterThanEqual:    174,
@@ -98,8 +99,17 @@ export const Op = {
   FConvert:             115,
   Bitcast:              124,
   ExtInst:              12,
+  Extension:            10,
   ControlBarrier:       224,
   MemoryBarrier:        225,
+  IsNan:                156,
+  IsInf:                157,
+  // Cooperative matrix (VK_KHR_cooperative_matrix)
+  OpTypeCooperativeMatrixKHR:   4456,
+  OpCooperativeMatrixLoadKHR:   4457,
+  OpCooperativeMatrixStoreKHR:  4458,
+  OpCooperativeMatrixMulAddKHR: 4459,
+  OpCooperativeMatrixLengthKHR: 4460,
 } as const;
 
 // Capabilities
@@ -108,6 +118,14 @@ export const Capability = {
   Float16: 9,
   StorageBuffer16BitAccess: 4433, // SPV_KHR_16bit_storage
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
+  CooperativeMatrixKHR: 6022,
+} as const;
+
+// Cooperative matrix usage
+export const CooperativeMatrixUse = {
+  MatrixA: 0,
+  MatrixB: 1,
+  MatrixAccumulator: 2,
 } as const;
 
 // Addressing/memory models
@@ -241,6 +259,11 @@ export class SpirVBuilder {
     this.capabilities.push(...this.instr(Op.Capability, [cap]));
   }
 
+  /** Emit OpExtension (opcode 10) — declares a SPIR-V extension. */
+  addExtension(name: string): void {
+    this.extensions.push(this.instr(Op.Extension, [...this.encodeString(name)]));
+  }
+
   addExtInstImport(resultId: number, name: string): void {
     this.extInstImports.push(this.instr(Op.ExtInstImport, [resultId, ...this.encodeString(name)]));
   }
@@ -307,6 +330,11 @@ export class SpirVBuilder {
     this.typeDecls.push(this.instr(Op.TypeFunction, [id, returnType, ...paramTypes]));
   }
 
+  /** Declare a cooperative matrix type (VK_KHR_cooperative_matrix). */
+  typeCooperativeMatrixKHR(id: number, componentType: number, scope: number, rows: number, cols: number, use: number): void {
+    this.typeDecls.push(this.instr(Op.OpTypeCooperativeMatrixKHR, [id, componentType, scope, rows, cols, use]));
+  }
+
   // ── Constants ─────────────────────────────────────────────────────────
 
   constant(resultType: number, resultId: number, value: number): void {
@@ -322,6 +350,21 @@ export class SpirVBuilder {
 
   constantComposite(resultType: number, resultId: number, constituents: number[]): void {
     this.typeDecls.push(this.instr(Op.ConstantComposite, [resultType, resultId, ...constituents]));
+  }
+
+  /** OpConstantNull (opcode 46) — creates a zero-initialized constant of any type. */
+  constantNull(resultType: number, resultId: number): void {
+    this.typeDecls.push(this.instr(46, [resultType, resultId]));
+  }
+
+  /** OpConstantTrue (opcode 41) */
+  constantTrue(resultType: number, resultId: number): void {
+    this.typeDecls.push(this.instr(41, [resultType, resultId]));
+  }
+
+  /** OpConstantFalse (opcode 42) */
+  constantFalse(resultType: number, resultId: number): void {
+    this.typeDecls.push(this.instr(42, [resultType, resultId]));
   }
 
   // ── Global variables ──────────────────────────────────────────────────
@@ -359,6 +402,7 @@ export class SpirVBuilder {
 
     // Sections in order
     words.push(...this.capabilities);
+    for (const ext of this.extensions) words.push(...ext);
     for (const ext of this.extInstImports) words.push(...ext);
     words.push(...this.memoryModelInstr);
     for (const ep of this.entryPoints) words.push(...ep);
