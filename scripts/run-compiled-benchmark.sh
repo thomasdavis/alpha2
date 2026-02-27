@@ -90,10 +90,7 @@ if [[ -n "$tok_series" ]]; then
   last_tok_s="$(echo "$tok_series" | awk 'END{if(NR>0) printf "%.3f", $1; else printf "0.000"}')"
 fi
 
-prev_avg_tok_s=""
-if [[ "$(wc -l < "$HISTORY_FILE")" -gt 1 ]]; then
-  prev_avg_tok_s="$(tail -n 1 "$HISTORY_FILE" | awk -F, '{print $7}')"
-fi
+prev_avg_tok_s="$(awk -F, 'NR>1 && $12=="ok" {v=$7} END{print v}' "$HISTORY_FILE")"
 
 speedup_pct="0.00"
 if [[ -n "$prev_avg_tok_s" && "$prev_avg_tok_s" != "0" && "$prev_avg_tok_s" != "0.000" ]]; then
