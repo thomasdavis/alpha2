@@ -453,6 +453,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const warmup = trainConfig.warmupIters > 0
+    ? trainConfig.warmupIters
+    : trainConfig.warmupIters < 0
+      ? 0  // negative = explicitly disabled
+      : Math.min(2000, Math.floor(trainConfig.iters / 5));
+  const lrMin = (trainConfig.lrMin ?? 0) === 0
+    ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
+    : trainConfig.lrMin;
+  const decayDenom = Math.max(1, trainConfig.iters - warmup);
   let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
@@ -462,19 +471,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const stepStart = performance.now();
 
     // Learning rate schedule: linear warmup + cosine decay to lrMin
-    const warmup = trainConfig.warmupIters > 0
-      ? trainConfig.warmupIters
-      : trainConfig.warmupIters < 0
-        ? 0  // negative = explicitly disabled
-        : Math.min(2000, Math.floor(trainConfig.iters / 5));
-    const lrMin = (trainConfig.lrMin ?? 0) === 0
-      ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
-      : trainConfig.lrMin;
     let lr: number;
     if (step < warmup) {
       lr = lrMin + (trainConfig.lr - lrMin) * (step + 1) / warmup;
     } else {
-      const decay = (step - warmup) / (trainConfig.iters - warmup);
+      const decay = (step - warmup) / decayDenom;
       lr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
     }
     if (optimizer && "setLr" in optimizer) {
