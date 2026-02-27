@@ -18,6 +18,7 @@ LR="${LR:-0.00003}"
 GRAD_CLIP="${GRAD_CLIP:-0}"
 COMPILE_TIMEOUT_SEC="${COMPILE_TIMEOUT_SEC:-60}"
 COMPILE_RETRIES="${COMPILE_RETRIES:-2}"
+SKIP_COMPILE_IF_FRESH="${SKIP_COMPILE_IF_FRESH:-1}"
 
 timestamp_utc() {
   date -u +"%Y%m%dT%H%M%SZ"
@@ -47,16 +48,38 @@ compile_start_ms="$(now_ms)"
 compile_ok="0"
 attempts="$((COMPILE_RETRIES + 1))"
 : >"$COMPILE_LOG"
-for attempt in $(seq 1 "$attempts"); do
-  echo "[bench] compile attempt ${attempt}/${attempts}" | tee -a "$COMPILE_LOG"
-  if timeout "${COMPILE_TIMEOUT_SEC}" npm run bun:compile >>"$COMPILE_LOG" 2>&1; then
-    compile_ok="1"
-    break
+should_compile="1"
+if [[ "$SKIP_COMPILE_IF_FRESH" == "1" && -x ".bun-out/alpha" && -f ".bun-out/helios_vk.node" ]]; then
+  latest_src_mtime="$(
+    find apps/cli/src packages scripts \
+      -type f \
+      \( -name '*.ts' -o -name '*.js' -o -name '*.mjs' -o -name '*.c' -o -name '*.h' \) \
+      -printf '%T@\n' | sort -nr | head -n1
+  )"
+  alpha_mtime="$(stat -c '%Y' .bun-out/alpha 2>/dev/null || echo 0)"
+  native_mtime="$(stat -c '%Y' .bun-out/helios_vk.node 2>/dev/null || echo 0)"
+  latest_src_sec="${latest_src_mtime%%.*}"
+  latest_src_sec="${latest_src_sec:-0}"
+  if [[ "$alpha_mtime" -ge "$latest_src_sec" && "$native_mtime" -ge "$latest_src_sec" ]]; then
+    should_compile="0"
+    echo "[bench] compile skip: existing .bun-out artifacts are fresh" | tee -a "$COMPILE_LOG"
   fi
-  if [[ "$attempt" -lt "$attempts" ]]; then
-    echo "[bench] compile attempt ${attempt} failed (timeout ${COMPILE_TIMEOUT_SEC}s) — retrying..." | tee -a "$COMPILE_LOG"
-  fi
-done
+fi
+
+if [[ "$should_compile" == "1" ]]; then
+  for attempt in $(seq 1 "$attempts"); do
+    echo "[bench] compile attempt ${attempt}/${attempts}" | tee -a "$COMPILE_LOG"
+    if timeout "${COMPILE_TIMEOUT_SEC}" npm run bun:compile >>"$COMPILE_LOG" 2>&1; then
+      compile_ok="1"
+      break
+    fi
+    if [[ "$attempt" -lt "$attempts" ]]; then
+      echo "[bench] compile attempt ${attempt} failed (timeout ${COMPILE_TIMEOUT_SEC}s) — retrying..." | tee -a "$COMPILE_LOG"
+    fi
+  done
+else
+  compile_ok="1"
+fi
 if [[ "$compile_ok" != "1" ]]; then
   compile_end_ms="$(now_ms)"
   compile_ms="$((compile_end_ms - compile_start_ms))"
