@@ -578,8 +578,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let fwdMs = 0;
     let bwdMs = 0;
 
-    // GPU-side loss accumulation: avoid per-microstep CPU readback.
-    // Accumulate scaled loss on GPU, single readback after the loop.
+    // GPU-side loss accumulation: avoid per-microstep CPU readback for grad accumulation.
+    // For accumSteps=1, skip the no-op GPU scale/add path and read loss directly.
+    const useGpuLossAccum = accumSteps > 1;
     let lossAccum: TensorData | null = null;
 
     for (let microStep = 0; microStep < accumSteps; microStep++) {
@@ -594,19 +595,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
       if (!loss) throw new Error("Loss is undefined");
 
-      // Accumulate loss on GPU: scale by 1/accumSteps and add to accumulator.
-      // No .data access here — stays lazy on GPU, no flush/wait/readback.
-      const scaledLoss = backend.scale(loss.data, 1 / accumSteps);
-      if (lossAccum === null) {
-        lossAccum = scaledLoss;
-      } else {
-        if (backend.addInplace) {
-          backend.addInplace(lossAccum, scaledLoss);
-          if (releaseFn) releaseFn(scaledLoss);
+      if (useGpuLossAccum) {
+        // Accumulate loss on GPU: scale by 1/accumSteps and add to accumulator.
+        // No .data access here — stays lazy on GPU, no flush/wait/readback.
+        const scaledLoss = backend.scale(loss.data, 1 / accumSteps);
+        if (lossAccum === null) {
+          lossAccum = scaledLoss;
         } else {
-          const prev = lossAccum;
-          lossAccum = backend.add(lossAccum, scaledLoss);
-          if (releaseFn) { releaseFn(prev); releaseFn(scaledLoss); }
+          if (backend.addInplace) {
+            backend.addInplace(lossAccum, scaledLoss);
+            if (releaseFn) releaseFn(scaledLoss);
+          } else {
+            const prev = lossAccum;
+            lossAccum = backend.add(lossAccum, scaledLoss);
+            if (releaseFn) { releaseFn(prev); releaseFn(scaledLoss); }
+          }
         }
       }
 
@@ -619,6 +622,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       } else {
         trainTape.backward(loss, backend, releaseFn);
       }
+      if (!useGpuLossAccum) {
+        lossVal = (loss.data.data as Float32Array)[0];
+        if (!isFinite(lossVal)) {
+          console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
+          nanDetected = true;
+        }
+      }
       const _bwd1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) bwdMs += _bwd1 - _fwd1;
       // Release tape intermediates but keep param gradients for accumulation
@@ -626,7 +636,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Single CPU readback of accumulated loss (triggers one flush+wait)
-    if (lossAccum) {
+    if (useGpuLossAccum && lossAccum) {
       lossVal = (lossAccum.data as Float32Array)[0];
       if (!isFinite(lossVal)) {
         console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
