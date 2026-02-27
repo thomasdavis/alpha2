@@ -494,6 +494,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
   const dropoutRng = new DropoutRng(trainConfig.seed);
+  const trainTape = new Tape();
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
@@ -529,13 +530,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let lossAccum: TensorData | null = null;
 
     for (let microStep = 0; microStep < accumSteps; microStep++) {
-      const tape = new Tape();
       const _dl0 = performance.now();
       const batch = trainLoader.nextBatch();
       const _dl1 = performance.now();
       dataLoadMs += _dl1 - _dl0;
       dropoutRng.reset(trainConfig.seed + step * 1000 + microStep, 0);
-      const { loss } = gptForward(activeModelConfig, params, backend, tape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
+      const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
       const _fwd1 = performance.now();
       fwdMs += _fwd1 - _dl1;
 
@@ -562,14 +562,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Gradients are unscaled back before the optimizer step.
       if (useLossScaling && lossScale !== 1.0) {
         const scaledGrad = backend.full(loss.data.shape, lossScale, loss.data.dtype);
-        tape.backward(loss, backend, releaseFn, scaledGrad);
+        trainTape.backward(loss, backend, releaseFn, scaledGrad);
       } else {
-        tape.backward(loss, backend, releaseFn);
+        trainTape.backward(loss, backend, releaseFn);
       }
       const _bwd1 = performance.now();
       bwdMs += _bwd1 - _fwd1;
       // Release tape intermediates but keep param gradients for accumulation
-      tape.clear(releaseFn);
+      trainTape.clear(releaseFn);
     }
 
     // Single CPU readback of accumulated loss (triggers one flush+wait)
