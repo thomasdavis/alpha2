@@ -30,7 +30,7 @@
     "server": "npm run dev -w @alpha/web",
     "web": "npm run dev -w @alpha/web",
     "tui": "npm run dev -w @alpha/tui",
-    "bun:compile": "npm run build -w @alpha/helios && mkdir -p .bun-out && bun build --compile ./apps/cli/src/main.ts --outfile ./.bun-out/alpha && cp packages/helios/native/helios_vk.node ./.bun-out/helios_vk.node",
+    "bun:compile": "npm run build:native -w @alpha/helios && mkdir -p .bun-out && bun build --compile ./apps/cli/src/main.ts --outfile ./.bun-out/alpha && cp packages/helios/native/helios_vk.node ./.bun-out/helios_vk.node",
     "fleet": "node apps/cli/dist/main.js fleet",
     "fleet:status": "node apps/cli/dist/main.js fleet status",
     "fleet:deploy": "node apps/cli/dist/main.js fleet deploy",
