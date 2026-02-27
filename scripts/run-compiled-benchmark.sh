@@ -104,6 +104,8 @@ git_commit="$(git rev-parse --short HEAD)"
 status_label="ok"
 if [[ "$run_status" -ne 0 ]]; then
   status_label="failed"
+elif rg -q 'loss=NaN|Inf/NaN|smoke_test: FAIL' "$RUN_LOG"; then
+  status_label="unstable"
 fi
 
 echo "${TS},${git_commit},${STEPS},${BACKEND},${compile_ms},${run_ms},${avg_tok_s},${last_tok_s},${speedup_pct},${RUN_DIR},${RUN_LOG},${status_label}" >> "$HISTORY_FILE"
