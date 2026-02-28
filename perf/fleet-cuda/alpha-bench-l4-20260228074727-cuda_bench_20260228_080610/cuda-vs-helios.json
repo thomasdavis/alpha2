@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-02-28T08:06:28.051Z",
+  "iters": 1,
+  "warmup": 0,
+  "dtype": "float32",
+  "shapes": [
+    "256x256x256"
+  ],
+  "helios": {
+    "backend": "helios",
+    "device_name": "NVIDIA L4",
+    "vendor_id": 4318,
+    "f16_supported": true
+  },
+  "cuda": {
+    "ok": true,
+    "framework": "pytorch_cuda",
+    "torch_version": "2.7.1+cu128",
+    "cuda_runtime": "12.8",
+    "device_name": "NVIDIA L4",
+    "device_capability": "8.9",
+    "dtype": "float32",
+    "rows": [
+      {
+        "shape": "256x256x256",
+        "avg_ms": 90.85475799997766,
+        "tflops": 0.00036931948021927754
+      }
+    ]
+  },
+  "rows": [
+    {
+      "shape": "256x256x256",
+      "heliosMs": 32.20759499999997,
+      "heliosTflops": 0.0010418173725793567,
+      "cudaMs": 90.85475799997766,
+      "cudaTflops": 0.00036931948021927754
+    }
+  ]
+}

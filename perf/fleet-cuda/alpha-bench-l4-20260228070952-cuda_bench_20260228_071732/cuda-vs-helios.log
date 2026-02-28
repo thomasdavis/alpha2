@@ -1,0 +1,5 @@
+── CUDA Reference Benchmark: Helios vs PyTorch CUDA ──
+
+iters=2 warmup=1 dtype=float32
+shapes=512x512x512
+

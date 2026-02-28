@@ -12,6 +12,170 @@ import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deser
 import { Effect } from "effect";
 
 type GpuProfile = "auto" | "none" | "l4";
+type PlanningIssueLevel = "warn" | "error";
+
+interface PlanningIssue {
+  level: PlanningIssueLevel;
+  message: string;
+}
+
+interface TrainingPlanningOptions {
+  strictPlanning: boolean;
+  requireValData: boolean;
+  minTokensPerParam: number;
+  warnDatasetPasses: number;
+  maxDatasetPasses: number;
+}
+
+function estimateFfnDim(config: ModelConfig): number {
+  if (config.ffnDim && config.ffnDim > 0) return config.ffnDim;
+  if ((config.ffnActivation ?? "gelu") === "swiglu") {
+    return Math.ceil((8 / 3) * config.nEmbd / 64) * 64;
+  }
+  return 4 * config.nEmbd;
+}
+
+function estimateModelParams(config: ModelConfig): number {
+  const n = config.nEmbd;
+  const l = config.nLayer;
+  const v = config.vocabSize;
+  const f = estimateFfnDim(config);
+  const activation = config.ffnActivation ?? "gelu";
+
+  // Global parameters (untied embeddings + final LN + lmHead).
+  let total = 2 * v * n + (config.blockSize * n) + (2 * n);
+
+  // Per-layer: attn weights + layer norms + MLP weights (+ activation extras).
+  let perLayer = (4 * n * n) + (4 * n);
+  if (activation === "swiglu") {
+    perLayer += 3 * n * f;
+  } else {
+    perLayer += 2 * n * f;
+  }
+  if (activation === "universal") {
+    perLayer += 2 * f;
+  } else if (activation === "kan_spline") {
+    perLayer += 5 * f;
+  }
+
+  total += l * perLayer;
+  return total;
+}
+
+function estimateCharsPerToken(tokenizerName: string): number {
+  if (tokenizerName === "char") return 1.0;
+  if (tokenizerName === "word") return 5.0;
+  if (tokenizerName.startsWith("bpe")) return 3.8;
+  return 4.0;
+}
+
+function formatCount(n: number): string {
+  if (n >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return `${Math.round(n)}`;
+}
+
+async function estimateDatasetTokens(dataPath: string, tokenizerName: string): Promise<number | null> {
+  try {
+    const fs = await import("node:fs/promises");
+    const meta = await fs.stat(dataPath);
+    if (!meta.isFile()) return null;
+    const charsPerToken = estimateCharsPerToken(tokenizerName);
+    return Math.max(1, Math.floor(meta.size / charsPerToken));
+  } catch {
+    return null;
+  }
+}
+
+async function emitTrainingPlanningWarnings(args: {
+  dataPath: string;
+  valDataPath?: string;
+  trainConfig: TrainConfig;
+  modelConfig: ModelConfig;
+  backendName: string;
+  tokenizerName: string;
+  planning: TrainingPlanningOptions;
+}): Promise<void> {
+  const { dataPath, valDataPath, trainConfig, modelConfig, backendName, tokenizerName, planning } = args;
+  const accum = Math.max(1, trainConfig.gradAccumSteps);
+  const plannedTokens = trainConfig.iters * trainConfig.batchSize * modelConfig.blockSize * accum;
+  const params = Math.max(1, estimateModelParams(modelConfig));
+  const tokensPerParam = plannedTokens / params;
+  const estDatasetTokens = await estimateDatasetTokens(dataPath, tokenizerName);
+  const issues: PlanningIssue[] = [];
+  const pushIssue = (level: PlanningIssueLevel, message: string) => issues.push({ level, message });
+  const requireValDataViolation = !valDataPath && planning.requireValData;
+  const minTokensPerParam = Number.isFinite(planning.minTokensPerParam) && planning.minTokensPerParam > 0
+    ? planning.minTokensPerParam
+    : 20;
+  const warnDatasetPasses = Number.isFinite(planning.warnDatasetPasses) && planning.warnDatasetPasses > 0
+    ? planning.warnDatasetPasses
+    : 8;
+  const maxDatasetPasses = Number.isFinite(planning.maxDatasetPasses) && planning.maxDatasetPasses >= warnDatasetPasses
+    ? planning.maxDatasetPasses
+    : Math.max(20, warnDatasetPasses);
+
+  if (tokensPerParam < 5) {
+    pushIssue("error", `Very low token budget for model size (${tokensPerParam.toFixed(2)} tokens/param).`);
+  } else if (tokensPerParam < minTokensPerParam) {
+    pushIssue("warn", `Under target token budget (${minTokensPerParam.toFixed(1)} tokens/param): currently ${tokensPerParam.toFixed(2)}.`);
+  }
+
+  if (estDatasetTokens !== null) {
+    const dataPasses = plannedTokens / estDatasetTokens;
+    if (dataPasses > maxDatasetPasses) {
+      pushIssue("error", `Planned budget reuses the dataset ~${dataPasses.toFixed(1)}x (max target ${maxDatasetPasses.toFixed(1)}x).`);
+    } else if (dataPasses > warnDatasetPasses) {
+      pushIssue("warn", `Planned budget reuses the dataset ~${dataPasses.toFixed(1)}x; consider more data.`);
+    }
+  }
+
+  if (requireValDataViolation) {
+    pushIssue("error", `Validation set is required (--requireValData=true) but --valData was not provided.`);
+  } else if (!valDataPath) {
+    pushIssue("warn", `No --valData provided; Alpha will auto-split data file 90/10 for train/val.`);
+  } else if (valDataPath === dataPath) {
+    pushIssue("error", `Validation path matches training path; validation signal will be misleading.`);
+  }
+
+  if (trainConfig.evalInterval >= trainConfig.iters) {
+    pushIssue("warn", `evalInterval (${trainConfig.evalInterval}) >= iters (${trainConfig.iters}); you may only eval at the end.`);
+  }
+
+  if (/helios/i.test(backendName) && trainConfig.batchSize <= 2 && accum <= 1) {
+    pushIssue("warn", `Small effective batch on GPU backend may underutilize the device; increase --batch or --accumSteps.`);
+  }
+
+  if (issues.length === 0) return;
+
+  const errorCount = issues.reduce((n, issue) => n + (issue.level === "error" ? 1 : 0), 0);
+
+  console.warn(`\nStartup planning checks:`);
+  console.warn(`  model_params≈${formatCount(params)} planned_tokens≈${formatCount(plannedTokens)} tokens/param≈${tokensPerParam.toFixed(2)}`);
+  if (estDatasetTokens !== null) {
+    console.warn(`  dataset_tokens_estimate≈${formatCount(estDatasetTokens)} (size/tokenizer heuristic)`);
+  }
+  console.warn(`  thresholds: min_tokens_per_param=${minTokensPerParam.toFixed(1)} warn_dataset_passes=${warnDatasetPasses.toFixed(1)} max_dataset_passes=${maxDatasetPasses.toFixed(1)}`);
+  for (const issue of issues) {
+    const line = `  - [${issue.level}] ${issue.message}`;
+    if (issue.level === "error") console.error(line);
+    else console.warn(line);
+  }
+  console.warn(`  Heuristics only; use domain evals to make final calls.\n`);
+
+  if (requireValDataViolation) {
+    throw new Error(`Missing required --valData while --requireValData=true.`);
+  }
+
+  if (planning.strictPlanning && errorCount > 0) {
+    throw new Error(
+      `Strict planning failed with ${errorCount} error(s). ` +
+      `Adjust training config or rerun with --strictPlanning=false.`
+    );
+  }
+}
 
 export async function trainCmd(args: string[]): Promise<void> {
   let kv = parseKV(args);
@@ -77,6 +241,13 @@ export async function trainCmd(args: string[]): Promise<void> {
     packed: boolArg(kv, "packed", tDefaults.packed ?? defaultTrainConfig.packed),
     symbio: boolArg(kv, "symbio", tDefaults.symbio ?? defaultTrainConfig.symbio),
     symbioConfig: null,
+  };
+  const planningOptions: TrainingPlanningOptions = {
+    strictPlanning: boolArg(kv, "strictPlanning", false),
+    requireValData: boolArg(kv, "requireValData", false),
+    minTokensPerParam: floatArg(kv, "minTokensPerParam", 20),
+    warnDatasetPasses: floatArg(kv, "warnDatasetPasses", 8),
+    maxDatasetPasses: floatArg(kv, "maxDatasetPasses", 20),
   };
 
   // Apply symbio preset if enabled (before resolving implementations)
@@ -196,6 +367,16 @@ export async function trainCmd(args: string[]): Promise<void> {
     ...modelConfig,
     vocabSize: tokenizer.vocabSize,
   };
+
+  await emitTrainingPlanningWarnings({
+    dataPath,
+    valDataPath,
+    trainConfig,
+    modelConfig: finalModelConfig,
+    backendName: backend.name,
+    tokenizerName: tokenizer.name,
+    planning: planningOptions,
+  });
 
   // Set up remote reporter if env vars are configured
   const enableRemote = boolArg(kv, "remote", true);

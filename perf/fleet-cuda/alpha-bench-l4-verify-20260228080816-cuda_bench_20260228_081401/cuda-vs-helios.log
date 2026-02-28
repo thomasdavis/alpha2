@@ -1,0 +1,17 @@
+── CUDA Reference Benchmark: Helios vs PyTorch CUDA ──
+
+iters=3 warmup=1 dtype=float32
+shapes=512x512x512,1024x1024x1024
+
+helios_device=NVIDIA L4 vendor=0x10de f16=true
+python=python3
+
+cuda_device=NVIDIA L4 capability=8.9 torch=2.7.1+cu128 cuda=12.8
+
+shape             helios_ms   cuda_ms     helios_tflops  cuda_tflops  h_vs_cuda
+───────────────────────────────────────────────────────────────────────────────
+512x512x512       0.411       0.071       0.653          3.771        1/5.78x
+1024x1024x1024    1.225       0.114       1.754          18.919       1/10.79x
+
+saved: /home/ajax/alpha/runs/cuda_bench_20260228_081401/cuda-vs-helios.json
+

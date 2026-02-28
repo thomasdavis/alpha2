@@ -1,0 +1,7 @@
+stage,seconds
+to_instance_ready,31
+build_and_deploy,280
+remote_prereq,38
+remote_benchmark,8
+download_artifacts,10
+total,367

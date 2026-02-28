@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-02-28T11:26:15.321Z",
+  "iters": 12,
+  "warmup": 6,
+  "dtype": "float32",
+  "shapes": [
+    "1024x1024x1024",
+    "2048x2048x2048"
+  ],
+  "helios": {
+    "backend": "helios",
+    "device_name": "NVIDIA L4",
+    "vendor_id": 4318,
+    "f16_supported": true,
+    "coop_supported": true,
+    "coop_tile_mnk": [
+      16,
+      16,
+      16
+    ],
+    "has_push_descriptors": true,
+    "coop_stats": {
+      "totalMatmulDispatches": 36,
+      "coopDispatches": 36,
+      "coopDirectDispatches": 36,
+      "coopPadded2DDispatches": 0,
+      "coopPaddedBatchedDispatches": 0,
+      "coopTransposedARewriteDispatches": 0,
+      "coopHitRate": 1
+    }
+  },
+  "cuda": {
+    "ok": true,
+    "framework": "pytorch_cuda",
+    "torch_version": "2.7.1+cu128",
+    "cuda_runtime": "12.8",
+    "device_name": "NVIDIA L4",
+    "device_capability": "8.9",
+    "dtype": "float32",
+    "rows": [
+      {
+        "shape": "1024x1024x1024",
+        "avg_ms": 0.08954574999127847,
+        "tflops": 23.981971765373114
+      },
+      {
+        "shape": "2048x2048x2048",
+        "avg_ms": 0.4579677500563169,
+        "tflops": 37.513272892878085
+      }
+    ]
+  },
+  "rows": [
+    {
+      "shape": "1024x1024x1024",
+      "heliosMs": 0.4754220833333325,
+      "heliosTflops": 4.517004412044392,
+      "cudaMs": 0.08954574999127847,
+      "cudaTflops": 23.981971765373114
+    },
+    {
+      "shape": "2048x2048x2048",
+      "heliosMs": 2.1530901666666673,
+      "heliosTflops": 7.979168476068619,
+      "cudaMs": 0.4579677500563169,
+      "cudaTflops": 37.513272892878085
+    }
+  ]
+}

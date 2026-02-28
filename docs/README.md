@@ -303,7 +303,7 @@ npm run fleet:bench:cuda -- --shutdown=delete
 
 `fleet:bench:cuda` now uses a fast path by default (skips `fleet setup`, deploys prebuilt `helios_vk.node`, writes per-stage timing CSVs). Add `--setup` to force full setup warmup.
 `fleet deploy` also skips unchanged uploads using SHA-256 checks, which makes repeated loop deploys much faster.
-On Bun standalone runtime, `HELIOS_ENABLE_COOP_MAT=1` requires `HELIOS_FORCE_UNSAFE_COOP_MAT=1` as an explicit crash-risk override.
+Cooperative matmul is enabled by default when the device reports support; set `HELIOS_DISABLE_COOP_MAT=1` to force-disable.
 
 ### Compare Helios vs CUDA (local NVIDIA laptop/workstation)
 

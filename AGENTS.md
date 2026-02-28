@@ -59,7 +59,7 @@ Operational notes:
 - On L4 instances, Fleet auto-applies default flags unless explicitly overridden.
 - Use `--force` on `fleet train`/`fleet resume` only when intentionally bypassing running-process checks.
 - `fleet deploy` now skips unchanged uploads via SHA-256 checks (binary/addon/source/env/flake files), which significantly speeds repeated deploy loops.
-- Bun standalone safety: `HELIOS_ENABLE_COOP_MAT=1` is ignored unless `HELIOS_FORCE_UNSAFE_COOP_MAT=1` is also set.
+- Coop matmul is default-on when supported; set `HELIOS_DISABLE_COOP_MAT=1` for forced-disable diagnostics.
 
 ## Compiled Binary Rules
 

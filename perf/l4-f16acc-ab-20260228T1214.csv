@@ -1,0 +1,7 @@
+mode,run,helios_ms,cuda_ms,ratio
+baseline,1,2.125,0.257,1/8.26x
+baseline,2,2.109,0.248,1/8.49x
+baseline,3,2.168,0.250,1/8.67x
+f16acc,1,2.159,0.251,1/8.60x
+f16acc,2,2.145,0.250,1/8.58x
+f16acc,3,2.164,0.251,1/8.63x
