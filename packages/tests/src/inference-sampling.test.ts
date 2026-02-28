@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SeededRng } from "@alpha/core";
-import { sampleFromLogits } from "@alpha/inference";
+import { sampleFromLogits, cloneSession } from "@alpha/inference";
 
 function makeFakeSampler(vocabSize: number) {
   return {
@@ -37,5 +37,37 @@ describe("Inference sampling", () => {
       const tok = sampleFromLogits(sampler, logits, 1.0, 1, rng, 1.0);
       expect(tok).toBe(0);
     }
+  });
+
+  it("cloneSession deep-copies KV cache and scratch buffers", () => {
+    const src: any = {
+      config: { vocabSize: 4 },
+      kCache: [new Float32Array([1, 2, 3])],
+      vCache: [new Float32Array([4, 5, 6])],
+      _x: new Float32Array([1]),
+      _lnOut: new Float32Array([2]),
+      _q: new Float32Array([3]),
+      _k: new Float32Array([4]),
+      _v: new Float32Array([5]),
+      _attnScores: new Float32Array([6, 7]),
+      _attnOut: new Float32Array([8]),
+      _projected: new Float32Array([9]),
+      _mlpHidden: new Float32Array([10]),
+      _mlpOut: new Float32Array([11]),
+      _logits: new Float32Array([12, 13, 14, 15]),
+      _sampleBuf: new Float32Array([0, 0, 0, 0]),
+      _prefillX: new Float32Array([16]),
+      _prefillMaxT: 1,
+      _prefillLastLn: new Float32Array([17]),
+    };
+    const cloned = cloneSession(src);
+
+    expect(Array.from(cloned.kCache[0])).toEqual([1, 2, 3]);
+    expect(Array.from(cloned.vCache[0])).toEqual([4, 5, 6]);
+
+    src.kCache[0][0] = 99;
+    src._x[0] = 42;
+    expect(cloned.kCache[0][0]).toBe(1);
+    expect(cloned._x[0]).toBe(1);
   });
 });

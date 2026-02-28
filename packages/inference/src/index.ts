@@ -6,6 +6,7 @@ export {
   createSession,
   prepareInferenceModel,
   resetCache,
+  cloneSession,
   countModelParams,
   prefill,
   decodeStep,

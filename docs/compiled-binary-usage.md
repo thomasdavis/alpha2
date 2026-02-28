@@ -86,6 +86,18 @@ Generate text:
 ./.bun-out/alpha sample --checkpoint=runs/compiled-binary-cpu/checkpoint-5.json --prompt="The " --steps=100
 ```
 
+Nucleus sampling (`top-p`) + beam search:
+```bash
+./.bun-out/alpha sample \
+  --checkpoint=runs/compiled-binary-cpu/checkpoint-5.json \
+  --prompt="The " \
+  --steps=120 \
+  --topk=40 \
+  --topp=0.92 \
+  --beam=4 \
+  --beamLengthPenalty=1.0
+```
+
 Evaluate checkpoint:
 ```bash
 ./.bun-out/alpha eval --checkpoint=runs/compiled-binary-cpu/checkpoint-5.json --data=data/abc-small.txt

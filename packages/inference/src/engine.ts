@@ -274,6 +274,39 @@ export function resetCache(session: InferenceSession): void {
   }
 }
 
+/** Deep clone an inference session (including KV cache and scratch buffers). */
+export function cloneSession(session: InferenceSession): InferenceSession {
+  const copy: InferenceSession = {
+    config: session.config,
+    kCache: session.kCache.map((k) => new Float32Array(k)),
+    vCache: session.vCache.map((v) => new Float32Array(v)),
+    _x: new Float32Array(session._x),
+    _lnOut: new Float32Array(session._lnOut),
+    _q: new Float32Array(session._q),
+    _k: new Float32Array(session._k),
+    _v: new Float32Array(session._v),
+    _attnScores: new Float32Array(session._attnScores),
+    _attnOut: new Float32Array(session._attnOut),
+    _projected: new Float32Array(session._projected),
+    _mlpHidden: new Float32Array(session._mlpHidden),
+    _mlpOut: new Float32Array(session._mlpOut),
+    _logits: new Float32Array(session._logits),
+    _sampleBuf: new Float32Array(session._sampleBuf),
+    _prefillLastLn: session._prefillLastLn ? new Float32Array(session._prefillLastLn) : undefined,
+  };
+  if (session._prefillX) copy._prefillX = new Float32Array(session._prefillX);
+  if (session._prefillLn) copy._prefillLn = new Float32Array(session._prefillLn);
+  if (session._prefillQ) copy._prefillQ = new Float32Array(session._prefillQ);
+  if (session._prefillK) copy._prefillK = new Float32Array(session._prefillK);
+  if (session._prefillV) copy._prefillV = new Float32Array(session._prefillV);
+  if (session._prefillAttn) copy._prefillAttn = new Float32Array(session._prefillAttn);
+  if (session._prefillScores) copy._prefillScores = new Float32Array(session._prefillScores);
+  if (session._prefillProj) copy._prefillProj = new Float32Array(session._prefillProj);
+  if (session._prefillMlpH) copy._prefillMlpH = new Float32Array(session._prefillMlpH);
+  if (session._prefillMaxT !== undefined) copy._prefillMaxT = session._prefillMaxT;
+  return copy;
+}
+
 export function countModelParams(
   params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
 ): number {
