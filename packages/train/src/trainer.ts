@@ -545,7 +545,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const gradTensors: TensorData[] = [];
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
-  const ADAPTIVE_MEM_STATS_POLL_EVERY = 8;
+  const ADAPTIVE_MEM_STATS_POLL_EVERY = 12;
   const ADAPTIVE_SYNC_MIN_INTERVAL = 9;
   const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = 28;
   const ADAPTIVE_SYNC_PENDING_THRESHOLD = 24;
