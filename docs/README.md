@@ -48,6 +48,11 @@ If you want a compact system you can read, modify, and benchmark end-to-end, thi
 - GPU training with Vulkan (`helios`) or CPU fallback (`cpu_ref`)
 - Mixed-precision activation storage (`--fp16=true`)
 - Activation checkpointing (`--checkpoint=true`)
+- Compiled standalone CLI binary (`bun --compile`) + Helios native sidecar
+- Benchmark harness with retry/selection/history logging (`perf/compiled-loop-history.csv`)
+- Runtime adaptive tuning knobs via env vars (no source edits required)
+- Fail-fast GPU smoke-test mode for clean benchmarking
+- Tokenizer artifact caching for repeated training/benchmark loops
 - Benchmarks for ops / end-to-end / training
 - OpenAI-compatible chat API routes in the web app
 
@@ -155,6 +160,60 @@ Notes:
 - `helios` is optional; CPU backend remains useful for correctness checks and small runs.
 - If the native addon is missing or Vulkan is unavailable, use `--backend=cpu_ref`.
 
+## Compiled Binary Workflow
+
+Build compiled binary + native sidecar:
+
+```bash
+npm run bun:compile
+```
+
+This now does:
+1. Workspace TS build for `@alpha/cli` (fresh `dist` artifacts).
+2. Helios native build.
+3. `bun --compile` from `apps/cli/dist/main.js`.
+4. Copies `helios_vk.node` next to `./.bun-out/alpha`.
+
+Quick check:
+
+```bash
+./.bun-out/alpha --help
+```
+
+See also:
+- `docs/compiled-binary-usage.md`
+
+## Performance Loop (Compiled Benchmark)
+
+Main benchmark command:
+
+```bash
+scripts/run-compiled-benchmark.sh 100
+```
+
+Outputs:
+- `perf/compiled-loop-history.csv`
+- `perf/last-benchmark.env`
+- `perf/run-<timestamp>.log`
+
+Default benchmark safety behavior:
+- `FAIL_ON_SMOKE_TEST=1` (strict fail-fast on GPU smoke failures)
+- attempt scoring preference: `ok > unstable > smoke_fail > failed`
+
+Optional diagnostic mode:
+
+```bash
+FAIL_ON_SMOKE_TEST=0 scripts/run-compiled-benchmark.sh 100
+```
+
+Automated adaptive tuning sweep (20 loops):
+
+```bash
+npm run perf:tune:adaptive
+```
+
+By default this tuner only accepts `status=ok` candidates and exits non-zero if none are valid.
+
 ## CLI Commands
 
 Main CLI entrypoint (`apps/cli/src/main.ts`) supports:
@@ -178,6 +237,11 @@ npm run -w @alpha/cli dev -- bench --suite=ops --backend=cpu_ref
 ### Important CLI Parsing Note
 
 The current CLI argument parser expects `--key=value` style flags (for example `--iters=100`, not `iters=100`).
+
+### Useful Training Flags For Looping
+
+- `--tokenizerArtifacts=<path>`  
+  Reuses tokenizer artifacts across runs; if missing, builds once and saves to that path.
 
 ## Web Dashboard / API
 
@@ -224,7 +288,21 @@ npm run -w @alpha/tests test
 ```bash
 npm run -w @alpha/cli dev -- bench --suite=ops --backend=cpu_ref
 npm run -w @alpha/cli dev -- bench --suite=train
+scripts/run-compiled-benchmark.sh 100
+npm run perf:tune:adaptive
 ```
+
+### Runtime Performance Env Knobs
+
+These are read at runtime by the trainer:
+
+- `ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY`
+- `ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL`
+- `ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD`
+- `ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD`
+- `ALPHA_GPU_METRICS_SAMPLE_EVERY`
+- `ALPHA_CALLBACK_YIELD_EVERY`
+- `ALPHA_FAIL_ON_SMOKE_TEST`
 
 ## Training Tips
 
@@ -288,4 +366,3 @@ A root `LICENSE` file is not currently present in this repository. Add one befor
 ## Acknowledgments
 
 Alpha is intentionally influenced by “small, readable ML systems” ideas, while pushing further into a custom TS + Vulkan stack.
-
