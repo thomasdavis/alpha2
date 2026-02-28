@@ -1,0 +1,4 @@
+iter,mem_poll,sync_interval,deferred_threshold,pending_threshold,gpu_metrics_sample_every,avg_tok_s,last_tok_s,status,speedup_pct,run_log
+1,14,11,32,28,50,2730.793,2665.770,smoke_fail,0.18,perf/run-20260228T012354Z.log
+2,12,10,28,24,50,2645.515,2783.956,ok,-2.95,perf/run-20260228T012401Z.log
+3,16,12,36,32,50,2888.243,2644.624,unstable,5.96,perf/run-20260228T012409Z.log

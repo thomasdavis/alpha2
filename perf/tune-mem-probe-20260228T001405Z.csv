@@ -1,0 +1,4 @@
+poll_every,avg_tok_s,status,run_log
+8,4172.631,smoke_fail,perf/run-20260228T001405Z.log
+10,4642.145,smoke_fail,perf/run-20260228T001410Z-try2.log
+12,4327.824,ok,perf/run-20260228T001420Z-try2.log

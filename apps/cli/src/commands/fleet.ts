@@ -597,6 +597,11 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
       }
       if (cfg.data) flagMap["data"] = cfg.data;
       if (cfg.domain) flagMap["domain"] = cfg.domain;
+      // Infer data path if not stored in config.json
+      if (!flagMap["data"] && cfg.domain) {
+        const { stdout: dataFiles } = await ssh(config, inst.host, `ls ${dir}/data/${cfg.domain}*.txt 2>/dev/null | head -1`);
+        if (dataFiles.trim()) flagMap["data"] = dataFiles.trim();
+      }
       if (cfg.checkpoint) flagMap["checkpoint"] = "true";
       if (cfg.fp16) flagMap["fp16"] = "true";
 

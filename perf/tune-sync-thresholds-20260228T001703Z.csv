@@ -1,0 +1,7 @@
+deferred_threshold,pending_threshold,avg_tok_s,status,run_log
+28,24,4962.609,unstable,perf/run-20260228T001703Z.log
+28,28,4853.173,smoke_fail,perf/run-20260228T001712Z.log
+32,24,4912.893,smoke_fail,perf/run-20260228T001817Z-try2.log
+32,28,4797.601,ok,perf/run-20260228T001827Z.log
+36,24,3627.739,ok,perf/run-20260228T001837Z-try2.log
+36,28,4036.626,smoke_fail,perf/run-20260228T001848Z.log

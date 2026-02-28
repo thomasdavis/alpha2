@@ -1,0 +1,5 @@
+min_interval,avg_tok_s,status,run_log
+8,4223.676,smoke_fail,perf/run-20260228T001534Z.log
+9,4206.087,ok,perf/run-20260228T001539Z.log
+10,4604.362,ok,perf/run-20260228T001548Z-try2.log
+11,4354.573,ok,perf/run-20260228T001558Z-try2.log
