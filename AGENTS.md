@@ -16,6 +16,8 @@ Project-specific operating guide for coding agents in this repo.
 - Compile binary: `npm run bun:compile`
 - Benchmark loop: `scripts/run-compiled-benchmark.sh 100`
 - Adaptive tuning sweep: `npm run perf:tune:adaptive`
+- Helios vs CUDA (local): `npm run bench:cuda -- --iters=12`
+- Helios vs CUDA (fleet L4 cycle): `npm run fleet:bench:cuda -- --shutdown=delete`
 
 ## Fleet Operations (Remote Instances)
 
@@ -29,6 +31,7 @@ Core commands:
 - Dashboard: `npm run fleet`
 - Status: `npm run fleet:status -- <instance>`
 - Deploy binary/native addon: `npm run fleet:deploy -- <instance>`
+- Force remote native rebuild: `npm run fleet:deploy -- <instance> --rebuild-native`
 - Deploy all instances: `npm run fleet -- deploy --all`
 - First-time setup (Nix + train shell warmup): `npm run fleet:setup -- <instance>`
 - Start training: `npm run fleet:train -- <instance> --data=<path> ...`
@@ -45,8 +48,8 @@ Core commands:
 Expected workflow:
 
 1. `npm run fleet -- sync-keys <instance>` (once per machine).
-2. `npm run fleet:deploy -- <instance>` (builds via `bun:compile`, uploads `alpha`, uploads `helios_vk.c`, compiles `helios_vk.node` remotely, uploads `.env.local` if present).
-3. `npm run fleet:setup -- <instance>` (once after deploy or environment changes).
+2. `npm run fleet:deploy -- <instance>` (builds via `bun:compile`, uploads `alpha` + prebuilt `helios_vk.node`, uploads `.env.local` if present).
+3. `npm run fleet:setup -- <instance>` only when Nix shell tooling is required (training env warmup, remote native rebuild, etc.).
 4. `npm run fleet:train -- <instance> ...` or `npm run fleet:resume -- <instance>`.
 5. Monitor with `fleet logs`, stop with `fleet stop`, and pull artifacts with `fleet download`.
 
@@ -55,6 +58,8 @@ Operational notes:
 - `fleet train`/`fleet resume` run detached via `nohup` and write `train.log` under remote `deployDir`.
 - On L4 instances, Fleet auto-applies default flags unless explicitly overridden.
 - Use `--force` on `fleet train`/`fleet resume` only when intentionally bypassing running-process checks.
+- `fleet deploy` now skips unchanged uploads via SHA-256 checks (binary/addon/source/env/flake files), which significantly speeds repeated deploy loops.
+- Bun standalone safety: `HELIOS_ENABLE_COOP_MAT=1` is ignored unless `HELIOS_FORCE_UNSAFE_COOP_MAT=1` is also set.
 
 ## Compiled Binary Rules
 

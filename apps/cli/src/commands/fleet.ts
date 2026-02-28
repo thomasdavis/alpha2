@@ -5,6 +5,7 @@
  */
 import { spawn, execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -112,6 +113,39 @@ function scp(config: FleetConfig, local: string, host: string, remote: string): 
     proc.on("error", reject);
     proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`scp exited ${code}`)));
   });
+}
+
+function sha256File(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+async function remoteSha256(config: FleetConfig, host: string, remotePath: string): Promise<string | null> {
+  const { stdout, code } = await ssh(
+    config,
+    host,
+    `if [ -f ${remotePath} ]; then sha256sum ${remotePath} | awk '{print $1}'; fi`,
+  );
+  if (code !== 0) return null;
+  const hash = stdout.trim().split(/\s+/)[0] || "";
+  return /^[a-f0-9]{64}$/i.test(hash) ? hash.toLowerCase() : null;
+}
+
+async function scpIfChanged(
+  config: FleetConfig,
+  localPath: string,
+  host: string,
+  remotePath: string,
+  label: string,
+): Promise<boolean> {
+  const localHash = sha256File(localPath);
+  const remoteHash = await remoteSha256(config, host, remotePath);
+  if (remoteHash && remoteHash === localHash) {
+    console.log(`  ${label} unchanged — skipping upload.`);
+    return false;
+  }
+  console.log(`  Uploading ${label}...`);
+  await scp(config, localPath, host, remotePath);
+  return true;
 }
 
 function rsyncFrom(config: FleetConfig, host: string, remote: string, local: string): Promise<void> {
@@ -334,6 +368,7 @@ free -h | head -2
 
 async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string, string>): Promise<void> {
   const names = kv["all"] === "true" ? Object.keys(config.instances) : [name];
+  const forceRemoteNativeBuild = kv["rebuild-native"] === "true" || kv["rebuildNative"] === "true";
   if (names.length === 1 && !names[0]) {
     console.error("Usage: alpha fleet deploy <name> [--all]");
     process.exit(1);
@@ -350,11 +385,16 @@ async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string,
 
   const bunOut = join(process.cwd(), ".bun-out");
   const binaryPath = join(bunOut, "alpha");
+  const nativeBinaryPath = join(bunOut, "helios_vk.node");
   const nativeSrc = join(process.cwd(), "packages", "helios", "native", "helios_vk.c");
   const envPath = join(process.cwd(), ".env.local");
 
   if (!existsSync(binaryPath)) {
     console.error(red(`  Binary not found at ${binaryPath}`));
+    process.exit(1);
+  }
+  if (!existsSync(nativeBinaryPath)) {
+    console.error(red(`  Native addon not found at ${nativeBinaryPath}`));
     process.exit(1);
   }
 
@@ -371,38 +411,51 @@ async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string,
     const flakePath = join(process.cwd(), "flake.nix");
     const flakeLockPath = join(process.cwd(), "flake.lock");
     if (existsSync(flakePath)) {
-      console.log("  Uploading flake.nix...");
-      await scp(config, flakePath, inst.host, `${dir}/flake.nix`);
+      await scpIfChanged(config, flakePath, inst.host, `${dir}/flake.nix`, "flake.nix");
     }
     if (existsSync(flakeLockPath)) {
-      console.log("  Uploading flake.lock...");
-      await scp(config, flakeLockPath, inst.host, `${dir}/flake.lock`);
+      await scpIfChanged(config, flakeLockPath, inst.host, `${dir}/flake.lock`, "flake.lock");
     }
 
     // Step 4: Upload binary
-    console.log("  Uploading binary...");
-    await scp(config, binaryPath, inst.host, `${dir}/alpha`);
+    await scpIfChanged(config, binaryPath, inst.host, `${dir}/alpha`, "binary");
     await ssh(config, inst.host, `chmod +x ${dir}/alpha`);
 
-    // Step 5: Upload helios_vk.c and compile (Nix shell if available, bare gcc fallback)
-    console.log("  Uploading helios_vk.c...");
-    await scp(config, nativeSrc, inst.host, `${dir}/helios_vk.c`);
+    // Step 5: Upload native addon. Rebuild remotely only if requested or prebuilt check fails.
+    await scpIfChanged(
+      config,
+      nativeBinaryPath,
+      inst.host,
+      `${dir}/helios_vk.node`,
+      "helios_vk.node (prebuilt)",
+    );
 
-    console.log("  Compiling helios_vk.node on instance...");
-    const nixGcc = `${NIX_SOURCE} command -v nix >/dev/null 2>&1 && nix develop path:${dir}#train --command bash -c 'gcc -shared -fPIC -O2 -Wall -I$NODE_HEADERS -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl'`;
-    const bareNodeHeaders = "$(node -p 'require(\"path\").resolve(process.execPath, \"..\", \"..\", \"include\", \"node\")')";
-    const bareGcc = `gcc -shared -fPIC -O2 -Wall -I${bareNodeHeaders} -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl`;
-    const gccCmd = `${nixGcc} || ${bareGcc}`;
-    const { code: gccCode, stderr: gccErr } = await ssh(config, inst.host, gccCmd, { stream: true });
-    if (gccCode !== 0) {
-      console.error(red(`\n  gcc failed on ${n}. Run 'alpha fleet setup ${n}' first.`));
-      continue;
+    await scpIfChanged(config, nativeSrc, inst.host, `${dir}/helios_vk.c`, "helios_vk.c");
+
+    let needsRemoteBuild = forceRemoteNativeBuild;
+    if (!needsRemoteBuild) {
+      const lddCheck = await ssh(config, inst.host, `ldd ${dir}/helios_vk.node >/dev/null 2>&1`);
+      needsRemoteBuild = lddCheck.code !== 0;
+    }
+
+    if (needsRemoteBuild) {
+      console.log("  Compiling helios_vk.node on instance...");
+      const nixGcc = `${NIX_SOURCE} command -v nix >/dev/null 2>&1 && nix develop path:${dir}#train --command bash -c 'gcc -shared -fPIC -O2 -Wall -I$NODE_HEADERS -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl'`;
+      const bareNodeHeaders = "$(node -p 'require(\"path\").resolve(process.execPath, \"..\", \"..\", \"include\", \"node\")')";
+      const bareGcc = `gcc -shared -fPIC -O2 -Wall -I${bareNodeHeaders} -o ${dir}/helios_vk.node ${dir}/helios_vk.c -ldl`;
+      const gccCmd = `${nixGcc} || ${bareGcc}`;
+      const { code: gccCode } = await ssh(config, inst.host, gccCmd, { stream: true });
+      if (gccCode !== 0) {
+        console.error(red(`\n  gcc failed on ${n}. Run 'alpha fleet setup ${n}' first.`));
+        continue;
+      }
+    } else {
+      console.log("  Using prebuilt helios_vk.node (remote compile skipped).");
     }
 
     // Step 6: Upload .env.local if exists
     if (existsSync(envPath)) {
-      console.log("  Uploading .env.local...");
-      await scp(config, envPath, inst.host, `${dir}/.env.local`);
+      await scpIfChanged(config, envPath, inst.host, `${dir}/.env.local`, ".env.local");
     }
 
     // Step 7: Verify
@@ -823,7 +876,7 @@ Commands:
   fleet                        Dashboard: all instances + status
   fleet status [name]          GPU, processes, disk, latest run
   fleet gpuinfo <name> [--all] Full GPU/Vulkan diagnostics, saved to docs/gpu/
-  fleet deploy <name> [--all]  Build bun binary + ship + compile .node
+  fleet deploy <name> [--all] [--rebuild-native]  Build bun binary + ship prebuilt .node
   fleet setup <name>           Install Nix + pre-warm train shell on instance
   fleet train <name> [--flags] Start detached training via nohup
   fleet resume <name> [--run=X]  Find latest checkpoint, resume training

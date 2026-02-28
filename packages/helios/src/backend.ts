@@ -765,6 +765,11 @@ export interface GpuDeviceInfo {
   vendorId: number;
   f16Supported: boolean;
   hasAsyncTransfer: boolean;
+  coopMatSupported: boolean;
+  coopMatM: number;
+  coopMatN: number;
+  coopMatK: number;
+  hasPushDescriptors: boolean;
   workgroupSize: number;
   minGpuSize: number;
 }
@@ -792,6 +797,7 @@ export class HeliosBackend implements Backend {
   private _coopM = 0;
   private _coopN = 0;
   private _coopK = 0;
+  private _hasPushDescriptors = false;
   private _matmulDispatches = 0;
   private _coopDispatches = 0;
   private _coopDirectDispatches = 0;
@@ -813,6 +819,27 @@ export class HeliosBackend implements Backend {
       this._coopM = info.coopMatM;
       this._coopN = info.coopMatN;
       this._coopK = info.coopMatK;
+      this._hasPushDescriptors = info.hasPushDescriptors;
+
+      // Cooperative matrix kernels are still unstable under the standalone Bun runtime.
+      // Keep them disabled there unless the caller opts into an explicit unsafe mode.
+      const bunRuntime = !!(process as any)?.versions?.bun;
+      const forceEnableCoop = process.env.HELIOS_ENABLE_COOP_MAT === "1";
+      const forceDisableCoop = process.env.HELIOS_DISABLE_COOP_MAT === "1";
+      const forceUnsafeCoop = process.env.HELIOS_FORCE_UNSAFE_COOP_MAT === "1";
+      const disableForBunRuntime = bunRuntime && (!forceEnableCoop || !forceUnsafeCoop);
+      if (forceDisableCoop || disableForBunRuntime) {
+        if (bunRuntime && forceEnableCoop && !forceUnsafeCoop) {
+          console.warn(
+            "[helios] HELIOS_ENABLE_COOP_MAT=1 ignored on Bun runtime; " +
+            "set HELIOS_FORCE_UNSAFE_COOP_MAT=1 to force-enable (may crash).",
+          );
+        }
+        this._coopMatSupported = false;
+        this._coopM = 0;
+        this._coopN = 0;
+        this._coopK = 0;
+      }
       const vk = getNative();
       graph.attach(vk);
       autoTuneWgSize(vk);
@@ -920,6 +947,11 @@ export class HeliosBackend implements Backend {
       vendorId: this._vendorId,
       f16Supported: this._f16Supported,
       hasAsyncTransfer: this._hasAsyncTransfer,
+      coopMatSupported: this._coopMatSupported,
+      coopMatM: this._coopM,
+      coopMatN: this._coopN,
+      coopMatK: this._coopK,
+      hasPushDescriptors: this._hasPushDescriptors,
       workgroupSize: WG_SIZE,
       minGpuSize: this._minGpuSize,
     };

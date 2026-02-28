@@ -396,6 +396,7 @@ typedef void     (*PFN_vkCmdResetQueryPool)(VkCommandBuffer, VkQueryPool, uint32
 typedef VkResult (*PFN_vkGetQueryPoolResults)(VkDevice, VkQueryPool, uint32_t, uint32_t, size_t, void*, VkDeviceSize, VkFlags);
 typedef VkResult (*PFN_vkEnumerateDeviceExtensionProperties)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
 typedef VkResult (*PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)(VkPhysicalDevice, uint32_t*, VkCooperativeMatrixPropertiesKHR*);
+typedef void*    (*PFN_vkGetInstanceProcAddr)(VkInstance, const char*);
 
 // Push descriptors (VK_KHR_push_descriptor)
 typedef void (*PFN_vkCmdPushDescriptorSetKHR)(VkCommandBuffer, uint32_t /*bindPoint*/, VkPipelineLayout, uint32_t /*set*/, uint32_t /*writeCount*/, const VkWriteDescriptorSet*);
@@ -435,6 +436,8 @@ static VkFence persistentFence = 0;
 static VkSemaphore timelineSem = 0;
 static uint64_t nextTimelineValue = 1;
 static uint64_t lastDispatchTimeline = 0;  // timeline value of last async dispatch
+// timeline value of last async upload recorded via transferCmdBuf
+static uint64_t lastUploadTimeline = 0;
 static int batchRecording = 0;
 static uint32_t batchDispatchCount = 0;
 
@@ -477,6 +480,7 @@ static int timestampsSupported = 0;
 static float timestampPeriodNs = 1.0f;  // ns per tick (most GPUs = 1.0)
 static int f16Supported = 0;            // can use f16 storage buffers
 static PFN_vkGetPhysicalDeviceFeatures2 fp_vkGetPhysicalDeviceFeatures2;
+static PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr;
 
 // Push descriptors (VK_KHR_push_descriptor)
 static int hasPushDescriptors = 0;
@@ -815,7 +819,6 @@ static uint64_t submitCmdBufAsync(VkCommandBuffer cmdBuf) {
     .signalSemaphoreValueCount = 1,
     .pSignalSemaphoreValues = &signalValue,
   };
-  uint32_t waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
   VkSubmitInfo submitInfo = {
     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
     .pNext = &tsInfo,
@@ -924,6 +927,8 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   // Optional: load vkGetPhysicalDeviceFeatures2 (for f16 probing)
   fp_vkGetPhysicalDeviceFeatures2 = (PFN_vkGetPhysicalDeviceFeatures2)dlsym(vk_lib, "vkGetPhysicalDeviceFeatures2");
+  // Optional: load vkGetInstanceProcAddr (needed for some extension entry points)
+  fp_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(vk_lib, "vkGetInstanceProcAddr");
 
   // Optional: load extension enumeration (for cooperative matrix probing)
   PFN_vkEnumerateDeviceExtensionProperties fp_vkEnumerateDeviceExtensionProperties =
@@ -1059,6 +1064,12 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
 
+  // Optional debug override: force-disable push descriptors to isolate driver/runtime issues.
+  const char* disablePushEnv = getenv("HELIOS_DISABLE_PUSH_DESCRIPTORS");
+  if (disablePushEnv && disablePushEnv[0] == '1') {
+    hasPushDescriptors = 0;
+  }
+
   // If extension present, probe the feature
   VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures = {0};
   if (hasCoopMatExt && fp_vkGetPhysicalDeviceFeatures2) {
@@ -1185,9 +1196,17 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   // Query cooperative matrix properties to find supported tile sizes
   if (hasCoopMatExt == 2) {
-    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR fp_getCoopMatProps =
-      (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)dlsym(vk_lib,
-        "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR fp_getCoopMatProps = NULL;
+    if (fp_vkGetInstanceProcAddr) {
+      fp_getCoopMatProps =
+        (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)fp_vkGetInstanceProcAddr(
+          instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+    }
+    if (!fp_getCoopMatProps) {
+      fp_getCoopMatProps =
+        (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)dlsym(
+          vk_lib, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+    }
     if (fp_getCoopMatProps) {
       uint32_t propCount = 0;
       fp_getCoopMatProps(physDevice, &propCount, NULL);
@@ -1352,6 +1371,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   }
   nextTimelineValue = 1;
   lastDispatchTimeline = 0;
+  lastUploadTimeline = 0;
 
   // Create transfer command pool + buffer if separate transfer queue available
   if (hasAsyncTransfer) {
@@ -1684,6 +1704,8 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
       stagingRing[found].timelineValue = nextTimelineValue; // tentative — will be committed on submit
     } else {
       // No batch recording — submit a standalone async copy
+      // transferCmdBuf is reused across uploads; wait for prior submit before reset.
+      if (lastUploadTimeline > 0) waitTimelineValue(lastUploadTimeline);
       fp_vkResetCommandBuffer(transferCmdBuf, 0);
       VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
       fp_vkBeginCommandBuffer(transferCmdBuf, &bi);
@@ -1692,7 +1714,10 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
       fp_vkEndCommandBuffer(transferCmdBuf);
       uint64_t tv = submitCmdBufAsync(transferCmdBuf);
       stagingRing[found].timelineValue = tv;
-      if (tv > 0) lastDispatchTimeline = tv;
+      if (tv > 0) {
+        lastUploadTimeline = tv;
+        lastDispatchTimeline = tv;
+      }
     }
   } else {
     // Device-local, large buffer: blocking staging copy (fallback)
@@ -2775,6 +2800,7 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   if (timelineSem) { fp_vkDestroySemaphore(device, timelineSem, NULL); timelineSem = 0; }
   nextTimelineValue = 1;
   lastDispatchTimeline = 0;
+  lastUploadTimeline = 0;
 
   // Destroy ring resources
   for (int ri = 0; ri < RING_SIZE; ri++) {

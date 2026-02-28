@@ -242,6 +242,14 @@ The current CLI argument parser expects `--key=value` style flags (for example `
 
 - `--tokenizerArtifacts=<path>`  
   Reuses tokenizer artifacts across runs; if missing, builds once and saves to that path.
+- `--strictPlanning=true`  
+  Fail fast when startup planning checks detect hard issues (for example, very low tokens/param or excessive dataset reuse).
+- `--requireValData=true`  
+  Require a dedicated validation file instead of using the built-in 90/10 auto-split.
+- `--minTokensPerParam=<float>`  
+  Adjust planning target (default `20`).
+- `--warnDatasetPasses=<float>` and `--maxDatasetPasses=<float>`  
+  Configure dataset reuse warnings/errors (defaults `8` and `20`).
 
 ## Web Dashboard / API
 
@@ -290,7 +298,25 @@ npm run -w @alpha/cli dev -- bench --suite=ops --backend=cpu_ref
 npm run -w @alpha/cli dev -- bench --suite=train
 scripts/run-compiled-benchmark.sh 100
 npm run perf:tune:adaptive
+npm run fleet:bench:cuda -- --shutdown=delete
 ```
+
+`fleet:bench:cuda` now uses a fast path by default (skips `fleet setup`, deploys prebuilt `helios_vk.node`, writes per-stage timing CSVs). Add `--setup` to force full setup warmup.
+`fleet deploy` also skips unchanged uploads using SHA-256 checks, which makes repeated loop deploys much faster.
+On Bun standalone runtime, `HELIOS_ENABLE_COOP_MAT=1` requires `HELIOS_FORCE_UNSAFE_COOP_MAT=1` as an explicit crash-risk override.
+
+### Compare Helios vs CUDA (local NVIDIA laptop/workstation)
+
+```bash
+# Requires: NVIDIA driver + CUDA-capable PyTorch in your Python env
+npm run bench:cuda -- --iters=12 --warmup=4 \
+  --shapes=1024x1024x1024,2048x2048x2048,3072x3072x3072
+```
+
+Optional knobs:
+
+- `--dtype=float16|float32|bfloat16` (CUDA reference dtype)
+- `--python=python3` (or another interpreter path)
 
 ### Runtime Performance Env Knobs
 
@@ -317,6 +343,8 @@ These are read at runtime by the trainer:
 Start here:
 
 - `ARCHITECTURE.md` — high-level system overview
+- `docs/CUDA_BENCHMARKING.md` — Helios vs CUDA local benchmark setup
+- `docs/TRAINING_GUARDRAILS.md` — practical training planning checklist (token budget, validation, resume)
 - `docs/helios-perf-research.md` — GPU backend performance notes
 - `docs/openai-compatible-api.md` — API behavior
 - `docs/training-performance-improvement-plan.md` (if present in your branch) / repo diagnostics and perf notes
