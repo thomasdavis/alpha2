@@ -9,6 +9,7 @@ ITERATIONS="${2:-20}"
 RUN_RETRIES="${RUN_RETRIES:-0}"
 RUN_CONTINUE_ON_OK="${RUN_CONTINUE_ON_OK:-0}"
 BACKEND="${BACKEND:-helios}"
+TUNE_REQUIRE_OK="${TUNE_REQUIRE_OK:-1}"
 PERF_DIR="perf"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_FILE="${PERF_DIR}/tune-adaptive-env-${TS}.csv"
@@ -72,6 +73,10 @@ best_tok=0
 while IFS=, read -r iter mem sync dthr pthr gsample avg_tok_s _ status _ run_log; do
   [[ "$iter" == "iter" ]] && continue
 
+  if [[ "$TUNE_REQUIRE_OK" == "1" && "$status" != "ok" ]]; then
+    continue
+  fi
+
   rank=0
   case "$status" in
     ok) rank=3 ;;
@@ -95,6 +100,12 @@ while IFS=, read -r iter mem sync dthr pthr gsample avg_tok_s _ status _ run_log
     best_line="$iter,$mem,$sync,$dthr,$pthr,$gsample,$avg_tok_s,$status,$run_log"
   fi
 done < "$OUT_FILE"
+
+if [[ -z "$best_line" ]]; then
+  echo "No acceptable candidate found (TUNE_REQUIRE_OK=${TUNE_REQUIRE_OK})."
+  echo "SWEEP_FILE=${OUT_FILE}"
+  exit 1
+fi
 
 IFS=, read -r best_iter best_mem best_sync best_dthr best_pthr best_gsample best_avg best_status best_log <<< "$best_line"
 

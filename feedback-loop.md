@@ -121,3 +121,5 @@ npm run perf:tune:adaptive
 This writes:
 - `perf/tune-adaptive-env-<timestamp>.csv`
 - `perf/best-adaptive-env-<timestamp>.env`
+
+By default this tuner only accepts `status=ok` runs (`TUNE_REQUIRE_OK=1`) and exits non-zero if none are valid.
