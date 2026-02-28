@@ -507,6 +507,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : undefined;
   const hasSumSq = !!sumOfSquaresFn;
   const hasTotalSumSq = !!totalSumOfSquaresFn;
+  const readEnvInt = (name: string, fallback: number, min = 0): number => {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < min) return fallback;
+    return parsed;
+  };
 
   // Training loop
   const startTime = performance.now();
@@ -545,10 +552,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const gradTensors: TensorData[] = [];
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
-  const ADAPTIVE_MEM_STATS_POLL_EVERY = 14;
-  const ADAPTIVE_SYNC_MIN_INTERVAL = 11;
-  const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = 32;
-  const ADAPTIVE_SYNC_PENDING_THRESHOLD = 28;
+  const ADAPTIVE_MEM_STATS_POLL_EVERY = readEnvInt("ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY", 14, 1);
+  const ADAPTIVE_SYNC_MIN_INTERVAL = readEnvInt("ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL", 11, 1);
+  const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD", 32, 0);
+  const ADAPTIVE_SYNC_PENDING_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD", 28, 0);
+  const GPU_METRICS_SAMPLE_EVERY = readEnvInt("ALPHA_GPU_METRICS_SAMPLE_EVERY", 50, 1);
   let memStatsCache: any | null = null;
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
@@ -1211,7 +1219,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       traceEnabled ||
       metrics.step === 1 ||
       metrics.step === totalIters ||
-      (metrics.step % Math.max(logEvery, 50) === 0);
+      (metrics.step % Math.max(logEvery, GPU_METRICS_SAMPLE_EVERY) === 0);
 
     // GPU stats (queried at most every 5s via nvidia-smi).
     // Keep sparse sampling in non-trace mode to avoid per-step async overhead.

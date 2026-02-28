@@ -39,6 +39,13 @@ Outputs:
 - `perf/run-<timestamp>.log` (full run log)
 - `coop_matmul` line in run log (direct/padded/rewrite coop dispatch counts + hit rate)
 
+Adaptive runtime tuning knobs (no source edit/recompile needed):
+- `ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY`
+- `ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL`
+- `ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD`
+- `ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD`
+- `ALPHA_GPU_METRICS_SAMPLE_EVERY`
+
 Quick smoke alternative (5 iterations) for sanity checks:
 
 ```bash
@@ -97,3 +104,13 @@ Pass criteria:
 - Re-rank bottlenecks after each successful cycle.
 - Prefer wins that remove full-tensor passes, reduce dispatch count, or reduce sync/readback.
 - Keep sampling behavior unchanged during training.
+
+Automated 20-loop adaptive sweep:
+
+```bash
+npm run perf:tune:adaptive
+```
+
+This writes:
+- `perf/tune-adaptive-env-<timestamp>.csv`
+- `perf/best-adaptive-env-<timestamp>.env`

@@ -27,6 +27,7 @@
     "train:gcp": "python scripts/gcp_train.py",
     "upload": "npx tsx scripts/upload-railway.ts",
     "demo": "npx tsx scripts/demo.ts",
+    "perf:tune:adaptive": "scripts/tune-adaptive-env-loop.sh 100 20",
     "server": "npm run dev -w @alpha/web",
     "web": "npm run dev -w @alpha/web",
     "tui": "npm run dev -w @alpha/tui",
