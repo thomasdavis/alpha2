@@ -246,9 +246,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
         }
       }
       // Cooperative matrix matmul — name encodes:
-      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_s{X}x{Y}][_r{M}x{N}][_db]
+      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
         if (coopMatch) {
           const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);

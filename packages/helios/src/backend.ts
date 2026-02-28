@@ -846,6 +846,8 @@ export class HeliosBackend implements Backend {
   private _coopM = 0;
   private _coopN = 0;
   private _coopK = 0;
+  private _coopKTile = 0; // coopK * kMulti — effective K-tile width for alignment
+  private _kMulti = 1;
   private _hasPushDescriptors = false;
   private _matmulDispatches = 0;
   private _coopDispatches = 0;
@@ -869,6 +871,8 @@ export class HeliosBackend implements Backend {
       this._coopM = info.coopMatM;
       this._coopN = info.coopMatN;
       this._coopK = info.coopMatK;
+      this._kMulti = parseInt(process.env.HELIOS_COOP_K_MULTI ?? "4", 10);
+      this._coopKTile = info.coopMatK * this._kMulti;
       this._hasPushDescriptors = info.hasPushDescriptors;
 
       // Cooperative matrix can be explicitly disabled for safety/debugging.
@@ -878,6 +882,7 @@ export class HeliosBackend implements Backend {
         this._coopM = 0;
         this._coopN = 0;
         this._coopK = 0;
+        this._coopKTile = 0;
       }
       const vk = getNative();
       graph.attach(vk);
@@ -2147,7 +2152,7 @@ export class HeliosBackend implements Backend {
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
-        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopKTile === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, false);
@@ -2275,7 +2280,7 @@ export class HeliosBackend implements Backend {
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
-        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
+        M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopKTile === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, true);
@@ -2363,7 +2368,7 @@ export class HeliosBackend implements Backend {
 
     // Direct cooperative path for aligned transposed-A GEMMs.
     if (coopInputDtypesOk && this._coopMatSupported &&
-        outM % this._coopM === 0 && N % this._coopN === 0 && loopK % this._coopK === 0) {
+        outM % this._coopM === 0 && N % this._coopN === 0 && loopK % this._coopKTile === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
       return this.gpuMatmulCoopTransposedA(vk, a, b, outM, N, loopK, aBatch, batchSize);
@@ -2483,10 +2488,11 @@ export class HeliosBackend implements Backend {
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      subgroupSuffix + regTileSuffix + dbSuffix;
+      subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
@@ -2564,10 +2570,11 @@ export class HeliosBackend implements Backend {
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      subgroupSuffix + regTileSuffix + dbSuffix;
+      subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
@@ -2619,7 +2626,7 @@ export class HeliosBackend implements Backend {
 
     const alignedM = alignUp(M, this._coopM);
     const alignedN = alignUp(N, this._coopN);
-    const alignedK = alignUp(K, this._coopK);
+    const alignedK = alignUp(K, this._coopKTile);
     if (alignedM === M && alignedN === N && alignedK === K) return null;
 
     const baseElems = M * K + K * N + M * N;
@@ -2654,7 +2661,7 @@ export class HeliosBackend implements Backend {
 
     const alignedM = alignUp(M, this._coopM);
     const alignedN = alignUp(N, this._coopN);
-    const alignedK = alignUp(K, this._coopK);
+    const alignedK = alignUp(K, this._coopKTile);
     if (alignedM === M && alignedN === N && alignedK === K) return null;
 
     const a3 = this.reshape(a, [batchSize, M, K]);
@@ -2674,10 +2681,10 @@ export class HeliosBackend implements Backend {
 
   private canUseCoopWithOptionalPadding(M: number, N: number, K: number): boolean {
     if (!this._coopMatSupported) return false;
-    if (M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) return true;
+    if (M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopKTile === 0) return true;
     const alignedM = alignUp(M, this._coopM);
     const alignedN = alignUp(N, this._coopN);
-    const alignedK = alignUp(K, this._coopK);
+    const alignedK = alignUp(K, this._coopKTile);
     const baseElems = M * K + K * N + M * N;
     const paddedElems = alignedM * alignedK + alignedK * alignedN + alignedM * alignedN;
     const overhead = (paddedElems - baseElems) / baseElems;
