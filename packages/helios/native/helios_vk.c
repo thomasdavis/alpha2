@@ -441,6 +441,7 @@ static uint64_t lastUploadTimeline = 0;
 static int batchRecording = 0;
 static uint32_t batchDispatchCount = 0;
 static int debugPipelines = 0;
+static int debugCoopProps = 0;
 
 // Per-buffer write tracking generation counter (arrays declared after MAX_BUFFERS)
 static uint32_t bufWriteGeneration = 0;        // bumped on batchBegin
@@ -857,6 +858,8 @@ static void waitTimelineValue(uint64_t value) {
 static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   const char* dbgP = getenv("HELIOS_DEBUG_PIPELINES");
   debugPipelines = (dbgP && dbgP[0] == '1') ? 1 : 0;
+  const char* dbgCoop = getenv("HELIOS_DEBUG_COOP_PROPS");
+  debugCoopProps = (dbgCoop && dbgCoop[0] == '1') ? 1 : 0;
 
   // Load libvulkan.so
   vk_lib = dlopen("libvulkan.so.1", RTLD_NOW);
@@ -1222,11 +1225,33 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
           props[i].pNext = NULL;
         }
         fp_getCoopMatProps(physDevice, &propCount, props);
+        if (debugCoopProps) {
+          fprintf(stderr, "[helios:native] cooperative matrix properties count=%u\n", propCount);
+          for (uint32_t i = 0; i < propCount; i++) {
+            fprintf(stderr,
+              "[helios:native] coop[%u] M=%u N=%u K=%u AType=%u BType=%u CType=%u RType=%u scope=%u\n",
+              i,
+              props[i].MSize, props[i].NSize, props[i].KSize,
+              props[i].AType, props[i].BType, props[i].CType, props[i].ResultType,
+              props[i].scope);
+          }
+        }
         // Pick the best available f16x f16 -> f32 cooperative shape.
         // Some drivers expose multiple shapes; first-match ordering is not
         // guaranteed to be optimal.
         uint64_t bestScore = 0;
         int32_t bestIdx = -1;
+        int32_t overrideIdx = -1;
+        uint32_t overrideM = 0, overrideN = 0, overrideK = 0;
+        int hasOverride = 0;
+        const char* tileOverride = getenv("HELIOS_COOP_TILE");
+        if (tileOverride && tileOverride[0] != '\0') {
+          if (sscanf(tileOverride, "%ux%ux%u", &overrideM, &overrideN, &overrideK) == 3) {
+            hasOverride = 1;
+          } else if (debugCoopProps) {
+            fprintf(stderr, "[helios:native] invalid HELIOS_COOP_TILE=\"%s\" (expected MxNxK)\n", tileOverride);
+          }
+        }
         for (uint32_t i = 0; i < propCount; i++) {
           if (props[i].AType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
               props[i].BType != VK_COMPONENT_TYPE_FLOAT16_KHR ||
@@ -1234,6 +1259,13 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
               props[i].ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR ||
               props[i].scope != VK_SCOPE_SUBGROUP_KHR) {
             continue;
+          }
+
+          if (hasOverride &&
+              props[i].MSize == overrideM &&
+              props[i].NSize == overrideN &&
+              props[i].KSize == overrideK) {
+            overrideIdx = (int32_t)i;
           }
 
           uint64_t m = props[i].MSize;
@@ -1248,11 +1280,28 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
             bestScore = score;
           }
         }
+        if (overrideIdx >= 0) {
+          bestIdx = overrideIdx;
+          if (debugCoopProps) {
+            fprintf(stderr,
+              "[helios:native] HELIOS_COOP_TILE override selected M=%u N=%u K=%u (idx=%d)\n",
+              props[bestIdx].MSize, props[bestIdx].NSize, props[bestIdx].KSize, bestIdx);
+          }
+        } else if (hasOverride && debugCoopProps) {
+          fprintf(stderr,
+            "[helios:native] HELIOS_COOP_TILE override %ux%ux%u unavailable for f16xf16->f32 subgroup mode\n",
+            overrideM, overrideN, overrideK);
+        }
         if (bestIdx >= 0) {
           coopMatSupported = 1;
           coopMatM = props[bestIdx].MSize;
           coopMatN = props[bestIdx].NSize;
           coopMatK = props[bestIdx].KSize;
+          if (debugCoopProps) {
+            fprintf(stderr,
+              "[helios:native] selected coop shape M=%u N=%u K=%u (idx=%d)\n",
+              coopMatM, coopMatN, coopMatK, bestIdx);
+          }
         }
         free(props);
       }

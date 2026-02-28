@@ -40,16 +40,24 @@ function buildCoopMatmul(
   transposedB: boolean,
   transposedA: boolean,
   inputF16: boolean,
+  accumF16: boolean,
+  subgroupTilesX: number,
+  subgroupTilesY: number,
 ): Uint32Array {
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
+  // Multi-subgroup tiles need direct cooperative global loads for correctness:
+  // the shared-memory path currently uses one tile buffer per workgroup.
+  const forceDirectForSubgroupTiles = subgroupTilesX > 1 || subgroupTilesY > 1;
+  const useDirectF16Load =
+    inputF16 && (process.env.HELIOS_COOP_DIRECT_LOAD === "1" || forceDirectForSubgroupTiles);
 
   // Capabilities
   b.addCapability(Capability.Shader);
   b.addCapability(Capability.Float16);
   b.addCapability(Capability.VulkanMemoryModel);
   b.addCapability(Capability.CooperativeMatrixKHR);
-  if (inputF16) {
+  if (inputF16 || accumF16) {
     b.addCapability(Capability.StorageBuffer16BitAccess);
   }
 
@@ -91,13 +99,32 @@ function buildCoopMatmul(
   // B: f16, K x N, MatrixB
   const tCoopB = b.id();
   b.typeCooperativeMatrixKHR(tCoopB, tF16, scopeSubgroup, constCoopK, constCoopN, constUseB);
-  // C: f32, M x N, Accumulator
-  const tCoopC = b.id();
-  b.typeCooperativeMatrixKHR(tCoopC, tF32, scopeSubgroup, constCoopM, constCoopN, constUseAcc);
+  // C accumulator tile type (f32 default, optional f16)
+  const tCoopCAcc = b.id();
+  b.typeCooperativeMatrixKHR(
+    tCoopCAcc,
+    accumF16 ? tF16 : tF32,
+    scopeSubgroup,
+    constCoopM,
+    constCoopN,
+    constUseAcc,
+  );
+  // Output tile type is always f32 (we keep model-visible outputs in f32).
+  const tCoopCOut = accumF16 ? b.id() : tCoopCAcc;
+  if (accumF16) {
+    b.typeCooperativeMatrixKHR(
+      tCoopCOut,
+      tF32,
+      scopeSubgroup,
+      constCoopM,
+      constCoopN,
+      constUseAcc,
+    );
+  }
 
   // Pointer types for cooperative matrices (Function storage class)
   const tPtrFnCoopC = b.id();
-  b.typePointer(tPtrFnCoopC, StorageClass.Function, tCoopC);
+  b.typePointer(tPtrFnCoopC, StorageClass.Function, tCoopCAcc);
 
   // Common constants
   const const0u = b.id(); b.constant(tU32, const0u, 0);
@@ -107,6 +134,8 @@ function buildCoopMatmul(
 
   // Cooperative matrix layout constant: RowMajorKHR = 0
   const constRowMajor = const0u;
+  // Cooperative matrix layout constant: ColumnMajorKHR = 1
+  const constColumnMajor = const1u;
 
   // Shared memory for loading tiles from global memory
   // Tile A: coopM * coopK f16 elements = coopM * coopK * 2 bytes
@@ -128,10 +157,10 @@ function buildCoopMatmul(
   // Storage buffers:
   // - A/B: f32 source buffers or pre-cast f16 source buffers
   // - C:   f32 output buffer
-  const bufA = inputF16
+  const bufA: { varId: number; tPtrF32?: number; tPtrF16?: number } = inputF16
     ? declareStorageBufferF16(b, tF16, tU32, 0, 0, true)
     : declareStorageBuffer(b, tF32, tU32, 0, 0, true);
-  const bufB = inputF16
+  const bufB: { varId: number; tPtrF32?: number; tPtrF16?: number } = inputF16
     ? declareStorageBufferF16(b, tF16, tU32, 0, 1, true)
     : declareStorageBuffer(b, tF32, tU32, 0, 1, true);
   const bufC = declareStorageBuffer(b, tF32, tU32, 0, 2, false);
@@ -163,8 +192,10 @@ function buildCoopMatmul(
   const tPtrFnU32 = b.id();
   b.typePointer(tPtrFnU32, StorageClass.Function, tU32);
 
-  // Entry point — workgroup size is 32 threads (one subgroup)
-  const WG_SIZE = 32;
+  // Entry point
+  // - baseline: one subgroup (32 threads) computes one output tile
+  // - s2x2 mode: 4 subgroups (128 threads) compute 2x2 tiles per workgroup
+  const WG_SIZE = 32 * subgroupTilesX * subgroupTilesY;
   const fnMain = b.id();
   b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main",
     [vGlobalId, vWorkgroupId, vLocalId]);
@@ -190,16 +221,47 @@ function buildCoopMatmul(
   // Load workgroup ID
   const wgIdVec = b.id();
   b.emit(Op.Load, [tVec3U32, wgIdVec, vWorkgroupId]);
-  const tileCol = b.id(); // x = column tile index
-  b.emit(Op.CompositeExtract, [tU32, tileCol, wgIdVec, 0]);
-  const tileRow = b.id(); // y = row tile index
-  b.emit(Op.CompositeExtract, [tU32, tileRow, wgIdVec, 1]);
+  const wgTileCol = b.id();
+  b.emit(Op.CompositeExtract, [tU32, wgTileCol, wgIdVec, 0]);
+  const wgTileRow = b.id();
+  b.emit(Op.CompositeExtract, [tU32, wgTileRow, wgIdVec, 1]);
 
-  // Load local ID (thread index within workgroup, 0..31)
+  // Load local ID (thread index within workgroup)
   const lidVec = b.id();
   b.emit(Op.Load, [tVec3U32, lidVec, vLocalId]);
   const tid = b.id();
   b.emit(Op.CompositeExtract, [tU32, tid, lidVec, 0]);
+
+  let tileCol: number;
+  let tileRow: number;
+  if (subgroupTilesX > 1 || subgroupTilesY > 1) {
+    const constSubgroupSize = b.id();
+    b.constant(tU32, constSubgroupSize, 32);
+    const constSubgroupTilesX = b.id();
+    b.constant(tU32, constSubgroupTilesX, subgroupTilesX);
+    const constSubgroupTilesY = b.id();
+    b.constant(tU32, constSubgroupTilesY, subgroupTilesY);
+
+    const subgroupId = b.id();
+    b.emit(Op.UDiv, [tU32, subgroupId, tid, constSubgroupSize]);
+    const subgroupX = b.id();
+    b.emit(Op.UMod, [tU32, subgroupX, subgroupId, constSubgroupTilesX]);
+    const subgroupY = b.id();
+    b.emit(Op.UDiv, [tU32, subgroupY, subgroupId, constSubgroupTilesX]);
+
+    const wgBaseCol = b.id();
+    b.emit(Op.IMul, [tU32, wgBaseCol, wgTileCol, constSubgroupTilesX]);
+    tileCol = b.id();
+    b.emit(Op.IAdd, [tU32, tileCol, wgBaseCol, subgroupX]);
+
+    const wgBaseRow = b.id();
+    b.emit(Op.IMul, [tU32, wgBaseRow, wgTileRow, constSubgroupTilesY]);
+    tileRow = b.id();
+    b.emit(Op.IAdd, [tU32, tileRow, wgBaseRow, subgroupY]);
+  } else {
+    tileCol = wgTileCol;
+    tileRow = wgTileRow;
+  }
 
   // Batch index (z dimension of workgroup ID)
   let batchIdx: number | undefined;
@@ -271,7 +333,7 @@ function buildCoopMatmul(
   // better — we initialize by doing the first MulAdd with a zero acc.
   // Actually, OpConstantNull works for cooperative matrix types.
   const constNullC = b.id();
-  b.constantNull(tCoopC, constNullC);
+  b.constantNull(tCoopCAcc, constNullC);
 
   b.emit(Op.Store, [varAcc, constNullC]);
 
@@ -296,114 +358,169 @@ function buildCoopMatmul(
 
   b.emit(Op.Label, [labelLoopBody]);
 
-  // ── Load tile A from global to shared ───────────────────────────────
-  // Each of 32 threads loads multiple elements to fill coopM*coopK
-  // Total elements = coopM * coopK. Each thread loads ceil(total/32) elements.
-  const totalA = coopM * coopK;
-  const elemsPerThreadA = Math.ceil(totalA / WG_SIZE);
-
-  for (let e = 0; e < elemsPerThreadA; e++) {
-    const elemOffset = b.id();
-    if (e === 0) {
-      // tid * elemsPerThread + 0 = tid (if elemsPerThread is not used, just tid + e*WG_SIZE)
-      // Better: element index = tid + e * WG_SIZE
-      b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
+  let coopAMat: number;
+  let coopBMat: number;
+  if (useDirectF16Load) {
+    // Direct cooperative loads from global f16 buffers.
+    // This avoids shared-memory staging and per-element conversion overhead.
+    let aBase = b.id();
+    if (transposedA) {
+      // A^T view of A[M,K] -> load with ColumnMajor layout from base (k, row)
+      const kTimesM = b.id();
+      b.emit(Op.IMul, [tU32, kTimesM, kVal, M]);
+      b.emit(Op.IAdd, [tU32, aBase, kTimesM, globalRowBase]);
     } else {
-      const constE = b.id();
-      b.constant(tU32, constE, e * WG_SIZE);
-      b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
+      const rowTimesK = b.id();
+      b.emit(Op.IMul, [tU32, rowTimesK, globalRowBase, K]);
+      b.emit(Op.IAdd, [tU32, aBase, rowTimesK, kVal]);
+    }
+    if (batched) {
+      const aWithBatch = b.id();
+      b.emit(Op.IAdd, [tU32, aWithBatch, aBase, batchOffsetA!]);
+      aBase = aWithBatch;
+    }
+    const ptrAStart = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrAStart, bufA.varId, const0u, aBase]);
+    coopAMat = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [
+      tCoopA,
+      coopAMat,
+      ptrAStart,
+      transposedA ? constColumnMajor : constRowMajor,
+      transposedA ? M : K,
+    ]);
+
+    let bBase = b.id();
+    if (transposedB) {
+      // B^T view of B[N,K] -> load with ColumnMajor layout from base (n, k)
+      const nTimesK = b.id();
+      b.emit(Op.IMul, [tU32, nTimesK, globalColBase, K]);
+      b.emit(Op.IAdd, [tU32, bBase, nTimesK, kVal]);
+    } else {
+      const kTimesN = b.id();
+      b.emit(Op.IMul, [tU32, kTimesN, kVal, N]);
+      b.emit(Op.IAdd, [tU32, bBase, kTimesN, globalColBase]);
+    }
+    if (batched) {
+      const bWithBatch = b.id();
+      b.emit(Op.IAdd, [tU32, bWithBatch, bBase, batchOffsetB!]);
+      bBase = bWithBatch;
+    }
+    const ptrBStart = b.id();
+    b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrBStart, bufB.varId, const0u, bBase]);
+    coopBMat = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [
+      tCoopB,
+      coopBMat,
+      ptrBStart,
+      transposedB ? constColumnMajor : constRowMajor,
+      transposedB ? K : N,
+    ]);
+  } else {
+    // ── Load tile A from global to shared ───────────────────────────────
+    // Each of 32 threads loads multiple elements to fill coopM*coopK
+    // Total elements = coopM * coopK. Each thread loads ceil(total/32) elements.
+    const totalA = coopM * coopK;
+    const elemsPerThreadA = Math.ceil(totalA / WG_SIZE);
+
+    for (let e = 0; e < elemsPerThreadA; e++) {
+      const elemOffset = b.id();
+      if (e === 0) {
+        b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
+      } else {
+        const constE = b.id();
+        b.constant(tU32, constE, e * WG_SIZE);
+        b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
+      }
+
+      if (e * WG_SIZE + WG_SIZE > totalA) {
+        const constTotal = b.id();
+        b.constant(tU32, constTotal, totalA);
+        const inBounds = b.id();
+        b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
+        const labelLoad = b.id();
+        const labelSkip = b.id();
+        b.emit(Op.SelectionMerge, [labelSkip, 0]);
+        b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
+        b.emit(Op.Label, [labelLoad]);
+
+        emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
+          elemOffset, kVal, globalRowBase, M, K, tileA,
+          const0u, coopK, batchOffsetA, batched, transposedA);
+
+        b.emit(Op.Branch, [labelSkip]);
+        b.emit(Op.Label, [labelSkip]);
+      } else {
+        emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
+          elemOffset, kVal, globalRowBase, M, K, tileA,
+          const0u, coopK, batchOffsetA, batched, transposedA);
+      }
     }
 
-    // Bounds check: elemOffset < totalA
-    if (e * WG_SIZE + WG_SIZE > totalA) {
-      // Last iteration may have excess threads
-      const constTotal = b.id();
-      b.constant(tU32, constTotal, totalA);
-      const inBounds = b.id();
-      b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
-      const labelLoad = b.id();
-      const labelSkip = b.id();
-      b.emit(Op.SelectionMerge, [labelSkip, 0]);
-      b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
-      b.emit(Op.Label, [labelLoad]);
+    // ── Load tile B from global to shared ───────────────────────────────
+    const totalB = coopK * coopN;
+    const elemsPerThreadB = Math.ceil(totalB / WG_SIZE);
 
-      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-        elemOffset, kVal, globalRowBase, M, K, tileA,
-        const0u, coopK, batchOffsetA, batched, transposedA);
+    for (let e = 0; e < elemsPerThreadB; e++) {
+      const elemOffset = b.id();
+      if (e === 0) {
+        b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
+      } else {
+        const constE = b.id();
+        b.constant(tU32, constE, e * WG_SIZE);
+        b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
+      }
 
-      b.emit(Op.Branch, [labelSkip]);
-      b.emit(Op.Label, [labelSkip]);
-    } else {
-      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-        elemOffset, kVal, globalRowBase, M, K, tileA,
-        const0u, coopK, batchOffsetA, batched, transposedA);
+      if (e * WG_SIZE + WG_SIZE > totalB) {
+        const constTotal = b.id();
+        b.constant(tU32, constTotal, totalB);
+        const inBounds = b.id();
+        b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
+        const labelLoad = b.id();
+        const labelSkip = b.id();
+        b.emit(Op.SelectionMerge, [labelSkip, 0]);
+        b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
+        b.emit(Op.Label, [labelLoad]);
+
+        emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
+          elemOffset, kVal, globalColBase, N, K, tileB,
+          const0u, coopN, batchOffsetB, batched, transposedB);
+
+        b.emit(Op.Branch, [labelSkip]);
+        b.emit(Op.Label, [labelSkip]);
+      } else {
+        emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
+          elemOffset, kVal, globalColBase, N, K, tileB,
+          const0u, coopN, batchOffsetB, batched, transposedB);
+      }
     }
+
+    // Barrier — wait for all shared memory writes
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    // ── Cooperative matrix load from shared memory ──────────────────────
+    const ptrTileAStart = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, const0u]);
+    coopAMat = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constRowMajor, constCoopK]);
+
+    const ptrTileBStart = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, const0u]);
+    coopBMat = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constRowMajor, constCoopN]);
   }
-
-  // ── Load tile B from global to shared ───────────────────────────────
-  const totalB = coopK * coopN;
-  const elemsPerThreadB = Math.ceil(totalB / WG_SIZE);
-
-  for (let e = 0; e < elemsPerThreadB; e++) {
-    const elemOffset = b.id();
-    if (e === 0) {
-      b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
-    } else {
-      const constE = b.id();
-      b.constant(tU32, constE, e * WG_SIZE);
-      b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
-    }
-
-    if (e * WG_SIZE + WG_SIZE > totalB) {
-      const constTotal = b.id();
-      b.constant(tU32, constTotal, totalB);
-      const inBounds = b.id();
-      b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
-      const labelLoad = b.id();
-      const labelSkip = b.id();
-      b.emit(Op.SelectionMerge, [labelSkip, 0]);
-      b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
-      b.emit(Op.Label, [labelLoad]);
-
-      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
-        elemOffset, kVal, globalColBase, N, K, tileB,
-        const0u, coopN, batchOffsetB, batched, transposedB);
-
-      b.emit(Op.Branch, [labelSkip]);
-      b.emit(Op.Label, [labelSkip]);
-    } else {
-      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
-        elemOffset, kVal, globalColBase, N, K, tileB,
-        const0u, coopN, batchOffsetB, batched, transposedB);
-    }
-  }
-
-  // Barrier — wait for all shared memory writes
-  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
-
-  // ── Cooperative matrix load from shared memory ──────────────────────
-  // Load A tile: coopM x coopK from tileA, stride = coopK (row-major)
-  const ptrTileAStart = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, const0u]);
-  const coopAMat = b.id();
-  // OpCooperativeMatrixLoadKHR: result_type result pointer memoryLayout stride
-  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constRowMajor, constCoopK]);
-
-  // Load B tile: coopK x coopN from tileB, stride = coopN (row-major)
-  const ptrTileBStart = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, const0u]);
-  const coopBMat = b.id();
-  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constRowMajor, constCoopN]);
 
   // ── MulAdd: C += A * B ──────────────────────────────────────────────
   const prevAcc = b.id();
-  b.emit(Op.Load, [tCoopC, prevAcc, varAcc]);
+  b.emit(Op.Load, [tCoopCAcc, prevAcc, varAcc]);
   const newAcc = b.id();
-  b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopC, newAcc, coopAMat, coopBMat, prevAcc]);
+  b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, coopAMat, coopBMat, prevAcc]);
   b.emit(Op.Store, [varAcc, newAcc]);
 
-  // Barrier before next tile load
-  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+  if (!useDirectF16Load) {
+    // Barrier before next tile load (shared-memory path only)
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+  }
 
   // ── Loop continue: k += coopK ──────────────────────────────────────
   b.emit(Op.Branch, [labelLoopContinue]);
@@ -438,8 +555,13 @@ function buildCoopMatmul(
 
   // Store cooperative matrix to global memory
   // OpCooperativeMatrixStoreKHR: pointer, object, memoryLayout, stride
-  const finalAcc = b.id();
-  b.emit(Op.Load, [tCoopC, finalAcc, varAcc]);
+  let finalAcc = b.id();
+  b.emit(Op.Load, [tCoopCAcc, finalAcc, varAcc]);
+  if (accumF16) {
+    const finalAccF32 = b.id();
+    b.emit(Op.FConvert, [tCoopCOut, finalAccF32, finalAcc]);
+    finalAcc = finalAccF32;
+  }
   b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrCOut, finalAcc, constRowMajor, N]);
 
   b.emit(Op.Return, []);
@@ -618,8 +740,11 @@ export function kernelCoopMatmulBasic(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }
 
 export function kernelCoopMatmulBatched(
@@ -627,8 +752,11 @@ export function kernelCoopMatmulBatched(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }
 
 export function kernelCoopMatmulTransposed(
@@ -636,8 +764,11 @@ export function kernelCoopMatmulTransposed(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }
 
 export function kernelCoopMatmulTransposedBatched(
@@ -645,8 +776,11 @@ export function kernelCoopMatmulTransposedBatched(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }
 
 export function kernelCoopMatmulTransposedA(
@@ -654,8 +788,11 @@ export function kernelCoopMatmulTransposedA(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }
 
 export function kernelCoopMatmulTransposedABatched(
@@ -663,6 +800,9 @@ export function kernelCoopMatmulTransposedABatched(
   coopN: number,
   coopK: number,
   inputF16 = false,
+  accumF16 = false,
+  subgroupTilesX = 1,
+  subgroupTilesY = 1,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
 }

@@ -8,10 +8,11 @@
  *   train — full training iterations: helios vs cpu_ref comparison
  *   cuda  — Helios matmul vs PyTorch CUDA matmul comparison
  */
-import { parseKV, strArg, intArg } from "../parse.js";
+import { parseKV, strArg, intArg, boolArg, floatArg } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng } from "../resolve.js";
 import type { Backend, TensorData } from "@alpha/core";
 import { HeliosBackend } from "@alpha/helios";
+import { CpuRefBackend } from "@alpha/tensor";
 import type { WebGpuBenchSpec, WebGpuBenchResult } from "./bench-webgpu.js";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
@@ -31,6 +32,14 @@ interface HeliosCudaRow {
   heliosTflops: number;
   cudaMs: number | null;
   cudaTflops: number | null;
+}
+
+interface MatmulCheckResult {
+  ok: boolean;
+  maxAbs: number;
+  maxRel: number;
+  failCount: number;
+  total: number;
 }
 
 export async function benchCmd(args: string[]): Promise<void> {
@@ -384,6 +393,70 @@ function parseMatmulShapes(raw: string): MatmulShape[] {
   return items.map(parseMatmulShape);
 }
 
+function makeDeterministicArray(len: number, seed: number): number[] {
+  const out = new Array<number>(len);
+  let x = seed | 0;
+  for (let i = 0; i < len; i++) {
+    x = (Math.imul(x, 1664525) + 1013904223) | 0;
+    out[i] = ((x >>> 0) / 4294967296) * 2 - 1;
+  }
+  return out;
+}
+
+function verifyHeliosMatmulAgainstCpu(
+  helios: HeliosBackend,
+  shape: MatmulShape,
+  atol: number,
+  rtol: number,
+): MatmulCheckResult {
+  const cpu = new CpuRefBackend();
+  const heliosAny = helios as any;
+  const releaseFn: ((td: TensorData) => void) | undefined =
+    typeof heliosAny.releaseGpuTensor === "function" ? heliosAny.releaseGpuTensor.bind(heliosAny) : undefined;
+  const syncFn: (() => void) | undefined =
+    typeof heliosAny.syncGpu === "function" ? heliosAny.syncGpu.bind(heliosAny) : undefined;
+
+  const aData = makeDeterministicArray(shape.m * shape.k, 0x1234abcd);
+  const bData = makeDeterministicArray(shape.k * shape.n, 0x5678ef90);
+
+  const aGpu = helios.fromArray(aData, [shape.m, shape.k]);
+  const bGpu = helios.fromArray(bData, [shape.k, shape.n]);
+  const aCpu = cpu.fromArray(aData, [shape.m, shape.k]);
+  const bCpu = cpu.fromArray(bData, [shape.k, shape.n]);
+
+  const outGpu = helios.matmul(aGpu, bGpu);
+  if (syncFn) syncFn();
+  const outGpuData = outGpu.data as Float32Array;
+  const outCpuData = cpu.matmul(aCpu, bCpu).data as Float32Array;
+
+  let maxAbs = 0;
+  let maxRel = 0;
+  let failCount = 0;
+  for (let i = 0; i < outCpuData.length; i++) {
+    const ref = outCpuData[i];
+    const got = outGpuData[i];
+    const absErr = Math.abs(got - ref);
+    const relErr = absErr / Math.max(1e-12, Math.abs(ref));
+    if (absErr > maxAbs) maxAbs = absErr;
+    if (relErr > maxRel) maxRel = relErr;
+    if (absErr > atol + rtol * Math.abs(ref)) failCount++;
+  }
+
+  if (releaseFn) {
+    releaseFn(outGpu);
+    releaseFn(aGpu);
+    releaseFn(bGpu);
+  }
+
+  return {
+    ok: failCount === 0,
+    maxAbs,
+    maxRel,
+    failCount,
+    total: outCpuData.length,
+  };
+}
+
 function ratioStr(r: number | null): string {
   if (r === null || !Number.isFinite(r) || r <= 0) return "n/a";
   if (r >= 1) return `${r.toFixed(2)}x`;
@@ -529,6 +602,10 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
   const warmup = intArg(kv, "warmup", 6);
   const pythonBin = strArg(kv, "python", "python3");
   const dtypeRaw = strArg(kv, "dtype", "float32");
+  const runCheck = boolArg(kv, "check", false);
+  const checkShapeRaw = strArg(kv, "checkShape", "384x384x384");
+  const checkAtol = floatArg(kv, "checkAtol", 2e-2);
+  const checkRtol = floatArg(kv, "checkRtol", 1e-2);
   const outPath = kv["out"];
   const dtype: "float16" | "float32" | "bfloat16" =
     dtypeRaw === "float16" || dtypeRaw === "float32" || dtypeRaw === "bfloat16"
@@ -568,6 +645,31 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
     typeof heliosAny.flush === "function" ? heliosAny.flush.bind(heliosAny) : undefined;
   const releaseFn: ((td: TensorData) => void) | undefined =
     typeof heliosAny.releaseGpuTensor === "function" ? heliosAny.releaseGpuTensor.bind(heliosAny) : undefined;
+
+  if (runCheck) {
+    let checkShape: MatmulShape;
+    try {
+      checkShape = parseMatmulShape(checkShapeRaw);
+    } catch (e) {
+      console.error(`Invalid --checkShape: ${(e as Error).message}`);
+      process.exit(1);
+      return;
+    }
+
+    const check = verifyHeliosMatmulAgainstCpu(helios, checkShape, checkAtol, checkRtol);
+    console.log(
+      `check_shape=${checkShape.key} ` +
+      `max_abs=${check.maxAbs.toExponential(3)} ` +
+      `max_rel=${check.maxRel.toExponential(3)} ` +
+      `fails=${check.failCount}/${check.total} ` +
+      `tol=atol(${checkAtol})+rtol(${checkRtol})`,
+    );
+    if (!check.ok) {
+      console.error("cuda bench aborted: Helios matmul correctness check failed.");
+      process.exit(2);
+      return;
+    }
+  }
 
   const rows: HeliosCudaRow[] = [];
   for (const shape of shapes) {

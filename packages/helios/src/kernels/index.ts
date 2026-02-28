@@ -248,19 +248,25 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
       // Cooperative matrix matmul — name encodes:
       //   matmul_coop_{variant}_{M}_{N}_{K}
       //   matmul_coop_{variant}_{M}_{N}_{K}_f16in
+      //   matmul_coop_{variant}_{M}_{N}_{K}_f16in_f16acc
+      //   matmul_coop_{variant}_{M}_{N}_{K}_f16in_s2x2
+      //   matmul_coop_{variant}_{M}_{N}_{K}_f16in_f16acc_s2x2
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s2x2))?$/);
         if (coopMatch) {
-          const [, variant, mS, nS, kS, f16Suffix] = coopMatch;
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, subgroupSuffix] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
           const inputF16 = f16Suffix === "f16in";
+          const accumF16 = f16AccSuffix === "f16acc";
+          const subgroupTilesX = subgroupSuffix === "s2x2" ? 2 : 1;
+          const subgroupTilesY = subgroupSuffix === "s2x2" ? 2 : 1;
           switch (variant) {
-            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16); break;
-            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16); break;
-            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16); break;
-            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16); break;
-            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16); break;
-            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16); break;
+            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
+            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
+            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
+            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
+            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
+            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY); break;
           }
         }
       }

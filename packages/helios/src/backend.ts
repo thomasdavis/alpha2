@@ -40,7 +40,7 @@ const DEFAULT_MIN_GPU_SIZE = 4096;
 const COOP_PAD_MAX_OVERHEAD = 0.20; // max tolerated element overhead from coop padding
 const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core win can amortize padding
 const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
-const LARGE_TILE_THRESHOLD = 65_536; // prefer tile=32 once output plane reaches this size
+const LARGE_TILE_THRESHOLD_DEFAULT = 65_536; // prefer tile=32 once output plane reaches this size
 const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
 
 const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
@@ -48,6 +48,21 @@ let WG_SIZE = 256;  // default, overridden by auto-tuning
 let wgAutoTuned = false;
 const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MANY === "1";
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
+const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
+const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 === "1";
+const COOP_F16IN_S2X2_MIN_FLOPS = 20_000_000;
+const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
+let LARGE_TILE_THRESHOLD = LARGE_TILE_THRESHOLD_DEFAULT;
+if (MATMUL_LARGE_TILE_THRESHOLD_ENV) {
+  const parsed = Number(MATMUL_LARGE_TILE_THRESHOLD_ENV);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    LARGE_TILE_THRESHOLD = Math.trunc(parsed);
+  } else {
+    console.warn(
+      `[helios] ignoring HELIOS_MATMUL_LARGE_TILE_THRESHOLD=${MATMUL_LARGE_TILE_THRESHOLD_ENV}; expected integer >= 0`,
+    );
+  }
+}
 const WG_ENV = process.env.HELIOS_WG_SIZE;
 if (WG_ENV) {
   const parsed = Number(WG_ENV);
@@ -2394,10 +2409,20 @@ export class HeliosBackend implements Backend {
     M: number, N: number, K: number,
     aBatch: number[], batchSize: number, transposed: boolean,
   ): TensorData {
+    const useS2x2 =
+      ENABLE_COOP_F16IN_S2X2 &&
+      (M * N * K >= COOP_F16IN_S2X2_MIN_FLOPS) &&
+      (M % (this._coopM * 2) === 0) &&
+      (N % (this._coopN * 2) === 0);
+    const subgroupTilesX = useS2x2 ? 2 : 1;
+    const subgroupTilesY = useS2x2 ? 2 : 1;
     const variant = transposed
       ? (batchSize > 1 ? "transposed_batched" : "transposed")
       : (batchSize > 1 ? "batched" : "basic");
-    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in`;
+    const kernelName =
+      `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      (useS2x2 ? "_s2x2" : "");
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
@@ -2411,8 +2436,8 @@ export class HeliosBackend implements Backend {
     const region = acquireOutputRegion(vk, outBytes);
 
     const push = push4Memo(M, N, K, 0);
-    const gX = Math.ceil(N / this._coopN);
-    const gY = Math.ceil(M / this._coopM);
+    const gX = Math.ceil(N / (this._coopN * subgroupTilesX));
+    const gY = Math.ceil(M / (this._coopM * subgroupTilesY));
 
     graph.record({
       kind: "matmul",
@@ -2435,8 +2460,18 @@ export class HeliosBackend implements Backend {
     outM: number, N: number, loopK: number,
     aBatch: number[], batchSize: number,
   ): TensorData {
+    const useS2x2 =
+      ENABLE_COOP_F16IN_S2X2 &&
+      (outM * N * loopK >= COOP_F16IN_S2X2_MIN_FLOPS) &&
+      (outM % (this._coopM * 2) === 0) &&
+      (N % (this._coopN * 2) === 0);
+    const subgroupTilesX = useS2x2 ? 2 : 1;
+    const subgroupTilesY = useS2x2 ? 2 : 1;
     const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
-    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in`;
+    const kernelName =
+      `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      (useS2x2 ? "_s2x2" : "");
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
@@ -2449,8 +2484,8 @@ export class HeliosBackend implements Backend {
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
     const push = push4Memo(outM, N, loopK, 0);
-    const gX = Math.ceil(N / this._coopN);
-    const gY = Math.ceil(outM / this._coopM);
+    const gX = Math.ceil(N / (this._coopN * subgroupTilesX));
+    const gY = Math.ceil(outM / (this._coopM * subgroupTilesY));
 
     graph.record({
       kind: "matmul",
