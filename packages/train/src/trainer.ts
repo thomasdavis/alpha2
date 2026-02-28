@@ -991,7 +991,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     if (shouldLogGpuMem) {
       const stats = memStatsStep ?? gpuMemStatsFn!();
-      const breakdown = poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
+      const breakdown = traceEnabled && poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
       console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${breakdown}`);
     }

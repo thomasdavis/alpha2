@@ -311,3 +311,14 @@ timestamp,git_commit,steps,backend,compile_ms,run_ms,avg_tok_s,last_tok_s,speedu
 20260228T001548Z,42117cb,100,helios,358,4592,4604.362,5169.214,9.47,runs/compiled-binary-helios-20260228T001548Z-try2,perf/run-20260228T001548Z-try2.log,ok
 20260228T001558Z,42117cb,100,helios,360,4669,4354.573,4206.147,3.53,runs/compiled-binary-helios-20260228T001558Z-try2,perf/run-20260228T001558Z-try2.log,ok
 20260228T001615Z,42117cb,100,helios,382,4582,4413.597,5309.100,1.98,runs/compiled-binary-helios-20260228T001615Z,perf/run-20260228T001615Z.log,smoke_fail
+20260228T001703Z,fcbbc86,100,helios,312,4326,4962.609,5646.698,14.67,runs/compiled-binary-helios-20260228T001703Z,perf/run-20260228T001703Z.log,unstable
+20260228T001712Z,fcbbc86,100,helios,60376,4751,4853.173,4864.912,12.14,runs/compiled-binary-helios-20260228T001712Z,perf/run-20260228T001712Z.log,smoke_fail
+20260228T001817Z,fcbbc86,100,helios,472,4531,4912.893,5925.332,13.52,runs/compiled-binary-helios-20260228T001817Z-try2,perf/run-20260228T001817Z-try2.log,smoke_fail
+20260228T001827Z,fcbbc86,100,helios,326,4701,4797.601,4158.272,10.85,runs/compiled-binary-helios-20260228T001827Z,perf/run-20260228T001827Z.log,ok
+20260228T001837Z,fcbbc86,100,helios,308,5238,3627.739,4166.610,-16.69,runs/compiled-binary-helios-20260228T001837Z-try2,perf/run-20260228T001837Z-try2.log,ok
+20260228T001848Z,fcbbc86,100,helios,326,4812,4036.626,4379.844,-7.30,runs/compiled-binary-helios-20260228T001848Z,perf/run-20260228T001848Z.log,smoke_fail
+20260228T001904Z,fcbbc86,100,helios,308,5024,3848.844,4335.795,-11.61,runs/compiled-binary-helios-20260228T001904Z,perf/run-20260228T001904Z.log,ok
+20260228T001926Z,fcbbc86,100,helios,10,5113,3742.652,2584.715,-14.05,runs/compiled-binary-helios-20260228T001926Z,perf/run-20260228T001926Z.log,smoke_fail
+20260228T001955Z,fcbbc86,100,helios,328,4721,4084.764,3225.472,-6.20,runs/compiled-binary-helios-20260228T001955Z-try2,perf/run-20260228T001955Z-try2.log,ok
+20260228T002036Z,fcbbc86,100,helios,342,4922,3900.599,4651.518,-4.51,runs/compiled-binary-helios-20260228T002036Z-try3,perf/run-20260228T002036Z-try3.log,smoke_fail
+20260228T002056Z,fcbbc86,100,helios,6,4528,4652.241,3489.967,13.89,runs/compiled-binary-helios-20260228T002056Z-try2,perf/run-20260228T002056Z-try2.log,ok
