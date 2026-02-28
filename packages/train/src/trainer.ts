@@ -1207,9 +1207,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
     }
 
-    // GPU stats (queried at most every 5s via nvidia-smi)
+    const shouldSampleGpuMetrics =
+      traceEnabled ||
+      metrics.step === 1 ||
+      metrics.step === totalIters ||
+      (metrics.step % Math.max(logEvery, 50) === 0);
+
+    // GPU stats (queried at most every 5s via nvidia-smi).
+    // Keep sparse sampling in non-trace mode to avoid per-step async overhead.
     let gpuStats: GpuStats | null = null;
-    if (!_gpuStatsDisabled) {
+    if (!_gpuStatsDisabled && shouldSampleGpuMetrics) {
       gpuStats = await queryGpuStats();
     }
     if (gpuStats) {
@@ -1217,11 +1224,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_vram_used_mb = gpuStats.vramUsedMb;
       metrics.gpu_vram_total_mb = gpuStats.vramTotalMb;
     }
-      const shouldSampleGpuMemMetric = traceEnabled ||
-      metrics.step === 1 ||
-      metrics.step === totalIters ||
-      (metrics.step % Math.max(logEvery, 50) === 0);
-    if (gpuMemStatsFn && shouldSampleGpuMemMetric) {
+    if (gpuMemStatsFn && shouldSampleGpuMetrics) {
       const memStats = memStatsStep ?? gpuMemStatsFn();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
     }
