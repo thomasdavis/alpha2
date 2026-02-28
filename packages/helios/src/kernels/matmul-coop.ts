@@ -41,18 +41,21 @@ function buildCoopMatmul(
   transposedA: boolean,
 ): Uint32Array {
   const b = new SpirVBuilder();
+  const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
 
   // Capabilities
   b.addCapability(Capability.Shader);
   b.addCapability(Capability.Float16);
+  b.addCapability(Capability.VulkanMemoryModel);
   b.addCapability(Capability.CooperativeMatrixKHR);
 
   // Extension
   b.addExtension("SPV_KHR_cooperative_matrix");
+  b.addExtension("SPV_KHR_vulkan_memory_model");
 
   const glslStd = b.id();
   b.addExtInstImport(glslStd, "GLSL.std.450");
-  b.setMemoryModel(AddressingModel.Logical, MemModelConst.GLSL450);
+  b.setMemoryModel(AddressingModel.Logical, MemModelConst.Vulkan);
 
   // Types
   const tVoid = b.id(); b.typeVoid(tVoid);
@@ -73,17 +76,20 @@ function buildCoopMatmul(
   const constCoopM = b.id(); b.constant(tU32, constCoopM, coopM);
   const constCoopN = b.id(); b.constant(tU32, constCoopN, coopN);
   const constCoopK = b.id(); b.constant(tU32, constCoopK, coopK);
+  const constUseA = b.id(); b.constant(tU32, constUseA, CooperativeMatrixUse.MatrixA);
+  const constUseB = b.id(); b.constant(tU32, constUseB, CooperativeMatrixUse.MatrixB);
+  const constUseAcc = b.id(); b.constant(tU32, constUseAcc, CooperativeMatrixUse.MatrixAccumulator);
 
   // Cooperative matrix types
   // A: f16, M x K, MatrixA
   const tCoopA = b.id();
-  b.typeCooperativeMatrixKHR(tCoopA, tF16, scopeSubgroup, constCoopM, constCoopK, CooperativeMatrixUse.MatrixA);
+  b.typeCooperativeMatrixKHR(tCoopA, tF16, scopeSubgroup, constCoopM, constCoopK, constUseA);
   // B: f16, K x N, MatrixB
   const tCoopB = b.id();
-  b.typeCooperativeMatrixKHR(tCoopB, tF16, scopeSubgroup, constCoopK, constCoopN, CooperativeMatrixUse.MatrixB);
+  b.typeCooperativeMatrixKHR(tCoopB, tF16, scopeSubgroup, constCoopK, constCoopN, constUseB);
   // C: f32, M x N, Accumulator
   const tCoopC = b.id();
-  b.typeCooperativeMatrixKHR(tCoopC, tF32, scopeSubgroup, constCoopM, constCoopN, CooperativeMatrixUse.MatrixAccumulator);
+  b.typeCooperativeMatrixKHR(tCoopC, tF32, scopeSubgroup, constCoopM, constCoopN, constUseAcc);
 
   // Pointer types for cooperative matrices (Function storage class)
   const tPtrFnCoopC = b.id();
@@ -95,8 +101,8 @@ function buildCoopMatmul(
   const const2u = b.id(); b.constant(tU32, const2u, 2);
   const const0f = b.id(); b.constantF32(tF32, const0f, 0.0);
 
-  // Boolean constant for row-major layout (ColumnMajor = false)
-  const constFalse = b.id(); b.constantFalse(tBool, constFalse);
+  // Cooperative matrix layout constant: RowMajorKHR = 0
+  const constRowMajor = const0u;
 
   // Shared memory for loading tiles from global memory
   // Tile A: coopM * coopK f16 elements = coopM * coopK * 2 bytes
@@ -158,6 +164,12 @@ function buildCoopMatmul(
   b.emit(Op.Function, [tVoid, fnMain, FunctionControl.None, tFnVoid]);
   const labelEntry = b.id();
   b.emit(Op.Label, [labelEntry]);
+
+  if (coopDebugMode === "type_only") {
+    b.emit(Op.Return, []);
+    b.emit(Op.FunctionEnd, []);
+    return b.build();
+  }
 
   // Function-local variables
   const varK = b.id();
@@ -364,15 +376,14 @@ function buildCoopMatmul(
   const ptrTileAStart = b.id();
   b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, const0u]);
   const coopAMat = b.id();
-  // OpCooperativeMatrixLoadKHR: result_type result pointer stride column_major
-  // column_major = false (0) for row-major
-  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constCoopK, constFalse]);
+  // OpCooperativeMatrixLoadKHR: result_type result pointer memoryLayout stride
+  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constRowMajor, constCoopK]);
 
   // Load B tile: coopK x coopN from tileB, stride = coopN (row-major)
   const ptrTileBStart = b.id();
   b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, const0u]);
   const coopBMat = b.id();
-  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constCoopN, constFalse]);
+  b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constRowMajor, constCoopN]);
 
   // ── MulAdd: C += A * B ──────────────────────────────────────────────
   const prevAcc = b.id();
@@ -416,10 +427,10 @@ function buildCoopMatmul(
   b.emit(Op.AccessChain, [bufC.tPtrF32, ptrCOut, bufC.varId, const0u, outBase]);
 
   // Store cooperative matrix to global memory
-  // OpCooperativeMatrixStoreKHR: pointer, object, stride, column_major
+  // OpCooperativeMatrixStoreKHR: pointer, object, memoryLayout, stride
   const finalAcc = b.id();
   b.emit(Op.Load, [tCoopC, finalAcc, varAcc]);
-  b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrCOut, finalAcc, N, constFalse]);
+  b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrCOut, finalAcc, constRowMajor, N]);
 
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);

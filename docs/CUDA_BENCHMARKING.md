@@ -90,13 +90,10 @@ Then rerun `npm run bench:cuda`.
 - `--shutdown=delete|stop|none`: post-run instance handling (fleet cycle script)
 - `--setup`: run `fleet setup` before deploy (off by default)
 
-### Cooperative Matmul Safety (Bun Compiled Binary)
+### Cooperative Matmul Controls
 
-- On Bun standalone runtime, coop matmul is disabled by default due an unresolved crash path.
-- `HELIOS_ENABLE_COOP_MAT=1` alone is intentionally ignored on Bun runtime.
-- To force-enable anyway for debugging, set both:
-  - `HELIOS_ENABLE_COOP_MAT=1`
-  - `HELIOS_FORCE_UNSAFE_COOP_MAT=1`
+- Coop matmul is enabled by default when Helios reports support on the device.
+- Use `HELIOS_DISABLE_COOP_MAT=1` to force-disable coop kernels for diagnostics.
 
 ## Output
 

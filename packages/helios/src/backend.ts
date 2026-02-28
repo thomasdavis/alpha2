@@ -46,6 +46,8 @@ const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
 const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
 let WG_SIZE = 256;  // default, overridden by auto-tuning
 let wgAutoTuned = false;
+const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MANY === "1";
+const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const WG_ENV = process.env.HELIOS_WG_SIZE;
 if (WG_ENV) {
   const parsed = Number(WG_ENV);
@@ -623,7 +625,7 @@ class ComputeGraph {
 
     vk.batchBegin();
 
-    if (typeof vk.batchDispatchMany === "function") {
+    if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchDispatchMany === "function") {
       // Packed binary path: single N-API call for all dispatches.
       // Per dispatch format:
       //   int32 pipelineSlot, uint16 bufCount, uint16 flags, uint32 gX,
@@ -821,20 +823,9 @@ export class HeliosBackend implements Backend {
       this._coopK = info.coopMatK;
       this._hasPushDescriptors = info.hasPushDescriptors;
 
-      // Cooperative matrix kernels are still unstable under the standalone Bun runtime.
-      // Keep them disabled there unless the caller opts into an explicit unsafe mode.
-      const bunRuntime = !!(process as any)?.versions?.bun;
-      const forceEnableCoop = process.env.HELIOS_ENABLE_COOP_MAT === "1";
+      // Cooperative matrix can be explicitly disabled for safety/debugging.
       const forceDisableCoop = process.env.HELIOS_DISABLE_COOP_MAT === "1";
-      const forceUnsafeCoop = process.env.HELIOS_FORCE_UNSAFE_COOP_MAT === "1";
-      const disableForBunRuntime = bunRuntime && (!forceEnableCoop || !forceUnsafeCoop);
-      if (forceDisableCoop || disableForBunRuntime) {
-        if (bunRuntime && forceEnableCoop && !forceUnsafeCoop) {
-          console.warn(
-            "[helios] HELIOS_ENABLE_COOP_MAT=1 ignored on Bun runtime; " +
-            "set HELIOS_FORCE_UNSAFE_COOP_MAT=1 to force-enable (may crash).",
-          );
-        }
+      if (forceDisableCoop) {
         this._coopMatSupported = false;
         this._coopM = 0;
         this._coopN = 0;
@@ -2371,7 +2362,13 @@ export class HeliosBackend implements Backend {
       ? (batchSize > 1 ? "transposed_batched" : "transposed")
       : (batchSize > 1 ? "batched" : "basic");
     const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    if (DEBUG_COOP) {
+      console.error(
+        `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
+      );
+    }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
+    if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
     const outBytes = batchSize * M * N * 4;
@@ -2392,6 +2389,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, M, N],
     });
+    if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, M, N], region);
   }
@@ -2403,7 +2401,13 @@ export class HeliosBackend implements Backend {
   ): TensorData {
     const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
     const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    if (DEBUG_COOP) {
+      console.error(
+        `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
+      );
+    }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
+    if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
     const outBytes = batchSize * outM * N * 4;
@@ -2423,6 +2427,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, outM, N],
     });
+    if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, outM, N], region);
   }

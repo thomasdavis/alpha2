@@ -32,6 +32,8 @@ interface ExecResult {
   code: number;
 }
 
+const SCP_TIMEOUT_MS = Number.parseInt(process.env.ALPHA_FLEET_SCP_TIMEOUT_MS ?? "300000", 10) || 300000;
+
 // ── Config ─────────────────────────────────────────────────────────────────
 
 function fleetJsonPath(): string {
@@ -81,6 +83,8 @@ function sshOpts(config: FleetConfig): string[] {
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
     "-o", "LogLevel=ERROR",
     "-i", expandPath(config.sshKey),
   ];
@@ -105,14 +109,56 @@ function ssh(config: FleetConfig, host: string, cmd: string, opts?: { stream?: b
   });
 }
 
-function scp(config: FleetConfig, local: string, host: string, remote: string): Promise<void> {
+function runTransfer(cmd: string, args: string[], timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("scp", [...sshOpts(config), local, `${sshTarget(config, host)}:${remote}`], {
-      stdio: ["ignore", "inherit", "inherit"],
+    const proc = spawn(cmd, args, { stdio: ["ignore", "inherit", "inherit"] });
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      proc.kill("SIGTERM");
+      setTimeout(() => proc.kill("SIGKILL"), 5000).unref();
+      reject(new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, Math.max(30000, timeoutMs));
+    timeout.unref();
+
+    proc.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(err);
     });
-    proc.on("error", reject);
-    proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`scp exited ${code}`)));
+    proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`));
+    });
   });
+}
+
+function scp(config: FleetConfig, local: string, host: string, remote: string): Promise<void> {
+  return (async () => {
+    const sshCmd = `ssh ${sshOpts(config).join(" ")}`;
+    const remoteTarget = `${sshTarget(config, host)}:${remote}`;
+
+    try {
+      await runTransfer(
+        "rsync",
+        ["-az", "--partial", "--inplace", "--no-owner", "--no-group", "--progress", "-e", sshCmd, local, remoteTarget],
+        SCP_TIMEOUT_MS,
+      );
+      return;
+    } catch (err) {
+      console.warn(`  rsync upload failed (${(err as Error).message}); falling back to scp...`);
+    }
+
+    await runTransfer(
+      "scp",
+      [...sshOpts(config), local, remoteTarget],
+      SCP_TIMEOUT_MS,
+    );
+  })();
 }
 
 function sha256File(path: string): string {

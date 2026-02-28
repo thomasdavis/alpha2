@@ -440,6 +440,7 @@ static uint64_t lastDispatchTimeline = 0;  // timeline value of last async dispa
 static uint64_t lastUploadTimeline = 0;
 static int batchRecording = 0;
 static uint32_t batchDispatchCount = 0;
+static int debugPipelines = 0;
 
 // Per-buffer write tracking generation counter (arrays declared after MAX_BUFFERS)
 static uint32_t bufWriteGeneration = 0;        // bumped on batchBegin
@@ -854,6 +855,9 @@ static void waitTimelineValue(uint64_t value) {
 // ── N-API: initDevice() ─────────────────────────────────────────────────────
 
 static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
+  const char* dbgP = getenv("HELIOS_DEBUG_PIPELINES");
+  debugPipelines = (dbgP && dbgP[0] == '1') ? 1 : 0;
+
   // Load libvulkan.so
   vk_lib = dlopen("libvulkan.so.1", RTLD_NOW);
   if (!vk_lib) vk_lib = dlopen("libvulkan.so", RTLD_NOW);
@@ -1878,6 +1882,19 @@ static napi_value napi_createPipeline(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
+  if (debugPipelines) {
+    fprintf(stderr, "[helios:native] createPipeline start slot=%d spirv_words=%zu bindings=%u push=%u\n",
+      slot, spirvLen, numBindings, pushConstantSize);
+    char spvPath[128];
+    snprintf(spvPath, sizeof(spvPath), "/tmp/helios-pipeline-%d.spv", slot);
+    FILE* fp = fopen(spvPath, "wb");
+    if (fp) {
+      fwrite(spirvData, sizeof(uint32_t), spirvLen, fp);
+      fclose(fp);
+      fprintf(stderr, "[helios:native] dumped spirv %s (%zu words)\n", spvPath, spirvLen);
+    }
+  }
+
   // Create shader module
   VkShaderModuleCreateInfo shaderInfo = {
     .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1962,6 +1979,11 @@ static napi_value napi_createPipeline(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
+  if (debugPipelines) {
+    fprintf(stderr, "[helios:native] createPipeline ok slot=%d pipeline=%p\n",
+      slot, (void*)pipelines[slot].pipeline);
+  }
+
   pipelines[slot].numBindings = numBindings;
   pipelines[slot].pushConstantSize = pushConstantSize;
   pipelines[slot].active = 1;
@@ -2014,6 +2036,11 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     napi_get_typedarray_info(env, args[5], NULL, NULL, &pushData, NULL, NULL);
   } else {
     pushSize = 0;
+  }
+
+  if (debugPipelines) {
+    fprintf(stderr, "[helios:native] dispatch pipe=%d g=(%u,%u,%u) bufCount=%u pushSize=%u\n",
+      pipeSlot, gX, gY, gZ, bufCount, pushSize);
   }
 
   // Check dispatch cache — skip re-recording when pipeline+buffers+groups+pushdata unchanged
@@ -2461,6 +2488,11 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
       if (ptr + pushSize > end) break;
       pushPtr = ptr;
       ptr += pushSize;
+    }
+
+    if (debugPipelines) {
+      fprintf(stderr, "[helios:native] batchDispatchMany d=%u pipe=%d g=(%u,%u,%u) bufCount=%u pushSize=%u\n",
+        d, pipeSlot, gX, gY, gZ, bufCount, pushSize);
     }
 
     // ── Barriers: O(1) per buffer ──

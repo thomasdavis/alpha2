@@ -18,7 +18,7 @@
 // ── SPIR-V constants ────────────────────────────────────────────────────────
 
 const MAGIC = 0x07230203;
-const VERSION = 0x00010300;        // SPIR-V 1.3 (Vulkan 1.1+, supports StorageBuffer)
+const VERSION = 0x00010300;        // SPIR-V 1.3 (default for most Helios kernels)
 const GENERATOR = 0x00000000;      // Helios (unregistered)
 
 // Opcodes (only the ones we need)
@@ -116,6 +116,7 @@ export const Op = {
 export const Capability = {
   Shader: 1,
   Float16: 9,
+  VulkanMemoryModel: 5345,
   StorageBuffer16BitAccess: 4433, // SPV_KHR_16bit_storage
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
   CooperativeMatrixKHR: 6022,
@@ -130,7 +131,10 @@ export const CooperativeMatrixUse = {
 
 // Addressing/memory models
 export const AddressingModel = { Logical: 0 } as const;
-export const MemoryModel = { GLSL450: 1 } as const;
+export const MemoryModel = {
+  GLSL450: 1,
+  Vulkan: 3,
+} as const;
 
 // Execution model / mode
 export const ExecutionModel = { GLCompute: 5 } as const;
@@ -215,6 +219,7 @@ export const FunctionControl = { None: 0 } as const;
 
 export class SpirVBuilder {
   private nextId = 1;
+  private versionWord: number;
   private capabilities: number[] = [];
   private extensions: number[][] = [];
   private extInstImports: number[][] = [];
@@ -228,6 +233,10 @@ export class SpirVBuilder {
   private functionBodies: number[][] = [];
 
   private bound = 0;
+
+  constructor(versionWord = VERSION) {
+    this.versionWord = versionWord;
+  }
 
   /** Allocate a new SPIR-V ID. */
   id(): number {
@@ -395,7 +404,7 @@ export class SpirVBuilder {
 
     // Header
     words.push(MAGIC);
-    words.push(VERSION);
+    words.push(this.versionWord);
     words.push(GENERATOR);
     words.push(this.bound);
     words.push(0); // schema (reserved)

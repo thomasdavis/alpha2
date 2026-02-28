@@ -6,18 +6,42 @@
  *   e2e   — forward-pass-like sequence (single backend)
  *   gpu   — element-wise ops: helios GPU vs cpu_ref comparison
  *   train — full training iterations: helios vs cpu_ref comparison
+ *   cuda  — Helios matmul vs PyTorch CUDA matmul comparison
  */
 import { parseKV, strArg, intArg } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng } from "../resolve.js";
 import type { Backend, TensorData } from "@alpha/core";
 import { HeliosBackend } from "@alpha/helios";
 import type { WebGpuBenchSpec, WebGpuBenchResult } from "./bench-webgpu.js";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+interface MatmulShape {
+  m: number;
+  k: number;
+  n: number;
+  key: string;
+}
+
+interface HeliosCudaRow {
+  shape: string;
+  heliosMs: number;
+  heliosTflops: number;
+  cudaMs: number | null;
+  cudaTflops: number | null;
+}
 
 export async function benchCmd(args: string[]): Promise<void> {
   const kv = parseKV(args);
   const suite = strArg(kv, "suite", "ops");
   const backendName = strArg(kv, "backend", "cpu_ref");
   const iters = intArg(kv, "iters", 100);
+
+  if (suite === "cuda" || suite === "all") {
+    await benchCuda(kv, iters);
+  }
 
   if (suite === "gpu" || suite === "all") {
     await benchGpu(iters);
@@ -343,6 +367,342 @@ async function benchTrain(iters: number): Promise<void> {
     console.log(`  Loss difference: ${lossDiff.toFixed(6)} ${lossDiff < 0.01 ? "(OK)" : "(DIVERGED)"}`);
   }
   console.log();
+}
+
+function parseMatmulShape(raw: string): MatmulShape {
+  const parts = raw.trim().split("x").map((v) => Number.parseInt(v, 10));
+  if (parts.length !== 3 || parts.some((v) => !Number.isFinite(v) || v <= 0)) {
+    throw new Error(`Invalid shape "${raw}". Expected MxKxN with positive integers.`);
+  }
+  const [m, k, n] = parts;
+  return { m, k, n, key: `${m}x${k}x${n}` };
+}
+
+function parseMatmulShapes(raw: string): MatmulShape[] {
+  const items = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (items.length === 0) throw new Error("No valid shapes provided.");
+  return items.map(parseMatmulShape);
+}
+
+function ratioStr(r: number | null): string {
+  if (r === null || !Number.isFinite(r) || r <= 0) return "n/a";
+  if (r >= 1) return `${r.toFixed(2)}x`;
+  return `1/${(1 / r).toFixed(2)}x`;
+}
+
+function buildCudaReferencePython(): string {
+  return String.raw`#!/usr/bin/env python3
+import argparse
+import json
+import time
+
+def parse_shapes(raw):
+  out = []
+  for part in raw.split(","):
+    part = part.strip()
+    if not part:
+      continue
+    bits = part.split("x")
+    if len(bits) != 3:
+      raise ValueError(f"invalid shape '{part}', expected MxKxN")
+    m, k, n = (int(bits[0]), int(bits[1]), int(bits[2]))
+    if m <= 0 or k <= 0 or n <= 0:
+      raise ValueError(f"invalid shape '{part}', dimensions must be > 0")
+    out.append((m, k, n))
+  if not out:
+    raise ValueError("at least one shape must be provided")
+  return out
+
+def main():
+  ap = argparse.ArgumentParser()
+  ap.add_argument("--shapes", required=True)
+  ap.add_argument("--iters", type=int, default=20)
+  ap.add_argument("--warmup", type=int, default=6)
+  ap.add_argument("--dtype", choices=["float16", "float32", "bfloat16"], default="float32")
+  args = ap.parse_args()
+
+  try:
+    import torch
+  except Exception as e:
+    print(json.dumps({
+      "ok": False,
+      "error": f"PyTorch import failed: {e}",
+      "hint": "Install CUDA PyTorch: pip install --index-url https://download.pytorch.org/whl/cu128 torch"
+    }))
+    return
+
+  if not torch.cuda.is_available():
+    print(json.dumps({
+      "ok": False,
+      "error": "CUDA is not available in PyTorch.",
+      "hint": "Use NVIDIA GPU + CUDA-enabled torch wheel."
+    }))
+    return
+
+  shapes = parse_shapes(args.shapes)
+  dtype_map = {
+    "float16": torch.float16,
+    "float32": torch.float32,
+    "bfloat16": torch.bfloat16
+  }
+  dtype = dtype_map[args.dtype]
+
+  torch.backends.cuda.matmul.allow_tf32 = True
+  if hasattr(torch, "set_float32_matmul_precision"):
+    torch.set_float32_matmul_precision("high")
+
+  rows = []
+  for (m, k, n) in shapes:
+    a = torch.randn((m, k), device="cuda", dtype=dtype)
+    b = torch.randn((k, n), device="cuda", dtype=dtype)
+
+    for _ in range(max(0, args.warmup)):
+      _ = a @ b
+    torch.cuda.synchronize()
+
+    start = time.perf_counter()
+    c = None
+    for _ in range(max(1, args.iters)):
+      c = a @ b
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+
+    avg_ms = (elapsed * 1000.0) / max(1, args.iters)
+    flops = 2.0 * float(m) * float(k) * float(n)
+    tflops = (flops / (avg_ms / 1000.0)) / 1e12
+    rows.append({"shape": f"{m}x{k}x{n}", "avg_ms": avg_ms, "tflops": tflops})
+    del c
+
+  print(json.dumps({
+    "ok": True,
+    "framework": "pytorch_cuda",
+    "torch_version": torch.__version__,
+    "cuda_runtime": torch.version.cuda,
+    "device_name": torch.cuda.get_device_name(0),
+    "device_capability": ".".join(map(str, torch.cuda.get_device_capability(0))),
+    "dtype": str(dtype).replace("torch.", ""),
+    "rows": rows
+  }))
+
+if __name__ == "__main__":
+  main()
+`;
+}
+
+async function runCudaReference(pythonBin: string, shapes: MatmulShape[], iters: number, warmup: number, dtype: "float16" | "float32" | "bfloat16"): Promise<any> {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "alpha-cuda-ref-"));
+  const scriptPath = path.join(tempDir, "bench-cuda-ref.py");
+  await writeFile(scriptPath, buildCudaReferencePython(), "utf8");
+
+  const shapesArg = shapes.map((s) => s.key).join(",");
+  const child = spawnSync(
+    pythonBin,
+    [scriptPath, `--shapes=${shapesArg}`, `--iters=${iters}`, `--warmup=${warmup}`, `--dtype=${dtype}`],
+    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+  );
+
+  if (child.error) {
+    return { ok: false, error: `Failed to launch ${pythonBin}: ${child.error.message}` };
+  }
+  const stdout = (child.stdout ?? "").trim();
+  const stderr = (child.stderr ?? "").trim();
+  if (!stdout) {
+    return {
+      ok: false,
+      error: `CUDA benchmark returned no stdout (exit=${child.status ?? "unknown"}).`,
+      hint: stderr || undefined,
+    };
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return {
+      ok: false,
+      error: "CUDA benchmark returned non-JSON output.",
+      hint: stdout.slice(0, 500),
+    };
+  }
+}
+
+async function benchCuda(kv: Record<string, string>, iters: number): Promise<void> {
+  const shapesRaw = strArg(kv, "shapes", "1024x1024x1024,2048x2048x2048,3072x3072x3072");
+  const warmup = intArg(kv, "warmup", 6);
+  const pythonBin = strArg(kv, "python", "python3");
+  const dtypeRaw = strArg(kv, "dtype", "float32");
+  const outPath = kv["out"];
+  const dtype: "float16" | "float32" | "bfloat16" =
+    dtypeRaw === "float16" || dtypeRaw === "float32" || dtypeRaw === "bfloat16"
+      ? dtypeRaw
+      : "float32";
+
+  let shapes: MatmulShape[];
+  try {
+    shapes = parseMatmulShapes(shapesRaw);
+  } catch (e) {
+    console.error(`Invalid --shapes: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  console.log("── CUDA Reference Benchmark: Helios vs PyTorch CUDA ──\n");
+  console.log(`iters=${iters} warmup=${warmup} dtype=${dtype}`);
+  console.log(`shapes=${shapes.map((s) => s.key).join(",")}\n`);
+
+  const helios = new HeliosBackend();
+  helios.setMinGpuSize(0);
+  const heliosAny = helios as any;
+  const info = typeof heliosAny.getDeviceInfo === "function"
+    ? heliosAny.getDeviceInfo()
+    : {
+      deviceName: "unknown",
+      vendorId: 0,
+      f16Supported: false,
+      coopMatSupported: false,
+      coopMatM: 0,
+      coopMatN: 0,
+      coopMatK: 0,
+      hasPushDescriptors: false,
+    };
+  const syncFn: (() => void) | undefined =
+    typeof heliosAny.syncGpu === "function" ? heliosAny.syncGpu.bind(heliosAny) : undefined;
+  const flushFn: (() => void) | undefined =
+    typeof heliosAny.flush === "function" ? heliosAny.flush.bind(heliosAny) : undefined;
+  const releaseFn: ((td: TensorData) => void) | undefined =
+    typeof heliosAny.releaseGpuTensor === "function" ? heliosAny.releaseGpuTensor.bind(heliosAny) : undefined;
+
+  const rows: HeliosCudaRow[] = [];
+  for (const shape of shapes) {
+    const a = helios.randn([shape.m, shape.k]);
+    const b = helios.randn([shape.k, shape.n]);
+
+    const warmupOuts: TensorData[] = [];
+    for (let i = 0; i < warmup; i++) warmupOuts.push(helios.matmul(a, b));
+    if (syncFn) syncFn();
+    if (flushFn) flushFn();
+    if (releaseFn) for (const td of warmupOuts) releaseFn(td);
+
+    const outs: TensorData[] = [];
+    const t0 = performance.now();
+    for (let i = 0; i < iters; i++) outs.push(helios.matmul(a, b));
+    if (syncFn) syncFn();
+    else void (outs[outs.length - 1].data as Float32Array)[0];
+    const elapsedMs = performance.now() - t0;
+    if (flushFn) flushFn();
+
+    if (releaseFn) {
+      for (const td of outs) releaseFn(td);
+      releaseFn(a);
+      releaseFn(b);
+    }
+
+    const avgMs = elapsedMs / iters;
+    const flops = 2 * shape.m * shape.k * shape.n;
+    const tflops = (flops / (avgMs / 1000)) / 1e12;
+    rows.push({
+      shape: shape.key,
+      heliosMs: avgMs,
+      heliosTflops: tflops,
+      cudaMs: null,
+      cudaTflops: null,
+    });
+  }
+  const coopStats = typeof heliosAny.getMatmulCoopStats === "function"
+    ? heliosAny.getMatmulCoopStats()
+    : null;
+
+  console.log(`helios_device=${info.deviceName} vendor=0x${Number(info.vendorId ?? 0).toString(16)} f16=${!!info.f16Supported}`);
+  console.log(
+    `helios_coop=${!!info.coopMatSupported} ` +
+    `tile=${Number(info.coopMatM ?? 0)}x${Number(info.coopMatN ?? 0)}x${Number(info.coopMatK ?? 0)} ` +
+    `push_desc=${!!info.hasPushDescriptors}`,
+  );
+  if (coopStats) {
+    console.log(
+      `helios_coop_stats ` +
+      `hit_rate=${(Number(coopStats.coopHitRate ?? 0) * 100).toFixed(1)}% ` +
+      `direct=${Number(coopStats.coopDirectDispatches ?? 0)} ` +
+      `padded2d=${Number(coopStats.coopPadded2DDispatches ?? 0)} ` +
+      `padded_batched=${Number(coopStats.coopPaddedBatchedDispatches ?? 0)} ` +
+      `total=${Number(coopStats.totalMatmulDispatches ?? 0)}`,
+    );
+  }
+  if (Number(info.vendorId ?? 0) !== 0x10de || /\bllvmpipe\b|\bswiftshader\b/i.test(String(info.deviceName ?? ""))) {
+    console.warn("warning: Helios is not running on an NVIDIA Vulkan device (results may reflect CPU/software Vulkan fallback).");
+  }
+  console.log(`python=${pythonBin}\n`);
+
+  const cudaResult = await runCudaReference(pythonBin, shapes, iters, warmup, dtype);
+  if (cudaResult.ok) {
+    console.log(
+      `cuda_device=${cudaResult.device_name} capability=${cudaResult.device_capability} ` +
+      `torch=${cudaResult.torch_version} cuda=${cudaResult.cuda_runtime}`,
+    );
+  } else {
+    console.log(`cuda benchmark unavailable: ${cudaResult.error}`);
+    if (cudaResult.hint) console.log(`hint: ${cudaResult.hint}`);
+  }
+  console.log("");
+
+  const cudaMap = new Map<string, { avg_ms: number; tflops: number }>();
+  for (const row of (cudaResult.rows ?? [])) {
+    if (row?.shape) cudaMap.set(row.shape, row);
+  }
+
+  for (const row of rows) {
+    const cuda = cudaMap.get(row.shape);
+    if (cuda) {
+      row.cudaMs = cuda.avg_ms;
+      row.cudaTflops = cuda.tflops;
+    }
+  }
+
+  const header =
+    padR("shape", 18) +
+    padR("helios_ms", 12) +
+    padR("cuda_ms", 12) +
+    padR("helios_tflops", 15) +
+    padR("cuda_tflops", 13) +
+    "h_vs_cuda";
+  console.log(header);
+  console.log("─".repeat(header.length));
+  for (const row of rows) {
+    const ratio = row.cudaMs ? row.cudaMs / row.heliosMs : null;
+    console.log(
+      padR(row.shape, 18) +
+      padR(row.heliosMs.toFixed(3), 12) +
+      padR(row.cudaMs ? row.cudaMs.toFixed(3) : "n/a", 12) +
+      padR(row.heliosTflops.toFixed(3), 15) +
+      padR(row.cudaTflops ? row.cudaTflops.toFixed(3) : "n/a", 13) +
+      ratioStr(ratio),
+    );
+  }
+  console.log("");
+
+  const summary = {
+    timestamp: new Date().toISOString(),
+    iters,
+    warmup,
+    dtype,
+    shapes: shapes.map((s) => s.key),
+    helios: {
+      backend: helios.name,
+      device_name: info.deviceName,
+      vendor_id: info.vendorId,
+      f16_supported: !!info.f16Supported,
+      coop_supported: !!info.coopMatSupported,
+      coop_tile_mnk: [Number(info.coopMatM ?? 0), Number(info.coopMatN ?? 0), Number(info.coopMatK ?? 0)],
+      has_push_descriptors: !!info.hasPushDescriptors,
+      coop_stats: coopStats,
+    },
+    cuda: cudaResult,
+    rows,
+  };
+
+  if (outPath) {
+    const absOut = path.resolve(process.cwd(), outPath);
+    await mkdir(path.dirname(absOut), { recursive: true });
+    await writeFile(absOut, JSON.stringify(summary, null, 2) + "\n", "utf8");
+    console.log(`saved: ${absOut}\n`);
+  }
 }
 
 // ── Original suites (single-backend) ────────────────────────────────────────

@@ -91,8 +91,7 @@ BPE tokenization of large files is CPU-intensive and runs synchronously in the N
    - Local/compiled `bench --suite=gpu --backend=helios` now reports PASS for add/mul/scale/exp/neg correctness checks.
    - This strongly suggests at least one root cause of smoke failures was upload command-buffer reuse.
 
-3. Separate unresolved issue:
-   - Bun standalone + cooperative matmul on L4 can still segfault.
-   - Runtime mitigation now disables coop matmul on Bun unless explicitly forced with:
-     - `HELIOS_ENABLE_COOP_MAT=1`
-     - `HELIOS_FORCE_UNSAFE_COOP_MAT=1`
+3. Follow-up status:
+   - Bun standalone cooperative-matmul pipeline creation crash on L4 was traced to malformed SPIR-V cooperative matrix operands.
+   - The cooperative matrix kernel emitter now uses ID operands for matrix-use/layout fields as required.
+   - Coop matmul now initializes and executes on L4 under the compiled Bun binary.
