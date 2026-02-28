@@ -581,11 +581,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const gradTensors: TensorData[] = [];
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
-  const ADAPTIVE_MEM_STATS_POLL_EVERY = readEnvInt("ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY", 14, 1);
-  const ADAPTIVE_SYNC_MIN_INTERVAL = readEnvInt("ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL", 11, 1);
-  const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD", 32, 0);
-  const ADAPTIVE_SYNC_PENDING_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD", 28, 0);
-  const GPU_METRICS_SAMPLE_EVERY = readEnvInt("ALPHA_GPU_METRICS_SAMPLE_EVERY", 50, 1);
+  // Defaults are set from the latest strict (`status=ok`) adaptive 20-run sweep.
+  const ADAPTIVE_MEM_STATS_POLL_EVERY = readEnvInt("ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY", 16, 1);
+  const ADAPTIVE_SYNC_MIN_INTERVAL = readEnvInt("ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL", 10, 1);
+  const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD", 28, 0);
+  const ADAPTIVE_SYNC_PENDING_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD", 24, 0);
+  const GPU_METRICS_SAMPLE_EVERY = readEnvInt("ALPHA_GPU_METRICS_SAMPLE_EVERY", 75, 1);
   let memStatsCache: any | null = null;
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
