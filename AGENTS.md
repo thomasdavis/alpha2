@@ -17,6 +17,45 @@ Project-specific operating guide for coding agents in this repo.
 - Benchmark loop: `scripts/run-compiled-benchmark.sh 100`
 - Adaptive tuning sweep: `npm run perf:tune:adaptive`
 
+## Fleet Operations (Remote Instances)
+
+Prereqs:
+
+- `fleet.json` must exist at repo root (copy `fleet.json.example` and fill host/key/user).
+- Build CLI before Fleet operations: `npm run build -w @alpha/cli`.
+
+Core commands:
+
+- Dashboard: `npm run fleet`
+- Status: `npm run fleet:status -- <instance>`
+- Deploy binary/native addon: `npm run fleet:deploy -- <instance>`
+- Deploy all instances: `npm run fleet -- deploy --all`
+- First-time setup (Nix + train shell warmup): `npm run fleet:setup -- <instance>`
+- Start training: `npm run fleet:train -- <instance> --data=<path> ...`
+- Resume latest run: `npm run fleet:resume -- <instance>`
+- Resume specific run: `npm run fleet:resume -- <instance> --run=<run-name>`
+- Stop training: `npm run fleet:stop -- <instance>`
+- Logs (last lines): `npm run fleet:logs -- <instance>`
+- Logs follow: `npm run fleet:logs -- <instance> -f`
+- SSH: `npm run fleet:ssh -- <instance>`
+- Run remote command: `npm run fleet:run -- <instance> -- <cmd>`
+- Sync SSH key: `npm run fleet -- sync-keys <instance>`
+- Download run dir: `npm run fleet:download -- <instance> --run=<run-name>`
+
+Expected workflow:
+
+1. `npm run fleet -- sync-keys <instance>` (once per machine).
+2. `npm run fleet:deploy -- <instance>` (builds via `bun:compile`, uploads `alpha`, uploads `helios_vk.c`, compiles `helios_vk.node` remotely, uploads `.env.local` if present).
+3. `npm run fleet:setup -- <instance>` (once after deploy or environment changes).
+4. `npm run fleet:train -- <instance> ...` or `npm run fleet:resume -- <instance>`.
+5. Monitor with `fleet logs`, stop with `fleet stop`, and pull artifacts with `fleet download`.
+
+Operational notes:
+
+- `fleet train`/`fleet resume` run detached via `nohup` and write `train.log` under remote `deployDir`.
+- On L4 instances, Fleet auto-applies default flags unless explicitly overridden.
+- Use `--force` on `fleet train`/`fleet resume` only when intentionally bypassing running-process checks.
+
 ## Compiled Binary Rules
 
 - Always compile via `npm run bun:compile`.
