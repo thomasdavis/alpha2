@@ -46,11 +46,7 @@ function buildCoopMatmul(
 ): Uint32Array {
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
-  // Multi-subgroup tiles need direct cooperative global loads for correctness:
-  // the shared-memory path currently uses one tile buffer per workgroup.
-  const forceDirectForSubgroupTiles = subgroupTilesX > 1 || subgroupTilesY > 1;
-  const useDirectF16Load =
-    inputF16 && (process.env.HELIOS_COOP_DIRECT_LOAD === "1" || forceDirectForSubgroupTiles);
+  const useDirectF16Load = inputF16 && process.env.HELIOS_COOP_DIRECT_LOAD === "1";
 
   // Capabilities
   b.addCapability(Capability.Shader);
@@ -136,17 +132,19 @@ function buildCoopMatmul(
   const constRowMajor = const0u;
   // Cooperative matrix layout constant: ColumnMajorKHR = 1
   const constColumnMajor = const1u;
+  const subgroupTileCount = subgroupTilesX * subgroupTilesY;
 
   // Shared memory for loading tiles from global memory
   // Tile A: coopM * coopK f16 elements = coopM * coopK * 2 bytes
   // Tile B: coopK * coopN f16 elements = coopK * coopN * 2 bytes
+  // In multi-subgroup mode, reserve one tile region per subgroup.
   // We store them as f16 arrays in shared memory
-  const constTileASize = b.id(); b.constant(tU32, constTileASize, coopM * coopK);
+  const constTileASize = b.id(); b.constant(tU32, constTileASize, coopM * coopK * subgroupTileCount);
   const tArrayTileA = b.id(); b.typeArray(tArrayTileA, tF16, constTileASize);
   const tPtrSharedArrA = b.id(); b.typePointer(tPtrSharedArrA, StorageClass.Workgroup, tArrayTileA);
   const tileA = b.id(); b.variable(tPtrSharedArrA, tileA, StorageClass.Workgroup);
 
-  const constTileBSize = b.id(); b.constant(tU32, constTileBSize, coopK * coopN);
+  const constTileBSize = b.id(); b.constant(tU32, constTileBSize, coopK * coopN * subgroupTileCount);
   const tArrayTileB = b.id(); b.typeArray(tArrayTileB, tF16, constTileBSize);
   const tPtrSharedArrB = b.id(); b.typePointer(tPtrSharedArrB, StorageClass.Workgroup, tArrayTileB);
   const tileB = b.id(); b.variable(tPtrSharedArrB, tileB, StorageClass.Workgroup);
@@ -232,9 +230,13 @@ function buildCoopMatmul(
   const tid = b.id();
   b.emit(Op.CompositeExtract, [tU32, tid, lidVec, 0]);
 
+  const subgroupMode = subgroupTilesX > 1 || subgroupTilesY > 1;
+  let subgroupIdVal: number | undefined;
+  let laneIdVal: number | undefined;
+
   let tileCol: number;
   let tileRow: number;
-  if (subgroupTilesX > 1 || subgroupTilesY > 1) {
+  if (subgroupMode) {
     const constSubgroupSize = b.id();
     b.constant(tU32, constSubgroupSize, 32);
     const constSubgroupTilesX = b.id();
@@ -244,6 +246,10 @@ function buildCoopMatmul(
 
     const subgroupId = b.id();
     b.emit(Op.UDiv, [tU32, subgroupId, tid, constSubgroupSize]);
+    subgroupIdVal = subgroupId;
+    const laneId = b.id();
+    b.emit(Op.UMod, [tU32, laneId, tid, constSubgroupSize]);
+    laneIdVal = laneId;
     const subgroupX = b.id();
     b.emit(Op.UMod, [tU32, subgroupX, subgroupId, constSubgroupTilesX]);
     const subgroupY = b.id();
@@ -421,19 +427,42 @@ function buildCoopMatmul(
     // Each of 32 threads loads multiple elements to fill coopM*coopK
     // Total elements = coopM * coopK. Each thread loads ceil(total/32) elements.
     const totalA = coopM * coopK;
-    const elemsPerThreadA = Math.ceil(totalA / WG_SIZE);
+    const totalB = coopK * coopN;
+    const loadWidth = subgroupMode ? 32 : WG_SIZE;
+    const elemsPerThreadA = Math.ceil(totalA / loadWidth);
+    const elemsPerThreadB = Math.ceil(totalB / loadWidth);
+    const loadThreadBase = subgroupMode ? laneIdVal! : tid;
+
+    let subgroupBaseA = const0u;
+    let subgroupBaseB = const0u;
+    if (subgroupMode) {
+      const constTotalA = b.id();
+      b.constant(tU32, constTotalA, totalA);
+      subgroupBaseA = b.id();
+      b.emit(Op.IMul, [tU32, subgroupBaseA, subgroupIdVal!, constTotalA]);
+
+      const constTotalB = b.id();
+      b.constant(tU32, constTotalB, totalB);
+      subgroupBaseB = b.id();
+      b.emit(Op.IMul, [tU32, subgroupBaseB, subgroupIdVal!, constTotalB]);
+    }
 
     for (let e = 0; e < elemsPerThreadA; e++) {
       const elemOffset = b.id();
       if (e === 0) {
-        b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
+        b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBase]);
       } else {
         const constE = b.id();
-        b.constant(tU32, constE, e * WG_SIZE);
-        b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
+        b.constant(tU32, constE, e * loadWidth);
+        b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBase, constE]);
       }
 
-      if (e * WG_SIZE + WG_SIZE > totalA) {
+      const sharedOffset = subgroupMode ? b.id() : elemOffset;
+      if (subgroupMode) {
+        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, elemOffset]);
+      }
+
+      if (e * loadWidth + loadWidth > totalA) {
         const constTotal = b.id();
         b.constant(tU32, constTotal, totalA);
         const inBounds = b.id();
@@ -445,33 +474,35 @@ function buildCoopMatmul(
         b.emit(Op.Label, [labelLoad]);
 
         emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-          elemOffset, kVal, globalRowBase, M, K, tileA,
+          elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
           const0u, coopK, batchOffsetA, batched, transposedA);
 
         b.emit(Op.Branch, [labelSkip]);
         b.emit(Op.Label, [labelSkip]);
       } else {
         emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-          elemOffset, kVal, globalRowBase, M, K, tileA,
+          elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
           const0u, coopK, batchOffsetA, batched, transposedA);
       }
     }
 
     // ── Load tile B from global to shared ───────────────────────────────
-    const totalB = coopK * coopN;
-    const elemsPerThreadB = Math.ceil(totalB / WG_SIZE);
-
     for (let e = 0; e < elemsPerThreadB; e++) {
       const elemOffset = b.id();
       if (e === 0) {
-        b.emit(Op.CopyObject, [tU32, elemOffset, tid]);
+        b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBase]);
       } else {
         const constE = b.id();
-        b.constant(tU32, constE, e * WG_SIZE);
-        b.emit(Op.IAdd, [tU32, elemOffset, tid, constE]);
+        b.constant(tU32, constE, e * loadWidth);
+        b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBase, constE]);
       }
 
-      if (e * WG_SIZE + WG_SIZE > totalB) {
+      const sharedOffset = subgroupMode ? b.id() : elemOffset;
+      if (subgroupMode) {
+        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, elemOffset]);
+      }
+
+      if (e * loadWidth + loadWidth > totalB) {
         const constTotal = b.id();
         b.constant(tU32, constTotal, totalB);
         const inBounds = b.id();
@@ -483,14 +514,14 @@ function buildCoopMatmul(
         b.emit(Op.Label, [labelLoad]);
 
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
-          elemOffset, kVal, globalColBase, N, K, tileB,
+          elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
           const0u, coopN, batchOffsetB, batched, transposedB);
 
         b.emit(Op.Branch, [labelSkip]);
         b.emit(Op.Label, [labelSkip]);
       } else {
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
-          elemOffset, kVal, globalColBase, N, K, tileB,
+          elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
           const0u, coopN, batchOffsetB, batched, transposedB);
       }
     }
@@ -499,13 +530,15 @@ function buildCoopMatmul(
     b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
     // ── Cooperative matrix load from shared memory ──────────────────────
+    const tileAStartOffset = subgroupMode ? subgroupBaseA : const0u;
     const ptrTileAStart = b.id();
-    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, const0u]);
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, tileAStartOffset]);
     coopAMat = b.id();
     b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constRowMajor, constCoopK]);
 
+    const tileBStartOffset = subgroupMode ? subgroupBaseB : const0u;
     const ptrTileBStart = b.id();
-    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, const0u]);
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, tileBStartOffset]);
     coopBMat = b.id();
     b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constRowMajor, constCoopN]);
   }
@@ -582,6 +615,7 @@ function emitLoadTileA(
   bufA: { varId: number; tPtrF32?: number; tPtrF16?: number },
   inputF16: boolean,
   elemOffset: number,
+  sharedOffset: number,
   kVal: number,
   globalRowBase: number,
   M: number, K: number,
@@ -648,7 +682,7 @@ function emitLoadTileA(
 
   // Store to shared memory
   const ptrShared = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileA, elemOffset]);
+  b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileA, sharedOffset]);
   b.emit(Op.Store, [ptrShared, valF16]);
 }
 
@@ -664,6 +698,7 @@ function emitLoadTileB(
   bufB: { varId: number; tPtrF32?: number; tPtrF16?: number },
   inputF16: boolean,
   elemOffset: number,
+  sharedOffset: number,
   kVal: number,
   globalColBase: number,
   N: number, K: number,
@@ -729,7 +764,7 @@ function emitLoadTileB(
 
   // Store to shared memory
   const ptrShared = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileB, elemOffset]);
+  b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileB, sharedOffset]);
   b.emit(Op.Store, [ptrShared, valF16]);
 }
 
