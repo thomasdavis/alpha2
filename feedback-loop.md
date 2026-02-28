@@ -49,6 +49,10 @@ Adaptive runtime tuning knobs (no source edit/recompile needed):
 - `ALPHA_CALLBACK_YIELD_EVERY`
 - `ALPHA_FAIL_ON_SMOKE_TEST` (default strict in benchmark script)
 
+Benchmark script smoke policy:
+- default: `FAIL_ON_SMOKE_TEST=1` (fail fast; marks run `smoke_fail` quickly)
+- override for diagnostics only: `FAIL_ON_SMOKE_TEST=0 scripts/run-compiled-benchmark.sh 100`
+
 Quick smoke alternative (5 iterations) for sanity checks:
 
 ```bash

@@ -205,7 +205,7 @@ for run_try in $(seq 1 "$run_attempts"); do
   fi
 
   status_label="ok"
-  if rg -q 'smoke_test: FAIL' "$run_log"; then
+  if rg -q 'smoke_test: FAIL|GPU smoke test failed' "$run_log"; then
     status_label="smoke_fail"
   elif [[ "$run_status" -ne 0 ]]; then
     status_label="failed"
