@@ -36,6 +36,7 @@ function declareStorageBufferF32Ssbo(
   set: number,
   binding: number,
   readonly_: boolean,
+  writeonly_?: boolean,
 ): { varId: number; tPtrF32: number } {
   const tRuntimeArr = b.id();
   b.typeRuntimeArray(tRuntimeArr, tF32);
@@ -46,6 +47,7 @@ function declareStorageBufferF32Ssbo(
   b.addDecorate(tStruct, Decoration.Block);
   b.addMemberDecorate(tStruct, 0, Decoration.Offset, 0);
   if (readonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonWritable);
+  if (writeonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonReadable);
 
   const tPtrStruct = b.id();
   b.typePointer(tPtrStruct, StorageClass.StorageBuffer, tStruct);
@@ -365,7 +367,7 @@ function buildCoopMatmul(
   const bufB: { varId: number; tPtrF32?: number; tPtrF16?: number } = inputF16
     ? declareStorageBufferF16Ssbo(b, tF16, 0, 1, true)
     : declareStorageBufferF32Ssbo(b, tF32, 0, 1, true);
-  const bufC = declareStorageBufferF32Ssbo(b, tF32, 0, 2, false);
+  const bufC = declareStorageBufferF32Ssbo(b, tF32, 0, 2, false, true);
 
   // Push constants: { M, N, K, _pad }
   const pc = declareParamsPushConstant(b, tF32, 4);
@@ -435,19 +437,22 @@ function buildCoopMatmul(
   let wgTileRow = b.id();
   b.emit(Op.CompositeExtract, [tU32, wgTileRow, wgIdVec, 1]);
 
-  // Super-tile swizzle: remap WG indices so consecutive WGs work on adjacent
-  // tiles in a S×S block, improving L2 cache reuse for A and B data.
-  // gridX is passed as push constant [3]. When gridX % S != 0, the dispatch
-  // code sets gridX=0 as a sentinel to skip the swizzle at runtime.
+  // Early-load M from push constant [0] (needed by GROUP_M swizzle before the main load block)
+  const ptrM_early = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrM_early, pc.varId, const0u]);
+  const MF_early = b.id();
+  b.emit(Op.Load, [tF32, MF_early, ptrM_early]);
+  const M_early = b.id();
+  b.emit(Op.ConvertFToU, [tU32, M_early, MF_early]);
+
+  // GROUP_M swizzle (Triton-style): remap WG indices so consecutive WGs cycle
+  // through GROUP_M rows before advancing to the next column. This ensures
+  // GROUP_M WGs share the same B-column data (L2 cache hit), and WGs across
+  // all columns share the same GROUP_M A-rows (L2 reuse across columns).
+  // gridX is passed as push constant [3]. 0 = swizzle disabled.
   if (useSwizzle) {
-    const S = swizzleSize;
-    const S2 = S * S;
-    const sShift = log2Pow2(S);
-    const s2Shift = log2Pow2(S2);
-    const constSShift = b.id(); b.constant(tU32, constSShift, sShift);
-    const constS2Shift = b.id(); b.constant(tU32, constS2Shift, s2Shift);
-    const constSMask = b.id(); b.constant(tU32, constSMask, S - 1);
-    const constS2Mask = b.id(); b.constant(tU32, constS2Mask, S2 - 1);
+    const GROUP_M = swizzleSize;
+    const constGroupM = b.id(); b.constant(tU32, constGroupM, GROUP_M);
 
     // Load gridX from push constant [3] (0 = swizzle disabled)
     const ptrGridX = b.id();
@@ -457,7 +462,7 @@ function buildCoopMatmul(
     const gridX = b.id();
     b.emit(Op.ConvertFToU, [tU32, gridX, gridXF]);
 
-    // Runtime guard: only swizzle when gridX > 0 (dispatch guarantees divisibility)
+    // Runtime guard: only swizzle when gridX > 0
     const swizzleOk = b.id();
     b.emit(Op.ULessThan, [tBool, swizzleOk, const0u, gridX]);
     const labelSwizzle = b.id();
@@ -466,34 +471,62 @@ function buildCoopMatmul(
     b.emit(Op.SelectionMerge, [labelSwizzleMerge, 0]);
     b.emit(Op.BranchConditional, [swizzleOk, labelSwizzle, labelNoSwizzle]);
 
-    // Swizzled path
+    // Swizzled path — Triton GROUP_M pattern
     b.emit(Op.Label, [labelSwizzle]);
+
+    // linear = wgTileRow * gridX + wgTileCol
     const rowTimesGX = b.id();
     b.emit(Op.IMul, [tU32, rowTimesGX, wgTileRow, gridX]);
     const linear = b.id();
     b.emit(Op.IAdd, [tU32, linear, wgTileCol, rowTimesGX]);
-    const super_ = b.id();
-    b.emit(Op.ShiftRightLogical, [tU32, super_, linear, constS2Shift]);
+
+    // Compute gridY = ceil(M / tileM) where tileM is compile-time constant
+    const wgTileM = coopM * regTilesM * subgroupTilesY; // output rows per WG
+    const constTileM = b.id(); b.constant(tU32, constTileM, wgTileM);
+    const constTileMM1 = b.id(); b.constant(tU32, constTileMM1, wgTileM - 1);
+    const mPlusTM1 = b.id(); b.emit(Op.IAdd, [tU32, mPlusTM1, M_early, constTileMM1]);
+    const gridY = b.id(); b.emit(Op.UDiv, [tU32, gridY, mPlusTM1, constTileM]);
+
+    // groupSizeTotal = GROUP_M * gridX
+    const groupSizeTotal = b.id();
+    b.emit(Op.IMul, [tU32, groupSizeTotal, constGroupM, gridX]);
+
+    // groupId = linear / groupSizeTotal
+    const groupId = b.id();
+    b.emit(Op.UDiv, [tU32, groupId, linear, groupSizeTotal]);
+
+    // firstPidM = groupId * GROUP_M
+    const firstPidM = b.id();
+    b.emit(Op.IMul, [tU32, firstPidM, groupId, constGroupM]);
+
+    // remainingM = gridY - firstPidM
+    const remainingM = b.id();
+    b.emit(Op.ISub, [tU32, remainingM, gridY, firstPidM]);
+
+    // groupSizeM = min(remainingM, GROUP_M)
+    const cmpLt = b.id();
+    b.emit(Op.ULessThan, [tBool, cmpLt, remainingM, constGroupM]);
+    const groupSizeM = b.id();
+    b.emit(Op.Select, [tU32, groupSizeM, cmpLt, remainingM, constGroupM]);
+
+    // groupSizeMTimesGX = groupSizeM * gridX
+    const groupSizeMTimesGX = b.id();
+    b.emit(Op.IMul, [tU32, groupSizeMTimesGX, groupSizeM, gridX]);
+
+    // within = linear % groupSizeMTimesGX
     const within = b.id();
-    b.emit(Op.BitwiseAnd, [tU32, within, linear, constS2Mask]);
-    const superGridX = b.id();
-    b.emit(Op.ShiftRightLogical, [tU32, superGridX, gridX, constSShift]);
-    const superRow = b.id();
-    b.emit(Op.UDiv, [tU32, superRow, super_, superGridX]);
-    const superCol = b.id();
-    b.emit(Op.UMod, [tU32, superCol, super_, superGridX]);
-    const localRow = b.id();
-    b.emit(Op.ShiftRightLogical, [tU32, localRow, within, constSShift]);
-    const localCol = b.id();
-    b.emit(Op.BitwiseAnd, [tU32, localCol, within, constSMask]);
-    const swColTimesS = b.id();
-    b.emit(Op.ShiftLeftLogical, [tU32, swColTimesS, superCol, constSShift]);
-    const swTileCol = b.id();
-    b.emit(Op.IAdd, [tU32, swTileCol, swColTimesS, localCol]);
-    const swRowTimesS = b.id();
-    b.emit(Op.ShiftLeftLogical, [tU32, swRowTimesS, superRow, constSShift]);
+    b.emit(Op.UMod, [tU32, within, linear, groupSizeMTimesGX]);
+
+    // swTileRow = firstPidM + (within % groupSizeM)
+    const withinModGSM = b.id();
+    b.emit(Op.UMod, [tU32, withinModGSM, within, groupSizeM]);
     const swTileRow = b.id();
-    b.emit(Op.IAdd, [tU32, swTileRow, swRowTimesS, localRow]);
+    b.emit(Op.IAdd, [tU32, swTileRow, firstPidM, withinModGSM]);
+
+    // swTileCol = within / groupSizeM
+    const swTileCol = b.id();
+    b.emit(Op.UDiv, [tU32, swTileCol, within, groupSizeM]);
+
     b.emit(Op.Branch, [labelSwizzleMerge]);
 
     // Non-swizzled path (passthrough)
@@ -797,97 +830,108 @@ function buildCoopMatmul(
     // Direct cooperative loads from global f16 buffers — NO shared memory, NO barriers.
     // Each subgroup independently loads its own A/B tiles from global memory.
     // L2 cache handles cross-subgroup data sharing.
+    // With kMulti>1, unroll kMulti load+MMA sub-steps per K-loop iteration.
 
-    // Load regTilesM A matrices
-    const directAMats: number[] = [];
-    for (let rm = 0; rm < regTilesM; rm++) {
-      let aBase = b.id();
-      if (transposedA) {
-        const kTimesM = b.id();
-        b.emit(Op.IMul, [tU32, kTimesM, kVal, M]);
-        if (rm === 0) {
-          b.emit(Op.IAdd, [tU32, aBase, kTimesM, globalRowBase]);
+    for (let km = 0; km < kMulti; km++) {
+      // kOff = kVal + km * coopK (K offset for this sub-step)
+      let kOff = kVal;
+      if (km > 0) {
+        const constKmOff = b.id(); b.constant(tU32, constKmOff, km * coopK);
+        kOff = b.id();
+        b.emit(Op.IAdd, [tU32, kOff, kVal, constKmOff]);
+      }
+
+      // Load regTilesM A matrices
+      const directAMats: number[] = [];
+      for (let rm = 0; rm < regTilesM; rm++) {
+        let aBase = b.id();
+        if (transposedA) {
+          const kTimesM = b.id();
+          b.emit(Op.IMul, [tU32, kTimesM, kOff, M]);
+          if (rm === 0) {
+            b.emit(Op.IAdd, [tU32, aBase, kTimesM, globalRowBase]);
+          } else {
+            const rowOff = b.id();
+            const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
+            b.emit(Op.IAdd, [tU32, rowOff, globalRowBase, cRM]);
+            b.emit(Op.IAdd, [tU32, aBase, kTimesM, rowOff]);
+          }
         } else {
-          const rowOff = b.id();
-          const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
-          b.emit(Op.IAdd, [tU32, rowOff, globalRowBase, cRM]);
-          b.emit(Op.IAdd, [tU32, aBase, kTimesM, rowOff]);
+          const rowOff = rm === 0 ? globalRowBase : (() => {
+            const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
+            const r = b.id();
+            b.emit(Op.IAdd, [tU32, r, globalRowBase, cRM]);
+            return r;
+          })();
+          const rowTimesK = b.id();
+          b.emit(Op.IMul, [tU32, rowTimesK, rowOff, K]);
+          b.emit(Op.IAdd, [tU32, aBase, rowTimesK, kOff]);
         }
-      } else {
-        const rowOff = rm === 0 ? globalRowBase : (() => {
-          const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
-          const r = b.id();
-          b.emit(Op.IAdd, [tU32, r, globalRowBase, cRM]);
-          return r;
-        })();
-        const rowTimesK = b.id();
-        b.emit(Op.IMul, [tU32, rowTimesK, rowOff, K]);
-        b.emit(Op.IAdd, [tU32, aBase, rowTimesK, kVal]);
-      }
-      if (batched) {
-        const aWithBatch = b.id();
-        b.emit(Op.IAdd, [tU32, aWithBatch, aBase, batchOffsetA!]);
-        aBase = aWithBatch;
-      }
-      const ptrA = b.id();
-      b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrA, bufA.varId, const0u, aBase]);
-      directAMats[rm] = b.id();
-      b.emit(Op.OpCooperativeMatrixLoadKHR, [
-        tCoopA, directAMats[rm], ptrA,
-        transposedA ? constColumnMajor : constRowMajor,
-        transposedA ? M : K,
-      ]);
-    }
-
-    // Load regTilesN B matrices
-    const directBMats: number[] = [];
-    for (let rn = 0; rn < regTilesN; rn++) {
-      let bBase = b.id();
-      if (transposedB) {
-        const colOff = rn === 0 ? globalColBase : (() => {
-          const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
-          const r = b.id();
-          b.emit(Op.IAdd, [tU32, r, globalColBase, cRN]);
-          return r;
-        })();
-        const nTimesK = b.id();
-        b.emit(Op.IMul, [tU32, nTimesK, colOff, K]);
-        b.emit(Op.IAdd, [tU32, bBase, nTimesK, kVal]);
-      } else {
-        const kTimesN = b.id();
-        b.emit(Op.IMul, [tU32, kTimesN, kVal, N]);
-        if (rn === 0) {
-          b.emit(Op.IAdd, [tU32, bBase, kTimesN, globalColBase]);
-        } else {
-          const colOff = b.id();
-          const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
-          b.emit(Op.IAdd, [tU32, colOff, globalColBase, cRN]);
-          b.emit(Op.IAdd, [tU32, bBase, kTimesN, colOff]);
+        if (batched) {
+          const aWithBatch = b.id();
+          b.emit(Op.IAdd, [tU32, aWithBatch, aBase, batchOffsetA!]);
+          aBase = aWithBatch;
         }
+        const ptrA = b.id();
+        b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrA, bufA.varId, const0u, aBase]);
+        directAMats[rm] = b.id();
+        b.emit(Op.OpCooperativeMatrixLoadKHR, [
+          tCoopA, directAMats[rm], ptrA,
+          transposedA ? constColumnMajor : constRowMajor,
+          transposedA ? M : K,
+        ]);
       }
-      if (batched) {
-        const bWithBatch = b.id();
-        b.emit(Op.IAdd, [tU32, bWithBatch, bBase, batchOffsetB!]);
-        bBase = bWithBatch;
-      }
-      const ptrB = b.id();
-      b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrB, bufB.varId, const0u, bBase]);
-      directBMats[rn] = b.id();
-      b.emit(Op.OpCooperativeMatrixLoadKHR, [
-        tCoopB, directBMats[rn], ptrB,
-        transposedB ? constColumnMajor : constRowMajor,
-        transposedB ? K : N,
-      ]);
-    }
 
-    // MMA: C[rm][rn] += A[rm] * B[rn] — no barriers needed!
-    for (let rm = 0; rm < regTilesM; rm++) {
+      // Load regTilesN B matrices
+      const directBMats: number[] = [];
       for (let rn = 0; rn < regTilesN; rn++) {
-        const prevAcc = b.id();
-        b.emit(Op.Load, [tCoopCAcc, prevAcc, varAccs[rm][rn]]);
-        const newAcc = b.id();
-        b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, directAMats[rm], directBMats[rn], prevAcc]);
-        b.emit(Op.Store, [varAccs[rm][rn], newAcc]);
+        let bBase = b.id();
+        if (transposedB) {
+          const colOff = rn === 0 ? globalColBase : (() => {
+            const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
+            const r = b.id();
+            b.emit(Op.IAdd, [tU32, r, globalColBase, cRN]);
+            return r;
+          })();
+          const nTimesK = b.id();
+          b.emit(Op.IMul, [tU32, nTimesK, colOff, K]);
+          b.emit(Op.IAdd, [tU32, bBase, nTimesK, kOff]);
+        } else {
+          const kTimesN = b.id();
+          b.emit(Op.IMul, [tU32, kTimesN, kOff, N]);
+          if (rn === 0) {
+            b.emit(Op.IAdd, [tU32, bBase, kTimesN, globalColBase]);
+          } else {
+            const colOff = b.id();
+            const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
+            b.emit(Op.IAdd, [tU32, colOff, globalColBase, cRN]);
+            b.emit(Op.IAdd, [tU32, bBase, kTimesN, colOff]);
+          }
+        }
+        if (batched) {
+          const bWithBatch = b.id();
+          b.emit(Op.IAdd, [tU32, bWithBatch, bBase, batchOffsetB!]);
+          bBase = bWithBatch;
+        }
+        const ptrB = b.id();
+        b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrB, bufB.varId, const0u, bBase]);
+        directBMats[rn] = b.id();
+        b.emit(Op.OpCooperativeMatrixLoadKHR, [
+          tCoopB, directBMats[rn], ptrB,
+          transposedB ? constColumnMajor : constRowMajor,
+          transposedB ? K : N,
+        ]);
+      }
+
+      // MMA: C[rm][rn] += A[rm] * B[rn] — no barriers needed!
+      for (let rm = 0; rm < regTilesM; rm++) {
+        for (let rn = 0; rn < regTilesN; rn++) {
+          const prevAcc = b.id();
+          b.emit(Op.Load, [tCoopCAcc, prevAcc, varAccs[rm][rn]]);
+          const newAcc = b.id();
+          b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, directAMats[rm], directBMats[rn], prevAcc]);
+          b.emit(Op.Store, [varAccs[rm][rn], newAcc]);
+        }
       }
     }
 
@@ -1162,181 +1206,313 @@ function buildCoopMatmul(
       writeOffB = b.id(); b.emit(Op.IMul, [tU32, writeOffB, phase, constHalfB]);
     }
 
-    // Shared memory padding constant (hoisted out of loop)
-    let constShmemPadA: number | undefined;
-    if (shmemPad > 0) {
-      constShmemPadA = b.id(); b.constant(tU32, constShmemPadA, shmemPad);
-    }
-
-    for (let e = 0; e < elemsPerThreadA; e++) {
-      const elemOffset = b.id();
-      if (e === 0) {
-        b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBaseA]);
+    // ── Load tile A: incremental stride addressing ────────────────────
+    // Instead of recomputing row/col/global-address from scratch for each element,
+    // precompute base addresses and add constant strides per element.
+    // Saves ~6 instructions per element (50% reduction in load instructions).
+    if (canUseStridedCoordsA) {
+      // Global base address: A[globalRowBase + localRow0, kVal + localCol0]
+      const gRow0A = b.id();
+      b.emit(Op.IAdd, [tU32, gRow0A, globalRowBase, baseLocalRowA!]);
+      let globalBaseA: number;
+      if (transposedA) {
+        // A[K,M]: index = (kVal + localCol) * M + globalRow
+        const kCol0 = b.id();
+        b.emit(Op.IAdd, [tU32, kCol0, kVal, baseLocalColA!]);
+        const kCol0M = b.id();
+        b.emit(Op.IMul, [tU32, kCol0M, kCol0, M]);
+        globalBaseA = b.id();
+        b.emit(Op.IAdd, [tU32, globalBaseA, kCol0M, gRow0A]);
       } else {
-        const constE = b.id();
-        b.constant(tU32, constE, e * loadWidthA);
-        b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseA, constE]);
+        // A[M,K]: index = globalRow * K + kVal + localCol
+        const gRow0K = b.id();
+        b.emit(Op.IMul, [tU32, gRow0K, gRow0A, K]);
+        const gRow0Kk = b.id();
+        b.emit(Op.IAdd, [tU32, gRow0Kk, gRow0K, kVal]);
+        globalBaseA = b.id();
+        b.emit(Op.IAdd, [tU32, globalBaseA, gRow0Kk, baseLocalColA!]);
+      }
+      if (batched) {
+        const gba = b.id();
+        b.emit(Op.IAdd, [tU32, gba, globalBaseA, batchOffsetA!]);
+        globalBaseA = gba;
       }
 
-      // Compute localRow for both padded offset and emitLoadTileA
-      let localRowOpt: number | undefined;
-      let localColOpt: number | undefined;
-      if (canUseStridedCoordsA) {
-        localColOpt = baseLocalColA!;
-        if (e === 0) {
-          localRowOpt = baseLocalRowA!;
+      // Global stride: rowStrideA rows apart in the major dimension
+      let globalStrideA: number;
+      if (transposedA) {
+        // transposed: increment in M dimension = rowStrideA
+        if (rowStrideA === 1) {
+          globalStrideA = const1u;
         } else {
-          const constERow = b.id();
-          b.constant(tU32, constERow, e * rowStrideA);
-          localRowOpt = b.id();
-          b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowA!, constERow]);
+          globalStrideA = b.id(); b.constant(tU32, globalStrideA, rowStrideA);
+        }
+      } else {
+        // non-transposed: increment in row dimension = rowStrideA * K
+        if (rowStrideA === 1) {
+          globalStrideA = K;
+        } else {
+          const cRSA = b.id(); b.constant(tU32, cRSA, rowStrideA);
+          globalStrideA = b.id();
+          b.emit(Op.IMul, [tU32, globalStrideA, cRSA, K]);
         }
       }
 
-      // Compute padded shared memory offset (adds localRow * shmemPad for bank conflict avoidance)
-      let effectiveOffset = elemOffset;
+      // Shared base: subgroupBaseA + localRow0 * paddedStrideA + localCol0
+      const constPaddedStrA = b.id(); b.constant(tU32, constPaddedStrA, paddedStrideA);
+      const shrRowOff0 = b.id();
+      b.emit(Op.IMul, [tU32, shrRowOff0, baseLocalRowA!, constPaddedStrA]);
+      let sharedBaseA = b.id();
+      b.emit(Op.IAdd, [tU32, sharedBaseA, shrRowOff0, baseLocalColA!]);
+      if (subgroupMode) {
+        const sba = b.id();
+        b.emit(Op.IAdd, [tU32, sba, subgroupBaseA, sharedBaseA]);
+        sharedBaseA = sba;
+      }
+      if (useDoubleBuf) {
+        const dba = b.id();
+        b.emit(Op.IAdd, [tU32, dba, sharedBaseA, writeOffA]);
+        sharedBaseA = dba;
+      }
+
+      // Shared stride: rowStrideA * paddedStrideA (compile-time constant)
+      const sharedStrideA = rowStrideA * paddedStrideA;
+      const constSharedStrA = b.id(); b.constant(tU32, constSharedStrA, sharedStrideA);
+
+      // Element loop: base + stride increments
+      let curGlobalA = globalBaseA;
+      let curSharedA = sharedBaseA;
+      for (let e = 0; e < elemsPerThreadA; e++) {
+        if (e > 0) {
+          const nextG = b.id();
+          b.emit(Op.IAdd, [tU32, nextG, curGlobalA, globalStrideA]);
+          curGlobalA = nextG;
+          const nextS = b.id();
+          b.emit(Op.IAdd, [tU32, nextS, curSharedA, constSharedStrA]);
+          curSharedA = nextS;
+        }
+
+        if (e * loadWidthA + loadWidthA > totalA) {
+          // Bounds check for partial last elements
+          const elemOff = b.id();
+          if (e === 0) {
+            b.emit(Op.CopyObject, [tU32, elemOff, loadThreadBaseA]);
+          } else {
+            const cE = b.id(); b.constant(tU32, cE, e * loadWidthA);
+            b.emit(Op.IAdd, [tU32, elemOff, loadThreadBaseA, cE]);
+          }
+          const cTot = b.id(); b.constant(tU32, cTot, totalA);
+          const inB = b.id();
+          b.emit(Op.ULessThan, [tBool, inB, elemOff, cTot]);
+          const lblL = b.id(); const lblS = b.id();
+          b.emit(Op.SelectionMerge, [lblS, 0]);
+          b.emit(Op.BranchConditional, [inB, lblL, lblS]);
+          b.emit(Op.Label, [lblL]);
+          emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u);
+          b.emit(Op.Branch, [lblS]);
+          b.emit(Op.Label, [lblS]);
+        } else {
+          emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u);
+        }
+      }
+    } else {
+      // Fallback: per-element decomposition for non-strided configs
+      let constShmemPadA: number | undefined;
       if (shmemPad > 0) {
-        let localRow = localRowOpt;
-        if (localRow === undefined) {
-          localRow = b.id();
+        constShmemPadA = b.id(); b.constant(tU32, constShmemPadA, shmemPad);
+      }
+      for (let e = 0; e < elemsPerThreadA; e++) {
+        const elemOffset = b.id();
+        if (e === 0) {
+          b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBaseA]);
+        } else {
+          const constE = b.id(); b.constant(tU32, constE, e * loadWidthA);
+          b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseA, constE]);
+        }
+        let effectiveOffset = elemOffset;
+        if (shmemPad > 0) {
+          const localRow = b.id();
           if (constKTileKShift !== undefined) {
             b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constKTileKShift]);
           } else {
             const ck = b.id(); b.constant(tU32, ck, kTileK);
             b.emit(Op.UDiv, [tU32, localRow, elemOffset, ck]);
           }
+          const padExtra = b.id();
+          b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadA!]);
+          effectiveOffset = b.id();
+          b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
         }
-        const padExtra = b.id();
-        b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadA!]);
-        effectiveOffset = b.id();
-        b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
+        let sharedOffset: number;
+        if (subgroupMode) {
+          sharedOffset = b.id();
+          b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, effectiveOffset]);
+        } else {
+          sharedOffset = effectiveOffset;
+        }
+        if (useDoubleBuf) {
+          const dbOff = b.id();
+          b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffA]);
+          sharedOffset = dbOff;
+        }
+        emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
+          elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
+          const0u, kTileK, constKTileKShift, constKTileKMask,
+          batchOffsetA, batched, transposedA);
+      }
+    }
+
+    // ── Load tile B: incremental stride addressing ────────────────────
+    if (canUseStridedCoordsB) {
+      // Global base address
+      const kRow0B = b.id();
+      b.emit(Op.IAdd, [tU32, kRow0B, kVal, baseLocalRowB!]);
+      const nCol0B = b.id();
+      b.emit(Op.IAdd, [tU32, nCol0B, globalColBase, baseLocalColB!]);
+      let globalBaseB: number;
+      if (transposedB) {
+        // B[N,K]: index = nCol * K + kRow
+        const nK = b.id();
+        b.emit(Op.IMul, [tU32, nK, nCol0B, K]);
+        globalBaseB = b.id();
+        b.emit(Op.IAdd, [tU32, globalBaseB, nK, kRow0B]);
+      } else {
+        // B[K,N]: index = kRow * N + nCol
+        const kN = b.id();
+        b.emit(Op.IMul, [tU32, kN, kRow0B, N]);
+        globalBaseB = b.id();
+        b.emit(Op.IAdd, [tU32, globalBaseB, kN, nCol0B]);
+      }
+      if (batched) {
+        const gbb = b.id();
+        b.emit(Op.IAdd, [tU32, gbb, globalBaseB, batchOffsetB!]);
+        globalBaseB = gbb;
       }
 
-      let sharedOffset: number;
-      if (subgroupMode) {
-        sharedOffset = b.id();
-        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, effectiveOffset]);
+      // Global stride
+      let globalStrideB: number;
+      if (transposedB) {
+        // transposed: increment in K dimension = rowStrideB
+        if (rowStrideB === 1) {
+          globalStrideB = const1u;
+        } else {
+          globalStrideB = b.id(); b.constant(tU32, globalStrideB, rowStrideB);
+        }
       } else {
-        sharedOffset = effectiveOffset;
+        // non-transposed: increment in K row dimension = rowStrideB * N
+        if (rowStrideB === 1) {
+          globalStrideB = N;
+        } else {
+          const cRSB = b.id(); b.constant(tU32, cRSB, rowStrideB);
+          globalStrideB = b.id();
+          b.emit(Op.IMul, [tU32, globalStrideB, cRSB, N]);
+        }
+      }
+
+      // Shared base: subgroupBaseB + localRow0 * paddedStrideB + localCol0
+      const constPaddedStrB = b.id(); b.constant(tU32, constPaddedStrB, paddedStrideB);
+      const shrRowOff0B = b.id();
+      b.emit(Op.IMul, [tU32, shrRowOff0B, baseLocalRowB!, constPaddedStrB]);
+      let sharedBaseB = b.id();
+      b.emit(Op.IAdd, [tU32, sharedBaseB, shrRowOff0B, baseLocalColB!]);
+      if (subgroupMode) {
+        const sbb = b.id();
+        b.emit(Op.IAdd, [tU32, sbb, subgroupBaseB, sharedBaseB]);
+        sharedBaseB = sbb;
       }
       if (useDoubleBuf) {
-        const dbOff = b.id();
-        b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffA]);
-        sharedOffset = dbOff;
+        const dbb = b.id();
+        b.emit(Op.IAdd, [tU32, dbb, sharedBaseB, writeOffB]);
+        sharedBaseB = dbb;
       }
 
-      if (e * loadWidthA + loadWidthA > totalA) {
-        const constTotal = b.id();
-        b.constant(tU32, constTotal, totalA);
-        const inBounds = b.id();
-        b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
-        const labelLoad = b.id();
-        const labelSkip = b.id();
-        b.emit(Op.SelectionMerge, [labelSkip, 0]);
-        b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
-        b.emit(Op.Label, [labelLoad]);
+      // Shared stride: rowStrideB * paddedStrideB (compile-time constant)
+      const sharedStrideB = rowStrideB * paddedStrideB;
+      const constSharedStrB = b.id(); b.constant(tU32, constSharedStrB, sharedStrideB);
 
-        emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-          elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
-          const0u, kTileK, constKTileKShift, constKTileKMask,
-          batchOffsetA, batched, transposedA, localRowOpt, localColOpt);
+      // Element loop
+      let curGlobalB = globalBaseB;
+      let curSharedB = sharedBaseB;
+      for (let e = 0; e < elemsPerThreadB; e++) {
+        if (e > 0) {
+          const nextG = b.id();
+          b.emit(Op.IAdd, [tU32, nextG, curGlobalB, globalStrideB]);
+          curGlobalB = nextG;
+          const nextS = b.id();
+          b.emit(Op.IAdd, [tU32, nextS, curSharedB, constSharedStrB]);
+          curSharedB = nextS;
+        }
 
-        b.emit(Op.Branch, [labelSkip]);
-        b.emit(Op.Label, [labelSkip]);
-      } else {
-        emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
-          elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
-          const0u, kTileK, constKTileKShift, constKTileKMask,
-          batchOffsetA, batched, transposedA, localRowOpt, localColOpt);
-      }
-    }
-
-    // ── Load tile B from global to shared ───────────────────────────────
-    let constShmemPadB: number | undefined;
-    if (shmemPad > 0) {
-      constShmemPadB = constShmemPadA; // same padding value, reuse
-    }
-
-    for (let e = 0; e < elemsPerThreadB; e++) {
-      const elemOffset = b.id();
-      if (e === 0) {
-        b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBaseB]);
-      } else {
-        const constE = b.id();
-        b.constant(tU32, constE, e * loadWidthB);
-        b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseB, constE]);
-      }
-
-      // Compute localRow for both padded offset and emitLoadTileB
-      let localRowOpt: number | undefined;
-      let localColOpt: number | undefined;
-      if (canUseStridedCoordsB) {
-        localColOpt = baseLocalColB!;
-        if (e === 0) {
-          localRowOpt = baseLocalRowB!;
+        if (e * loadWidthB + loadWidthB > totalB) {
+          const elemOff = b.id();
+          if (e === 0) {
+            b.emit(Op.CopyObject, [tU32, elemOff, loadThreadBaseB]);
+          } else {
+            const cE = b.id(); b.constant(tU32, cE, e * loadWidthB);
+            b.emit(Op.IAdd, [tU32, elemOff, loadThreadBaseB, cE]);
+          }
+          const cTot = b.id(); b.constant(tU32, cTot, totalB);
+          const inB = b.id();
+          b.emit(Op.ULessThan, [tBool, inB, elemOff, cTot]);
+          const lblL = b.id(); const lblS = b.id();
+          b.emit(Op.SelectionMerge, [lblS, 0]);
+          b.emit(Op.BranchConditional, [inB, lblL, lblS]);
+          b.emit(Op.Label, [lblL]);
+          emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u);
+          b.emit(Op.Branch, [lblS]);
+          b.emit(Op.Label, [lblS]);
         } else {
-          const constERow = b.id();
-          b.constant(tU32, constERow, e * rowStrideB);
-          localRowOpt = b.id();
-          b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowB!, constERow]);
+          emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u);
         }
       }
-
-      // Compute padded shared memory offset for B tile
-      let effectiveOffset = elemOffset;
+    } else {
+      // Fallback: per-element decomposition for non-strided configs
+      let constShmemPadB: number | undefined;
       if (shmemPad > 0) {
-        let localRow = localRowOpt;
-        if (localRow === undefined) {
-          localRow = b.id();
+        constShmemPadB = b.id(); b.constant(tU32, constShmemPadB, shmemPad);
+      }
+      for (let e = 0; e < elemsPerThreadB; e++) {
+        const elemOffset = b.id();
+        if (e === 0) {
+          b.emit(Op.CopyObject, [tU32, elemOffset, loadThreadBaseB]);
+        } else {
+          const constE = b.id(); b.constant(tU32, constE, e * loadWidthB);
+          b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseB, constE]);
+        }
+        let effectiveOffset = elemOffset;
+        if (shmemPad > 0) {
+          const localRow = b.id();
           if (constBTileStrideShift !== undefined) {
             b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constBTileStrideShift]);
           } else {
             const cbs = b.id(); b.constant(tU32, cbs, bTileStride);
             b.emit(Op.UDiv, [tU32, localRow, elemOffset, cbs]);
           }
+          const padExtra = b.id();
+          b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadB!]);
+          effectiveOffset = b.id();
+          b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
         }
-        const padExtra = b.id();
-        b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadB!]);
-        effectiveOffset = b.id();
-        b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
-      }
-
-      let sharedOffset: number;
-      if (subgroupMode) {
-        sharedOffset = b.id();
-        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, effectiveOffset]);
-      } else {
-        sharedOffset = effectiveOffset;
-      }
-      if (useDoubleBuf) {
-        const dbOff = b.id();
-        b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffB]);
-        sharedOffset = dbOff;
-      }
-
-      if (e * loadWidthB + loadWidthB > totalB) {
-        const constTotal = b.id();
-        b.constant(tU32, constTotal, totalB);
-        const inBounds = b.id();
-        b.emit(Op.ULessThan, [tBool, inBounds, elemOffset, constTotal]);
-        const labelLoad = b.id();
-        const labelSkip = b.id();
-        b.emit(Op.SelectionMerge, [labelSkip, 0]);
-        b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
-        b.emit(Op.Label, [labelLoad]);
-
+        let sharedOffset: number;
+        if (subgroupMode) {
+          sharedOffset = b.id();
+          b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, effectiveOffset]);
+        } else {
+          sharedOffset = effectiveOffset;
+        }
+        if (useDoubleBuf) {
+          const dbOff = b.id();
+          b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffB]);
+          sharedOffset = dbOff;
+        }
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
           const0u, bTileStride, constBTileStrideShift, constBTileStrideMask,
-          batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
-
-        b.emit(Op.Branch, [labelSkip]);
-        b.emit(Op.Label, [labelSkip]);
-      } else {
-        emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
-          elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
-          const0u, bTileStride, constBTileStrideShift, constBTileStrideMask,
-          batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
+          batchOffsetB, batched, transposedB);
       }
     }
 
@@ -1376,10 +1552,26 @@ function buildCoopMatmul(
         readBaseB = readOffB;
       }
 
-      emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
-        tPtrSharedF16, tileA, tileB, readBaseA, readBaseB,
-        constRowMajor, coopM, coopN, coopK,
-        regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
+      // kMulti MMA steps from previous tile (same pattern as single buffer)
+      const effectivePadADb = coopK * (kMulti - 1) + shmemPad;
+      for (let km = 0; km < kMulti; km++) {
+        let adjABase = readBaseA;
+        if (km > 0) {
+          const constKmA = b.id(); b.constant(tU32, constKmA, km * coopK);
+          adjABase = b.id();
+          b.emit(Op.IAdd, [tU32, adjABase, readBaseA, constKmA]);
+        }
+        let adjBBase = readBaseB;
+        if (km > 0) {
+          const constKmB = b.id(); b.constant(tU32, constKmB, km * coopK * paddedStrideB);
+          adjBBase = b.id();
+          b.emit(Op.IAdd, [tU32, adjBBase, readBaseB, constKmB]);
+        }
+        emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+          tPtrSharedF16, tileA, tileB, adjABase, adjBBase,
+          constRowMajor, coopM, coopN, coopK,
+          regTilesM, regTilesN, bTileStride, varAccs, effectivePadADb, shmemPad);
+      }
 
       b.emit(Op.Branch, [labelSkipMMA]);
       b.emit(Op.Label, [labelSkipMMA]);
@@ -1471,10 +1663,26 @@ function buildCoopMatmul(
       readBaseBEpi = readOffBEpi;
     }
 
-    emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
-      tPtrSharedF16, tileA, tileB, readBaseAEpi, readBaseBEpi,
-      constRowMajor, coopM, coopN, coopK,
-      regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
+    // kMulti MMA steps for final tile (same pattern as loop body)
+    const effectivePadAEpi = coopK * (kMulti - 1) + shmemPad;
+    for (let km = 0; km < kMulti; km++) {
+      let adjABaseEpi = readBaseAEpi;
+      if (km > 0) {
+        const constKmA = b.id(); b.constant(tU32, constKmA, km * coopK);
+        adjABaseEpi = b.id();
+        b.emit(Op.IAdd, [tU32, adjABaseEpi, readBaseAEpi, constKmA]);
+      }
+      let adjBBaseEpi = readBaseBEpi;
+      if (km > 0) {
+        const constKmB = b.id(); b.constant(tU32, constKmB, km * coopK * paddedStrideB);
+        adjBBaseEpi = b.id();
+        b.emit(Op.IAdd, [tU32, adjBBaseEpi, readBaseBEpi, constKmB]);
+      }
+      emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+        tPtrSharedF16, tileA, tileB, adjABaseEpi, adjBBaseEpi,
+        constRowMajor, coopM, coopN, coopK,
+        regTilesM, regTilesN, bTileStride, varAccs, effectivePadAEpi, shmemPad);
+    }
   }
 
   for (let rm = 0; rm < regTilesM; rm++) {

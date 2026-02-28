@@ -2507,8 +2507,8 @@ export class HeliosBackend implements Backend {
 
     const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     const gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
-    // Pass gridX for super-tile swizzle; 0 disables when grid isn't divisible by swizzle size
-    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gX % COOP_SWIZZLE_SIZE === 0 && gY % COOP_SWIZZLE_SIZE === 0) ? gX : 0;
+    // Pass gridX for GROUP_M swizzle (Triton-style); 0 disables
+    const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
     const push = push4Memo(M, N, K, swizzleGridX);
 
     graph.record({
@@ -2588,7 +2588,7 @@ export class HeliosBackend implements Backend {
     const region = acquireOutputRegion(vk, outBytes);
     const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     const gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
-    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gX % COOP_SWIZZLE_SIZE === 0 && gY % COOP_SWIZZLE_SIZE === 0) ? gX : 0;
+    const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
     const push = push4Memo(outM, N, loopK, swizzleGridX);
 
     graph.record({
