@@ -51,6 +51,20 @@ const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 === "1";
 const COOP_F16IN_S2X2_MIN_FLOPS = 20_000_000;
+const COOP_SUBGROUP_TILES_ENV = process.env.HELIOS_COOP_F16IN_SUBGROUP_TILES?.trim() ?? "";
+let COOP_SUBGROUP_TILES_X = 1;
+let COOP_SUBGROUP_TILES_Y = 1;
+if (COOP_SUBGROUP_TILES_ENV) {
+  const m = COOP_SUBGROUP_TILES_ENV.match(/^(\d+)x(\d+)$/);
+  if (m) {
+    COOP_SUBGROUP_TILES_X = Math.max(1, parseInt(m[1], 10));
+    COOP_SUBGROUP_TILES_Y = Math.max(1, parseInt(m[2], 10));
+  } else {
+    console.warn(
+      `[helios] ignoring HELIOS_COOP_F16IN_SUBGROUP_TILES=${COOP_SUBGROUP_TILES_ENV}; expected <X>x<Y>`,
+    );
+  }
+}
 const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
 let LARGE_TILE_THRESHOLD = LARGE_TILE_THRESHOLD_DEFAULT;
 if (MATMUL_LARGE_TILE_THRESHOLD_ENV) {
@@ -2409,20 +2423,35 @@ export class HeliosBackend implements Backend {
     M: number, N: number, K: number,
     aBatch: number[], batchSize: number, transposed: boolean,
   ): TensorData {
-    const useS2x2 =
-      ENABLE_COOP_F16IN_S2X2 &&
-      (M * N * K >= COOP_F16IN_S2X2_MIN_FLOPS) &&
-      (M % (this._coopM * 2) === 0) &&
-      (N % (this._coopN * 2) === 0);
-    const subgroupTilesX = useS2x2 ? 2 : 1;
-    const subgroupTilesY = useS2x2 ? 2 : 1;
+    let subgroupTilesX = 1;
+    let subgroupTilesY = 1;
+    if (M * N * K >= COOP_F16IN_S2X2_MIN_FLOPS) {
+      if (COOP_SUBGROUP_TILES_X > 1 || COOP_SUBGROUP_TILES_Y > 1) {
+        if (
+          (M % (this._coopM * COOP_SUBGROUP_TILES_Y) === 0) &&
+          (N % (this._coopN * COOP_SUBGROUP_TILES_X) === 0)
+        ) {
+          subgroupTilesX = COOP_SUBGROUP_TILES_X;
+          subgroupTilesY = COOP_SUBGROUP_TILES_Y;
+        }
+      } else if (
+        ENABLE_COOP_F16IN_S2X2 &&
+        (M % (this._coopM * 2) === 0) &&
+        (N % (this._coopN * 2) === 0)
+      ) {
+        subgroupTilesX = 2;
+        subgroupTilesY = 2;
+      }
+    }
     const variant = transposed
       ? (batchSize > 1 ? "transposed_batched" : "transposed")
       : (batchSize > 1 ? "batched" : "basic");
+    const subgroupSuffix =
+      (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      (useS2x2 ? "_s2x2" : "");
+      subgroupSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
@@ -2460,18 +2489,33 @@ export class HeliosBackend implements Backend {
     outM: number, N: number, loopK: number,
     aBatch: number[], batchSize: number,
   ): TensorData {
-    const useS2x2 =
-      ENABLE_COOP_F16IN_S2X2 &&
-      (outM * N * loopK >= COOP_F16IN_S2X2_MIN_FLOPS) &&
-      (outM % (this._coopM * 2) === 0) &&
-      (N % (this._coopN * 2) === 0);
-    const subgroupTilesX = useS2x2 ? 2 : 1;
-    const subgroupTilesY = useS2x2 ? 2 : 1;
+    let subgroupTilesX = 1;
+    let subgroupTilesY = 1;
+    if (outM * N * loopK >= COOP_F16IN_S2X2_MIN_FLOPS) {
+      if (COOP_SUBGROUP_TILES_X > 1 || COOP_SUBGROUP_TILES_Y > 1) {
+        if (
+          (outM % (this._coopM * COOP_SUBGROUP_TILES_Y) === 0) &&
+          (N % (this._coopN * COOP_SUBGROUP_TILES_X) === 0)
+        ) {
+          subgroupTilesX = COOP_SUBGROUP_TILES_X;
+          subgroupTilesY = COOP_SUBGROUP_TILES_Y;
+        }
+      } else if (
+        ENABLE_COOP_F16IN_S2X2 &&
+        (outM % (this._coopM * 2) === 0) &&
+        (N % (this._coopN * 2) === 0)
+      ) {
+        subgroupTilesX = 2;
+        subgroupTilesY = 2;
+      }
+    }
     const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
+    const subgroupSuffix =
+      (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      (useS2x2 ? "_s2x2" : "");
+      subgroupSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
