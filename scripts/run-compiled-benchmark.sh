@@ -22,6 +22,7 @@ COMPILE_RETRIES="${COMPILE_RETRIES:-2}"
 RUN_RETRIES="${RUN_RETRIES:-2}"
 RUN_CONTINUE_ON_OK="${RUN_CONTINUE_ON_OK:-0}"
 RUN_RETRY_ON_SMOKE_FAIL="${RUN_RETRY_ON_SMOKE_FAIL:-auto}"
+FAIL_ON_SMOKE_TEST="${FAIL_ON_SMOKE_TEST:-1}"
 SMOKE_FAIL_MIN_PCT_OF_PREV="${SMOKE_FAIL_MIN_PCT_OF_PREV:-90}"
 BASELINE_WINDOW_OK="${BASELINE_WINDOW_OK:-5}"
 SKIP_COMPILE_IF_FRESH="${SKIP_COMPILE_IF_FRESH:-1}"
@@ -162,7 +163,7 @@ for run_try in $(seq 1 "$run_attempts"); do
   echo "[bench] run attempt ${run_try}/${run_attempts} start (log: ${run_log}, helios_wg=${HELIOS_WG_SIZE})"
   run_start_ms="$(now_ms)"
   set +e
-  HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
+  ALPHA_FAIL_ON_SMOKE_TEST="${FAIL_ON_SMOKE_TEST}" HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
     --data="${DATA_PATH}" \
     --tokenizerArtifacts="${TOKENIZER_ARTIFACTS}" \
     --backend="${BACKEND}" \
@@ -204,12 +205,12 @@ for run_try in $(seq 1 "$run_attempts"); do
   fi
 
   status_label="ok"
-  if [[ "$run_status" -ne 0 ]]; then
+  if rg -q 'smoke_test: FAIL' "$run_log"; then
+    status_label="smoke_fail"
+  elif [[ "$run_status" -ne 0 ]]; then
     status_label="failed"
   elif rg -q 'loss=NaN|Inf/NaN' "$run_log"; then
     status_label="unstable"
-  elif rg -q 'smoke_test: FAIL' "$run_log"; then
-    status_label="smoke_fail"
   fi
 
   run_rank=0
@@ -315,7 +316,7 @@ echo "[bench] last tok/s: ${last_tok_s}"
 echo "[bench] speedup vs previous: ${speedup_pct}%"
 echo "[bench] summary: ${SUMMARY_FILE}"
 
-if [[ "$run_status" -ne 0 ]]; then
+if [[ "$run_status" -ne 0 && "$status_label" != "smoke_fail" ]]; then
   echo "[bench] last 40 log lines:"
   tail -n 40 "$RUN_LOG"
   exit "$run_status"

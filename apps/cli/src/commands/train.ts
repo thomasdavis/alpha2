@@ -173,7 +173,12 @@ export async function trainCmd(args: string[]): Promise<void> {
     const hasArtifacts = await fs.access(tokenizerArtifactsPath).then(() => true).catch(() => false);
     if (hasArtifacts) {
       tokenizerArtifacts = await Effect.runPromise(loadArtifacts(tokenizerArtifactsPath));
-      tokenizer.loadArtifacts(tokenizerArtifacts as any);
+      const tokWithArtifacts = tokenizer as any;
+      if (typeof tokWithArtifacts.loadArtifacts === "function") {
+        tokWithArtifacts.loadArtifacts(tokenizerArtifacts as any);
+      } else {
+        throw new Error(`Tokenizer ${tokenizer.name} does not support loading artifacts`);
+      }
       console.log(`Tokenizer artifacts: loaded ${tokenizerArtifactsPath}`);
     } else {
       const text = await loadTextSample(dataPath, 100 * 1024 * 1024);

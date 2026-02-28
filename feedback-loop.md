@@ -46,6 +46,8 @@ Adaptive runtime tuning knobs (no source edit/recompile needed):
 - `ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD`
 - `ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD`
 - `ALPHA_GPU_METRICS_SAMPLE_EVERY`
+- `ALPHA_CALLBACK_YIELD_EVERY`
+- `ALPHA_FAIL_ON_SMOKE_TEST` (default strict in benchmark script)
 
 Quick smoke alternative (5 iterations) for sanity checks:
 

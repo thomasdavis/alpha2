@@ -325,6 +325,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   // GPU proof: log device info and run smoke test
   if ("getDeviceInfo" in backend && "smokeTest" in backend) {
+    const failOnSmokeTestRaw = process.env.ALPHA_FAIL_ON_SMOKE_TEST?.trim().toLowerCase();
+    const failOnSmokeTest =
+      failOnSmokeTestRaw === "1" ||
+      failOnSmokeTestRaw === "true" ||
+      failOnSmokeTestRaw === "yes" ||
+      failOnSmokeTestRaw === "on";
     const gpu = (backend as any).getDeviceInfo();
     const vendorName = gpu.vendorId === 0x10de ? "NVIDIA"
       : gpu.vendorId === 0x1002 ? "AMD"
@@ -332,11 +338,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : `0x${gpu.vendorId.toString(16)}`;
     console.log(`gpu: ${gpu.deviceName} (${vendorName})`);
     console.log(`  f16: ${gpu.f16Supported} | async_transfer: ${gpu.hasAsyncTransfer} | wg_size: ${gpu.workgroupSize} | min_gpu: ${gpu.minGpuSize}`);
+    let smokeVerified = true;
+    let smokeFailureReason = "";
     try {
       const smoke = (backend as any).smokeTest();
+      smokeVerified = !!smoke.verified;
+      if (!smoke.verified) smokeFailureReason = "verification mismatch";
       console.log(`  smoke_test: ${smoke.verified ? "PASS" : "FAIL"} | gpu_throughput: ${smoke.throughputGBps.toFixed(1)} GB/s`);
     } catch (e: any) {
-      console.log(`  smoke_test: FAIL (${e.message})`);
+      smokeVerified = false;
+      smokeFailureReason = e?.message ? String(e.message) : "exception";
+      console.log(`  smoke_test: FAIL (${smokeFailureReason})`);
+    }
+    if (!smokeVerified && failOnSmokeTest) {
+      throw new Error(`GPU smoke test failed (${smokeFailureReason || "unknown"}) and ALPHA_FAIL_ON_SMOKE_TEST=1`);
     }
   }
 
@@ -523,7 +538,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   // Dynamic loss scaling for mixed precision training
   const useLossScaling = !!deps.mixedPrecision;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
-  const shouldYieldEachStep = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const shouldYieldForCallbacks = !!(onStep || deps.onCheckpoint || deps.onSamples);
+  const callbackYieldEvery = readEnvInt("ALPHA_CALLBACK_YIELD_EVERY", 25, 1);
   const totalIters = trainConfig.iters;
   const traceEnabled = trainConfig.trace;
   const capturePhaseTimings = traceEnabled;
@@ -1297,8 +1313,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     if (onStep) onStep(metrics);
 
-    // Yield only when async callbacks are attached; otherwise avoid per-step event-loop overhead.
-    if (shouldYieldEachStep) {
+    // Yield periodically when callbacks are attached so timers/network can progress
+    // without paying a setImmediate cost every single step.
+    if (shouldYieldForCallbacks && (stepNum % callbackYieldEvery === 0 || stepNum === totalIters)) {
       await new Promise<void>(resolve => setImmediate(resolve));
     }
 
