@@ -91,6 +91,74 @@ function declareStorageBufferF16Ssbo(
 }
 
 /**
+ * Emit cooperative matrix loads from shared memory + MMA operations.
+ * Used by both single-buffer and double-buffer paths, and for the
+ * double-buffer epilogue MMA after the K-loop.
+ */
+function emitCoopMatrixMMA(
+  b: SpirVBuilder,
+  tF16: number, tU32: number,
+  tCoopA: number, tCoopB: number, tCoopCAcc: number,
+  tPtrSharedF16: number,
+  tileA: number, tileB: number,
+  tileABase: number, tileBBase: number,
+  constRowMajor: number,
+  coopM: number, coopN: number, coopK: number,
+  regTilesM: number, regTilesN: number,
+  bTileStride: number,
+  varAccs: number[][],
+  shmemPadA = 0,
+  shmemPadB = 0,
+): void {
+  const strideA = coopK + shmemPadA;
+  const strideB = bTileStride + shmemPadB;
+  const constStrideA = b.id(); b.constant(tU32, constStrideA, strideA);
+  // Load A tiles: regTilesM tiles at offsets 0, coopM*strideA, 2*coopM*strideA, ...
+  const coopAMats: number[] = [];
+  for (let rm = 0; rm < regTilesM; rm++) {
+    let aOffset: number;
+    if (rm === 0) {
+      aOffset = tileABase;
+    } else {
+      const constAOff = b.id(); b.constant(tU32, constAOff, rm * coopM * strideA);
+      aOffset = b.id();
+      b.emit(Op.IAdd, [tU32, aOffset, tileABase, constAOff]);
+    }
+    const ptrA = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrA, tileA, aOffset]);
+    coopAMats[rm] = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMats[rm], ptrA, constRowMajor, constStrideA]);
+  }
+  // Load B tiles: regTilesN tiles at column offsets 0, coopN, 2*coopN, ...
+  const constBTileStrideVal = b.id(); b.constant(tU32, constBTileStrideVal, strideB);
+  const coopBMats: number[] = [];
+  for (let rn = 0; rn < regTilesN; rn++) {
+    let bOffset: number;
+    if (rn === 0) {
+      bOffset = tileBBase;
+    } else {
+      const constBOff = b.id(); b.constant(tU32, constBOff, rn * coopN);
+      bOffset = b.id();
+      b.emit(Op.IAdd, [tU32, bOffset, tileBBase, constBOff]);
+    }
+    const ptrB = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrB, tileB, bOffset]);
+    coopBMats[rn] = b.id();
+    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMats[rn], ptrB, constRowMajor, constBTileStrideVal]);
+  }
+  // MMA: C += A * B (register-tiled)
+  for (let rm = 0; rm < regTilesM; rm++) {
+    for (let rn = 0; rn < regTilesN; rn++) {
+      const prevAcc = b.id();
+      b.emit(Op.Load, [tCoopCAcc, prevAcc, varAccs[rm][rn]]);
+      const newAcc = b.id();
+      b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, coopAMats[rm], coopBMats[rn], prevAcc]);
+      b.emit(Op.Store, [varAccs[rm][rn], newAcc]);
+    }
+  }
+}
+
+/**
  * Build cooperative matrix matmul kernel.
  *
  * @param coopM - Cooperative matrix M tile size (rows of C)
@@ -111,10 +179,20 @@ function buildCoopMatmul(
   accumF16: boolean,
   subgroupTilesX: number,
   subgroupTilesY: number,
+  regTilesM = 1,
+  regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
   const useDirectF16Load = inputF16 && process.env.HELIOS_COOP_DIRECT_LOAD === "1";
+  // Double buffering only applies to the shared memory path
+  const useDoubleBuf = doubleBuf && !useDirectF16Load;
+  // Super-tile swizzle for L2 cache reuse (0=disabled, 2/4/8=super-tile width)
+  const swizzleSize = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
+  const useSwizzle = swizzleSize >= 2 && isPowerOfTwo(swizzleSize);
+  // Shared memory padding per row to avoid bank conflicts (0=disabled, 8=NVIDIA default for f16)
+  const shmemPad = useDirectF16Load ? 0 : parseInt(process.env.HELIOS_COOP_SHMEM_PAD ?? "8", 10);
 
   // Capabilities
   b.addCapability(Capability.Shader);
@@ -196,6 +274,7 @@ function buildCoopMatmul(
   const const0u = b.id(); b.constant(tU32, const0u, 0);
   const const1u = b.id(); b.constant(tU32, const1u, 1);
   const const2u = b.id(); b.constant(tU32, const2u, 2);
+  const const3u = b.id(); b.constant(tU32, const3u, 3);
   const const0f = b.id(); b.constantF32(tF32, const0f, 0.0);
 
   // Cooperative matrix layout constant: RowMajorKHR = 0
@@ -203,7 +282,12 @@ function buildCoopMatmul(
   // Cooperative matrix layout constant: ColumnMajorKHR = 1
   const constColumnMajor = const1u;
   const coopKPow2 = isPowerOfTwo(coopK);
-  const coopNPow2 = isPowerOfTwo(coopN);
+  // B tile stride: with register tiling, each subgroup covers coopN*regTilesN columns
+  const bTileStride = coopN * regTilesN;
+  const bTileStridePow2 = isPowerOfTwo(bTileStride);
+  // Padded strides for shared memory (avoids bank conflicts when shmemPad > 0)
+  const paddedStrideA = coopK + shmemPad;
+  const paddedStrideB = bTileStride + shmemPad;
 
   let constCoopKShift: number | undefined;
   let constCoopKMask: number | undefined;
@@ -214,26 +298,31 @@ function buildCoopMatmul(
     b.constant(tU32, constCoopKMask, coopK - 1);
   }
 
-  let constCoopNShift: number | undefined;
-  let constCoopNMask: number | undefined;
-  if (coopNPow2) {
-    constCoopNShift = b.id();
-    b.constant(tU32, constCoopNShift, log2Pow2(coopN));
-    constCoopNMask = b.id();
-    b.constant(tU32, constCoopNMask, coopN - 1);
+  // B tile stride shift/mask for shared memory load coordinate decomposition
+  let constBTileStrideShift: number | undefined;
+  let constBTileStrideMask: number | undefined;
+  if (bTileStridePow2) {
+    constBTileStrideShift = b.id();
+    b.constant(tU32, constBTileStrideShift, log2Pow2(bTileStride));
+    constBTileStrideMask = b.id();
+    b.constant(tU32, constBTileStrideMask, bTileStride - 1);
   }
 
   // Shared memory for loading tiles from global memory
-  // Tile A: coopM * coopK f16 elements = coopM * coopK * 2 bytes
-  // Tile B: coopK * coopN f16 elements = coopK * coopN * 2 bytes
+  // Tile A: (coopM * regTilesM) rows × coopK cols, per subgroup-Y section
+  // Tile B: coopK rows × (coopN * regTilesN) cols, per subgroup-X section
   // In multi-subgroup mode, A tiles are shared by subgroup rows (Y),
   // B tiles are shared by subgroup columns (X). This improves tile reuse.
-  const constTileASize = b.id(); b.constant(tU32, constTileASize, coopM * coopK * subgroupTilesY);
+  // Double buffering: 2× size for ping-pong shared memory.
+  const dbMul = useDoubleBuf ? 2 : 1;
+  const halfSizeA = coopM * regTilesM * paddedStrideA * subgroupTilesY;
+  const halfSizeB = coopK * paddedStrideB * subgroupTilesX;
+  const constTileASize = b.id(); b.constant(tU32, constTileASize, halfSizeA * dbMul);
   const tArrayTileA = b.id(); b.typeArray(tArrayTileA, tF16, constTileASize);
   const tPtrSharedArrA = b.id(); b.typePointer(tPtrSharedArrA, StorageClass.Workgroup, tArrayTileA);
   const tileA = b.id(); b.variable(tPtrSharedArrA, tileA, StorageClass.Workgroup);
 
-  const constTileBSize = b.id(); b.constant(tU32, constTileBSize, coopK * coopN * subgroupTilesX);
+  const constTileBSize = b.id(); b.constant(tU32, constTileBSize, halfSizeB * dbMul);
   const tArrayTileB = b.id(); b.typeArray(tArrayTileB, tF16, constTileBSize);
   const tPtrSharedArrB = b.id(); b.typePointer(tPtrSharedArrB, StorageClass.Workgroup, tArrayTileB);
   const tileB = b.id(); b.variable(tPtrSharedArrB, tileB, StorageClass.Workgroup);
@@ -302,16 +391,98 @@ function buildCoopMatmul(
   // Function-local variables
   const varK = b.id();
   b.emit(Op.Variable, [tPtrFnU32, varK, StorageClass.Function]);
-  const varAcc = b.id();
-  b.emit(Op.Variable, [tPtrFnCoopC, varAcc, StorageClass.Function]);
+  // Register tiling: regTilesM × regTilesN accumulator tiles per subgroup
+  const varAccs: number[][] = [];
+  for (let rm = 0; rm < regTilesM; rm++) {
+    varAccs[rm] = [];
+    for (let rn = 0; rn < regTilesN; rn++) {
+      varAccs[rm][rn] = b.id();
+      b.emit(Op.Variable, [tPtrFnCoopC, varAccs[rm][rn], StorageClass.Function]);
+    }
+  }
 
   // Load workgroup ID
   const wgIdVec = b.id();
   b.emit(Op.Load, [tVec3U32, wgIdVec, vWorkgroupId]);
-  const wgTileCol = b.id();
+  let wgTileCol = b.id();
   b.emit(Op.CompositeExtract, [tU32, wgTileCol, wgIdVec, 0]);
-  const wgTileRow = b.id();
+  let wgTileRow = b.id();
   b.emit(Op.CompositeExtract, [tU32, wgTileRow, wgIdVec, 1]);
+
+  // Super-tile swizzle: remap WG indices so consecutive WGs work on adjacent
+  // tiles in a S×S block, improving L2 cache reuse for A and B data.
+  // gridX is passed as push constant [3]. When gridX % S != 0, the dispatch
+  // code sets gridX=0 as a sentinel to skip the swizzle at runtime.
+  if (useSwizzle) {
+    const S = swizzleSize;
+    const S2 = S * S;
+    const sShift = log2Pow2(S);
+    const s2Shift = log2Pow2(S2);
+    const constSShift = b.id(); b.constant(tU32, constSShift, sShift);
+    const constS2Shift = b.id(); b.constant(tU32, constS2Shift, s2Shift);
+    const constSMask = b.id(); b.constant(tU32, constSMask, S - 1);
+    const constS2Mask = b.id(); b.constant(tU32, constS2Mask, S2 - 1);
+
+    // Load gridX from push constant [3] (0 = swizzle disabled)
+    const ptrGridX = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrGridX, pc.varId, const3u]);
+    const gridXF = b.id();
+    b.emit(Op.Load, [tF32, gridXF, ptrGridX]);
+    const gridX = b.id();
+    b.emit(Op.ConvertFToU, [tU32, gridX, gridXF]);
+
+    // Runtime guard: only swizzle when gridX > 0 (dispatch guarantees divisibility)
+    const swizzleOk = b.id();
+    b.emit(Op.ULessThan, [tBool, swizzleOk, const0u, gridX]);
+    const labelSwizzle = b.id();
+    const labelNoSwizzle = b.id();
+    const labelSwizzleMerge = b.id();
+    b.emit(Op.SelectionMerge, [labelSwizzleMerge, 0]);
+    b.emit(Op.BranchConditional, [swizzleOk, labelSwizzle, labelNoSwizzle]);
+
+    // Swizzled path
+    b.emit(Op.Label, [labelSwizzle]);
+    const rowTimesGX = b.id();
+    b.emit(Op.IMul, [tU32, rowTimesGX, wgTileRow, gridX]);
+    const linear = b.id();
+    b.emit(Op.IAdd, [tU32, linear, wgTileCol, rowTimesGX]);
+    const super_ = b.id();
+    b.emit(Op.ShiftRightLogical, [tU32, super_, linear, constS2Shift]);
+    const within = b.id();
+    b.emit(Op.BitwiseAnd, [tU32, within, linear, constS2Mask]);
+    const superGridX = b.id();
+    b.emit(Op.ShiftRightLogical, [tU32, superGridX, gridX, constSShift]);
+    const superRow = b.id();
+    b.emit(Op.UDiv, [tU32, superRow, super_, superGridX]);
+    const superCol = b.id();
+    b.emit(Op.UMod, [tU32, superCol, super_, superGridX]);
+    const localRow = b.id();
+    b.emit(Op.ShiftRightLogical, [tU32, localRow, within, constSShift]);
+    const localCol = b.id();
+    b.emit(Op.BitwiseAnd, [tU32, localCol, within, constSMask]);
+    const swColTimesS = b.id();
+    b.emit(Op.ShiftLeftLogical, [tU32, swColTimesS, superCol, constSShift]);
+    const swTileCol = b.id();
+    b.emit(Op.IAdd, [tU32, swTileCol, swColTimesS, localCol]);
+    const swRowTimesS = b.id();
+    b.emit(Op.ShiftLeftLogical, [tU32, swRowTimesS, superRow, constSShift]);
+    const swTileRow = b.id();
+    b.emit(Op.IAdd, [tU32, swTileRow, swRowTimesS, localRow]);
+    b.emit(Op.Branch, [labelSwizzleMerge]);
+
+    // Non-swizzled path (passthrough)
+    b.emit(Op.Label, [labelNoSwizzle]);
+    b.emit(Op.Branch, [labelSwizzleMerge]);
+
+    // Merge: Phi selects between swizzled and original coords
+    b.emit(Op.Label, [labelSwizzleMerge]);
+    const mergedCol = b.id();
+    b.emit(Op.Phi, [tU32, mergedCol, swTileCol, labelSwizzle, wgTileCol, labelNoSwizzle]);
+    const mergedRow = b.id();
+    b.emit(Op.Phi, [tU32, mergedRow, swTileRow, labelSwizzle, wgTileRow, labelNoSwizzle]);
+    wgTileCol = mergedCol;
+    wgTileRow = mergedRow;
+  }
 
   // Load local ID (thread index within workgroup)
   const lidVec = b.id();
@@ -392,10 +563,25 @@ function buildCoopMatmul(
   b.emit(Op.ConvertFToU, [tU32, K, KF]);
 
   // Compute global row/col offsets for this tile
-  const globalRowBase = b.id(); // tileRow * coopM
-  b.emit(Op.IMul, [tU32, globalRowBase, tileRow, constCoopM]);
-  const globalColBase = b.id(); // tileCol * coopN
-  b.emit(Op.IMul, [tU32, globalColBase, tileCol, constCoopN]);
+  // With register tiling, each subgroup covers coopM*regTilesM rows and coopN*regTilesN cols
+  let globalRowBase: number;
+  if (regTilesM > 1) {
+    const constEffM = b.id(); b.constant(tU32, constEffM, coopM * regTilesM);
+    globalRowBase = b.id();
+    b.emit(Op.IMul, [tU32, globalRowBase, tileRow, constEffM]);
+  } else {
+    globalRowBase = b.id();
+    b.emit(Op.IMul, [tU32, globalRowBase, tileRow, constCoopM]);
+  }
+  let globalColBase: number;
+  if (regTilesN > 1) {
+    const constEffN = b.id(); b.constant(tU32, constEffN, coopN * regTilesN);
+    globalColBase = b.id();
+    b.emit(Op.IMul, [tU32, globalColBase, tileCol, constEffN]);
+  } else {
+    globalColBase = b.id();
+    b.emit(Op.IMul, [tU32, globalColBase, tileCol, constCoopN]);
+  }
 
   // Batch offset for A and B
   const MK = b.id(); // M * K
@@ -425,6 +611,19 @@ function buildCoopMatmul(
     }
   }
 
+  // ── Tile loading constants (for address hoisting fast path) ─────────
+  const totalA = coopM * regTilesM * coopK;
+  const totalB = coopK * coopN * regTilesN;
+  const loadWidthA = subgroupMode ? (32 * subgroupTilesX) : WG_SIZE;
+  const loadWidthB = subgroupMode ? (32 * subgroupTilesY) : WG_SIZE;
+  const elemsPerThreadA = Math.ceil(totalA / loadWidthA);
+  const elemsPerThreadB = Math.ceil(totalB / loadWidthB);
+  const canUseStridedCoordsA = (loadWidthA % coopK) === 0;
+  const canUseStridedCoordsB = (loadWidthB % bTileStride) === 0;
+  const rowStrideA = canUseStridedCoordsA ? (loadWidthA / coopK) : 0;
+  const rowStrideB = canUseStridedCoordsB ? (loadWidthB / bTileStride) : 0;
+  const useFastPath = false; // disabled — address hoisting regresses perf
+
   // Initialize accumulator to zero
   // We need to create a constant zero cooperative matrix — not directly supported.
   // Instead, we'll use OpConstant for f32 zero and composite-construct won't work for coop matrices.
@@ -434,93 +633,421 @@ function buildCoopMatmul(
   const constNullC = b.id();
   b.constantNull(tCoopCAcc, constNullC);
 
-  b.emit(Op.Store, [varAcc, constNullC]);
+  for (let rm = 0; rm < regTilesM; rm++)
+    for (let rn = 0; rn < regTilesN; rn++)
+      b.emit(Op.Store, [varAccs[rm][rn], constNullC]);
+
+  // Double buffer phase variable: alternates 0/1 to select shared memory half
+  let varDbPhase: number | undefined;
+  if (useDoubleBuf) {
+    varDbPhase = b.id();
+    b.emit(Op.Variable, [tPtrFnU32, varDbPhase, StorageClass.Function]);
+    b.emit(Op.Store, [varDbPhase, const0u]);
+  }
+
+  // ── Address hoisting: precompute K-invariant address bases ───────────
+  // Only aBase and bBase survive across the K-loop (2 extra registers).
+  // All other values (loadThreadBase, subgroupBase, strides) are
+  // recomputed inside the loop body to avoid register pressure.
+  let fastABase: number | undefined;
+  let fastBBase: number | undefined;
+
+  if (useFastPath) {
+    // Temporary: compute loadThreadBase + localRow/Col (dies after aBase/bBase)
+    let tmpLTBA = tid;
+    let tmpLTBB = tid;
+    if (subgroupMode) {
+      const cSgSz = b.id(); b.constant(tU32, cSgSz, 32);
+      const sgXB = b.id();
+      b.emit(Op.IMul, [tU32, sgXB, subgroupXVal!, cSgSz]);
+      tmpLTBA = b.id();
+      b.emit(Op.IAdd, [tU32, tmpLTBA, sgXB, laneIdVal!]);
+      const sgYB = b.id();
+      b.emit(Op.IMul, [tU32, sgYB, subgroupYVal!, cSgSz]);
+      tmpLTBB = b.id();
+      b.emit(Op.IAdd, [tU32, tmpLTBB, sgYB, laneIdVal!]);
+    }
+
+    // A: localRow/Col from loadThreadBase
+    const fpRowA = b.id();
+    const fpColA = b.id();
+    if (constCoopKShift !== undefined && constCoopKMask !== undefined) {
+      b.emit(Op.ShiftRightLogical, [tU32, fpRowA, tmpLTBA, constCoopKShift]);
+      b.emit(Op.BitwiseAnd, [tU32, fpColA, tmpLTBA, constCoopKMask]);
+    } else {
+      b.emit(Op.UDiv, [tU32, fpRowA, tmpLTBA, constCoopK]);
+      b.emit(Op.UMod, [tU32, fpColA, tmpLTBA, constCoopK]);
+    }
+
+    // aBase: K-invariant global address for element 0
+    const gRowA = b.id();
+    b.emit(Op.IAdd, [tU32, gRowA, globalRowBase, fpRowA]);
+    if (transposedA) {
+      const colM = b.id();
+      b.emit(Op.IMul, [tU32, colM, fpColA, M]);
+      fastABase = b.id();
+      b.emit(Op.IAdd, [tU32, fastABase, colM, gRowA]);
+    } else {
+      const rowK = b.id();
+      b.emit(Op.IMul, [tU32, rowK, gRowA, K]);
+      fastABase = b.id();
+      b.emit(Op.IAdd, [tU32, fastABase, rowK, fpColA]);
+    }
+    if (batched) {
+      const ab = b.id();
+      b.emit(Op.IAdd, [tU32, ab, fastABase, batchOffsetA!]);
+      fastABase = ab;
+    }
+
+    // B: localRow/Col from loadThreadBase
+    const fpRowB = b.id();
+    const fpColB = b.id();
+    if (constBTileStrideShift !== undefined && constBTileStrideMask !== undefined) {
+      b.emit(Op.ShiftRightLogical, [tU32, fpRowB, tmpLTBB, constBTileStrideShift]);
+      b.emit(Op.BitwiseAnd, [tU32, fpColB, tmpLTBB, constBTileStrideMask]);
+    } else {
+      const cBSt = b.id(); b.constant(tU32, cBSt, bTileStride);
+      b.emit(Op.UDiv, [tU32, fpRowB, tmpLTBB, cBSt]);
+      b.emit(Op.UMod, [tU32, fpColB, tmpLTBB, cBSt]);
+    }
+
+    // bBase: K-invariant global address for element 0
+    const nCol = b.id();
+    b.emit(Op.IAdd, [tU32, nCol, globalColBase, fpColB]);
+    if (transposedB) {
+      const nK = b.id();
+      b.emit(Op.IMul, [tU32, nK, nCol, K]);
+      fastBBase = b.id();
+      b.emit(Op.IAdd, [tU32, fastBBase, nK, fpRowB]);
+    } else {
+      const rN = b.id();
+      b.emit(Op.IMul, [tU32, rN, fpRowB, N]);
+      fastBBase = b.id();
+      b.emit(Op.IAdd, [tU32, fastBBase, rN, nCol]);
+    }
+    if (batched) {
+      const bb = b.id();
+      b.emit(Op.IAdd, [tU32, bb, fastBBase, batchOffsetB!]);
+      fastBBase = bb;
+    }
+  }
 
   // ── K-tile loop: for k = 0; k < K; k += coopK ──────────────────────
-  b.emit(Op.Store, [varK, const0u]);
+  // Pre-allocate forward reference for Phi
+  const kNext = b.id();
 
   const labelLoopHeader = b.id();
   const labelLoopBody = b.id();
   const labelLoopContinue = b.id();
   const labelLoopEnd = b.id();
 
+  // Capture pre-loop block label for Phi incoming edge
+  const labelPreLoop = b.id();
+  b.emit(Op.Branch, [labelPreLoop]);
+  b.emit(Op.Label, [labelPreLoop]);
   b.emit(Op.Branch, [labelLoopHeader]);
+
   b.emit(Op.Label, [labelLoopHeader]);
 
+  // SSA Phi: kVal = 0 on first entry, kNext on loop back-edge
   const kVal = b.id();
-  b.emit(Op.Load, [tU32, kVal, varK]);
+  b.emit(Op.Phi, [tU32, kVal, const0u, labelPreLoop, kNext, labelLoopContinue]);
   const kLtK = b.id();
   b.emit(Op.ULessThan, [tBool, kLtK, kVal, K]);
 
-  b.emit(Op.LoopMerge, [labelLoopEnd, labelLoopContinue, 0]);
+  b.emit(Op.LoopMerge, [labelLoopEnd, labelLoopContinue, 1]); // Unroll hint
   b.emit(Op.BranchConditional, [kLtK, labelLoopBody, labelLoopEnd]);
 
   b.emit(Op.Label, [labelLoopBody]);
 
   let coopAMat: number;
   let coopBMat: number;
+  let coopAMats: number[] = [];
+  let coopBMats: number[] = [];
+  // Hoisted for double-buffer epilogue access
+  let subgroupBaseA_h = const0u;
+  let subgroupBaseB_h = const0u;
   if (useDirectF16Load) {
-    // Direct cooperative loads from global f16 buffers.
-    // This avoids shared-memory staging and per-element conversion overhead.
-    let aBase = b.id();
-    if (transposedA) {
-      // A^T view of A[M,K] -> load with ColumnMajor layout from base (k, row)
-      const kTimesM = b.id();
-      b.emit(Op.IMul, [tU32, kTimesM, kVal, M]);
-      b.emit(Op.IAdd, [tU32, aBase, kTimesM, globalRowBase]);
-    } else {
-      const rowTimesK = b.id();
-      b.emit(Op.IMul, [tU32, rowTimesK, globalRowBase, K]);
-      b.emit(Op.IAdd, [tU32, aBase, rowTimesK, kVal]);
-    }
-    if (batched) {
-      const aWithBatch = b.id();
-      b.emit(Op.IAdd, [tU32, aWithBatch, aBase, batchOffsetA!]);
-      aBase = aWithBatch;
-    }
-    const ptrAStart = b.id();
-    b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrAStart, bufA.varId, const0u, aBase]);
-    coopAMat = b.id();
-    b.emit(Op.OpCooperativeMatrixLoadKHR, [
-      tCoopA,
-      coopAMat,
-      ptrAStart,
-      transposedA ? constColumnMajor : constRowMajor,
-      transposedA ? M : K,
-    ]);
+    // Direct cooperative loads from global f16 buffers — NO shared memory, NO barriers.
+    // Each subgroup independently loads its own A/B tiles from global memory.
+    // L2 cache handles cross-subgroup data sharing.
 
-    let bBase = b.id();
-    if (transposedB) {
-      // B^T view of B[N,K] -> load with ColumnMajor layout from base (n, k)
-      const nTimesK = b.id();
-      b.emit(Op.IMul, [tU32, nTimesK, globalColBase, K]);
-      b.emit(Op.IAdd, [tU32, bBase, nTimesK, kVal]);
+    // Load regTilesM A matrices
+    const directAMats: number[] = [];
+    for (let rm = 0; rm < regTilesM; rm++) {
+      let aBase = b.id();
+      if (transposedA) {
+        const kTimesM = b.id();
+        b.emit(Op.IMul, [tU32, kTimesM, kVal, M]);
+        if (rm === 0) {
+          b.emit(Op.IAdd, [tU32, aBase, kTimesM, globalRowBase]);
+        } else {
+          const rowOff = b.id();
+          const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
+          b.emit(Op.IAdd, [tU32, rowOff, globalRowBase, cRM]);
+          b.emit(Op.IAdd, [tU32, aBase, kTimesM, rowOff]);
+        }
+      } else {
+        const rowOff = rm === 0 ? globalRowBase : (() => {
+          const cRM = b.id(); b.constant(tU32, cRM, rm * coopM);
+          const r = b.id();
+          b.emit(Op.IAdd, [tU32, r, globalRowBase, cRM]);
+          return r;
+        })();
+        const rowTimesK = b.id();
+        b.emit(Op.IMul, [tU32, rowTimesK, rowOff, K]);
+        b.emit(Op.IAdd, [tU32, aBase, rowTimesK, kVal]);
+      }
+      if (batched) {
+        const aWithBatch = b.id();
+        b.emit(Op.IAdd, [tU32, aWithBatch, aBase, batchOffsetA!]);
+        aBase = aWithBatch;
+      }
+      const ptrA = b.id();
+      b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrA, bufA.varId, const0u, aBase]);
+      directAMats[rm] = b.id();
+      b.emit(Op.OpCooperativeMatrixLoadKHR, [
+        tCoopA, directAMats[rm], ptrA,
+        transposedA ? constColumnMajor : constRowMajor,
+        transposedA ? M : K,
+      ]);
+    }
+
+    // Load regTilesN B matrices
+    const directBMats: number[] = [];
+    for (let rn = 0; rn < regTilesN; rn++) {
+      let bBase = b.id();
+      if (transposedB) {
+        const colOff = rn === 0 ? globalColBase : (() => {
+          const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
+          const r = b.id();
+          b.emit(Op.IAdd, [tU32, r, globalColBase, cRN]);
+          return r;
+        })();
+        const nTimesK = b.id();
+        b.emit(Op.IMul, [tU32, nTimesK, colOff, K]);
+        b.emit(Op.IAdd, [tU32, bBase, nTimesK, kVal]);
+      } else {
+        const kTimesN = b.id();
+        b.emit(Op.IMul, [tU32, kTimesN, kVal, N]);
+        if (rn === 0) {
+          b.emit(Op.IAdd, [tU32, bBase, kTimesN, globalColBase]);
+        } else {
+          const colOff = b.id();
+          const cRN = b.id(); b.constant(tU32, cRN, rn * coopN);
+          b.emit(Op.IAdd, [tU32, colOff, globalColBase, cRN]);
+          b.emit(Op.IAdd, [tU32, bBase, kTimesN, colOff]);
+        }
+      }
+      if (batched) {
+        const bWithBatch = b.id();
+        b.emit(Op.IAdd, [tU32, bWithBatch, bBase, batchOffsetB!]);
+        bBase = bWithBatch;
+      }
+      const ptrB = b.id();
+      b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrB, bufB.varId, const0u, bBase]);
+      directBMats[rn] = b.id();
+      b.emit(Op.OpCooperativeMatrixLoadKHR, [
+        tCoopB, directBMats[rn], ptrB,
+        transposedB ? constColumnMajor : constRowMajor,
+        transposedB ? K : N,
+      ]);
+    }
+
+    // MMA: C[rm][rn] += A[rm] * B[rn] — no barriers needed!
+    for (let rm = 0; rm < regTilesM; rm++) {
+      for (let rn = 0; rn < regTilesN; rn++) {
+        const prevAcc = b.id();
+        b.emit(Op.Load, [tCoopCAcc, prevAcc, varAccs[rm][rn]]);
+        const newAcc = b.id();
+        b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, directAMats[rm], directBMats[rn], prevAcc]);
+        b.emit(Op.Store, [varAccs[rm][rn], newAcc]);
+      }
+    }
+
+    coopAMat = 0 as any;
+    coopBMat = 0 as any;
+  } else if (useFastPath) {
+    // ── Fast path: address hoisting (only aBase/bBase precomputed) ────
+    // Recompute loadThreadBase, subgroupBase, strides inside loop body
+    // to keep register pressure low (only 2 extra live regs: aBase, bBase).
+
+    // loadThreadBase (recomputed each K-step — same values, but no cross-loop pressure)
+    let fpLTBA = tid;
+    let fpLTBB = tid;
+    if (subgroupMode) {
+      const cSgSz = b.id(); b.constant(tU32, cSgSz, 32);
+      const sgXB = b.id();
+      b.emit(Op.IMul, [tU32, sgXB, subgroupXVal!, cSgSz]);
+      fpLTBA = b.id();
+      b.emit(Op.IAdd, [tU32, fpLTBA, sgXB, laneIdVal!]);
+      const sgYB = b.id();
+      b.emit(Op.IMul, [tU32, sgYB, subgroupYVal!, cSgSz]);
+      fpLTBB = b.id();
+      b.emit(Op.IAdd, [tU32, fpLTBB, sgYB, laneIdVal!]);
+    }
+
+    // subgroupBase (recomputed)
+    let fpSgBaseA = const0u;
+    let fpSgBaseB = const0u;
+    if (subgroupMode) {
+      const cTotA = b.id(); b.constant(tU32, cTotA, totalA);
+      fpSgBaseA = b.id();
+      b.emit(Op.IMul, [tU32, fpSgBaseA, subgroupYVal!, cTotA]);
+      const cTotB = b.id(); b.constant(tU32, cTotB, totalB);
+      fpSgBaseB = b.id();
+      b.emit(Op.IMul, [tU32, fpSgBaseB, subgroupXVal!, cTotB]);
+    }
+
+    // sharedBase: first shared offset
+    let fpShrBaseA: number;
+    let fpShrBaseB: number;
+    if (subgroupMode) {
+      fpShrBaseA = b.id();
+      b.emit(Op.IAdd, [tU32, fpShrBaseA, fpSgBaseA, fpLTBA]);
+      fpShrBaseB = b.id();
+      b.emit(Op.IAdd, [tU32, fpShrBaseB, fpSgBaseB, fpLTBB]);
     } else {
-      const kTimesN = b.id();
-      b.emit(Op.IMul, [tU32, kTimesN, kVal, N]);
-      b.emit(Op.IAdd, [tU32, bBase, kTimesN, globalColBase]);
+      fpShrBaseA = fpLTBA;
+      fpShrBaseB = fpLTBB;
     }
-    if (batched) {
-      const bWithBatch = b.id();
-      b.emit(Op.IAdd, [tU32, bWithBatch, bBase, batchOffsetB!]);
-      bBase = bWithBatch;
+
+    // A stride: rowStrideA * K (non-transposed) or rowStrideA (transposed)
+    let fpAStride: number;
+    if (transposedA) {
+      fpAStride = b.id(); b.constant(tU32, fpAStride, rowStrideA);
+    } else {
+      const cRSA = b.id(); b.constant(tU32, cRSA, rowStrideA);
+      fpAStride = b.id();
+      b.emit(Op.IMul, [tU32, fpAStride, cRSA, K]);
     }
-    const ptrBStart = b.id();
-    b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrBStart, bufB.varId, const0u, bBase]);
-    coopBMat = b.id();
-    b.emit(Op.OpCooperativeMatrixLoadKHR, [
-      tCoopB,
-      coopBMat,
-      ptrBStart,
-      transposedB ? constColumnMajor : constRowMajor,
-      transposedB ? K : N,
-    ]);
+
+    // B stride: rowStrideB * N (non-transposed) or rowStrideB (transposed)
+    let fpBStride: number;
+    if (transposedB) {
+      fpBStride = b.id(); b.constant(tU32, fpBStride, rowStrideB);
+    } else {
+      const cRSB = b.id(); b.constant(tU32, cRSB, rowStrideB);
+      fpBStride = b.id();
+      b.emit(Op.IMul, [tU32, fpBStride, cRSB, N]);
+    }
+
+    // Per-K-step multiply (shared across all elements):
+    let kTermA: number;
+    if (transposedA) {
+      kTermA = b.id();
+      b.emit(Op.IMul, [tU32, kTermA, kVal, M]);
+    } else {
+      kTermA = kVal;
+    }
+    let kTermB: number;
+    if (!transposedB) {
+      kTermB = b.id();
+      b.emit(Op.IMul, [tU32, kTermB, kVal, N]);
+    } else {
+      kTermB = kVal;
+    }
+
+    // ── A loads: addr = kTermA + aBase, then += aStride per element ───
+    let addrA = b.id();
+    b.emit(Op.IAdd, [tU32, addrA, kTermA, fastABase!]);
+    let shrA = fpShrBaseA;
+    const cLdWA = b.id(); b.constant(tU32, cLdWA, loadWidthA);
+
+    for (let e = 0; e < elemsPerThreadA; e++) {
+      if (e * loadWidthA + loadWidthA > totalA) {
+        const eOff = b.id();
+        if (e === 0) {
+          b.emit(Op.CopyObject, [tU32, eOff, fpLTBA]);
+        } else {
+          const cE = b.id(); b.constant(tU32, cE, e * loadWidthA);
+          b.emit(Op.IAdd, [tU32, eOff, fpLTBA, cE]);
+        }
+        const cTot = b.id(); b.constant(tU32, cTot, totalA);
+        const inB = b.id();
+        b.emit(Op.ULessThan, [tBool, inB, eOff, cTot]);
+        const lblL = b.id(); const lblS = b.id();
+        b.emit(Op.SelectionMerge, [lblS, 0]);
+        b.emit(Op.BranchConditional, [inB, lblL, lblS]);
+        b.emit(Op.Label, [lblL]);
+        emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+          bufA, inputF16, addrA, shrA, tileA, const0u);
+        b.emit(Op.Branch, [lblS]);
+        b.emit(Op.Label, [lblS]);
+      } else {
+        emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+          bufA, inputF16, addrA, shrA, tileA, const0u);
+      }
+      if (e < elemsPerThreadA - 1) {
+        const nA = b.id();
+        b.emit(Op.IAdd, [tU32, nA, addrA, fpAStride]);
+        addrA = nA;
+        const nS = b.id();
+        b.emit(Op.IAdd, [tU32, nS, shrA, cLdWA]);
+        shrA = nS;
+      }
+    }
+
+    // ── B loads: addr = kTermB + bBase, then += bStride per element ───
+    let addrB = b.id();
+    b.emit(Op.IAdd, [tU32, addrB, kTermB, fastBBase!]);
+    let shrB = fpShrBaseB;
+    const cLdWB = b.id(); b.constant(tU32, cLdWB, loadWidthB);
+
+    for (let e = 0; e < elemsPerThreadB; e++) {
+      if (e * loadWidthB + loadWidthB > totalB) {
+        const eOff = b.id();
+        if (e === 0) {
+          b.emit(Op.CopyObject, [tU32, eOff, fpLTBB]);
+        } else {
+          const cE = b.id(); b.constant(tU32, cE, e * loadWidthB);
+          b.emit(Op.IAdd, [tU32, eOff, fpLTBB, cE]);
+        }
+        const cTot = b.id(); b.constant(tU32, cTot, totalB);
+        const inB = b.id();
+        b.emit(Op.ULessThan, [tBool, inB, eOff, cTot]);
+        const lblL = b.id(); const lblS = b.id();
+        b.emit(Op.SelectionMerge, [lblS, 0]);
+        b.emit(Op.BranchConditional, [inB, lblL, lblS]);
+        b.emit(Op.Label, [lblL]);
+        emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+          bufB, inputF16, addrB, shrB, tileB, const0u);
+        b.emit(Op.Branch, [lblS]);
+        b.emit(Op.Label, [lblS]);
+      } else {
+        emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
+          bufB, inputF16, addrB, shrB, tileB, const0u);
+      }
+      if (e < elemsPerThreadB - 1) {
+        const nB = b.id();
+        b.emit(Op.IAdd, [tU32, nB, addrB, fpBStride]);
+        addrB = nB;
+        const nS = b.id();
+        b.emit(Op.IAdd, [tU32, nS, shrB, cLdWB]);
+        shrB = nS;
+      }
+    }
+
+    // ── Barrier → MMA → Barrier ──────────────────────────────────────
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    const tileABaseFP = subgroupMode ? fpSgBaseA : const0u;
+    const tileBBaseFP = subgroupMode ? fpSgBaseB : const0u;
+    emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+      tPtrSharedF16, tileA, tileB, tileABaseFP, tileBBaseFP,
+      constRowMajor, coopM, coopN, coopK,
+      regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
+
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    coopAMat = 0 as any;
+    coopBMat = 0 as any;
   } else {
     // ── Load tile A from global to shared ───────────────────────────────
-    // Each of 32 threads loads multiple elements to fill coopM*coopK
-    // Total elements = coopM * coopK. Each thread loads ceil(total/32) elements.
-    const totalA = coopM * coopK;
-    const totalB = coopK * coopN;
+    // With register tiling: each subgroup section covers (coopM*regTilesM) × coopK
+    // With register tiling: each B section covers coopK × (coopN*regTilesN)
+    const totalA = coopM * regTilesM * coopK;
+    const totalB = coopK * coopN * regTilesN;
     const loadWidthA = subgroupMode ? (32 * subgroupTilesX) : WG_SIZE;
     const loadWidthB = subgroupMode ? (32 * subgroupTilesY) : WG_SIZE;
     const elemsPerThreadA = Math.ceil(totalA / loadWidthA);
@@ -541,10 +1068,12 @@ function buildCoopMatmul(
       loadThreadBaseB = b.id();
       b.emit(Op.IAdd, [tU32, loadThreadBaseB, subgroupYBase, laneIdVal!]);
     }
+    // A tile stride is coopK (unchanged by register tiling — just more rows)
     const canUseStridedCoordsA = (loadWidthA % coopK) === 0;
-    const canUseStridedCoordsB = (loadWidthB % coopN) === 0;
+    // B tile stride is bTileStride = coopN * regTilesN (contiguous columns)
+    const canUseStridedCoordsB = (loadWidthB % bTileStride) === 0;
     const rowStrideA = canUseStridedCoordsA ? (loadWidthA / coopK) : 0;
-    const rowStrideB = canUseStridedCoordsB ? (loadWidthB / coopN) : 0;
+    const rowStrideB = canUseStridedCoordsB ? (loadWidthB / bTileStride) : 0;
 
     let baseLocalRowA: number | undefined;
     let baseLocalColA: number | undefined;
@@ -565,27 +1094,51 @@ function buildCoopMatmul(
     if (canUseStridedCoordsB) {
       baseLocalRowB = b.id();
       baseLocalColB = b.id();
-      if (constCoopNShift !== undefined && constCoopNMask !== undefined) {
-        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowB, loadThreadBaseB, constCoopNShift]);
-        b.emit(Op.BitwiseAnd, [tU32, baseLocalColB, loadThreadBaseB, constCoopNMask]);
+      if (constBTileStrideShift !== undefined && constBTileStrideMask !== undefined) {
+        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowB, loadThreadBaseB, constBTileStrideShift]);
+        b.emit(Op.BitwiseAnd, [tU32, baseLocalColB, loadThreadBaseB, constBTileStrideMask]);
       } else {
-        b.emit(Op.UDiv, [tU32, baseLocalRowB, loadThreadBaseB, constCoopN]);
-        b.emit(Op.UMod, [tU32, baseLocalColB, loadThreadBaseB, constCoopN]);
+        const constBStride = b.id(); b.constant(tU32, constBStride, bTileStride);
+        b.emit(Op.UDiv, [tU32, baseLocalRowB, loadThreadBaseB, constBStride]);
+        b.emit(Op.UMod, [tU32, baseLocalColB, loadThreadBaseB, constBStride]);
       }
     }
 
     let subgroupBaseA = const0u;
     let subgroupBaseB = const0u;
+    // Use padded section sizes so subgroup offsets account for shared memory padding
+    const paddedSectionA = coopM * regTilesM * paddedStrideA;
+    const paddedSectionB = coopK * paddedStrideB;
     if (subgroupMode) {
       const constTotalA = b.id();
-      b.constant(tU32, constTotalA, totalA);
+      b.constant(tU32, constTotalA, paddedSectionA);
       subgroupBaseA = b.id();
       b.emit(Op.IMul, [tU32, subgroupBaseA, subgroupYVal!, constTotalA]);
 
       const constTotalB = b.id();
-      b.constant(tU32, constTotalB, totalB);
+      b.constant(tU32, constTotalB, paddedSectionB);
       subgroupBaseB = b.id();
       b.emit(Op.IMul, [tU32, subgroupBaseB, subgroupXVal!, constTotalB]);
+    }
+    subgroupBaseA_h = subgroupBaseA;
+    subgroupBaseB_h = subgroupBaseB;
+
+    // Double buffer: compute write/read offsets from phase variable
+    let writeOffA = const0u;
+    let writeOffB = const0u;
+    if (useDoubleBuf) {
+      const phase = b.id();
+      b.emit(Op.Load, [tU32, phase, varDbPhase!]);
+      const constHalfA = b.id(); b.constant(tU32, constHalfA, halfSizeA);
+      const constHalfB = b.id(); b.constant(tU32, constHalfB, halfSizeB);
+      writeOffA = b.id(); b.emit(Op.IMul, [tU32, writeOffA, phase, constHalfA]);
+      writeOffB = b.id(); b.emit(Op.IMul, [tU32, writeOffB, phase, constHalfB]);
+    }
+
+    // Shared memory padding constant (hoisted out of loop)
+    let constShmemPadA: number | undefined;
+    if (shmemPad > 0) {
+      constShmemPadA = b.id(); b.constant(tU32, constShmemPadA, shmemPad);
     }
 
     for (let e = 0; e < elemsPerThreadA; e++) {
@@ -598,11 +1151,7 @@ function buildCoopMatmul(
         b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseA, constE]);
       }
 
-      const sharedOffset = subgroupMode ? b.id() : elemOffset;
-      if (subgroupMode) {
-        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, elemOffset]);
-      }
-
+      // Compute localRow for both padded offset and emitLoadTileA
       let localRowOpt: number | undefined;
       let localColOpt: number | undefined;
       if (canUseStridedCoordsA) {
@@ -615,6 +1164,38 @@ function buildCoopMatmul(
           localRowOpt = b.id();
           b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowA!, constERow]);
         }
+      }
+
+      // Compute padded shared memory offset (adds localRow * shmemPad for bank conflict avoidance)
+      let effectiveOffset = elemOffset;
+      if (shmemPad > 0) {
+        let localRow = localRowOpt;
+        if (localRow === undefined) {
+          localRow = b.id();
+          if (constCoopKShift !== undefined) {
+            b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constCoopKShift]);
+          } else {
+            const ck = b.id(); b.constant(tU32, ck, coopK);
+            b.emit(Op.UDiv, [tU32, localRow, elemOffset, ck]);
+          }
+        }
+        const padExtra = b.id();
+        b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadA!]);
+        effectiveOffset = b.id();
+        b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
+      }
+
+      let sharedOffset: number;
+      if (subgroupMode) {
+        sharedOffset = b.id();
+        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, effectiveOffset]);
+      } else {
+        sharedOffset = effectiveOffset;
+      }
+      if (useDoubleBuf) {
+        const dbOff = b.id();
+        b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffA]);
+        sharedOffset = dbOff;
       }
 
       if (e * loadWidthA + loadWidthA > totalA) {
@@ -644,6 +1225,11 @@ function buildCoopMatmul(
     }
 
     // ── Load tile B from global to shared ───────────────────────────────
+    let constShmemPadB: number | undefined;
+    if (shmemPad > 0) {
+      constShmemPadB = constShmemPadA; // same padding value, reuse
+    }
+
     for (let e = 0; e < elemsPerThreadB; e++) {
       const elemOffset = b.id();
       if (e === 0) {
@@ -654,11 +1240,7 @@ function buildCoopMatmul(
         b.emit(Op.IAdd, [tU32, elemOffset, loadThreadBaseB, constE]);
       }
 
-      const sharedOffset = subgroupMode ? b.id() : elemOffset;
-      if (subgroupMode) {
-        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, elemOffset]);
-      }
-
+      // Compute localRow for both padded offset and emitLoadTileB
       let localRowOpt: number | undefined;
       let localColOpt: number | undefined;
       if (canUseStridedCoordsB) {
@@ -671,6 +1253,38 @@ function buildCoopMatmul(
           localRowOpt = b.id();
           b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowB!, constERow]);
         }
+      }
+
+      // Compute padded shared memory offset for B tile
+      let effectiveOffset = elemOffset;
+      if (shmemPad > 0) {
+        let localRow = localRowOpt;
+        if (localRow === undefined) {
+          localRow = b.id();
+          if (constBTileStrideShift !== undefined) {
+            b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constBTileStrideShift]);
+          } else {
+            const cbs = b.id(); b.constant(tU32, cbs, bTileStride);
+            b.emit(Op.UDiv, [tU32, localRow, elemOffset, cbs]);
+          }
+        }
+        const padExtra = b.id();
+        b.emit(Op.IMul, [tU32, padExtra, localRow, constShmemPadB!]);
+        effectiveOffset = b.id();
+        b.emit(Op.IAdd, [tU32, effectiveOffset, elemOffset, padExtra]);
+      }
+
+      let sharedOffset: number;
+      if (subgroupMode) {
+        sharedOffset = b.id();
+        b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, effectiveOffset]);
+      } else {
+        sharedOffset = effectiveOffset;
+      }
+      if (useDoubleBuf) {
+        const dbOff = b.id();
+        b.emit(Op.IAdd, [tU32, dbOff, sharedOffset, writeOffB]);
+        sharedOffset = dbOff;
       }
 
       if (e * loadWidthB + loadWidthB > totalB) {
@@ -686,7 +1300,7 @@ function buildCoopMatmul(
 
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
-          const0u, coopN, constCoopNShift, constCoopNMask,
+          const0u, bTileStride, constBTileStrideShift, constBTileStrideMask,
           batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
 
         b.emit(Op.Branch, [labelSkip]);
@@ -694,86 +1308,215 @@ function buildCoopMatmul(
       } else {
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
-          const0u, coopN, constCoopNShift, constCoopNMask,
+          const0u, bTileStride, constBTileStrideShift, constBTileStrideMask,
           batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
       }
     }
 
-    // Barrier — wait for all shared memory writes
-    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    if (useDoubleBuf) {
+      // ── Double buffer: MMA from PREVIOUS tile, overlapped with loads ────
+      // On the first iteration (k==0), skip MMA (no previous data yet).
+      const isNotFirst = b.id();
+      b.emit(Op.ULessThan, [tBool, isNotFirst, const0u, kVal]);
+      const labelDoMMA = b.id();
+      const labelSkipMMA = b.id();
+      b.emit(Op.SelectionMerge, [labelSkipMMA, 0]);
+      b.emit(Op.BranchConditional, [isNotFirst, labelDoMMA, labelSkipMMA]);
+      b.emit(Op.Label, [labelDoMMA]);
 
-    // ── Cooperative matrix load from shared memory ──────────────────────
-    const tileAStartOffset = subgroupMode ? subgroupBaseA : const0u;
-    const ptrTileAStart = b.id();
-    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileAStart, tileA, tileAStartOffset]);
-    coopAMat = b.id();
-    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopAMat, ptrTileAStart, constRowMajor, constCoopK]);
+      // Compute read offset (opposite half from write offset)
+      const phase2 = b.id();
+      b.emit(Op.Load, [tU32, phase2, varDbPhase!]);
+      const oneMinusPhase = b.id();
+      b.emit(Op.ISub, [tU32, oneMinusPhase, const1u, phase2]);
+      const constHalfA2 = b.id(); b.constant(tU32, constHalfA2, halfSizeA);
+      const constHalfB2 = b.id(); b.constant(tU32, constHalfB2, halfSizeB);
+      const readOffA = b.id(); b.emit(Op.IMul, [tU32, readOffA, oneMinusPhase, constHalfA2]);
+      const readOffB = b.id(); b.emit(Op.IMul, [tU32, readOffB, oneMinusPhase, constHalfB2]);
 
-    const tileBStartOffset = subgroupMode ? subgroupBaseB : const0u;
-    const ptrTileBStart = b.id();
-    b.emit(Op.AccessChain, [tPtrSharedF16, ptrTileBStart, tileB, tileBStartOffset]);
-    coopBMat = b.id();
-    b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopBMat, ptrTileBStart, constRowMajor, constCoopN]);
-  }
+      let readBaseA: number;
+      if (subgroupMode) {
+        readBaseA = b.id();
+        b.emit(Op.IAdd, [tU32, readBaseA, subgroupBaseA, readOffA]);
+      } else {
+        readBaseA = readOffA;
+      }
+      let readBaseB: number;
+      if (subgroupMode) {
+        readBaseB = b.id();
+        b.emit(Op.IAdd, [tU32, readBaseB, subgroupBaseB, readOffB]);
+      } else {
+        readBaseB = readOffB;
+      }
 
-  // ── MulAdd: C += A * B ──────────────────────────────────────────────
-  const prevAcc = b.id();
-  b.emit(Op.Load, [tCoopCAcc, prevAcc, varAcc]);
-  const newAcc = b.id();
-  b.emit(Op.OpCooperativeMatrixMulAddKHR, [tCoopCAcc, newAcc, coopAMat, coopBMat, prevAcc]);
-  b.emit(Op.Store, [varAcc, newAcc]);
+      emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+        tPtrSharedF16, tileA, tileB, readBaseA, readBaseB,
+        constRowMajor, coopM, coopN, coopK,
+        regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
 
-  if (!useDirectF16Load) {
-    // Barrier before next tile load (shared-memory path only)
-    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+      b.emit(Op.Branch, [labelSkipMMA]);
+      b.emit(Op.Label, [labelSkipMMA]);
+
+      // Single barrier: wait for current tile's loads to complete
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+      // Toggle phase: 0→1, 1→0
+      const prevPhase = b.id();
+      b.emit(Op.Load, [tU32, prevPhase, varDbPhase!]);
+      const nextPhase = b.id();
+      b.emit(Op.ISub, [tU32, nextPhase, const1u, prevPhase]);
+      b.emit(Op.Store, [varDbPhase!, nextPhase]);
+    } else {
+      // ── Single buffer: barrier → MMA → barrier ─────────────────────────
+      // Barrier — wait for all shared memory writes
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+      const tileABase = subgroupMode ? subgroupBaseA : const0u;
+      const tileBBase = subgroupMode ? subgroupBaseB : const0u;
+      emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+        tPtrSharedF16, tileA, tileB, tileABase, tileBBase,
+        constRowMajor, coopM, coopN, coopK,
+        regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
+
+      // Barrier before next tile load
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    }
+    coopAMat = 0 as any; // unused in refactored path
+    coopBMat = 0 as any;
   }
 
   // ── Loop continue: k += coopK ──────────────────────────────────────
   b.emit(Op.Branch, [labelLoopContinue]);
   b.emit(Op.Label, [labelLoopContinue]);
 
-  const kNext = b.id();
+  // kNext is pre-allocated; Phi in header resolves it as the back-edge value
   b.emit(Op.IAdd, [tU32, kNext, kVal, constCoopK]);
-  b.emit(Op.Store, [varK, kNext]);
   b.emit(Op.Branch, [labelLoopHeader]);
 
-  // ── Loop end: store result to global C ──────────────────────────────
+  // ── Loop end: store results to global C (register-tiled) ───────────
   b.emit(Op.Label, [labelLoopEnd]);
 
-  // Store accumulator to global output
-  // Output address = batchOffset + globalRowBase * N + globalColBase
-  const rowTimesN = b.id();
-  b.emit(Op.IMul, [tU32, rowTimesN, globalRowBase, N]);
-  let outBase = b.id();
-  b.emit(Op.IAdd, [tU32, outBase, rowTimesN, globalColBase]);
+  // Double buffer epilogue: MMA the final K-tile that was loaded but not yet consumed.
+  // After the last iteration, phase was toggled, so the data we need is at (1-phase)*halfSize.
+  if (useDoubleBuf) {
+    // Barrier to ensure all stores from the last iteration are visible
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
-  if (batched) {
-    const batchOffsetC = b.id();
-    b.emit(Op.IMul, [tU32, batchOffsetC, batchIdx!, MN]);
-    const outWithBatch = b.id();
-    b.emit(Op.IAdd, [tU32, outWithBatch, outBase, batchOffsetC]);
-    outBase = outWithBatch;
+    const epilogPhase = b.id();
+    b.emit(Op.Load, [tU32, epilogPhase, varDbPhase!]);
+    const epilogOneMinusPhase = b.id();
+    b.emit(Op.ISub, [tU32, epilogOneMinusPhase, const1u, epilogPhase]);
+    const constHalfAEpi = b.id(); b.constant(tU32, constHalfAEpi, halfSizeA);
+    const constHalfBEpi = b.id(); b.constant(tU32, constHalfBEpi, halfSizeB);
+    const readOffAEpi = b.id(); b.emit(Op.IMul, [tU32, readOffAEpi, epilogOneMinusPhase, constHalfAEpi]);
+    const readOffBEpi = b.id(); b.emit(Op.IMul, [tU32, readOffBEpi, epilogOneMinusPhase, constHalfBEpi]);
+
+    let readBaseAEpi: number;
+    if (subgroupMode) {
+      readBaseAEpi = b.id();
+      b.emit(Op.IAdd, [tU32, readBaseAEpi, subgroupBaseA_h, readOffAEpi]);
+    } else {
+      readBaseAEpi = readOffAEpi;
+    }
+    let readBaseBEpi: number;
+    if (subgroupMode) {
+      readBaseBEpi = b.id();
+      b.emit(Op.IAdd, [tU32, readBaseBEpi, subgroupBaseB_h, readOffBEpi]);
+    } else {
+      readBaseBEpi = readOffBEpi;
+    }
+
+    emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
+      tPtrSharedF16, tileA, tileB, readBaseAEpi, readBaseBEpi,
+      constRowMajor, coopM, coopN, coopK,
+      regTilesM, regTilesN, bTileStride, varAccs, shmemPad, shmemPad);
   }
 
-  // Pointer to C[outBase] in global memory
-  const ptrCOut = b.id();
-  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrCOut, bufC.varId, const0u, outBase]);
+  for (let rm = 0; rm < regTilesM; rm++) {
+    for (let rn = 0; rn < regTilesN; rn++) {
+      // Output address for tile (rm, rn):
+      //   row = globalRowBase + rm * coopM
+      //   col = globalColBase + rn * coopN
+      //   addr = batchOffset + row * N + col
+      let tileRowBase: number;
+      if (rm === 0) {
+        tileRowBase = globalRowBase;
+      } else {
+        const constRM = b.id(); b.constant(tU32, constRM, rm * coopM);
+        tileRowBase = b.id();
+        b.emit(Op.IAdd, [tU32, tileRowBase, globalRowBase, constRM]);
+      }
+      let tileColBase: number;
+      if (rn === 0) {
+        tileColBase = globalColBase;
+      } else {
+        const constRN = b.id(); b.constant(tU32, constRN, rn * coopN);
+        tileColBase = b.id();
+        b.emit(Op.IAdd, [tU32, tileColBase, globalColBase, constRN]);
+      }
 
-  // Store cooperative matrix to global memory
-  // OpCooperativeMatrixStoreKHR: pointer, object, memoryLayout, stride
-  let finalAcc = b.id();
-  b.emit(Op.Load, [tCoopCAcc, finalAcc, varAcc]);
-  if (accumF16) {
-    const finalAccF32 = b.id();
-    b.emit(Op.FConvert, [tCoopCOut, finalAccF32, finalAcc]);
-    finalAcc = finalAccF32;
+      const rowTimesN = b.id();
+      b.emit(Op.IMul, [tU32, rowTimesN, tileRowBase, N]);
+      let outBase = b.id();
+      b.emit(Op.IAdd, [tU32, outBase, rowTimesN, tileColBase]);
+
+      if (batched) {
+        const batchOffsetC = b.id();
+        b.emit(Op.IMul, [tU32, batchOffsetC, batchIdx!, MN]);
+        const outWithBatch = b.id();
+        b.emit(Op.IAdd, [tU32, outWithBatch, outBase, batchOffsetC]);
+        outBase = outWithBatch;
+      }
+
+      const ptrCOut = b.id();
+      b.emit(Op.AccessChain, [bufC.tPtrF32, ptrCOut, bufC.varId, const0u, outBase]);
+
+      let finalAcc = b.id();
+      b.emit(Op.Load, [tCoopCAcc, finalAcc, varAccs[rm][rn]]);
+      if (accumF16) {
+        const finalAccF32 = b.id();
+        b.emit(Op.FConvert, [tCoopCOut, finalAccF32, finalAcc]);
+        finalAcc = finalAccF32;
+      }
+      b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrCOut, finalAcc, constRowMajor, N]);
+    }
   }
-  b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrCOut, finalAcc, constRowMajor, N]);
 
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
 
   return b.build();
+}
+
+/**
+ * Emit a single global→shared load with a precomputed global address.
+ * Used by the address-hoisting fast path.
+ */
+function emitFastLoad(
+  b: SpirVBuilder,
+  tF32: number, tF16: number, tU32: number, tPtrSharedF16: number,
+  buf: { varId: number; tPtrF32?: number; tPtrF16?: number },
+  inputF16: boolean,
+  globalAddr: number, sharedAddr: number,
+  tile: number, const0u: number,
+): void {
+  let valF16: number;
+  if (inputF16) {
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [buf.tPtrF16!, ptr, buf.varId, const0u, globalAddr]);
+    valF16 = b.id();
+    b.emit(Op.Load, [tF16, valF16, ptr]);
+  } else {
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [buf.tPtrF32!, ptr, buf.varId, const0u, globalAddr]);
+    const valF32 = b.id();
+    b.emit(Op.Load, [tF32, valF32, ptr]);
+    valF16 = b.id();
+    b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  }
+  const ptrShared = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tile, sharedAddr]);
+  b.emit(Op.Store, [ptrShared, valF16]);
 }
 
 /**
@@ -974,73 +1717,61 @@ function emitLoadTileB(
 // ── Exported kernel generators ──────────────────────────────────────────────
 
 export function kernelCoopMatmulBasic(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }
 
 export function kernelCoopMatmulBatched(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }
 
 export function kernelCoopMatmulTransposed(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }
 
 export function kernelCoopMatmulTransposedBatched(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }
 
 export function kernelCoopMatmulTransposedA(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }
 
 export function kernelCoopMatmulTransposedABatched(
-  coopM: number,
-  coopN: number,
-  coopK: number,
-  inputF16 = false,
-  accumF16 = false,
-  subgroupTilesX = 1,
-  subgroupTilesY = 1,
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
 }

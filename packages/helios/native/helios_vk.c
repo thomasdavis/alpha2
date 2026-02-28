@@ -2494,6 +2494,8 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
   const uint8_t* ptr = (const uint8_t*)packedData;
   const uint8_t* end = ptr + packedLen;
 
+  VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
+
   for (uint32_t d = 0; d < count; d++) {
     if (ptr + 12 > end) break; // minimum header: 4+2+2+4 = 12 bytes
 
@@ -2587,7 +2589,10 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
     VkDescriptorBufferInfo bufInfos[32];
     VkWriteDescriptorSet writes[32];
 
-    fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
+    if (ps->pipeline != lastBoundPipeline) {
+      fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
+      lastBoundPipeline = ps->pipeline;
+    }
 
     if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
       // Push descriptors: write directly into command buffer, no pool allocation

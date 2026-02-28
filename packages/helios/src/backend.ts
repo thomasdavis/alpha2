@@ -65,6 +65,24 @@ if (COOP_SUBGROUP_TILES_ENV) {
     );
   }
 }
+// Register tiling: each subgroup computes regTilesM × regTilesN cooperative matrix tiles
+const COOP_REG_TILES_ENV = process.env.HELIOS_COOP_REG_TILES?.trim() ?? "";
+let COOP_REG_TILES_M = 1;
+let COOP_REG_TILES_N = 1;
+if (COOP_REG_TILES_ENV) {
+  const m = COOP_REG_TILES_ENV.match(/^(\d+)x(\d+)$/);
+  if (m) {
+    COOP_REG_TILES_M = Math.max(1, parseInt(m[1], 10));
+    COOP_REG_TILES_N = Math.max(1, parseInt(m[2], 10));
+  } else {
+    console.warn(`[helios] ignoring HELIOS_COOP_REG_TILES=${COOP_REG_TILES_ENV}; expected <M>x<N>`);
+  }
+}
+// Double buffering: overlap global memory loads with cooperative matrix MMA
+const ENABLE_COOP_DOUBLE_BUF = process.env.HELIOS_COOP_DOUBLE_BUF === "1";
+// Super-tile swizzle size for L2 cache reuse (0=disabled, must match kernel codegen)
+const COOP_SWIZZLE_SIZE = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
+
 const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
 let LARGE_TILE_THRESHOLD = LARGE_TILE_THRESHOLD_DEFAULT;
 if (MATMUL_LARGE_TILE_THRESHOLD_ENV) {
@@ -2425,6 +2443,8 @@ export class HeliosBackend implements Backend {
   ): TensorData {
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
+    let regTilesM = 1;
+    let regTilesN = 1;
     if (M * N * K >= COOP_F16IN_S2X2_MIN_FLOPS) {
       if (COOP_SUBGROUP_TILES_X > 1 || COOP_SUBGROUP_TILES_Y > 1) {
         if (
@@ -2442,16 +2462,31 @@ export class HeliosBackend implements Backend {
         subgroupTilesX = 2;
         subgroupTilesY = 2;
       }
+      // Register tiling: each subgroup computes regTilesM × regTilesN tiles
+      // Default to r4x4 when s2x2 is active; env var overrides
+      const wantM = COOP_REG_TILES_M > 1 ? COOP_REG_TILES_M : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
+      const wantN = COOP_REG_TILES_N > 1 ? COOP_REG_TILES_N : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
+      if (wantM > 1 || wantN > 1) {
+        const effM = this._coopM * subgroupTilesY * wantM;
+        const effN = this._coopN * subgroupTilesX * wantN;
+        if (M % effM === 0 && N % effN === 0) {
+          regTilesM = wantM;
+          regTilesN = wantN;
+        }
+      }
     }
     const variant = transposed
       ? (batchSize > 1 ? "transposed_batched" : "transposed")
       : (batchSize > 1 ? "batched" : "basic");
     const subgroupSuffix =
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
+    const regTileSuffix =
+      (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      subgroupSuffix;
+      subgroupSuffix + regTileSuffix + dbSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
@@ -2464,9 +2499,11 @@ export class HeliosBackend implements Backend {
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
 
-    const push = push4Memo(M, N, K, 0);
-    const gX = Math.ceil(N / (this._coopN * subgroupTilesX));
-    const gY = Math.ceil(M / (this._coopM * subgroupTilesY));
+    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    const gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
+    // Pass gridX for super-tile swizzle; 0 disables when grid isn't divisible by swizzle size
+    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gX % COOP_SWIZZLE_SIZE === 0 && gY % COOP_SWIZZLE_SIZE === 0) ? gX : 0;
+    const push = push4Memo(M, N, K, swizzleGridX);
 
     graph.record({
       kind: "matmul",
@@ -2491,6 +2528,8 @@ export class HeliosBackend implements Backend {
   ): TensorData {
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
+    let regTilesM = 1;
+    let regTilesN = 1;
     if (outM * N * loopK >= COOP_F16IN_S2X2_MIN_FLOPS) {
       if (COOP_SUBGROUP_TILES_X > 1 || COOP_SUBGROUP_TILES_Y > 1) {
         if (
@@ -2508,14 +2547,27 @@ export class HeliosBackend implements Backend {
         subgroupTilesX = 2;
         subgroupTilesY = 2;
       }
+      const wantM = COOP_REG_TILES_M > 1 ? COOP_REG_TILES_M : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
+      const wantN = COOP_REG_TILES_N > 1 ? COOP_REG_TILES_N : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
+      if (wantM > 1 || wantN > 1) {
+        const effM = this._coopM * subgroupTilesY * wantM;
+        const effN = this._coopN * subgroupTilesX * wantN;
+        if (outM % effM === 0 && N % effN === 0) {
+          regTilesM = wantM;
+          regTilesN = wantN;
+        }
+      }
     }
     const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
     const subgroupSuffix =
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
+    const regTileSuffix =
+      (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
     const kernelName =
       `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
-      subgroupSuffix;
+      subgroupSuffix + regTileSuffix + dbSuffix;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
@@ -2527,9 +2579,10 @@ export class HeliosBackend implements Backend {
     const bufB = this.getCoopInputBuffer(vk, b);
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const push = push4Memo(outM, N, loopK, 0);
-    const gX = Math.ceil(N / (this._coopN * subgroupTilesX));
-    const gY = Math.ceil(outM / (this._coopM * subgroupTilesY));
+    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    const gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
+    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gX % COOP_SWIZZLE_SIZE === 0 && gY % COOP_SWIZZLE_SIZE === 0) ? gX : 0;
+    const push = push4Memo(outM, N, loopK, swizzleGridX);
 
     graph.record({
       kind: "matmul",
