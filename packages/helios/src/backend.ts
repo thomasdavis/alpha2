@@ -806,6 +806,7 @@ export class HeliosBackend implements Backend {
   private _coopPadded2DDispatches = 0;
   private _coopPaddedBatchedDispatches = 0;
   private _coopTransposedARewriteDispatches = 0;
+  private _coopF16InputCache = new WeakMap<TensorData, TensorData>();
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
@@ -838,6 +839,10 @@ export class HeliosBackend implements Backend {
       return vk;
     }
     return getNative();
+  }
+
+  private resetCoopF16InputCache(): void {
+    this._coopF16InputCache = new WeakMap<TensorData, TensorData>();
   }
 
   /** Flush the compute graph — executes all pending GPU ops as a single batch. */
@@ -889,6 +894,7 @@ export class HeliosBackend implements Backend {
 
     // Safe to destroy now — GPU sync above guarantees all work has completed
     processPendingDestroys(vk);
+    this.resetCoopF16InputCache();
   }
 
   /**
@@ -899,6 +905,7 @@ export class HeliosBackend implements Backend {
    */
   releaseGpuTensor(td: TensorData): void {
     releaseGpuBufferFor(td);
+    this._coopF16InputCache.delete(td);
   }
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
@@ -1600,6 +1607,24 @@ export class HeliosBackend implements Backend {
     return handle;
   }
 
+  private canUseCoopMatmulDtypes(a: TensorData, b: TensorData): boolean {
+    const aOk = a.dtype === "f32" || a.dtype === "f16";
+    const bOk = b.dtype === "f32" || b.dtype === "f16";
+    return aOk && bOk;
+  }
+
+  private getCoopInputBuffer(vk: NativeAddon, td: TensorData): number {
+    if (td.dtype === "f16") return this.ensureGpuF16(vk, td);
+    if (td.dtype !== "f32") throw new Error(`Helios coop matmul only supports f32/f16 inputs (got ${td.dtype})`);
+
+    let casted = this._coopF16InputCache.get(td);
+    if (!casted) {
+      casted = this.castDtype(td, "f16");
+      this._coopF16InputCache.set(td, casted);
+    }
+    return this.ensureGpuF16(vk, casted);
+  }
+
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────
 
   private gpuSoftmax(a: TensorData): TensorData {
@@ -2071,15 +2096,18 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
-    if (this._coopMatSupported &&
+    if (coopInputDtypesOk && this._coopMatSupported &&
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, false);
     }
-    const coopPaddedBatched = this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, false);
+    const coopPaddedBatched = coopInputDtypesOk
+      ? this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, false)
+      : null;
     if (coopPaddedBatched) {
       this._coopDispatches++;
       this._coopPaddedBatchedDispatches++;
@@ -2087,7 +2115,9 @@ export class HeliosBackend implements Backend {
     }
     // For large 2D GEMMs, opportunistically pad to coop tile sizes so we can still
     // use tensor cores on non-aligned shapes (generic, non-device-specific path).
-    const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, false, batchSize);
+    const coopPadded = coopInputDtypesOk
+      ? this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, false, batchSize)
+      : null;
     if (coopPadded) {
       this._coopDispatches++;
       this._coopPadded2DDispatches++;
@@ -2194,21 +2224,26 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
-    if (this._coopMatSupported &&
+    if (coopInputDtypesOk && this._coopMatSupported &&
         M % this._coopM === 0 && N % this._coopN === 0 && K % this._coopK === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
       return this.gpuMatmulCoop(vk, a, b, M, N, K, aBatch, batchSize, true);
     }
-    const coopPaddedBatched = this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, true);
+    const coopPaddedBatched = coopInputDtypesOk
+      ? this.tryPaddedCoopMatmulBatched(vk, a, b, M, N, K, aBatch, batchSize, true)
+      : null;
     if (coopPaddedBatched) {
       this._coopDispatches++;
       this._coopPaddedBatchedDispatches++;
       return coopPaddedBatched;
     }
-    const coopPadded = this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, true, batchSize);
+    const coopPadded = coopInputDtypesOk
+      ? this.tryPaddedCoopMatmul2D(vk, a, b, M, N, K, true, batchSize)
+      : null;
     if (coopPadded) {
       this._coopDispatches++;
       this._coopPadded2DDispatches++;
@@ -2273,13 +2308,14 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
 
     // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
     const outM = K;
     const loopK = M;
 
     // Direct cooperative path for aligned transposed-A GEMMs.
-    if (this._coopMatSupported &&
+    if (coopInputDtypesOk && this._coopMatSupported &&
         outM % this._coopM === 0 && N % this._coopN === 0 && loopK % this._coopK === 0) {
       this._coopDispatches++;
       this._coopDirectDispatches++;
@@ -2289,7 +2325,7 @@ export class HeliosBackend implements Backend {
     // Generic tensor-core route for large transposed-A GEMMs:
     // A^T @ B == (transpose(A)) @ (transpose(B))^T.
     // This allows reuse of the cooperative matmul-transposed path.
-    if (this._coopMatSupported &&
+    if (coopInputDtypesOk && this._coopMatSupported &&
         outM * N * loopK >= COOP_TRANSPOSED_A_MIN_FLOPS &&
         this.canUseCoopWithOptionalPadding(outM, N, loopK)) {
       this._coopTransposedARewriteDispatches++;
@@ -2361,7 +2397,7 @@ export class HeliosBackend implements Backend {
     const variant = transposed
       ? (batchSize > 1 ? "transposed_batched" : "transposed")
       : (batchSize > 1 ? "batched" : "basic");
-    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in`;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
@@ -2369,8 +2405,8 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = ensureGpu(vk, a);
-    const bufB = ensureGpu(vk, b);
+    const bufA = this.getCoopInputBuffer(vk, a);
+    const bufB = this.getCoopInputBuffer(vk, b);
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
 
@@ -2400,7 +2436,7 @@ export class HeliosBackend implements Backend {
     aBatch: number[], batchSize: number,
   ): TensorData {
     const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
-    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}`;
+    const kernelName = `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in`;
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
@@ -2408,8 +2444,8 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = ensureGpu(vk, a);
-    const bufB = ensureGpu(vk, b);
+    const bufA = this.getCoopInputBuffer(vk, a);
+    const bufB = this.getCoopInputBuffer(vk, b);
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
     const push = push4Memo(outM, N, loopK, 0);
@@ -2543,12 +2579,15 @@ export class HeliosBackend implements Backend {
         shape: a.shape as number[],
         allBufs: [bufA, bufB],
       });
+      invalidateCache(a);
+      this._coopF16InputCache.delete(a);
       return;
     }
     // CPU fallback
     const aArr = a.data as Float32Array;
     const bArr = b.data as Float32Array;
     for (let i = 0; i < size; i++) aArr[i] += bArr[i];
+    this._coopF16InputCache.delete(a);
   }
 
   // ── In-place scale: A *= scalar on GPU ─────────────────────────────────────
@@ -2579,11 +2618,13 @@ export class HeliosBackend implements Backend {
       });
 
       invalidateCache(a);
+      this._coopF16InputCache.delete(a);
       return;
     }
     if (a.dtype === "f32") {
       const arr = a.data as Float32Array;
       for (let i = 0; i < size; i++) arr[i] *= scalar;
+      this._coopF16InputCache.delete(a);
       return;
     }
     // Generic fallback for non-f32 dtypes: compute out-of-place then copy back.
@@ -2595,6 +2636,7 @@ export class HeliosBackend implements Backend {
     } else {
       for (let i = 0; i < size; i++) dst[i] = src[i];
     }
+    this._coopF16InputCache.delete(a);
   }
 
   // ── Flash Attention (fused forward + backward) ─────────────────────────
@@ -3601,6 +3643,9 @@ export class HeliosBackend implements Backend {
         const vHat = vData[i] / bc2;
         pData[i] -= lr * mHat / (Math.sqrt(vHat) + eps);
       }
+      this._coopF16InputCache.delete(params);
+      this._coopF16InputCache.delete(m);
+      this._coopF16InputCache.delete(v);
       return;
     }
 
@@ -3632,5 +3677,8 @@ export class HeliosBackend implements Backend {
     invalidateCache(params);
     invalidateCache(m);
     invalidateCache(v);
+    this._coopF16InputCache.delete(params);
+    this._coopF16InputCache.delete(m);
+    this._coopF16InputCache.delete(v);
   }
 }

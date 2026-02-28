@@ -19,7 +19,7 @@ import {
   SpirVBuilder, Op, Capability, CooperativeMatrixUse,
   AddressingModel, MemoryModel as MemModelConst, ExecutionModel, ExecutionMode,
   StorageClass, Decoration, BuiltIn, FunctionControl, Scope, MemorySemantics,
-  declareStorageBuffer, declareParamsPushConstant,
+  declareStorageBuffer, declareStorageBufferF16, declareParamsPushConstant,
 } from "./helpers.js";
 
 /**
@@ -39,6 +39,7 @@ function buildCoopMatmul(
   batched: boolean,
   transposedB: boolean,
   transposedA: boolean,
+  inputF16: boolean,
 ): Uint32Array {
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
@@ -48,6 +49,9 @@ function buildCoopMatmul(
   b.addCapability(Capability.Float16);
   b.addCapability(Capability.VulkanMemoryModel);
   b.addCapability(Capability.CooperativeMatrixKHR);
+  if (inputF16) {
+    b.addCapability(Capability.StorageBuffer16BitAccess);
+  }
 
   // Extension
   b.addExtension("SPV_KHR_cooperative_matrix");
@@ -121,9 +125,15 @@ function buildCoopMatmul(
   const tPtrSharedF16 = b.id();
   b.typePointer(tPtrSharedF16, StorageClass.Workgroup, tF16);
 
-  // Storage buffers (f32) — 0=A, 1=B, 2=C
-  const bufA = declareStorageBuffer(b, tF32, tU32, 0, 0, true);
-  const bufB = declareStorageBuffer(b, tF32, tU32, 0, 1, true);
+  // Storage buffers:
+  // - A/B: f32 source buffers or pre-cast f16 source buffers
+  // - C:   f32 output buffer
+  const bufA = inputF16
+    ? declareStorageBufferF16(b, tF16, tU32, 0, 0, true)
+    : declareStorageBuffer(b, tF32, tU32, 0, 0, true);
+  const bufB = inputF16
+    ? declareStorageBufferF16(b, tF16, tU32, 0, 1, true)
+    : declareStorageBuffer(b, tF32, tU32, 0, 1, true);
   const bufC = declareStorageBuffer(b, tF32, tU32, 0, 2, false);
 
   // Push constants: { M, N, K, _pad }
@@ -286,7 +296,7 @@ function buildCoopMatmul(
 
   b.emit(Op.Label, [labelLoopBody]);
 
-  // ── Load tile A from global to shared (f32→f16 conversion) ──────────
+  // ── Load tile A from global to shared ───────────────────────────────
   // Each of 32 threads loads multiple elements to fill coopM*coopK
   // Total elements = coopM * coopK. Each thread loads ceil(total/32) elements.
   const totalA = coopM * coopK;
@@ -317,20 +327,20 @@ function buildCoopMatmul(
       b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
       b.emit(Op.Label, [labelLoad]);
 
-      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, pc,
+      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
         elemOffset, kVal, globalRowBase, M, K, tileA,
         const0u, coopK, batchOffsetA, batched, transposedA);
 
       b.emit(Op.Branch, [labelSkip]);
       b.emit(Op.Label, [labelSkip]);
     } else {
-      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, pc,
+      emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
         elemOffset, kVal, globalRowBase, M, K, tileA,
         const0u, coopK, batchOffsetA, batched, transposedA);
     }
   }
 
-  // ── Load tile B from global to shared (f32→f16 conversion) ──────────
+  // ── Load tile B from global to shared ───────────────────────────────
   const totalB = coopK * coopN;
   const elemsPerThreadB = Math.ceil(totalB / WG_SIZE);
 
@@ -355,14 +365,14 @@ function buildCoopMatmul(
       b.emit(Op.BranchConditional, [inBounds, labelLoad, labelSkip]);
       b.emit(Op.Label, [labelLoad]);
 
-      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, pc,
+      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
         elemOffset, kVal, globalColBase, N, K, tileB,
         const0u, coopN, batchOffsetB, batched, transposedB);
 
       b.emit(Op.Branch, [labelSkip]);
       b.emit(Op.Label, [labelSkip]);
     } else {
-      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, pc,
+      emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
         elemOffset, kVal, globalColBase, N, K, tileB,
         const0u, coopN, batchOffsetB, batched, transposedB);
     }
@@ -447,8 +457,8 @@ function buildCoopMatmul(
 function emitLoadTileA(
   b: SpirVBuilder,
   tF32: number, tF16: number, tU32: number, tPtrSharedF16: number,
-  bufA: { varId: number; tPtrF32: number },
-  pc: { varId: number; tPtrF32: number },
+  bufA: { varId: number; tPtrF32?: number; tPtrF16?: number },
+  inputF16: boolean,
   elemOffset: number,
   kVal: number,
   globalRowBase: number,
@@ -497,15 +507,22 @@ function emitLoadTileA(
     aIdx = aIdxBatch;
   }
 
-  // Load f32 from global A
-  const ptrA = b.id();
-  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, const0u, aIdx]);
-  const valF32 = b.id();
-  b.emit(Op.Load, [tF32, valF32, ptrA]);
-
-  // Convert f32 → f16
-  const valF16 = b.id();
-  b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  let valF16: number;
+  if (inputF16) {
+    // Load f16 directly from pre-cast storage buffer.
+    const ptrA = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrF16!, ptrA, bufA.varId, const0u, aIdx]);
+    valF16 = b.id();
+    b.emit(Op.Load, [tF16, valF16, ptrA]);
+  } else {
+    // Load f32 then convert to f16 for cooperative matrix tile.
+    const ptrA = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrF32!, ptrA, bufA.varId, const0u, aIdx]);
+    const valF32 = b.id();
+    b.emit(Op.Load, [tF32, valF32, ptrA]);
+    valF16 = b.id();
+    b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  }
 
   // Store to shared memory
   const ptrShared = b.id();
@@ -522,8 +539,8 @@ function emitLoadTileA(
 function emitLoadTileB(
   b: SpirVBuilder,
   tF32: number, tF16: number, tU32: number, tPtrSharedF16: number,
-  bufB: { varId: number; tPtrF32: number },
-  pc: { varId: number; tPtrF32: number },
+  bufB: { varId: number; tPtrF32?: number; tPtrF16?: number },
+  inputF16: boolean,
   elemOffset: number,
   kVal: number,
   globalColBase: number,
@@ -571,15 +588,22 @@ function emitLoadTileB(
     bIdx = bIdxBatch;
   }
 
-  // Load f32 from global B
-  const ptrB = b.id();
-  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, const0u, bIdx]);
-  const valF32 = b.id();
-  b.emit(Op.Load, [tF32, valF32, ptrB]);
-
-  // Convert f32 → f16
-  const valF16 = b.id();
-  b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  let valF16: number;
+  if (inputF16) {
+    // Load f16 directly from pre-cast storage buffer.
+    const ptrB = b.id();
+    b.emit(Op.AccessChain, [bufB.tPtrF16!, ptrB, bufB.varId, const0u, bIdx]);
+    valF16 = b.id();
+    b.emit(Op.Load, [tF16, valF16, ptrB]);
+  } else {
+    // Load f32 then convert to f16 for cooperative matrix tile.
+    const ptrB = b.id();
+    b.emit(Op.AccessChain, [bufB.tPtrF32!, ptrB, bufB.varId, const0u, bIdx]);
+    const valF32 = b.id();
+    b.emit(Op.Load, [tF32, valF32, ptrB]);
+    valF16 = b.id();
+    b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  }
 
   // Store to shared memory
   const ptrShared = b.id();
@@ -589,26 +613,56 @@ function emitLoadTileB(
 
 // ── Exported kernel generators ──────────────────────────────────────────────
 
-export function kernelCoopMatmulBasic(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, false);
+export function kernelCoopMatmulBasic(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16);
 }
 
-export function kernelCoopMatmulBatched(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, false);
+export function kernelCoopMatmulBatched(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16);
 }
 
-export function kernelCoopMatmulTransposed(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true, false);
+export function kernelCoopMatmulTransposed(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16);
 }
 
-export function kernelCoopMatmulTransposedBatched(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, true, false);
+export function kernelCoopMatmulTransposedBatched(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16);
 }
 
-export function kernelCoopMatmulTransposedA(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, true);
+export function kernelCoopMatmulTransposedA(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16);
 }
 
-export function kernelCoopMatmulTransposedABatched(coopM: number, coopN: number, coopK: number): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, true);
+export function kernelCoopMatmulTransposedABatched(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  inputF16 = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16);
 }

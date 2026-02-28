@@ -245,19 +245,22 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           case "bwd_dkv": spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D); break;
         }
       }
-      // Cooperative matrix matmul — name encodes: matmul_coop_{variant}_{M}_{N}_{K}
+      // Cooperative matrix matmul — name encodes:
+      //   matmul_coop_{variant}_{M}_{N}_{K}
+      //   matmul_coop_{variant}_{M}_{N}_{K}_f16in
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?$/);
         if (coopMatch) {
-          const [, variant, mS, nS, kS] = coopMatch;
+          const [, variant, mS, nS, kS, f16Suffix] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
+          const inputF16 = f16Suffix === "f16in";
           switch (variant) {
-            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK); break;
-            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK); break;
-            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK); break;
-            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK); break;
-            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK); break;
-            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK); break;
+            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16); break;
+            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16); break;
+            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16); break;
+            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16); break;
+            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16); break;
+            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16); break;
           }
         }
       }
