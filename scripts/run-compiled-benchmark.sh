@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 STEPS="${1:-100}"
 BACKEND="${BACKEND:-helios}"
 DATA_PATH="${DATA_PATH:-data/abc-small.txt}"
+TOKENIZER_ARTIFACTS="${TOKENIZER_ARTIFACTS:-perf/tokenizer-artifacts-benchmark.json}"
 BATCH="${BATCH:-2}"
 BLOCK="${BLOCK:-64}"
 LAYERS="${LAYERS:-2}"
@@ -163,6 +164,7 @@ for run_try in $(seq 1 "$run_attempts"); do
   set +e
   HELIOS_WG_SIZE="${HELIOS_WG_SIZE}" ./.bun-out/alpha train \
     --data="${DATA_PATH}" \
+    --tokenizerArtifacts="${TOKENIZER_ARTIFACTS}" \
     --backend="${BACKEND}" \
     --steps="${STEPS}" \
     --lr="${LR}" \

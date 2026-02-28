@@ -38,6 +38,7 @@ Outputs:
 - `perf/last-benchmark.env` (latest metrics for commit message)
 - `perf/run-<timestamp>.log` (full run log)
 - `coop_matmul` line in run log (direct/padded/rewrite coop dispatch counts + hit rate)
+- benchmark tokenizer cache: `perf/tokenizer-artifacts-benchmark.json` (auto-built once, then reused)
 
 Adaptive runtime tuning knobs (no source edit/recompile needed):
 - `ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY`

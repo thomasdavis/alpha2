@@ -7,7 +7,7 @@ import { train as runTrain, createRemoteReporter, loadTextSample, sample as runS
 import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
-import { loadArtifacts } from "@alpha/tokenizers";
+import { loadArtifacts, saveArtifacts } from "@alpha/tokenizers";
 import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deserializeGraph } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
@@ -163,9 +163,28 @@ export async function trainCmd(args: string[]): Promise<void> {
   });
   const rng = resolveRng(trainConfig.seed);
 
-  // Build tokenizer from training data (sample first 100MB for large files)
-  const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
-  const tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));
+  // Tokenizer artifacts:
+  // - if --tokenizerArtifacts=<path> is passed and file exists, load it
+  // - otherwise build from a 100MB sample and optionally persist to that path
+  const tokenizerArtifactsPath = kv["tokenizerArtifacts"];
+  let tokenizerArtifacts;
+  if (tokenizerArtifactsPath) {
+    const fs = await import("node:fs/promises");
+    const hasArtifacts = await fs.access(tokenizerArtifactsPath).then(() => true).catch(() => false);
+    if (hasArtifacts) {
+      tokenizerArtifacts = await Effect.runPromise(loadArtifacts(tokenizerArtifactsPath));
+      tokenizer.loadArtifacts(tokenizerArtifacts as any);
+      console.log(`Tokenizer artifacts: loaded ${tokenizerArtifactsPath}`);
+    } else {
+      const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
+      tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));
+      await Effect.runPromise(saveArtifacts(tokenizerArtifactsPath, tokenizerArtifacts));
+      console.log(`Tokenizer artifacts: built and saved to ${tokenizerArtifactsPath}`);
+    }
+  } else {
+    const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
+    tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));
+  }
 
   // Override vocab size from tokenizer
   const finalModelConfig: ModelConfig = {
