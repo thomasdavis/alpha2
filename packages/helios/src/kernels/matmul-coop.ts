@@ -19,8 +19,76 @@ import {
   SpirVBuilder, Op, Capability, CooperativeMatrixUse,
   AddressingModel, MemoryModel as MemModelConst, ExecutionModel, ExecutionMode,
   StorageClass, Decoration, BuiltIn, FunctionControl, Scope, MemorySemantics,
-  declareStorageBuffer, declareStorageBufferF16, declareParamsPushConstant,
+  declareParamsPushConstant,
 } from "./helpers.js";
+
+function isPowerOfTwo(v: number): boolean {
+  return v > 0 && (v & (v - 1)) === 0;
+}
+
+function log2Pow2(v: number): number {
+  return 31 - Math.clz32(v);
+}
+
+function declareStorageBufferF32Ssbo(
+  b: SpirVBuilder,
+  tF32: number,
+  set: number,
+  binding: number,
+  readonly_: boolean,
+): { varId: number; tPtrF32: number } {
+  const tRuntimeArr = b.id();
+  b.typeRuntimeArray(tRuntimeArr, tF32);
+  b.addDecorate(tRuntimeArr, Decoration.ArrayStride, 4);
+
+  const tStruct = b.id();
+  b.typeStruct(tStruct, [tRuntimeArr]);
+  b.addDecorate(tStruct, Decoration.Block);
+  b.addMemberDecorate(tStruct, 0, Decoration.Offset, 0);
+  if (readonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonWritable);
+
+  const tPtrStruct = b.id();
+  b.typePointer(tPtrStruct, StorageClass.StorageBuffer, tStruct);
+  const tPtrF32 = b.id();
+  b.typePointer(tPtrF32, StorageClass.StorageBuffer, tF32);
+
+  const varId = b.id();
+  b.variable(tPtrStruct, varId, StorageClass.StorageBuffer);
+  b.addDecorate(varId, Decoration.DescriptorSet, set);
+  b.addDecorate(varId, Decoration.Binding, binding);
+
+  return { varId, tPtrF32 };
+}
+
+function declareStorageBufferF16Ssbo(
+  b: SpirVBuilder,
+  tF16: number,
+  set: number,
+  binding: number,
+  readonly_: boolean,
+): { varId: number; tPtrF16: number } {
+  const tRuntimeArr = b.id();
+  b.typeRuntimeArray(tRuntimeArr, tF16);
+  b.addDecorate(tRuntimeArr, Decoration.ArrayStride, 2);
+
+  const tStruct = b.id();
+  b.typeStruct(tStruct, [tRuntimeArr]);
+  b.addDecorate(tStruct, Decoration.Block);
+  b.addMemberDecorate(tStruct, 0, Decoration.Offset, 0);
+  if (readonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonWritable);
+
+  const tPtrStruct = b.id();
+  b.typePointer(tPtrStruct, StorageClass.StorageBuffer, tStruct);
+  const tPtrF16 = b.id();
+  b.typePointer(tPtrF16, StorageClass.StorageBuffer, tF16);
+
+  const varId = b.id();
+  b.variable(tPtrStruct, varId, StorageClass.StorageBuffer);
+  b.addDecorate(varId, Decoration.DescriptorSet, set);
+  b.addDecorate(varId, Decoration.Binding, binding);
+
+  return { varId, tPtrF16 };
+}
 
 /**
  * Build cooperative matrix matmul kernel.
@@ -53,6 +121,7 @@ function buildCoopMatmul(
   b.addCapability(Capability.Float16);
   b.addCapability(Capability.VulkanMemoryModel);
   b.addCapability(Capability.CooperativeMatrixKHR);
+  b.addCapability(Capability.StorageBufferStorageClass);
   if (inputF16 || accumF16) {
     b.addCapability(Capability.StorageBuffer16BitAccess);
   }
@@ -60,6 +129,7 @@ function buildCoopMatmul(
   // Extension
   b.addExtension("SPV_KHR_cooperative_matrix");
   b.addExtension("SPV_KHR_vulkan_memory_model");
+  b.addExtension("SPV_KHR_storage_buffer_storage_class");
 
   const glslStd = b.id();
   b.addExtInstImport(glslStd, "GLSL.std.450");
@@ -133,6 +203,26 @@ function buildCoopMatmul(
   // Cooperative matrix layout constant: ColumnMajorKHR = 1
   const constColumnMajor = const1u;
   const subgroupTileCount = subgroupTilesX * subgroupTilesY;
+  const coopKPow2 = isPowerOfTwo(coopK);
+  const coopNPow2 = isPowerOfTwo(coopN);
+
+  let constCoopKShift: number | undefined;
+  let constCoopKMask: number | undefined;
+  if (coopKPow2) {
+    constCoopKShift = b.id();
+    b.constant(tU32, constCoopKShift, log2Pow2(coopK));
+    constCoopKMask = b.id();
+    b.constant(tU32, constCoopKMask, coopK - 1);
+  }
+
+  let constCoopNShift: number | undefined;
+  let constCoopNMask: number | undefined;
+  if (coopNPow2) {
+    constCoopNShift = b.id();
+    b.constant(tU32, constCoopNShift, log2Pow2(coopN));
+    constCoopNMask = b.id();
+    b.constant(tU32, constCoopNMask, coopN - 1);
+  }
 
   // Shared memory for loading tiles from global memory
   // Tile A: coopM * coopK f16 elements = coopM * coopK * 2 bytes
@@ -156,12 +246,12 @@ function buildCoopMatmul(
   // - A/B: f32 source buffers or pre-cast f16 source buffers
   // - C:   f32 output buffer
   const bufA: { varId: number; tPtrF32?: number; tPtrF16?: number } = inputF16
-    ? declareStorageBufferF16(b, tF16, tU32, 0, 0, true)
-    : declareStorageBuffer(b, tF32, tU32, 0, 0, true);
+    ? declareStorageBufferF16Ssbo(b, tF16, 0, 0, true)
+    : declareStorageBufferF32Ssbo(b, tF32, 0, 0, true);
   const bufB: { varId: number; tPtrF32?: number; tPtrF16?: number } = inputF16
-    ? declareStorageBufferF16(b, tF16, tU32, 0, 1, true)
-    : declareStorageBuffer(b, tF32, tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, tF32, tU32, 0, 2, false);
+    ? declareStorageBufferF16Ssbo(b, tF16, 0, 1, true)
+    : declareStorageBufferF32Ssbo(b, tF32, 0, 1, true);
+  const bufC = declareStorageBufferF32Ssbo(b, tF32, 0, 2, false);
 
   // Push constants: { M, N, K, _pad }
   const pc = declareParamsPushConstant(b, tF32, 4);
@@ -432,6 +522,38 @@ function buildCoopMatmul(
     const elemsPerThreadA = Math.ceil(totalA / loadWidth);
     const elemsPerThreadB = Math.ceil(totalB / loadWidth);
     const loadThreadBase = subgroupMode ? laneIdVal! : tid;
+    const canUseStridedCoordsA = (loadWidth % coopK) === 0;
+    const canUseStridedCoordsB = (loadWidth % coopN) === 0;
+    const rowStrideA = canUseStridedCoordsA ? (loadWidth / coopK) : 0;
+    const rowStrideB = canUseStridedCoordsB ? (loadWidth / coopN) : 0;
+
+    let baseLocalRowA: number | undefined;
+    let baseLocalColA: number | undefined;
+    if (canUseStridedCoordsA) {
+      baseLocalRowA = b.id();
+      baseLocalColA = b.id();
+      if (constCoopKShift !== undefined && constCoopKMask !== undefined) {
+        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowA, loadThreadBase, constCoopKShift]);
+        b.emit(Op.BitwiseAnd, [tU32, baseLocalColA, loadThreadBase, constCoopKMask]);
+      } else {
+        b.emit(Op.UDiv, [tU32, baseLocalRowA, loadThreadBase, constCoopK]);
+        b.emit(Op.UMod, [tU32, baseLocalColA, loadThreadBase, constCoopK]);
+      }
+    }
+
+    let baseLocalRowB: number | undefined;
+    let baseLocalColB: number | undefined;
+    if (canUseStridedCoordsB) {
+      baseLocalRowB = b.id();
+      baseLocalColB = b.id();
+      if (constCoopNShift !== undefined && constCoopNMask !== undefined) {
+        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowB, loadThreadBase, constCoopNShift]);
+        b.emit(Op.BitwiseAnd, [tU32, baseLocalColB, loadThreadBase, constCoopNMask]);
+      } else {
+        b.emit(Op.UDiv, [tU32, baseLocalRowB, loadThreadBase, constCoopN]);
+        b.emit(Op.UMod, [tU32, baseLocalColB, loadThreadBase, constCoopN]);
+      }
+    }
 
     let subgroupBaseA = const0u;
     let subgroupBaseB = const0u;
@@ -462,6 +584,20 @@ function buildCoopMatmul(
         b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseA, elemOffset]);
       }
 
+      let localRowOpt: number | undefined;
+      let localColOpt: number | undefined;
+      if (canUseStridedCoordsA) {
+        localColOpt = baseLocalColA!;
+        if (e === 0) {
+          localRowOpt = baseLocalRowA!;
+        } else {
+          const constERow = b.id();
+          b.constant(tU32, constERow, e * rowStrideA);
+          localRowOpt = b.id();
+          b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowA!, constERow]);
+        }
+      }
+
       if (e * loadWidth + loadWidth > totalA) {
         const constTotal = b.id();
         b.constant(tU32, constTotal, totalA);
@@ -475,14 +611,16 @@ function buildCoopMatmul(
 
         emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
           elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
-          const0u, coopK, batchOffsetA, batched, transposedA);
+          const0u, coopK, constCoopKShift, constCoopKMask,
+          batchOffsetA, batched, transposedA, localRowOpt, localColOpt);
 
         b.emit(Op.Branch, [labelSkip]);
         b.emit(Op.Label, [labelSkip]);
       } else {
         emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
           elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
-          const0u, coopK, batchOffsetA, batched, transposedA);
+          const0u, coopK, constCoopKShift, constCoopKMask,
+          batchOffsetA, batched, transposedA, localRowOpt, localColOpt);
       }
     }
 
@@ -502,6 +640,20 @@ function buildCoopMatmul(
         b.emit(Op.IAdd, [tU32, sharedOffset, subgroupBaseB, elemOffset]);
       }
 
+      let localRowOpt: number | undefined;
+      let localColOpt: number | undefined;
+      if (canUseStridedCoordsB) {
+        localColOpt = baseLocalColB!;
+        if (e === 0) {
+          localRowOpt = baseLocalRowB!;
+        } else {
+          const constERow = b.id();
+          b.constant(tU32, constERow, e * rowStrideB);
+          localRowOpt = b.id();
+          b.emit(Op.IAdd, [tU32, localRowOpt, baseLocalRowB!, constERow]);
+        }
+      }
+
       if (e * loadWidth + loadWidth > totalB) {
         const constTotal = b.id();
         b.constant(tU32, constTotal, totalB);
@@ -515,14 +667,16 @@ function buildCoopMatmul(
 
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
-          const0u, coopN, batchOffsetB, batched, transposedB);
+          const0u, coopN, constCoopNShift, constCoopNMask,
+          batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
 
         b.emit(Op.Branch, [labelSkip]);
         b.emit(Op.Label, [labelSkip]);
       } else {
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
-          const0u, coopN, batchOffsetB, batched, transposedB);
+          const0u, coopN, constCoopNShift, constCoopNMask,
+          batchOffsetB, batched, transposedB, localRowOpt, localColOpt);
       }
     }
 
@@ -621,25 +775,40 @@ function emitLoadTileA(
   M: number, K: number,
   tileA: number,
   const0u: number, coopK: number,
+  constCoopKShift: number | undefined,
+  constCoopKMask: number | undefined,
   batchOffsetA: number | undefined, batched: boolean,
   transposedA: boolean,
+  precomputedLocalRow?: number,
+  precomputedLocalCol?: number,
 ): void {
   const constCoopK = b.id();
   b.constant(tU32, constCoopK, coopK);
 
   // localRow = elemOffset / coopK, localCol = elemOffset % coopK
-  const localRow = b.id();
-  b.emit(Op.UDiv, [tU32, localRow, elemOffset, constCoopK]);
-  const localCol = b.id();
-  b.emit(Op.UMod, [tU32, localCol, elemOffset, constCoopK]);
+  let localRow = precomputedLocalRow;
+  let localCol = precomputedLocalCol;
+  if (localRow === undefined || localCol === undefined) {
+    localRow = b.id();
+    localCol = b.id();
+    if (constCoopKShift !== undefined && constCoopKMask !== undefined) {
+      b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constCoopKShift]);
+      b.emit(Op.BitwiseAnd, [tU32, localCol, elemOffset, constCoopKMask]);
+    } else {
+      b.emit(Op.UDiv, [tU32, localRow, elemOffset, constCoopK]);
+      b.emit(Op.UMod, [tU32, localCol, elemOffset, constCoopK]);
+    }
+  }
+  const localRowVal = localRow!;
+  const localColVal = localCol!;
 
   // globalRow = globalRowBase + localRow
   const globalRow = b.id();
-  b.emit(Op.IAdd, [tU32, globalRow, globalRowBase, localRow]);
+  b.emit(Op.IAdd, [tU32, globalRow, globalRowBase, localRowVal]);
 
   // globalCol = kVal + localCol
   const globalCol = b.id();
-  b.emit(Op.IAdd, [tU32, globalCol, kVal, localCol]);
+  b.emit(Op.IAdd, [tU32, globalCol, kVal, localColVal]);
 
   // A index:
   //   regular:     A[globalRow, globalCol] => globalRow * K + globalCol
@@ -704,25 +873,40 @@ function emitLoadTileB(
   N: number, K: number,
   tileB: number,
   const0u: number, coopN: number,
+  constCoopNShift: number | undefined,
+  constCoopNMask: number | undefined,
   batchOffsetB: number | undefined, batched: boolean,
   transposed: boolean,
+  precomputedLocalRow?: number,
+  precomputedLocalCol?: number,
 ): void {
   const constCoopN = b.id();
   b.constant(tU32, constCoopN, coopN);
 
   // localRow = elemOffset / coopN, localCol = elemOffset % coopN
-  const localRow = b.id();
-  b.emit(Op.UDiv, [tU32, localRow, elemOffset, constCoopN]);
-  const localCol = b.id();
-  b.emit(Op.UMod, [tU32, localCol, elemOffset, constCoopN]);
+  let localRow = precomputedLocalRow;
+  let localCol = precomputedLocalCol;
+  if (localRow === undefined || localCol === undefined) {
+    localRow = b.id();
+    localCol = b.id();
+    if (constCoopNShift !== undefined && constCoopNMask !== undefined) {
+      b.emit(Op.ShiftRightLogical, [tU32, localRow, elemOffset, constCoopNShift]);
+      b.emit(Op.BitwiseAnd, [tU32, localCol, elemOffset, constCoopNMask]);
+    } else {
+      b.emit(Op.UDiv, [tU32, localRow, elemOffset, constCoopN]);
+      b.emit(Op.UMod, [tU32, localCol, elemOffset, constCoopN]);
+    }
+  }
+  const localRowVal = localRow!;
+  const localColVal = localCol!;
 
   // kRow = kVal + localRow (row within K dimension)
   const kRow = b.id();
-  b.emit(Op.IAdd, [tU32, kRow, kVal, localRow]);
+  b.emit(Op.IAdd, [tU32, kRow, kVal, localRowVal]);
 
   // nCol = globalColBase + localCol
   const nCol = b.id();
-  b.emit(Op.IAdd, [tU32, nCol, globalColBase, localCol]);
+  b.emit(Op.IAdd, [tU32, nCol, globalColBase, localColVal]);
 
   let bIdx: number;
   if (transposed) {

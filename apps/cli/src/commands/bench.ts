@@ -457,6 +457,61 @@ function verifyHeliosMatmulAgainstCpu(
   };
 }
 
+function verifyHeliosMatmulTransposedAgainstCpu(
+  helios: HeliosBackend,
+  shape: MatmulShape,
+  atol: number,
+  rtol: number,
+): MatmulCheckResult {
+  const cpu = new CpuRefBackend();
+  const heliosAny = helios as any;
+  const releaseFn: ((td: TensorData) => void) | undefined =
+    typeof heliosAny.releaseGpuTensor === "function" ? heliosAny.releaseGpuTensor.bind(heliosAny) : undefined;
+  const syncFn: (() => void) | undefined =
+    typeof heliosAny.syncGpu === "function" ? heliosAny.syncGpu.bind(heliosAny) : undefined;
+
+  const aData = makeDeterministicArray(shape.m * shape.k, 0x1234abcd);
+  const bData = makeDeterministicArray(shape.n * shape.k, 0x5678ef90); // B stored as [N,K]
+
+  const aGpu = helios.fromArray(aData, [shape.m, shape.k]);
+  const bGpu = helios.fromArray(bData, [shape.n, shape.k]);
+  const aCpu = cpu.fromArray(aData, [shape.m, shape.k]);
+  const bCpuNk = cpu.fromArray(bData, [shape.n, shape.k]);
+  const bCpuKn = cpu.transpose(bCpuNk, 0, 1);
+
+  const outGpu = helios.matmulTransposed(aGpu, bGpu);
+  if (syncFn) syncFn();
+  const outGpuData = outGpu.data as Float32Array;
+  const outCpuData = cpu.matmul(aCpu, bCpuKn).data as Float32Array;
+
+  let maxAbs = 0;
+  let maxRel = 0;
+  let failCount = 0;
+  for (let i = 0; i < outCpuData.length; i++) {
+    const ref = outCpuData[i];
+    const got = outGpuData[i];
+    const absErr = Math.abs(got - ref);
+    const relErr = absErr / Math.max(1e-12, Math.abs(ref));
+    if (absErr > maxAbs) maxAbs = absErr;
+    if (relErr > maxRel) maxRel = relErr;
+    if (absErr > atol + rtol * Math.abs(ref)) failCount++;
+  }
+
+  if (releaseFn) {
+    releaseFn(outGpu);
+    releaseFn(aGpu);
+    releaseFn(bGpu);
+  }
+
+  return {
+    ok: failCount === 0,
+    maxAbs,
+    maxRel,
+    failCount,
+    total: outCpuData.length,
+  };
+}
+
 function ratioStr(r: number | null): string {
   if (r === null || !Number.isFinite(r) || r <= 0) return "n/a";
   if (r >= 1) return `${r.toFixed(2)}x`;
@@ -602,6 +657,7 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
   const warmup = intArg(kv, "warmup", 6);
   const pythonBin = strArg(kv, "python", "python3");
   const dtypeRaw = strArg(kv, "dtype", "float32");
+  const heliosVariantRaw = strArg(kv, "heliosVariant", "matmul");
   const runCheck = boolArg(kv, "check", false);
   const checkShapeRaw = strArg(kv, "checkShape", "384x384x384");
   const checkAtol = floatArg(kv, "checkAtol", 2e-2);
@@ -611,6 +667,8 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
     dtypeRaw === "float16" || dtypeRaw === "float32" || dtypeRaw === "bfloat16"
       ? dtypeRaw
       : "float32";
+  const heliosVariant: "matmul" | "matmulTransposed" =
+    heliosVariantRaw === "matmulTransposed" ? "matmulTransposed" : "matmul";
 
   let shapes: MatmulShape[];
   try {
@@ -622,6 +680,7 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
 
   console.log("── CUDA Reference Benchmark: Helios vs PyTorch CUDA ──\n");
   console.log(`iters=${iters} warmup=${warmup} dtype=${dtype}`);
+  console.log(`helios_variant=${heliosVariant}`);
   console.log(`shapes=${shapes.map((s) => s.key).join(",")}\n`);
 
   const helios = new HeliosBackend();
@@ -656,7 +715,9 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
       return;
     }
 
-    const check = verifyHeliosMatmulAgainstCpu(helios, checkShape, checkAtol, checkRtol);
+    const check = heliosVariant === "matmulTransposed"
+      ? verifyHeliosMatmulTransposedAgainstCpu(helios, checkShape, checkAtol, checkRtol)
+      : verifyHeliosMatmulAgainstCpu(helios, checkShape, checkAtol, checkRtol);
     console.log(
       `check_shape=${checkShape.key} ` +
       `max_abs=${check.maxAbs.toExponential(3)} ` +
@@ -674,17 +735,23 @@ async function benchCuda(kv: Record<string, string>, iters: number): Promise<voi
   const rows: HeliosCudaRow[] = [];
   for (const shape of shapes) {
     const a = helios.randn([shape.m, shape.k]);
-    const b = helios.randn([shape.k, shape.n]);
+    const b = heliosVariant === "matmulTransposed"
+      ? helios.randn([shape.n, shape.k])
+      : helios.randn([shape.k, shape.n]);
+    const runMatmul = (): TensorData =>
+      heliosVariant === "matmulTransposed"
+        ? helios.matmulTransposed(a, b)
+        : helios.matmul(a, b);
 
     const warmupOuts: TensorData[] = [];
-    for (let i = 0; i < warmup; i++) warmupOuts.push(helios.matmul(a, b));
+    for (let i = 0; i < warmup; i++) warmupOuts.push(runMatmul());
     if (syncFn) syncFn();
     if (flushFn) flushFn();
     if (releaseFn) for (const td of warmupOuts) releaseFn(td);
 
     const outs: TensorData[] = [];
     const t0 = performance.now();
-    for (let i = 0; i < iters; i++) outs.push(helios.matmul(a, b));
+    for (let i = 0; i < iters; i++) outs.push(runMatmul());
     if (syncFn) syncFn();
     else void (outs[outs.length - 1].data as Float32Array)[0];
     const elapsedMs = performance.now() - t0;
