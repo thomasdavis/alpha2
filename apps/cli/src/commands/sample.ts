@@ -52,6 +52,7 @@ export async function sampleCmd(args: string[]): Promise<void> {
     steps: intArg(kv, "steps", defaultSampleConfig.steps),
     temperature: floatArg(kv, "temp", defaultSampleConfig.temperature),
     topk: intArg(kv, "topk", defaultSampleConfig.topk),
+    topp: floatArg(kv, "topp", floatArg(kv, "topP", defaultSampleConfig.topp ?? 1.0)),
   };
 
   // Load checkpoint (contains model weights + tokenizer)
@@ -72,7 +73,7 @@ export async function sampleCmd(args: string[]): Promise<void> {
   console.log(`Model: ${modelConfig.nLayer}L ${modelConfig.nEmbd}D ${modelConfig.nHead}H vocab=${modelConfig.vocabSize}`);
   console.log(`Tokenizer: ${state.tokenizerArtifacts.type} (${tokenizer.vocabSize} tokens)`);
   console.log(`Prompt: "${prompt}"`);
-  console.log(`Sampling: steps=${sampleConfig.steps} temp=${sampleConfig.temperature} topk=${sampleConfig.topk}`);
+  console.log(`Sampling: steps=${sampleConfig.steps} temp=${sampleConfig.temperature} topk=${sampleConfig.topk} topp=${sampleConfig.topp ?? 1}`);
   console.log(`Engine: ${useSlow ? "autograd (slow)" : "inference (fast)"}`);
   console.log(`---`);
 
@@ -116,7 +117,7 @@ export async function sampleCmd(args: string[]): Promise<void> {
     let pos = tokens.length;
 
     // Sample first token from prefill logits
-    let nextToken = sampleFromLogits(model, logits, sampleConfig.temperature, sampleConfig.topk, rng);
+    let nextToken = sampleFromLogits(model, logits, sampleConfig.temperature, sampleConfig.topk, rng, sampleConfig.topp ?? 1);
     generated.push(nextToken);
 
     // Decode loop
@@ -125,7 +126,7 @@ export async function sampleCmd(args: string[]): Promise<void> {
       if (pos >= modelConfig.blockSize) break;
       logits = decodeStep(model, nextToken, pos);
       pos++;
-      nextToken = sampleFromLogits(model, logits, sampleConfig.temperature, sampleConfig.topk, rng);
+      nextToken = sampleFromLogits(model, logits, sampleConfig.temperature, sampleConfig.topk, rng, sampleConfig.topp ?? 1);
       generated.push(nextToken);
 
       // Stop on end-of-text token

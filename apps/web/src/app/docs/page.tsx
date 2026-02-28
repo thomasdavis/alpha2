@@ -409,6 +409,7 @@ export default function DocsPage() {
           [<code>steps</code>, "int", <code>200</code>, "Max tokens to generate (capped at 500)"],
           [<code>temp</code>, "float", <code>0.8</code>, "Sampling temperature"],
           [<code>topk</code>, "int", <code>40</code>, "Top-k filtering (0 = disabled)"],
+          [<code>top_p</code>, "float", <code>1.0</code>, "Top-p (nucleus) filtering (1.0 = disabled)"],
         ]}
       />
 
@@ -460,6 +461,7 @@ export default function DocsPage() {
           [<code>maxTokens</code>, "int", <code>200</code>, "Max tokens (capped at 500)"],
           [<code>temperature</code>, "float", <code>0.8</code>, "Sampling temperature"],
           [<code>topk</code>, "int", <code>40</code>, "Top-k filtering"],
+          [<code>top_p</code>, "float", <code>1.0</code>, "Top-p (nucleus) filtering"],
         ]}
       />
 

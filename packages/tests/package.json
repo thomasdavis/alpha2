@@ -12,6 +12,7 @@
     "@alpha/tokenizers": "*",
     "@alpha/model": "*",
     "@alpha/train": "*",
+    "@alpha/inference": "*",
     "@alpha/helios": "*",
     "effect": "^3.12.0"
   },

@@ -145,6 +145,8 @@ app.post("/v1/chat/completions", async (c) => {
   const body = await c.req.json();
   const messages: Array<{ role: string; content: string }> = body.messages ?? [];
   const temperature: number = body.temperature ?? 0.7;
+  const topk: number = body.topk ?? body.top_k ?? 40;
+  const topp: number = body.top_p ?? body.topp ?? 1.0;
   const stream: boolean = body.stream === true;
 
   const prompt = messages.map((m) => m.content).join("\n");
@@ -193,7 +195,7 @@ app.post("/v1/chat/completions", async (c) => {
             return;
           }
 
-          const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+          const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
           generatedTokens.push(tok);
           count++;
 
@@ -226,7 +228,7 @@ app.post("/v1/chat/completions", async (c) => {
   // Non-streaming
   let count = 0;
   for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-    const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+    const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
     generatedTokens.push(tok);
     count++;
 

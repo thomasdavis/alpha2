@@ -10,13 +10,14 @@ export async function GET(request: NextRequest) {
   const steps = Math.min(parseInt(request.nextUrl.searchParams.get("steps") ?? "200", 10), 500);
   const temperature = parseFloat(request.nextUrl.searchParams.get("temp") ?? "0.8");
   const topk = parseInt(request.nextUrl.searchParams.get("topk") ?? "40", 10);
+  const topp = parseFloat(request.nextUrl.searchParams.get("topp") ?? request.nextUrl.searchParams.get("top_p") ?? "1.0");
 
   if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
     return Response.json({ error: "Unknown model" }, { status: 400 });
   }
 
   const model = await ensureModel(modelId);
-  const gen = generateTokens(model, query, steps, temperature, topk);
+  const gen = generateTokens(model, query, steps, temperature, topk, topp);
 
   const stream = new ReadableStream({
     start(controller) {

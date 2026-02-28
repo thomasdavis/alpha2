@@ -23,6 +23,12 @@ async function handleGenerate(request: NextRequest) {
     20_000,
   );
   const temperature: number = parseFloat(request.nextUrl.searchParams.get("temperature") ?? "") || (body.temperature ?? 0.7);
+  const topkParam = request.nextUrl.searchParams.get("topk");
+  const topkParsed = topkParam !== null ? Number.parseInt(topkParam, 10) : Number.NaN;
+  const topk: number = Number.isFinite(topkParsed) ? topkParsed : (body.topk ?? body.top_k ?? 40);
+  const toppParam = request.nextUrl.searchParams.get("top_p");
+  const toppParsed = toppParam !== null ? Number.parseFloat(toppParam) : Number.NaN;
+  const topp: number = Number.isFinite(toppParsed) ? toppParsed : (body.top_p ?? body.topp ?? 1.0);
   const modelId: string = request.nextUrl.searchParams.get("model") ?? body.model ?? runs[0]?.id;
 
   if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
@@ -51,7 +57,7 @@ async function handleGenerate(request: NextRequest) {
     const generatedTokens: number[] = [];
 
     for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-      const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+      const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
       generatedTokens.push(tok);
       completionCount++;
 

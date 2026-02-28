@@ -588,7 +588,8 @@ export function decodeStep(
 // ── Sampling ───────────────────────────────────────────────────────────────
 
 /**
- * Sample a token from logits with temperature scaling and top-k filtering.
+ * Sample a token from logits with temperature scaling, top-k filtering, and
+ * optional top-p (nucleus) filtering.
  *
  * Accepts either (session, logits, ...) or legacy (model, logits, ...).
  * If temperature <= 0, returns argmax (greedy decoding).
@@ -599,9 +600,14 @@ export function sampleFromLogits(
   temperature: number,
   topk: number,
   rng: SeededRng,
+  topp = 1.0,
 ): number {
   const vocabSize = sessionOrModel.config.vocabSize;
   const scaled = sessionOrModel._sampleBuf;
+  const topKVal = Number(topk);
+  const topPVal = Number(topp);
+  const topK = Number.isFinite(topKVal) ? Math.max(0, Math.floor(topKVal)) : 0;
+  const topP = Number.isFinite(topPVal) ? Math.min(1, Math.max(0, topPVal)) : 1;
 
   // Greedy decoding
   if (temperature <= 0) {
@@ -620,14 +626,69 @@ export function sampleFromLogits(
   }
 
   // Top-k filtering via partial selection (O(V) average instead of O(V log V))
-  if (topk > 0 && topk < vocabSize) {
+  if (topK > 0 && topK < vocabSize) {
     // Find k-th largest using quickselect on a scratch copy
-    const buf = sessionOrModel._sampleBuf; // reuse same buffer — we already have values there
     // We need the threshold value. Do nth_element-style partitioning.
-    const threshold = quickselectThreshold(scaled, vocabSize, topk);
+    const threshold = quickselectThreshold(scaled, vocabSize, topK);
     for (let i = 0; i < vocabSize; i++) {
       if (scaled[i] < threshold) scaled[i] = -Infinity;
     }
+  }
+
+  // Top-p (nucleus) filtering. Keep the minimum-probability prefix whose
+  // cumulative mass >= topP, then sample from that set.
+  if (topP > 0 && topP < 1) {
+    let maxVal = -Infinity;
+    for (let i = 0; i < vocabSize; i++) {
+      if (scaled[i] > maxVal) maxVal = scaled[i];
+    }
+    if (!Number.isFinite(maxVal)) return 0;
+
+    const active: number[] = [];
+    let sumExp = 0;
+    for (let i = 0; i < vocabSize; i++) {
+      const v = scaled[i];
+      if (Number.isFinite(v)) {
+        const p = Math.exp(v - maxVal);
+        scaled[i] = p;
+        sumExp += p;
+        active.push(i);
+      } else {
+        scaled[i] = 0;
+      }
+    }
+    if (active.length === 0 || sumExp <= 0) {
+      // Fallback to argmax if all candidates were filtered out numerically.
+      let bestIdx = 0;
+      let bestVal = logits[0];
+      for (let i = 1; i < vocabSize; i++) {
+        if (logits[i] > bestVal) { bestVal = logits[i]; bestIdx = i; }
+      }
+      return bestIdx;
+    }
+
+    active.sort((a, b) => scaled[b] - scaled[a]);
+    const targetMass = sumExp * topP;
+    let keptMass = 0;
+    let keepCount = 0;
+    for (; keepCount < active.length; keepCount++) {
+      keptMass += scaled[active[keepCount]];
+      if (keptMass >= targetMass) {
+        keepCount++;
+        break;
+      }
+    }
+    if (keepCount <= 0) keepCount = 1;
+    if (keptMass <= 0) keptMass = scaled[active[0]];
+
+    const r = rng.next() * keptMass;
+    let cumsum = 0;
+    for (let i = 0; i < keepCount; i++) {
+      const idx = active[i];
+      cumsum += scaled[idx];
+      if (r < cumsum) return idx;
+    }
+    return active[Math.max(0, keepCount - 1)];
   }
 
   // Softmax

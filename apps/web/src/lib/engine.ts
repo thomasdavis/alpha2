@@ -222,6 +222,7 @@ export function* generateTokens(
   steps: number,
   temperature: number,
   topk: number,
+  topp = 1.0,
 ): Generator<string> {
   const { config, tokenizer, weights, sessionPool } = model;
   const rng = new SeededRng(Date.now() & 0xffffffff);
@@ -240,7 +241,7 @@ export function* generateTokens(
     let currentPos = promptTokens.length;
 
     for (let i = 0; i < steps && currentPos < config.blockSize; i++) {
-      const tok = sampleFromLogits(session, logits, temperature, topk, rng);
+      const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
       const raw = tokenizer.decode(new Int32Array([tok]));
       const sep = tokenizer.name === "word" && raw !== "\n" ? " " : "";
       yield sep + raw;
@@ -289,12 +290,14 @@ export class AlphaLanguageModel implements LanguageModelV3 {
   private _steps: number;
   private _temperature: number;
   private _topk: number;
+  private _topp: number;
 
-  constructor(modelId: string, opts?: { steps?: number; temperature?: number; topk?: number }) {
+  constructor(modelId: string, opts?: { steps?: number; temperature?: number; topk?: number; topp?: number }) {
     this.modelId = modelId;
     this._steps = opts?.steps ?? 200;
     this._temperature = opts?.temperature ?? 0.8;
     this._topk = opts?.topk ?? 40;
+    this._topp = opts?.topp ?? 1.0;
   }
 
   async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
@@ -303,6 +306,7 @@ export class AlphaLanguageModel implements LanguageModelV3 {
     const maxTokens = options.maxOutputTokens ?? this._steps;
     const temperature = options.temperature ?? this._temperature;
     const topk = options.topK ?? this._topk;
+    const topp = (options as any).topP ?? this._topp;
 
     const { config, tokenizer, weights, sessionPool } = model;
     const rng = new SeededRng(Date.now() & 0xffffffff);
@@ -321,7 +325,7 @@ export class AlphaLanguageModel implements LanguageModelV3 {
       const generatedTokens: number[] = [];
 
       for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-        const tok = sampleFromLogits(session, logits, temperature, topk, rng);
+        const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
         generatedTokens.push(tok);
         outputTokenCount++;
 
@@ -348,6 +352,7 @@ export class AlphaLanguageModel implements LanguageModelV3 {
     const maxTokens = options.maxOutputTokens ?? this._steps;
     const temperature = options.temperature ?? this._temperature;
     const topk = options.topK ?? this._topk;
+    const topp = (options as any).topP ?? this._topp;
     const signal = options.abortSignal;
 
     const { config, tokenizer, weights, sessionPool } = model;
@@ -384,7 +389,7 @@ export class AlphaLanguageModel implements LanguageModelV3 {
             return;
           }
 
-          const tok = sampleFromLogits(session, logits, temperature, topk, rng);
+          const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
           outputCount++;
 
           const raw = tokenizer.decode(new Int32Array([tok]));

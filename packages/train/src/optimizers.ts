@@ -1,5 +1,5 @@
 /**
- * Optimizers: AdamW and SGD.
+ * Optimizers: AdamW, Lion, Adafactor, and SGD.
  *
  * Inspired by microgpt.py's Adam implementation but generalized to work
  * with named parameter tensors.
@@ -233,6 +233,314 @@ export class AdamW implements Optimizer {
   }
 }
 
+// ── Lion ───────────────────────────────────────────────────────────────────
+
+export interface LionConfig {
+  lr: number;
+  beta1: number;
+  beta2: number;
+  weightDecay: number;
+  noDecayNames?: Set<string>;
+}
+
+export class Lion implements Optimizer {
+  readonly name = "lion";
+  private _step = 0;
+  private _m = new Map<string, Float32Array>();
+  private config: LionConfig;
+  private noDecayNames: Set<string>;
+
+  constructor(_backend: Backend, config: Partial<LionConfig> = {}) {
+    this.noDecayNames = config.noDecayNames ?? new Set();
+    this.config = {
+      lr: config.lr ?? 1e-4,
+      beta1: config.beta1 ?? 0.9,
+      beta2: config.beta2 ?? 0.99,
+      weightDecay: config.weightDecay ?? 0.01,
+    };
+  }
+
+  stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
+    this._step++;
+    const { lr, beta1, beta2, weightDecay } = this.config;
+
+    for (const [name, variable] of entries) {
+      const grad = variable.grad;
+      if (!grad) continue;
+      this.stepTensor(name, variable.data, grad, lr, beta1, beta2, weightDecay, gradScale);
+    }
+  }
+
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
+    this._step++;
+    const { lr, beta1, beta2, weightDecay } = this.config;
+
+    for (const [name, param] of params) {
+      const grad = grads.get(name);
+      if (!grad) continue;
+      this.stepTensor(name, param, grad, lr, beta1, beta2, weightDecay, gradScale);
+    }
+  }
+
+  private stepTensor(
+    name: string,
+    param: TensorData,
+    grad: TensorData,
+    lr: number,
+    beta1: number,
+    beta2: number,
+    weightDecay: number,
+    gradScale: number,
+  ): void {
+    const size = shapeSize(param.shape);
+    if (!this._m.has(name)) {
+      this._m.set(name, new Float32Array(size));
+    }
+
+    const m = this._m.get(name)!;
+    const pData = param.data as Float32Array;
+    const gData = grad.data as Float32Array;
+    const wd = this.noDecayNames.has(name) ? 0 : weightDecay;
+    const decayMul = wd > 0 ? (1 - lr * wd) : 1;
+
+    for (let i = 0; i < size; i++) {
+      const g = gData[i] * gradScale;
+      if (wd > 0) pData[i] *= decayMul;
+      const update = beta1 * m[i] + (1 - beta1) * g;
+      pData[i] -= lr * Math.sign(update);
+      m[i] = beta2 * m[i] + (1 - beta2) * g;
+    }
+  }
+
+  stateDict(): OptimizerState {
+    const buffers = new Map<string, TensorData>();
+    for (const [name, m] of this._m) {
+      buffers.set(`${name}.m`, { shape: [m.length], dtype: "f32", data: new Float32Array(m) });
+    }
+    return { step: this._step, buffers };
+  }
+
+  loadStateDict(state: OptimizerState): void {
+    this._step = state.step;
+    this._m.clear();
+    for (const [key, td] of state.buffers) {
+      if (key.endsWith(".m")) {
+        this._m.set(key.slice(0, -2), new Float32Array(td.data));
+      }
+    }
+  }
+
+  setLr(lr: number): void {
+    this.config.lr = lr;
+  }
+}
+
+// ── Adafactor ──────────────────────────────────────────────────────────────
+
+export interface AdafactorConfig {
+  lr: number;
+  beta2: number;
+  eps: number;
+  clipThreshold: number;
+  weightDecay: number;
+  noDecayNames?: Set<string>;
+}
+
+export class Adafactor implements Optimizer {
+  readonly name = "adafactor";
+  private _step = 0;
+  // 2D factored second-moment state
+  private _vr = new Map<string, Float32Array>();
+  private _vc = new Map<string, Float32Array>();
+  // fallback unfactored state for non-2D params
+  private _v = new Map<string, Float32Array>();
+  private config: AdafactorConfig;
+  private noDecayNames: Set<string>;
+
+  constructor(_backend: Backend, config: Partial<AdafactorConfig> = {}) {
+    this.noDecayNames = config.noDecayNames ?? new Set();
+    this.config = {
+      lr: config.lr ?? 1e-3,
+      beta2: config.beta2 ?? 0.999,
+      eps: config.eps ?? 1e-30,
+      clipThreshold: config.clipThreshold ?? 1.0,
+      weightDecay: config.weightDecay ?? 0.0,
+    };
+  }
+
+  stepParamEntries(entries: readonly [string, { data: TensorData; grad: TensorData | null }][], gradScale = 1.0): void {
+    this._step++;
+    const { lr, beta2, eps, clipThreshold, weightDecay } = this.config;
+    for (const [name, variable] of entries) {
+      const grad = variable.grad;
+      if (!grad) continue;
+      this.stepTensor(name, variable.data, grad, lr, beta2, eps, clipThreshold, weightDecay, gradScale);
+    }
+  }
+
+  step(params: Map<string, TensorData>, grads: Map<string, TensorData>, gradScale = 1.0): void {
+    this._step++;
+    const { lr, beta2, eps, clipThreshold, weightDecay } = this.config;
+    for (const [name, param] of params) {
+      const grad = grads.get(name);
+      if (!grad) continue;
+      this.stepTensor(name, param, grad, lr, beta2, eps, clipThreshold, weightDecay, gradScale);
+    }
+  }
+
+  private stepTensor(
+    name: string,
+    param: TensorData,
+    grad: TensorData,
+    lr: number,
+    beta2: number,
+    eps: number,
+    clipThreshold: number,
+    weightDecay: number,
+    gradScale: number,
+  ): void {
+    const pData = param.data as Float32Array;
+    const gData = grad.data as Float32Array;
+    const shape = param.shape;
+    const size = pData.length;
+
+    const wd = this.noDecayNames.has(name) ? 0 : weightDecay;
+    const decayMul = wd > 0 ? (1 - lr * wd) : 1;
+
+    if (shape.length === 2) {
+      const rows = shape[0];
+      const cols = shape[1];
+      let vr = this._vr.get(name);
+      let vc = this._vc.get(name);
+      if (!vr || vr.length !== rows) {
+        vr = new Float32Array(rows);
+        this._vr.set(name, vr);
+      }
+      if (!vc || vc.length !== cols) {
+        vc = new Float32Array(cols);
+        this._vc.set(name, vc);
+      }
+
+      const oneMinusBeta2 = 1 - beta2;
+      const invCols = 1 / cols;
+      const invRows = 1 / rows;
+
+      for (let r = 0; r < rows; r++) {
+        let rowMean = 0;
+        const rowOff = r * cols;
+        for (let c = 0; c < cols; c++) {
+          const g = gData[rowOff + c] * gradScale;
+          rowMean += g * g;
+        }
+        rowMean *= invCols;
+        vr[r] = beta2 * vr[r] + oneMinusBeta2 * rowMean + eps;
+      }
+      for (let c = 0; c < cols; c++) {
+        let colMean = 0;
+        for (let r = 0; r < rows; r++) {
+          const g = gData[r * cols + c] * gradScale;
+          colMean += g * g;
+        }
+        colMean *= invRows;
+        vc[c] = beta2 * vc[c] + oneMinusBeta2 * colMean + eps;
+      }
+
+      let vrMean = 0;
+      for (let r = 0; r < rows; r++) vrMean += vr[r];
+      vrMean = Math.max(vrMean * invRows, eps);
+      const invVrMean = 1 / vrMean;
+
+      // Compute RMS of update for clipping.
+      let updateSq = 0;
+      for (let r = 0; r < rows; r++) {
+        const rowOff = r * cols;
+        const rScale = Math.sqrt(vr[r] * invVrMean);
+        for (let c = 0; c < cols; c++) {
+          const denom = Math.max(eps, rScale * Math.sqrt(vc[c]));
+          const g = gData[rowOff + c] * gradScale;
+          const upd = g / denom;
+          updateSq += upd * upd;
+        }
+      }
+      const rms = Math.sqrt(updateSq / Math.max(1, size));
+      const clipDen = clipThreshold > 0 ? Math.max(1, rms / clipThreshold) : 1;
+      const stepScale = lr / clipDen;
+
+      for (let r = 0; r < rows; r++) {
+        const rowOff = r * cols;
+        const rScale = Math.sqrt(vr[r] * invVrMean);
+        for (let c = 0; c < cols; c++) {
+          const idx = rowOff + c;
+          const denom = Math.max(eps, rScale * Math.sqrt(vc[c]));
+          const g = gData[idx] * gradScale;
+          if (wd > 0) pData[idx] *= decayMul;
+          pData[idx] -= stepScale * (g / denom);
+        }
+      }
+      return;
+    }
+
+    // Non-2D fallback: unfactored second moment.
+    let v = this._v.get(name);
+    if (!v || v.length !== size) {
+      v = new Float32Array(size);
+      this._v.set(name, v);
+    }
+    const oneMinusBeta2 = 1 - beta2;
+
+    let updateSq = 0;
+    for (let i = 0; i < size; i++) {
+      const g = gData[i] * gradScale;
+      v[i] = beta2 * v[i] + oneMinusBeta2 * (g * g) + eps;
+      const upd = g / Math.sqrt(v[i]);
+      updateSq += upd * upd;
+    }
+    const rms = Math.sqrt(updateSq / Math.max(1, size));
+    const clipDen = clipThreshold > 0 ? Math.max(1, rms / clipThreshold) : 1;
+    const stepScale = lr / clipDen;
+
+    for (let i = 0; i < size; i++) {
+      const g = gData[i] * gradScale;
+      if (wd > 0) pData[i] *= decayMul;
+      pData[i] -= stepScale * (g / Math.sqrt(v[i]));
+    }
+  }
+
+  stateDict(): OptimizerState {
+    const buffers = new Map<string, TensorData>();
+    for (const [name, vr] of this._vr) {
+      buffers.set(`${name}.vr`, { shape: [vr.length], dtype: "f32", data: new Float32Array(vr) });
+    }
+    for (const [name, vc] of this._vc) {
+      buffers.set(`${name}.vc`, { shape: [vc.length], dtype: "f32", data: new Float32Array(vc) });
+    }
+    for (const [name, v] of this._v) {
+      buffers.set(`${name}.v`, { shape: [v.length], dtype: "f32", data: new Float32Array(v) });
+    }
+    return { step: this._step, buffers };
+  }
+
+  loadStateDict(state: OptimizerState): void {
+    this._step = state.step;
+    this._vr.clear();
+    this._vc.clear();
+    this._v.clear();
+    for (const [key, td] of state.buffers) {
+      if (key.endsWith(".vr")) {
+        this._vr.set(key.slice(0, -3), new Float32Array(td.data));
+      } else if (key.endsWith(".vc")) {
+        this._vc.set(key.slice(0, -3), new Float32Array(td.data));
+      } else if (key.endsWith(".v")) {
+        this._v.set(key.slice(0, -2), new Float32Array(td.data));
+      }
+    }
+  }
+
+  setLr(lr: number): void {
+    this.config.lr = lr;
+  }
+}
+
 // ── SGD ────────────────────────────────────────────────────────────────────
 
 export class SGD implements Optimizer {
@@ -288,6 +596,8 @@ export class SGD implements Optimizer {
 export function createOptimizerRegistry(backend: Backend) {
   const registry = new Registry<Optimizer>("optimizer");
   registry.register("adamw", () => new AdamW(backend));
+  registry.register("lion", () => new Lion(backend));
+  registry.register("adafactor", () => new Adafactor(backend));
   registry.register("sgd", () => new SGD(backend));
   return registry;
 }

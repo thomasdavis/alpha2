@@ -141,10 +141,13 @@ export interface SampleConfig {
   readonly steps: number;
   readonly temperature: number;
   readonly topk: number;
+  /** Nucleus sampling threshold (1.0 = disabled). */
+  readonly topp?: number;
 }
 
 export const defaultSampleConfig: SampleConfig = {
   steps: 200,
   temperature: 0.8,
   topk: 40,
+  topp: 1.0,
 };

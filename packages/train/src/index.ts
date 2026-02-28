@@ -1,4 +1,7 @@
-export { AdamW, SGD, createOptimizerRegistry, type AdamWConfig } from "./optimizers.js";
+export {
+  AdamW, Lion, Adafactor, SGD, createOptimizerRegistry,
+  type AdamWConfig, type LionConfig, type AdafactorConfig,
+} from "./optimizers.js";
 export { DataLoader, loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText, type DataBatch } from "./data.js";
 export {
   FileCheckpoint, buildCheckpointState, restoreParams,

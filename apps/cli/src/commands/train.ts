@@ -282,7 +282,7 @@ export async function trainCmd(args: string[]): Promise<void> {
         (t) => tokenizer.encode(t),
         (t) => tokenizer.decode(t),
         prompt,
-        { steps: 100, temperature: 0.8, topk: 40 },
+        { steps: 100, temperature: 0.8, topk: 40, topp: 1.0 },
         releaseFn, flushFn,
       );
       console.log(`\n  prompt: "${prompt}"`);

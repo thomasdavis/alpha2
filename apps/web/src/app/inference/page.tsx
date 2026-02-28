@@ -37,6 +37,7 @@ export default function InferencePage() {
   const [steps, setSteps] = useState(200);
   const [temperature, setTemperature] = useState(0.8);
   const [topk, setTopk] = useState(40);
+  const [topP, setTopP] = useState(1.0);
   const [generating, setGenerating] = useState(false);
   const [tokens, setTokens] = useState<{ text: string; isPrompt: boolean }[]>(
     []
@@ -109,6 +110,7 @@ export default function InferencePage() {
       steps: String(steps),
       temp: String(temperature),
       topk: String(topk),
+      top_p: String(topP),
     });
 
     const es = new EventSource(`/api/inference?${params.toString()}`);
@@ -143,7 +145,7 @@ export default function InferencePage() {
       setStatus("Connection lost.");
       finish();
     };
-  }, [prompt, modelId, steps, temperature, topk, finish]);
+  }, [prompt, modelId, steps, temperature, topk, topP, finish]);
 
   // Auto-scroll output
   useEffect(() => {
@@ -278,6 +280,20 @@ export default function InferencePage() {
                 onChange={(e) => setTopk(Number(e.target.value))}
                 min={0}
                 max={200}
+                className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-text-secondary">
+                Top-p
+              </label>
+              <input
+                type="number"
+                value={topP}
+                onChange={(e) => setTopP(Number(e.target.value))}
+                min={0}
+                max={1}
+                step={0.05}
                 className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
               />
             </div>

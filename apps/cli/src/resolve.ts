@@ -4,8 +4,8 @@
 import { backendRegistry } from "@alpha/tensor";
 import { heliosRegistry } from "@alpha/helios";
 import { tokenizerRegistry } from "@alpha/tokenizers";
-import { AdamW, createOptimizerRegistry } from "@alpha/train";
-import type { AdamWConfig } from "@alpha/train";
+import { AdamW, Lion, Adafactor, createOptimizerRegistry } from "@alpha/train";
+import type { AdamWConfig, LionConfig, AdafactorConfig } from "@alpha/train";
 import type { Backend, Tokenizer, Optimizer, Rng } from "@alpha/core";
 import { SeededRng } from "@alpha/core";
 
@@ -22,9 +22,15 @@ export function resolveTokenizer(name: string): Tokenizer {
   return tokenizerRegistry.get(name);
 }
 
-export function resolveOptimizer(name: string, backend: Backend, config?: Partial<AdamWConfig>): Optimizer {
+export function resolveOptimizer(name: string, backend: Backend, config?: Partial<AdamWConfig & LionConfig & AdafactorConfig>): Optimizer {
   if (name === "adamw") {
     return new AdamW(backend, config);
+  }
+  if (name === "lion") {
+    return new Lion(backend, config);
+  }
+  if (name === "adafactor") {
+    return new Adafactor(backend, config);
   }
   return createOptimizerRegistry(backend).get(name);
 }
@@ -37,6 +43,6 @@ export function listImplementations(): string {
   return [
     `Tokenizers: ${tokenizerRegistry.list().join(", ")}`,
     `Backends:   ${backendRegistry.list().join(", ")}`,
-    `Optimizers: adamw, sgd`,
+    `Optimizers: adamw, lion, adafactor, sgd`,
   ].join("\n");
 }

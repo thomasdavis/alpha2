@@ -17,6 +17,8 @@ export async function POST(request: Request) {
   const modelId: string = body.model ?? runs[0]?.id;
   const maxTokens: number = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 2048, 20_000);
   const temperature: number = body.temperature ?? 0.7;
+  const topk: number = body.topk ?? body.top_k ?? 40;
+  const topp: number = body.top_p ?? body.topp ?? 1.0;
   const stream: boolean = body.stream === true;
 
   if (!modelId || !runs.find((r) => r.id === modelId || r.config?.runId === modelId)) {
@@ -70,7 +72,7 @@ export async function POST(request: Request) {
             return;
           }
 
-          const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+          const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
           generatedTokens.push(tok);
           completionCount++;
           const raw = tokenizer.decode(new Int32Array([tok]));
@@ -102,7 +104,7 @@ export async function POST(request: Request) {
   // Non-streaming
   let completionCount = 0;
   for (let i = 0; i < maxTokens && currentPos < config.blockSize; i++) {
-    const tok = sampleFromLogits(session, logits, temperature, 40, rng);
+    const tok = sampleFromLogits(session, logits, temperature, topk, rng, topp);
     generatedTokens.push(tok);
     completionCount++;
 

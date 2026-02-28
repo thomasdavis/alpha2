@@ -433,7 +433,7 @@ The endpoint follows the OpenAI Chat Completions spec closely enough for most ar
 - **No function calling / tools** — not implemented
 - **Context window varies by model** — typically 128–256 tokens (set by `blockSize` in training config)
 - **Single choice only** — `n` parameter is ignored, always returns one choice
-- **Top-k instead of top-p** — `top_p` is ignored; top-k is hardcoded to 40
+- **Sampling controls** — supports `top_p` (nucleus sampling) and optional `top_k` / `topk` (default 40)
 
 ---
 
