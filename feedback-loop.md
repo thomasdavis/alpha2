@@ -52,6 +52,7 @@ Adaptive runtime tuning knobs (no source edit/recompile needed):
 Benchmark script smoke policy:
 - default: `FAIL_ON_SMOKE_TEST=1` (fail fast; marks run `smoke_fail` quickly)
 - override for diagnostics only: `FAIL_ON_SMOKE_TEST=0 scripts/run-compiled-benchmark.sh 100`
+- attempt scoring preference: `ok` > `unstable` > `smoke_fail` > `failed`
 
 Quick smoke alternative (5 iterations) for sanity checks:
 

@@ -216,8 +216,8 @@ for run_try in $(seq 1 "$run_attempts"); do
   run_rank=0
   case "$status_label" in
     ok) run_rank=3 ;;
-    smoke_fail) run_rank=2 ;;
-    unstable) run_rank=1 ;;
+    unstable) run_rank=2 ;;
+    smoke_fail) run_rank=1 ;;
     failed) run_rank=0 ;;
   esac
 

@@ -80,8 +80,8 @@ while IFS=, read -r iter mem sync dthr pthr gsample avg_tok_s _ status _ run_log
   rank=0
   case "$status" in
     ok) rank=3 ;;
-    smoke_fail) rank=2 ;;
-    unstable) rank=1 ;;
+    unstable) rank=2 ;;
+    smoke_fail) rank=1 ;;
     *) rank=0 ;;
   esac
 
