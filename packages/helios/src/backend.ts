@@ -325,18 +325,21 @@ let _totalAllocBytes = 0;
 let _liveAllocCount = 0;
 
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
-  const pool = bufferPool.get(byteSize);
+  // Round to 4MB bins above 1MB. NVIDIA Vulkan driver has 4× bandwidth degradation
+  // for device-local buffers whose size is not 4MB-aligned (observed on L4 driver 570.x).
+  const rounded = roundPoolSize(byteSize);
+  const pool = bufferPool.get(rounded);
   if (pool && pool.length > 0) {
     const handle = pool.pop()!;
     bufferPoolEntries--;
-    bufferPoolBytes -= byteSize;
+    bufferPoolBytes -= rounded;
     return handle;
   }
   _totalAllocCount++;
-  _totalAllocBytes += byteSize;
+  _totalAllocBytes += rounded;
   _liveAllocCount++;
   try {
-    return vk.createBuffer(byteSize, 0); // device-local (staging handled in C)
+    return vk.createBuffer(rounded, 0); // device-local (staging handled in C)
   } catch (e) {
     console.error(`[helios OOM] acquireBuffer failed: requesting ${(byteSize / 1048576).toFixed(1)}MB`);
     console.error(`[helios OOM] total allocated: ${(_totalAllocBytes / 1048576).toFixed(1)}MB across ${_totalAllocCount} allocs (${_liveAllocCount} live)`);
@@ -352,12 +355,13 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
 }
 
 function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void {
-  let pool = bufferPool.get(byteSize);
-  if (!pool) { pool = []; bufferPool.set(byteSize, pool); }
+  const rounded = roundPoolSize(byteSize);
+  let pool = bufferPool.get(rounded);
+  if (!pool) { pool = []; bufferPool.set(rounded, pool); }
   if (pool.length < POOL_MAX_PER_SIZE) {
     pool.push(handle);
     bufferPoolEntries++;
-    bufferPoolBytes += byteSize;
+    bufferPoolBytes += rounded;
   } else {
     vk.destroyBuffer(handle);
     _liveAllocCount--;
@@ -404,8 +408,20 @@ function ensureGpu(vk: NativeAddon, td: TensorData): number {
   // Upload to a new device-local buffer
   const byteSize = td.data.length * 4;
   const handle = acquireBuffer(vk, byteSize);
-  vk.uploadBuffer(handle, toF32(td));
-  const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
+  // Pad upload data to match buffer allocation size.
+  // NVIDIA L4 driver (570.x) has ~4× bandwidth degradation when the staging
+  // memcpy doesn't cover the full device buffer — even if the vkCmdCopyBuffer
+  // region is padded. Padding the Float32Array ensures full page coverage.
+  const rounded = roundPoolSize(byteSize);
+  let uploadData: Float32Array;
+  if (rounded > byteSize) {
+    uploadData = new Float32Array(rounded >> 2);
+    uploadData.set(toF32(td));
+  } else {
+    uploadData = toF32(td);
+  }
+  vk.uploadBuffer(handle, uploadData);
+  const info: GpuHandle = { handle, byteSize: rounded, refs: 1, released: false };
   gpuResidence.set(td, info);
   gpuCleanup.register(td, info);
   return handle;
@@ -578,7 +594,7 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 const MAX_PENDING_OPS = 2048; // auto-flush when this many ops are pending
 
-type PendingOpKind = "binary" | "unary" | "softmax" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
+type PendingOpKind = "binary" | "unary" | "softmax" | "softmax_online" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
 
 interface PendingOp {
   kind: PendingOpKind;
@@ -768,7 +784,10 @@ const graph = new ComputeGraph();
  */
 function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
   let cached: Float32Array | null = null;
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: shapeSize(shape) * 4, refs: 1, released: false };
+  // Use region.byteSize (rounded) for pool key consistency.
+  // acquireOutputRegion rounds to 4MB bins; release must match that key
+  // or every iteration allocates a new buffer (vkAllocateMemory overhead).
+  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
   const td: TensorData = {
     shape: [...shape],
     dtype: "f32",
@@ -778,7 +797,10 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
         const tv = graph.flush();
         // Wait for the batch to complete on GPU before reading
         if (tv > 0) vk.waitTimeline(tv);
-        cached = vk.readBuffer(region.handle);
+        const raw = vk.readBuffer(region.handle);
+        // Buffer may be larger than shape (4MB pool rounding) — truncate
+        const expected = shapeSize(shape);
+        cached = raw.length > expected ? raw.subarray(0, expected) : raw;
       }
       return cached;
     },
@@ -792,7 +814,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
 /** Like graphLazyTensor but for f16 output buffers (2 bytes per element). */
 function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
   const size = shapeSize(shape);
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: size * 2, refs: 1, released: false };
+  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
   const td: TensorData = {
     shape: [...shape],
     dtype: "f16",
@@ -1086,10 +1108,16 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, b);
     const region = acquireOutputRegion(vk, byteSize);
 
-    // Push constants: [len, unused] — must snapshot since pushData is reused
+    // Pad dispatch to buffer-rounded boundary to avoid NVIDIA Vulkan bandwidth cliff.
+    // The NVIDIA L4 driver (570.x) has ~4× bandwidth degradation when the dispatch
+    // grid size is not a multiple of 1024 WGs (= 4MB of data at vec4×WG256).
+    // Since acquireBuffer already rounds to 4MB bins, we pad the dispatch to match.
     const effectiveSize = useVec4 ? size >> 2 : size;
-    const push = push2Memo(effectiveSize, 0);
-    const groups = Math.ceil(effectiveSize / WG_SIZE);
+    const roundedBytes = roundPoolSize(byteSize);
+    const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
+    const dispatchLen = Math.max(effectiveSize, paddedSize);
+    const push = push2Memo(dispatchLen, 0);
+    const groups = Math.ceil(dispatchLen / WG_SIZE);
 
     // Record to compute graph — deferred execution
     graph.record({
@@ -1120,10 +1148,13 @@ export class HeliosBackend implements Backend {
     const bufA = ensureGpu(vk, a);
     const region = acquireOutputRegion(vk, byteSize);
 
-    // Push constants: [len, scalar] — must snapshot
+    // Pad dispatch to buffer-rounded boundary (see gpuBinaryOp comment for details)
     const effectiveSize = useVec4 ? size >> 2 : size;
-    const push = push2Memo(effectiveSize, scalar);
-    const groups = Math.ceil(effectiveSize / WG_SIZE);
+    const roundedBytes = roundPoolSize(byteSize);
+    const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
+    const dispatchLen = Math.max(effectiveSize, paddedSize);
+    const push = push2Memo(dispatchLen, scalar);
+    const groups = Math.ceil(dispatchLen / WG_SIZE);
 
     // Record to compute graph — deferred execution
     graph.record({
@@ -1688,6 +1719,37 @@ export class HeliosBackend implements Backend {
     const numRows = shapeSize(a.shape) / dim;
     const byteSize = shapeSize(a.shape) * 4;
 
+    // Use vec4 kernel when dim is divisible by 4
+    // HELIOS_SOFTMAX_KERNEL: "online" (2-pass), "vec4" (3-pass vec4), "" (auto)
+    if (dim % 4 === 0 && dim >= 16) {
+      const dimVec4 = dim / 4;
+      const softmaxEnv = process.env.HELIOS_SOFTMAX_KERNEL ?? "";
+      // Auto: online (2-pass) for large dims (>32K, row exceeds L1, fewer DRAM passes wins),
+      // vec4 3-pass for smaller dims (row fits in L1, simpler loop bodies generate better code)
+      const kernelName = softmaxEnv === "online" ? "softmax_online"
+        : softmaxEnv === "vec4" ? "softmax_vec4"
+        : dim > 32768 ? "softmax_online" : "softmax_vec4";
+      const pipeline = getPipeline(vk, kernelName, 2);
+      const bufA = ensureGpu(vk, a);
+      const region = acquireOutputRegion(vk, byteSize);
+      const push = push2Memo(dimVec4, numRows);
+
+      graph.record({
+        kind: "softmax_online" as PendingOpKind,
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA],
+        outputRegion: region,
+        groups: [numRows, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape,
+      });
+
+      return graphLazyTensor(vk, a.shape, region);
+    }
+
+    // Fallback to 3-pass scalar kernel
     const pipeline = getPipeline(vk, "softmax", 2);
     const bufA = ensureGpu(vk, a);
     const region = acquireOutputRegion(vk, byteSize);

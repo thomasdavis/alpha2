@@ -1703,12 +1703,18 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
   }
 
   size_t copyLen = byteLength < buffers[slot].size ? byteLength : buffers[slot].size;
+  // Transfer the full buffer allocation, not just the data.
+  // NVIDIA L4 driver (570.x) has ~4× bandwidth degradation for device-local buffers
+  // where the VkCmdCopyBuffer region doesn't cover the full allocation (4MB alignment).
+  // The staging buffer tail beyond the data is garbage but harmless — those bytes are
+  // never used for actual computation results.
+  size_t xferLen = buffers[slot].size;
 
   if (buffers[slot].mapped) {
     // Host-visible: direct memcpy (still need to wait if GPU is writing to this buffer)
     waitTimelineValue(buffers[slot].lastWriteTimeline);
     memcpy(buffers[slot].mapped, data, copyLen);
-  } else if (copyLen <= STAGING_SLOT_BYTES && initStagingRing()) {
+  } else if (xferLen <= STAGING_SLOT_BYTES && initStagingRing()) {
     // Device-local + fits in a staging ring slot: async copy (no blocking wait)
     // Find a free staging slot
     uint64_t completed;
@@ -1733,11 +1739,14 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
       waitTimelineValue(stagingRing[found].timelineValue);
     }
 
+    if (xferLen > copyLen) {
+      memset((char*)stagingRing[found].mapped + copyLen, 0, xferLen - copyLen);
+    }
     memcpy(stagingRing[found].mapped, data, copyLen);
 
     // If a batch is currently recording, record the copy into the batch command buffer
     if (batchRecording) {
-      VkBufferCopy region = { 0, 0, copyLen };
+      VkBufferCopy region = { 0, 0, xferLen };
       fp_vkCmdCopyBuffer(g_ring[g_ringHead].cmd, stagingRing[found].buffer, buffers[slot].buffer, 1, &region);
       // Add a transfer→compute barrier so subsequent dispatches see the copy
       VkBufferMemoryBarrier xferBarrier = {
@@ -1762,7 +1771,7 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
       fp_vkResetCommandBuffer(transferCmdBuf, 0);
       VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
       fp_vkBeginCommandBuffer(transferCmdBuf, &bi);
-      VkBufferCopy region = { 0, 0, copyLen };
+      VkBufferCopy region = { 0, 0, xferLen };
       fp_vkCmdCopyBuffer(transferCmdBuf, stagingRing[found].buffer, buffers[slot].buffer, 1, &region);
       fp_vkEndCommandBuffer(transferCmdBuf);
       uint64_t tv = submitCmdBufAsync(transferCmdBuf);
@@ -1775,8 +1784,14 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
   } else {
     // Device-local, large buffer: blocking staging copy (fallback)
     waitTimelineValue(lastDispatchTimeline);
-    VkResult r = ensureStagingBuffer(copyLen);
+    VkResult r = ensureStagingBuffer(xferLen);
     if (r != VK_SUCCESS) { napi_throw_error(env, NULL, "staging buffer alloc failed"); return NULL; }
+    // Zero-fill the ENTIRE staging buffer region to fault in all host pages.
+    // Then overwrite with actual data. This prevents the GPU DMA from hitting
+    // page faults on the gap between data and buffer size.
+    if (xferLen > copyLen) {
+      memset((char*)stagingMapped + copyLen, 0, xferLen - copyLen);
+    }
     memcpy(stagingMapped, data, copyLen);
 
     VkCommandBuffer cb = hasAsyncTransfer ? xferCmdBuf : transferCmdBuf;
@@ -1786,7 +1801,7 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
     fp_vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     fp_vkBeginCommandBuffer(cb, &bi);
-    VkBufferCopy region = { 0, 0, copyLen };
+    VkBufferCopy region = { 0, 0, xferLen };
     fp_vkCmdCopyBuffer(cb, stagingBuffer, buffers[slot].buffer, 1, &region);
     fp_vkEndCommandBuffer(cb);
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
