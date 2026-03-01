@@ -386,6 +386,36 @@ function main(): void {
     release(vState);
   }
 
+  // ── 8b. GRADIENT ACCUMULATION (add_inplace, scale_inplace) ───────────────
+
+  if (typeof (b as any).addInplace === "function") {
+    // LM head weight grad accumulation: [1024, 64000] = 64M elements = 256MB
+    const lmGrad = b.randn([1024, V]);
+    const lmAcc = b.randn([1024, V]);
+    const lmSize = 1024 * V;
+    const ms = benchCustom(() => {
+      (b as any).addInplace(lmAcc, lmGrad);
+      return [];
+    });
+    record("grad_accum_lm_head", ms, {
+      bytes: lmSize * 4 * 3, note: "gradient accumulation (add_inplace)",
+    });
+
+    // Scale grad for clipping
+    if (typeof (b as any).scaleInplace === "function") {
+      const msScale = benchCustom(() => {
+        (b as any).scaleInplace(lmAcc, 0.5);
+        return [];
+      });
+      record("grad_scale_lm_head", msScale, {
+        bytes: lmSize * 4 * 2, note: "gradient clipping scale (scale_inplace)",
+      });
+    }
+
+    release(lmGrad);
+    release(lmAcc);
+  }
+
   // ── 9. FUSED OPS ──────────────────────────────────────────────────────────
 
   if (typeof (b as any).residualDropoutAdd === "function") {

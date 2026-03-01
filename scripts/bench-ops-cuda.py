@@ -278,6 +278,20 @@ def main():
            bytes_rw=p_size * 4 * 7, note="AdamW for 1 layer (~8.5M params)")
     del param, grad, m, v_state
 
+    # ── 8b. GRADIENT ACCUMULATION ─────────────────────────────────────────
+    lm_grad = torch.randn(1024, V, device=device)
+    lm_acc = torch.randn(1024, V, device=device)
+    lm_size = 1024 * V
+
+    ms = bench(lambda: lm_acc.add_(lm_grad), W, I, sync)
+    record("grad_accum_lm_head", ms,
+           bytes_rw=lm_size * 4 * 3, note="gradient accumulation (add_inplace)")
+
+    ms = bench(lambda: lm_acc.mul_(0.5), W, I, sync)
+    record("grad_scale_lm_head", ms,
+           bytes_rw=lm_size * 4 * 2, note="gradient clipping scale (scale_inplace)")
+    del lm_grad, lm_acc
+
     # ── 9. FUSED OPS ────────────────────────────────────────────────────────
 
     # Residual + dropout + add
