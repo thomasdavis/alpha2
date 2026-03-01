@@ -534,6 +534,13 @@ def main():
            bytes_rw=p_size_norm * 4, note="sum of squares for gradient norm")
     del grad_norm_t
 
+    # Full model gradient norm (34M params)
+    grad_norm_34 = torch.randn(p_size_norm * 4, device=device)
+    ms = bench(lambda: (grad_norm_34 * grad_norm_34).sum(), W, I, sync)
+    record("grad_norm_34M", ms,
+           bytes_rw=p_size_norm * 4 * 4, note="full-model sum of squares (34M params)")
+    del grad_norm_34
+
     # ── 8d. GRADIENT CLIP PIPELINE ────────────────────────────────────────
     p_size_layer = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024
     all_grads = [torch.randn(p_size_layer, device=device) for _ in range(4)]

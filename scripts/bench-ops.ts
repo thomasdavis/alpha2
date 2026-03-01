@@ -638,6 +638,14 @@ function main(): void {
       bytes: pSize * 4, note: "sum of squares for gradient norm (fused)",
     });
     release(gradTensor);
+
+    // Full model gradient norm (34M params) — 4 layers worth
+    const gradTensor34 = b.randn([pSize * 4]);
+    const msNorm34 = benchOp(() => (b as any).sumOfSquares(gradTensor34));
+    record("grad_norm_34M", msNorm34, {
+      bytes: pSize * 4 * 4, note: "full-model sum of squares (34M params)",
+    });
+    release(gradTensor34);
   }
 
   // ── 9. FUSED OPS ──────────────────────────────────────────────────────────
