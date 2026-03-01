@@ -1775,15 +1775,18 @@ export class HeliosBackend implements Backend {
     if (dim % 4 === 0 && dim >= 16) {
       const dimVec4 = dim / 4;
       const softmaxEnv = process.env.HELIOS_SOFTMAX_KERNEL ?? "";
-      // Online (2-pass) is faster for all dims: fewer memory passes outweigh
-      // the slightly heavier Phase 1 ALU. Measured 23% faster at dim=512.
+      // Register-resident softmax (softmax_reg) tested and reverted (Session 8):
+      // For dim=512 (attention softmax), input fits in L4's 48MB L2 cache, so online
+      // softmax's "second global read" is an L2 hit (~free). The reg-resident approach
+      // adds L1-scratch write overhead → net 25% regression (0.165ms vs 0.131ms baseline).
+      // Only viable for dims >> L2 cache budget, but those exceed maxIters capacity.
       const kernelName = softmaxEnv === "online" ? "softmax_online"
         : softmaxEnv === "vec4" ? "softmax_vec4"
+        : softmaxEnv === "reg" ? "softmax_reg"
         : "softmax_online";
-      // Optimal WG size: smallest power-of-2 >= dimVec4, clamped to [32, WG_SIZE]
-      // For dim=512 (dimVec4=128): wgSize=128 → 100% thread utilization
-      // For dim=64000 (dimVec4=16000): wgSize=256 → each thread loops 62×
-      const softmaxWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const softmaxWg = softmaxEnv === "reg"
+        ? 32
+        : Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
       const pipeline = getPipeline(vk, kernelName, 2, PUSH_SIZE, softmaxWg);
       const bufA = ensureGpu(vk, a);
       const region = acquireOutputRegion(vk, byteSize);
@@ -2634,6 +2637,8 @@ export class HeliosBackend implements Backend {
 
     // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
     // for better SM occupancy. On L4 (58 SMs), 64 WGs = 1.1 WGs/SM → poor latency hiding.
+    // Benchmarked threshold=64 (Session 8): r4x4 at 64 WGs REGRESSED matmul_bwd_attn_out
+    // by 4% (0.114→0.118ms). r2x2's 4× more WGs wins over r4x4's 2× arithmetic intensity.
     if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
       const fallM = 2, fallN = 2;
       const effM2 = this._coopM * subgroupTilesY * fallM;

@@ -30,7 +30,7 @@ function kernelBinaryOp(opcode: number, wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -96,7 +96,7 @@ export function kernelScale(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -152,7 +152,7 @@ export function kernelNeg(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -200,7 +200,7 @@ function kernelUnaryGlsl(glslOp: number, wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -258,7 +258,7 @@ export function kernelRelu(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -313,7 +313,7 @@ export function kernelGelu(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants for GELU
@@ -406,7 +406,7 @@ export function kernelGeluBackward(wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const constHalf = b.id(); b.constantF32(p.tF32, constHalf, 0.5);
@@ -504,7 +504,7 @@ export function kernelGeluBackwardVec4(wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
   const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Scalar constants
@@ -608,7 +608,7 @@ export function kernelSiluBackward(wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
@@ -705,7 +705,7 @@ export function kernelSiluBackwardVec4(wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
   const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants
@@ -800,7 +800,7 @@ export function kernelReluBackward(wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -859,7 +859,7 @@ export function kernelClampBackward(wgSize = 256): Uint32Array {
 
   const bufInput = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 3);
 
   const fnMain = b.id();
@@ -938,7 +938,7 @@ export function kernelSoftCapForward(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants for overflow protection
@@ -1013,7 +1013,7 @@ export function kernelSoftCapBackward(wgSize = 256): Uint32Array {
 
   const bufGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufInput = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants
@@ -1105,7 +1105,7 @@ export function kernelSoftCapForwardVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants for overflow protection
@@ -1189,7 +1189,7 @@ export function kernelSoftCapBackwardVec4(wgSize = 256): Uint32Array {
 
   const bufGrad = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
   const bufInput = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
-  const bufOut = declareStorageBufferVec4(b, tVec4F32, 0, 2, false);
+  const bufOut = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Constants
@@ -1287,7 +1287,7 @@ function kernelBinaryOpVec4(opcode: number, wgSize = 256): Uint32Array {
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
   const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1351,7 +1351,7 @@ export function kernelScaleVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1409,7 +1409,7 @@ export function kernelNegVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1463,7 +1463,7 @@ function kernelUnaryGlslVec4(glslOp: number, wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1521,7 +1521,7 @@ export function kernelReluVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // vec4(0, 0, 0, 0)
@@ -1581,7 +1581,7 @@ export function kernelClampMin(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1634,7 +1634,7 @@ export function kernelClampMinVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const fnMain = b.id();
@@ -1690,7 +1690,7 @@ export function kernelClamp(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 3);
 
   const fnMain = b.id();
@@ -1751,7 +1751,7 @@ export function kernelClampVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 3);
 
   const fnMain = b.id();
@@ -1822,7 +1822,7 @@ export function kernelGeluVec4(wgSize = 256): Uint32Array {
   b.typeVector(tVec4F32, p.tF32, 4);
 
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   // Scalar constants

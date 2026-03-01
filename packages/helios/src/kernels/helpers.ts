@@ -121,6 +121,7 @@ export function declareStorageBuffer(
   set: number,
   binding: number,
   readonly_: boolean = false,
+  writeonly_: boolean = false,
 ) {
   // RuntimeArray<f32>
   const tRuntimeArr = b.id();
@@ -133,9 +134,12 @@ export function declareStorageBuffer(
   b.addDecorate(tStruct, Decoration.BufferBlock);
   b.addMemberDecorate(tStruct, 0, Decoration.Offset, 0);
 
-  // NonWritable goes on the struct member, not the variable
+  // NonWritable/NonReadable go on the struct member, not the variable
   if (readonly_) {
     b.addMemberDecorate(tStruct, 0, Decoration.NonWritable);
+  }
+  if (writeonly_) {
+    b.addMemberDecorate(tStruct, 0, Decoration.NonReadable);
   }
 
   // Pointer to struct in Uniform storage class
@@ -304,6 +308,7 @@ export function declareStorageBufferVec4(
   set: number,
   binding: number,
   readonly_: boolean = false,
+  writeonly_: boolean = false,
 ) {
   const tRuntimeArr = b.id();
   b.typeRuntimeArray(tRuntimeArr, tVec4F32);
@@ -314,6 +319,7 @@ export function declareStorageBufferVec4(
   b.addDecorate(tStruct, Decoration.BufferBlock);
   b.addMemberDecorate(tStruct, 0, Decoration.Offset, 0);
   if (readonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonWritable);
+  if (writeonly_) b.addMemberDecorate(tStruct, 0, Decoration.NonReadable);
 
   const tPtrStruct = b.id();
   b.typePointer(tPtrStruct, StorageClass.Uniform, tStruct);
