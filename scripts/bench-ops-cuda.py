@@ -160,6 +160,18 @@ def main():
     ms = bench(lambda: torch.exp(x1024), W, I, sync)
     record("exp_512x1024", ms, bytes_rw=sz1024 * 4 * 2, note="exp")
 
+    # GELU backward (fused)
+    gelu_x = x1024.clone().requires_grad_(True)
+    gelu_out = F.gelu(gelu_x, approximate="tanh")
+    gelu_grad = torch.randn_like(gelu_out)
+    def gelu_bwd():
+        if gelu_x.grad is not None:
+            gelu_x.grad.zero_()
+        gelu_out.backward(gelu_grad, retain_graph=True)
+    ms = bench(gelu_bwd, W, I, sync)
+    record("gelu_bwd_512x1024", ms, bytes_rw=sz1024 * 4 * 3, note="GELU backward (fused)")
+    del gelu_x, gelu_out, gelu_grad
+
     del x1024, x2752, y1024
 
     # Large tensor element-wise (memory bandwidth test)
@@ -243,6 +255,26 @@ def main():
     except Exception as exc:
         record("flash_attn_fwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
 
+    # Flash attention backward
+    try:
+        q2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        k2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        v2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        out = F.scaled_dot_product_attention(q2, k2, v2, is_causal=True)
+        dO = torch.randn_like(out)
+        def flash_bwd():
+            if q2.grad is not None:
+                q2.grad.zero_()
+                k2.grad.zero_()
+                v2.grad.zero_()
+            out.backward(dO, retain_graph=True)
+        ms = bench(flash_bwd, W, I, sync)
+        record("flash_attn_bwd_b1_h16_t512_d64", ms,
+               flops=2 * B * H * T * T * Dh * 4, note="SDPA bwd (f16)")
+        del q2, k2, v2, out, dO
+    except Exception as exc:
+        record("flash_attn_bwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
+
     del q, k, v
 
     # ── 7. EMBEDDING ─────────────────────────────────────────────────────────
@@ -253,7 +285,21 @@ def main():
     ms = bench(lambda: F.embedding(indices, emb_w), W, I, sync)
     record("embedding_fwd_64000x1024", ms,
            bytes_rw=BT * D * 4, note="embedding lookup")
-    del emb_w, indices
+
+    # Embedding backward (scatter-add gradients)
+    emb_w_req = emb_w.clone().requires_grad_(True)
+    emb_out = F.embedding(indices, emb_w_req)
+    grad_emb = torch.randn_like(emb_out)
+
+    def emb_bwd():
+        if emb_w_req.grad is not None:
+            emb_w_req.grad.zero_()
+        emb_out.backward(grad_emb, retain_graph=True)
+
+    ms = bench(emb_bwd, W, I, sync)
+    record("embedding_bwd_64000x1024", ms,
+           bytes_rw=BT * D * 4 + V * D * 4, note="embedding backward (scatter-add)")
+    del emb_w, emb_w_req, emb_out, grad_emb, indices
 
     # ── 8. ADAMW STEP ────────────────────────────────────────────────────────
 
@@ -291,6 +337,14 @@ def main():
     record("grad_scale_lm_head", ms,
            bytes_rw=lm_size * 4 * 2, note="gradient clipping scale (scale_inplace)")
     del lm_grad, lm_acc
+
+    # ── 8c. GRADIENT NORM (sum of squares) ────────────────────────────────
+    p_size_norm = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024
+    grad_norm_t = torch.randn(p_size_norm, device=device)
+    ms = bench(lambda: (grad_norm_t * grad_norm_t).sum(), W, I, sync)
+    record("grad_norm_8.5M", ms,
+           bytes_rw=p_size_norm * 4, note="sum of squares for gradient norm")
+    del grad_norm_t
 
     # ── 9. FUSED OPS ────────────────────────────────────────────────────────
 

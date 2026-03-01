@@ -18,6 +18,7 @@ export interface NativeAddon {
   initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean };
   createBuffer(byteLength: number, hostVisible?: number): number;
   uploadBuffer(handle: number, data: Float32Array): void;
+  fillBuffer(handle: number, byteSize: number, value: number): void;
   readBuffer(handle: number): Float32Array;
   destroyBuffer(handle: number): void;
   createPipeline(spirv: Uint32Array, numBindings: number, pushConstantSize?: number): number;

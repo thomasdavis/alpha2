@@ -2052,11 +2052,10 @@ export class HeliosBackend implements Backend {
       const bufIndices = ensureGpuRawBits(vk, indices);
       const bufGradOut = ensureGpu(vk, gradOutput);
 
-      // Allocate output via output pool and zero it (avoids double-tracking
-      // that would happen with zeros() + ensureGpu())
+      // Allocate output via output pool and zero it on GPU (avoids CPU→GPU upload)
       const outByteSize = outputSize * 4;
       const region = acquireOutputRegion(vk, outByteSize);
-      vk.uploadBuffer(region.handle, new Float32Array(outputSize));
+      vk.fillBuffer(region.handle, outByteSize, 0);
 
       // Dispatch the scatter-add kernel
       const pipeline = getPipeline(vk, "embedding_backward", 3, 2 * 4);

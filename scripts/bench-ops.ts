@@ -231,6 +231,12 @@ function main(): void {
     ms = benchOp(() => (b as any).exp(x));
     record("exp_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "exp" });
 
+    // Activation backward ops (fused kernels)
+    if (typeof (b as any).geluBackward === "function") {
+      ms = benchOp(() => (b as any).geluBackward(x, y));
+      record("gelu_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "GELU backward (fused)" });
+    }
+
     release(x);
     release(y);
     release(x2);
@@ -339,6 +345,25 @@ function main(): void {
       flops: 2 * BH * T * T * Dh * 2, note: "Flash Attention fwd",
     });
 
+    // Flash attention backward
+    if (typeof (b as any).flashAttentionBackward === "function") {
+      const fwdResult = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
+      const O = fwdResult.output ?? fwdResult;
+      const lse = fwdResult.lse;
+      const dO = b.randn([BH, T, Dh]);
+
+      if (lse) {
+        const msBwd = benchCustom(() => {
+          const result = (b as any).flashAttentionBackward(q, k, v, O, dO, lse, T, 1.0 / Math.sqrt(Dh), 30);
+          return [result.dQ, result.dK, result.dV];
+        });
+        record("flash_attn_bwd_b1_h16_t512_d64", msBwd, {
+          flops: 2 * BH * T * T * Dh * 4, note: "Flash Attention bwd",
+        });
+      }
+      release(dO);
+    }
+
     release(q);
     release(k);
     release(v);
@@ -358,6 +383,16 @@ function main(): void {
     record("embedding_fwd_64000x1024", ms, {
       bytes: BT * D * 4, note: "embedding lookup",
     });
+
+    // Embedding backward (scatter-add gradients back to vocab table)
+    if (typeof (b as any).embeddingBackward === "function") {
+      const gradOut = b.randn([BT, D]);
+      const msBwd = benchOp(() => (b as any).embeddingBackward(indices, gradOut, V));
+      record("embedding_bwd_64000x1024", msBwd, {
+        bytes: BT * D * 4 + V * D * 4, note: "embedding backward (scatter-add)",
+      });
+      release(gradOut);
+    }
 
     release(embW);
   }
@@ -414,6 +449,19 @@ function main(): void {
 
     release(lmGrad);
     release(lmAcc);
+  }
+
+  // ── 8c. GRADIENT NORM (sum of squares) ─────────────────────────────────────
+
+  if (typeof (b as any).sumOfSquares === "function") {
+    // One layer's worth of params (~8.5M) — used for gradient clipping norm calc
+    const pSize = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024;
+    const gradTensor = b.randn([pSize]);
+    const msNorm = benchOp(() => (b as any).sumOfSquares(gradTensor));
+    record("grad_norm_8.5M", msNorm, {
+      bytes: pSize * 4, note: "sum of squares for gradient norm (fused)",
+    });
+    release(gradTensor);
   }
 
   // ── 9. FUSED OPS ──────────────────────────────────────────────────────────

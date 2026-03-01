@@ -379,6 +379,7 @@ typedef VkResult (*PFN_vkResetDescriptorPool)(VkDevice, VkDescriptorPool, VkFlag
 typedef VkResult (*PFN_vkFlushMappedMemoryRanges)(VkDevice, uint32_t, const VkMappedMemoryRange*);
 typedef VkResult (*PFN_vkInvalidateMappedMemoryRanges)(VkDevice, uint32_t, const VkMappedMemoryRange*);
 typedef void     (*PFN_vkCmdCopyBuffer)(VkCommandBuffer, VkBuffer, VkBuffer, uint32_t, const void*);
+typedef void     (*PFN_vkCmdFillBuffer)(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, uint32_t);
 typedef VkResult (*PFN_vkCreateFence)(VkDevice, const VkFenceCreateInfo*, const void*, VkFence*);
 typedef void     (*PFN_vkDestroyFence)(VkDevice, VkFence, const void*);
 typedef VkResult (*PFN_vkWaitForFences)(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t);
@@ -547,6 +548,7 @@ static PFN_vkResetDescriptorPool                  fp_vkResetDescriptorPool;
 static PFN_vkFlushMappedMemoryRanges              fp_vkFlushMappedMemoryRanges;
 static PFN_vkInvalidateMappedMemoryRanges         fp_vkInvalidateMappedMemoryRanges;
 static PFN_vkCmdCopyBuffer                        fp_vkCmdCopyBuffer;
+static PFN_vkCmdFillBuffer                        fp_vkCmdFillBuffer;
 static PFN_vkCreateFence                          fp_vkCreateFence;
 static PFN_vkDestroyFence                         fp_vkDestroyFence;
 static PFN_vkWaitForFences                        fp_vkWaitForFences;
@@ -916,6 +918,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   LOAD_VK(vkFlushMappedMemoryRanges);
   LOAD_VK(vkInvalidateMappedMemoryRanges);
   LOAD_VK(vkCmdCopyBuffer);
+  LOAD_VK(vkCmdFillBuffer);
   LOAD_VK(vkCreateFence);
   LOAD_VK(vkDestroyFence);
   LOAD_VK(vkWaitForFences);
@@ -1809,6 +1812,65 @@ static napi_value napi_uploadBuffer(napi_env env, napi_callback_info info) {
     if (r != VK_SUCCESS) { napi_throw_error(env, NULL, "upload staging submit failed"); return NULL; }
     fp_vkWaitForFences(device, 1, &f, 1, ~0ULL);
     fp_vkResetFences(device, 1, &f);
+  }
+
+  return NULL;
+}
+
+// ── N-API: fillBuffer(handle, byteSize, value) ──────────────────────────────
+// GPU-side fill using vkCmdFillBuffer. value is a 32-bit uint pattern.
+// Records into current batch if one is active, otherwise submits standalone.
+
+static napi_value napi_fillBuffer(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  int32_t slot;
+  napi_get_value_int32(env, args[0], &slot);
+  int64_t byteSize64;
+  napi_get_value_int64(env, args[1], &byteSize64);
+  uint32_t value;
+  napi_get_value_uint32(env, args[2], &value);
+
+  if (slot < 0 || slot >= MAX_BUFFERS || !buffers[slot].active) {
+    napi_throw_error(env, NULL, "fillBuffer: invalid buffer handle");
+    return NULL;
+  }
+
+  VkDeviceSize fillSize = (VkDeviceSize)byteSize64;
+  if (fillSize > buffers[slot].size) fillSize = buffers[slot].size;
+
+  if (batchRecording) {
+    // Record into the current batch command buffer
+    fp_vkCmdFillBuffer(g_ring[g_ringHead].cmd, buffers[slot].buffer, 0, fillSize, value);
+    // Barrier: transfer write → shader read
+    VkBufferMemoryBarrier bar = {
+      .sType = 44,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+      .srcQueueFamilyIndex = 0xFFFFFFFF,
+      .dstQueueFamilyIndex = 0xFFFFFFFF,
+      .buffer = buffers[slot].buffer,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+    };
+    fp_vkCmdPipelineBarrier(g_ring[g_ringHead].cmd,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 0, NULL, 1, &bar, 0, NULL);
+  } else {
+    // Standalone submission
+    if (lastUploadTimeline > 0) waitTimelineValue(lastUploadTimeline);
+    fp_vkResetCommandBuffer(transferCmdBuf, 0);
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    fp_vkBeginCommandBuffer(transferCmdBuf, &bi);
+    fp_vkCmdFillBuffer(transferCmdBuf, buffers[slot].buffer, 0, fillSize, value);
+    fp_vkEndCommandBuffer(transferCmdBuf);
+    uint64_t tv = submitCmdBufAsync(transferCmdBuf);
+    if (tv > 0) {
+      lastUploadTimeline = tv;
+      lastDispatchTimeline = tv;
+    }
   }
 
   return NULL;
@@ -2937,6 +2999,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "initDevice",      NULL, napi_initDevice,      NULL, NULL, NULL, napi_default, NULL },
     { "createBuffer",    NULL, napi_createBuffer,    NULL, NULL, NULL, napi_default, NULL },
     { "uploadBuffer",    NULL, napi_uploadBuffer,    NULL, NULL, NULL, napi_default, NULL },
+    { "fillBuffer",      NULL, napi_fillBuffer,      NULL, NULL, NULL, napi_default, NULL },
     { "readBuffer",      NULL, napi_readBuffer,      NULL, NULL, NULL, napi_default, NULL },
     { "destroyBuffer",   NULL, napi_destroyBuffer,   NULL, NULL, NULL, napi_default, NULL },
     { "createPipeline",  NULL, napi_createPipeline,  NULL, NULL, NULL, napi_default, NULL },
