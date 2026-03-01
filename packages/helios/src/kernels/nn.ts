@@ -1935,6 +1935,326 @@ export function kernelCrossEntropyForwardFused(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: Cross-Entropy Forward Fused Vec4 (online 2-pass) ─────────────────
+
+/**
+ * Vec4 + online algorithm for cross-entropy forward.
+ * Combines vec4 loads with fused max+sum in a single pass:
+ *   Phase 1: Online max+sum via vec4 loads + shared memory reduction
+ *   Phase 2: Thread 0 computes loss = log(sum) + max - logit[target]
+ *
+ * For C=64000 (250KB/row, exceeds L1), saves 1 DRAM pass vs 3-pass scalar.
+ * Requires C % 4 == 0.
+ *
+ * Bindings: 0=Logits(in, N*C as vec4), 1=Targets(in, N as i32 raw bits), 2=Out(out, N)
+ * Push constants: { N: u32, C: u32 }
+ * Dispatch: (N, 1, 1) workgroups
+ */
+export function kernelCrossEntropyForwardVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  // vec4 type
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // Buffers: logits as vec4 (readonly), targets as f32/bits (readonly), output f32
+  const bufLogits = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  // Targets buffer: scalar f32 (bitcast to u32 for index)
+  const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+
+  // Push constants: { N: u32, C: u32 }
+  const tPCStruct = b.id();
+  b.typeStruct(tPCStruct, [p.tU32, p.tU32]);
+  b.addDecorate(tPCStruct, Decoration.Block);
+  b.addMemberDecorate(tPCStruct, 0, Decoration.Offset, 0);
+  b.addMemberDecorate(tPCStruct, 1, Decoration.Offset, 4);
+  const tPtrPCStruct = b.id();
+  b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
+  const tPtrU32PC = b.id();
+  b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const pcVar = b.id();
+  b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
+
+  // Constants
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const constNegMax = b.id();
+  b.constantF32(p.tF32, constNegMax, -3.4028235e+38);
+  const const4u = b.id();
+  b.constant(p.tU32, const4u, 4);
+
+  // Two shared arrays for online reduction (max, sum)
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMax = b.id();
+  b.variable(tPtrShared, sharedMax, StorageClass.Workgroup);
+  const sharedSum = b.id();
+  b.variable(tPtrShared, sharedSum, StorageClass.Workgroup);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varMax = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varMax, StorageClass.Function]);
+  const varSum = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varSum, StorageClass.Function]);
+
+  // Load IDs
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  // Load push constants
+  const ptrPC0 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC0, pcVar, p.const0u]);
+  const _totalN = b.id(); b.emit(Op.Load, [p.tU32, _totalN, ptrPC0]);
+  const ptrPC1 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC1, pcVar, p.const1u]);
+  const vocabC = b.id(); b.emit(Op.Load, [p.tU32, vocabC, ptrPC1]);
+
+  // cVec4 = C / 4
+  const cVec4 = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, cVec4, vocabC, p.const2u]);
+
+  // rowOffsetVec4 = row * cVec4
+  const rowOffsetVec4 = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffsetVec4, row, cVec4]);
+
+  // ── Phase 1: Online fused max+sum with vec4 loads ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varMax, constNegMax]);
+  b.emit(Op.Store, [varSum, p.const0f]);
+
+  const labelP1Head = b.id();
+  const labelP1Body = b.id();
+  const labelP1Merge = b.id();
+  const labelP1Cont = b.id();
+
+  b.emit(Op.Branch, [labelP1Head]);
+  b.emit(Op.Label, [labelP1Head]);
+  const curIdx = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx, varIdx]);
+  const cmpP1 = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpP1, curIdx, cVec4]);
+  b.emit(Op.LoopMerge, [labelP1Merge, labelP1Cont, 0]);
+  b.emit(Op.BranchConditional, [cmpP1, labelP1Body, labelP1Merge]);
+
+  b.emit(Op.Label, [labelP1Body]);
+  const gIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, gIdx, rowOffsetVec4, curIdx]);
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufLogits.tPtrVec4, ptrA, bufLogits.varId, p.const0u, gIdx]);
+  const v4 = b.id();
+  b.emit(Op.Load, [tVec4F32, v4, ptrA]);
+
+  // Horizontal max of vec4
+  const x0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x0, v4, 0]);
+  const x1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x1, v4, 1]);
+  const x2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x2, v4, 2]);
+  const x3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x3, v4, 3]);
+  const m01 = b.id(); b.emit(Op.ExtInst, [p.tF32, m01, p.glslStd, GLSLstd450.FMax, x0, x1]);
+  const m23 = b.id(); b.emit(Op.ExtInst, [p.tF32, m23, p.glslStd, GLSLstd450.FMax, x2, x3]);
+  const chunkMax = b.id(); b.emit(Op.ExtInst, [p.tF32, chunkMax, p.glslStd, GLSLstd450.FMax, m01, m23]);
+
+  // Online update: newMax = max(localMax, chunkMax)
+  const localMax = b.id(); b.emit(Op.Load, [p.tF32, localMax, varMax]);
+  const newMax = b.id(); b.emit(Op.ExtInst, [p.tF32, newMax, p.glslStd, GLSLstd450.FMax, localMax, chunkMax]);
+
+  // alpha = exp(localMax - newMax) — correction factor for running sum
+  const diff = b.id(); b.emit(Op.FSub, [p.tF32, diff, localMax, newMax]);
+  const alpha = b.id(); b.emit(Op.ExtInst, [p.tF32, alpha, p.glslStd, GLSLstd450.Exp, diff]);
+
+  // localSum = localSum * alpha + sum(exp(v4 - newMax))
+  const localSum = b.id(); b.emit(Op.Load, [p.tF32, localSum, varSum]);
+  const correctedSum = b.id(); b.emit(Op.FMul, [p.tF32, correctedSum, localSum, alpha]);
+
+  // Splat newMax, compute exp(v4 - newMax)
+  const splatMax = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatMax, newMax, newMax, newMax, newMax]);
+  const shifted = b.id(); b.emit(Op.FSub, [tVec4F32, shifted, v4, splatMax]);
+  const expV = b.id(); b.emit(Op.ExtInst, [tVec4F32, expV, p.glslStd, GLSLstd450.Exp, shifted]);
+
+  // Horizontal sum of exp values
+  const e0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e0, expV, 0]);
+  const e1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e1, expV, 1]);
+  const e2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e2, expV, 2]);
+  const e3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e3, expV, 3]);
+  const s01 = b.id(); b.emit(Op.FAdd, [p.tF32, s01, e0, e1]);
+  const s23 = b.id(); b.emit(Op.FAdd, [p.tF32, s23, e2, e3]);
+  const chunkSum = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSum, s01, s23]);
+
+  const newSum = b.id(); b.emit(Op.FAdd, [p.tF32, newSum, correctedSum, chunkSum]);
+
+  b.emit(Op.Store, [varMax, newMax]);
+  b.emit(Op.Store, [varSum, newSum]);
+
+  // Loop increment
+  b.emit(Op.Branch, [labelP1Cont]);
+  b.emit(Op.Label, [labelP1Cont]);
+  const nextIdx = b.id(); b.emit(Op.Load, [p.tU32, nextIdx, varIdx]);
+  const incIdx = b.id(); b.emit(Op.IAdd, [p.tU32, incIdx, nextIdx, constWgSize]);
+  b.emit(Op.Store, [varIdx, incIdx]);
+  b.emit(Op.Branch, [labelP1Head]);
+  b.emit(Op.Label, [labelP1Merge]);
+
+  // ── Online tree reduction: combine (max, sum) pairs ──
+  // Store thread-local max and sum to shared
+  const threadMax = b.id(); b.emit(Op.Load, [p.tF32, threadMax, varMax]);
+  const threadSum = b.id(); b.emit(Op.Load, [p.tF32, threadSum, varSum]);
+  const ptrSM = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSM, sharedMax, localIdx]);
+  b.emit(Op.Store, [ptrSM, threadMax]);
+  const ptrSS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSS, sharedSum, localIdx]);
+  b.emit(Op.Store, [ptrSS, threadSum]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Tree reduction combining (max, sum) pairs
+  let stride = wgSize >> 1;
+  while (stride > 0) {
+    const sc = b.id(); b.constant(p.tU32, sc, stride);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+    const lr = b.id(), lar = b.id();
+    b.emit(Op.SelectionMerge, [lar, 0]);
+    b.emit(Op.BranchConditional, [cmp, lr, lar]);
+    b.emit(Op.Label, [lr]);
+
+    const oi = b.id(); b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+
+    // Load my (max, sum)
+    const pmm = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmm, sharedMax, localIdx]);
+    const myMax = b.id(); b.emit(Op.Load, [p.tF32, myMax, pmm]);
+    const pms = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pms, sharedSum, localIdx]);
+    const mySum = b.id(); b.emit(Op.Load, [p.tF32, mySum, pms]);
+
+    // Load other (max, sum)
+    const pom = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pom, sharedMax, oi]);
+    const otherMax = b.id(); b.emit(Op.Load, [p.tF32, otherMax, pom]);
+    const pos = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pos, sharedSum, oi]);
+    const otherSum = b.id(); b.emit(Op.Load, [p.tF32, otherSum, pos]);
+
+    // Combine: newMax = max(a, b), newSum = sumA * exp(maxA - newMax) + sumB * exp(maxB - newMax)
+    const combMax = b.id(); b.emit(Op.ExtInst, [p.tF32, combMax, p.glslStd, GLSLstd450.FMax, myMax, otherMax]);
+    const dA = b.id(); b.emit(Op.FSub, [p.tF32, dA, myMax, combMax]);
+    const dB = b.id(); b.emit(Op.FSub, [p.tF32, dB, otherMax, combMax]);
+    const eA = b.id(); b.emit(Op.ExtInst, [p.tF32, eA, p.glslStd, GLSLstd450.Exp, dA]);
+    const eB = b.id(); b.emit(Op.ExtInst, [p.tF32, eB, p.glslStd, GLSLstd450.Exp, dB]);
+    const sA = b.id(); b.emit(Op.FMul, [p.tF32, sA, mySum, eA]);
+    const sB = b.id(); b.emit(Op.FMul, [p.tF32, sB, otherSum, eB]);
+    const combSum = b.id(); b.emit(Op.FAdd, [p.tF32, combSum, sA, sB]);
+
+    b.emit(Op.Store, [pmm, combMax]);
+    b.emit(Op.Store, [pms, combSum]);
+
+    b.emit(Op.Branch, [lar]);
+    b.emit(Op.Label, [lar]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    stride >>= 1;
+  }
+
+  // ── Phase 2: Thread 0 computes loss ──
+  const cmpThread0 = b.id();
+  b.emit(Op.IEqual, [p.tBool, cmpThread0, localIdx, p.const0u]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [cmpThread0, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+
+  // rowMax = sharedMax[0], rowSum = sharedSum[0]
+  const ptrSM0 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSM0, sharedMax, p.const0u]);
+  const rowMax = b.id(); b.emit(Op.Load, [p.tF32, rowMax, ptrSM0]);
+  const ptrSS0 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSS0, sharedSum, p.const0u]);
+  const rowSum = b.id(); b.emit(Op.Load, [p.tF32, rowSum, ptrSS0]);
+
+  // logSumExp = log(rowSum) + rowMax
+  const logRowSum = b.id();
+  b.emit(Op.ExtInst, [p.tF32, logRowSum, p.glslStd, GLSLstd450.Log, rowSum]);
+  const logSumExp = b.id();
+  b.emit(Op.FAdd, [p.tF32, logSumExp, logRowSum, rowMax]);
+
+  // Load target index: bitcast f32 → u32
+  const ptrTarget = b.id();
+  b.emit(Op.AccessChain, [bufTargets.tPtrF32, ptrTarget, bufTargets.varId, p.const0u, row]);
+  const targetF32 = b.id();
+  b.emit(Op.Load, [p.tF32, targetF32, ptrTarget]);
+  const targetU32 = b.id();
+  b.emit(Op.Bitcast, [p.tU32, targetU32, targetF32]);
+
+  // Load logit[target] via scalar access to vec4 buffer:
+  // vec4 index = target / 4, component = target % 4
+  const tgtVec4Idx = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, tgtVec4Idx, targetU32, p.const2u]);
+  const tgtComponent = b.id();
+  const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+  b.emit(Op.BitwiseAnd, [p.tU32, tgtComponent, targetU32, const3u]);
+
+  // Global vec4 index for this row
+  const tgtGlobalVec4 = b.id();
+  b.emit(Op.IAdd, [p.tU32, tgtGlobalVec4, rowOffsetVec4, tgtVec4Idx]);
+  const ptrTgtVec4 = b.id();
+  b.emit(Op.AccessChain, [bufLogits.tPtrVec4, ptrTgtVec4, bufLogits.varId, p.const0u, tgtGlobalVec4]);
+  const tgtV4 = b.id();
+  b.emit(Op.Load, [tVec4F32, tgtV4, ptrTgtVec4]);
+
+  // Extract the target component using VectorExtractDynamic
+  const logitTarget = b.id();
+  b.emit(Op.VectorExtractDynamic, [p.tF32, logitTarget, tgtV4, tgtComponent]);
+
+  // loss = logSumExp - logit[target]
+  const loss = b.id();
+  b.emit(Op.FSub, [p.tF32, loss, logSumExp, logitTarget]);
+
+  // Write to output[row]
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, row]);
+  b.emit(Op.Store, [ptrOut, loss]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: Cross-Entropy Forward Pick ──────────────────────────────────────
 
 /**

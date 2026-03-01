@@ -69,6 +69,7 @@ export const Op = {
   FMod:                 141,
   FNegate:              127,
   VectorTimesScalar:    142,
+  VectorExtractDynamic: 77,
   CompositeExtract:     81,
   CompositeConstruct:   80,
   CopyObject:           83,

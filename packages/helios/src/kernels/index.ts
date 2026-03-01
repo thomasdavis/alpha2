@@ -46,7 +46,7 @@ import {
 export {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormBackward,
   kernelBroadcast, kernelMaskedFill,
-  kernelCrossEntropyForwardFused, kernelCrossEntropyForwardPick,
+  kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
@@ -57,7 +57,7 @@ export {
 import {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormBackward,
   kernelBroadcast, kernelMaskedFill,
-  kernelCrossEntropyForwardFused, kernelCrossEntropyForwardPick,
+  kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
@@ -213,6 +213,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "broadcast":  spirv = kernelBroadcast(wgSize); break;
     case "masked_fill": spirv = kernelMaskedFill(wgSize); break;
     case "ce_fwd_fused": spirv = kernelCrossEntropyForwardFused(wgSize); break;
+    case "ce_fwd_vec4":  spirv = kernelCrossEntropyForwardVec4(wgSize); break;
     case "ce_fwd_pick": spirv = kernelCrossEntropyForwardPick(wgSize); break;
     case "cross_entropy_backward": spirv = kernelCrossEntropyBackward(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;

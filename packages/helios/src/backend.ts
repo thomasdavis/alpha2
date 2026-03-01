@@ -302,12 +302,12 @@ function autoTuneWgSize(vk: NativeAddon): void {
 
 const pipelineCache = new Map<string, number>();
 
-function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSize = PUSH_SIZE): number {
-  const key = `${name}:${numBindings}:${pushSize}`;
+function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): number {
+  const key = `${name}:${numBindings}:${pushSize}:${wgSize}`;
   let handle = pipelineCache.get(key);
   if (handle !== undefined) return handle;
 
-  const spirv = getKernelSpirv(name, WG_SIZE);
+  const spirv = getKernelSpirv(name, wgSize);
   handle = vk.createPipeline(spirv, numBindings, pushSize);
   pipelineCache.set(key, handle);
   return handle;
@@ -1729,7 +1729,11 @@ export class HeliosBackend implements Backend {
       const kernelName = softmaxEnv === "online" ? "softmax_online"
         : softmaxEnv === "vec4" ? "softmax_vec4"
         : dim > 32768 ? "softmax_online" : "softmax_vec4";
-      const pipeline = getPipeline(vk, kernelName, 2);
+      // Optimal WG size: smallest power-of-2 >= dimVec4, clamped to [32, WG_SIZE]
+      // For dim=512 (dimVec4=128): wgSize=128 → 100% thread utilization
+      // For dim=64000 (dimVec4=16000): wgSize=256 → each thread loops 62×
+      const softmaxWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const pipeline = getPipeline(vk, kernelName, 2, PUSH_SIZE, softmaxWg);
       const bufA = ensureGpu(vk, a);
       const region = acquireOutputRegion(vk, byteSize);
       const push = push2Memo(dimVec4, numRows);
@@ -3212,11 +3216,12 @@ export class HeliosBackend implements Backend {
     if (N * C >= this._minGpuSize) {
       const vk = this.init();
       // GPU path: fused log-sum-exp CE kernel (one workgroup per row)
-      // Replaces 5-op chain (softmax → clamp → log → pick → negate) with
-      // a single kernel that computes loss[i] = log(sum(exp(x - max))) + max - x[target]
+      // Vec4 online variant for C divisible by 4 (vec4 loads + single-pass max+sum)
+      const useVec4CE = C % 4 === 0 && C >= 16;
+      const kernelName = useVec4CE ? "ce_fwd_vec4" : "ce_fwd_fused";
       const bufLogits = ensureGpu(vk, logits);
       const bufTargets = ensureGpuRawBits(vk, targets);
-      const pipeline = getPipeline(vk, "ce_fwd_fused", 3, 2 * 4);
+      const pipeline = getPipeline(vk, kernelName, 3, 2 * 4);
       const region = acquireOutputRegion(vk, N * 4);
 
       const push = new Float32Array(2);
@@ -3226,7 +3231,7 @@ export class HeliosBackend implements Backend {
 
       graph.record({
         kind: "unary",
-        kernel: "ce_fwd_fused",
+        kernel: kernelName,
         pipeline,
         inputBufs: [],
         outputRegion: region,
