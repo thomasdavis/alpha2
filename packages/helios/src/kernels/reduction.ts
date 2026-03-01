@@ -543,6 +543,228 @@ export function kernelSumOfSquares(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: Grid-stride sum-of-squares (fewer WGs, more work per thread) ─────
+
+/**
+ * Grid-stride sum-of-squares: each thread loops over many elements.
+ * Uses N workgroups instead of N/wgSize, reducing multi-pass overhead.
+ *
+ * Each thread:
+ *   acc = 0
+ *   for i = globalId; i < totalLen; i += gridStride:
+ *     acc += A[i] * A[i]
+ *   shared[localId] = acc
+ *   // tree reduction
+ *   C[wgId] = shared[0]
+ *
+ * Bindings: 0=A(in), 1=C(out, partial sums)
+ * Push constants: { totalLen: f32, _unused: f32 }
+ */
+export function kernelSumOfSquaresStride(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  // Shared memory
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id();
+  b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  // Function-scope variable for loop counter
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+  const vNumWorkgroups = b.id();
+  b.variable(tPtrInputVec3, vNumWorkgroups, StorageClass.Input);
+  b.addDecorate(vNumWorkgroups, Decoration.BuiltIn, BuiltIn.NumWorkgroups);
+
+  // Barrier constants
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const const1u_extra = b.id();
+  b.constant(p.tU32, const1u_extra, 1);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId, vNumWorkgroups]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  // Function-scope variables MUST be first in the entry block (SPIR-V spec)
+  const varIdx = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  // globalId = GlobalInvocationId.x
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const globalId = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, globalId, gidVec, 0]);
+
+  // localIdx
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  // wgId
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const wgId = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, wgId, wgIdVec, 0]);
+
+  // numWgs = NumWorkgroups.x
+  const nwgVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, nwgVec, vNumWorkgroups]);
+  const numWgs = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, numWgs, nwgVec, 0]);
+
+  // gridStride = numWgs * wgSize
+  const gridStride = b.id();
+  b.emit(Op.IMul, [p.tU32, gridStride, numWgs, constWgSize]);
+
+  // totalLen (u32) from push constant
+  const lenF = loadPushLen(b, p, pc);
+  const totalLen = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, totalLen, lenF]);
+
+  // Initialize loop variables
+  b.emit(Op.Store, [varIdx, globalId]);
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  const labelLoopHead = b.id();
+  const labelLoopBody = b.id();
+  const labelLoopContinue = b.id();
+  const labelLoopEnd = b.id();
+
+  b.emit(Op.Branch, [labelLoopHead]);
+  b.emit(Op.Label, [labelLoopHead]);
+  const curIdx = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx, varIdx]);
+  const loopCond = b.id();
+  b.emit(Op.ULessThan, [p.tBool, loopCond, curIdx, totalLen]);
+  b.emit(Op.LoopMerge, [labelLoopEnd, labelLoopContinue, 0]);
+  b.emit(Op.BranchConditional, [loopCond, labelLoopBody, labelLoopEnd]);
+
+  b.emit(Op.Label, [labelLoopBody]);
+  // Load A[idx], square, add to acc
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, curIdx]);
+  const aVal = b.id();
+  b.emit(Op.Load, [p.tF32, aVal, ptrA]);
+  const sq = b.id();
+  b.emit(Op.FMul, [p.tF32, sq, aVal, aVal]);
+  const curAcc = b.id();
+  b.emit(Op.Load, [p.tF32, curAcc, varAcc]);
+  const newAcc = b.id();
+  b.emit(Op.FAdd, [p.tF32, newAcc, curAcc, sq]);
+  b.emit(Op.Store, [varAcc, newAcc]);
+  b.emit(Op.Branch, [labelLoopContinue]);
+
+  // Continue block: advance idx and branch back to header
+  b.emit(Op.Label, [labelLoopContinue]);
+  const nextIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, nextIdx, curIdx, gridStride]);
+  b.emit(Op.Store, [varIdx, nextIdx]);
+  b.emit(Op.Branch, [labelLoopHead]);
+
+  b.emit(Op.Label, [labelLoopEnd]);
+
+  // Store accumulated value to shared memory
+  const finalAcc = b.id();
+  b.emit(Op.Load, [p.tF32, finalAcc, varAcc]);
+  const ptrSharedLocal = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSharedLocal, sharedMem, localIdx]);
+  b.emit(Op.Store, [ptrSharedLocal, finalAcc]);
+
+  // Barrier
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Tree reduction in shared memory (unrolled)
+  let stride = wgSize >> 1;
+  while (stride > 0) {
+    const strideConst = b.id();
+    b.constant(p.tU32, strideConst, stride);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, strideConst]);
+    const labelReduce = b.id();
+    const labelAfterReduce = b.id();
+    b.emit(Op.SelectionMerge, [labelAfterReduce, 0]);
+    b.emit(Op.BranchConditional, [cmp, labelReduce, labelAfterReduce]);
+
+    b.emit(Op.Label, [labelReduce]);
+    const otherIdx = b.id();
+    b.emit(Op.IAdd, [p.tU32, otherIdx, localIdx, strideConst]);
+    const ptrMe = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrMe, sharedMem, localIdx]);
+    const myVal = b.id();
+    b.emit(Op.Load, [p.tF32, myVal, ptrMe]);
+    const ptrOther = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrOther, sharedMem, otherIdx]);
+    const otherVal = b.id();
+    b.emit(Op.Load, [p.tF32, otherVal, ptrOther]);
+    const sum = b.id();
+    b.emit(Op.FAdd, [p.tF32, sum, myVal, otherVal]);
+    b.emit(Op.Store, [ptrMe, sum]);
+    b.emit(Op.Branch, [labelAfterReduce]);
+
+    b.emit(Op.Label, [labelAfterReduce]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    stride >>= 1;
+  }
+
+  // Thread 0 writes partial sum
+  const isZero = b.id();
+  b.emit(Op.ULessThan, [p.tBool, isZero, localIdx, const1u_extra]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [isZero, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+  const ptrShared0 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrShared0, sharedMem, p.const0u]);
+  const partialSum = b.id();
+  b.emit(Op.Load, [p.tF32, partialSum, ptrShared0]);
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, wgId]);
+  b.emit(Op.Store, [ptrC, partialSum]);
+  b.emit(Op.Branch, [labelEnd]);
+
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: Column sum (reduce axis 0 of a 2D buffer) ────────────────────────
 
 /**

@@ -486,6 +486,100 @@ export function kernelGeluBackward(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: SiLU backward ───────────────────────────────────────────────────
+
+/**
+ * SiLU backward: C[i] = dout * sigma(x) * (1 + x * (1 - sigma(x)))
+ * where sigma(x) = 1 / (1 + exp(-x))
+ * Bindings: 0=A(input), 1=B(gradOutput), 2=C(gradInput)
+ * Push constants: { len: f32, _unused: f32 }
+ */
+export function kernelSiluBackward(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // x = A[gidX]
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
+  const x = b.id();
+  b.emit(Op.Load, [p.tF32, x, ptrA]);
+
+  // dout = B[gidX]
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, p.const0u, gidX]);
+  const dout = b.id();
+  b.emit(Op.Load, [p.tF32, dout, ptrB]);
+
+  // negX = -x
+  const negX = b.id();
+  b.emit(Op.FNegate, [p.tF32, negX, x]);
+
+  // expNegX = exp(-x)
+  const expNegX = b.id();
+  b.emit(Op.ExtInst, [p.tF32, expNegX, p.glslStd, GLSLstd450.Exp, negX]);
+
+  // sigma = 1 / (1 + exp(-x))
+  const onePlusExp = b.id();
+  b.emit(Op.FAdd, [p.tF32, onePlusExp, constOne, expNegX]);
+  const sigma = b.id();
+  b.emit(Op.FDiv, [p.tF32, sigma, constOne, onePlusExp]);
+
+  // oneMinusSigma = 1 - sigma
+  const oneMinusSigma = b.id();
+  b.emit(Op.FSub, [p.tF32, oneMinusSigma, constOne, sigma]);
+
+  // xTimesOms = x * (1 - sigma)
+  const xTimesOms = b.id();
+  b.emit(Op.FMul, [p.tF32, xTimesOms, x, oneMinusSigma]);
+
+  // factor = 1 + x * (1 - sigma)
+  const factor = b.id();
+  b.emit(Op.FAdd, [p.tF32, factor, constOne, xTimesOms]);
+
+  // siluGrad = sigma * factor
+  const siluGrad = b.id();
+  b.emit(Op.FMul, [p.tF32, siluGrad, sigma, factor]);
+
+  // result = dout * siluGrad
+  const result = b.id();
+  b.emit(Op.FMul, [p.tF32, result, dout, siluGrad]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Kernel: ReLU backward ───────────────────────────────────────────────────
 
 /**

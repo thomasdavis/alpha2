@@ -12,6 +12,7 @@ export {
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
   kernelGeluBackward, kernelReluBackward, kernelClampBackward,
+  kernelSiluBackward,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
   kernelAddVec4, kernelSubVec4, kernelMulVec4, kernelDivVec4,
@@ -25,6 +26,7 @@ import {
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
   kernelGeluBackward, kernelReluBackward, kernelClampBackward,
+  kernelSiluBackward,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
   kernelAddVec4, kernelSubVec4, kernelMulVec4, kernelDivVec4,
@@ -35,11 +37,11 @@ import {
 
 // Reduction kernels
 export {
-  kernelSumReduce, kernelSumOfSquares, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
 } from "./reduction.js";
 
 import {
-  kernelSumReduce, kernelSumOfSquares, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelSumAxis,
 } from "./reduction.js";
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
@@ -175,6 +177,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
     case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
+    case "sum_sq_reduce_stride": spirv = kernelSumOfSquaresStride(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
     case "softmax":   spirv = kernelSoftmax(wgSize); break;
     case "softmax_online": spirv = kernelSoftmaxOnline(wgSize); break;
@@ -204,6 +207,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "scale_inplace": spirv = kernelScaleInplace(wgSize); break;
     case "scale_inplace_vec4": spirv = kernelScaleInplaceVec4(wgSize); break;
     case "gelu_backward": spirv = kernelGeluBackward(wgSize); break;
+    case "silu_backward": spirv = kernelSiluBackward(wgSize); break;
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;
     case "clamp_backward": spirv = kernelClampBackward(wgSize); break;
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;

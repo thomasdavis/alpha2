@@ -172,6 +172,18 @@ def main():
     record("gelu_bwd_512x1024", ms, bytes_rw=sz1024 * 4 * 3, note="GELU backward (fused)")
     del gelu_x, gelu_out, gelu_grad
 
+    # SiLU backward (fused)
+    silu_x = torch.randn(512, 2752, device=device, requires_grad=True)
+    silu_out = F.silu(silu_x)
+    silu_grad = torch.randn_like(silu_out)
+    def silu_bwd():
+        if silu_x.grad is not None:
+            silu_x.grad.zero_()
+        silu_out.backward(silu_grad, retain_graph=True)
+    ms = bench(silu_bwd, W, I, sync)
+    record("silu_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 3, note="SiLU backward (fused)")
+    del silu_x, silu_out, silu_grad
+
     del x1024, x2752, y1024
 
     # Large tensor element-wise (memory bandwidth test)

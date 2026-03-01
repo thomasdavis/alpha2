@@ -1509,9 +1509,62 @@ export class HeliosBackend implements Backend {
   private gpuReduceSumOfSquares(a: TensorData): TensorData {
     const vk = this.init();
     const totalSize = shapeSize(a.shape);
-    // First pass uses sum_sq_reduce (squares at input load)
+
+    // For large inputs, use grid-stride kernel: fewer WGs, each thread loops
+    // over many elements. Reduces 3 passes to 2 for ~8.5M elements.
+    const STRIDE_THRESHOLD = 65536; // Use stride kernel above 64K elements
+    const STRIDE_WGS = 256;        // Fixed number of workgroups for stride kernel
+
+    if (totalSize >= STRIDE_THRESHOLD) {
+      const stridePipeline = getPipeline(vk, "sum_sq_reduce_stride", 2);
+      const sumPipeline = getPipeline(vk, "sum_reduce", 2);
+      let inputBuf = ensureGpu(vk, a);
+
+      // Pass 1: grid-stride sum-of-squares → STRIDE_WGS partial sums
+      const numGroups = Math.min(STRIDE_WGS, Math.ceil(totalSize / WG_SIZE));
+      const region1 = acquireOutputRegion(vk, numGroups * 4);
+      const push1 = push2Memo(totalSize, 0);
+
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "sum_sq_reduce_stride",
+        pipeline: stridePipeline,
+        inputBufs: [],
+        outputRegion: region1,
+        groups: [numGroups, 1, 1],
+        push: push1,
+        pushSize: PUSH_SIZE,
+        shape: [numGroups],
+        allBufs: [inputBuf, region1.handle],
+      });
+
+      // Pass 2: reduce partial sums → 1 value (single WG handles up to 256)
+      if (numGroups > 1) {
+        const region2 = acquireOutputRegion(vk, 4);
+        const push2 = push2Memo(numGroups, 0);
+
+        graph.record({
+          kind: "reduce_sum",
+          kernel: "sum_reduce",
+          pipeline: sumPipeline,
+          inputBufs: [],
+          outputRegion: region2,
+          groups: [1, 1, 1],
+          push: push2,
+          pushSize: PUSH_SIZE,
+          shape: [],
+          allBufs: [region1.handle, region2.handle],
+        });
+
+        graph.deferRelease(region1);
+        return graphLazyTensor(vk, [], region2);
+      }
+
+      return graphLazyTensor(vk, [], region1);
+    }
+
+    // Small inputs: use original multi-pass approach
     const sqPipeline = getPipeline(vk, "sum_sq_reduce", 2);
-    // Subsequent passes use plain sum_reduce (just sum partial sums)
     const sumPipeline = getPipeline(vk, "sum_reduce", 2);
 
     let inputBuf = ensureGpu(vk, a);
@@ -1519,7 +1572,6 @@ export class HeliosBackend implements Backend {
     let finalRegion: OutputRegion | null = null;
     let isFirstPass = true;
 
-    // Multi-pass reduction: each pass reduces by WG_SIZE, all recorded to graph
     while (remaining > 1) {
       const numGroups = Math.ceil(remaining / WG_SIZE);
       const outByteSize = numGroups * 4;
@@ -1542,7 +1594,6 @@ export class HeliosBackend implements Backend {
         allBufs: [inputBuf, region.handle],
       });
 
-      // Defer-release intermediate regions (not the final one)
       if (finalRegion) graph.deferRelease(finalRegion);
 
       inputBuf = region.handle;
@@ -1551,7 +1602,7 @@ export class HeliosBackend implements Backend {
       isFirstPass = false;
     }
 
-    if (!finalRegion) return a; // single element, already reduced
+    if (!finalRegion) return a;
 
     return graphLazyTensor(vk, [], finalRegion);
   }
@@ -1825,6 +1876,23 @@ export class HeliosBackend implements Backend {
       const sech2 = 1 - tanh_val * tanh_val;
       const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
       out[i] = grad[i] * (0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner);
+    }
+    return makeTensor(input.shape, input.dtype, out);
+  }
+
+  siluBackward(input: TensorData, gradOutput: TensorData): TensorData {
+    const size = shapeSize(input.shape);
+    if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
+      return this.gpuBinaryOp(input, gradOutput, "silu_backward", true);
+    }
+    // CPU fallback: silu'(x) = sigma(x) * (1 + x * (1 - sigma(x)))
+    const src = input.data as Float32Array;
+    const grad = gradOutput.data as Float32Array;
+    const out = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const sigma = 1 / (1 + Math.exp(-x));
+      out[i] = grad[i] * sigma * (1 + x * (1 - sigma));
     }
     return makeTensor(input.shape, input.dtype, out);
   }

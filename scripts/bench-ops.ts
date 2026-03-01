@@ -237,6 +237,16 @@ function main(): void {
       record("gelu_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "GELU backward (fused)" });
     }
 
+    // SiLU backward (used in SwiGLU)
+    const xSilu = b.randn([512, 2752]);
+    const ySilu = b.randn([512, 2752]);
+    if (typeof (b as any).siluBackward === "function") {
+      ms = benchOp(() => (b as any).siluBackward(xSilu, ySilu));
+      record("silu_bwd_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "SiLU backward (fused)" });
+    }
+    release(xSilu);
+    release(ySilu);
+
     release(x);
     release(y);
     release(x2);
