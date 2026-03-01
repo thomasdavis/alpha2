@@ -26,7 +26,7 @@ export function kernelSlice2D(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufSrc = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   // Push constants as u32 (5 members)
   const numPC = 5;
@@ -129,7 +129,7 @@ export function kernelSlice3D(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufSrc = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   const numPC = 8;
   const pcMemberTypes = Array(numPC).fill(p.tU32) as number[];
@@ -238,9 +238,9 @@ export function kernelSlice3Way(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufSrc  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufOut0 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
-  const bufOut1 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
-  const bufOut2 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+  const bufOut0 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
+  const bufOut1 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
+  const bufOut2 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false, true);
 
   // Push constants (3 u32)
   const numPC = 3;
@@ -474,7 +474,7 @@ export function kernelScatterSlice2D(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   // Push constants as u32 (6 members)
   const numPC = 6;
@@ -595,7 +595,7 @@ export function kernelScatterSlice3D(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   const numPC = 9;
   const pcMemberTypes = Array(numPC).fill(p.tU32) as number[];
