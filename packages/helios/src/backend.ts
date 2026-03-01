@@ -2645,20 +2645,6 @@ export class HeliosBackend implements Backend {
       }
     }
 
-    // Second-level: if r2x2 with s2x2 still gives < 192 WGs, fall to r1x1
-    // for even more SM occupancy (e.g. 512×1024 attn_out: r2x2=128WGs → r1x1=512WGs).
-    if (gX * gY < 192 && regTilesM === 2 && regTilesN === 2 &&
-        subgroupTilesX >= 2 && subgroupTilesY >= 2) {
-      const eff1M = this._coopM * subgroupTilesY;
-      const eff1N = this._coopN * subgroupTilesX;
-      if (M % eff1M === 0 && N % eff1N === 0) {
-        regTilesM = 1;
-        regTilesN = 1;
-        gX = Math.ceil(N / eff1N);
-        gY = Math.ceil(M / eff1M);
-      }
-    }
-
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
     // Only for non-batched (batchSize=1) since wgId.z is repurposed as split index.
     const kTileK = this._coopK * this._kMulti;
@@ -2852,19 +2838,6 @@ export class HeliosBackend implements Backend {
         regTilesN = fallN;
         gX = Math.ceil(N / effN2);
         gY = Math.ceil(outM / effM2);
-      }
-    }
-
-    // Second-level: r2x2 → r1x1 for more occupancy
-    if (gX * gY < 192 && regTilesM === 2 && regTilesN === 2 &&
-        subgroupTilesX >= 2 && subgroupTilesY >= 2) {
-      const eff1M = this._coopM * subgroupTilesY;
-      const eff1N = this._coopN * subgroupTilesX;
-      if (outM % eff1M === 0 && N % eff1N === 0) {
-        regTilesM = 1;
-        regTilesN = 1;
-        gX = Math.ceil(N / eff1N);
-        gY = Math.ceil(outM / eff1M);
       }
     }
 
