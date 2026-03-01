@@ -184,6 +184,14 @@ def main():
     record("scale_4096x4096", ms, bytes_rw=sz_big * 4 * 2, note="large scale bandwidth test")
     del big, big2
 
+    # LM head weight-sized element-wise (sustained bandwidth on 256MB)
+    lm_w1 = torch.randn(1024, V, device=device)
+    lm_w2 = torch.randn(1024, V, device=device)
+    lm_sz = 1024 * V
+    ms = bench(lambda: lm_w1 + lm_w2, W, I, sync)
+    record("add_lm_head_1024x64000", ms, bytes_rw=lm_sz * 4 * 3, note="LM head-sized add (256MB)")
+    del lm_w1, lm_w2
+
     # ── 3. LAYERNORM ─────────────────────────────────────────────────────────
 
     ln_x = torch.randn(BT, D, device=device)
@@ -337,6 +345,14 @@ def main():
     record("grad_scale_lm_head", ms,
            bytes_rw=lm_size * 4 * 2, note="gradient clipping scale (scale_inplace)")
     del lm_grad, lm_acc
+
+    # ── 8b2. DROPOUT MASK GENERATION ────────────────────────────────────
+    drop_shape = (BT, D)
+    drop_p = torch.full(drop_shape, 0.9, device=device)  # keep_prob = 1-0.1 = 0.9
+    ms = bench(lambda: torch.bernoulli(drop_p) / 0.9, W, I, sync)
+    record("dropout_mask_512x1024", ms,
+           bytes_rw=BT * D * 4, note="GPU-side dropout mask")
+    del drop_p
 
     # ── 8c. GRADIENT NORM (sum of squares) ────────────────────────────────
     p_size_norm = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024

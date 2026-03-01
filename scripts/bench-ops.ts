@@ -258,6 +258,19 @@ function main(): void {
     release(big2);
   }
 
+  // LM head weight-sized element-wise (tests sustained bandwidth on 256MB)
+  {
+    const lmW1 = b.randn([1024, V]);
+    const lmW2 = b.randn([1024, V]);
+    const lmSize = 1024 * V;
+
+    let ms = benchOp(() => b.add(lmW1, lmW2));
+    record("add_lm_head_1024x64000", ms, { bytes: lmSize * 4 * 3, note: "LM head-sized add (256MB)" });
+
+    release(lmW1);
+    release(lmW2);
+  }
+
   // ── 3. LAYERNORM ──────────────────────────────────────────────────────────
 
   {
@@ -449,6 +462,15 @@ function main(): void {
 
     release(lmGrad);
     release(lmAcc);
+  }
+
+  // ── 8b2. DROPOUT MASK GENERATION ──────────────────────────────────────────
+
+  if (typeof (b as any).dropoutMask === "function") {
+    const msDropout = benchOp(() => (b as any).dropoutMask([BT, D], 42, 0, 0.1));
+    record("dropout_mask_512x1024", msDropout, {
+      bytes: BT * D * 4, note: "GPU-side dropout mask (PhiloxRNG)",
+    });
   }
 
   // ── 8c. GRADIENT NORM (sum of squares) ─────────────────────────────────────
