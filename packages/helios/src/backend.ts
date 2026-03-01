@@ -1775,11 +1775,11 @@ export class HeliosBackend implements Backend {
     if (dim % 4 === 0 && dim >= 16) {
       const dimVec4 = dim / 4;
       const softmaxEnv = process.env.HELIOS_SOFTMAX_KERNEL ?? "";
-      // Auto: online (2-pass) for large dims (>32K, row exceeds L1, fewer DRAM passes wins),
-      // vec4 3-pass for smaller dims (row fits in L1, simpler loop bodies generate better code)
+      // Online (2-pass) is faster for all dims: fewer memory passes outweigh
+      // the slightly heavier Phase 1 ALU. Measured 23% faster at dim=512.
       const kernelName = softmaxEnv === "online" ? "softmax_online"
         : softmaxEnv === "vec4" ? "softmax_vec4"
-        : dim > 32768 ? "softmax_online" : "softmax_vec4";
+        : "softmax_online";
       // Optimal WG size: smallest power-of-2 >= dimVec4, clamped to [32, WG_SIZE]
       // For dim=512 (dimVec4=128): wgSize=128 → 100% thread utilization
       // For dim=64000 (dimVec4=16000): wgSize=256 → each thread loops 62×
@@ -1834,7 +1834,12 @@ export class HeliosBackend implements Backend {
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
     const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
-    const pipeline = getPipeline(vk, kernelName, 4);
+    // Tune wgSize: ensure each thread has >= 2 vec4 elements for better compute density
+    const dimVec4 = dim / 4;
+    const lnWg = useVec4
+      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
+      : WG_SIZE;
+    const pipeline = getPipeline(vk, kernelName, 4, PUSH_SIZE, lnWg);
     const bufX = ensureGpu(vk, x);
     const bufW = ensureGpu(vk, weight);
     const bufB = ensureGpu(vk, bias);
@@ -2185,7 +2190,11 @@ export class HeliosBackend implements Backend {
       // Main backward kernel (6 bindings) — recorded to graph
       const useVec4Bwd = dim % 4 === 0 && dim >= 16;
       const bwdKernel = useVec4Bwd ? "layernorm_backward_vec4" : "layernorm_backward";
-      const pipeline1 = getPipeline(vk, bwdKernel, 6);
+      const dimVec4Bwd = dim / 4;
+      const lnBwdWg = useVec4Bwd
+        ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4Bwd >> 1)))))
+        : WG_SIZE;
+      const pipeline1 = getPipeline(vk, bwdKernel, 6, PUSH_SIZE, lnBwdWg);
       const push1 = push2Memo(dim, eps);
       graph.record({
         kind: "backward",
@@ -2636,6 +2645,20 @@ export class HeliosBackend implements Backend {
       }
     }
 
+    // Second-level: if r2x2 with s2x2 still gives < 192 WGs, fall to r1x1
+    // for even more SM occupancy (e.g. 512×1024 attn_out: r2x2=128WGs → r1x1=512WGs).
+    if (gX * gY < 192 && regTilesM === 2 && regTilesN === 2 &&
+        subgroupTilesX >= 2 && subgroupTilesY >= 2) {
+      const eff1M = this._coopM * subgroupTilesY;
+      const eff1N = this._coopN * subgroupTilesX;
+      if (M % eff1M === 0 && N % eff1N === 0) {
+        regTilesM = 1;
+        regTilesN = 1;
+        gX = Math.ceil(N / eff1N);
+        gY = Math.ceil(M / eff1M);
+      }
+    }
+
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
     // Only for non-batched (batchSize=1) since wgId.z is repurposed as split index.
     const kTileK = this._coopK * this._kMulti;
@@ -2829,6 +2852,19 @@ export class HeliosBackend implements Backend {
         regTilesN = fallN;
         gX = Math.ceil(N / effN2);
         gY = Math.ceil(outM / effM2);
+      }
+    }
+
+    // Second-level: r2x2 → r1x1 for more occupancy
+    if (gX * gY < 192 && regTilesM === 2 && regTilesN === 2 &&
+        subgroupTilesX >= 2 && subgroupTilesY >= 2) {
+      const eff1M = this._coopM * subgroupTilesY;
+      const eff1N = this._coopN * subgroupTilesX;
+      if (outM % eff1M === 0 && N % eff1N === 0) {
+        regTilesM = 1;
+        regTilesN = 1;
+        gX = Math.ceil(N / eff1N);
+        gY = Math.ceil(outM / eff1M);
       }
     }
 

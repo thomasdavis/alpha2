@@ -105,6 +105,10 @@ export const Op = {
   MemoryBarrier:        225,
   IsNan:                156,
   IsInf:                157,
+  // Subgroup non-uniform (core in SPIR-V 1.3)
+  GroupNonUniformFAdd:          350,
+  GroupNonUniformFMax:          358,
+  GroupNonUniformFMin:          355,
   // Cooperative matrix (VK_KHR_cooperative_matrix)
   OpTypeCooperativeMatrixKHR:   4456,
   OpCooperativeMatrixLoadKHR:   4457,
@@ -120,6 +124,8 @@ export const Capability = {
   VulkanMemoryModel: 5345,
   StorageBuffer16BitAccess: 4433, // SPV_KHR_16bit_storage
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
+  GroupNonUniform: 61,
+  GroupNonUniformArithmetic: 63,
   CooperativeMatrixKHR: 6022,
 } as const;
 
@@ -128,6 +134,13 @@ export const CooperativeMatrixUse = {
   MatrixA: 0,
   MatrixB: 1,
   MatrixAccumulator: 2,
+} as const;
+
+// Group operations (for subgroup non-uniform)
+export const GroupOperation = {
+  Reduce: 0,
+  InclusiveScan: 1,
+  ExclusiveScan: 2,
 } as const;
 
 // Addressing/memory models
