@@ -471,6 +471,24 @@ function main(): void {
     release(grad);
     release(m);
     release(vState);
+
+    // Full model AdamW: 4 layers × 8.5M = ~34M params
+    const pSize4 = pSize * 4;
+    const param4 = b.randn([pSize4]);
+    const grad4 = b.randn([pSize4]);
+    const m4 = b.randn([pSize4]);
+    const vState4 = b.randn([pSize4]);
+    const ms4 = benchCustom(() => {
+      (b as any).adamwStep(param4, grad4, m4, vState4, 3e-4, 0.9, 0.999, 1e-8, 0.1, 0.1, 0.001, 1.0);
+      return [];
+    });
+    record("adamw_step_34M", ms4, {
+      bytes: pSize4 * 4 * 7, note: "AdamW 4 layers (~34M params)",
+    });
+    release(param4);
+    release(grad4);
+    release(m4);
+    release(vState4);
   }
 
   // ── 8b. GRADIENT ACCUMULATION (add_inplace, scale_inplace) ───────────────

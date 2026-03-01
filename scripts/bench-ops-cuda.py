@@ -380,6 +380,27 @@ def main():
            bytes_rw=p_size * 4 * 7, note="AdamW for 1 layer (~8.5M params)")
     del param, grad, m, v_state
 
+    # Full model AdamW: 4 layers × 8.5M = ~34M params
+    p_size4 = p_size * 4
+    param4 = torch.randn(p_size4, device=device)
+    grad4 = torch.randn(p_size4, device=device)
+    m4 = torch.zeros(p_size4, device=device)
+    v4 = torch.zeros(p_size4, device=device)
+
+    def adamw_step_big():
+        nonlocal m4, v4
+        m4.mul_(0.9).add_(grad4, alpha=0.1)
+        v4.mul_(0.999).addcmul_(grad4, grad4, value=0.001)
+        m_hat = m4 / (1 - 0.9)
+        v_hat = v4 / (1 - 0.999)
+        param4.addcdiv_(m_hat, v_hat.sqrt().add_(1e-8), value=-3e-4)
+        param4.mul_(1 - 3e-4 * 0.1)
+
+    ms = bench(adamw_step_big, W, I, sync)
+    record("adamw_step_34M", ms,
+           bytes_rw=p_size4 * 4 * 7, note="AdamW 4 layers (~34M params)")
+    del param4, grad4, m4, v4
+
     # ── 8b. GRADIENT ACCUMULATION ─────────────────────────────────────────
     lm_grad = torch.randn(1024, V, device=device)
     lm_acc = torch.randn(1024, V, device=device)
