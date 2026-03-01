@@ -55,7 +55,7 @@ export {
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
-  kernelDropoutMask,
+  kernelDropoutMask, kernelDropoutMaskVec4,
 } from "./nn.js";
 
 import {
@@ -66,7 +66,7 @@ import {
   kernelEmbeddingForward, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
-  kernelDropoutMask,
+  kernelDropoutMask, kernelDropoutMaskVec4,
 } from "./nn.js";
 
 // Matmul kernels
@@ -235,6 +235,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "slice_3d": spirv = kernelSlice3D(wgSize); break;
     case "scatter_slice_3d": spirv = kernelScatterSlice3D(wgSize); break;
     case "dropout_mask": spirv = kernelDropoutMask(wgSize); break;
+    case "dropout_mask_vec4": spirv = kernelDropoutMaskVec4(wgSize); break;
     case "softcap_forward": spirv = kernelSoftCapForward(wgSize); break;
     case "softcap_backward": spirv = kernelSoftCapBackward(wgSize); break;
     case "softcap_forward_vec4": spirv = kernelSoftCapForwardVec4(wgSize); break;

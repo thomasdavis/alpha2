@@ -3689,3 +3689,141 @@ export function kernelDropoutMask(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
   return b.build();
 }
+
+/**
+ * Vec4 dropout mask: 4 elements per thread, vec4 store.
+ * Same hash algorithm as scalar, but processes 4 consecutive indices per thread.
+ *
+ * Bindings: 0=out(write, vec4)
+ * Push constants (all u32): [vec4Count, seed, counter, p_bits, scale_bits]
+ */
+export function kernelDropoutMaskVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufOut = declareStorageBufferVec4(b, tVec4F32, 0, 0, false);
+
+  // Push constants as u32 (5 members)
+  const numPC = 5;
+  const pcMemberTypes = Array(numPC).fill(p.tU32) as number[];
+  const tPCStruct = b.id();
+  b.typeStruct(tPCStruct, pcMemberTypes);
+  b.addDecorate(tPCStruct, Decoration.Block);
+  for (let i = 0; i < numPC; i++) {
+    b.addMemberDecorate(tPCStruct, i, Decoration.Offset, i * 4);
+  }
+  const tPtrPCStruct = b.id();
+  b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
+  const tPtrU32PC = b.id();
+  b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const pcVar = b.id();
+  b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
+
+  // Index constants
+  const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+  const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+  const const4u = b.id(); b.constant(p.tU32, const4u, 4);
+
+  // Hash constants
+  const cMult = b.id(); b.constant(p.tU32, cMult, 0x9E3779B1);
+  const iMult = b.id(); b.constant(p.tU32, iMult, 0x85EBCA77);
+  const mix1  = b.id(); b.constant(p.tU32, mix1,  0x85EBCA6B);
+  const mix2  = b.id(); b.constant(p.tU32, mix2,  0xC2B2AE35);
+  const c16   = b.id(); b.constant(p.tU32, c16, 16);
+  const c13   = b.id(); b.constant(p.tU32, c13, 13);
+
+  const invU32Max = b.id(); b.constantF32(p.tF32, invU32Max, 1.0 / 4294967296.0);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelBody = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  // Load global ID
+  const gidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id(); b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load vec4Count
+  const ptrLen = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrLen, pcVar, p.const0u]);
+  const lenU = b.id(); b.emit(Op.Load, [p.tU32, lenU, ptrLen]);
+
+  // Bounds check
+  const cmpB = b.id(); b.emit(Op.UGreaterThanEqual, [p.tBool, cmpB, gidX, lenU]);
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [cmpB, labelEnd, labelBody]);
+  b.emit(Op.Label, [labelBody]);
+
+  // Load seed, counter
+  const ptrSeed = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrSeed, pcVar, p.const1u]);
+  const seed = b.id(); b.emit(Op.Load, [p.tU32, seed, ptrSeed]);
+  const ptrCounter = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrCounter, pcVar, const2u]);
+  const counter = b.id(); b.emit(Op.Load, [p.tU32, counter, ptrCounter]);
+
+  // Load p and scale as f32
+  const ptrPbits = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPbits, pcVar, const3u]);
+  const pBitsU = b.id(); b.emit(Op.Load, [p.tU32, pBitsU, ptrPbits]);
+  const pVal = b.id(); b.emit(Op.Bitcast, [p.tF32, pVal, pBitsU]);
+  const ptrSbits = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrSbits, pcVar, const4u]);
+  const sBitsU = b.id(); b.emit(Op.Load, [p.tU32, sBitsU, ptrSbits]);
+  const scaleVal = b.id(); b.emit(Op.Bitcast, [p.tF32, scaleVal, sBitsU]);
+
+  // Pre-compute: seedPlusCounterHash = seed + counter * cMult
+  const counterHash = b.id(); b.emit(Op.IMul, [p.tU32, counterHash, counter, cMult]);
+  const seedPlusCH = b.id(); b.emit(Op.IAdd, [p.tU32, seedPlusCH, seed, counterHash]);
+
+  // base = gidX * 4
+  const baseIdx = b.id(); b.emit(Op.IMul, [p.tU32, baseIdx, gidX, const4u]);
+
+  // Emit hash + mask for a single element index offset
+  function emitMask(off: number): number {
+    let idx: number;
+    if (off === 0) {
+      idx = baseIdx;
+    } else {
+      const offConst = off === 1 ? p.const1u : off === 2 ? const2u : const3u;
+      idx = b.id(); b.emit(Op.IAdd, [p.tU32, idx, baseIdx, offConst]);
+    }
+    const t2 = b.id(); b.emit(Op.IMul, [p.tU32, t2, idx, iMult]);
+    const h0 = b.id(); b.emit(Op.IAdd, [p.tU32, h0, seedPlusCH, t2]);
+    const h0r = b.id(); b.emit(Op.ShiftRightLogical, [p.tU32, h0r, h0, c16]);
+    const h1x = b.id(); b.emit(Op.BitwiseXor, [p.tU32, h1x, h0, h0r]);
+    const h1 = b.id(); b.emit(Op.IMul, [p.tU32, h1, h1x, mix1]);
+    const h1r = b.id(); b.emit(Op.ShiftRightLogical, [p.tU32, h1r, h1, c13]);
+    const h2x = b.id(); b.emit(Op.BitwiseXor, [p.tU32, h2x, h1, h1r]);
+    const h2 = b.id(); b.emit(Op.IMul, [p.tU32, h2, h2x, mix2]);
+    const h2r = b.id(); b.emit(Op.ShiftRightLogical, [p.tU32, h2r, h2, c16]);
+    const hFinal = b.id(); b.emit(Op.BitwiseXor, [p.tU32, hFinal, h2, h2r]);
+    const hF = b.id(); b.emit(Op.ConvertUToF, [p.tF32, hF, hFinal]);
+    const hashV = b.id(); b.emit(Op.FMul, [p.tF32, hashV, hF, invU32Max]);
+    const cmpDrop = b.id(); b.emit(Op.FOrdGreaterThan, [p.tBool, cmpDrop, hashV, pVal]);
+    const maskV = b.id(); b.emit(Op.Select, [p.tF32, maskV, cmpDrop, scaleVal, p.const0f]);
+    return maskV;
+  }
+
+  const m0 = emitMask(0);
+  const m1 = emitMask(1);
+  const m2 = emitMask(2);
+  const m3 = emitMask(3);
+
+  // Construct vec4 and store
+  const result = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, result, m0, m1, m2, m3]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrVec4, ptrOut, bufOut.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrOut, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}

@@ -3702,23 +3702,26 @@ export class HeliosBackend implements Backend {
     const size = shapeSize(shape);
     const scaleVal = 1 / (1 - p);
     const vk = this.init();
+    const useVec4 = (size & 3) === 0;
 
     const pushF = new Float32Array(5);
     const pushU = new Uint32Array(pushF.buffer);
-    pushU[0] = size;
+    pushU[0] = useVec4 ? size >>> 2 : size;
     pushU[1] = (seed | 0) >>> 0;    // seed as u32
     pushU[2] = (counter | 0) >>> 0;  // counter as u32
     // p and scale as f32 bit patterns stored in u32 slots
     pushF[3] = p;
     pushF[4] = scaleVal;
 
-    const pipeline = getPipeline(vk, "dropout_mask", 1, 5 * 4);
+    const kernelName = useVec4 ? "dropout_mask_vec4" : "dropout_mask";
+    const pipeline = getPipeline(vk, kernelName, 1, 5 * 4);
     const outRegion = acquireOutputRegion(vk, size * 4);
-    const groups = Math.ceil(size / WG_SIZE);
+    const effectiveSize = useVec4 ? size >>> 2 : size;
+    const groups = Math.ceil(effectiveSize / WG_SIZE);
 
     graph.record({
       kind: "unary",
-      kernel: "dropout_mask",
+      kernel: kernelName,
       pipeline,
       inputBufs: [],
       outputRegion: outRegion,
