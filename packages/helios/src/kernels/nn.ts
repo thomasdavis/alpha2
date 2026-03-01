@@ -649,8 +649,14 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
  * Dispatch: (numWGs, 1, 1) workgroups of (wgSize, 1, 1)
  */
 export function kernelSoftmaxOnlinePCTA(wgSize = 256): Uint32Array {
+  const SUBGROUP_SIZE = 32;
+  const numSubgroups = Math.max(1, wgSize / SUBGROUP_SIZE);
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
+
+  // Subgroup capabilities for hardware-accelerated reduction
+  b.addCapability(Capability.GroupNonUniform);
+  b.addCapability(Capability.GroupNonUniformArithmetic);
 
   // vec4 type
   const tVec4F32 = b.id();
@@ -668,10 +674,20 @@ export function kernelSoftmaxOnlinePCTA(wgSize = 256): Uint32Array {
   b.constantF32(p.tF32, constNegMax, -3.4028235e+38);
   const const1f = b.id();
   b.constantF32(p.tF32, const1f, 1.0);
+  const const5u = b.id();
+  b.constant(p.tU32, const5u, 5);
+  const const31u = b.id();
+  b.constant(p.tU32, const31u, 31);
 
-  // Two shared memory arrays for online (max, sum) reduction
+  // Subgroup scope
+  const scopeSubgroup = b.id();
+  b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
+
+  // Shared memory arrays — only need numSubgroups slots (not wgSize)
+  const constNumSg = b.id();
+  b.constant(p.tU32, constNumSg, numSubgroups);
   const tArrayShared = b.id();
-  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  b.typeArray(tArrayShared, p.tF32, constNumSg);
   const tPtrShared = b.id();
   b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
   const tPtrSharedF32 = b.id();
@@ -844,59 +860,109 @@ export function kernelSoftmaxOnlinePCTA(wgSize = 256): Uint32Array {
 
   b.emit(Op.Label, [labelP1Merge]);
 
-  // Store thread-local (max, sum) to shared memory
+  // ── Subgroup-accelerated reduction: 2 barriers instead of log₂(wgSize) ──
   const threadMax = b.id(); b.emit(Op.Load, [p.tF32, threadMax, varMax]);
   const threadSum = b.id(); b.emit(Op.Load, [p.tF32, threadSum, varSum]);
-  const ptrSMax = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSMax, sharedMax, localIdx]);
-  b.emit(Op.Store, [ptrSMax, threadMax]);
-  const ptrSSum = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSum, sharedSum, localIdx]);
-  b.emit(Op.Store, [ptrSSum, threadSum]);
-  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
-  // Tree reduction: combine (max, sum) pairs with online formula
-  let stride = wgSize >> 1;
-  while (stride > 0) {
-    const sc = b.id(); b.constant(p.tU32, sc, stride);
-    const cmp = b.id();
-    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
-    const lr = b.id();
-    const lar = b.id();
-    b.emit(Op.SelectionMerge, [lar, 0]);
-    b.emit(Op.BranchConditional, [cmp, lr, lar]);
-    b.emit(Op.Label, [lr]);
-    const oi = b.id();
-    b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
-    const pm1 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pm1, sharedMax, localIdx]);
-    const m1 = b.id(); b.emit(Op.Load, [p.tF32, m1, pm1]);
-    const ps1 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ps1, sharedSum, localIdx]);
-    const s1 = b.id(); b.emit(Op.Load, [p.tF32, s1, ps1]);
-    const pm2 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pm2, sharedMax, oi]);
-    const m2 = b.id(); b.emit(Op.Load, [p.tF32, m2, pm2]);
-    const ps2 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ps2, sharedSum, oi]);
-    const s2 = b.id(); b.emit(Op.Load, [p.tF32, s2, ps2]);
-    const m = b.id(); b.emit(Op.ExtInst, [p.tF32, m, p.glslStd, GLSLstd450.FMax, m1, m2]);
-    const d1 = b.id(); b.emit(Op.FSub, [p.tF32, d1, m1, m]);
-    const d2 = b.id(); b.emit(Op.FSub, [p.tF32, d2, m2, m]);
-    const e1r = b.id(); b.emit(Op.ExtInst, [p.tF32, e1r, p.glslStd, GLSLstd450.Exp, d1]);
-    const e2r = b.id(); b.emit(Op.ExtInst, [p.tF32, e2r, p.glslStd, GLSLstd450.Exp, d2]);
-    const t1 = b.id(); b.emit(Op.FMul, [p.tF32, t1, s1, e1r]);
-    const t2 = b.id(); b.emit(Op.FMul, [p.tF32, t2, s2, e2r]);
-    const s = b.id(); b.emit(Op.FAdd, [p.tF32, s, t1, t2]);
-    b.emit(Op.Store, [pm1, m]);
-    b.emit(Op.Store, [ps1, s]);
-    b.emit(Op.Branch, [lar]);
-    b.emit(Op.Label, [lar]);
+  let globalMax: number;
+  let globalSum: number;
+
+  if (numSubgroups === 1) {
+    // Single subgroup: pure hardware reduce, 0 barriers
+    globalMax = b.id();
+    b.emit(Op.GroupNonUniformFMax, [p.tF32, globalMax, scopeSubgroup, GroupOperation.Reduce, threadMax]);
+    const maxDiff = b.id(); b.emit(Op.FSub, [p.tF32, maxDiff, threadMax, globalMax]);
+    const rescale = b.id(); b.emit(Op.ExtInst, [p.tF32, rescale, p.glslStd, GLSLstd450.Exp, maxDiff]);
+    const rescaledSum = b.id(); b.emit(Op.FMul, [p.tF32, rescaledSum, threadSum, rescale]);
+    globalSum = b.id();
+    b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSum, scopeSubgroup, GroupOperation.Reduce, rescaledSum]);
+  } else {
+    // Multi-subgroup: subgroup reduce → shared memory → cross-subgroup combine
+    // Step 1: Intra-subgroup reduce (hardware, 0 barriers)
+    const sgMax = b.id();
+    b.emit(Op.GroupNonUniformFMax, [p.tF32, sgMax, scopeSubgroup, GroupOperation.Reduce, threadMax]);
+    const sgDiff = b.id(); b.emit(Op.FSub, [p.tF32, sgDiff, threadMax, sgMax]);
+    const sgRescale = b.id(); b.emit(Op.ExtInst, [p.tF32, sgRescale, p.glslStd, GLSLstd450.Exp, sgDiff]);
+    const sgRescaledSum = b.id(); b.emit(Op.FMul, [p.tF32, sgRescaledSum, threadSum, sgRescale]);
+    const sgSum = b.id();
+    b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgSum, scopeSubgroup, GroupOperation.Reduce, sgRescaledSum]);
+
+    // Step 2: Subgroup leaders write to shared memory (1 barrier)
+    const subgroupId = b.id();
+    b.emit(Op.ShiftRightLogical, [p.tU32, subgroupId, localIdx, const5u]);
+    const sgLocalId = b.id();
+    b.emit(Op.BitwiseAnd, [p.tU32, sgLocalId, localIdx, const31u]);
+    const isLeader = b.id();
+    b.emit(Op.IEqual, [p.tBool, isLeader, sgLocalId, p.const0u]);
+    const lbWr = b.id();
+    const lbWrEnd = b.id();
+    b.emit(Op.SelectionMerge, [lbWrEnd, 0]);
+    b.emit(Op.BranchConditional, [isLeader, lbWr, lbWrEnd]);
+    b.emit(Op.Label, [lbWr]);
+    const ptrSMax = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrSMax, sharedMax, subgroupId]);
+    b.emit(Op.Store, [ptrSMax, sgMax]);
+    const ptrSSum = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSum, sharedSum, subgroupId]);
+    b.emit(Op.Store, [ptrSSum, sgSum]);
+    b.emit(Op.Branch, [lbWrEnd]);
+    b.emit(Op.Label, [lbWrEnd]);
     b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
-    stride >>= 1;
-  }
 
-  // Read global max and sum from shared[0]
-  const ptrGMax = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGMax, sharedMax, p.const0u]);
-  const globalMax = b.id(); b.emit(Op.Load, [p.tF32, globalMax, ptrGMax]);
-  const ptrGSum = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSum, sharedSum, p.const0u]);
-  const globalSum = b.id(); b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
+    // Step 3: Thread 0 serial combine across subgroups
+    const isThread0 = b.id();
+    b.emit(Op.IEqual, [p.tBool, isThread0, localIdx, p.const0u]);
+    const lbReduce = b.id();
+    const lbReduceEnd = b.id();
+    b.emit(Op.SelectionMerge, [lbReduceEnd, 0]);
+    b.emit(Op.BranchConditional, [isThread0, lbReduce, lbReduceEnd]);
+    b.emit(Op.Label, [lbReduce]);
+    const ptr0Max = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptr0Max, sharedMax, p.const0u]);
+    let accMax = b.id();
+    b.emit(Op.Load, [p.tF32, accMax, ptr0Max]);
+    const ptr0Sum = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptr0Sum, sharedSum, p.const0u]);
+    let accSum = b.id();
+    b.emit(Op.Load, [p.tF32, accSum, ptr0Sum]);
+    for (let sg = 1; sg < numSubgroups; sg++) {
+      const constSg = b.id();
+      b.constant(p.tU32, constSg, sg);
+      const ptrSgMax = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, ptrSgMax, sharedMax, constSg]);
+      const sgM = b.id();
+      b.emit(Op.Load, [p.tF32, sgM, ptrSgMax]);
+      const ptrSgSum = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, ptrSgSum, sharedSum, constSg]);
+      const sgS = b.id();
+      b.emit(Op.Load, [p.tF32, sgS, ptrSgSum]);
+      const cm = b.id(); b.emit(Op.ExtInst, [p.tF32, cm, p.glslStd, GLSLstd450.FMax, accMax, sgM]);
+      const d1 = b.id(); b.emit(Op.FSub, [p.tF32, d1, accMax, cm]);
+      const d2 = b.id(); b.emit(Op.FSub, [p.tF32, d2, sgM, cm]);
+      const e1r = b.id(); b.emit(Op.ExtInst, [p.tF32, e1r, p.glslStd, GLSLstd450.Exp, d1]);
+      const e2r = b.id(); b.emit(Op.ExtInst, [p.tF32, e2r, p.glslStd, GLSLstd450.Exp, d2]);
+      const t1 = b.id(); b.emit(Op.FMul, [p.tF32, t1, accSum, e1r]);
+      const t2 = b.id(); b.emit(Op.FMul, [p.tF32, t2, sgS, e2r]);
+      const cs = b.id(); b.emit(Op.FAdd, [p.tF32, cs, t1, t2]);
+      accMax = cm;
+      accSum = cs;
+    }
+    b.emit(Op.Store, [ptr0Max, accMax]);
+    b.emit(Op.Store, [ptr0Sum, accSum]);
+    b.emit(Op.Branch, [lbReduceEnd]);
+    b.emit(Op.Label, [lbReduceEnd]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    // All threads read from shared[0]
+    const ptrGMax = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrGMax, sharedMax, p.const0u]);
+    globalMax = b.id();
+    b.emit(Op.Load, [p.tF32, globalMax, ptrGMax]);
+    const ptrGSum = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSum, sharedSum, p.const0u]);
+    globalSum = b.id();
+    b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
+  }
 
   const invSum = b.id(); b.emit(Op.FDiv, [p.tF32, invSum, const1f, globalSum]);
   const splatGMax = b.id();
