@@ -184,7 +184,43 @@ def main():
     record("silu_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 3, note="SiLU backward (fused)")
     del silu_x, silu_out, silu_grad
 
+    # SoftCap backward (tanh + exp derivatives)
+    sc_input = torch.randn(512, 2752, device=device, requires_grad=True)
+    sc_out = torch.tanh(sc_input / 30.0) * 30.0
+    sc_grad = torch.randn_like(sc_out)
+    def softcap_bwd():
+        if sc_input.grad is not None:
+            sc_input.grad.zero_()
+        sc_out.backward(sc_grad, retain_graph=True)
+    ms = bench(softcap_bwd, W, I, sync)
+    record("softcap_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 3, note="softcap backward (fused)")
+    del sc_input, sc_out, sc_grad
+
     del x1024, x2752, y1024
+
+    # Large tensor backward ops
+    big_x = torch.randn(4096, 4096, device=device, requires_grad=True)
+    big_gelu_out = F.gelu(big_x, approximate="tanh")
+    big_g = torch.randn_like(big_gelu_out)
+    big_sz = 4096 * 4096
+    def big_gelu_bwd():
+        if big_x.grad is not None:
+            big_x.grad.zero_()
+        big_gelu_out.backward(big_g, retain_graph=True)
+    ms = bench(big_gelu_bwd, W, I, sync)
+    record("gelu_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="GELU backward large (16M)")
+    del big_x, big_gelu_out
+
+    big_x2 = torch.randn(4096, 4096, device=device, requires_grad=True)
+    big_silu_out = F.silu(big_x2)
+    big_g2 = torch.randn_like(big_silu_out)
+    def big_silu_bwd():
+        if big_x2.grad is not None:
+            big_x2.grad.zero_()
+        big_silu_out.backward(big_g2, retain_graph=True)
+    ms = bench(big_silu_bwd, W, I, sync)
+    record("silu_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="SiLU backward large (16M)")
+    del big_x2, big_silu_out, big_g, big_g2
 
     # Large tensor element-wise (memory bandwidth test)
     big = torch.randn(4096, 4096, device=device)
@@ -373,6 +409,26 @@ def main():
     record("grad_norm_8.5M", ms,
            bytes_rw=p_size_norm * 4, note="sum of squares for gradient norm")
     del grad_norm_t
+
+    # ── 8d. GRADIENT CLIP PIPELINE ────────────────────────────────────────
+    p_size_layer = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024
+    all_grads = [torch.randn(p_size_layer, device=device) for _ in range(4)]
+
+    def grad_clip_pipeline():
+        total_norm = 0.0
+        for g in all_grads:
+            total_norm += (g * g).sum().item()
+        norm = total_norm ** 0.5
+        max_norm = 1.0
+        if norm > max_norm:
+            scale = max_norm / norm
+            for g in all_grads:
+                g.mul_(scale)
+
+    ms = bench(grad_clip_pipeline, W, I, sync)
+    record("grad_clip_pipeline_34M", ms,
+           bytes_rw=p_size_layer * 4 * 4 * 2, note="4-layer gradient norm + clip pipeline")
+    del all_grads
 
     # ── 9. FUSED OPS ────────────────────────────────────────────────────────
 

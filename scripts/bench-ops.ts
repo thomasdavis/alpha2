@@ -247,9 +247,38 @@ function main(): void {
     release(xSilu);
     release(ySilu);
 
+    // SoftCap backward (complex fused: tanh + exp derivatives)
+    if (typeof (b as any).softCapBackward === "function") {
+      const scGrad = b.randn([512, 2752]);
+      const scInput = b.randn([512, 2752]);
+      ms = benchOp(() => (b as any).softCapBackward(scGrad, scInput, 30.0));
+      record("softcap_bwd_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "softcap backward (fused)" });
+      release(scGrad);
+      release(scInput);
+    }
+
     release(x);
     release(y);
     release(x2);
+  }
+
+  // Large tensor backward ops (Helios amortizes dispatch overhead on big tensors)
+  {
+    const bigX = b.randn([4096, 4096]);
+    const bigG = b.randn([4096, 4096]);
+    const bigSize = 4096 * 4096;
+
+    if (typeof (b as any).geluBackward === "function") {
+      const ms = benchOp(() => (b as any).geluBackward(bigX, bigG));
+      record("gelu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "GELU backward large (16M)" });
+    }
+    if (typeof (b as any).siluBackward === "function") {
+      const ms = benchOp(() => (b as any).siluBackward(bigX, bigG));
+      record("silu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "SiLU backward large (16M)" });
+    }
+
+    release(bigX);
+    release(bigG);
   }
 
   // Large tensor bandwidth test
@@ -566,6 +595,40 @@ function main(): void {
       bytes: BH * T * Dh * 4 * 2, note: "transpose",
     });
     release(t);
+  }
+
+  // ── 11b. GRADIENT CLIP PIPELINE ──────────────────────────────────────────
+  // Full gradient clipping: sumOfSquares → sqrt → max(1, norm/maxNorm) → scaleInplace
+  // This tests sustained throughput of combined reduction + in-place ops
+  if (typeof (b as any).sumOfSquares === "function" && typeof (b as any).scaleInplace === "function") {
+    // Full model gradient norm: ~33M params (300M / ~21 layers ≈ 15M per layer, but test all at once)
+    const totalParams = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024; // one layer
+    const allGrads: TensorData[] = [];
+    for (let l = 0; l < 4; l++) allGrads.push(b.randn([totalParams])); // 4 layers ≈ 34M params
+
+    const msClip = benchCustom(() => {
+      // 1. Compute total grad norm across all layers
+      let totalNorm = 0;
+      for (const g of allGrads) {
+        const ss = (b as any).sumOfSquares(g);
+        sync();
+        totalNorm += (ss.data as Float32Array)[0];
+        release(ss);
+      }
+      // 2. Clip
+      const norm = Math.sqrt(totalNorm);
+      const maxNorm = 1.0;
+      if (norm > maxNorm) {
+        const scale = maxNorm / norm;
+        for (const g of allGrads) (b as any).scaleInplace(g, scale);
+      }
+      return [];
+    });
+    record("grad_clip_pipeline_34M", msClip, {
+      bytes: totalParams * 4 * 4 * 2, note: "4-layer gradient norm + clip pipeline",
+    });
+
+    for (const g of allGrads) release(g);
   }
 
   // ── 12. SLICE ─────────────────────────────────────────────────────────────
