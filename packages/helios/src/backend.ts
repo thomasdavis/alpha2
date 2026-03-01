@@ -2563,8 +2563,22 @@ export class HeliosBackend implements Backend {
         }
       }
     }
-    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
-    const gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
+    let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    let gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
+
+    // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
+    // for better SM occupancy. On L4 (58 SMs), 64 WGs = 1.1 WGs/SM → poor latency hiding.
+    if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
+      const fallM = 2, fallN = 2;
+      const effM2 = this._coopM * subgroupTilesY * fallM;
+      const effN2 = this._coopN * subgroupTilesX * fallN;
+      if (M % effM2 === 0 && N % effN2 === 0) {
+        regTilesM = fallM;
+        regTilesN = fallN;
+        gX = Math.ceil(N / effN2);
+        gY = Math.ceil(M / effM2);
+      }
+    }
 
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
     // Only for non-batched (batchSize=1) since wgId.z is repurposed as split index.
@@ -2746,8 +2760,21 @@ export class HeliosBackend implements Backend {
         }
       }
     }
-    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
-    const gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
+    let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    let gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
+
+    // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
+    if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
+      const fallM = 2, fallN = 2;
+      const effM2 = this._coopM * subgroupTilesY * fallM;
+      const effN2 = this._coopN * subgroupTilesX * fallN;
+      if (outM % effM2 === 0 && N % effN2 === 0) {
+        regTilesM = fallM;
+        regTilesN = fallN;
+        gX = Math.ceil(N / effN2);
+        gY = Math.ceil(outM / effM2);
+      }
+    }
 
     // Split-K for transposed-A (non-batched only)
     const kTileK = this._coopK * this._kMulti;

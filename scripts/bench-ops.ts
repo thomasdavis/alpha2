@@ -309,6 +309,16 @@ function main(): void {
     const ms = benchOp(() => (b as any).crossEntropy(logits, targets));
     record("cross_entropy_fwd_512x64000", ms, { note: "CE loss forward" });
 
+    // CE backward
+    if (typeof (b as any).crossEntropyBackward === "function") {
+      const gradOut: TensorData = { data: new Float32Array([1.0]), shape: [1], dtype: "f32" };
+      const msBwd = benchOp(() => (b as any).crossEntropyBackward(logits, targets, gradOut));
+      record("cross_entropy_bwd_512x64000", msBwd, {
+        bytes: BT * V * 4 * 2,
+        note: "CE loss backward",
+      });
+    }
+
     release(logits);
   }
 
