@@ -1781,7 +1781,9 @@ export class HeliosBackend implements Backend {
     const numRows = shapeSize(x.shape) / dim;
     const byteSize = shapeSize(x.shape) * 4;
 
-    const pipeline = getPipeline(vk, "layernorm", 4);
+    const useVec4 = dim % 4 === 0 && dim >= 16;
+    const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
+    const pipeline = getPipeline(vk, kernelName, 4);
     const bufX = ensureGpu(vk, x);
     const bufW = ensureGpu(vk, weight);
     const bufB = ensureGpu(vk, bias);
@@ -1791,7 +1793,7 @@ export class HeliosBackend implements Backend {
 
     graph.record({
       kind: "layernorm",
-      kernel: "layernorm",
+      kernel: kernelName,
       pipeline,
       inputBufs: [bufX, bufW, bufB],
       outputRegion: region,
@@ -3333,12 +3335,45 @@ export class HeliosBackend implements Backend {
     const newShape = [...a.shape]; newShape[d0] = a.shape[d1]; newShape[d1] = a.shape[d0];
     const size = shapeSize(a.shape);
 
-    // GPU path — use stride-based 4D transpose kernel
+    // GPU path
     if (size >= this._minGpuSize) {
       const vk = this.init();
       const inputBuf = ensureGpu(vk, a);
 
-      // Pad shape to 4D (prepend 1s) and adjust dim indices
+      // Fast path: tiled 2D transpose for last-2-dim swaps (attention heads)
+      const isLast2 = ndim >= 2 &&
+        ((d0 === ndim - 2 && d1 === ndim - 1) || (d0 === ndim - 1 && d1 === ndim - 2));
+      if (isLast2) {
+        const rows = a.shape[ndim - 2];
+        const cols = a.shape[ndim - 1];
+        const batch = size / (rows * cols);
+        const TILE = 32;
+
+        const pushF = new Float32Array(2);
+        const pushU = new Uint32Array(pushF.buffer);
+        pushU[0] = rows;
+        pushU[1] = cols;
+
+        const pipeline = getPipeline(vk, "transpose_2d_tiled", 2, 2 * 4);
+        const outRegion = acquireOutputRegion(vk, size * 4);
+
+        graph.record({
+          kind: "unary",
+          kernel: "transpose_2d_tiled",
+          pipeline,
+          inputBufs: [],
+          outputRegion: outRegion,
+          groups: [Math.ceil(cols / TILE), Math.ceil(rows / TILE), batch],
+          push: pushF,
+          pushSize: 2 * 4,
+          shape: newShape,
+          allBufs: [inputBuf, outRegion.handle],
+        });
+
+        return graphLazyTensor(vk, newShape, outRegion);
+      }
+
+      // General 4D stride-based transpose kernel
       const pad = 4 - ndim;
       const shape4 = ndim < 4
         ? [...Array(pad).fill(1) as number[], ...a.shape]
@@ -3346,18 +3381,13 @@ export class HeliosBackend implements Backend {
       const d0_4 = d0 + pad;
       const d1_4 = d1 + pad;
 
-      // Compute input strides for padded 4D shape
       const inStrides = shapeStrides(shape4);
-
-      // Compute output strides: swap dims in shape, recompute strides,
-      // then swap stride positions so input coords map to correct output positions
       const outShape4 = [...shape4];
       outShape4[d0_4] = shape4[d1_4];
       outShape4[d1_4] = shape4[d0_4];
       const outStrides = shapeStrides(outShape4);
       const tmpS = outStrides[d0_4]; outStrides[d0_4] = outStrides[d1_4]; outStrides[d1_4] = tmpS;
 
-      // Pack push constants as u32 via shared ArrayBuffer
       const pushF = new Float32Array(9);
       const pushU = new Uint32Array(pushF.buffer);
       pushU[0] = size;

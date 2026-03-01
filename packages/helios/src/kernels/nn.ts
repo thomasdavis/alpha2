@@ -1192,6 +1192,306 @@ export function kernelLayerNorm(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: LayerNorm vec4 (one workgroup per row, single-pass mean+var) ─────
+
+/**
+ * Vec4 LayerNorm — single-pass Welford-style mean+variance with 128-bit loads.
+ *
+ * Phase 1: Accumulate sum and sumOfSquares in one pass over X (vec4 loads).
+ *          mean = sum/dim, var = sumSq/dim - mean²
+ * Phase 2: Normalize with vec4 ops: out = (x - mean) * invStd * w + b
+ *
+ * Saves one full DRAM read pass vs the scalar 2-pass kernel.
+ * Bindings: 0=X(in,vec4), 1=W(in,vec4), 2=B(in,vec4), 3=C(out,vec4)
+ * Push: { dim: f32, eps: f32 }
+ * Dispatch: (numRows, 1, 1)
+ */
+export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  // vec4 type
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // Buffers: all vec4
+  const bufX = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufW = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 2, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 3, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2); // dim, eps
+
+  // Constants
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const const2u = b.id();
+  b.constant(p.tU32, const2u, 2);
+
+  // Two shared arrays for parallel reduction of sum and sumSq
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedSum = b.id();
+  b.variable(tPtrShared, sharedSum, StorageClass.Workgroup);
+  const sharedSumSq = b.id();
+  b.variable(tPtrShared, sharedSumSq, StorageClass.Workgroup);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varSum = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varSum, StorageClass.Function]);
+  const varSumSq = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varSumSq, StorageClass.Function]);
+
+  // Load IDs
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  // Push constants
+  const dimF = loadPushLen(b, p, pc);
+  const dimU = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const epsF = loadPushScalar(b, p, pc);
+
+  // dimVec4 = dim >> 2
+  const dimVec4 = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, dimVec4, dimU, const2u]);
+  // rowOffset in vec4 units
+  const rowOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffset, row, dimVec4]);
+
+  // ── Phase 1: Single-pass sum + sumSq with vec4 loads ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varSum, p.const0f]);
+  b.emit(Op.Store, [varSumSq, p.const0f]);
+
+  const labelP1Head = b.id();
+  const labelP1Body = b.id();
+  const labelP1Merge = b.id();
+  const labelP1Cont = b.id();
+
+  b.emit(Op.Branch, [labelP1Head]);
+  b.emit(Op.Label, [labelP1Head]);
+  const curIdx = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx, varIdx]);
+  const cmpP1 = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpP1, curIdx, dimVec4]);
+  b.emit(Op.LoopMerge, [labelP1Merge, labelP1Cont, 0]);
+  b.emit(Op.BranchConditional, [cmpP1, labelP1Body, labelP1Merge]);
+
+  b.emit(Op.Label, [labelP1Body]);
+  const globalIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, globalIdx, rowOffset, curIdx]);
+  const ptrX1 = b.id();
+  b.emit(Op.AccessChain, [bufX.tPtrVec4, ptrX1, bufX.varId, p.const0u, globalIdx]);
+  const v4 = b.id();
+  b.emit(Op.Load, [tVec4F32, v4, ptrX1]);
+
+  // Horizontal sum of 4 components
+  const x0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x0, v4, 0]);
+  const x1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x1, v4, 1]);
+  const x2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x2, v4, 2]);
+  const x3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x3, v4, 3]);
+  const s01 = b.id(); b.emit(Op.FAdd, [p.tF32, s01, x0, x1]);
+  const s23 = b.id(); b.emit(Op.FAdd, [p.tF32, s23, x2, x3]);
+  const chunkSum = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSum, s01, s23]);
+
+  // Horizontal sum of squares via vec4 FMul then extract+add
+  const v4sq = b.id(); b.emit(Op.FMul, [tVec4F32, v4sq, v4, v4]);
+  const sq0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq0, v4sq, 0]);
+  const sq1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq1, v4sq, 1]);
+  const sq2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq2, v4sq, 2]);
+  const sq3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq3, v4sq, 3]);
+  const sq01 = b.id(); b.emit(Op.FAdd, [p.tF32, sq01, sq0, sq1]);
+  const sq23 = b.id(); b.emit(Op.FAdd, [p.tF32, sq23, sq2, sq3]);
+  const chunkSumSq = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSumSq, sq01, sq23]);
+
+  // Accumulate
+  const oldSum = b.id(); b.emit(Op.Load, [p.tF32, oldSum, varSum]);
+  const newSum = b.id(); b.emit(Op.FAdd, [p.tF32, newSum, oldSum, chunkSum]);
+  b.emit(Op.Store, [varSum, newSum]);
+  const oldSumSq = b.id(); b.emit(Op.Load, [p.tF32, oldSumSq, varSumSq]);
+  const newSumSq = b.id(); b.emit(Op.FAdd, [p.tF32, newSumSq, oldSumSq, chunkSumSq]);
+  b.emit(Op.Store, [varSumSq, newSumSq]);
+
+  b.emit(Op.Branch, [labelP1Cont]);
+  b.emit(Op.Label, [labelP1Cont]);
+  const nextIdx = b.id();
+  b.emit(Op.Load, [p.tU32, nextIdx, varIdx]);
+  const incIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, incIdx, nextIdx, constWgSize]);
+  b.emit(Op.Store, [varIdx, incIdx]);
+  b.emit(Op.Branch, [labelP1Head]);
+
+  b.emit(Op.Label, [labelP1Merge]);
+
+  // Store thread-local (sum, sumSq) to shared
+  const threadSum = b.id(); b.emit(Op.Load, [p.tF32, threadSum, varSum]);
+  const threadSumSq = b.id(); b.emit(Op.Load, [p.tF32, threadSumSq, varSumSq]);
+  const ptrSSum = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSum, sharedSum, localIdx]);
+  b.emit(Op.Store, [ptrSSum, threadSum]);
+  const ptrSSumSq = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSumSq, sharedSumSq, localIdx]);
+  b.emit(Op.Store, [ptrSSumSq, threadSumSq]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Tree reduction for both sum and sumSq
+  let stride = wgSize >> 1;
+  while (stride > 0) {
+    const sc = b.id(); b.constant(p.tU32, sc, stride);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+    const lr = b.id();
+    const lar = b.id();
+    b.emit(Op.SelectionMerge, [lar, 0]);
+    b.emit(Op.BranchConditional, [cmp, lr, lar]);
+    b.emit(Op.Label, [lr]);
+    const oi = b.id();
+    b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+    // Sum reduction
+    const pmS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmS, sharedSum, localIdx]);
+    const mvS = b.id(); b.emit(Op.Load, [p.tF32, mvS, pmS]);
+    const poS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poS, sharedSum, oi]);
+    const ovS = b.id(); b.emit(Op.Load, [p.tF32, ovS, poS]);
+    const rS = b.id(); b.emit(Op.FAdd, [p.tF32, rS, mvS, ovS]);
+    b.emit(Op.Store, [pmS, rS]);
+    // SumSq reduction
+    const pmSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmSq, sharedSumSq, localIdx]);
+    const mvSq = b.id(); b.emit(Op.Load, [p.tF32, mvSq, pmSq]);
+    const poSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poSq, sharedSumSq, oi]);
+    const ovSq = b.id(); b.emit(Op.Load, [p.tF32, ovSq, poSq]);
+    const rSq = b.id(); b.emit(Op.FAdd, [p.tF32, rSq, mvSq, ovSq]);
+    b.emit(Op.Store, [pmSq, rSq]);
+    b.emit(Op.Branch, [lar]);
+    b.emit(Op.Label, [lar]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    stride >>= 1;
+  }
+
+  // mean = sum / dim, var = sumSq/dim - mean²
+  const ptrGSum = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSum, sharedSum, p.const0u]);
+  const globalSum = b.id(); b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
+  const ptrGSumSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSumSq, sharedSumSq, p.const0u]);
+  const globalSumSq = b.id(); b.emit(Op.Load, [p.tF32, globalSumSq, ptrGSumSq]);
+
+  const meanVal = b.id(); b.emit(Op.FDiv, [p.tF32, meanVal, globalSum, dimF]);
+  const meanSumSq = b.id(); b.emit(Op.FDiv, [p.tF32, meanSumSq, globalSumSq, dimF]);
+  const meanSq = b.id(); b.emit(Op.FMul, [p.tF32, meanSq, meanVal, meanVal]);
+  const variance = b.id(); b.emit(Op.FSub, [p.tF32, variance, meanSumSq, meanSq]);
+
+  // invStd = 1 / sqrt(var + eps)
+  const varPlusEps = b.id(); b.emit(Op.FAdd, [p.tF32, varPlusEps, variance, epsF]);
+  const stdDev = b.id(); b.emit(Op.ExtInst, [p.tF32, stdDev, p.glslStd, GLSLstd450.Sqrt, varPlusEps]);
+  const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
+  const invStd = b.id(); b.emit(Op.FDiv, [p.tF32, invStd, constOne, stdDev]);
+
+  // Splat for vec4 ops
+  const splatMean = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatMean, meanVal, meanVal, meanVal, meanVal]);
+  const splatInvStd = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatInvStd, invStd, invStd, invStd, invStd]);
+
+  // ── Phase 2: Normalize with vec4 ops ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+
+  const labelP2Head = b.id();
+  const labelP2Body = b.id();
+  const labelP2Merge = b.id();
+  const labelP2Cont = b.id();
+
+  b.emit(Op.Branch, [labelP2Head]);
+  b.emit(Op.Label, [labelP2Head]);
+  const curIdx2 = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx2, varIdx]);
+  const cmpP2 = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpP2, curIdx2, dimVec4]);
+  b.emit(Op.LoopMerge, [labelP2Merge, labelP2Cont, 0]);
+  b.emit(Op.BranchConditional, [cmpP2, labelP2Body, labelP2Merge]);
+
+  b.emit(Op.Label, [labelP2Body]);
+  const globalIdx2 = b.id();
+  b.emit(Op.IAdd, [p.tU32, globalIdx2, rowOffset, curIdx2]);
+  // Load X, W, B as vec4
+  const ptrX2 = b.id();
+  b.emit(Op.AccessChain, [bufX.tPtrVec4, ptrX2, bufX.varId, p.const0u, globalIdx2]);
+  const xv = b.id();
+  b.emit(Op.Load, [tVec4F32, xv, ptrX2]);
+  const ptrW2 = b.id();
+  b.emit(Op.AccessChain, [bufW.tPtrVec4, ptrW2, bufW.varId, p.const0u, curIdx2]);
+  const wv = b.id();
+  b.emit(Op.Load, [tVec4F32, wv, ptrW2]);
+  const ptrB2 = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB2, bufB.varId, p.const0u, curIdx2]);
+  const bv = b.id();
+  b.emit(Op.Load, [tVec4F32, bv, ptrB2]);
+
+  // normed = (x - mean) * invStd
+  const xMinusMean = b.id();
+  b.emit(Op.FSub, [tVec4F32, xMinusMean, xv, splatMean]);
+  const normed = b.id();
+  b.emit(Op.FMul, [tVec4F32, normed, xMinusMean, splatInvStd]);
+  // out = fma(normed, w, b)
+  const result = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, result, p.glslStd, GLSLstd450.FMA, normed, wv, bv]);
+
+  const ptrC2 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC2, bufC.varId, p.const0u, globalIdx2]);
+  b.emit(Op.Store, [ptrC2, result]);
+
+  b.emit(Op.Branch, [labelP2Cont]);
+  b.emit(Op.Label, [labelP2Cont]);
+  const nextIdx2 = b.id();
+  b.emit(Op.Load, [p.tU32, nextIdx2, varIdx]);
+  const incIdx2 = b.id();
+  b.emit(Op.IAdd, [p.tU32, incIdx2, nextIdx2, constWgSize]);
+  b.emit(Op.Store, [varIdx, incIdx2]);
+  b.emit(Op.Branch, [labelP2Head]);
+
+  b.emit(Op.Label, [labelP2Merge]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: LayerNorm backward (one workgroup per row) ───────────────────────
 
 /**

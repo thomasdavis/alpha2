@@ -6,7 +6,7 @@
 
 import {
   SpirVBuilder, Op, ExecutionModel, ExecutionMode, StorageClass, Decoration,
-  BuiltIn, FunctionControl, GLSLstd450,
+  BuiltIn, FunctionControl, Scope, MemorySemantics, GLSLstd450,
   preamble, declareStorageBuffer, declareParamsPushConstant,
   loadPushLen, loadPushScalar, emitBoundsCheck,
 } from "./helpers.js";
@@ -279,6 +279,203 @@ export function kernelTranspose(wgSize = 256): Uint32Array {
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: Tiled 2D Transpose (shared memory, last-2-dim swap) ──────────────
+
+/**
+ * B[batch][col][row] = A[batch][row][col] — tiled transpose for last 2 dims.
+ *
+ * Uses 32×32 shared memory tiles with +1 padding to avoid bank conflicts.
+ * Each workgroup (256 threads) processes one tile, 4 rows per thread.
+ * Coalesced reads AND writes (classic shared-memory transpose trick).
+ *
+ * Bindings: 0=A(in), 1=B(out)
+ * Push constants (u32): [rows, cols]
+ * Dispatch: [ceil(cols/32), ceil(rows/32), batch]
+ */
+export function kernelTranspose2DTiled(wgSize = 256): Uint32Array {
+  const TILE = 32;
+  const TILE_P1 = 33;
+  const THREAD_ROWS = wgSize / TILE; // = 8
+  const ELEMS_PER_THREAD = (TILE * TILE) / wgSize; // = 4
+
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+
+  // Push constants: {rows: u32, cols: u32}
+  const tPCStruct = b.id();
+  b.typeStruct(tPCStruct, [p.tU32, p.tU32]);
+  b.addDecorate(tPCStruct, Decoration.Block);
+  b.addMemberDecorate(tPCStruct, 0, Decoration.Offset, 0);
+  b.addMemberDecorate(tPCStruct, 1, Decoration.Offset, 4);
+  const tPtrPCStruct = b.id();
+  b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
+  const tPtrU32PC = b.id();
+  b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const pcVar = b.id();
+  b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
+
+  // Shared memory: TILE * (TILE+1) f32
+  const constSharedSize = b.id();
+  b.constant(p.tU32, constSharedSize, TILE * TILE_P1);
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constSharedSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id();
+  b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  // Constants
+  const constTile = b.id(); b.constant(p.tU32, constTile, TILE);
+  const constTileP1 = b.id(); b.constant(p.tU32, constTileP1, TILE_P1);
+  const const5u = b.id(); b.constant(p.tU32, const5u, 5);
+  const const31u = b.id(); b.constant(p.tU32, const31u, 31);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  // Load workgroup and local IDs
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const tileColIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, tileColIdx, wgIdVec, 0]);
+  const tileRowIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, tileRowIdx, wgIdVec, 1]);
+  const batchIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, batchIdx, wgIdVec, 2]);
+
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  // Thread position: tx = localIdx & 31, ty = localIdx >> 5
+  const tx = b.id();
+  b.emit(Op.BitwiseAnd, [p.tU32, tx, localIdx, const31u]);
+  const ty = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, ty, localIdx, const5u]);
+
+  // Load push constants
+  const ptrRows = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrRows, pcVar, p.const0u]);
+  const rowsU = b.id(); b.emit(Op.Load, [p.tU32, rowsU, ptrRows]);
+  const ptrCols = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrCols, pcVar, p.const1u]);
+  const colsU = b.id(); b.emit(Op.Load, [p.tU32, colsU, ptrCols]);
+
+  // Tile base positions
+  const tileRowBase = b.id();
+  b.emit(Op.IMul, [p.tU32, tileRowBase, tileRowIdx, constTile]);
+  const tileColBase = b.id();
+  b.emit(Op.IMul, [p.tU32, tileColBase, tileColIdx, constTile]);
+
+  // Batch offset = batchIdx * rows * cols
+  const batchStride = b.id();
+  b.emit(Op.IMul, [p.tU32, batchStride, rowsU, colsU]);
+  const batchOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, batchOffset, batchIdx, batchStride]);
+
+  // ── Load phase: read input tile into shared memory (coalesced reads) ──
+  for (let k = 0; k < ELEMS_PER_THREAD; k++) {
+    const kOff = b.id(); b.constant(p.tU32, kOff, k * THREAD_ROWS);
+    const rowInTile = b.id(); b.emit(Op.IAdd, [p.tU32, rowInTile, ty, kOff]);
+    const globalRow = b.id(); b.emit(Op.IAdd, [p.tU32, globalRow, tileRowBase, rowInTile]);
+    const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, tileColBase, tx]);
+
+    const cmpR = b.id(); b.emit(Op.ULessThan, [p.tBool, cmpR, globalRow, rowsU]);
+    const cmpC = b.id(); b.emit(Op.ULessThan, [p.tBool, cmpC, globalCol, colsU]);
+    const inBounds = b.id(); b.emit(Op.LogicalAnd, [p.tBool, inBounds, cmpR, cmpC]);
+
+    const lblLoad = b.id();
+    const lblAfterLoad = b.id();
+    b.emit(Op.SelectionMerge, [lblAfterLoad, 0]);
+    b.emit(Op.BranchConditional, [inBounds, lblLoad, lblAfterLoad]);
+    b.emit(Op.Label, [lblLoad]);
+
+    // input[batchOffset + globalRow * cols + globalCol]
+    const rowTimesC = b.id(); b.emit(Op.IMul, [p.tU32, rowTimesC, globalRow, colsU]);
+    const idx1 = b.id(); b.emit(Op.IAdd, [p.tU32, idx1, batchOffset, rowTimesC]);
+    const inIdx = b.id(); b.emit(Op.IAdd, [p.tU32, inIdx, idx1, globalCol]);
+    const ptrA = b.id(); b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, inIdx]);
+    const val = b.id(); b.emit(Op.Load, [p.tF32, val, ptrA]);
+
+    // shared[rowInTile * TILE_P1 + tx]
+    const shRow = b.id(); b.emit(Op.IMul, [p.tU32, shRow, rowInTile, constTileP1]);
+    const shIdx = b.id(); b.emit(Op.IAdd, [p.tU32, shIdx, shRow, tx]);
+    const ptrS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrS, sharedMem, shIdx]);
+    b.emit(Op.Store, [ptrS, val]);
+
+    b.emit(Op.Branch, [lblAfterLoad]);
+    b.emit(Op.Label, [lblAfterLoad]);
+  }
+
+  // Barrier: ensure all loads complete before transposed reads
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // ── Store phase: write transposed data from shared to output (coalesced writes) ──
+  for (let k = 0; k < ELEMS_PER_THREAD; k++) {
+    const kOff = b.id(); b.constant(p.tU32, kOff, k * THREAD_ROWS);
+    const rowInTile = b.id(); b.emit(Op.IAdd, [p.tU32, rowInTile, ty, kOff]);
+
+    // Transposed output: outR = tileColBase + rowInTile, outC = tileRowBase + tx
+    const outR = b.id(); b.emit(Op.IAdd, [p.tU32, outR, tileColBase, rowInTile]);
+    const outC = b.id(); b.emit(Op.IAdd, [p.tU32, outC, tileRowBase, tx]);
+
+    const cmpR = b.id(); b.emit(Op.ULessThan, [p.tBool, cmpR, outR, colsU]);
+    const cmpC = b.id(); b.emit(Op.ULessThan, [p.tBool, cmpC, outC, rowsU]);
+    const inBounds = b.id(); b.emit(Op.LogicalAnd, [p.tBool, inBounds, cmpR, cmpC]);
+
+    const lblStore = b.id();
+    const lblAfterStore = b.id();
+    b.emit(Op.SelectionMerge, [lblAfterStore, 0]);
+    b.emit(Op.BranchConditional, [inBounds, lblStore, lblAfterStore]);
+    b.emit(Op.Label, [lblStore]);
+
+    // Read transposed from shared: shared[tx * TILE_P1 + rowInTile]
+    const shCol = b.id(); b.emit(Op.IMul, [p.tU32, shCol, tx, constTileP1]);
+    const shIdx = b.id(); b.emit(Op.IAdd, [p.tU32, shIdx, shCol, rowInTile]);
+    const ptrS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrS, sharedMem, shIdx]);
+    const val = b.id(); b.emit(Op.Load, [p.tF32, val, ptrS]);
+
+    // output[batchOffset + outR * rows + outC]
+    const outRTimesRows = b.id(); b.emit(Op.IMul, [p.tU32, outRTimesRows, outR, rowsU]);
+    const idx1 = b.id(); b.emit(Op.IAdd, [p.tU32, idx1, batchOffset, outRTimesRows]);
+    const outIdx = b.id(); b.emit(Op.IAdd, [p.tU32, outIdx, idx1, outC]);
+    const ptrB = b.id(); b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, p.const0u, outIdx]);
+    b.emit(Op.Store, [ptrB, val]);
+
+    b.emit(Op.Branch, [lblAfterStore]);
+    b.emit(Op.Label, [lblAfterStore]);
+  }
+
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
 

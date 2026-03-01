@@ -44,7 +44,7 @@ import {
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormBackward,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -55,7 +55,7 @@ export {
 } from "./nn.js";
 
 import {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormBackward,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -80,13 +80,13 @@ import {
 
 // Optimizer / utility kernels
 export {
-  kernelAdamW, kernelTranspose,
+  kernelAdamW, kernelTranspose, kernelTranspose2DTiled,
   kernelAddInplace, kernelAddInplaceVec4,
   kernelScaleInplace, kernelScaleInplaceVec4,
 } from "./optimizer.js";
 
 import {
-  kernelAdamW, kernelTranspose,
+  kernelAdamW, kernelTranspose, kernelTranspose2DTiled,
   kernelAddInplace, kernelAddInplaceVec4,
   kernelScaleInplace, kernelScaleInplaceVec4,
 } from "./optimizer.js";
@@ -180,6 +180,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "softmax_online": spirv = kernelSoftmaxOnline(wgSize); break;
     case "softmax_vec4": spirv = kernelSoftmaxVec4(wgSize); break;
     case "layernorm": spirv = kernelLayerNorm(wgSize); break;
+    case "layernorm_vec4": spirv = kernelLayerNormVec4(wgSize); break;
     case "silu":      spirv = kernelSilu(wgSize); break;
     case "silu_vec4": spirv = kernelSiluVec4(wgSize); break;
     case "mul_add":   spirv = kernelMulAdd(wgSize); break;
@@ -209,6 +210,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "column_sum": spirv = kernelColumnSum(wgSize); break;
     case "adamw_step": spirv = kernelAdamW(wgSize); break;
     case "transpose":  spirv = kernelTranspose(wgSize); break;
+    case "transpose_2d_tiled": spirv = kernelTranspose2DTiled(wgSize); break;
     case "sum_axis":   spirv = kernelSumAxis(wgSize); break;
     case "broadcast":  spirv = kernelBroadcast(wgSize); break;
     case "masked_fill": spirv = kernelMaskedFill(wgSize); break;
