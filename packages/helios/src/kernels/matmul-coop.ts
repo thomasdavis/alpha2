@@ -184,6 +184,7 @@ function buildCoopMatmul(
   regTilesM = 1,
   regTilesN = 1,
   doubleBuf = false,
+  splitK = false,
 ): Uint32Array {
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
@@ -191,8 +192,11 @@ function buildCoopMatmul(
   // Double buffering only applies to the shared memory path
   const useDoubleBuf = doubleBuf && !useDirectF16Load;
   // Super-tile swizzle for L2 cache reuse (0=disabled, 2/4/8=super-tile width)
-  const swizzleSize = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
-  const useSwizzle = swizzleSize >= 2 && isPowerOfTwo(swizzleSize);
+  // Default 4: groups 4 M-tile rows so consecutive WGs share B columns in L2.
+  // Significant win (+20%) for large-N shapes (e.g. LM head 64000).
+  const swizzleSize = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "4", 10);
+  // Split-K uses push[3] for kChunk, so swizzle (which also uses push[3]) is disabled
+  const useSwizzle = !splitK && swizzleSize >= 2 && isPowerOfTwo(swizzleSize);
   // Shared memory padding per row to avoid bank conflicts (0=disabled, 8=NVIDIA default for f16)
   const shmemPad = useDirectF16Load ? 0 : parseInt(process.env.HELIOS_COOP_SHMEM_PAD ?? "8", 10);
   // K-tile multiplier: load kMulti K-steps at once, reducing barrier overhead (1/2/4)
@@ -599,6 +603,13 @@ function buildCoopMatmul(
     b.emit(Op.CompositeExtract, [tU32, batchIdx, wgIdVec, 2]);
   }
 
+  // Split-K: wgId.z is the split index (mutually exclusive with batching)
+  let splitIdx: number | undefined;
+  if (splitK && !batched) {
+    splitIdx = b.id();
+    b.emit(Op.CompositeExtract, [tU32, splitIdx, wgIdVec, 2]);
+  }
+
   // Load M, N, K from push constants
   const ptrM = b.id();
   b.emit(Op.AccessChain, [pc.tPtrF32, ptrM, pc.varId, const0u]);
@@ -620,6 +631,28 @@ function buildCoopMatmul(
   b.emit(Op.Load, [tF32, KF, ptrK]);
   const K = b.id();
   b.emit(Op.ConvertFToU, [tU32, K, KF]);
+
+  // Split-K: load kChunk from push[3], compute per-split K bounds
+  // kStart = splitIdx * kChunk, kEnd = min(kStart + kChunk, K)
+  let kLoopStart: number = const0u;
+  let kLoopEnd: number = K;
+  if (splitK && !batched) {
+    const ptrKChunk = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrKChunk, pc.varId, const3u]);
+    const kChunkF = b.id();
+    b.emit(Op.Load, [tF32, kChunkF, ptrKChunk]);
+    const kChunk = b.id();
+    b.emit(Op.ConvertFToU, [tU32, kChunk, kChunkF]);
+    kLoopStart = b.id();
+    b.emit(Op.IMul, [tU32, kLoopStart, splitIdx!, kChunk]);
+    const kEndRaw = b.id();
+    b.emit(Op.IAdd, [tU32, kEndRaw, kLoopStart, kChunk]);
+    // kEnd = min(kEndRaw, K)
+    const kEndGtK = b.id();
+    b.emit(Op.ULessThan, [tBool, kEndGtK, K, kEndRaw]);
+    kLoopEnd = b.id();
+    b.emit(Op.Select, [tU32, kLoopEnd, kEndGtK, K, kEndRaw]);
+  }
 
   // Compute global row/col offsets for this tile
   // With register tiling, each subgroup covers coopM*regTilesM rows and coopN*regTilesN cols
@@ -791,7 +824,7 @@ function buildCoopMatmul(
     }
   }
 
-  // ── K-tile loop: for k = 0; k < K; k += kTileK ─────────────────────
+  // ── K-tile loop: for k = kLoopStart; k < kLoopEnd; k += kTileK ─────
   // Pre-allocate forward reference for Phi
   const kNext = b.id();
 
@@ -808,11 +841,11 @@ function buildCoopMatmul(
 
   b.emit(Op.Label, [labelLoopHeader]);
 
-  // SSA Phi: kVal = 0 on first entry, kNext on loop back-edge
+  // SSA Phi: kVal = kLoopStart on first entry, kNext on loop back-edge
   const kVal = b.id();
-  b.emit(Op.Phi, [tU32, kVal, const0u, labelPreLoop, kNext, labelLoopContinue]);
+  b.emit(Op.Phi, [tU32, kVal, kLoopStart, labelPreLoop, kNext, labelLoopContinue]);
   const kLtK = b.id();
-  b.emit(Op.ULessThan, [tBool, kLtK, kVal, K]);
+  b.emit(Op.ULessThan, [tBool, kLtK, kVal, kLoopEnd]);
 
   b.emit(Op.LoopMerge, [labelLoopEnd, labelLoopContinue, 1]); // Unroll hint
   b.emit(Op.BranchConditional, [kLtK, labelLoopBody, labelLoopEnd]);
@@ -1138,40 +1171,92 @@ function buildCoopMatmul(
       loadThreadBaseB = b.id();
       b.emit(Op.IAdd, [tU32, loadThreadBaseB, subgroupYBase, laneIdVal!]);
     }
-    // A tile stride is kTileK = coopK * kMulti (wider rows when kMulti > 1)
-    const canUseStridedCoordsA = (loadWidthA % kTileK) === 0;
-    // B tile stride is bTileStride = coopN * regTilesN (contiguous columns)
-    const canUseStridedCoordsB = (loadWidthB % bTileStride) === 0;
-    const rowStrideA = canUseStridedCoordsA ? (loadWidthA / kTileK) : 0;
-    const rowStrideB = canUseStridedCoordsB ? (loadWidthB / bTileStride) : 0;
+    // A load dimension: for coalesced global reads, adjacent threads should index
+    // the contiguous memory dimension. Non-transposed A[M,K] has K contiguous;
+    // transposed A (stored as [K,M] from kernel perspective) has M contiguous.
+    const aTileM = coopM * regTilesM;
+    const aLoadDim = transposedA ? aTileM : kTileK;
+    const canUseStridedCoordsA = (loadWidthA % aLoadDim) === 0;
+    // B load dimension: for coalesced global reads, adjacent threads should index
+    // the contiguous memory dimension. Non-transposed B[K,N] has N contiguous;
+    // transposed B[N,K] has K contiguous. Swap the fast decomposition axis accordingly.
+    const bLoadDim = transposedB ? kTileK : bTileStride;
+    const canUseStridedCoordsB = (loadWidthB % bLoadDim) === 0;
+    const rowStrideA = canUseStridedCoordsA ? (loadWidthA / aLoadDim) : 0;
+    const rowStrideB = canUseStridedCoordsB ? (loadWidthB / bLoadDim) : 0;
 
     let baseLocalRowA: number | undefined;
     let baseLocalColA: number | undefined;
     if (canUseStridedCoordsA) {
-      baseLocalRowA = b.id();
-      baseLocalColA = b.id();
-      if (constKTileKShift !== undefined && constKTileKMask !== undefined) {
-        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowA, loadThreadBaseA, constKTileKShift]);
-        b.emit(Op.BitwiseAnd, [tU32, baseLocalColA, loadThreadBaseA, constKTileKMask]);
+      // For transposed A (stored as [K,M]): swap decomposition so M-dimension is
+      // the fast axis. Adjacent threads index M (stride 1 in memory) → coalesced.
+      // For non-transposed A[M,K]: K-dimension is fast axis → coalesced.
+      const aFastId = b.id();
+      const aSlowId = b.id();
+      if (transposedA) {
+        // Fast axis = M (aTileM)
+        const aTileMLog2 = Math.log2(aTileM);
+        if (Number.isInteger(aTileMLog2)) {
+          const constShift = b.id(); b.constant(tU32, constShift, aTileMLog2);
+          const constMask = b.id(); b.constant(tU32, constMask, aTileM - 1);
+          b.emit(Op.ShiftRightLogical, [tU32, aSlowId, loadThreadBaseA, constShift]);
+          b.emit(Op.BitwiseAnd, [tU32, aFastId, loadThreadBaseA, constMask]);
+        } else {
+          const ca = b.id(); b.constant(tU32, ca, aTileM);
+          b.emit(Op.UDiv, [tU32, aSlowId, loadThreadBaseA, ca]);
+          b.emit(Op.UMod, [tU32, aFastId, loadThreadBaseA, ca]);
+        }
+        baseLocalRowA = aFastId;  // M-dim (fast, contiguous in memory)
+        baseLocalColA = aSlowId;  // K-dim (slow)
       } else {
-        const ck = b.id(); b.constant(tU32, ck, kTileK);
-        b.emit(Op.UDiv, [tU32, baseLocalRowA, loadThreadBaseA, ck]);
-        b.emit(Op.UMod, [tU32, baseLocalColA, loadThreadBaseA, ck]);
+        // Fast axis = K (kTileK)
+        if (constKTileKShift !== undefined && constKTileKMask !== undefined) {
+          b.emit(Op.ShiftRightLogical, [tU32, aSlowId, loadThreadBaseA, constKTileKShift]);
+          b.emit(Op.BitwiseAnd, [tU32, aFastId, loadThreadBaseA, constKTileKMask]);
+        } else {
+          const ck = b.id(); b.constant(tU32, ck, kTileK);
+          b.emit(Op.UDiv, [tU32, aSlowId, loadThreadBaseA, ck]);
+          b.emit(Op.UMod, [tU32, aFastId, loadThreadBaseA, ck]);
+        }
+        baseLocalRowA = aSlowId;  // M-dim (slow)
+        baseLocalColA = aFastId;  // K-dim (fast, contiguous in memory)
       }
     }
 
     let baseLocalRowB: number | undefined;
     let baseLocalColB: number | undefined;
     if (canUseStridedCoordsB) {
-      baseLocalRowB = b.id();
-      baseLocalColB = b.id();
-      if (constBTileStrideShift !== undefined && constBTileStrideMask !== undefined) {
-        b.emit(Op.ShiftRightLogical, [tU32, baseLocalRowB, loadThreadBaseB, constBTileStrideShift]);
-        b.emit(Op.BitwiseAnd, [tU32, baseLocalColB, loadThreadBaseB, constBTileStrideMask]);
+      // For transposed B[N,K]: swap decomposition so K-dimension is the fast axis.
+      // Adjacent threads index K (stride 1 in memory) → coalesced global reads.
+      // For non-transposed B[K,N]: N-dimension is fast axis → coalesced.
+      const bFastId = b.id();
+      const bSlowId = b.id();
+      if (transposedB) {
+        // Fast axis = K (kTileK), reuse kTileK shift/mask if power of 2
+        if (constKTileKShift !== undefined && constKTileKMask !== undefined) {
+          b.emit(Op.ShiftRightLogical, [tU32, bSlowId, loadThreadBaseB, constKTileKShift]);
+          b.emit(Op.BitwiseAnd, [tU32, bFastId, loadThreadBaseB, constKTileKMask]);
+        } else {
+          const ck = b.id(); b.constant(tU32, ck, kTileK);
+          b.emit(Op.UDiv, [tU32, bSlowId, loadThreadBaseB, ck]);
+          b.emit(Op.UMod, [tU32, bFastId, loadThreadBaseB, ck]);
+        }
+        // row = K-dim (fast), col = N-dim (slow)
+        baseLocalRowB = bFastId;
+        baseLocalColB = bSlowId;
       } else {
-        const constBStride = b.id(); b.constant(tU32, constBStride, bTileStride);
-        b.emit(Op.UDiv, [tU32, baseLocalRowB, loadThreadBaseB, constBStride]);
-        b.emit(Op.UMod, [tU32, baseLocalColB, loadThreadBaseB, constBStride]);
+        // Fast axis = N (bTileStride)
+        if (constBTileStrideShift !== undefined && constBTileStrideMask !== undefined) {
+          b.emit(Op.ShiftRightLogical, [tU32, bSlowId, loadThreadBaseB, constBTileStrideShift]);
+          b.emit(Op.BitwiseAnd, [tU32, bFastId, loadThreadBaseB, constBTileStrideMask]);
+        } else {
+          const constBStride = b.id(); b.constant(tU32, constBStride, bTileStride);
+          b.emit(Op.UDiv, [tU32, bSlowId, loadThreadBaseB, constBStride]);
+          b.emit(Op.UMod, [tU32, bFastId, loadThreadBaseB, constBStride]);
+        }
+        // row = K-dim (slow), col = N-dim (fast)
+        baseLocalRowB = bSlowId;
+        baseLocalColB = bFastId;
       }
     }
 
@@ -1238,14 +1323,18 @@ function buildCoopMatmul(
         globalBaseA = gba;
       }
 
-      // Global stride: rowStrideA rows apart in the major dimension
+      // Global stride: elements advance in the slow dimension.
+      // Transposed A[K,M]: slow dim=K, stride per element = rowStrideA * M
+      // Non-transposed A[M,K]: slow dim=M, stride per element = rowStrideA * K
       let globalStrideA: number;
       if (transposedA) {
-        // transposed: increment in M dimension = rowStrideA
+        // transposed: elements advance in K-dimension, stride = rowStrideA * M
         if (rowStrideA === 1) {
-          globalStrideA = const1u;
+          globalStrideA = M;
         } else {
-          globalStrideA = b.id(); b.constant(tU32, globalStrideA, rowStrideA);
+          const cRSA = b.id(); b.constant(tU32, cRSA, rowStrideA);
+          globalStrideA = b.id();
+          b.emit(Op.IMul, [tU32, globalStrideA, cRSA, M]);
         }
       } else {
         // non-transposed: increment in row dimension = rowStrideA * K
@@ -1275,8 +1364,10 @@ function buildCoopMatmul(
         sharedBaseA = dba;
       }
 
-      // Shared stride: rowStrideA * paddedStrideA (compile-time constant)
-      const sharedStrideA = rowStrideA * paddedStrideA;
+      // Shared stride: elements advance in the slow dimension of the tile.
+      // Transposed: slow dim=K-col, stride = rowStrideA columns
+      // Non-transposed: slow dim=M-row, stride = rowStrideA * paddedStrideA
+      const sharedStrideA = transposedA ? rowStrideA : rowStrideA * paddedStrideA;
       const constSharedStrA = b.id(); b.constant(tU32, constSharedStrA, sharedStrideA);
 
       // Element loop: base + stride increments
@@ -1391,17 +1482,21 @@ function buildCoopMatmul(
         globalBaseB = gbb;
       }
 
-      // Global stride
+      // Global stride: for coalesced loads, elements advance in the slow dimension.
+      // Transposed B[N,K]: slow dim=N, stride per element = rowStrideB * K
+      // Non-transposed B[K,N]: slow dim=K, stride per element = rowStrideB * N
       let globalStrideB: number;
       if (transposedB) {
-        // transposed: increment in K dimension = rowStrideB
+        // transposed: elements advance in N-column direction, stride = rowStrideB * K
         if (rowStrideB === 1) {
-          globalStrideB = const1u;
+          globalStrideB = K;
         } else {
-          globalStrideB = b.id(); b.constant(tU32, globalStrideB, rowStrideB);
+          const cRSB = b.id(); b.constant(tU32, cRSB, rowStrideB);
+          globalStrideB = b.id();
+          b.emit(Op.IMul, [tU32, globalStrideB, cRSB, K]);
         }
       } else {
-        // non-transposed: increment in K row dimension = rowStrideB * N
+        // non-transposed: elements advance in K-row direction, stride = rowStrideB * N
         if (rowStrideB === 1) {
           globalStrideB = N;
         } else {
@@ -1428,8 +1523,10 @@ function buildCoopMatmul(
         sharedBaseB = dbb;
       }
 
-      // Shared stride: rowStrideB * paddedStrideB (compile-time constant)
-      const sharedStrideB = rowStrideB * paddedStrideB;
+      // Shared stride: elements advance in the slow dimension of the tile.
+      // Transposed: slow dim=N-col, stride = rowStrideB columns
+      // Non-transposed: slow dim=K-row, stride = rowStrideB * paddedStrideB
+      const sharedStrideB = transposedB ? rowStrideB : rowStrideB * paddedStrideB;
       const constSharedStrB = b.id(); b.constant(tU32, constSharedStrB, sharedStrideB);
 
       // Element loop
@@ -1719,6 +1816,15 @@ function buildCoopMatmul(
         const outWithBatch = b.id();
         b.emit(Op.IAdd, [tU32, outWithBatch, outBase, batchOffsetC]);
         outBase = outWithBatch;
+      }
+
+      // Split-K: offset output by splitIdx * M * N so each split writes to its own slice
+      if (splitK && !batched) {
+        const splitOffsetC = b.id();
+        b.emit(Op.IMul, [tU32, splitOffsetC, splitIdx!, MN]);
+        const outWithSplit = b.id();
+        b.emit(Op.IAdd, [tU32, outWithSplit, outBase, splitOffsetC]);
+        outBase = outWithSplit;
       }
 
       const ptrCOut = b.id();
@@ -2188,4 +2294,38 @@ export function kernelCoopMatmulTransposedABatched(
   doubleBuf = false,
 ): Uint32Array {
   return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+}
+
+// ── Split-K variants (non-batched only) ─────────────────────────────────────
+// Each workgroup processes a K-slice; output goes to a temp buffer of size
+// splitK × M × N. A separate reduction kernel sums across splits.
+
+export function kernelCoopMatmulSplitK(
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
+}
+
+export function kernelCoopMatmulTransposedSplitK(
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
+}
+
+export function kernelCoopMatmulTransposedASplitK(
+  coopM: number, coopN: number, coopK: number,
+  inputF16 = false, accumF16 = false,
+  subgroupTilesX = 1, subgroupTilesY = 1,
+  regTilesM = 1, regTilesN = 1,
+  doubleBuf = false,
+): Uint32Array {
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
 }

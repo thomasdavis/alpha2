@@ -119,12 +119,16 @@ export {
   kernelCoopMatmulBasic, kernelCoopMatmulBatched,
   kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
   kernelCoopMatmulTransposedA, kernelCoopMatmulTransposedABatched,
+  kernelCoopMatmulSplitK, kernelCoopMatmulTransposedSplitK,
+  kernelCoopMatmulTransposedASplitK,
 } from "./matmul-coop.js";
 
 import {
   kernelCoopMatmulBasic, kernelCoopMatmulBatched,
   kernelCoopMatmulTransposed, kernelCoopMatmulTransposedBatched,
   kernelCoopMatmulTransposedA, kernelCoopMatmulTransposedABatched,
+  kernelCoopMatmulSplitK, kernelCoopMatmulTransposedSplitK,
+  kernelCoopMatmulTransposedASplitK,
 } from "./matmul-coop.js";
 
 // Validation kernels
@@ -266,6 +270,27 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
             case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
             case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
             case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
+          }
+        }
+      }
+      // Split-K cooperative matrix matmul — name encodes:
+      //   matmul_coop_splitk_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
+      if (!spirv) {
+        const skMatch = name.match(/^matmul_coop_splitk_(basic|transposed|transposed_a)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
+        if (skMatch) {
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix] = skMatch;
+          const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
+          const inputF16 = f16Suffix === "f16in";
+          const accumF16 = f16AccSuffix === "f16acc";
+          const subgroupTilesX = Math.max(1, subgroupXS ? parseInt(subgroupXS) : 1);
+          const subgroupTilesY = Math.max(1, subgroupYS ? parseInt(subgroupYS) : 1);
+          const regTilesM = Math.max(1, regMStr ? parseInt(regMStr) : 1);
+          const regTilesN = Math.max(1, regNStr ? parseInt(regNStr) : 1);
+          const doubleBuf = dbSuffix === "db";
+          switch (variant) {
+            case "basic":        spirv = kernelCoopMatmulSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
+            case "transposed":   spirv = kernelCoopMatmulTransposedSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
+            case "transposed_a": spirv = kernelCoopMatmulTransposedASplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
           }
         }
       }

@@ -82,6 +82,9 @@ if (COOP_REG_TILES_ENV) {
 const ENABLE_COOP_DOUBLE_BUF = process.env.HELIOS_COOP_DOUBLE_BUF === "1";
 // Super-tile swizzle size for L2 cache reuse (0=disabled, must match kernel codegen)
 const COOP_SWIZZLE_SIZE = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
+// Split-K: partition K-reduction across multiple WGs for better SM occupancy.
+// 0 or 1 = disabled; 2-8 = fixed split count; -1 = auto (heuristic based on WG count).
+const COOP_SPLIT_K = parseInt(process.env.HELIOS_COOP_SPLIT_K ?? "0", 10);
 
 const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
 let LARGE_TILE_THRESHOLD = LARGE_TILE_THRESHOLD_DEFAULT;
@@ -2480,33 +2483,123 @@ export class HeliosBackend implements Backend {
         }
       }
     }
-    const variant = transposed
-      ? (batchSize > 1 ? "transposed_batched" : "transposed")
-      : (batchSize > 1 ? "batched" : "basic");
+    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    const gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
+
+    // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
+    // Only for non-batched (batchSize=1) since wgId.z is repurposed as split index.
+    const kTileK = this._coopK * this._kMulti;
+    const baseWGs = gX * gY;
+    let splitK = 1;
+    if (COOP_SPLIT_K !== 0 && batchSize === 1) {
+      if (COOP_SPLIT_K === -1) {
+        // Auto: target ~512+ WGs for good SM occupancy on L4 (58 SMs × ~10 WGs/SM)
+        const targetWGs = 512;
+        splitK = Math.max(1, Math.ceil(targetWGs / baseWGs));
+        // Cap: each split must process at least 1 K-tile
+        const kTiles = Math.ceil(K / kTileK);
+        splitK = Math.min(splitK, kTiles);
+        // Reasonable upper bound
+        splitK = Math.min(splitK, 16);
+      } else {
+        splitK = Math.max(1, COOP_SPLIT_K);
+        const kTiles = Math.ceil(K / kTileK);
+        splitK = Math.min(splitK, kTiles);
+      }
+    }
+
+    const useSplitK = splitK > 1;
+
     const subgroupSuffix =
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
     const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
+
+    let variant: string;
+    if (useSplitK) {
+      variant = transposed ? "transposed" : "basic";
+    } else {
+      variant = transposed
+        ? (batchSize > 1 ? "transposed_batched" : "transposed")
+        : (batchSize > 1 ? "batched" : "basic");
+    }
+
+    const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
-      `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     if (DEBUG_COOP) {
       console.error(
-        `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed}`,
+        `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed} splitK=${splitK}`,
       );
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
     const bufA = this.getCoopInputBuffer(vk, a);
     const bufB = this.getCoopInputBuffer(vk, b);
+
+    if (useSplitK) {
+      // Split-K path: dispatch matmul to temp buffer, then reduce.
+      // NOTE: Benchmarked on L4 (commit b87a888 + split-K) — the separate reduction
+      // pass adds ~1-2ms overhead per matmul (sum_axis achieves only ~30 GB/s effective
+      // bandwidth). This makes split-K 2-3× SLOWER than baseline at all tested shapes
+      // (1024-4096). Only useful if an atomic-add reduction is implemented instead.
+      const kChunk = alignUp(Math.ceil(K / splitK), kTileK);
+      const tempBytes = splitK * M * N * 4;
+      const tempRegion = acquireOutputRegion(vk, tempBytes);
+      const push = new Float32Array([M, N, K, kChunk]);
+
+      graph.record({
+        kind: "matmul",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: tempRegion,
+        groups: [gX, gY, splitK],
+        push,
+        pushSize: 16,
+        shape: [splitK, M, N],
+      });
+      if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
+
+      // Reduction: sum across split dimension using sum_axis kernel
+      // Tensor is [splitK, M*N] → sum axis=0 → [M*N]
+      const totalOutput = M * N;
+      const reducePipeline = getPipeline(vk, "sum_axis", 2, 3 * 4);
+      const outRegion = acquireOutputRegion(vk, totalOutput * 4);
+      const reduceGroups = Math.ceil(totalOutput / WG_SIZE);
+      const reducePush = new Float32Array(3);
+      const reducePushU = new Uint32Array(reducePush.buffer);
+      reducePushU[0] = totalOutput;
+      reducePushU[1] = splitK;
+      reducePushU[2] = totalOutput;  // innerSize = M*N
+
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "sum_axis",
+        pipeline: reducePipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [reduceGroups, 1, 1],
+        push: reducePush,
+        pushSize: 3 * 4,
+        shape: [...aBatch, M, N],
+        allBufs: [tempRegion.handle, outRegion.handle],
+      });
+      if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK reduce totalOutput=${totalOutput} splitK=${splitK}`);
+
+      // Release temp buffer after this batch completes
+      graph.deferRelease(tempRegion);
+
+      return graphLazyTensor(vk, [...aBatch, M, N], outRegion);
+    }
+
+    // Standard path (no split-K)
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-
-    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
-    const gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
     // Pass gridX for GROUP_M swizzle (Triton-style); 0 disables
     const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
     const push = push4Memo(M, N, K, swizzleGridX);
@@ -2564,30 +2657,100 @@ export class HeliosBackend implements Backend {
         }
       }
     }
-    const variant = batchSize > 1 ? "transposed_a_batched" : "transposed_a";
+    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
+    const gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
+
+    // Split-K for transposed-A (non-batched only)
+    const kTileK = this._coopK * this._kMulti;
+    const baseWGs = gX * gY;
+    let splitK = 1;
+    if (COOP_SPLIT_K !== 0 && batchSize === 1) {
+      if (COOP_SPLIT_K === -1) {
+        const targetWGs = 512;
+        splitK = Math.max(1, Math.ceil(targetWGs / baseWGs));
+        const kTiles = Math.ceil(loopK / kTileK);
+        splitK = Math.min(splitK, kTiles);
+        splitK = Math.min(splitK, 16);
+      } else {
+        splitK = Math.max(1, COOP_SPLIT_K);
+        const kTiles = Math.ceil(loopK / kTileK);
+        splitK = Math.min(splitK, kTiles);
+      }
+    }
+    const useSplitK = splitK > 1;
+
+    const variant = useSplitK ? "transposed_a" : (batchSize > 1 ? "transposed_a_batched" : "transposed_a");
     const subgroupSuffix =
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
     const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
+    const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
-      `matmul_coop_${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     if (DEBUG_COOP) {
       console.error(
-        `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true`,
+        `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true splitK=${splitK}`,
       );
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
     const bufA = this.getCoopInputBuffer(vk, a);
     const bufB = this.getCoopInputBuffer(vk, b);
+
+    if (useSplitK) {
+      const kChunk = alignUp(Math.ceil(loopK / splitK), kTileK);
+      const tempBytes = splitK * outM * N * 4;
+      const tempRegion = acquireOutputRegion(vk, tempBytes);
+      const push = new Float32Array([outM, N, loopK, kChunk]);
+
+      graph.record({
+        kind: "matmul",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: tempRegion,
+        groups: [gX, gY, splitK],
+        push,
+        pushSize: 16,
+        shape: [splitK, outM, N],
+      });
+      if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK transA kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
+
+      const totalOutput = outM * N;
+      const reducePipeline = getPipeline(vk, "sum_axis", 2, 3 * 4);
+      const outRegion = acquireOutputRegion(vk, totalOutput * 4);
+      const reduceGroups = Math.ceil(totalOutput / WG_SIZE);
+      const reducePush = new Float32Array(3);
+      const reducePushU = new Uint32Array(reducePush.buffer);
+      reducePushU[0] = totalOutput;
+      reducePushU[1] = splitK;
+      reducePushU[2] = totalOutput;
+
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "sum_axis",
+        pipeline: reducePipeline,
+        inputBufs: [],
+        outputRegion: outRegion,
+        groups: [reduceGroups, 1, 1],
+        push: reducePush,
+        pushSize: 3 * 4,
+        shape: [...aBatch, outM, N],
+        allBufs: [tempRegion.handle, outRegion.handle],
+      });
+
+      // Release temp buffer after this batch completes
+      graph.deferRelease(tempRegion);
+
+      return graphLazyTensor(vk, [...aBatch, outM, N], outRegion);
+    }
+
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
-    const gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
     const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
     const push = push4Memo(outM, N, loopK, swizzleGridX);
 
