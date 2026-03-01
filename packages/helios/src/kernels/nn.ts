@@ -1733,6 +1733,289 @@ export function kernelLayerNormBackward(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: LayerNorm backward vec4 (one workgroup per row, merged passes) ──
+
+/**
+ * Vec4 LayerNorm backward — merged reduction passes with 128-bit loads.
+ *
+ * Phase 1: Single-pass sum+sumSq → mean, variance, invStd (vec4, 1 read of X)
+ * Phase 2: Single-pass sum1=Σ(G·W) + sum2=Σ(G·W·xhat) (vec4, reads X,G,W)
+ * Phase 3: Write DX, DW_PARTIAL, DB_PARTIAL (vec4, reads X,G,W, writes 3 out)
+ *
+ * Saves 1 full DRAM read of X vs scalar 5-phase kernel (4→3 reads of X).
+ * Bindings: 0=X(in,vec4), 1=W(in,vec4), 2=G(in,vec4),
+ *           3=DX(out,vec4), 4=DW_PARTIAL(out,vec4), 5=DB_PARTIAL(out,vec4)
+ * Push: { dim: f32, eps: f32 }
+ * Dispatch: (numRows, 1, 1)
+ */
+export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // 6 vec4 buffer bindings
+  const bufX   = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufW   = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufG   = declareStorageBufferVec4(b, tVec4F32, 0, 2, true);
+  const bufDX  = declareStorageBufferVec4(b, tVec4F32, 0, 3, false);
+  const bufDWP = declareStorageBufferVec4(b, tVec4F32, 0, 4, false);
+  const bufDBP = declareStorageBufferVec4(b, tVec4F32, 0, 5, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constWgSize = b.id(); b.constant(p.tU32, constWgSize, wgSize);
+  const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+
+  // Two shared arrays for parallel reductions
+  const tArrayShared = b.id(); b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id(); b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id(); b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedA = b.id(); b.variable(tPtrShared, sharedA, StorageClass.Workgroup);
+  const sharedB = b.id(); b.variable(tPtrShared, sharedB, StorageClass.Workgroup);
+
+  const tPtrInputVec3 = b.id(); b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id(); b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id(); b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id(); b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id(); b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id(); b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id(); b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id(); b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varAccA = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAccA, StorageClass.Function]);
+  const varAccB = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAccB, StorageClass.Function]);
+
+  const lidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id(); b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id(); b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id(); b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  const dimF = loadPushLen(b, p, pc);
+  const dimU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const epsF = loadPushScalar(b, p, pc);
+  const dimVec4 = b.id(); b.emit(Op.ShiftRightLogical, [p.tU32, dimVec4, dimU, const2u]);
+  const rowOffset = b.id(); b.emit(Op.IMul, [p.tU32, rowOffset, row, dimVec4]);
+
+  // Helper: horizontal sum of vec4 components
+  function hsum(v4: number): number {
+    const a0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, a0, v4, 0]);
+    const a1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, a1, v4, 1]);
+    const a2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, a2, v4, 2]);
+    const a3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, a3, v4, 3]);
+    const s01 = b.id(); b.emit(Op.FAdd, [p.tF32, s01, a0, a1]);
+    const s23 = b.id(); b.emit(Op.FAdd, [p.tF32, s23, a2, a3]);
+    const s = b.id(); b.emit(Op.FAdd, [p.tF32, s, s01, s23]);
+    return s;
+  }
+
+  // Helper: dual tree reduction on sharedA + sharedB
+  function emitDualTreeReduce() {
+    let s = wgSize >> 1;
+    while (s > 0) {
+      const sc = b.id(); b.constant(p.tU32, sc, s);
+      const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+      const lr = b.id(), lar = b.id();
+      b.emit(Op.SelectionMerge, [lar, 0]);
+      b.emit(Op.BranchConditional, [cmp, lr, lar]);
+      b.emit(Op.Label, [lr]);
+      const oi = b.id(); b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+      // Reduce A
+      const pmA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmA, sharedA, localIdx]);
+      const mvA = b.id(); b.emit(Op.Load, [p.tF32, mvA, pmA]);
+      const poA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poA, sharedA, oi]);
+      const ovA = b.id(); b.emit(Op.Load, [p.tF32, ovA, poA]);
+      const rA = b.id(); b.emit(Op.FAdd, [p.tF32, rA, mvA, ovA]);
+      b.emit(Op.Store, [pmA, rA]);
+      // Reduce B
+      const pmB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmB, sharedB, localIdx]);
+      const mvB = b.id(); b.emit(Op.Load, [p.tF32, mvB, pmB]);
+      const poB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poB, sharedB, oi]);
+      const ovB = b.id(); b.emit(Op.Load, [p.tF32, ovB, poB]);
+      const rB = b.id(); b.emit(Op.FAdd, [p.tF32, rB, mvB, ovB]);
+      b.emit(Op.Store, [pmB, rB]);
+      b.emit(Op.Branch, [lar]);
+      b.emit(Op.Label, [lar]);
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+      s >>= 1;
+    }
+  }
+
+  // Helper: store accumulators to shared, reduce, read result
+  function storeDualReduceLoad(): { valA: number; valB: number } {
+    const tsA = b.id(); b.emit(Op.Load, [p.tF32, tsA, varAccA]);
+    const tsB = b.id(); b.emit(Op.Load, [p.tF32, tsB, varAccB]);
+    const psA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, psA, sharedA, localIdx]);
+    b.emit(Op.Store, [psA, tsA]);
+    const psB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, psB, sharedB, localIdx]);
+    b.emit(Op.Store, [psB, tsB]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    emitDualTreeReduce();
+    const pGA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pGA, sharedA, p.const0u]);
+    const valA = b.id(); b.emit(Op.Load, [p.tF32, valA, pGA]);
+    const pGB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pGB, sharedB, p.const0u]);
+    const valB = b.id(); b.emit(Op.Load, [p.tF32, valB, pGB]);
+    return { valA, valB };
+  }
+
+  // Helper: emit a vec4 strided loop body
+  function emitVec4Loop(bodyFn: (globalIdx: number, localVecIdx: number) => void): void {
+    const h = b.id(), bd = b.id(), m = b.id(), c = b.id();
+    b.emit(Op.Branch, [h]);
+    b.emit(Op.Label, [h]);
+    const ci = b.id(); b.emit(Op.Load, [p.tU32, ci, varIdx]);
+    const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, ci, dimVec4]);
+    b.emit(Op.LoopMerge, [m, c, 0]);
+    b.emit(Op.BranchConditional, [cmp, bd, m]);
+    b.emit(Op.Label, [bd]);
+    const gi = b.id(); b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
+    bodyFn(gi, ci);
+    b.emit(Op.Branch, [c]);
+    b.emit(Op.Label, [c]);
+    const ni = b.id(); b.emit(Op.Load, [p.tU32, ni, varIdx]);
+    const ii = b.id(); b.emit(Op.IAdd, [p.tU32, ii, ni, constWgSize]);
+    b.emit(Op.Store, [varIdx, ii]);
+    b.emit(Op.Branch, [h]);
+    b.emit(Op.Label, [m]);
+  }
+
+  // ── Phase 1: Single-pass sum + sumSq of X → mean, var, invStd ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varAccA, p.const0f]);
+  b.emit(Op.Store, [varAccB, p.const0f]);
+
+  emitVec4Loop((gi) => {
+    const ptrX = b.id(); b.emit(Op.AccessChain, [bufX.tPtrVec4, ptrX, bufX.varId, p.const0u, gi]);
+    const v4 = b.id(); b.emit(Op.Load, [tVec4F32, v4, ptrX]);
+    // sum
+    const cSum = hsum(v4);
+    const oldS = b.id(); b.emit(Op.Load, [p.tF32, oldS, varAccA]);
+    const newS = b.id(); b.emit(Op.FAdd, [p.tF32, newS, oldS, cSum]);
+    b.emit(Op.Store, [varAccA, newS]);
+    // sumSq
+    const v4sq = b.id(); b.emit(Op.FMul, [tVec4F32, v4sq, v4, v4]);
+    const cSumSq = hsum(v4sq);
+    const oldSq = b.id(); b.emit(Op.Load, [p.tF32, oldSq, varAccB]);
+    const newSq = b.id(); b.emit(Op.FAdd, [p.tF32, newSq, oldSq, cSumSq]);
+    b.emit(Op.Store, [varAccB, newSq]);
+  });
+
+  const { valA: globalSum, valB: globalSumSq } = storeDualReduceLoad();
+  const meanVal = b.id(); b.emit(Op.FDiv, [p.tF32, meanVal, globalSum, dimF]);
+  const meanSumSq = b.id(); b.emit(Op.FDiv, [p.tF32, meanSumSq, globalSumSq, dimF]);
+  const meanSq = b.id(); b.emit(Op.FMul, [p.tF32, meanSq, meanVal, meanVal]);
+  const variance = b.id(); b.emit(Op.FSub, [p.tF32, variance, meanSumSq, meanSq]);
+  const varPlusEps = b.id(); b.emit(Op.FAdd, [p.tF32, varPlusEps, variance, epsF]);
+  const stdDev = b.id(); b.emit(Op.ExtInst, [p.tF32, stdDev, p.glslStd, GLSLstd450.Sqrt, varPlusEps]);
+  const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
+  const invStd = b.id(); b.emit(Op.FDiv, [p.tF32, invStd, constOne, stdDev]);
+
+  // Splats for vec4 ops
+  const splatMean = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatMean, meanVal, meanVal, meanVal, meanVal]);
+  const splatInvStd = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatInvStd, invStd, invStd, invStd, invStd]);
+
+  // ── Phase 2: Single-pass sum1=Σ(G·W) + sum2=Σ(G·W·xhat) ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varAccA, p.const0f]);
+  b.emit(Op.Store, [varAccB, p.const0f]);
+
+  emitVec4Loop((gi, ci) => {
+    // Load X, G, W as vec4
+    const pX = b.id(); b.emit(Op.AccessChain, [bufX.tPtrVec4, pX, bufX.varId, p.const0u, gi]);
+    const xv = b.id(); b.emit(Op.Load, [tVec4F32, xv, pX]);
+    const pG = b.id(); b.emit(Op.AccessChain, [bufG.tPtrVec4, pG, bufG.varId, p.const0u, gi]);
+    const gv = b.id(); b.emit(Op.Load, [tVec4F32, gv, pG]);
+    const pW = b.id(); b.emit(Op.AccessChain, [bufW.tPtrVec4, pW, bufW.varId, p.const0u, ci]);
+    const wv = b.id(); b.emit(Op.Load, [tVec4F32, wv, pW]);
+    // gw = G * W (vec4)
+    const gw = b.id(); b.emit(Op.FMul, [tVec4F32, gw, gv, wv]);
+    // sum1 += hsum(gw)
+    const cSum1 = hsum(gw);
+    const old1 = b.id(); b.emit(Op.Load, [p.tF32, old1, varAccA]);
+    const new1 = b.id(); b.emit(Op.FAdd, [p.tF32, new1, old1, cSum1]);
+    b.emit(Op.Store, [varAccA, new1]);
+    // xhat = (x - mean) * invStd (vec4)
+    const xmm = b.id(); b.emit(Op.FSub, [tVec4F32, xmm, xv, splatMean]);
+    const xhat = b.id(); b.emit(Op.FMul, [tVec4F32, xhat, xmm, splatInvStd]);
+    // gwxh = gw * xhat (vec4)
+    const gwxh = b.id(); b.emit(Op.FMul, [tVec4F32, gwxh, gw, xhat]);
+    // sum2 += hsum(gwxh)
+    const cSum2 = hsum(gwxh);
+    const old2 = b.id(); b.emit(Op.Load, [p.tF32, old2, varAccB]);
+    const new2 = b.id(); b.emit(Op.FAdd, [p.tF32, new2, old2, cSum2]);
+    b.emit(Op.Store, [varAccB, new2]);
+  });
+
+  const { valA: sum1, valB: sum2 } = storeDualReduceLoad();
+
+  // Precompute scalars: sum1/dim, sum2/dim
+  const sum1Div = b.id(); b.emit(Op.FDiv, [p.tF32, sum1Div, sum1, dimF]);
+  const sum2Div = b.id(); b.emit(Op.FDiv, [p.tF32, sum2Div, sum2, dimF]);
+  // Splat for vec4 phase 3
+  const splatSum1D = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatSum1D, sum1Div, sum1Div, sum1Div, sum1Div]);
+  const splatSum2D = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatSum2D, sum2Div, sum2Div, sum2Div, sum2Div]);
+
+  // ── Phase 3: Write DX, DW_PARTIAL, DB_PARTIAL (all vec4) ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+
+  emitVec4Loop((gi, ci) => {
+    const pX = b.id(); b.emit(Op.AccessChain, [bufX.tPtrVec4, pX, bufX.varId, p.const0u, gi]);
+    const xv = b.id(); b.emit(Op.Load, [tVec4F32, xv, pX]);
+    const pG = b.id(); b.emit(Op.AccessChain, [bufG.tPtrVec4, pG, bufG.varId, p.const0u, gi]);
+    const gv = b.id(); b.emit(Op.Load, [tVec4F32, gv, pG]);
+    const pW = b.id(); b.emit(Op.AccessChain, [bufW.tPtrVec4, pW, bufW.varId, p.const0u, ci]);
+    const wv = b.id(); b.emit(Op.Load, [tVec4F32, wv, pW]);
+
+    // xhat = (x - mean) * invStd
+    const xmm = b.id(); b.emit(Op.FSub, [tVec4F32, xmm, xv, splatMean]);
+    const xhat = b.id(); b.emit(Op.FMul, [tVec4F32, xhat, xmm, splatInvStd]);
+
+    // dy = G * W
+    const dy = b.id(); b.emit(Op.FMul, [tVec4F32, dy, gv, wv]);
+
+    // DX = invStd * (dy - (sum1/dim + xhat * sum2/dim))
+    // xhat_s2 = xhat * splatSum2D
+    const xhS2 = b.id(); b.emit(Op.FMul, [tVec4F32, xhS2, xhat, splatSum2D]);
+    // correction = splatSum1D + xhS2
+    const corr = b.id(); b.emit(Op.FAdd, [tVec4F32, corr, splatSum1D, xhS2]);
+    // dy_minus_corr = dy - corr
+    const dmc = b.id(); b.emit(Op.FSub, [tVec4F32, dmc, dy, corr]);
+    // dx = dmc * invStd
+    const dxv = b.id(); b.emit(Op.FMul, [tVec4F32, dxv, dmc, splatInvStd]);
+
+    // DW_PARTIAL = G * xhat
+    const dwpv = b.id(); b.emit(Op.FMul, [tVec4F32, dwpv, gv, xhat]);
+
+    // Store DX, DWP, DBP (= G)
+    const pdx = b.id(); b.emit(Op.AccessChain, [bufDX.tPtrVec4, pdx, bufDX.varId, p.const0u, gi]);
+    b.emit(Op.Store, [pdx, dxv]);
+    const pdwp = b.id(); b.emit(Op.AccessChain, [bufDWP.tPtrVec4, pdwp, bufDWP.varId, p.const0u, gi]);
+    b.emit(Op.Store, [pdwp, dwpv]);
+    const pdbp = b.id(); b.emit(Op.AccessChain, [bufDBP.tPtrVec4, pdbp, bufDBP.varId, p.const0u, gi]);
+    b.emit(Op.Store, [pdbp, gv]); // db_partial = G
+  });
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: Broadcast (tile input to fill output) ──────────────────────────
 
 /**

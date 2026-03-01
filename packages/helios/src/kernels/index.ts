@@ -44,7 +44,7 @@ import {
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -55,7 +55,7 @@ export {
 } from "./nn.js";
 
 import {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -207,6 +207,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;
     case "clamp_backward": spirv = kernelClampBackward(wgSize); break;
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;
+    case "layernorm_backward_vec4": spirv = kernelLayerNormBackwardVec4(wgSize); break;
     case "column_sum": spirv = kernelColumnSum(wgSize); break;
     case "adamw_step": spirv = kernelAdamW(wgSize); break;
     case "transpose":  spirv = kernelTranspose(wgSize); break;

@@ -2116,11 +2116,13 @@ export class HeliosBackend implements Backend {
       const dbRegion = acquireOutputRegion(vk, dim * 4);
 
       // Main backward kernel (6 bindings) — recorded to graph
-      const pipeline1 = getPipeline(vk, "layernorm_backward", 6);
+      const useVec4Bwd = dim % 4 === 0 && dim >= 16;
+      const bwdKernel = useVec4Bwd ? "layernorm_backward_vec4" : "layernorm_backward";
+      const pipeline1 = getPipeline(vk, bwdKernel, 6);
       const push1 = push2Memo(dim, eps);
       graph.record({
         kind: "backward",
-        kernel: "layernorm_backward",
+        kernel: bwdKernel,
         pipeline: pipeline1,
         inputBufs: [],
         outputRegion: dxRegion,
