@@ -2657,13 +2657,28 @@ export class HeliosBackend implements Backend {
           regTilesM = wantM;
           regTilesN = wantN;
         } else if (wantM >= 4 && wantN >= 4) {
-          // Fallback to r2x2 when r4x4 doesn't fit
-          const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
-          const effM2 = this._coopM * subgroupTilesY * fallM;
-          const effN2 = this._coopN * subgroupTilesX * fallN;
-          if (M % effM2 === 0 && N % effN2 === 0) {
-            regTilesM = fallM;
-            regTilesN = fallN;
+          // Try asymmetric register tiling before r2x2 fallback.
+          // r4x2 has 33% higher arithmetic intensity than r2x2 (more compute per
+          // shared memory load), which helps compute-bound shapes like N=2752.
+          const effM_r4x2 = this._coopM * subgroupTilesY * wantM;
+          const effN_r4x2 = this._coopN * subgroupTilesX * Math.min(wantN, 2);
+          const effM_r2x4 = this._coopM * subgroupTilesY * Math.min(wantM, 2);
+          const effN_r2x4 = this._coopN * subgroupTilesX * wantN;
+          if (M % effM_r4x2 === 0 && N % effN_r4x2 === 0) {
+            regTilesM = wantM;
+            regTilesN = Math.min(wantN, 2);
+          } else if (M % effM_r2x4 === 0 && N % effN_r2x4 === 0) {
+            regTilesM = Math.min(wantM, 2);
+            regTilesN = wantN;
+          } else {
+            // Fallback to r2x2 when asymmetric doesn't fit either
+            const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
+            const effM2 = this._coopM * subgroupTilesY * fallM;
+            const effN2 = this._coopN * subgroupTilesX * fallN;
+            if (M % effM2 === 0 && N % effN2 === 0) {
+              regTilesM = fallM;
+              regTilesN = fallN;
+            }
           }
         }
       }
@@ -2857,13 +2872,25 @@ export class HeliosBackend implements Backend {
           regTilesM = wantM;
           regTilesN = wantN;
         } else if (wantM >= 4 && wantN >= 4) {
-          // Fallback to r2x2 when r4x4 doesn't fit
-          const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
-          const effM2 = this._coopM * subgroupTilesY * fallM;
-          const effN2 = this._coopN * subgroupTilesX * fallN;
-          if (outM % effM2 === 0 && N % effN2 === 0) {
-            regTilesM = fallM;
-            regTilesN = fallN;
+          // Try asymmetric register tiling before r2x2 fallback
+          const effM_r4x2 = this._coopM * subgroupTilesY * wantM;
+          const effN_r4x2 = this._coopN * subgroupTilesX * Math.min(wantN, 2);
+          const effM_r2x4 = this._coopM * subgroupTilesY * Math.min(wantM, 2);
+          const effN_r2x4 = this._coopN * subgroupTilesX * wantN;
+          if (outM % effM_r4x2 === 0 && N % effN_r4x2 === 0) {
+            regTilesM = wantM;
+            regTilesN = Math.min(wantN, 2);
+          } else if (outM % effM_r2x4 === 0 && N % effN_r2x4 === 0) {
+            regTilesM = Math.min(wantM, 2);
+            regTilesN = wantN;
+          } else {
+            const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
+            const effM2 = this._coopM * subgroupTilesY * fallM;
+            const effN2 = this._coopN * subgroupTilesX * fallN;
+            if (outM % effM2 === 0 && N % effN2 === 0) {
+              regTilesM = fallM;
+              regTilesN = fallN;
+            }
           }
         }
       }
@@ -2889,7 +2916,8 @@ export class HeliosBackend implements Backend {
     // Adaptive kMulti for transposed-A: use kMulti=2 when occupancy is limited.
     // With kMulti=4 + s2x2: shmem = 32KB/WG → 1 WG/SM (48KB L4 limit).
     // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
-    // For high-WG shapes (≥512), kMulti=4 is better (fewer barrier cycles).
+    // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles
+    // outweigh the occupancy penalty since many waves keep SMs busy.
     const baseWGs = gX * gY;
     const localKMulti = (baseWGs < 512 && this._kMulti >= 4) ? 2 : this._kMulti;
     const kTileK = this._coopK * localKMulti;
