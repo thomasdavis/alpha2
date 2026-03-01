@@ -11,7 +11,8 @@ export {
   kernelAdd, kernelSub, kernelMul, kernelDiv, kernelNeg, kernelScale,
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
-  kernelGeluBackward, kernelReluBackward, kernelClampBackward,
+  kernelGeluBackward, kernelGeluBackwardVec4,
+  kernelReluBackward, kernelClampBackward,
   kernelSiluBackward, kernelSiluBackwardVec4,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
@@ -25,7 +26,8 @@ import {
   kernelAdd, kernelSub, kernelMul, kernelDiv, kernelNeg, kernelScale,
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
-  kernelGeluBackward, kernelReluBackward, kernelClampBackward,
+  kernelGeluBackward, kernelGeluBackwardVec4,
+  kernelReluBackward, kernelClampBackward,
   kernelSiluBackward, kernelSiluBackwardVec4,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
@@ -207,6 +209,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "scale_inplace": spirv = kernelScaleInplace(wgSize); break;
     case "scale_inplace_vec4": spirv = kernelScaleInplaceVec4(wgSize); break;
     case "gelu_backward": spirv = kernelGeluBackward(wgSize); break;
+    case "gelu_backward_vec4": spirv = kernelGeluBackwardVec4(wgSize); break;
     case "silu_backward": spirv = kernelSiluBackward(wgSize); break;
     case "silu_backward_vec4": spirv = kernelSiluBackwardVec4(wgSize); break;
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;

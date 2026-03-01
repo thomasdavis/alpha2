@@ -1862,7 +1862,7 @@ export class HeliosBackend implements Backend {
   geluBackward(input: TensorData, gradOutput: TensorData): TensorData {
     const size = shapeSize(input.shape);
     if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
-      return this.gpuBinaryOp(input, gradOutput, "gelu_backward", true);
+      return this.gpuBinaryOp(input, gradOutput, "gelu_backward");
     }
     // CPU fallback
     const SQRT2PI = Math.sqrt(2 / Math.PI);

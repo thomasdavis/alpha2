@@ -486,6 +486,114 @@ export function kernelGeluBackward(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: GELU backward (vec4) ─────────────────────────────────────────────
+
+/**
+ * GELU backward vec4: same formula as scalar but on vec4 types
+ * gelu_grad = 0.5*(1+tanh(s)) + 0.5*x*sech²(s)*ds
+ * where s = sqrt(2/pi)*(x + 0.044715*x³), ds = sqrt(2/pi)*(1 + 3*0.044715*x²)
+ * Bindings: 0=A(input,vec4,ro), 1=B(gradOutput,vec4,ro), 2=C(gradInput,vec4,wo)
+ * Push constants: { vec4Count: f32, _unused: f32 }
+ */
+export function kernelGeluBackwardVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  // Scalar constants
+  const cHalf = b.id(); b.constantF32(p.tF32, cHalf, 0.5);
+  const cOne = b.id(); b.constantF32(p.tF32, cOne, 1.0);
+  const cThree = b.id(); b.constantF32(p.tF32, cThree, 3.0);
+  const cCoeff = b.id(); b.constantF32(p.tF32, cCoeff, 0.044715);
+  const cSqrt2Pi = b.id(); b.constantF32(p.tF32, cSqrt2Pi, Math.sqrt(2.0 / Math.PI));
+
+  // Vec4 constant splats
+  const halfVec = b.id(); b.constantComposite(tVec4F32, halfVec, [cHalf, cHalf, cHalf, cHalf]);
+  const oneVec = b.id(); b.constantComposite(tVec4F32, oneVec, [cOne, cOne, cOne, cOne]);
+  const coeffVec = b.id(); b.constantComposite(tVec4F32, coeffVec, [cCoeff, cCoeff, cCoeff, cCoeff]);
+  const sqrt2piVec = b.id(); b.constantComposite(tVec4F32, sqrt2piVec, [cSqrt2Pi, cSqrt2Pi, cSqrt2Pi, cSqrt2Pi]);
+  // 3 * 0.044715 = 0.134145
+  const c3Coeff = b.id(); b.constantF32(p.tF32, c3Coeff, 3.0 * 0.044715);
+  const c3CoeffVec = b.id(); b.constantComposite(tVec4F32, c3CoeffVec, [c3Coeff, c3Coeff, c3Coeff, c3Coeff]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // x = A[gidX] (vec4)
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gidX]);
+  const x = b.id();
+  b.emit(Op.Load, [tVec4F32, x, ptrA]);
+
+  // dout = B[gidX] (vec4)
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB, bufB.varId, p.const0u, gidX]);
+  const dout = b.id();
+  b.emit(Op.Load, [tVec4F32, dout, ptrB]);
+
+  // x² = x * x, x³ = x² * x
+  const x2 = b.id(); b.emit(Op.FMul, [tVec4F32, x2, x, x]);
+  const x3 = b.id(); b.emit(Op.FMul, [tVec4F32, x3, x2, x]);
+
+  // s = sqrt(2/pi) * (x + 0.044715*x³)
+  const cx3 = b.id(); b.emit(Op.FMul, [tVec4F32, cx3, coeffVec, x3]);
+  const xPcx3 = b.id(); b.emit(Op.FAdd, [tVec4F32, xPcx3, x, cx3]);
+  const s = b.id(); b.emit(Op.FMul, [tVec4F32, s, sqrt2piVec, xPcx3]);
+
+  // t = tanh(s), sech² = 1 - t²
+  const t = b.id(); b.emit(Op.ExtInst, [tVec4F32, t, p.glslStd, GLSLstd450.Tanh, s]);
+  const t2 = b.id(); b.emit(Op.FMul, [tVec4F32, t2, t, t]);
+  const sech2 = b.id(); b.emit(Op.FSub, [tVec4F32, sech2, oneVec, t2]);
+
+  // ds = sqrt(2/pi) * (1 + 3*0.044715*x²)
+  const c3x2 = b.id(); b.emit(Op.FMul, [tVec4F32, c3x2, c3CoeffVec, x2]);
+  const onePC3x2 = b.id(); b.emit(Op.FAdd, [tVec4F32, onePC3x2, oneVec, c3x2]);
+  const ds = b.id(); b.emit(Op.FMul, [tVec4F32, ds, sqrt2piVec, onePC3x2]);
+
+  // gelu_grad = 0.5*(1+t) + 0.5*x*sech²*ds
+  const onePt = b.id(); b.emit(Op.FAdd, [tVec4F32, onePt, oneVec, t]);
+  const halfOnePt = b.id(); b.emit(Op.FMul, [tVec4F32, halfOnePt, halfVec, onePt]);
+  const xSech2 = b.id(); b.emit(Op.FMul, [tVec4F32, xSech2, x, sech2]);
+  const xSech2Ds = b.id(); b.emit(Op.FMul, [tVec4F32, xSech2Ds, xSech2, ds]);
+  const halfXSD = b.id(); b.emit(Op.FMul, [tVec4F32, halfXSD, halfVec, xSech2Ds]);
+  const geluGrad = b.id(); b.emit(Op.FAdd, [tVec4F32, geluGrad, halfOnePt, halfXSD]);
+
+  // result = dout * gelu_grad
+  const result = b.id(); b.emit(Op.FMul, [tVec4F32, result, dout, geluGrad]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Kernel: SiLU backward ───────────────────────────────────────────────────
 
 /**
