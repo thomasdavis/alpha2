@@ -218,6 +218,125 @@ export function kernelSlice3D(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: slice3Way ────────────────────────────────────────────────────
+
+/**
+ * Fused 3-way column slice: split [rows, 3*D] into three [rows, D] outputs.
+ * One dispatch replaces 3 separate slice_2d dispatches for QKV splitting.
+ *
+ * Each thread i writes:
+ *   row = i / sliceCols, col = i % sliceCols
+ *   out0[i] = src[row * srcCols + col]
+ *   out1[i] = src[row * srcCols + sliceCols + col]
+ *   out2[i] = src[row * srcCols + 2*sliceCols + col]
+ *
+ * Bindings: 0=src(in), 1=out0(out), 2=out1(out), 3=out2(out)
+ * Push constants (u32): [totalElements, sliceCols, srcCols]
+ */
+export function kernelSlice3Way(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufSrc  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufOut0 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufOut1 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufOut2 = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+
+  // Push constants (3 u32)
+  const numPC = 3;
+  const pcMemberTypes = Array(numPC).fill(p.tU32) as number[];
+  const tPCStruct = b.id();
+  b.typeStruct(tPCStruct, pcMemberTypes);
+  b.addDecorate(tPCStruct, Decoration.Block);
+  for (let i = 0; i < numPC; i++) {
+    b.addMemberDecorate(tPCStruct, i, Decoration.Offset, i * 4);
+  }
+  const tPtrPCStruct = b.id();
+  b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
+  const tPtrU32PC = b.id();
+  b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const pcVar = b.id();
+  b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelBody = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  // Load global ID
+  const gidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id(); b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load totalElements
+  const ptrLen = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrLen, pcVar, p.const0u]);
+  const lenU = b.id(); b.emit(Op.Load, [p.tU32, lenU, ptrLen]);
+
+  // Bounds check
+  const cmp = b.id(); b.emit(Op.UGreaterThanEqual, [p.tBool, cmp, gidX, lenU]);
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [cmp, labelEnd, labelBody]);
+  b.emit(Op.Label, [labelBody]);
+
+  // Load push constants
+  const ptrSliceCols = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrSliceCols, pcVar, p.const1u]);
+  const sliceCols = b.id(); b.emit(Op.Load, [p.tU32, sliceCols, ptrSliceCols]);
+
+  const ptrSrcCols = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrSrcCols, pcVar, p.const2u]);
+  const srcCols = b.id(); b.emit(Op.Load, [p.tU32, srcCols, ptrSrcCols]);
+
+  // Decompose gidX into row, col
+  const row = b.id(); b.emit(Op.UDiv, [p.tU32, row, gidX, sliceCols]);
+  const rowTimesC = b.id(); b.emit(Op.IMul, [p.tU32, rowTimesC, row, sliceCols]);
+  const col = b.id(); b.emit(Op.ISub, [p.tU32, col, gidX, rowTimesC]);
+
+  // srcBase = row * srcCols + col
+  const rowTimesSrc = b.id(); b.emit(Op.IMul, [p.tU32, rowTimesSrc, row, srcCols]);
+  const srcIdx0 = b.id(); b.emit(Op.IAdd, [p.tU32, srcIdx0, rowTimesSrc, col]);
+  // srcIdx1 = srcIdx0 + sliceCols
+  const srcIdx1 = b.id(); b.emit(Op.IAdd, [p.tU32, srcIdx1, srcIdx0, sliceCols]);
+  // srcIdx2 = srcIdx1 + sliceCols
+  const srcIdx2 = b.id(); b.emit(Op.IAdd, [p.tU32, srcIdx2, srcIdx1, sliceCols]);
+
+  // Load 3 values from src
+  const ptrS0 = b.id();
+  b.emit(Op.AccessChain, [bufSrc.tPtrF32, ptrS0, bufSrc.varId, p.const0u, srcIdx0]);
+  const val0 = b.id(); b.emit(Op.Load, [p.tF32, val0, ptrS0]);
+
+  const ptrS1 = b.id();
+  b.emit(Op.AccessChain, [bufSrc.tPtrF32, ptrS1, bufSrc.varId, p.const0u, srcIdx1]);
+  const val1 = b.id(); b.emit(Op.Load, [p.tF32, val1, ptrS1]);
+
+  const ptrS2 = b.id();
+  b.emit(Op.AccessChain, [bufSrc.tPtrF32, ptrS2, bufSrc.varId, p.const0u, srcIdx2]);
+  const val2 = b.id(); b.emit(Op.Load, [p.tF32, val2, ptrS2]);
+
+  // Store to 3 output buffers
+  const ptrO0 = b.id();
+  b.emit(Op.AccessChain, [bufOut0.tPtrF32, ptrO0, bufOut0.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrO0, val0]);
+
+  const ptrO1 = b.id();
+  b.emit(Op.AccessChain, [bufOut1.tPtrF32, ptrO1, bufOut1.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrO1, val1]);
+
+  const ptrO2 = b.id();
+  b.emit(Op.AccessChain, [bufOut2.tPtrF32, ptrO2, bufOut2.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrO2, val2]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: scatterSlice2D ───────────────────────────────────────────────────
 
 /**

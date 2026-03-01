@@ -109,9 +109,9 @@ import {
 } from "./attention.js";
 
 // Copy / slice kernels
-export { kernelSlice2D, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
+export { kernelSlice2D, kernelSlice3Way, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
 
-import { kernelSlice2D, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
+import { kernelSlice2D, kernelSlice3Way, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
 
 // F16 storage variant kernels + cast kernels
 export { kernelBinaryOpF16, kernelUnaryOpF16, kernelCastF32ToF16, kernelCastF16ToF32 } from "./f16.js";
@@ -233,6 +233,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
     case "slice_2d": spirv = kernelSlice2D(wgSize); break;
+    case "slice_3way": spirv = kernelSlice3Way(wgSize); break;
     case "scatter_slice_2d": spirv = kernelScatterSlice2D(wgSize); break;
     case "slice_3d": spirv = kernelSlice3D(wgSize); break;
     case "scatter_slice_3d": spirv = kernelScatterSlice3D(wgSize); break;

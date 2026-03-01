@@ -1791,7 +1791,7 @@ export class HeliosBackend implements Backend {
       // Persistent CTA: limit concurrent WGs so Phase 2 re-reads hit L2 cache.
       // Activates when total data exceeds ~32MB (L2 thrashing threshold on L4).
       const totalBytes = byteSize;
-      const L2_TARGET_MB = parseInt(process.env.HELIOS_SOFTMAX_L2_MB ?? "15", 10);
+      const L2_TARGET_MB = parseInt(process.env.HELIOS_SOFTMAX_L2_MB ?? "12", 10);
       const L2_TARGET = L2_TARGET_MB * 1024 * 1024;
       const usePCTA = softmaxEnv === "" && totalBytes > L2_TARGET && dim >= 4096;
 
@@ -1800,7 +1800,10 @@ export class HeliosBackend implements Backend {
         const envWGs = parseInt(process.env.HELIOS_SOFTMAX_PCTA_WGS ?? "0", 10);
         const numWGs = envWGs > 0 ? envWGs : Math.min(numRows, Math.max(1, Math.floor(L2_TARGET / rowBytes)));
         const PCTA_PUSH_SIZE = 12; // 3 x f32: dimVec4, numRows, numWGs
-        const pctaPipeline = getPipeline(vk, "softmax_online_pcta", 2, PCTA_PUSH_SIZE, softmaxWg);
+        // Cap PCTA WG size at 128: fewer threads per WG → more work per thread →
+        // better register utilization and less overhead per barrier within the WG.
+        const pctaWg = Math.min(128, softmaxWg);
+        const pctaPipeline = getPipeline(vk, "softmax_online_pcta", 2, PCTA_PUSH_SIZE, pctaWg);
         const bufA = ensureGpu(vk, a);
         const region = acquireOutputRegion(vk, byteSize);
         const push = new Float32Array([dimVec4, numRows, numWGs]);
@@ -2670,8 +2673,9 @@ export class HeliosBackend implements Backend {
 
     // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
     // for better SM occupancy. On L4 (58 SMs), 64 WGs = 1.1 WGs/SM → poor latency hiding.
-    // Benchmarked threshold=64 (Session 8): r4x4 at 64 WGs REGRESSED matmul_bwd_attn_out
-    // by 4% (0.114→0.118ms). r2x2's 4× more WGs wins over r4x4's 2× arithmetic intensity.
+    // NOTE: Tested threshold=192 with adaptive kMulti=2 (Session 12) — REGRESSED forward
+    // training shapes. matmul_qkv went from C 1.18× to C 1.36×, 1024sq from H 1.37× to H 1.25×.
+    // The r4x4 arithmetic intensity outweighs occupancy gains for the forward path.
     if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
       const fallM = 2, fallN = 2;
       const effM2 = this._coopM * subgroupTilesY * fallM;
@@ -2867,8 +2871,10 @@ export class HeliosBackend implements Backend {
     let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     let gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
 
-    // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
-    if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
+    // Occupancy check: if r4x4 gives too few WGs (< 192), fall back to r2x2
+    // for better SM occupancy. With r4x4 s2x2, shmem=32KB/WG → only 1 WG/SM on L4.
+    // r2x2 uses 16KB → 3 WGs/SM. Threshold 192 ≈ 3.3 WGs/SM on 58-SM L4.
+    if (gX * gY < 192 && regTilesM >= 4 && regTilesN >= 4) {
       const fallM = 2, fallN = 2;
       const effM2 = this._coopM * subgroupTilesY * fallM;
       const effN2 = this._coopN * subgroupTilesX * fallN;
@@ -2880,9 +2886,13 @@ export class HeliosBackend implements Backend {
       }
     }
 
-    // Split-K for transposed-A (non-batched only)
-    const kTileK = this._coopK * this._kMulti;
+    // Adaptive kMulti for transposed-A: use kMulti=2 when occupancy is limited.
+    // With kMulti=4 + s2x2: shmem = 32KB/WG → 1 WG/SM (48KB L4 limit).
+    // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
+    // For high-WG shapes (≥512), kMulti=4 is better (fewer barrier cycles).
     const baseWGs = gX * gY;
+    const localKMulti = (baseWGs < 512 && this._kMulti >= 4) ? 2 : this._kMulti;
+    const kTileK = this._coopK * localKMulti;
     let splitK = 1;
     if (COOP_SPLIT_K !== 0 && batchSize === 1) {
       if (COOP_SPLIT_K === -1) {
@@ -2905,7 +2915,7 @@ export class HeliosBackend implements Backend {
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
-    const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
+    const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
@@ -2913,7 +2923,7 @@ export class HeliosBackend implements Backend {
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     if (DEBUG_COOP) {
       console.error(
-        `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true splitK=${splitK}`,
+        `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true splitK=${splitK} kMulti=${localKMulti}`,
       );
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
@@ -3647,6 +3657,55 @@ export class HeliosBackend implements Backend {
       out[i] = a.data[srcFlat];
     }
     return makeTensor(outShape, a.dtype, out);
+  }
+
+  /**
+   * Fused 3-way column slice: split [rows, 3*D] into [rows, D] × 3.
+   * Single GPU dispatch instead of 3 separate slice_2d dispatches.
+   */
+  sliceQkv(a: TensorData): [TensorData, TensorData, TensorData] {
+    if (a.shape.length !== 2 || a.shape[1] % 3 !== 0)
+      throw new Error(`sliceQkv: expected [rows, 3*D], got [${a.shape}]`);
+    const rows = a.shape[0];
+    const sliceCols = a.shape[1] / 3;
+    const srcCols = a.shape[1];
+    const outSize = rows * sliceCols;
+    const outShape: Shape = [rows, sliceCols];
+
+    const vk = this.init();
+    const inputBuf = ensureGpu(vk, a);
+
+    const pushF = new Float32Array(3);
+    const pushU = new Uint32Array(pushF.buffer);
+    pushU[0] = outSize;       // totalElements per slice
+    pushU[1] = sliceCols;     // slice width (D)
+    pushU[2] = srcCols;       // source width (3*D)
+
+    const pipeline = getPipeline(vk, "slice_3way", 4, 3 * 4);
+    const r0 = acquireOutputRegion(vk, outSize * 4);
+    const r1 = acquireOutputRegion(vk, outSize * 4);
+    const r2 = acquireOutputRegion(vk, outSize * 4);
+    const groups = Math.ceil(outSize / WG_SIZE);
+
+    graph.record({
+      kind: "unary",
+      kernel: "slice_3way",
+      pipeline,
+      inputBufs: [],
+      outputRegion: r0,
+      groups: [groups, 1, 1],
+      push: pushF,
+      pushSize: 3 * 4,
+      shape: outShape,
+      allBufs: [inputBuf, r0.handle, r1.handle, r2.handle],
+      writeMask: 0b1110,  // outputs at binding 1, 2, 3
+    });
+
+    return [
+      graphLazyTensor(vk, outShape, r0),
+      graphLazyTensor(vk, outShape, r1),
+      graphLazyTensor(vk, outShape, r2),
+    ];
   }
 
   scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {

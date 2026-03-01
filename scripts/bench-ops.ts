@@ -772,13 +772,18 @@ function main(): void {
 
   if (typeof (b as any).slice === "function") {
     const qkv = b.randn([BT, 3 * D]);
+    // Use fused sliceQkv when available (1 dispatch vs 3)
+    const hasFused = typeof (b as any).sliceQkv === "function";
     const ms = benchCustom(() => {
+      if (hasFused) {
+        return (b as any).sliceQkv(qkv);
+      }
       const q = (b as any).slice(qkv, [0, 0], [BT, D]);
       const k = (b as any).slice(qkv, [0, D], [BT, 2 * D]);
       const v = (b as any).slice(qkv, [0, 2 * D], [BT, 3 * D]);
       return [q, k, v];
     });
-    record("slice_qkv_512x3072", ms, { note: "3-way slice for Q,K,V" });
+    record("slice_qkv_512x3072", ms, { note: hasFused ? "fused 3-way slice" : "3-way slice for Q,K,V" });
     release(qkv);
   }
 
