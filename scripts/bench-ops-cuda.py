@@ -368,9 +368,11 @@ def main():
 
     # ── 6. FLASH ATTENTION ───────────────────────────────────────────────────
 
-    q = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
-    k = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
-    v = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
+    # Use f32 to match Helios (which has no f16 flash attention path).
+    # Previous benchmark used f16 SDPA which inflated CUDA's advantage ~10×.
+    q = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
+    k = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
+    v = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
 
     try:
         ms = bench(
@@ -378,15 +380,15 @@ def main():
             W, I, sync,
         )
         record("flash_attn_fwd_b1_h16_t512_d64", ms,
-               flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd (f16)")
+               flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd (f32)")
     except Exception as exc:
         record("flash_attn_fwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
 
     # Flash attention backward
     try:
-        q2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
-        k2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
-        v2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        q2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32, requires_grad=True)
+        k2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32, requires_grad=True)
+        v2 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32, requires_grad=True)
         out = F.scaled_dot_product_attention(q2, k2, v2, is_causal=True)
         dO = torch.randn_like(out)
         def flash_bwd():
@@ -397,7 +399,7 @@ def main():
             out.backward(dO, retain_graph=True)
         ms = bench(flash_bwd, W, I, sync)
         record("flash_attn_bwd_b1_h16_t512_d64", ms,
-               flops=2 * B * H * T * T * Dh * 4, note="SDPA bwd (f16)")
+               flops=2 * B * H * T * T * Dh * 4, note="SDPA bwd (f32)")
         del q2, k2, v2, out, dO
     except Exception as exc:
         record("flash_attn_bwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
@@ -618,7 +620,9 @@ def main():
     # ── 12. SLICE ────────────────────────────────────────────────────────────
 
     qkv = torch.randn(BT, 3 * D, device=device)
-    ms = bench(lambda: (qkv[:, :D], qkv[:, D:2*D], qkv[:, 2*D:]), W, I, sync)
+    # Use .contiguous() to match Helios which materializes slice copies.
+    # Without it, PyTorch returns zero-cost views (unfair comparison).
+    ms = bench(lambda: (qkv[:, :D].contiguous(), qkv[:, D:2*D].contiguous(), qkv[:, 2*D:].contiguous()), W, I, sync)
     record("slice_qkv_512x3072", ms, note="3-way slice for Q,K,V")
     del qkv
 

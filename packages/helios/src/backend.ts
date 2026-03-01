@@ -1787,6 +1787,39 @@ export class HeliosBackend implements Backend {
       const softmaxWg = softmaxEnv === "reg"
         ? 32
         : Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+
+      // Persistent CTA: limit concurrent WGs so Phase 2 re-reads hit L2 cache.
+      // Activates when total data exceeds ~32MB (L2 thrashing threshold on L4).
+      const totalBytes = byteSize;
+      const L2_TARGET_MB = parseInt(process.env.HELIOS_SOFTMAX_L2_MB ?? "15", 10);
+      const L2_TARGET = L2_TARGET_MB * 1024 * 1024;
+      const usePCTA = softmaxEnv === "" && totalBytes > L2_TARGET && dim >= 4096;
+
+      if (usePCTA) {
+        const rowBytes = dim * 4;
+        const envWGs = parseInt(process.env.HELIOS_SOFTMAX_PCTA_WGS ?? "0", 10);
+        const numWGs = envWGs > 0 ? envWGs : Math.min(numRows, Math.max(1, Math.floor(L2_TARGET / rowBytes)));
+        const PCTA_PUSH_SIZE = 12; // 3 x f32: dimVec4, numRows, numWGs
+        const pctaPipeline = getPipeline(vk, "softmax_online_pcta", 2, PCTA_PUSH_SIZE, softmaxWg);
+        const bufA = ensureGpu(vk, a);
+        const region = acquireOutputRegion(vk, byteSize);
+        const push = new Float32Array([dimVec4, numRows, numWGs]);
+
+        graph.record({
+          kind: "softmax_online" as PendingOpKind,
+          kernel: "softmax_online_pcta",
+          pipeline: pctaPipeline,
+          inputBufs: [bufA],
+          outputRegion: region,
+          groups: [numWGs, 1, 1],
+          push,
+          pushSize: PCTA_PUSH_SIZE,
+          shape: a.shape,
+        });
+
+        return graphLazyTensor(vk, a.shape, region);
+      }
+
       const pipeline = getPipeline(vk, kernelName, 2, PUSH_SIZE, softmaxWg);
       const bufA = ensureGpu(vk, a);
       const region = acquireOutputRegion(vk, byteSize);

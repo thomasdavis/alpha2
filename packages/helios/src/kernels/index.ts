@@ -48,7 +48,7 @@ import {
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -59,7 +59,7 @@ export {
 } from "./nn.js";
 
 import {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
@@ -183,6 +183,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
     case "softmax":   spirv = kernelSoftmax(wgSize); break;
     case "softmax_online": spirv = kernelSoftmaxOnline(wgSize); break;
+    case "softmax_online_pcta": spirv = kernelSoftmaxOnlinePCTA(wgSize); break;
     case "softmax_reg": spirv = kernelSoftmaxRegResident(wgSize, 8); break;
     case "softmax_vec4": spirv = kernelSoftmaxVec4(wgSize); break;
     case "layernorm": spirv = kernelLayerNorm(wgSize); break;
