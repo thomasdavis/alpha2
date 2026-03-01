@@ -521,6 +521,22 @@ function main(): void {
     release(lmAcc);
   }
 
+  // ── 8b1.5. WEIGHT DECAY (separate from AdamW, in-place scale) ──────────
+
+  if (typeof (b as any).scaleInplace === "function") {
+    // Full model weight decay: ~34M params × scale
+    const pSizeWd = (1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024) * 4;
+    const wdParams = b.randn([pSizeWd]);
+    const msWd = benchCustom(() => {
+      (b as any).scaleInplace(wdParams, 0.9997);  // 1 - lr*wd = 1 - 3e-4*0.1
+      return [];
+    });
+    record("weight_decay_34M", msWd, {
+      bytes: pSizeWd * 4 * 2, note: "full-model weight decay (scale_inplace 34M)",
+    });
+    release(wdParams);
+  }
+
   // ── 8b2. DROPOUT MASK GENERATION ──────────────────────────────────────────
 
   if (typeof (b as any).dropoutMask === "function") {

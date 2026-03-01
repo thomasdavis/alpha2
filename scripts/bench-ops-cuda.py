@@ -415,6 +415,14 @@ def main():
            bytes_rw=lm_size * 4 * 2, note="gradient clipping scale (scale_inplace)")
     del lm_grad, lm_acc
 
+    # ── 8b1.5. WEIGHT DECAY (scale_inplace for full model) ──────────
+    p_size_wd = p_size * 4  # 34M params
+    wd_params = torch.randn(p_size_wd, device=device)
+    ms = bench(lambda: wd_params.mul_(0.9997), W, I, sync)
+    record("weight_decay_34M", ms,
+           bytes_rw=p_size_wd * 4 * 2, note="full-model weight decay (scale_inplace 34M)")
+    del wd_params
+
     # ── 8b2. DROPOUT MASK GENERATION ────────────────────────────────────
     drop_shape = (BT, D)
     drop_p = torch.full(drop_shape, 0.9, device=device)  # keep_prob = 1-0.1 = 0.9
