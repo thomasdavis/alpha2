@@ -1834,10 +1834,11 @@ export class HeliosBackend implements Backend {
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
     const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
-    // Tune wgSize: ensure each thread has >= 2 vec4 elements for better compute density
+    // Tune wgSize: dimVec4>>2 → 64 for dim=1024. Sweet spot: 4 vec4/thread, 2 subgroups,
+    // subgroup reduce + 2 barriers. Higher occupancy than 128 (24 WGs/SM vs 12).
     const dimVec4 = dim / 4;
     const lnWg = useVec4
-      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
+      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 2)))))
       : WG_SIZE;
     const pipeline = getPipeline(vk, kernelName, 4, PUSH_SIZE, lnWg);
     const bufX = ensureGpu(vk, x);

@@ -1253,6 +1253,13 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
+  // Subgroup capabilities (core in SPIR-V 1.3)
+  b.addCapability(Capability.GroupNonUniform);
+  b.addCapability(Capability.GroupNonUniformArithmetic);
+
+  const SUBGROUP_SIZE = 32;
+  const numSubgroups = wgSize / SUBGROUP_SIZE;
+
   // vec4 type
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
@@ -1269,6 +1276,10 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   b.constant(p.tU32, constWgSize, wgSize);
   const const2u = b.id();
   b.constant(p.tU32, const2u, 2);
+  const const5u = b.id();
+  b.constant(p.tU32, const5u, 5);
+  const const31u = b.id();
+  b.constant(p.tU32, const31u, 31);
 
   // Two shared arrays for parallel reduction of sum and sumSq
   const tArrayShared = b.id();
@@ -1294,6 +1305,8 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
 
   const scopeWg = b.id();
   b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const scopeSubgroup = b.id();
+  b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
   const semAcqRelWg = b.id();
   b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
 
@@ -1322,6 +1335,15 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
   const localIdx = b.id();
   b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  // Subgroup lane computations (subgroupSize=32 on NVIDIA)
+  const subgroupId = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, subgroupId, localIdx, const5u]);
+  const sgLocalId = b.id();
+  b.emit(Op.BitwiseAnd, [p.tU32, sgLocalId, localIdx, const31u]);
+  const isLeader = b.id();
+  b.emit(Op.IEqual, [p.tBool, isLeader, sgLocalId, p.const0u]);
+
   const wgIdVec = b.id();
   b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
   const row = b.id();
@@ -1405,51 +1427,73 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
 
   b.emit(Op.Label, [labelP1Merge]);
 
-  // Store thread-local (sum, sumSq) to shared
+  // ── Subgroup-accelerated reduction: 2 barriers instead of log2(wgSize)+1 ──
+  // Step 1: Subgroup reduce (hardware warp shuffle — no barriers)
   const threadSum = b.id(); b.emit(Op.Load, [p.tF32, threadSum, varSum]);
   const threadSumSq = b.id(); b.emit(Op.Load, [p.tF32, threadSumSq, varSumSq]);
-  const ptrSSum = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSum, sharedSum, localIdx]);
-  b.emit(Op.Store, [ptrSSum, threadSum]);
-  const ptrSSumSq = b.id();
-  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSSumSq, sharedSumSq, localIdx]);
-  b.emit(Op.Store, [ptrSSumSq, threadSumSq]);
+  const sgSum = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgSum, scopeSubgroup, GroupOperation.Reduce, threadSum]);
+  const sgSumSq = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgSumSq, scopeSubgroup, GroupOperation.Reduce, threadSumSq]);
+
+  // Step 2: Leader of each subgroup writes to shared[subgroupId]
+  const wl = b.id(), wm = b.id();
+  b.emit(Op.SelectionMerge, [wm, 0]);
+  b.emit(Op.BranchConditional, [isLeader, wl, wm]);
+  b.emit(Op.Label, [wl]);
+  const ptrSGSum = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSGSum, sharedSum, subgroupId]);
+  b.emit(Op.Store, [ptrSGSum, sgSum]);
+  const ptrSGSumSq = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSGSumSq, sharedSumSq, subgroupId]);
+  b.emit(Op.Store, [ptrSGSumSq, sgSumSq]);
+  b.emit(Op.Branch, [wm]);
+  b.emit(Op.Label, [wm]);
+
+  // Step 3: Barrier — wait for all subgroup leaders
   b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
-  // Tree reduction for both sum and sumSq
-  let stride = wgSize >> 1;
-  while (stride > 0) {
-    const sc = b.id(); b.constant(p.tU32, sc, stride);
-    const cmp = b.id();
-    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
-    const lr = b.id();
-    const lar = b.id();
-    b.emit(Op.SelectionMerge, [lar, 0]);
-    b.emit(Op.BranchConditional, [cmp, lr, lar]);
-    b.emit(Op.Label, [lr]);
-    const oi = b.id();
-    b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
-    // Sum reduction
-    const pmS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmS, sharedSum, localIdx]);
-    const mvS = b.id(); b.emit(Op.Load, [p.tF32, mvS, pmS]);
-    const poS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poS, sharedSum, oi]);
-    const ovS = b.id(); b.emit(Op.Load, [p.tF32, ovS, poS]);
-    const rS = b.id(); b.emit(Op.FAdd, [p.tF32, rS, mvS, ovS]);
-    b.emit(Op.Store, [pmS, rS]);
-    // SumSq reduction
-    const pmSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmSq, sharedSumSq, localIdx]);
-    const mvSq = b.id(); b.emit(Op.Load, [p.tF32, mvSq, pmSq]);
-    const poSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poSq, sharedSumSq, oi]);
-    const ovSq = b.id(); b.emit(Op.Load, [p.tF32, ovSq, poSq]);
-    const rSq = b.id(); b.emit(Op.FAdd, [p.tF32, rSq, mvSq, ovSq]);
-    b.emit(Op.Store, [pmSq, rSq]);
-    b.emit(Op.Branch, [lar]);
-    b.emit(Op.Label, [lar]);
-    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
-    stride >>= 1;
+  // Step 4: Thread 0 serially reduces shared[0..numSubgroups-1]
+  const sl = b.id(), sm = b.id();
+  const isT0 = b.id();
+  b.emit(Op.IEqual, [p.tBool, isT0, localIdx, p.const0u]);
+  b.emit(Op.SelectionMerge, [sm, 0]);
+  b.emit(Op.BranchConditional, [isT0, sl, sm]);
+  b.emit(Op.Label, [sl]);
+  const p0Sum = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, p0Sum, sharedSum, p.const0u]);
+  let accSum = b.id();
+  b.emit(Op.Load, [p.tF32, accSum, p0Sum]);
+  const p0SumSq = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, p0SumSq, sharedSumSq, p.const0u]);
+  let accSumSq = b.id();
+  b.emit(Op.Load, [p.tF32, accSumSq, p0SumSq]);
+  for (let i = 1; i < numSubgroups; i++) {
+    const ci = b.id(); b.constant(p.tU32, ci, i);
+    const piS = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, piS, sharedSum, ci]);
+    const viS = b.id();
+    b.emit(Op.Load, [p.tF32, viS, piS]);
+    const naS = b.id();
+    b.emit(Op.FAdd, [p.tF32, naS, accSum, viS]);
+    accSum = naS;
+    const piSq = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, piSq, sharedSumSq, ci]);
+    const viSq = b.id();
+    b.emit(Op.Load, [p.tF32, viSq, piSq]);
+    const naSq = b.id();
+    b.emit(Op.FAdd, [p.tF32, naSq, accSumSq, viSq]);
+    accSumSq = naSq;
   }
+  b.emit(Op.Store, [p0Sum, accSum]);
+  b.emit(Op.Store, [p0SumSq, accSumSq]);
+  b.emit(Op.Branch, [sm]);
+  b.emit(Op.Label, [sm]);
 
-  // mean = sum / dim, var = sumSq/dim - mean²
+  // Step 5: Barrier — wait for thread 0 to write final results
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Step 6: All threads read final sum and sumSq
   const ptrGSum = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSum, sharedSum, p.const0u]);
   const globalSum = b.id(); b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
   const ptrGSumSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrGSumSq, sharedSumSq, p.const0u]);
@@ -1795,6 +1839,13 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
+  // Subgroup capabilities (core in SPIR-V 1.3)
+  b.addCapability(Capability.GroupNonUniform);
+  b.addCapability(Capability.GroupNonUniformArithmetic);
+
+  const SUBGROUP_SIZE = 32;
+  const numSubgroups = wgSize / SUBGROUP_SIZE;
+
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
 
@@ -1809,6 +1860,8 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
 
   const constWgSize = b.id(); b.constant(p.tU32, constWgSize, wgSize);
   const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+  const const5u = b.id(); b.constant(p.tU32, const5u, 5);
+  const const31u = b.id(); b.constant(p.tU32, const31u, 31);
 
   // Two shared arrays for parallel reductions
   const tArrayShared = b.id(); b.typeArray(tArrayShared, p.tF32, constWgSize);
@@ -1824,6 +1877,7 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
   b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
 
   const scopeWg = b.id(); b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const scopeSubgroup = b.id(); b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
   const semAcqRelWg = b.id(); b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
 
   const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
@@ -1842,6 +1896,15 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
 
   const lidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
   const localIdx = b.id(); b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  // Subgroup lane computations
+  const subgroupId = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, subgroupId, localIdx, const5u]);
+  const sgLocalId = b.id();
+  b.emit(Op.BitwiseAnd, [p.tU32, sgLocalId, localIdx, const31u]);
+  const isLeader = b.id();
+  b.emit(Op.IEqual, [p.tBool, isLeader, sgLocalId, p.const0u]);
+
   const wgIdVec = b.id(); b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
   const row = b.id(); b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
 
@@ -1863,48 +1926,74 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
     return s;
   }
 
-  // Helper: dual tree reduction on sharedA + sharedB
-  function emitDualTreeReduce() {
-    let s = wgSize >> 1;
-    while (s > 0) {
-      const sc = b.id(); b.constant(p.tU32, sc, s);
-      const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
-      const lr = b.id(), lar = b.id();
-      b.emit(Op.SelectionMerge, [lar, 0]);
-      b.emit(Op.BranchConditional, [cmp, lr, lar]);
-      b.emit(Op.Label, [lr]);
-      const oi = b.id(); b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
-      // Reduce A
-      const pmA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmA, sharedA, localIdx]);
-      const mvA = b.id(); b.emit(Op.Load, [p.tF32, mvA, pmA]);
-      const poA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poA, sharedA, oi]);
-      const ovA = b.id(); b.emit(Op.Load, [p.tF32, ovA, poA]);
-      const rA = b.id(); b.emit(Op.FAdd, [p.tF32, rA, mvA, ovA]);
-      b.emit(Op.Store, [pmA, rA]);
-      // Reduce B
-      const pmB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pmB, sharedB, localIdx]);
-      const mvB = b.id(); b.emit(Op.Load, [p.tF32, mvB, pmB]);
-      const poB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, poB, sharedB, oi]);
-      const ovB = b.id(); b.emit(Op.Load, [p.tF32, ovB, poB]);
-      const rB = b.id(); b.emit(Op.FAdd, [p.tF32, rB, mvB, ovB]);
-      b.emit(Op.Store, [pmB, rB]);
-      b.emit(Op.Branch, [lar]);
-      b.emit(Op.Label, [lar]);
-      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
-      s >>= 1;
-    }
-  }
-
-  // Helper: store accumulators to shared, reduce, read result
+  // Helper: subgroup-accelerated dual reduction (2 barriers instead of log2(wgSize)+1)
   function storeDualReduceLoad(): { valA: number; valB: number } {
+    // Step 1: Subgroup reduce (hardware warp shuffle — no barriers)
     const tsA = b.id(); b.emit(Op.Load, [p.tF32, tsA, varAccA]);
     const tsB = b.id(); b.emit(Op.Load, [p.tF32, tsB, varAccB]);
-    const psA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, psA, sharedA, localIdx]);
-    b.emit(Op.Store, [psA, tsA]);
-    const psB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, psB, sharedB, localIdx]);
-    b.emit(Op.Store, [psB, tsB]);
+    const sgA = b.id();
+    b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgA, scopeSubgroup, GroupOperation.Reduce, tsA]);
+    const sgB = b.id();
+    b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgB, scopeSubgroup, GroupOperation.Reduce, tsB]);
+
+    // Step 2: Leader of each subgroup writes to shared[subgroupId]
+    const wl = b.id(), wm = b.id();
+    b.emit(Op.SelectionMerge, [wm, 0]);
+    b.emit(Op.BranchConditional, [isLeader, wl, wm]);
+    b.emit(Op.Label, [wl]);
+    const pSGA = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pSGA, sharedA, subgroupId]);
+    b.emit(Op.Store, [pSGA, sgA]);
+    const pSGB = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pSGB, sharedB, subgroupId]);
+    b.emit(Op.Store, [pSGB, sgB]);
+    b.emit(Op.Branch, [wm]);
+    b.emit(Op.Label, [wm]);
+
+    // Step 3: Barrier
     b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
-    emitDualTreeReduce();
+
+    // Step 4: Thread 0 serially reduces shared[0..numSubgroups-1]
+    const sl = b.id(), sm = b.id();
+    const isT0 = b.id();
+    b.emit(Op.IEqual, [p.tBool, isT0, localIdx, p.const0u]);
+    b.emit(Op.SelectionMerge, [sm, 0]);
+    b.emit(Op.BranchConditional, [isT0, sl, sm]);
+    b.emit(Op.Label, [sl]);
+    const p0A = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, p0A, sharedA, p.const0u]);
+    let accA = b.id();
+    b.emit(Op.Load, [p.tF32, accA, p0A]);
+    const p0B = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, p0B, sharedB, p.const0u]);
+    let accB = b.id();
+    b.emit(Op.Load, [p.tF32, accB, p0B]);
+    for (let i = 1; i < numSubgroups; i++) {
+      const ci = b.id(); b.constant(p.tU32, ci, i);
+      const piA = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, piA, sharedA, ci]);
+      const viA = b.id();
+      b.emit(Op.Load, [p.tF32, viA, piA]);
+      const naA = b.id();
+      b.emit(Op.FAdd, [p.tF32, naA, accA, viA]);
+      accA = naA;
+      const piB = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, piB, sharedB, ci]);
+      const viB = b.id();
+      b.emit(Op.Load, [p.tF32, viB, piB]);
+      const naB = b.id();
+      b.emit(Op.FAdd, [p.tF32, naB, accB, viB]);
+      accB = naB;
+    }
+    b.emit(Op.Store, [p0A, accA]);
+    b.emit(Op.Store, [p0B, accB]);
+    b.emit(Op.Branch, [sm]);
+    b.emit(Op.Label, [sm]);
+
+    // Step 5: Barrier
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+    // Step 6: All threads read final results
     const pGA = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pGA, sharedA, p.const0u]);
     const valA = b.id(); b.emit(Op.Load, [p.tF32, valA, pGA]);
     const pGB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pGB, sharedB, p.const0u]);
