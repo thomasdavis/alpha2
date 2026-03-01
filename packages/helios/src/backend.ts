@@ -3703,21 +3703,32 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     const inputBuf = ensureGpu(vk, a);
 
+    // Use vec4 when both sliceCols and srcCols are divisible by 4
+    const useVec4 = (sliceCols & 3) === 0 && (srcCols & 3) === 0;
+
     const pushF = new Float32Array(3);
     const pushU = new Uint32Array(pushF.buffer);
-    pushU[0] = outSize;       // totalElements per slice
-    pushU[1] = sliceCols;     // slice width (D)
-    pushU[2] = srcCols;       // source width (3*D)
+    if (useVec4) {
+      pushU[0] = outSize >>> 2;      // totalVec4 elements
+      pushU[1] = sliceCols >>> 2;    // sliceVec4Cols
+      pushU[2] = srcCols >>> 2;      // srcVec4Cols
+    } else {
+      pushU[0] = outSize;            // totalElements per slice
+      pushU[1] = sliceCols;          // slice width (D)
+      pushU[2] = srcCols;            // source width (3*D)
+    }
 
-    const pipeline = getPipeline(vk, "slice_3way", 4, 3 * 4);
+    const kernelName = useVec4 ? "slice_3way_vec4" : "slice_3way";
+    const pipeline = getPipeline(vk, kernelName, 4, 3 * 4);
     const r0 = acquireOutputRegion(vk, outSize * 4);
     const r1 = acquireOutputRegion(vk, outSize * 4);
     const r2 = acquireOutputRegion(vk, outSize * 4);
-    const groups = Math.ceil(outSize / WG_SIZE);
+    const dispatchLen = useVec4 ? (outSize >>> 2) : outSize;
+    const groups = Math.ceil(dispatchLen / WG_SIZE);
 
     graph.record({
       kind: "unary",
-      kernel: "slice_3way",
+      kernel: kernelName,
       pipeline,
       inputBufs: [],
       outputRegion: r0,
