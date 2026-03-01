@@ -847,6 +847,112 @@ export function kernelColumnSum(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: Fused dual column sum (for LayerNorm backward dw + db) ──────────
+
+/**
+ * Fused dual column sum: reduces two [numRows, dim] partial buffers to [dim] each.
+ *   C[j] = sum_i(A[i*dim + j])
+ *   D[j] = sum_i(B[i*dim + j])
+ *
+ * Saves one dispatch + barrier vs two separate column_sum calls.
+ * Both buffers share the same index pattern, improving cache reuse.
+ *
+ * Bindings: 0=A(in), 1=B(in), 2=C(out), 3=D(out)
+ * Push constants: { dim: f32, numRows: f32 }
+ * Dispatch: (ceil(dim/wgSize), 1, 1)
+ */
+export function kernelColumnSumDual(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufD = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id(); b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varRow = b.id(); b.emit(Op.Variable, [tPtrFnU32, varRow, StorageClass.Function]);
+  const varAccA = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAccA, StorageClass.Function]);
+  const varAccB = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAccB, StorageClass.Function]);
+
+  const gidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id(); b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const dimF = loadPushLen(b, p, pc);
+  const dimU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const numRowsF = loadPushScalar(b, p, pc);
+  const numRowsU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, numRowsU, numRowsF]);
+
+  const labelEnd = b.id();
+  emitBoundsCheck(b, p, dimF, gidX, labelEnd);
+
+  b.emit(Op.Store, [varAccA, p.const0f]);
+  b.emit(Op.Store, [varAccB, p.const0f]);
+  b.emit(Op.Store, [varRow, p.const0u]);
+
+  // Loop over rows, accumulating both A and B
+  const lH = b.id(), lBd = b.id(), lM = b.id(), lC = b.id();
+  b.emit(Op.Branch, [lH]);
+  b.emit(Op.Label, [lH]);
+  const curRow = b.id(); b.emit(Op.Load, [p.tU32, curRow, varRow]);
+  const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, curRow, numRowsU]);
+  b.emit(Op.LoopMerge, [lM, lC, 0]);
+  b.emit(Op.BranchConditional, [cmp, lBd, lM]);
+  b.emit(Op.Label, [lBd]);
+
+  const roff = b.id(); b.emit(Op.IMul, [p.tU32, roff, curRow, dimU]);
+  const idx = b.id(); b.emit(Op.IAdd, [p.tU32, idx, roff, gidX]);
+
+  // Load and accumulate A
+  const ptrA = b.id(); b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, idx]);
+  const valA = b.id(); b.emit(Op.Load, [p.tF32, valA, ptrA]);
+  const accA = b.id(); b.emit(Op.Load, [p.tF32, accA, varAccA]);
+  const nAccA = b.id(); b.emit(Op.FAdd, [p.tF32, nAccA, accA, valA]);
+  b.emit(Op.Store, [varAccA, nAccA]);
+
+  // Load and accumulate B
+  const ptrB = b.id(); b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, p.const0u, idx]);
+  const valB = b.id(); b.emit(Op.Load, [p.tF32, valB, ptrB]);
+  const accB = b.id(); b.emit(Op.Load, [p.tF32, accB, varAccB]);
+  const nAccB = b.id(); b.emit(Op.FAdd, [p.tF32, nAccB, accB, valB]);
+  b.emit(Op.Store, [varAccB, nAccB]);
+
+  b.emit(Op.Branch, [lC]);
+  b.emit(Op.Label, [lC]);
+  const nr = b.id(); b.emit(Op.Load, [p.tU32, nr, varRow]);
+  const ir = b.id(); b.emit(Op.IAdd, [p.tU32, ir, nr, p.const1u]);
+  b.emit(Op.Store, [varRow, ir]);
+  b.emit(Op.Branch, [lH]);
+
+  b.emit(Op.Label, [lM]);
+
+  // Store both results
+  const fAccA = b.id(); b.emit(Op.Load, [p.tF32, fAccA, varAccA]);
+  const ptrC = b.id(); b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, fAccA]);
+
+  const fAccB = b.id(); b.emit(Op.Load, [p.tF32, fAccB, varAccB]);
+  const ptrD = b.id(); b.emit(Op.AccessChain, [bufD.tPtrF32, ptrD, bufD.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrD, fAccB]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Kernel: Axis-specific sum reduction ─────────────────────────────────────
 
 /**

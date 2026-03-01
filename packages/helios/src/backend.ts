@@ -2200,13 +2200,14 @@ export class HeliosBackend implements Backend {
         allBufs: [bufX, bufW, bufG, dxRegion.handle, dwPartialRegion.handle, dbPartialRegion.handle],
       });
 
-      // Column sum to reduce partials: [numRows, dim] → [dim]
-      const pipeline2 = getPipeline(vk, "column_sum", 2);
+      // Fused dual column sum: reduce both partials in a single dispatch
+      // Saves one dispatch + barrier vs two separate column_sum calls
+      const pipeline2 = getPipeline(vk, "column_sum_dual", 4);
       const push2 = push2Memo(dim, numRows);
       const groups = Math.ceil(dim / WG_SIZE);
       graph.record({
         kind: "backward",
-        kernel: "column_sum_dw",
+        kernel: "column_sum_dual",
         pipeline: pipeline2,
         inputBufs: [],
         outputRegion: dwRegion,
@@ -2214,19 +2215,7 @@ export class HeliosBackend implements Backend {
         push: push2,
         pushSize: 2 * 4,
         shape: weight.shape,
-        allBufs: [dwPartialRegion.handle, dwRegion.handle],
-      });
-      graph.record({
-        kind: "backward",
-        kernel: "column_sum_db",
-        pipeline: pipeline2,
-        inputBufs: [],
-        outputRegion: dbRegion,
-        groups: [groups, 1, 1],
-        push: push2Memo(dim, numRows),
-        pushSize: 2 * 4,
-        shape: weight.shape,
-        allBufs: [dbPartialRegion.handle, dbRegion.handle],
+        allBufs: [dwPartialRegion.handle, dbPartialRegion.handle, dwRegion.handle, dbRegion.handle],
       });
 
       // Defer-release intermediate partial buffers (freed after graph flush)

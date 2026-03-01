@@ -301,6 +301,20 @@ function main(): void {
       record("clamp_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "clamp backward large (16M)" });
     }
 
+    // Large forward activations (Helios fused unary kernels)
+    {
+      const ms = benchOp(() => b.gelu(bigX));
+      record("gelu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "GELU forward large (16M)" });
+    }
+    {
+      const ms = benchOp(() => (b as any).silu(bigX));
+      record("silu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "SiLU forward large (16M)" });
+    }
+    if (typeof (b as any).relu === "function") {
+      const ms = benchOp(() => (b as any).relu(bigX));
+      record("relu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "ReLU forward large (16M)" });
+    }
+
     release(bigX);
     release(bigG);
   }

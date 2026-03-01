@@ -283,6 +283,16 @@ def main():
     record("clamp_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="clamp backward large (16M)")
     del big_clamp_x, big_clamp_out, big_clamp_g
 
+    # Large forward activations
+    big_act = torch.randn(4096, 4096, device=device)
+    ms = bench(lambda: F.gelu(big_act), W, I, sync)
+    record("gelu_fwd_4096sq", ms, bytes_rw=big_sz * 4 * 2, note="GELU forward large (16M)")
+    ms = bench(lambda: F.silu(big_act), W, I, sync)
+    record("silu_fwd_4096sq", ms, bytes_rw=big_sz * 4 * 2, note="SiLU forward large (16M)")
+    ms = bench(lambda: F.relu(big_act), W, I, sync)
+    record("relu_fwd_4096sq", ms, bytes_rw=big_sz * 4 * 2, note="ReLU forward large (16M)")
+    del big_act
+
     # Large tensor element-wise (memory bandwidth test)
     big = torch.randn(4096, 4096, device=device)
     big2 = torch.randn(4096, 4096, device=device)
