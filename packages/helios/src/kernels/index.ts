@@ -12,7 +12,7 @@ export {
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
   kernelGeluBackward, kernelReluBackward, kernelClampBackward,
-  kernelSiluBackward,
+  kernelSiluBackward, kernelSiluBackwardVec4,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
   kernelAddVec4, kernelSubVec4, kernelMulVec4, kernelDivVec4,
@@ -26,7 +26,7 @@ import {
   kernelExp, kernelLog, kernelSqrt, kernelRelu, kernelGelu,
   kernelClampMin, kernelClamp,
   kernelGeluBackward, kernelReluBackward, kernelClampBackward,
-  kernelSiluBackward,
+  kernelSiluBackward, kernelSiluBackwardVec4,
   kernelSoftCapForward, kernelSoftCapBackward,
   kernelSoftCapForwardVec4, kernelSoftCapBackwardVec4,
   kernelAddVec4, kernelSubVec4, kernelMulVec4, kernelDivVec4,
@@ -208,6 +208,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "scale_inplace_vec4": spirv = kernelScaleInplaceVec4(wgSize); break;
     case "gelu_backward": spirv = kernelGeluBackward(wgSize); break;
     case "silu_backward": spirv = kernelSiluBackward(wgSize); break;
+    case "silu_backward_vec4": spirv = kernelSiluBackwardVec4(wgSize); break;
     case "relu_backward": spirv = kernelReluBackward(wgSize); break;
     case "clamp_backward": spirv = kernelClampBackward(wgSize); break;
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;

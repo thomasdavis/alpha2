@@ -1883,7 +1883,7 @@ export class HeliosBackend implements Backend {
   siluBackward(input: TensorData, gradOutput: TensorData): TensorData {
     const size = shapeSize(input.shape);
     if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
-      return this.gpuBinaryOp(input, gradOutput, "silu_backward", true);
+      return this.gpuBinaryOp(input, gradOutput, "silu_backward");
     }
     // CPU fallback: silu'(x) = sigma(x) * (1 + x * (1 - sigma(x)))
     const src = input.data as Float32Array;

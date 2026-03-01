@@ -196,6 +196,30 @@ def main():
     record("softcap_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 3, note="softcap backward (fused)")
     del sc_input, sc_out, sc_grad
 
+    # ReLU backward (fused)
+    relu_x = x1024.clone().requires_grad_(True)
+    relu_out = F.relu(relu_x)
+    relu_grad = torch.randn_like(relu_out)
+    def relu_bwd():
+        if relu_x.grad is not None:
+            relu_x.grad.zero_()
+        relu_out.backward(relu_grad, retain_graph=True)
+    ms = bench(relu_bwd, W, I, sync)
+    record("relu_bwd_512x1024", ms, bytes_rw=sz1024 * 4 * 3, note="ReLU backward (fused)")
+    del relu_x, relu_out, relu_grad
+
+    # Clamp backward (fused)
+    clamp_x = x1024.clone().requires_grad_(True)
+    clamp_out = torch.clamp(clamp_x, -1.0, 1.0)
+    clamp_grad = torch.randn_like(clamp_out)
+    def clamp_bwd():
+        if clamp_x.grad is not None:
+            clamp_x.grad.zero_()
+        clamp_out.backward(clamp_grad, retain_graph=True)
+    ms = bench(clamp_bwd, W, I, sync)
+    record("clamp_bwd_512x1024", ms, bytes_rw=sz1024 * 4 * 3, note="clamp backward (fused)")
+    del clamp_x, clamp_out, clamp_grad
+
     del x1024, x2752, y1024
 
     # Large tensor backward ops
@@ -220,7 +244,44 @@ def main():
         big_silu_out.backward(big_g2, retain_graph=True)
     ms = bench(big_silu_bwd, W, I, sync)
     record("silu_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="SiLU backward large (16M)")
-    del big_x2, big_silu_out, big_g, big_g2
+    del big_x2, big_silu_out, big_g2
+
+    # Softcap backward large
+    big_sc_x = torch.randn(4096, 4096, device=device, requires_grad=True)
+    cap = 30.0
+    big_sc_out = cap * torch.tanh(big_sc_x / cap)
+    big_sc_g = torch.randn_like(big_sc_out)
+    def big_softcap_bwd():
+        if big_sc_x.grad is not None:
+            big_sc_x.grad.zero_()
+        big_sc_out.backward(big_sc_g, retain_graph=True)
+    ms = bench(big_softcap_bwd, W, I, sync)
+    record("softcap_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="softcap backward large (16M)")
+    del big_sc_x, big_sc_out, big_sc_g, big_g
+
+    # ReLU backward large
+    big_relu_x = torch.randn(4096, 4096, device=device, requires_grad=True)
+    big_relu_out = F.relu(big_relu_x)
+    big_relu_g = torch.randn_like(big_relu_out)
+    def big_relu_bwd():
+        if big_relu_x.grad is not None:
+            big_relu_x.grad.zero_()
+        big_relu_out.backward(big_relu_g, retain_graph=True)
+    ms = bench(big_relu_bwd, W, I, sync)
+    record("relu_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="ReLU backward large (16M)")
+    del big_relu_x, big_relu_out, big_relu_g
+
+    # Clamp backward large
+    big_clamp_x = torch.randn(4096, 4096, device=device, requires_grad=True)
+    big_clamp_out = torch.clamp(big_clamp_x, -1.0, 1.0)
+    big_clamp_g = torch.randn_like(big_clamp_out)
+    def big_clamp_bwd():
+        if big_clamp_x.grad is not None:
+            big_clamp_x.grad.zero_()
+        big_clamp_out.backward(big_clamp_g, retain_graph=True)
+    ms = bench(big_clamp_bwd, W, I, sync)
+    record("clamp_bwd_4096sq", ms, bytes_rw=big_sz * 4 * 3, note="clamp backward large (16M)")
+    del big_clamp_x, big_clamp_out, big_clamp_g
 
     # Large tensor element-wise (memory bandwidth test)
     big = torch.randn(4096, 4096, device=device)
@@ -415,13 +476,47 @@ def main():
            bytes_rw=lm_size * 4 * 2, note="gradient clipping scale (scale_inplace)")
     del lm_grad, lm_acc
 
-    # ── 8b1.5. WEIGHT DECAY (scale_inplace for full model) ──────────
+    # ── 8b1.5. WEIGHT DECAY + FULL-MODEL IN-PLACE OPS ──────────────────
     p_size_wd = p_size * 4  # 34M params
     wd_params = torch.randn(p_size_wd, device=device)
     ms = bench(lambda: wd_params.mul_(0.9997), W, I, sync)
     record("weight_decay_34M", ms,
            bytes_rw=p_size_wd * 4 * 2, note="full-model weight decay (scale_inplace 34M)")
     del wd_params
+
+    # Full-model gradient accumulation (add_inplace) for accumSteps > 1
+    acc_grad = torch.randn(p_size * 4, device=device)
+    acc_acc = torch.randn(p_size * 4, device=device)
+    ms = bench(lambda: acc_acc.add_(acc_grad), W, I, sync)
+    record("grad_accum_34M", ms,
+           bytes_rw=p_size * 4 * 4 * 3, note="full-model gradient accumulation (add_inplace 34M)")
+
+    ms = bench(lambda: acc_acc.mul_(0.5), W, I, sync)
+    record("grad_scale_34M", ms,
+           bytes_rw=p_size * 4 * 4 * 2, note="full-model gradient scale (scale_inplace 34M)")
+    del acc_grad, acc_acc
+
+    # ── 8b1.6. LARGE ELEMENTWISE OPS (full-model sized) ─────────────────
+    el_size = p_size * 4  # ~34M elements
+    el_a = torch.randn(el_size, device=device)
+    el_b = torch.randn(el_size, device=device)
+
+    ms = bench(lambda: el_a + el_b, W, I, sync)
+    record("add_34M", ms,
+           bytes_rw=el_size * 4 * 3, note="full-model add (34M elements)")
+
+    ms = bench(lambda: el_a * 0.5, W, I, sync)
+    record("scale_34M", ms,
+           bytes_rw=el_size * 4 * 2, note="full-model scale (34M elements)")
+
+    ms = bench(lambda: el_a - el_b, W, I, sync)
+    record("sub_34M", ms,
+           bytes_rw=el_size * 4 * 3, note="full-model sub (34M elements)")
+
+    ms = bench(lambda: el_a * el_b, W, I, sync)
+    record("mul_34M", ms,
+           bytes_rw=el_size * 4 * 3, note="full-model mul (34M elements)")
+    del el_a, el_b
 
     # ── 8b2. DROPOUT MASK GENERATION ────────────────────────────────────
     drop_shape = (BT, D)

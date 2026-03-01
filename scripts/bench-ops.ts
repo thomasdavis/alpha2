@@ -257,6 +257,18 @@ function main(): void {
       release(scInput);
     }
 
+    // ReLU backward (simple fused: x > 0 ? grad : 0)
+    if (typeof (b as any).reluBackward === "function") {
+      ms = benchOp(() => (b as any).reluBackward(x, y));
+      record("relu_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "ReLU backward (fused)" });
+    }
+
+    // Clamp backward (fused: lo < x < hi ? grad : 0)
+    if (typeof (b as any).clampBackward === "function") {
+      ms = benchOp(() => (b as any).clampBackward(x, y, -1.0, 1.0));
+      record("clamp_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "clamp backward (fused)" });
+    }
+
     release(x);
     release(y);
     release(x2);
@@ -275,6 +287,18 @@ function main(): void {
     if (typeof (b as any).siluBackward === "function") {
       const ms = benchOp(() => (b as any).siluBackward(bigX, bigG));
       record("silu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "SiLU backward large (16M)" });
+    }
+    if (typeof (b as any).softCapBackward === "function") {
+      const ms = benchOp(() => (b as any).softCapBackward(bigG, bigX, 30.0));
+      record("softcap_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "softcap backward large (16M)" });
+    }
+    if (typeof (b as any).reluBackward === "function") {
+      const ms = benchOp(() => (b as any).reluBackward(bigX, bigG));
+      record("relu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "ReLU backward large (16M)" });
+    }
+    if (typeof (b as any).clampBackward === "function") {
+      const ms = benchOp(() => (b as any).clampBackward(bigX, bigG, -1.0, 1.0));
+      record("clamp_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "clamp backward large (16M)" });
     }
 
     release(bigX);
@@ -521,7 +545,7 @@ function main(): void {
     release(lmAcc);
   }
 
-  // ── 8b1.5. WEIGHT DECAY (separate from AdamW, in-place scale) ──────────
+  // ── 8b1.5. WEIGHT DECAY + FULL-MODEL IN-PLACE OPS ───────────────────────
 
   if (typeof (b as any).scaleInplace === "function") {
     // Full model weight decay: ~34M params × scale
@@ -535,6 +559,63 @@ function main(): void {
       bytes: pSizeWd * 4 * 2, note: "full-model weight decay (scale_inplace 34M)",
     });
     release(wdParams);
+
+    // Full-model gradient accumulation (add_inplace): represents accumSteps > 1
+    if (typeof (b as any).addInplace === "function") {
+      const accGrad = b.randn([pSizeWd]);
+      const accAcc = b.randn([pSizeWd]);
+      const msAcc34 = benchCustom(() => {
+        (b as any).addInplace(accAcc, accGrad);
+        return [];
+      });
+      record("grad_accum_34M", msAcc34, {
+        bytes: pSizeWd * 4 * 3, note: "full-model gradient accumulation (add_inplace 34M)",
+      });
+
+      // Also scale_inplace at 34M for gradient clipping
+      const msScale34 = benchCustom(() => {
+        (b as any).scaleInplace(accAcc, 0.5);
+        return [];
+      });
+      record("grad_scale_34M", msScale34, {
+        bytes: pSizeWd * 4 * 2, note: "full-model gradient scale (scale_inplace 34M)",
+      });
+
+      release(accGrad);
+      release(accAcc);
+    }
+  }
+
+  // ── 8b1.6. LARGE ELEMENTWISE OPS (full-model sized) ─────────────────────
+
+  {
+    // Full model residual add: ~34M elements (same size as AdamW/weight_decay)
+    const elSize = (1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024) * 4;
+    const elA = b.randn([elSize]);
+    const elB = b.randn([elSize]);
+
+    let msEl = benchOp(() => b.add(elA, elB));
+    record("add_34M", msEl, {
+      bytes: elSize * 4 * 3, note: "full-model add (34M elements)",
+    });
+
+    msEl = benchOp(() => (b as any).scale(elA, 0.5));
+    record("scale_34M", msEl, {
+      bytes: elSize * 4 * 2, note: "full-model scale (34M elements)",
+    });
+
+    msEl = benchOp(() => b.sub(elA, elB));
+    record("sub_34M", msEl, {
+      bytes: elSize * 4 * 3, note: "full-model sub (34M elements)",
+    });
+
+    msEl = benchOp(() => b.mul(elA, elB));
+    record("mul_34M", msEl, {
+      bytes: elSize * 4 * 3, note: "full-model mul (34M elements)",
+    });
+
+    release(elA);
+    release(elB);
   }
 
   // ── 8b2. DROPOUT MASK GENERATION ──────────────────────────────────────────
