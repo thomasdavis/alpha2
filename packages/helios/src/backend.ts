@@ -2471,7 +2471,8 @@ export class HeliosBackend implements Backend {
         subgroupTilesY = 2;
       }
       // Register tiling: each subgroup computes regTilesM × regTilesN tiles
-      // Default to r4x4 when s2x2 is active; env var overrides
+      // Default to r4x4 when s2x2 is active; env var overrides.
+      // Falls back to r2x2 when r4x4 doesn't fit the shape (e.g. N=2752).
       const wantM = COOP_REG_TILES_M > 1 ? COOP_REG_TILES_M : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
       const wantN = COOP_REG_TILES_N > 1 ? COOP_REG_TILES_N : (subgroupTilesX === 2 && subgroupTilesY === 2 ? 4 : 1);
       if (wantM > 1 || wantN > 1) {
@@ -2480,6 +2481,15 @@ export class HeliosBackend implements Backend {
         if (M % effM === 0 && N % effN === 0) {
           regTilesM = wantM;
           regTilesN = wantN;
+        } else if (wantM >= 4 && wantN >= 4) {
+          // Fallback to r2x2 when r4x4 doesn't fit
+          const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
+          const effM2 = this._coopM * subgroupTilesY * fallM;
+          const effN2 = this._coopN * subgroupTilesX * fallN;
+          if (M % effM2 === 0 && N % effN2 === 0) {
+            regTilesM = fallM;
+            regTilesN = fallN;
+          }
         }
       }
     }
@@ -2654,6 +2664,15 @@ export class HeliosBackend implements Backend {
         if (outM % effM === 0 && N % effN === 0) {
           regTilesM = wantM;
           regTilesN = wantN;
+        } else if (wantM >= 4 && wantN >= 4) {
+          // Fallback to r2x2 when r4x4 doesn't fit
+          const fallM = Math.min(wantM, 2), fallN = Math.min(wantN, 2);
+          const effM2 = this._coopM * subgroupTilesY * fallM;
+          const effN2 = this._coopN * subgroupTilesX * fallN;
+          if (outM % effM2 === 0 && N % effN2 === 0) {
+            regTilesM = fallM;
+            regTilesN = fallN;
+          }
         }
       }
     }
