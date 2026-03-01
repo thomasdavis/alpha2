@@ -2686,20 +2686,44 @@ export class HeliosBackend implements Backend {
     let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     let gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
 
-    // Occupancy check: if r4x4 gives too few WGs (< 96), fall back to r2x2
-    // for better SM occupancy. On L4 (58 SMs), 64 WGs = 1.1 WGs/SM → poor latency hiding.
-    // NOTE: Tested threshold=192 with adaptive kMulti=2 (Session 12) — REGRESSED forward
-    // training shapes. matmul_qkv went from C 1.18× to C 1.36×, 1024sq from H 1.37× to H 1.25×.
-    // The r4x4 arithmetic intensity outweighs occupancy gains for the forward path.
+    // Occupancy check: if r4x4 gives too few WGs (< 96), try r4x2 first for higher
+    // arithmetic intensity than r2x2, then fall back to r2x2 if needed.
     if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
-      const fallM = 2, fallN = 2;
-      const effM2 = this._coopM * subgroupTilesY * fallM;
-      const effN2 = this._coopN * subgroupTilesX * fallN;
-      if (M % effM2 === 0 && N % effN2 === 0) {
-        regTilesM = fallM;
-        regTilesN = fallN;
-        gX = Math.ceil(N / effN2);
-        gY = Math.ceil(M / effM2);
+      // Try r4x2: 33% higher arithmetic intensity than r2x2, 2× WGs vs r4x4.
+      // Require ≥ 2*58=116 WGs so each SM gets at least 2 WGs (r4x2 shmem=24KB → 2/SM).
+      // With 64 WGs (M=512), r4x2 gives only 1 WG/SM → worse than r2x2's 3 WGs/SM.
+      const effM_42 = this._coopM * subgroupTilesY * 4;
+      const effN_42 = this._coopN * subgroupTilesX * 2;
+      if (M % effM_42 === 0 && N % effN_42 === 0) {
+        const gX_42 = Math.ceil(N / effN_42);
+        const gY_42 = Math.ceil(M / effM_42);
+        if (gX_42 * gY_42 >= 116) {
+          regTilesM = 4;
+          regTilesN = 2;
+          gX = gX_42;
+          gY = gY_42;
+        } else {
+          // r4x2 still too few, fall back to r2x2
+          const fallM = 2, fallN = 2;
+          const effM2 = this._coopM * subgroupTilesY * fallM;
+          const effN2 = this._coopN * subgroupTilesX * fallN;
+          if (M % effM2 === 0 && N % effN2 === 0) {
+            regTilesM = fallM;
+            regTilesN = fallN;
+            gX = Math.ceil(N / effN2);
+            gY = Math.ceil(M / effM2);
+          }
+        }
+      } else {
+        const fallM = 2, fallN = 2;
+        const effM2 = this._coopM * subgroupTilesY * fallM;
+        const effN2 = this._coopN * subgroupTilesX * fallN;
+        if (M % effM2 === 0 && N % effN2 === 0) {
+          regTilesM = fallM;
+          regTilesN = fallN;
+          gX = Math.ceil(N / effN2);
+          gY = Math.ceil(M / effM2);
+        }
       }
     }
 
@@ -2898,18 +2922,40 @@ export class HeliosBackend implements Backend {
     let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     let gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
 
-    // Occupancy check: if r4x4 gives too few WGs (< 192), fall back to r2x2
-    // for better SM occupancy. With r4x4 s2x2, shmem=32KB/WG → only 1 WG/SM on L4.
-    // r2x2 uses 16KB → 3 WGs/SM. Threshold 192 ≈ 3.3 WGs/SM on 58-SM L4.
+    // Occupancy check: if r4x4 gives too few WGs (< 192), try r4x2 first for higher
+    // arithmetic intensity than r2x2, then fall back to r2x2 if needed.
     if (gX * gY < 192 && regTilesM >= 4 && regTilesN >= 4) {
-      const fallM = 2, fallN = 2;
-      const effM2 = this._coopM * subgroupTilesY * fallM;
-      const effN2 = this._coopN * subgroupTilesX * fallN;
-      if (outM % effM2 === 0 && N % effN2 === 0) {
-        regTilesM = fallM;
-        regTilesN = fallN;
-        gX = Math.ceil(N / effN2);
-        gY = Math.ceil(outM / effM2);
+      const effM_42 = this._coopM * subgroupTilesY * 4;
+      const effN_42 = this._coopN * subgroupTilesX * 2;
+      if (outM % effM_42 === 0 && N % effN_42 === 0) {
+        const gX_42 = Math.ceil(N / effN_42);
+        const gY_42 = Math.ceil(outM / effM_42);
+        if (gX_42 * gY_42 >= 116) {
+          regTilesM = 4;
+          regTilesN = 2;
+          gX = gX_42;
+          gY = gY_42;
+        } else {
+          const fallM = 2, fallN = 2;
+          const effM2 = this._coopM * subgroupTilesY * fallM;
+          const effN2 = this._coopN * subgroupTilesX * fallN;
+          if (outM % effM2 === 0 && N % effN2 === 0) {
+            regTilesM = fallM;
+            regTilesN = fallN;
+            gX = Math.ceil(N / effN2);
+            gY = Math.ceil(outM / effM2);
+          }
+        }
+      } else {
+        const fallM = 2, fallN = 2;
+        const effM2 = this._coopM * subgroupTilesY * fallM;
+        const effN2 = this._coopN * subgroupTilesX * fallN;
+        if (outM % effM2 === 0 && N % effN2 === 0) {
+          regTilesM = fallM;
+          regTilesN = fallN;
+          gX = Math.ceil(N / effN2);
+          gY = Math.ceil(outM / effM2);
+        }
       }
     }
 

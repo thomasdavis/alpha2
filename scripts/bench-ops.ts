@@ -5,7 +5,7 @@
  * pipeline. Compares Helios (Vulkan) against PyTorch CUDA on each.
  *
  * Usage:
- *   npx tsx scripts/bench-ops.ts [--iters=30] [--warmup=8] [--python=python3] [--cuda-json=path]
+ *   npx tsx scripts/bench-ops.ts [--iters=30] [--warmup=8] [--python=python3] [--cuda-json=path] [--only=matmul_bwd,softmax]
  *
  * Use --cuda-json to load pre-computed CUDA results (avoids GPU memory conflicts).
  * Generate CUDA JSON: python3 scripts/bench-ops-cuda.py --iters=30 --warmup=8 > cuda.json
@@ -23,6 +23,7 @@ interface CliOpts {
   warmup: number;
   python: string;
   cudaJson: string;
+  only: string;  // comma-separated substrings to filter ops
 }
 
 function parseArgs(): CliOpts {
@@ -38,6 +39,7 @@ function parseArgs(): CliOpts {
     warmup: Math.max(0, parseInt(kv.warmup ?? "8", 10)),
     python: kv.python ?? "python3",
     cudaJson: kv["cuda-json"] ?? "",
+    only: kv.only ?? "",
   };
 }
 
@@ -90,6 +92,11 @@ function main(): void {
   const BH = B * H;
 
   const results: Record<string, OpResult> = {};
+  const onlyFilters = opts.only ? opts.only.split(",").map(s => s.trim()) : [];
+  function shouldRun(name: string): boolean {
+    if (onlyFilters.length === 0) return true;
+    return onlyFilters.some(f => name.includes(f));
+  }
 
   function record(name: string, ms: number, opts?: { flops?: number; bytes?: number; note?: string }): void {
     const r: OpResult = { ms: Math.round(ms * 10000) / 10000 };
@@ -138,7 +145,7 @@ function main(): void {
   }
 
   console.error(`[bench] Helios device: ${info.deviceName ?? "unknown"} coopMat=${info.coopMatSupported ?? false}`);
-  console.error(`[bench] iters=${opts.iters} warmup=${opts.warmup}`);
+  console.error(`[bench] iters=${opts.iters} warmup=${opts.warmup}${opts.only ? ` only=${opts.only}` : ""}`);
 
   // ── 1. MATMUL (training shapes: matmulTransposed = A @ B^T) ─────────────
 
@@ -155,6 +162,7 @@ function main(): void {
   const hasMatmulTransposedA = typeof (b as any).matmulTransposedA === "function";
 
   for (const [name, M, N, K, note] of matmulShapes) {
+    if (!shouldRun(name)) continue;
     const a = b.randn([M, K]);
     const w = b.randn([N, K]); // stored transposed, as in training
     // Use native matmulTransposed (A @ W^T) — what training actually calls
@@ -175,6 +183,7 @@ function main(): void {
   ];
 
   for (const [name, M, N, K, note] of bwdShapes) {
+    if (!shouldRun(name)) continue;
     // A^T @ B: A is [K, M], B is [K, N] → result [M, N]
     const a = b.randn([K, M]);
     const dout = b.randn([K, N]);
@@ -193,10 +202,12 @@ function main(): void {
 
   // Square matmuls for reference
   for (const sz of [1024, 2048, 3072, 4096]) {
+    const sqName = `matmul_${sz}sq`;
+    if (!shouldRun(sqName)) continue;
     const a = b.randn([sz, sz]);
     const bm = b.randn([sz, sz]);
     const ms = benchOp(() => b.matmul(a, bm));
-    record(`matmul_${sz}sq`, ms, { flops: 2 * sz ** 3, note: `${sz}x${sz}x${sz}` });
+    record(sqName, ms, { flops: 2 * sz ** 3, note: `${sz}x${sz}x${sz}` });
     release(a);
     release(bm);
   }
@@ -210,62 +221,49 @@ function main(): void {
     const sz1024 = BT * D;
     const sz2752 = BT * FFN;
 
-    let ms = benchOp(() => b.add(x, y));
-    record("add_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "a+b" });
-
-    ms = benchOp(() => b.mul(x, y));
-    record("mul_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "a*b" });
-
-    ms = benchOp(() => (b as any).gelu(x));
-    record("gelu_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "GELU activation" });
-
-    ms = benchOp(() => (b as any).silu(x2));
-    record("silu_512x2752", ms, { bytes: sz2752 * 4 * 2, note: "SiLU activation" });
-
-    ms = benchOp(() => (b as any).scale(x, 0.125));
-    record("scale_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "scalar multiply" });
-
-    ms = benchOp(() => (b as any).neg(x));
-    record("neg_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "negate" });
-
-    ms = benchOp(() => (b as any).exp(x));
-    record("exp_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "exp" });
+    if (shouldRun("add_512x1024")) { const ms = benchOp(() => b.add(x, y)); record("add_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "a+b" }); }
+    if (shouldRun("mul_512x1024")) { const ms = benchOp(() => b.mul(x, y)); record("mul_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "a*b" }); }
+    if (shouldRun("gelu_512x1024")) { const ms = benchOp(() => (b as any).gelu(x)); record("gelu_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "GELU activation" }); }
+    if (shouldRun("silu_512x2752")) { const ms = benchOp(() => (b as any).silu(x2)); record("silu_512x2752", ms, { bytes: sz2752 * 4 * 2, note: "SiLU activation" }); }
+    if (shouldRun("scale_512x1024")) { const ms = benchOp(() => (b as any).scale(x, 0.125)); record("scale_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "scalar multiply" }); }
+    if (shouldRun("neg_512x1024")) { const ms = benchOp(() => (b as any).neg(x)); record("neg_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "negate" }); }
+    if (shouldRun("exp_512x1024")) { const ms = benchOp(() => (b as any).exp(x)); record("exp_512x1024", ms, { bytes: sz1024 * 4 * 2, note: "exp" }); }
 
     // Activation backward ops (fused kernels)
-    if (typeof (b as any).geluBackward === "function") {
-      ms = benchOp(() => (b as any).geluBackward(x, y));
+    if (shouldRun("gelu_bwd_512x1024") && typeof (b as any).geluBackward === "function") {
+      const ms = benchOp(() => (b as any).geluBackward(x, y));
       record("gelu_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "GELU backward (fused)" });
     }
 
     // SiLU backward (used in SwiGLU)
-    const xSilu = b.randn([512, 2752]);
-    const ySilu = b.randn([512, 2752]);
-    if (typeof (b as any).siluBackward === "function") {
-      ms = benchOp(() => (b as any).siluBackward(xSilu, ySilu));
+    if (shouldRun("silu_bwd_512x2752") && typeof (b as any).siluBackward === "function") {
+      const xSilu = b.randn([512, 2752]);
+      const ySilu = b.randn([512, 2752]);
+      const ms = benchOp(() => (b as any).siluBackward(xSilu, ySilu));
       record("silu_bwd_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "SiLU backward (fused)" });
+      release(xSilu);
+      release(ySilu);
     }
-    release(xSilu);
-    release(ySilu);
 
     // SoftCap backward (complex fused: tanh + exp derivatives)
-    if (typeof (b as any).softCapBackward === "function") {
+    if (shouldRun("softcap_bwd_512x2752") && typeof (b as any).softCapBackward === "function") {
       const scGrad = b.randn([512, 2752]);
       const scInput = b.randn([512, 2752]);
-      ms = benchOp(() => (b as any).softCapBackward(scGrad, scInput, 30.0));
+      const ms = benchOp(() => (b as any).softCapBackward(scGrad, scInput, 30.0));
       record("softcap_bwd_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "softcap backward (fused)" });
       release(scGrad);
       release(scInput);
     }
 
     // ReLU backward (simple fused: x > 0 ? grad : 0)
-    if (typeof (b as any).reluBackward === "function") {
-      ms = benchOp(() => (b as any).reluBackward(x, y));
+    if (shouldRun("relu_bwd_512x1024") && typeof (b as any).reluBackward === "function") {
+      const ms = benchOp(() => (b as any).reluBackward(x, y));
       record("relu_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "ReLU backward (fused)" });
     }
 
     // Clamp backward (fused: lo < x < hi ? grad : 0)
-    if (typeof (b as any).clampBackward === "function") {
-      ms = benchOp(() => (b as any).clampBackward(x, y, -1.0, 1.0));
+    if (shouldRun("clamp_bwd_512x1024") && typeof (b as any).clampBackward === "function") {
+      const ms = benchOp(() => (b as any).clampBackward(x, y, -1.0, 1.0));
       record("clamp_bwd_512x1024", ms, { bytes: sz1024 * 4 * 3, note: "clamp backward (fused)" });
     }
 
@@ -280,37 +278,37 @@ function main(): void {
     const bigG = b.randn([4096, 4096]);
     const bigSize = 4096 * 4096;
 
-    if (typeof (b as any).geluBackward === "function") {
+    if (shouldRun("gelu_bwd_4096sq") && typeof (b as any).geluBackward === "function") {
       const ms = benchOp(() => (b as any).geluBackward(bigX, bigG));
       record("gelu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "GELU backward large (16M)" });
     }
-    if (typeof (b as any).siluBackward === "function") {
+    if (shouldRun("silu_bwd_4096sq") && typeof (b as any).siluBackward === "function") {
       const ms = benchOp(() => (b as any).siluBackward(bigX, bigG));
       record("silu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "SiLU backward large (16M)" });
     }
-    if (typeof (b as any).softCapBackward === "function") {
+    if (shouldRun("softcap_bwd_4096sq") && typeof (b as any).softCapBackward === "function") {
       const ms = benchOp(() => (b as any).softCapBackward(bigG, bigX, 30.0));
       record("softcap_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "softcap backward large (16M)" });
     }
-    if (typeof (b as any).reluBackward === "function") {
+    if (shouldRun("relu_bwd_4096sq") && typeof (b as any).reluBackward === "function") {
       const ms = benchOp(() => (b as any).reluBackward(bigX, bigG));
       record("relu_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "ReLU backward large (16M)" });
     }
-    if (typeof (b as any).clampBackward === "function") {
+    if (shouldRun("clamp_bwd_4096sq") && typeof (b as any).clampBackward === "function") {
       const ms = benchOp(() => (b as any).clampBackward(bigX, bigG, -1.0, 1.0));
       record("clamp_bwd_4096sq", ms, { bytes: bigSize * 4 * 3, note: "clamp backward large (16M)" });
     }
 
     // Large forward activations (Helios fused unary kernels)
-    {
+    if (shouldRun("gelu_fwd_4096sq")) {
       const ms = benchOp(() => b.gelu(bigX));
       record("gelu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "GELU forward large (16M)" });
     }
-    {
+    if (shouldRun("silu_fwd_4096sq")) {
       const ms = benchOp(() => (b as any).silu(bigX));
       record("silu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "SiLU forward large (16M)" });
     }
-    if (typeof (b as any).relu === "function") {
+    if (shouldRun("relu_fwd_4096sq") && typeof (b as any).relu === "function") {
       const ms = benchOp(() => (b as any).relu(bigX));
       record("relu_fwd_4096sq", ms, { bytes: bigSize * 4 * 2, note: "ReLU forward large (16M)" });
     }
@@ -325,11 +323,8 @@ function main(): void {
     const big2 = b.randn([4096, 4096]);
     const sz = 4096 * 4096;
 
-    let ms = benchOp(() => b.add(big, big2));
-    record("add_4096x4096", ms, { bytes: sz * 4 * 3, note: "large add bandwidth test" });
-
-    ms = benchOp(() => (b as any).scale(big, 2.0));
-    record("scale_4096x4096", ms, { bytes: sz * 4 * 2, note: "large scale bandwidth test" });
+    if (shouldRun("add_4096x4096")) { const ms = benchOp(() => b.add(big, big2)); record("add_4096x4096", ms, { bytes: sz * 4 * 3, note: "large add bandwidth test" }); }
+    if (shouldRun("scale_4096x4096")) { const ms = benchOp(() => (b as any).scale(big, 2.0)); record("scale_4096x4096", ms, { bytes: sz * 4 * 2, note: "large scale bandwidth test" }); }
 
     release(big);
     release(big2);
@@ -341,8 +336,7 @@ function main(): void {
     const lmW2 = b.randn([1024, V]);
     const lmSize = 1024 * V;
 
-    let ms = benchOp(() => b.add(lmW1, lmW2));
-    record("add_lm_head_1024x64000", ms, { bytes: lmSize * 4 * 3, note: "LM head-sized add (256MB)" });
+    if (shouldRun("add_lm_head_1024x64000")) { const ms = benchOp(() => b.add(lmW1, lmW2)); record("add_lm_head_1024x64000", ms, { bytes: lmSize * 4 * 3, note: "LM head-sized add (256MB)" }); }
 
     release(lmW1);
     release(lmW2);
@@ -355,12 +349,14 @@ function main(): void {
     const w = b.randn([D]);
     const bias = b.randn([D]);
 
-    const ms = benchOp(() => (b as any).layerNorm(x, w, bias, 1e-5));
-    record("layernorm_512x1024", ms, { bytes: BT * D * 4 * 3, note: "LayerNorm fwd" });
+    if (shouldRun("layernorm_512x1024")) {
+      const ms = benchOp(() => (b as any).layerNorm(x, w, bias, 1e-5));
+      record("layernorm_512x1024", ms, { bytes: BT * D * 4 * 3, note: "LayerNorm fwd" });
+    }
 
     // Backward
-    const gradOut = b.randn([BT, D]);
-    if (typeof (b as any).layerNormBackward === "function") {
+    if (shouldRun("layernorm_bwd_512x1024") && typeof (b as any).layerNormBackward === "function") {
+      const gradOut = b.randn([BT, D]);
       const msBwd = benchCustom(() => {
         const result = (b as any).layerNormBackward(x, w, gradOut, 1e-5);
         return [result.dx, result.dw, result.db];
@@ -377,24 +373,24 @@ function main(): void {
   // ── 4. SOFTMAX ────────────────────────────────────────────────────────────
 
   {
-    const attnScores = b.randn([BH, T, T]);
-    let ms = benchOp(() => (b as any).softmax(attnScores, -1));
-    record("softmax_attn_16x512x512", ms, {
-      bytes: BH * T * T * 4 * 2, note: "attention softmax",
-    });
-    release(attnScores);
+    if (shouldRun("softmax_attn_16x512x512")) {
+      const attnScores = b.randn([BH, T, T]);
+      const ms = benchOp(() => (b as any).softmax(attnScores, -1));
+      record("softmax_attn_16x512x512", ms, { bytes: BH * T * T * 4 * 2, note: "attention softmax" });
+      release(attnScores);
+    }
 
-    const logits = b.randn([BT, V]);
-    ms = benchOp(() => (b as any).softmax(logits, -1));
-    record("softmax_logits_512x64000", ms, {
-      bytes: BT * V * 4 * 2, note: "output softmax",
-    });
-    release(logits);
+    if (shouldRun("softmax_logits_512x64000")) {
+      const logits = b.randn([BT, V]);
+      const ms = benchOp(() => (b as any).softmax(logits, -1));
+      record("softmax_logits_512x64000", ms, { bytes: BT * V * 4 * 2, note: "output softmax" });
+      release(logits);
+    }
   }
 
   // ── 5. CROSS-ENTROPY ──────────────────────────────────────────────────────
 
-  if (typeof (b as any).crossEntropy === "function") {
+  if (typeof (b as any).crossEntropy === "function" && (shouldRun("cross_entropy_fwd") || shouldRun("cross_entropy_bwd"))) {
     const logits = b.randn([BT, V]);
     const targets: TensorData = {
       data: new Int32Array(BT).map(() => Math.floor(Math.random() * V)),
@@ -402,17 +398,16 @@ function main(): void {
       dtype: "i32",
     };
 
-    const ms = benchOp(() => (b as any).crossEntropy(logits, targets));
-    record("cross_entropy_fwd_512x64000", ms, { note: "CE loss forward" });
+    if (shouldRun("cross_entropy_fwd_512x64000")) {
+      const ms = benchOp(() => (b as any).crossEntropy(logits, targets));
+      record("cross_entropy_fwd_512x64000", ms, { note: "CE loss forward" });
+    }
 
     // CE backward
-    if (typeof (b as any).crossEntropyBackward === "function") {
+    if (shouldRun("cross_entropy_bwd_512x64000") && typeof (b as any).crossEntropyBackward === "function") {
       const gradOut: TensorData = { data: new Float32Array([1.0]), shape: [1], dtype: "f32" };
       const msBwd = benchOp(() => (b as any).crossEntropyBackward(logits, targets, gradOut));
-      record("cross_entropy_bwd_512x64000", msBwd, {
-        bytes: BT * V * 4 * 2,
-        note: "CE loss backward",
-      });
+      record("cross_entropy_bwd_512x64000", msBwd, { bytes: BT * V * 4 * 2, note: "CE loss backward" });
     }
 
     release(logits);
@@ -420,23 +415,24 @@ function main(): void {
 
   // ── 6. FLASH ATTENTION ────────────────────────────────────────────────────
 
-  if (typeof (b as any).flashAttention === "function") {
+  if (typeof (b as any).flashAttention === "function" && (shouldRun("flash_attn_fwd") || shouldRun("flash_attn_bwd"))) {
     const q = b.randn([BH, T, Dh]);
     const k = b.randn([BH, T, Dh]);
     const v = b.randn([BH, T, Dh]);
 
-    const ms = benchCustom(() => {
-      const result = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
-      // flashAttention returns { output, lse }
-      if (result.output && result.lse) return [result.output, result.lse];
-      return [result];
-    });
-    record("flash_attn_fwd_b1_h16_t512_d64", ms, {
-      flops: 2 * BH * T * T * Dh * 2, note: "Flash Attention fwd",
-    });
+    if (shouldRun("flash_attn_fwd_b1_h16_t512_d64")) {
+      const ms = benchCustom(() => {
+        const result = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
+        if (result.output && result.lse) return [result.output, result.lse];
+        return [result];
+      });
+      record("flash_attn_fwd_b1_h16_t512_d64", ms, {
+        flops: 2 * BH * T * T * Dh * 2, note: "Flash Attention fwd",
+      });
+    }
 
     // Flash attention backward
-    if (typeof (b as any).flashAttentionBackward === "function") {
+    if (shouldRun("flash_attn_bwd_b1_h16_t512_d64") && typeof (b as any).flashAttentionBackward === "function") {
       const fwdResult = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
       const O = fwdResult.output ?? fwdResult;
       const lse = fwdResult.lse;
@@ -461,7 +457,7 @@ function main(): void {
 
   // ── 7. EMBEDDING ──────────────────────────────────────────────────────────
 
-  if (typeof (b as any).embedding === "function") {
+  if (typeof (b as any).embedding === "function" && (shouldRun("embedding_fwd") || shouldRun("embedding_bwd"))) {
     const embW = b.randn([V, D]);
     const indices: TensorData = {
       data: new Int32Array(BT).map(() => Math.floor(Math.random() * V)),
@@ -469,18 +465,15 @@ function main(): void {
       dtype: "i32",
     };
 
-    const ms = benchOp(() => (b as any).embedding(embW, indices));
-    record("embedding_fwd_64000x1024", ms, {
-      bytes: BT * D * 4, note: "embedding lookup",
-    });
+    if (shouldRun("embedding_fwd_64000x1024")) {
+      const ms = benchOp(() => (b as any).embedding(embW, indices));
+      record("embedding_fwd_64000x1024", ms, { bytes: BT * D * 4, note: "embedding lookup" });
+    }
 
-    // Embedding backward (scatter-add gradients back to vocab table)
-    if (typeof (b as any).embeddingBackward === "function") {
+    if (shouldRun("embedding_bwd_64000x1024") && typeof (b as any).embeddingBackward === "function") {
       const gradOut = b.randn([BT, D]);
       const msBwd = benchOp(() => (b as any).embeddingBackward(indices, gradOut, V));
-      record("embedding_bwd_64000x1024", msBwd, {
-        bytes: BT * D * 4 + V * D * 4, note: "embedding backward (scatter-add)",
-      });
+      record("embedding_bwd_64000x1024", msBwd, { bytes: BT * D * 4 + V * D * 4, note: "embedding backward (scatter-add)" });
       release(gradOut);
     }
 
@@ -490,71 +483,43 @@ function main(): void {
   // ── 8. ADAMW STEP ─────────────────────────────────────────────────────────
 
   if (typeof (b as any).adamwStep === "function") {
-    // One layer's worth of params (~8.5M)
     const pSize = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024;
-    const param = b.randn([pSize]);
-    const grad = b.randn([pSize]);
-    const m = b.randn([pSize]);
-    const vState = b.randn([pSize]);
+    if (shouldRun("adamw_step_8.5M")) {
+      const param = b.randn([pSize]);
+      const grad = b.randn([pSize]);
+      const m = b.randn([pSize]);
+      const vState = b.randn([pSize]);
+      const ms = benchCustom(() => { (b as any).adamwStep(param, grad, m, vState, 3e-4, 0.9, 0.999, 1e-8, 0.1, 0.1, 0.001, 1.0); return []; });
+      record("adamw_step_8.5M", ms, { bytes: pSize * 4 * 7, note: "AdamW for 1 layer (~8.5M params)" });
+      release(param); release(grad); release(m); release(vState);
+    }
 
-    const ms = benchCustom(() => {
-      (b as any).adamwStep(param, grad, m, vState, 3e-4, 0.9, 0.999, 1e-8, 0.1, 0.1, 0.001, 1.0);
-      return []; // in-place, nothing to release
-    });
-    record("adamw_step_8.5M", ms, {
-      bytes: pSize * 4 * 7, note: "AdamW for 1 layer (~8.5M params)",
-    });
-
-    release(param);
-    release(grad);
-    release(m);
-    release(vState);
-
-    // Full model AdamW: 4 layers × 8.5M = ~34M params
-    const pSize4 = pSize * 4;
-    const param4 = b.randn([pSize4]);
-    const grad4 = b.randn([pSize4]);
-    const m4 = b.randn([pSize4]);
-    const vState4 = b.randn([pSize4]);
-    const ms4 = benchCustom(() => {
-      (b as any).adamwStep(param4, grad4, m4, vState4, 3e-4, 0.9, 0.999, 1e-8, 0.1, 0.1, 0.001, 1.0);
-      return [];
-    });
-    record("adamw_step_34M", ms4, {
-      bytes: pSize4 * 4 * 7, note: "AdamW 4 layers (~34M params)",
-    });
-    release(param4);
-    release(grad4);
-    release(m4);
-    release(vState4);
+    if (shouldRun("adamw_step_34M")) {
+      const pSize4 = pSize * 4;
+      const param4 = b.randn([pSize4]);
+      const grad4 = b.randn([pSize4]);
+      const m4 = b.randn([pSize4]);
+      const vState4 = b.randn([pSize4]);
+      const ms4 = benchCustom(() => { (b as any).adamwStep(param4, grad4, m4, vState4, 3e-4, 0.9, 0.999, 1e-8, 0.1, 0.1, 0.001, 1.0); return []; });
+      record("adamw_step_34M", ms4, { bytes: pSize4 * 4 * 7, note: "AdamW 4 layers (~34M params)" });
+      release(param4); release(grad4); release(m4); release(vState4);
+    }
   }
 
   // ── 8b. GRADIENT ACCUMULATION (add_inplace, scale_inplace) ───────────────
 
-  if (typeof (b as any).addInplace === "function") {
-    // LM head weight grad accumulation: [1024, 64000] = 64M elements = 256MB
+  if (typeof (b as any).addInplace === "function" && (shouldRun("grad_accum_lm_head") || shouldRun("grad_scale_lm_head"))) {
     const lmGrad = b.randn([1024, V]);
     const lmAcc = b.randn([1024, V]);
     const lmSize = 1024 * V;
-    const ms = benchCustom(() => {
-      (b as any).addInplace(lmAcc, lmGrad);
-      return [];
-    });
-    record("grad_accum_lm_head", ms, {
-      bytes: lmSize * 4 * 3, note: "gradient accumulation (add_inplace)",
-    });
-
-    // Scale grad for clipping
-    if (typeof (b as any).scaleInplace === "function") {
-      const msScale = benchCustom(() => {
-        (b as any).scaleInplace(lmAcc, 0.5);
-        return [];
-      });
-      record("grad_scale_lm_head", msScale, {
-        bytes: lmSize * 4 * 2, note: "gradient clipping scale (scale_inplace)",
-      });
+    if (shouldRun("grad_accum_lm_head")) {
+      const ms = benchCustom(() => { (b as any).addInplace(lmAcc, lmGrad); return []; });
+      record("grad_accum_lm_head", ms, { bytes: lmSize * 4 * 3, note: "gradient accumulation (add_inplace)" });
     }
-
+    if (shouldRun("grad_scale_lm_head") && typeof (b as any).scaleInplace === "function") {
+      const msScale = benchCustom(() => { (b as any).scaleInplace(lmAcc, 0.5); return []; });
+      record("grad_scale_lm_head", msScale, { bytes: lmSize * 4 * 2, note: "gradient clipping scale (scale_inplace)" });
+    }
     release(lmGrad);
     release(lmAcc);
   }
@@ -562,39 +527,25 @@ function main(): void {
   // ── 8b1.5. WEIGHT DECAY + FULL-MODEL IN-PLACE OPS ───────────────────────
 
   if (typeof (b as any).scaleInplace === "function") {
-    // Full model weight decay: ~34M params × scale
     const pSizeWd = (1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024) * 4;
-    const wdParams = b.randn([pSizeWd]);
-    const msWd = benchCustom(() => {
-      (b as any).scaleInplace(wdParams, 0.9997);  // 1 - lr*wd = 1 - 3e-4*0.1
-      return [];
-    });
-    record("weight_decay_34M", msWd, {
-      bytes: pSizeWd * 4 * 2, note: "full-model weight decay (scale_inplace 34M)",
-    });
-    release(wdParams);
+    if (shouldRun("weight_decay_34M")) {
+      const wdParams = b.randn([pSizeWd]);
+      const msWd = benchCustom(() => { (b as any).scaleInplace(wdParams, 0.9997); return []; });
+      record("weight_decay_34M", msWd, { bytes: pSizeWd * 4 * 2, note: "full-model weight decay (scale_inplace 34M)" });
+      release(wdParams);
+    }
 
-    // Full-model gradient accumulation (add_inplace): represents accumSteps > 1
-    if (typeof (b as any).addInplace === "function") {
+    if (typeof (b as any).addInplace === "function" && (shouldRun("grad_accum_34M") || shouldRun("grad_scale_34M"))) {
       const accGrad = b.randn([pSizeWd]);
       const accAcc = b.randn([pSizeWd]);
-      const msAcc34 = benchCustom(() => {
-        (b as any).addInplace(accAcc, accGrad);
-        return [];
-      });
-      record("grad_accum_34M", msAcc34, {
-        bytes: pSizeWd * 4 * 3, note: "full-model gradient accumulation (add_inplace 34M)",
-      });
-
-      // Also scale_inplace at 34M for gradient clipping
-      const msScale34 = benchCustom(() => {
-        (b as any).scaleInplace(accAcc, 0.5);
-        return [];
-      });
-      record("grad_scale_34M", msScale34, {
-        bytes: pSizeWd * 4 * 2, note: "full-model gradient scale (scale_inplace 34M)",
-      });
-
+      if (shouldRun("grad_accum_34M")) {
+        const msAcc34 = benchCustom(() => { (b as any).addInplace(accAcc, accGrad); return []; });
+        record("grad_accum_34M", msAcc34, { bytes: pSizeWd * 4 * 3, note: "full-model gradient accumulation (add_inplace 34M)" });
+      }
+      if (shouldRun("grad_scale_34M")) {
+        const msScale34 = benchCustom(() => { (b as any).scaleInplace(accAcc, 0.5); return []; });
+        record("grad_scale_34M", msScale34, { bytes: pSizeWd * 4 * 2, note: "full-model gradient scale (scale_inplace 34M)" });
+      }
       release(accGrad);
       release(accAcc);
     }
@@ -608,25 +559,10 @@ function main(): void {
     const elA = b.randn([elSize]);
     const elB = b.randn([elSize]);
 
-    let msEl = benchOp(() => b.add(elA, elB));
-    record("add_34M", msEl, {
-      bytes: elSize * 4 * 3, note: "full-model add (34M elements)",
-    });
-
-    msEl = benchOp(() => (b as any).scale(elA, 0.5));
-    record("scale_34M", msEl, {
-      bytes: elSize * 4 * 2, note: "full-model scale (34M elements)",
-    });
-
-    msEl = benchOp(() => b.sub(elA, elB));
-    record("sub_34M", msEl, {
-      bytes: elSize * 4 * 3, note: "full-model sub (34M elements)",
-    });
-
-    msEl = benchOp(() => b.mul(elA, elB));
-    record("mul_34M", msEl, {
-      bytes: elSize * 4 * 3, note: "full-model mul (34M elements)",
-    });
+    if (shouldRun("add_34M")) { const ms = benchOp(() => b.add(elA, elB)); record("add_34M", ms, { bytes: elSize * 4 * 3, note: "full-model add (34M elements)" }); }
+    if (shouldRun("scale_34M")) { const ms = benchOp(() => (b as any).scale(elA, 0.5)); record("scale_34M", ms, { bytes: elSize * 4 * 2, note: "full-model scale (34M elements)" }); }
+    if (shouldRun("sub_34M")) { const ms = benchOp(() => b.sub(elA, elB)); record("sub_34M", ms, { bytes: elSize * 4 * 3, note: "full-model sub (34M elements)" }); }
+    if (shouldRun("mul_34M")) { const ms = benchOp(() => b.mul(elA, elB)); record("mul_34M", ms, { bytes: elSize * 4 * 3, note: "full-model mul (34M elements)" }); }
 
     release(elA);
     release(elB);
@@ -634,56 +570,46 @@ function main(): void {
 
   // ── 8b2. DROPOUT MASK GENERATION ──────────────────────────────────────────
 
-  if (typeof (b as any).dropoutMask === "function") {
+  if (shouldRun("dropout_mask_512x1024") && typeof (b as any).dropoutMask === "function") {
     const msDropout = benchOp(() => (b as any).dropoutMask([BT, D], 42, 0, 0.1));
-    record("dropout_mask_512x1024", msDropout, {
-      bytes: BT * D * 4, note: "GPU-side dropout mask (PhiloxRNG)",
-    });
+    record("dropout_mask_512x1024", msDropout, { bytes: BT * D * 4, note: "GPU-side dropout mask (PhiloxRNG)" });
   }
 
   // ── 8c. GRADIENT NORM (sum of squares) ─────────────────────────────────────
 
   if (typeof (b as any).sumOfSquares === "function") {
-    // One layer's worth of params (~8.5M) — used for gradient clipping norm calc
     const pSize = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024;
-    const gradTensor = b.randn([pSize]);
-    const msNorm = benchOp(() => (b as any).sumOfSquares(gradTensor));
-    record("grad_norm_8.5M", msNorm, {
-      bytes: pSize * 4, note: "sum of squares for gradient norm (fused)",
-    });
-    release(gradTensor);
-
-    // Full model gradient norm (34M params) — 4 layers worth
-    const gradTensor34 = b.randn([pSize * 4]);
-    const msNorm34 = benchOp(() => (b as any).sumOfSquares(gradTensor34));
-    record("grad_norm_34M", msNorm34, {
-      bytes: pSize * 4 * 4, note: "full-model sum of squares (34M params)",
-    });
-    release(gradTensor34);
+    if (shouldRun("grad_norm_8.5M")) {
+      const gradTensor = b.randn([pSize]);
+      const msNorm = benchOp(() => (b as any).sumOfSquares(gradTensor));
+      record("grad_norm_8.5M", msNorm, { bytes: pSize * 4, note: "sum of squares for gradient norm (fused)" });
+      release(gradTensor);
+    }
+    if (shouldRun("grad_norm_34M")) {
+      const gradTensor34 = b.randn([pSize * 4]);
+      const msNorm34 = benchOp(() => (b as any).sumOfSquares(gradTensor34));
+      record("grad_norm_34M", msNorm34, { bytes: pSize * 4 * 4, note: "full-model sum of squares (34M params)" });
+      release(gradTensor34);
+    }
   }
 
   // ── 9. FUSED OPS ──────────────────────────────────────────────────────────
 
-  if (typeof (b as any).residualDropoutAdd === "function") {
+  if (shouldRun("residual_dropout_add_512x1024") && typeof (b as any).residualDropoutAdd === "function") {
     const residual = b.randn([BT, D]);
     const projected = b.randn([BT, D]);
-    // Generate a dropout mask (0 or 1/0.9 scaled)
     const maskData = new Float32Array(BT * D);
     for (let i = 0; i < maskData.length; i++) maskData[i] = Math.random() > 0.1 ? 1.0 / 0.9 : 0;
     const mask: TensorData = { data: maskData, shape: [BT, D], dtype: "f32" };
-
     const ms = benchOp(() => (b as any).residualDropoutAdd(residual, projected, mask));
-    record("residual_dropout_add_512x1024", ms, {
-      bytes: BT * D * 4 * 4, note: "fused residual+dropout+add",
-    });
-
+    record("residual_dropout_add_512x1024", ms, { bytes: BT * D * 4 * 4, note: "fused residual+dropout+add" });
     release(residual);
     release(projected);
   }
 
   // ── 10. KERNEL LAUNCH OVERHEAD ────────────────────────────────────────────
 
-  {
+  if (shouldRun("launch_overhead_200_adds")) {
     const small = b.randn([64, 64]);
     const small2 = b.randn([64, 64]);
 
@@ -725,23 +651,20 @@ function main(): void {
 
   // ── 11. TRANSPOSE ─────────────────────────────────────────────────────────
 
-  if (typeof (b as any).transpose === "function") {
+  if (shouldRun("transpose_16x512x64") && typeof (b as any).transpose === "function") {
     const t = b.randn([BH, T, Dh]);
     const ms = benchOp(() => (b as any).transpose(t, 1, 2));
-    record("transpose_16x512x64", ms, {
-      bytes: BH * T * Dh * 4 * 2, note: "transpose",
-    });
+    record("transpose_16x512x64", ms, { bytes: BH * T * Dh * 4 * 2, note: "transpose" });
     release(t);
   }
 
   // ── 11b. GRADIENT CLIP PIPELINE ──────────────────────────────────────────
   // Full gradient clipping: sumOfSquares → sqrt → max(1, norm/maxNorm) → scaleInplace
   // This tests sustained throughput of combined reduction + in-place ops
-  if (typeof (b as any).sumOfSquares === "function" && typeof (b as any).scaleInplace === "function") {
-    // Full model gradient norm: ~33M params (300M / ~21 layers ≈ 15M per layer, but test all at once)
-    const totalParams = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024; // one layer
+  if (shouldRun("grad_clip_pipeline_34M") && typeof (b as any).sumOfSquares === "function" && typeof (b as any).scaleInplace === "function") {
+    const totalParams = 1024 * 3072 + 1024 * 1024 + 1024 * 2752 * 2 + 2752 * 1024;
     const allGrads: TensorData[] = [];
-    for (let l = 0; l < 4; l++) allGrads.push(b.randn([totalParams])); // 4 layers ≈ 34M params
+    for (let l = 0; l < 4; l++) allGrads.push(b.randn([totalParams]));
 
     const msClip = benchCustom(() => {
       // 1. Compute total grad norm across all layers
@@ -770,9 +693,8 @@ function main(): void {
 
   // ── 12. SLICE ─────────────────────────────────────────────────────────────
 
-  if (typeof (b as any).slice === "function") {
+  if (shouldRun("slice_qkv_512x3072") && typeof (b as any).slice === "function") {
     const qkv = b.randn([BT, 3 * D]);
-    // Use fused sliceQkv when available (1 dispatch vs 3)
     const hasFused = typeof (b as any).sliceQkv === "function";
     const ms = benchCustom(() => {
       if (hasFused) {
