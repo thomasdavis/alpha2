@@ -1860,11 +1860,12 @@ export class HeliosBackend implements Backend {
     const byteSize = shapeSize(x.shape) * 4;
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
-    // Tune wgSize: dimVec4>>2 → 64 for dim=1024. Sweet spot: 4 vec4/thread, 2 subgroups,
-    // subgroup reduce + 2 barriers. Higher occupancy than 128 (24 WGs/SM vs 12).
+    // Tune wgSize: dimVec4>>1 → 128 for dim=1024. 2 vec4/thread, 4 subgroups.
+    // Better than >>2 (wg=64, identical perf but fewer warps/SM).
+    // Much better than wg=256 (8 subgroups, barrier overhead dominates).
     const dimVec4 = dim / 4;
     const lnWg = useVec4
-      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 2)))))
+      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
       : WG_SIZE;
     const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
     const pipeline = getPipeline(vk, kernelName, 4, PUSH_SIZE, lnWg);
@@ -3360,22 +3361,35 @@ export class HeliosBackend implements Backend {
       const bufWeight = ensureGpu(vk, weight);
       const bufIndices = ensureGpuRawBits(vk, indices);
 
-      const pipeline = getPipeline(vk, "embedding_forward", 3, 2 * 4);
+      const useVec4 = (dim & 3) === 0;
+      const kernelName = useVec4 ? "embedding_forward_vec4" : "embedding_forward";
+      // Use wgSize=64 for vec4 to maximize WG count (more memory latency hiding)
+      const embWg = useVec4 ? 64 : WG_SIZE;
+      const pipeline = getPipeline(vk, kernelName, 3, 2 * 4, embWg);
       const region = acquireOutputRegion(vk, totalElements * 4);
-      const groups = Math.ceil(totalElements / WG_SIZE);
 
       const push = new Float32Array(2);
       const pushU = new Uint32Array(push.buffer);
-      push[0] = totalElements;  // float value for bounds check
-      pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+      let groups: [number, number, number];
+      if (useVec4) {
+        // 2D dispatch: x = vec4 columns, y = samples
+        const dimVec4 = dim >> 2;
+        pushU[0] = dimVec4;  // u32 bits — kernel bitcasts f32→u32
+        push[1] = 0;
+        groups = [Math.ceil(dimVec4 / embWg), nIdx, 1];
+      } else {
+        push[0] = totalElements;  // float value for bounds check
+        pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+        groups = [Math.ceil(totalElements / WG_SIZE), 1, 1];
+      }
 
       graph.record({
         kind: "unary",
-        kernel: "embedding_forward",
+        kernel: kernelName,
         pipeline,
         inputBufs: [],
         outputRegion: region,
-        groups: [groups, 1, 1],
+        groups,
         push,
         pushSize: 2 * 4,
         shape: outShape,

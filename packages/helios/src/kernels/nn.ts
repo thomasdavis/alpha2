@@ -4553,6 +4553,108 @@ export function kernelEmbeddingForward(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+/**
+ * Vec4 embedding forward: 2D dispatch eliminates UDiv/UMod.
+ *
+ * Dispatch: [ceil(dim/4 / wgSize), nIdx, 1]
+ * Thread x = vec4 position within row, workgroup y = sample index.
+ * Push constants: { dimVec4: u32 (as f32 bits), unused: f32 }
+ * Bindings: 0=weight(f32,ro), 1=indices(i32 as f32,ro), 2=output(vec4,wo)
+ */
+export function kernelEmbeddingForwardVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // Weight as vec4 for coalesced reads, indices as scalar i32/f32
+  const bufWeight  = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufIndices = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufOut     = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2); // [dimVec4 as u32 bits, unused]
+
+  // WorkgroupId built-in (for y = sample index)
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd   = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  // gidX = GlobalInvocationId.x = vec4 position within row
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const colVec4 = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, colVec4, gidVec, 0]);
+
+  // dimVec4 = bitcast<u32>(push[0])
+  const ptrPcDimVec4 = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcDimVec4, pc.varId, p.const0u]);
+  const dimVec4F = b.id();
+  b.emit(Op.Load, [p.tF32, dimVec4F, ptrPcDimVec4]);
+  const dimVec4 = b.id();
+  b.emit(Op.Bitcast, [p.tU32, dimVec4, dimVec4F]);
+
+  // Bounds check: colVec4 >= dimVec4 → skip
+  const oob = b.id();
+  b.emit(Op.UGreaterThanEqual, [p.tBool, oob, colVec4, dimVec4]);
+  const labelBody = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [oob, labelEnd, labelBody]);
+  b.emit(Op.Label, [labelBody]);
+
+  // sampleIdx = WorkgroupId.y
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const sampleIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, sampleIdx, wgIdVec, 1]);
+
+  // vocabRow = bitcast<u32>(indices[sampleIdx])
+  const ptrIdx = b.id();
+  b.emit(Op.AccessChain, [bufIndices.tPtrF32, ptrIdx, bufIndices.varId, p.const0u, sampleIdx]);
+  const idxF = b.id();
+  b.emit(Op.Load, [p.tF32, idxF, ptrIdx]);
+  const vocabRow = b.id();
+  b.emit(Op.Bitcast, [p.tU32, vocabRow, idxF]);
+
+  // srcOffset = vocabRow * dimVec4 + colVec4
+  const rowTimesDim = b.id();
+  b.emit(Op.IMul, [p.tU32, rowTimesDim, vocabRow, dimVec4]);
+  const srcOffset = b.id();
+  b.emit(Op.IAdd, [p.tU32, srcOffset, rowTimesDim, colVec4]);
+
+  // dstOffset = sampleIdx * dimVec4 + colVec4
+  const dstRow = b.id();
+  b.emit(Op.IMul, [p.tU32, dstRow, sampleIdx, dimVec4]);
+  const dstOffset = b.id();
+  b.emit(Op.IAdd, [p.tU32, dstOffset, dstRow, colVec4]);
+
+  // out[dstOffset] = weight[srcOffset]
+  const ptrSrc = b.id();
+  b.emit(Op.AccessChain, [bufWeight.tPtrVec4, ptrSrc, bufWeight.varId, p.const0u, srcOffset]);
+  const val = b.id();
+  b.emit(Op.Load, [tVec4F32, val, ptrSrc]);
+  const ptrDst = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrVec4, ptrDst, bufOut.varId, p.const0u, dstOffset]);
+  b.emit(Op.Store, [ptrDst, val]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Kernel: dropout mask generation ──────────────────────────────────────────
 
 /**
