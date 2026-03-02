@@ -1108,16 +1108,14 @@ export class HeliosBackend implements Backend {
     const bufB = ensureGpu(vk, b);
     const region = acquireOutputRegion(vk, byteSize);
 
-    // Pad dispatch to buffer-rounded boundary to avoid NVIDIA Vulkan bandwidth cliff.
-    // The NVIDIA L4 driver (570.x) has ~4× bandwidth degradation when the dispatch
-    // grid size is not a multiple of 1024 WGs (= 4MB of data at vec4×WG256).
-    // Since acquireBuffer already rounds to 4MB bins, we pad the dispatch to match.
+    // Dispatch WG count padded to buffer-rounded boundary for NVIDIA bandwidth alignment.
+    // Push constant uses ACTUAL size for bounds check — extra WGs early-exit, avoiding
+    // 2× wasted data transfer for small tensors (e.g. 512×1024: 2MB actual → 4MB padded).
     const effectiveSize = useVec4 ? size >> 2 : size;
     const roundedBytes = roundPoolSize(byteSize);
     const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
-    const dispatchLen = Math.max(effectiveSize, paddedSize);
-    const push = push2Memo(dispatchLen, 0);
-    const groups = Math.ceil(dispatchLen / WG_SIZE);
+    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / WG_SIZE);
+    const push = push2Memo(effectiveSize, 0);
 
     // Record to compute graph — deferred execution
     graph.record({
@@ -1126,7 +1124,7 @@ export class HeliosBackend implements Backend {
       pipeline,
       inputBufs: [bufA, bufB],
       outputRegion: region,
-      groups: [groups, 1, 1],
+      groups: [paddedGroups, 1, 1],
       push,
       pushSize: PUSH_SIZE,
       shape: a.shape,
@@ -1148,13 +1146,13 @@ export class HeliosBackend implements Backend {
     const bufA = ensureGpu(vk, a);
     const region = acquireOutputRegion(vk, byteSize);
 
-    // Pad dispatch to buffer-rounded boundary (see gpuBinaryOp comment for details)
+    // Dispatch WG count padded for NVIDIA bandwidth alignment; actual size for bounds check
     const effectiveSize = useVec4 ? size >> 2 : size;
     const roundedBytes = roundPoolSize(byteSize);
     const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
-    const dispatchLen = Math.max(effectiveSize, paddedSize);
-    const push = push2Memo(dispatchLen, scalar);
-    const groups = Math.ceil(dispatchLen / WG_SIZE);
+    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / WG_SIZE);
+    const push = push2Memo(effectiveSize, scalar);
+    const groups = paddedGroups;
 
     // Record to compute graph — deferred execution
     graph.record({
