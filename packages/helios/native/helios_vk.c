@@ -2753,6 +2753,240 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
   return NULL;
 }
 
+// ── N-API: batchExecuteAll(packed: ArrayBuffer, count: number) ───────────────
+//
+// Combined batchBegin + batchDispatchMany + batchSubmit in a single N-API call.
+// Saves ~4-6μs per flush by eliminating 2 N-API boundary crossings.
+
+static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  void* packedData;
+  size_t packedLen;
+  napi_get_arraybuffer_info(env, args[0], &packedData, &packedLen);
+
+  uint32_t count;
+  napi_get_value_uint32(env, args[1], &count);
+
+  // ── batchBegin logic (inlined) ──
+  uint32_t slot = g_ringHead;
+  if (g_ring[slot].timelineValue > 0) {
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed < g_ring[slot].timelineValue) {
+      waitTimelineValue(g_ring[slot].timelineValue);
+    }
+  }
+
+  if (g_ring[slot].descPool) {
+    fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
+  }
+  dispatchCacheValid = 0;
+
+  fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
+  VkCommandBufferBeginInfo beginInfo = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+
+  {
+    VkMemoryBarrier memBarrier = {
+      .sType = 46,
+      .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+    };
+    fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &memBarrier, 0, NULL, 0, NULL);
+  }
+
+  batchRecording = 1;
+  batchDispatchCount = 0;
+  bufWriteGeneration++;
+
+  // ── batchDispatchMany logic (inlined) ──
+  VkCommandBuffer ringCmd = g_ring[slot].cmd;
+  VkDescriptorPool ringDescPool = g_ring[slot].descPool;
+
+  const uint8_t* ptr = (const uint8_t*)packedData;
+  const uint8_t* end = ptr + packedLen;
+
+  VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
+
+  for (uint32_t d = 0; d < count; d++) {
+    if (ptr + 12 > end) break;
+
+    int32_t pipeSlot;
+    memcpy(&pipeSlot, ptr, 4); ptr += 4;
+
+    uint16_t bufCount, flags;
+    memcpy(&bufCount, ptr, 2); ptr += 2;
+    memcpy(&flags, ptr, 2); ptr += 2;
+
+    uint32_t gX;
+    memcpy(&gX, ptr, 4); ptr += 4;
+
+    uint32_t gY = (flags >> 1) & 0x7FFF;
+    if (gY == 0) gY = 1;
+
+    uint32_t gZ = 1;
+    if (flags & 1) {
+      if (ptr + 4 > end) break;
+      memcpy(&gZ, ptr, 4); ptr += 4;
+    }
+
+    if (ptr + 4 > end) break;
+    uint32_t writeMask;
+    memcpy(&writeMask, ptr, 4); ptr += 4;
+
+    if (bufCount > 32 || ptr + bufCount * 4 > end) break;
+    int32_t bufSlots[32];
+    memcpy(bufSlots, ptr, bufCount * 4); ptr += bufCount * 4;
+
+    if (pipeSlot < 0 || pipeSlot >= MAX_PIPELINES || !pipelines[pipeSlot].active) continue;
+    PipelineSlot* ps = &pipelines[pipeSlot];
+
+    uint32_t pushSize = ps->pushConstantSize;
+    const void* pushPtr = NULL;
+    if (pushSize > 0) {
+      if (ptr + pushSize > end) break;
+      pushPtr = ptr;
+      ptr += pushSize;
+    }
+
+    // Barriers
+    if (batchDispatchCount > 0) {
+      VkBufferMemoryBarrier bufBarriers[32];
+      uint32_t barrierCount = 0;
+
+      for (uint32_t i = 0; i < bufCount; i++) {
+        int32_t s = bufSlots[i];
+        if (s >= 0 && s < MAX_BUFFERS && bufWriteGen[s] == bufWriteGeneration) {
+          bufBarriers[barrierCount] = (VkBufferMemoryBarrier){
+            .sType = 44,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = ((writeMask >> i) & 1)
+              ? (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
+              : VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = 0xFFFFFFFF,
+            .dstQueueFamilyIndex = 0xFFFFFFFF,
+            .buffer = buffers[s].buffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+          };
+          barrierCount++;
+        }
+      }
+
+      if (barrierCount > 0) {
+        fp_vkCmdPipelineBarrier(ringCmd,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 0, NULL, barrierCount, bufBarriers, 0, NULL);
+      }
+    }
+
+    // Write tracking
+    for (uint32_t i = 0; i < bufCount; i++) {
+      if ((writeMask >> i) & 1) {
+        bufWriteDispatch[bufSlots[i]] = batchDispatchCount;
+        bufWriteGen[bufSlots[i]] = bufWriteGeneration;
+      }
+    }
+
+    // Descriptors + dispatch
+    VkDescriptorBufferInfo bufInfos[32];
+    VkWriteDescriptorSet writes[32];
+
+    if (ps->pipeline != lastBoundPipeline) {
+      fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
+      lastBoundPipeline = ps->pipeline;
+    }
+
+    if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+      for (uint32_t i = 0; i < bufCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = 0,
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        ps->layout, 0, bufCount, writes);
+    } else {
+      VkDescriptorSetAllocateInfo dsAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = ringDescPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &ps->descLayout,
+      };
+      VkDescriptorSet descSet;
+      VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      if (res != VK_SUCCESS) {
+        napi_throw_error(env, NULL, "batchExecuteAll: vkAllocateDescriptorSets failed");
+        return NULL;
+      }
+      for (uint32_t i = 0; i < bufCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = descSet,
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+      fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    }
+
+    if (pushSize > 0 && pushPtr) {
+      fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushPtr);
+    }
+    fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
+    batchDispatchCount++;
+  }
+
+  // ── batchSubmit logic (inlined) ──
+  fp_vkEndCommandBuffer(g_ring[slot].cmd);
+
+  uint64_t tv = 0;
+  if (batchDispatchCount > 0) {
+    tv = submitCmdBufAsync(g_ring[slot].cmd);
+    if (tv == 0) {
+      batchRecording = 0;
+      batchDispatchCount = 0;
+      napi_throw_error(env, NULL, "batchExecuteAll: vkQueueSubmit failed");
+      return NULL;
+    }
+    g_ring[slot].timelineValue = tv;
+    lastDispatchTimeline = tv;
+  }
+
+  g_ringHead = (g_ringHead + 1) % RING_SIZE;
+  batchRecording = 0;
+  batchDispatchCount = 0;
+
+  napi_value result;
+  napi_create_double(env, (double)tv, &result);
+  return result;
+}
+
 // ── N-API: waitTimeline(value) ───────────────────────────────────────────────
 
 static napi_value napi_waitTimeline(napi_env env, napi_callback_info info) {
@@ -3028,6 +3262,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "batchDispatch",   NULL, napi_batchDispatch,   NULL, NULL, NULL, napi_default, NULL },
     { "batchDispatchMany", NULL, napi_batchDispatchMany, NULL, NULL, NULL, napi_default, NULL },
     { "batchSubmit",     NULL, napi_batchSubmit,     NULL, NULL, NULL, napi_default, NULL },
+    { "batchExecuteAll", NULL, napi_batchExecuteAll, NULL, NULL, NULL, napi_default, NULL },
     { "waitTimeline",    NULL, napi_waitTimeline,    NULL, NULL, NULL, napi_default, NULL },
     { "getCompleted",    NULL, napi_getCompleted,    NULL, NULL, NULL, napi_default, NULL },
     { "gpuTime",         NULL, napi_gpuTime,         NULL, NULL, NULL, napi_default, NULL },

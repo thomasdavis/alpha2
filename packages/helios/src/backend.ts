@@ -689,76 +689,62 @@ class ComputeGraph {
     const packedTotalBytes = this.pendingPackedBytes;
     this.pendingPackedBytes = 0;
 
-    vk.batchBegin();
+    // Pack ops into binary format for C dispatch
+    const packed = new ArrayBuffer(packedTotalBytes);
+    const view = new DataView(packed);
+    let offset = 0;
 
-    if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchDispatchMany === "function") {
-      // Packed binary path: single N-API call for all dispatches.
-      // Per dispatch format:
-      //   int32 pipelineSlot, uint16 bufCount, uint16 flags, uint32 gX,
-      //   [uint32 gZ], uint32 writeMask, int32 bufHandles[bufCount], uint8 pushData[pushSize]
-      const packed = new ArrayBuffer(packedTotalBytes);
-      const view = new DataView(packed);
-      let offset = 0;
+    for (const op of ops) {
+      const bufs = op.allBufs;
+      const bufCount = bufs ? bufs.length : (op.inputBufs.length + 1);
+      const hasGZ = op.hasGZ!;
+      const writeMask = op.writeMask!;
+      const flags = op.flags!;
 
-      for (const op of ops) {
-        const bufs = op.allBufs;
-        const bufCount = bufs ? bufs.length : (op.inputBufs.length + 1);
-        const hasGZ = op.hasGZ!;
-        const writeMask = op.writeMask!;
-        const flags = op.flags!;
+      view.setInt32(offset, op.pipeline, true); offset += 4;
+      view.setUint16(offset, bufCount, true); offset += 2;
+      view.setUint16(offset, flags, true); offset += 2;
+      view.setUint32(offset, op.groups[0], true); offset += 4;
+      if (hasGZ) {
+        view.setUint32(offset, op.groups[2], true); offset += 4;
+      }
+      view.setUint32(offset, writeMask, true); offset += 4;
 
-        view.setInt32(offset, op.pipeline, true); offset += 4;
-        view.setUint16(offset, bufCount, true); offset += 2;
-        view.setUint16(offset, flags, true); offset += 2;
-        view.setUint32(offset, op.groups[0], true); offset += 4;
-        if (hasGZ) {
-          view.setUint32(offset, op.groups[2], true); offset += 4;
-        }
-        view.setUint32(offset, writeMask, true); offset += 4;
-
-        // Buffer handles
-        if (bufs) {
-          for (let i = 0; i < bufs.length; i++) {
-            view.setInt32(offset, bufs[i], true);
-            offset += 4;
-          }
-        } else {
-          for (let i = 0; i < op.inputBufs.length; i++) {
-            view.setInt32(offset, op.inputBufs[i], true);
-            offset += 4;
-          }
-          view.setInt32(offset, op.outputRegion.handle, true);
+      // Buffer handles
+      if (bufs) {
+        for (let i = 0; i < bufs.length; i++) {
+          view.setInt32(offset, bufs[i], true);
           offset += 4;
         }
-
-        // Push constants (raw bytes from Float32Array)
-        if (op.pushSize > 0) {
-          const words = op.pushSize >>> 2;
-          for (let i = 0; i < words; i++) {
-            view.setFloat32(offset, op.push[i], true);
-            offset += 4;
-          }
+      } else {
+        for (let i = 0; i < op.inputBufs.length; i++) {
+          view.setInt32(offset, op.inputBufs[i], true);
+          offset += 4;
         }
+        view.setInt32(offset, op.outputRegion.handle, true);
+        offset += 4;
       }
 
-      vk.batchDispatchMany(packed, ops.length);
-    } else {
-      // Fallback: per-dispatch N-API calls
-      const wmBuf = new Uint32Array(1);
-      for (const op of ops) {
-        wmBuf[0] = op.writeMask!;
-        const bufs = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
-        vk.batchDispatch(
-          op.pipeline,
-          bufs,
-          op.groups[0], op.groups[1], op.groups[2],
-          op.push,
-          wmBuf,
-        );
+      // Push constants (raw bytes from Float32Array)
+      if (op.pushSize > 0) {
+        const words = op.pushSize >>> 2;
+        for (let i = 0; i < words; i++) {
+          view.setFloat32(offset, op.push[i], true);
+          offset += 4;
+        }
       }
     }
 
-    const tv = vk.batchSubmit();
+    // Prefer combined batchExecuteAll (single N-API call) for lower dispatch overhead.
+    // Falls back to 3-call path (batchBegin + batchDispatchMany + batchSubmit).
+    let tv: number;
+    if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
+      tv = vk.batchExecuteAll(packed, ops.length);
+    } else {
+      vk.batchBegin();
+      vk.batchDispatchMany(packed, ops.length);
+      tv = vk.batchSubmit();
+    }
     this._lastFlushTimeline = tv;
 
     // Release deferred intermediate regions (e.g. from multi-pass reductions)

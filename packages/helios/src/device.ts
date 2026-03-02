@@ -27,6 +27,7 @@ export interface NativeAddon {
   batchDispatch(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array, writeMask?: Uint32Array): void;
   batchDispatchMany(packed: ArrayBuffer, count: number): void;
   batchSubmit(): number;
+  batchExecuteAll?(packed: ArrayBuffer, count: number): number;
   waitTimeline(value: number): void;
   getCompleted(): number;
   gpuTime(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
