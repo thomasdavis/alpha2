@@ -1768,8 +1768,12 @@ export class HeliosBackend implements Backend {
         : softmaxEnv === "vec4" ? "softmax_vec4"
         : softmaxEnv === "reg" ? "softmax_reg"
         : "softmax_online";
+      // For small dims (attention softmax, dim≤512), use wgSize=32: single subgroup
+      // eliminates shared memory barriers and allows 48 WGs/SM vs 12 at wgSize=128.
       const softmaxWg = softmaxEnv === "reg"
         ? 32
+        : dimVec4 <= 32 ? 32  // dim ≤ 128: fits in 1 subgroup without looping
+        : dimVec4 <= 128 ? 32 // dim ≤ 512: 4 vec4/thread, 1 subgroup, 0 barriers
         : Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
 
       // Persistent CTA: limit concurrent WGs so Phase 2 re-reads hit L2 cache.
@@ -1856,13 +1860,13 @@ export class HeliosBackend implements Backend {
     const byteSize = shapeSize(x.shape) * 4;
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
-    const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
     // Tune wgSize: dimVec4>>2 → 64 for dim=1024. Sweet spot: 4 vec4/thread, 2 subgroups,
     // subgroup reduce + 2 barriers. Higher occupancy than 128 (24 WGs/SM vs 12).
     const dimVec4 = dim / 4;
     const lnWg = useVec4
       ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 2)))))
       : WG_SIZE;
+    const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
     const pipeline = getPipeline(vk, kernelName, 4, PUSH_SIZE, lnWg);
     const bufX = ensureGpu(vk, x);
     const bufW = ensureGpu(vk, weight);

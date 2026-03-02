@@ -2241,6 +2241,11 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   const rowOffset = b.id();
   b.emit(Op.IMul, [p.tU32, rowOffset, row, dimVec4]);
 
+  // vec4(1,1,1,1) for dot product horizontal sum
+  const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
+  const constOnes = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, constOnes, const1f, const1f, const1f, const1f]);
+
   // ── Phase 1: Single-pass sum + sumSq with vec4 loads ──
   b.emit(Op.Store, [varIdx, localIdx]);
   b.emit(Op.Store, [varSum, p.const0f]);
@@ -2268,24 +2273,10 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   const v4 = b.id();
   b.emit(Op.Load, [tVec4F32, v4, ptrX1]);
 
-  // Horizontal sum of 4 components
-  const x0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x0, v4, 0]);
-  const x1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x1, v4, 1]);
-  const x2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x2, v4, 2]);
-  const x3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x3, v4, 3]);
-  const s01 = b.id(); b.emit(Op.FAdd, [p.tF32, s01, x0, x1]);
-  const s23 = b.id(); b.emit(Op.FAdd, [p.tF32, s23, x2, x3]);
-  const chunkSum = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSum, s01, s23]);
-
-  // Horizontal sum of squares via vec4 FMul then extract+add
-  const v4sq = b.id(); b.emit(Op.FMul, [tVec4F32, v4sq, v4, v4]);
-  const sq0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq0, v4sq, 0]);
-  const sq1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq1, v4sq, 1]);
-  const sq2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq2, v4sq, 2]);
-  const sq3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, sq3, v4sq, 3]);
-  const sq01 = b.id(); b.emit(Op.FAdd, [p.tF32, sq01, sq0, sq1]);
-  const sq23 = b.id(); b.emit(Op.FAdd, [p.tF32, sq23, sq2, sq3]);
-  const chunkSumSq = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSumSq, sq01, sq23]);
+  // Horizontal sum: dot(v4, ones) = x0+x1+x2+x3 (1 instruction vs 7)
+  const chunkSum = b.id(); b.emit(Op.Dot, [p.tF32, chunkSum, v4, constOnes]);
+  // Sum of squares: dot(v4, v4) = x0²+x1²+x2²+x3² (1 instruction vs 8)
+  const chunkSumSq = b.id(); b.emit(Op.Dot, [p.tF32, chunkSumSq, v4, v4]);
 
   // Accumulate
   const oldSum = b.id(); b.emit(Op.Load, [p.tF32, oldSum, varSum]);
@@ -2383,11 +2374,9 @@ export function kernelLayerNormVec4(wgSize = 256): Uint32Array {
   const meanSq = b.id(); b.emit(Op.FMul, [p.tF32, meanSq, meanVal, meanVal]);
   const variance = b.id(); b.emit(Op.FSub, [p.tF32, variance, meanSumSq, meanSq]);
 
-  // invStd = 1 / sqrt(var + eps)
+  // invStd = inversesqrt(var + eps) — single MUFU.RSQ instruction on NVIDIA
   const varPlusEps = b.id(); b.emit(Op.FAdd, [p.tF32, varPlusEps, variance, epsF]);
-  const stdDev = b.id(); b.emit(Op.ExtInst, [p.tF32, stdDev, p.glslStd, GLSLstd450.Sqrt, varPlusEps]);
-  const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
-  const invStd = b.id(); b.emit(Op.FDiv, [p.tF32, invStd, constOne, stdDev]);
+  const invStd = b.id(); b.emit(Op.ExtInst, [p.tF32, invStd, p.glslStd, GLSLstd450.InverseSqrt, varPlusEps]);
 
   // Splat for vec4 ops
   const splatMean = b.id();
