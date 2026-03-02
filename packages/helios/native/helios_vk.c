@@ -840,12 +840,30 @@ static uint64_t submitCmdBufAsync(VkCommandBuffer cmdBuf) {
   return signalValue;
 }
 
+// Spin-wait iterations before falling back to blocking vkWaitSemaphores.
+// Each iteration polls vkGetSemaphoreCounterValue (~1-3μs on NVIDIA).
+// Avoids ~50-100μs kernel context switch overhead for short GPU ops.
+static int spinWaitIters = 400;
+
 // Wait until timeline semaphore reaches the given value
 static void waitTimelineValue(uint64_t value) {
   if (value == 0) return;
   uint64_t completed;
   fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
   if (completed >= value) return;
+
+  // Spin-wait: poll semaphore to avoid blocking wait overhead
+  for (int i = 0; i < spinWaitIters; i++) {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+    __asm__ volatile("pause" ::: "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile("yield" ::: "memory");
+#endif
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed >= value) return;
+  }
+
+  // Fall back to blocking wait for longer ops
   VkSemaphoreWaitInfo waitInfo = {
     .sType = 1000207004, // VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO
     .semaphoreCount = 1,
@@ -862,6 +880,8 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   debugPipelines = (dbgP && dbgP[0] == '1') ? 1 : 0;
   const char* dbgCoop = getenv("HELIOS_DEBUG_COOP_PROPS");
   debugCoopProps = (dbgCoop && dbgCoop[0] == '1') ? 1 : 0;
+  const char* spinEnv = getenv("HELIOS_SPIN_WAIT");
+  if (spinEnv) spinWaitIters = atoi(spinEnv);
 
   // Load libvulkan.so
   vk_lib = dlopen("libvulkan.so.1", RTLD_NOW);
