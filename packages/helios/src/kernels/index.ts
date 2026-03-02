@@ -20,6 +20,9 @@ export {
   kernelNegVec4, kernelScaleVec4, kernelExpVec4, kernelLogVec4,
   kernelSqrtVec4, kernelReluVec4, kernelClampMinVec4, kernelClampVec4,
   kernelGeluVec4,
+  kernelAddVec4x2, kernelSubVec4x2, kernelMulVec4x2,
+  kernelScaleVec4x2, kernelReluVec4x2, kernelGeluVec4x2,
+  kernelAddBDA, kernelSubBDA, kernelMulBDA, kernelDivBDA,
 } from "./elementwise.js";
 
 import {
@@ -35,6 +38,9 @@ import {
   kernelNegVec4, kernelScaleVec4, kernelExpVec4, kernelLogVec4,
   kernelSqrtVec4, kernelReluVec4, kernelClampMinVec4, kernelClampVec4,
   kernelGeluVec4,
+  kernelAddVec4x2, kernelSubVec4x2, kernelMulVec4x2,
+  kernelScaleVec4x2, kernelReluVec4x2, kernelGeluVec4x2,
+  kernelAddBDA, kernelSubBDA, kernelMulBDA, kernelDivBDA,
 } from "./elementwise.js";
 
 // Reduction kernels
@@ -48,23 +54,25 @@ import {
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
-  kernelSilu, kernelSiluVec4,
+  kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
+  kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
   kernelDropoutMask, kernelDropoutMaskVec4,
 } from "./nn.js";
 
 import {
-  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
+  kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyBackward,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
-  kernelSilu, kernelSiluVec4,
+  kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
+  kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
   kernelDropoutMask, kernelDropoutMaskVec4,
 } from "./nn.js";
@@ -98,14 +106,20 @@ import {
 // Attention kernels (Flash Attention forward + backward)
 export {
   kernelFlashAttentionForward,
+  kernelFlashAttentionForwardV2,
   kernelFlashAttentionBackwardDQ,
   kernelFlashAttentionBackwardDKV,
+  kernelFlashAttentionBackwardDQV2,
+  kernelFlashAttentionBackwardDKVV2,
 } from "./attention.js";
 
 import {
   kernelFlashAttentionForward,
+  kernelFlashAttentionForwardV2,
   kernelFlashAttentionBackwardDQ,
   kernelFlashAttentionBackwardDKV,
+  kernelFlashAttentionBackwardDQV2,
+  kernelFlashAttentionBackwardDKVV2,
 } from "./attention.js";
 
 // Copy / slice kernels
@@ -155,6 +169,10 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "sub":   spirv = kernelSub(wgSize); break;
     case "mul":   spirv = kernelMul(wgSize); break;
     case "div":   spirv = kernelDiv(wgSize); break;
+    case "add_bda": spirv = kernelAddBDA(wgSize); break;
+    case "sub_bda": spirv = kernelSubBDA(wgSize); break;
+    case "mul_bda": spirv = kernelMulBDA(wgSize); break;
+    case "div_bda": spirv = kernelDivBDA(wgSize); break;
     case "neg":   spirv = kernelNeg(wgSize); break;
     case "scale": spirv = kernelScale(wgSize); break;
     case "exp":   spirv = kernelExp(wgSize); break;
@@ -168,15 +186,21 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "sub_vec4":  spirv = kernelSubVec4(wgSize); break;
     case "mul_vec4":  spirv = kernelMulVec4(wgSize); break;
     case "div_vec4":  spirv = kernelDivVec4(wgSize); break;
+    case "add_vec4x2": spirv = kernelAddVec4x2(wgSize); break;
+    case "sub_vec4x2": spirv = kernelSubVec4x2(wgSize); break;
+    case "mul_vec4x2": spirv = kernelMulVec4x2(wgSize); break;
     case "neg_vec4":  spirv = kernelNegVec4(wgSize); break;
     case "scale_vec4": spirv = kernelScaleVec4(wgSize); break;
+    case "scale_vec4x2": spirv = kernelScaleVec4x2(wgSize); break;
     case "exp_vec4":  spirv = kernelExpVec4(wgSize); break;
     case "log_vec4":  spirv = kernelLogVec4(wgSize); break;
     case "sqrt_vec4": spirv = kernelSqrtVec4(wgSize); break;
     case "relu_vec4": spirv = kernelReluVec4(wgSize); break;
+    case "relu_vec4x2": spirv = kernelReluVec4x2(wgSize); break;
     case "clamp_min_vec4": spirv = kernelClampMinVec4(wgSize); break;
     case "clamp_vec4":     spirv = kernelClampVec4(wgSize); break;
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
+    case "gelu_vec4x2": spirv = kernelGeluVec4x2(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
     case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
     case "sum_sq_reduce_stride": spirv = kernelSumOfSquaresStride(wgSize); break;
@@ -190,6 +214,11 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "layernorm_vec4": spirv = kernelLayerNormVec4(wgSize); break;
     case "silu":      spirv = kernelSilu(wgSize); break;
     case "silu_vec4": spirv = kernelSiluVec4(wgSize); break;
+    case "silu_vec4x2": spirv = kernelSiluVec4x2(wgSize); break;
+    case "silu_mul":  spirv = kernelSiluMul(wgSize); break;
+    case "silu_mul_vec4": spirv = kernelSiluMulVec4(wgSize); break;
+    case "silu_mul_backward": spirv = kernelSiluMulBackward(wgSize); break;
+    case "silu_mul_backward_vec4": spirv = kernelSiluMulBackwardVec4(wgSize); break;
     case "mul_add":   spirv = kernelMulAdd(wgSize); break;
     case "residual_dropout_add": spirv = kernelResidualDropoutAdd(wgSize); break;
     case "residual_dropout_add_vec4": spirv = kernelResidualDropoutAddVec4(wgSize); break;
@@ -259,15 +288,34 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "cast_f16_to_f32": spirv = kernelCastF16ToF32(wgSize); break;
     case "check_finite": spirv = kernelCheckFinite(wgSize); break;
     default: {
+      // Register-resident unrolled softmax — name encodes iters: softmax_reg_u{N}
+      const regUnrollMatch = name.match(/^softmax_reg_u(\d+)$/);
+      if (regUnrollMatch) {
+        const iters = parseInt(regUnrollMatch[1], 10);
+        spirv = kernelSoftmaxRegUnrolled(wgSize, iters);
+      }
+      // Register-resident unrolled layernorm — name encodes iters: layernorm_reg_u{N}
+      if (!spirv) {
+        const lnRegMatch = name.match(/^layernorm_reg_u(\d+)$/);
+        if (lnRegMatch) {
+          const iters = parseInt(lnRegMatch[1], 10);
+          spirv = kernelLayerNormRegUnrolled(wgSize, iters);
+        }
+      }
       // Flash attention kernels — name encodes params: flash_attn_{variant}_{Br}_{Bc}_{D}
-      const flashMatch = name.match(/^flash_attn_(fwd|bwd_dq|bwd_dkv)_(\d+)_(\d+)_(\d+)$/);
-      if (flashMatch) {
-        const [, variant, brS, bcS, dS] = flashMatch;
-        const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
-        switch (variant) {
-          case "fwd":     spirv = kernelFlashAttentionForward(Br, Bc, D); break;
-          case "bwd_dq":  spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D); break;
-          case "bwd_dkv": spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D); break;
+      if (!spirv) {
+        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)_(\d+)_(\d+)_(\d+)$/);
+        if (flashMatch) {
+          const [, variant, brS, bcS, dS] = flashMatch;
+          const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
+          switch (variant) {
+            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D); break;
+            case "fwd_v2":     spirv = kernelFlashAttentionForwardV2(Br, Bc, D); break;
+            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D); break;
+            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D); break;
+            case "bwd_dq_v2":  spirv = kernelFlashAttentionBackwardDQV2(Br, Bc, D); break;
+            case "bwd_dkv_v2": spirv = kernelFlashAttentionBackwardDKVV2(Br, Bc, D); break;
+          }
         }
       }
       // Cooperative matrix matmul — name encodes:

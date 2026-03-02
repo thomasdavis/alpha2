@@ -10,8 +10,8 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, relu, layerNorm, softmax, crossEntropy,
-  slice, reshape, transpose, embedding, scale, softCap, dropout,
+  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, softmax, crossEntropy,
+  sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
@@ -236,10 +236,10 @@ function transformerBlock(
   // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
   const qkvFlat = matmulTransposed(ctx, q3d, layer.attn.wqkv); // [B*T, 3*nEmbd]
-  const BT = Batch * T;
-  const q = reshape(ctx, slice(ctx, qkvFlat, [0, 0], [BT, nEmbd]), [Batch, T, nEmbd]);
-  const k = reshape(ctx, slice(ctx, qkvFlat, [0, nEmbd], [BT, 2 * nEmbd]), [Batch, T, nEmbd]);
-  const v = reshape(ctx, slice(ctx, qkvFlat, [0, 2 * nEmbd], [BT, 3 * nEmbd]), [Batch, T, nEmbd]);
+  const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
+  const q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
+  const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
+  const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
@@ -295,9 +295,9 @@ function transformerBlock(
     mlpH = matmulTransposed(ctx, h_act, layer.mlp.fc2);
   } else if (activation === "swiglu") {
     // SwiGLU: h = (silu(x @ W_gate) ⊙ (x @ W_up)) @ W_proj
-    const gate = silu(ctx, matmulTransposed(ctx, flat, layer.mlp.fc_gate!));
+    const gatePre = matmulTransposed(ctx, flat, layer.mlp.fc_gate!);
     const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);
-    mlpH = matmulTransposed(ctx, mul(ctx, gate, up), layer.mlp.fc_proj!);
+    mlpH = matmulTransposed(ctx, siluMul(ctx, gatePre, up), layer.mlp.fc_proj!);
   } else if (activation === "universal") {
     // Universal Approximator: f(x) = silu(x) * gate + x * skip
     // Learnable per-channel gating — can represent any blend of SiLU and identity.

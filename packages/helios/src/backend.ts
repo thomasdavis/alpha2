@@ -315,7 +315,13 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
 
-const POOL_MAX_PER_SIZE = 8;
+// Adaptive pool cap: allow more entries for small buffers (cheap), fewer for large.
+// Prevents both vk.destroyBuffer thrashing (small) and VRAM hoarding (large).
+function poolMaxForSize(byteSize: number): number {
+  if (byteSize <= 262_144) return 256;   // ≤256KB: up to 256 entries (64MB max)
+  if (byteSize <= 4_194_304) return 32;  // ≤4MB: up to 32 entries (128MB max)
+  return 8;                               // >4MB: 8 entries (conservative)
+}
 const bufferPool = new Map<number, number[]>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
@@ -358,7 +364,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
   const rounded = roundPoolSize(byteSize);
   let pool = bufferPool.get(rounded);
   if (!pool) { pool = []; bufferPool.set(rounded, pool); }
-  if (pool.length < POOL_MAX_PER_SIZE) {
+  if (pool.length < poolMaxForSize(rounded)) {
     pool.push(handle);
     bufferPoolEntries++;
     bufferPoolBytes += rounded;
@@ -504,6 +510,19 @@ const outputPool = new Map<number, OutputRegion[]>();
 let outputPoolEntries = 0;
 let outputPoolBytes = 0;
 
+// Cached timeline completion value — avoids N-API call per-op.
+// Refreshed lazily: only re-queries GPU when cache is stale (after flush).
+let _completedCache = 0;
+let _completedCacheDirty = true;
+function getCachedCompleted(vk: NativeAddon): number {
+  if (_completedCacheDirty) {
+    _completedCache = vk.getCompleted();
+    _completedCacheDirty = false;
+  }
+  return _completedCache;
+}
+function invalidateCompletedCache(): void { _completedCacheDirty = true; }
+
 /**
  * Round allocation size up to coarse bins to reduce pool fragmentation.
  * Collapses many similar sizes into fewer size classes for better reuse.
@@ -516,10 +535,13 @@ function roundPoolSize(bytes: number): number {
 
 function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
   const rounded = roundPoolSize(byteSize);
-  const completed = vk.getCompleted();
+  const completed = getCachedCompleted(vk);
   const pool = outputPool.get(rounded);
   if (pool) {
-    for (let i = 0; i < pool.length; i++) {
+    // LIFO scan: prefer most recently released buffer for L2 cache locality.
+    // The most recent buffer is most likely still in L2, improving bandwidth
+    // for repeated operations on the same data size.
+    for (let i = pool.length - 1; i >= 0; i--) {
       if (pool[i].readyValue <= completed) {
         const region = pool.splice(i, 1)[0];
         outputPoolEntries--;
@@ -543,7 +565,7 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   region.readyValue = submitValue;
   let pool = outputPool.get(region.byteSize);
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
-  if (pool.length < POOL_MAX_PER_SIZE) {
+  if (pool.length < poolMaxForSize(region.byteSize)) {
     pool.push(region);
     outputPoolEntries++;
     outputPoolBytes += region.byteSize;
@@ -611,6 +633,7 @@ interface PendingOp {
   hasGZ?: boolean;          // whether packed dispatch stores explicit z group count
   flags?: number;           // packed dispatch flags (gY + hasGZ bit)
   packedBytes?: number;     // encoded byte size for batchDispatchMany payload
+  elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
 }
 
 /**
@@ -629,10 +652,50 @@ class ComputeGraph {
   get deferredReleaseCount(): number { return this.deferredReleases.length; }
   opsThisStep = 0;
 
+  // DGC state: pipeline slot for the BDA binary op kernel, -1 if not set up
+  private dgcBinaryPipeSlot = -1;
+  // Set of regular pipeline slots that map to the DGC binary pipeline
+  private dgcEligiblePipelines = new Set<number>();
+  private dgcReady = false;
+  // DGC packed buffer (reused across flushes)
+  private dgcPackedBuf: ArrayBuffer | null = null;
+
   attach(vk: NativeAddon): void { this.vk = vk; }
 
   get length(): number { return this.pending.length; }
   get lastFlushTimeline(): number { return this._lastFlushTimeline; }
+
+  /**
+   * Set up DGC for binary ops. Called once when DGC is available.
+   * Creates a BDA pipeline and configures the DGC layout.
+   */
+  setupDGC(vk: NativeAddon): void {
+    if (this.dgcReady || !vk.dgcSetup || !vk.batchExecuteAllDGC) return;
+    try {
+      // Create BDA binary op pipeline (0 descriptor bindings, 32-byte push constants)
+      const spirv = getKernelSpirv("add_bda", WG_SIZE);
+      const pipeSlot = vk.createPipeline(spirv, 0, 32);
+      this.dgcBinaryPipeSlot = pipeSlot;
+
+      // Set up DGC with this pipeline: 32 bytes push constants, up to 4096 sequences
+      const ok = vk.dgcSetup(pipeSlot, 32, 4096);
+      if (!ok) return;
+
+      this.dgcReady = true;
+    } catch {
+      // DGC setup failed — continue with regular dispatch
+    }
+  }
+
+  /**
+   * Register a regular pipeline slot as DGC-eligible (maps to the BDA binary op kernel).
+   * Called when a binary op pipeline is first created.
+   */
+  markDGCEligible(regularPipeSlot: number): void {
+    if (this.dgcReady) {
+      this.dgcEligiblePipelines.add(regularPipeSlot);
+    }
+  }
 
   record(op: PendingOp): void {
     // Normalize per-op metadata once to avoid repeated work in flush().
@@ -660,9 +723,21 @@ class ComputeGraph {
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
   }
 
-  /** Schedule an intermediate output region for release after the next flush. */
+  /** Schedule an intermediate output region for release after the next flush.
+   *  When the graph has no pending ops (e.g. after sync()), release immediately
+   *  to the output pool so the buffer is available for reuse right away. This
+   *  prevents double-buffering in tight loops (benchmark or training) where the
+   *  same-size buffer would otherwise alternate between two allocations, filling
+   *  the L2 cache and preventing input data from staying cached.
+   */
   deferRelease(region: OutputRegion): void {
-    this.deferredReleases.push(region);
+    if (this.pending.length === 0) {
+      // No pending ops — buffer was used by already-completed work.
+      // Release immediately so it's available for the next acquire.
+      releaseOutputRegion(region, this._lastFlushTimeline);
+    } else {
+      this.deferredReleases.push(region);
+    }
   }
 
   /**
@@ -689,7 +764,56 @@ class ComputeGraph {
     const packedTotalBytes = this.pendingPackedBytes;
     this.pendingPackedBytes = 0;
 
-    // Pack ops into binary format for C dispatch
+    // ── DGC fast path: when all ops are DGC-eligible binary ops ──
+    // Uses device-generated commands (single GPU submit, no per-op descriptor sets).
+    if (this.dgcReady && ops.length >= 2 && typeof vk.batchExecuteAllDGC === "function") {
+      // Check if ALL ops are DGC-eligible (binary ops with 3 buffers)
+      let allEligible = true;
+      for (let i = 0; i < ops.length; i++) {
+        if (!this.dgcEligiblePipelines.has(ops[i].pipeline) ||
+            ops[i].inputBufs.length !== 2 || ops[i].allBufs) {
+          allEligible = false;
+          break;
+        }
+      }
+
+      if (allEligible) {
+        // Pack DGC format: per op [bufA(i32), bufB(i32), bufC(i32), count(u32), gX(u32), gY(u32), gZ(u32)] = 28 bytes
+        // The BDA kernel is SCALAR (processes 1 element/thread), so we use the actual
+        // element count and recompute dispatch groups, regardless of whether the original
+        // dispatch used vec4 or vec4x2.
+        const DGC_OP_SIZE = 28;
+        const dgcTotal = ops.length * DGC_OP_SIZE;
+        if (!this.dgcPackedBuf || this.dgcPackedBuf.byteLength < dgcTotal) {
+          this.dgcPackedBuf = new ArrayBuffer(Math.max(dgcTotal, 4096));
+        }
+        const dv = new DataView(this.dgcPackedBuf);
+        let off = 0;
+        for (const op of ops) {
+          const count = op.elementCount ?? (op.push[0] | 0);
+          const gX = Math.ceil(count / WG_SIZE);
+          dv.setInt32(off, op.inputBufs[0], true); off += 4;
+          dv.setInt32(off, op.inputBufs[1], true); off += 4;
+          dv.setInt32(off, op.outputRegion.handle, true); off += 4;
+          dv.setUint32(off, count, true); off += 4;
+          dv.setUint32(off, gX, true); off += 4;
+          dv.setUint32(off, 1, true); off += 4;
+          dv.setUint32(off, 1, true); off += 4;
+        }
+
+        const tv = vk.batchExecuteAllDGC(this.dgcPackedBuf, ops.length);
+        this._lastFlushTimeline = tv;
+        invalidateCompletedCache();
+
+        for (const region of this.deferredReleases) {
+          releaseOutputRegion(region, tv);
+        }
+        this.deferredReleases = [];
+        return tv;
+      }
+    }
+
+    // ── Regular path: pack ops into binary format for C dispatch ──
     const packed = new ArrayBuffer(packedTotalBytes);
     const view = new DataView(packed);
     let offset = 0;
@@ -746,6 +870,7 @@ class ComputeGraph {
       tv = vk.batchSubmit();
     }
     this._lastFlushTimeline = tv;
+    invalidateCompletedCache();
 
     // Release deferred intermediate regions (e.g. from multi-pass reductions)
     for (const region of this.deferredReleases) {
@@ -775,7 +900,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
   // or every iteration allocates a new buffer (vkAllocateMemory overhead).
   const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
   const td: TensorData = {
-    shape: [...shape],
+    shape,
     dtype: "f32",
     get data(): Float32Array {
       if (!cached) {
@@ -898,6 +1023,12 @@ export class HeliosBackend implements Backend {
       const vk = getNative();
       graph.attach(vk);
       autoTuneWgSize(vk);
+
+      // Set up DGC (device-generated commands) if available
+      if (info.hasDGC && process.env.HELIOS_DISABLE_DGC !== "1") {
+        graph.setupDGC(vk);
+      }
+
       this.initialized = true;
       return vk;
     }
@@ -1087,7 +1218,20 @@ export class HeliosBackend implements Backend {
 
     // Use vec4 kernel when size is aligned (4x throughput)
     const useVec4 = !forceScalar && (size & 3) === 0;
-    const pipeline = getPipeline(vk, useVec4 ? `${kernelName}_vec4` : kernelName, 3);
+    // Coarsened vec4x2 (2 vec4 per thread) for large tensors — improves ILP.
+    // Threshold: >= 1M elements (256KB). Below this, dispatch overhead dominates
+    // and extra index math hurts. Only for simple binary ops (add/sub/mul).
+    const VEC4X2_THRESHOLD = 1 << 20; // 1M elements
+    const hasVec4x2 = useVec4 && size >= VEC4X2_THRESHOLD &&
+      (kernelName === "add" || kernelName === "sub" || kernelName === "mul");
+    const actualKernel = hasVec4x2 ? `${kernelName}_vec4x2`
+      : useVec4 ? `${kernelName}_vec4` : kernelName;
+    const pipeline = getPipeline(vk, actualKernel, 3);
+
+    // Mark add pipelines as DGC-eligible (DGC BDA kernel does FAdd)
+    if (kernelName === "add") {
+      graph.markDGCEligible(pipeline);
+    }
 
     // Reuse GPU buffers if inputs already on GPU (skips upload)
     const bufA = ensureGpu(vk, a);
@@ -1100,13 +1244,15 @@ export class HeliosBackend implements Backend {
     const effectiveSize = useVec4 ? size >> 2 : size;
     const roundedBytes = roundPoolSize(byteSize);
     const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
-    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / WG_SIZE);
+    // For vec4x2, dispatch half the groups (each thread handles 2 vec4)
+    const coarsenDiv = hasVec4x2 ? 2 : 1;
+    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / coarsenDiv / WG_SIZE);
     const push = push2Memo(effectiveSize, 0);
 
     // Record to compute graph — deferred execution
     graph.record({
       kind: "binary",
-      kernel: kernelName,
+      kernel: actualKernel,
       pipeline,
       inputBufs: [bufA, bufB],
       outputRegion: region,
@@ -1114,6 +1260,7 @@ export class HeliosBackend implements Backend {
       push,
       pushSize: PUSH_SIZE,
       shape: a.shape,
+      elementCount: size,  // actual element count for DGC scalar dispatch
     });
 
     return graphLazyTensor(vk, a.shape, region);
@@ -1126,7 +1273,13 @@ export class HeliosBackend implements Backend {
 
     // Use vec4 kernel when size is aligned (4x throughput)
     const useVec4 = (size & 3) === 0;
-    const pipeline = getPipeline(vk, useVec4 ? `${kernelName}_vec4` : kernelName, 2);
+    // Coarsened vec4x2 (2 vec4 per thread) for large tensors — improves ILP.
+    const VEC4X2_THRESHOLD = 4 << 20; // 4M elements — lower thresholds regress on exp()-heavy kernels
+    const hasVec4x2 = useVec4 && size >= VEC4X2_THRESHOLD &&
+      (kernelName === "scale" || kernelName === "gelu" || kernelName === "relu" || kernelName === "silu");
+    const actualKernel = hasVec4x2 ? `${kernelName}_vec4x2`
+      : useVec4 ? `${kernelName}_vec4` : kernelName;
+    const pipeline = getPipeline(vk, actualKernel, 2);
 
     // Reuse GPU buffer if input already on GPU
     const bufA = ensureGpu(vk, a);
@@ -1136,7 +1289,9 @@ export class HeliosBackend implements Backend {
     const effectiveSize = useVec4 ? size >> 2 : size;
     const roundedBytes = roundPoolSize(byteSize);
     const paddedSize = useVec4 ? (roundedBytes >> 4) : (roundedBytes >> 2);
-    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / WG_SIZE);
+    // For vec4x2, dispatch half the groups (each thread handles 2 vec4)
+    const coarsenDiv = hasVec4x2 ? 2 : 1;
+    const paddedGroups = Math.ceil(Math.max(effectiveSize, paddedSize) / coarsenDiv / WG_SIZE);
     const push = push2Memo(effectiveSize, scalar);
     const groups = paddedGroups;
 
@@ -1759,22 +1914,22 @@ export class HeliosBackend implements Backend {
     if (dim % 4 === 0 && dim >= 16) {
       const dimVec4 = dim / 4;
       const softmaxEnv = process.env.HELIOS_SOFTMAX_KERNEL ?? "";
-      // Register-resident softmax (softmax_reg) tested and reverted (Session 8):
-      // For dim=512 (attention softmax), input fits in L4's 48MB L2 cache, so online
-      // softmax's "second global read" is an L2 hit (~free). The reg-resident approach
-      // adds L1-scratch write overhead → net 25% regression (0.165ms vs 0.131ms baseline).
-      // Only viable for dims >> L2 cache budget, but those exceed maxIters capacity.
+      // Register-resident unrolled softmax: compile-time unrolled SSA variables
+      // (not an array) stay in GPU registers. Requires dimVec4 % wgSize == 0 and
+      // itersPerThread <= 8. Eliminates the 2nd global memory read entirely.
+      // Previous softmax_reg used a Function-scope array which spilled to L1 scratch
+      // (25% regression). This version uses individual SSA values → true registers.
+      const softmaxWgBase = dimVec4 <= 128 ? 32 : Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const itersPerThread = Math.ceil(dimVec4 / softmaxWgBase);
+      const canUnroll = !softmaxEnv && dimVec4 % softmaxWgBase === 0 && itersPerThread <= 8 && softmaxWgBase <= 32;
       const kernelName = softmaxEnv === "online" ? "softmax_online"
         : softmaxEnv === "vec4" ? "softmax_vec4"
         : softmaxEnv === "reg" ? "softmax_reg"
+        : canUnroll ? `softmax_reg_u${itersPerThread}`
         : "softmax_online";
       // For small dims (attention softmax, dim≤512), use wgSize=32: single subgroup
       // eliminates shared memory barriers and allows 48 WGs/SM vs 12 at wgSize=128.
-      const softmaxWg = softmaxEnv === "reg"
-        ? 32
-        : dimVec4 <= 32 ? 32  // dim ≤ 128: fits in 1 subgroup without looping
-        : dimVec4 <= 128 ? 32 // dim ≤ 512: 4 vec4/thread, 1 subgroup, 0 barriers
-        : Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const softmaxWg = softmaxEnv === "reg" ? 32 : softmaxWgBase;
 
       // Persistent CTA: limit concurrent WGs so Phase 2 re-reads hit L2 cache.
       // Activates when total data exceeds ~32MB (L2 thrashing threshold on L4).
@@ -1860,14 +2015,20 @@ export class HeliosBackend implements Backend {
     const byteSize = shapeSize(x.shape) * 4;
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
+    const dimVec4 = dim / 4;
+    // Register-resident unrolled: wgSize=32, compile-time unrolled SSA registers.
+    // Eliminates Phase 2 re-read of X. Requires dimVec4 % 32 == 0 and iters <= 16.
+    const lnItersPerThread = Math.ceil(dimVec4 / 32);
+    const canUnrollLn = useVec4 && dimVec4 % 32 === 0 && lnItersPerThread <= 16;
     // Tune wgSize: dimVec4>>1 → 128 for dim=1024. 2 vec4/thread, 4 subgroups.
     // Better than >>2 (wg=64, identical perf but fewer warps/SM).
     // Much better than wg=256 (8 subgroups, barrier overhead dominates).
-    const dimVec4 = dim / 4;
-    const lnWg = useVec4
-      ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
-      : WG_SIZE;
-    const kernelName = useVec4 ? "layernorm_vec4" : "layernorm";
+    const lnWg = canUnrollLn
+      ? 32
+      : useVec4
+        ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
+        : WG_SIZE;
+    const kernelName = canUnrollLn ? `layernorm_reg_u${lnItersPerThread}` : useVec4 ? "layernorm_vec4" : "layernorm";
     const pipeline = getPipeline(vk, kernelName, 4, PUSH_SIZE, lnWg);
     const bufX = ensureGpu(vk, x);
     const bufW = ensureGpu(vk, weight);
@@ -1929,6 +2090,99 @@ export class HeliosBackend implements Backend {
       out[i] = grad[i] * sigma * (1 + x * (1 - sigma));
     }
     return makeTensor(input.shape, input.dtype, out);
+  }
+
+  // ── Fused SiLU-Mul (SwiGLU) ───────────────────────────────────────────────
+
+  siluMul(a: TensorData, b: TensorData): TensorData {
+    const size = shapeSize(a.shape);
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const byteSize = size * 4;
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "silu_mul_vec4" : "silu_mul";
+      const pipeline = getPipeline(vk, kernelName, 3);
+      const bufA = ensureGpu(vk, a);
+      const bufB = ensureGpu(vk, b);
+      const region = acquireOutputRegion(vk, byteSize);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      const push = push2Memo(effectiveSize, 0);
+      graph.record({
+        kind: "binary",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [bufA, bufB],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: a.shape,
+      });
+      return graphLazyTensor(vk, a.shape, region);
+    }
+    // CPU fallback
+    const aArr = a.data as Float32Array;
+    const bArr = b.data as Float32Array;
+    const out = new Float32Array(size);
+    for (let i = 0; i < size; i++) {
+      const x = aArr[i];
+      out[i] = (x / (1 + Math.exp(-x))) * bArr[i];
+    }
+    return makeTensor(a.shape, a.dtype, out);
+  }
+
+  siluMulBackward(aData: TensorData, bData: TensorData, gradOutput: TensorData): TensorData[] {
+    const size = shapeSize(aData.shape);
+    if (size >= this._minGpuSize) {
+      const vk = this.init();
+      const byteSize = size * 4;
+      const useVec4 = (size & 3) === 0;
+      const kernelName = useVec4 ? "silu_mul_backward_vec4" : "silu_mul_backward";
+      const pipeline = getPipeline(vk, kernelName, 5);
+      const bufDC = ensureGpu(vk, gradOutput);
+      const bufA = ensureGpu(vk, aData);
+      const bufB = ensureGpu(vk, bData);
+      const regionDA = acquireOutputRegion(vk, byteSize);
+      const regionDB = acquireOutputRegion(vk, byteSize);
+      const effectiveSize = useVec4 ? size >> 2 : size;
+      const groups = Math.ceil(effectiveSize / WG_SIZE);
+      const push = push2Memo(effectiveSize, 0);
+      graph.record({
+        kind: "backward",
+        kernel: kernelName,
+        pipeline,
+        inputBufs: [],
+        outputRegion: regionDA,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: PUSH_SIZE,
+        shape: aData.shape,
+        allBufs: [bufDC, bufA, bufB, regionDA.handle, regionDB.handle],
+        writeMask: (1 << 3) | (1 << 4),
+      });
+      return [
+        graphLazyTensor(vk, aData.shape, regionDA),
+        graphLazyTensor(vk, bData.shape, regionDB),
+      ];
+    }
+    // CPU fallback
+    const aArr = aData.data as Float32Array;
+    const bArr = bData.data as Float32Array;
+    const gArr = gradOutput.data as Float32Array;
+    const da = new Float32Array(size);
+    const db = new Float32Array(size);
+    for (let i = 0; i < size; i++) {
+      const x = aArr[i];
+      const sig = 1 / (1 + Math.exp(-x));
+      const siluDeriv = sig * (1 + x * (1 - sig));
+      da[i] = gArr[i] * bArr[i] * siluDeriv;
+      db[i] = gArr[i] * x * sig;
+    }
+    return [
+      makeTensor(aData.shape, aData.dtype, da),
+      makeTensor(bData.shape, bData.dtype, db),
+    ];
   }
 
   reluBackward(input: TensorData, gradOutput: TensorData): TensorData {
@@ -2675,12 +2929,13 @@ export class HeliosBackend implements Backend {
     let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     let gY = Math.ceil(M / (this._coopM * regTilesM * subgroupTilesY));
 
-    // Occupancy check: if r4x4 gives too few WGs (< 96), try r4x2 first for higher
+    // Occupancy check: if r4x4 gives too few WGs (< 128), try r4x2 first for higher
     // arithmetic intensity than r2x2, then fall back to r2x2 if needed.
-    if (gX * gY < 96 && regTilesM >= 4 && regTilesN >= 4) {
+    // 128 WGs = ~2.2 WGs/SM on L4 (58 SMs). With r4x4 shmem ≈ 32KB, only 1 WG/SM
+    // can be active, so < 128 WGs means many SMs sit idle during the second wave.
+    if (gX * gY < 128 && regTilesM >= 4 && regTilesN >= 4) {
       // Try r4x2: 33% higher arithmetic intensity than r2x2, 2× WGs vs r4x4.
       // Require ≥ 2*58=116 WGs so each SM gets at least 2 WGs (r4x2 shmem=24KB → 2/SM).
-      // With 64 WGs (M=512), r4x2 gives only 1 WG/SM → worse than r2x2's 3 WGs/SM.
       const effM_42 = this._coopM * subgroupTilesY * 4;
       const effN_42 = this._coopN * subgroupTilesX * 2;
       if (M % effM_42 === 0 && N % effN_42 === 0) {
@@ -2716,10 +2971,16 @@ export class HeliosBackend implements Backend {
       }
     }
 
+    // Adaptive kMulti: use kMulti=2 when occupancy is limited (< 512 WGs).
+    // With kMulti=4 + s2x2: shmem = 32KB/WG → 1 WG/SM (48KB L4 limit).
+    // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
+    // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles.
+    const baseWGs = gX * gY;
+    const localKMulti = (baseWGs < 512 && this._kMulti >= 4) ? 2 : this._kMulti;
+    const kTileK = this._coopK * localKMulti;
+
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
     // Only for non-batched (batchSize=1) since wgId.z is repurposed as split index.
-    const kTileK = this._coopK * this._kMulti;
-    const baseWGs = gX * gY;
     let splitK = 1;
     if (COOP_SPLIT_K !== 0 && batchSize === 1) {
       if (COOP_SPLIT_K === -1) {
@@ -2745,7 +3006,7 @@ export class HeliosBackend implements Backend {
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
-    const kmSuffix = this._kMulti > 1 ? `_km${this._kMulti}` : "";
+    const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
 
     let variant: string;
     if (useSplitK) {
@@ -3242,8 +3503,10 @@ export class HeliosBackend implements Backend {
     // Q/K/V are [BH, T, D] where BH = batch * nHeads
     const BH = Q.shape[0];
     const D = Q.shape[2];
-    const Br = 32, Bc = 32;
-
+    // Br=32, Bc=16: halved Bc reduces shared memory (sK+sV: 16KB→8KB), doubling
+    // occupancy from 3 to 6 WGs/SM on L4. V1 (runtime loop) avoids the SPIR-V code
+    // bloat that V2's compile-time j-unrolling causes (40% regression from icache pressure).
+    const Br = 32, Bc = 16;
     const kernelName = `flash_attn_fwd_${Br}_${Bc}_${D}`;
     const pipeline = getPipeline(vk, kernelName, 5, 16);
 
@@ -3285,7 +3548,7 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
-    const Br = 32, Bc = 32;
+    const Br = 32, BrDKV = 16, BcDQ = 16, BcDKV = 16;
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -3294,15 +3557,14 @@ export class HeliosBackend implements Backend {
     const bufDO = ensureGpu(vk, dO);
     const bufLSE = ensureGpu(vk, lse);
 
-    // Step 1: Precompute D[i] = sum_d(dO[i,d] * O[i,d]) via element-wise mul + sum
-    // D_precomp: [BH, T] — one scalar per query position
-    const doTimesO = this.mul(dO, O); // [BH, T, D]
-    const dPrecomp = this.sum(doTimesO, 2); // [BH, T] — sum over last axis (D)
-    const bufDpre = ensureGpu(vk, dPrecomp);
+    // Step 1: dQ kernel computes D_precomp inline (saves 2 dispatch calls ~60µs)
+    // D_precomp: [BH, T] — Di = dot(dO[i,:], O[i,:]), computed inside dQ kernel
+    const dPreBytes = BH * T * 4;
+    const dPreRegion = acquireOutputRegion(vk, dPreBytes);
 
-    // Step 2: dQ kernel
-    const dqKernel = `flash_attn_bwd_dq_${Br}_${Bc}_${D}`;
-    const dqPipeline = getPipeline(vk, dqKernel, 7, 16);
+    // dQ kernel: bindings [Q, K, V, dO, O, LSE, Dpre_out, dQ_out]
+    const dqKernel = `flash_attn_bwd_dq_${Br}_${BcDQ}_${D}`;
+    const dqPipeline = getPipeline(vk, dqKernel, 8, 16);
     const dqBytes = BH * T * D * 4;
     const dqRegion = acquireOutputRegion(vk, dqBytes);
     const push = new Float32Array([T, scale, softCap, 0]);
@@ -3317,11 +3579,11 @@ export class HeliosBackend implements Backend {
       push,
       pushSize: 16,
       shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, bufDpre, dqRegion.handle],
+      allBufs: [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
     });
 
-    // Step 3: dKV kernel
-    const dkvKernel = `flash_attn_bwd_dkv_${Br}_${Bc}_${D}`;
+    // Step 2: dKV kernel reads D_precomp written by dQ kernel
+    const dkvKernel = `flash_attn_bwd_dkv_${BrDKV}_${BcDKV}_${D}`;
     const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
     const dkBytes = BH * T * D * 4;
     const dkRegion = acquireOutputRegion(vk, dkBytes);
@@ -3334,11 +3596,11 @@ export class HeliosBackend implements Backend {
       pipeline: dkvPipeline,
       inputBufs: [],
       outputRegion: dkRegion,
-      groups: [Math.ceil(T / Bc), BH, 1],
+      groups: [Math.ceil(T / BcDKV), BH, 1],
       push: new Float32Array([T, scale, softCap, 0]),
       pushSize: 16,
       shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, bufDpre, dkRegion.handle, dvRegion.handle],
+      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
     });
 
     const dQ = graphLazyTensor(vk, [BH, T, D], dqRegion);

@@ -96,6 +96,8 @@ export interface Backend {
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   reluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
   siluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
+  siluMul?(a: TensorData, b: TensorData): TensorData;
+  siluMulBackward?(a: TensorData, b: TensorData, gradOutput: TensorData): TensorData[];
   clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
   crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;
@@ -109,6 +111,9 @@ export interface Backend {
   matmulTransposedA?(a: TensorData, b: TensorData): TensorData;
   addInplace?(a: TensorData, b: TensorData): void;
   scaleInplace?(a: TensorData, scalar: number): void;
+
+  // fused 3-way column slice: [rows, 3*D] → 3×[rows, D] in single dispatch
+  sliceQkv?(a: TensorData): [TensorData, TensorData, TensorData];
 
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.

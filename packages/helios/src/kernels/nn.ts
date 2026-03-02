@@ -1511,6 +1511,183 @@ export function kernelSoftmaxRegResident(wgSize = 32, maxIters = 8): Uint32Array
   return b.build();
 }
 
+// ── Kernel: Compile-time unrolled register-resident softmax ──────────────────
+
+/**
+ * Single-pass register-resident softmax with compile-time unrolled loads.
+ * Each thread loads exactly `maxIters` vec4 values into SSA variables (not an
+ * array), so they stay in GPU registers instead of spilling to L1 scratch.
+ *
+ * Requires: dimVec4 == maxIters * wgSize (no OOB handling).
+ * Single subgroup only (wgSize must equal SUBGROUP_SIZE = 32).
+ *
+ * Algorithm:
+ *   1. Load all values into SSA registers + compute local max
+ *   2. Subgroup reduce for global max
+ *   3. Compute exp(x - max) + accumulate local sum
+ *   4. Subgroup reduce for global sum
+ *   5. Normalize (multiply by 1/sum) and store
+ *
+ * Bindings: 0=A(vec4,in), 1=C(vec4,out)
+ * Push constants: { dimVec4: f32, numRows: f32 }
+ * Dispatch: (numRows, 1, 1) workgroups of (wgSize, 1, 1)
+ */
+export function kernelSoftmaxRegUnrolled(wgSize = 32, maxIters = 4): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  b.addCapability(Capability.GroupNonUniform);
+  b.addCapability(Capability.GroupNonUniformArithmetic);
+
+  // vec4 type
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // Buffers: input (vec4, readonly), output (vec4, write)
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2); // dimVec4, numRows
+
+  // Constants
+  const constNegMax = b.id();
+  b.constantF32(p.tF32, constNegMax, -3.4028235e+38);
+  const const1f = b.id();
+  b.constantF32(p.tF32, const1f, 1.0);
+  const scopeSubgroup = b.id();
+  b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [b.id()]);
+
+  // Load IDs
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  // Push constants
+  const dimVec4F = loadPushLen(b, p, pc); // push[0] = dimVec4
+  const dimVec4 = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, dimVec4, dimVec4F]);
+  const rowOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffset, row, dimVec4]);
+
+  // Pre-compute offset constants: localIdx + k * wgSize
+  const kOffsets: number[] = [];
+  for (let k = 0; k < maxIters; k++) {
+    if (k === 0) {
+      kOffsets.push(localIdx);
+    } else {
+      const constKW = b.id();
+      b.constant(p.tU32, constKW, k * wgSize);
+      const off = b.id();
+      b.emit(Op.IAdd, [p.tU32, off, localIdx, constKW]);
+      kOffsets.push(off);
+    }
+  }
+
+  // ── Step 1: Load all values into SSA registers + compute local max ──
+  const regVec4: number[] = [];
+  let localMax = constNegMax;
+
+  for (let k = 0; k < maxIters; k++) {
+    const globalOff = k === 0
+      ? (() => { const id = b.id(); b.emit(Op.IAdd, [p.tU32, id, rowOffset, localIdx]); return id; })()
+      : (() => { const id = b.id(); b.emit(Op.IAdd, [p.tU32, id, rowOffset, kOffsets[k]]); return id; })();
+    const ptrA = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, globalOff]);
+    const v4 = b.id();
+    b.emit(Op.Load, [tVec4F32, v4, ptrA]);
+    regVec4.push(v4);
+
+    // Horizontal max of 4 components
+    const x0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x0, v4, 0]);
+    const x1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x1, v4, 1]);
+    const x2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x2, v4, 2]);
+    const x3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, x3, v4, 3]);
+    const m01 = b.id(); b.emit(Op.ExtInst, [p.tF32, m01, p.glslStd, GLSLstd450.FMax, x0, x1]);
+    const m23 = b.id(); b.emit(Op.ExtInst, [p.tF32, m23, p.glslStd, GLSLstd450.FMax, x2, x3]);
+    const chunkMax = b.id(); b.emit(Op.ExtInst, [p.tF32, chunkMax, p.glslStd, GLSLstd450.FMax, m01, m23]);
+
+    const newMax = b.id();
+    b.emit(Op.ExtInst, [p.tF32, newMax, p.glslStd, GLSLstd450.FMax, localMax, chunkMax]);
+    localMax = newMax;
+  }
+
+  // ── Step 2: Subgroup reduce for global max ──
+  const globalMax = b.id();
+  b.emit(Op.GroupNonUniformFMax, [p.tF32, globalMax, scopeSubgroup, GroupOperation.Reduce, localMax]);
+  const splatGMax = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatGMax, globalMax, globalMax, globalMax, globalMax]);
+
+  // ── Step 3: Compute exp(x - max) + accumulate sum ──
+  let localSum = p.const0f;
+  const regExp: number[] = [];
+
+  for (let k = 0; k < maxIters; k++) {
+    const shifted = b.id();
+    b.emit(Op.FSub, [tVec4F32, shifted, regVec4[k], splatGMax]);
+    const expV = b.id();
+    b.emit(Op.ExtInst, [tVec4F32, expV, p.glslStd, GLSLstd450.Exp, shifted]);
+    regExp.push(expV);
+
+    // Horizontal sum of exp values
+    const e0 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e0, expV, 0]);
+    const e1 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e1, expV, 1]);
+    const e2 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e2, expV, 2]);
+    const e3 = b.id(); b.emit(Op.CompositeExtract, [p.tF32, e3, expV, 3]);
+    const s01 = b.id(); b.emit(Op.FAdd, [p.tF32, s01, e0, e1]);
+    const s23 = b.id(); b.emit(Op.FAdd, [p.tF32, s23, e2, e3]);
+    const chunkSum = b.id(); b.emit(Op.FAdd, [p.tF32, chunkSum, s01, s23]);
+
+    const newSum = b.id();
+    b.emit(Op.FAdd, [p.tF32, newSum, localSum, chunkSum]);
+    localSum = newSum;
+  }
+
+  // ── Step 4: Subgroup reduce for global sum ──
+  const globalSum = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSum, scopeSubgroup, GroupOperation.Reduce, localSum]);
+  const invSum = b.id();
+  b.emit(Op.FDiv, [p.tF32, invSum, const1f, globalSum]);
+  const splatInvSum = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatInvSum, invSum, invSum, invSum, invSum]);
+
+  // ── Step 5: Normalize and store ──
+  for (let k = 0; k < maxIters; k++) {
+    const normalized = b.id();
+    b.emit(Op.FMul, [tVec4F32, normalized, regExp[k], splatInvSum]);
+    const globalOff = b.id();
+    b.emit(Op.IAdd, [p.tU32, globalOff, rowOffset, kOffsets[k]]);
+    const ptrC = b.id();
+    b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, globalOff]);
+    b.emit(Op.Store, [ptrC, normalized]);
+  }
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
 // ── Kernel: 3-pass Softmax with vec4 loads (one workgroup per row) ───────────
 
 /**
@@ -2108,6 +2285,189 @@ export function kernelLayerNorm(wgSize = 256): Uint32Array {
   b.emit(Op.Branch, [labelNH]);
 
   b.emit(Op.Label, [labelNM]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: LayerNorm register-resident unrolled (single subgroup, 0 barriers) ─
+
+/**
+ * Single-pass register-resident LayerNorm with compile-time unrolled loads.
+ * Each thread loads `maxIters` vec4 X values into SSA variables (not an array),
+ * so they stay in GPU registers. Eliminates the Phase 2 re-read of X entirely.
+ *
+ * Requires: dimVec4 == maxIters * wgSize (no OOB handling).
+ * Single subgroup only (wgSize must equal SUBGROUP_SIZE = 32).
+ *
+ * Algorithm:
+ *   1. Load all X into SSA registers + compute sum, sumSq via OpDot
+ *   2. Subgroup reduce for global sum, sumSq
+ *   3. Compute mean, variance, invStd
+ *   4. For each slot: load W, B from global; normalize regX; FMA + store
+ *
+ * Bindings: 0=X(in,vec4), 1=W(in,vec4), 2=B(in,vec4), 3=C(out,vec4)
+ * Push constants: { dim: f32, eps: f32 }
+ * Dispatch: (numRows, 1, 1) workgroups of (wgSize, 1, 1)
+ */
+export function kernelLayerNormRegUnrolled(wgSize = 32, maxIters = 8): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  b.addCapability(Capability.GroupNonUniform);
+  b.addCapability(Capability.GroupNonUniformArithmetic);
+
+  // vec4 type
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  // Buffers
+  const bufX = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufW = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 2, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 3, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2); // dim, eps
+
+  // Constants
+  const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
+  const constOnes = b.id();
+  b.constantComposite(tVec4F32, constOnes, [const1f, const1f, const1f, const1f]);
+  const scopeSubgroup = b.id();
+  b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
+  const const2u = b.id();
+  b.constant(p.tU32, const2u, 2);
+
+  // Built-ins
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [b.id()]);
+
+  // Load IDs
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  // Push constants
+  const dimF = loadPushLen(b, p, pc);
+  const epsF = loadPushScalar(b, p, pc);
+  const dimU = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const dimVec4 = b.id();
+  b.emit(Op.ShiftRightLogical, [p.tU32, dimVec4, dimU, const2u]);
+  const rowOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffset, row, dimVec4]);
+
+  // Pre-compute offset constants: localIdx + k * wgSize
+  const kOffsets: number[] = [];
+  for (let k = 0; k < maxIters; k++) {
+    if (k === 0) {
+      kOffsets.push(localIdx);
+    } else {
+      const constKW = b.id();
+      b.constant(p.tU32, constKW, k * wgSize);
+      const off = b.id();
+      b.emit(Op.IAdd, [p.tU32, off, localIdx, constKW]);
+      kOffsets.push(off);
+    }
+  }
+
+  // ── Step 1: Load all X into registers + compute sum, sumSq ──
+  const regX: number[] = [];
+  let localSum = p.const0f;
+  let localSumSq = p.const0f;
+
+  for (let k = 0; k < maxIters; k++) {
+    const globalOff = b.id();
+    b.emit(Op.IAdd, [p.tU32, globalOff, rowOffset, kOffsets[k]]);
+    const ptrX = b.id();
+    b.emit(Op.AccessChain, [bufX.tPtrVec4, ptrX, bufX.varId, p.const0u, globalOff]);
+    const v4 = b.id();
+    b.emit(Op.Load, [tVec4F32, v4, ptrX]);
+    regX.push(v4);
+
+    // Horizontal sum: dot(v4, ones) = x0+x1+x2+x3
+    const chunkSum = b.id();
+    b.emit(Op.Dot, [p.tF32, chunkSum, v4, constOnes]);
+    // Sum of squares: dot(v4, v4) = x0²+x1²+x2²+x3²
+    const chunkSumSq = b.id();
+    b.emit(Op.Dot, [p.tF32, chunkSumSq, v4, v4]);
+
+    const newSum = b.id();
+    b.emit(Op.FAdd, [p.tF32, newSum, localSum, chunkSum]);
+    localSum = newSum;
+    const newSumSq = b.id();
+    b.emit(Op.FAdd, [p.tF32, newSumSq, localSumSq, chunkSumSq]);
+    localSumSq = newSumSq;
+  }
+
+  // ── Step 2: Subgroup reduce ──
+  const globalSum = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSum, scopeSubgroup, GroupOperation.Reduce, localSum]);
+  const globalSumSq = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSumSq, scopeSubgroup, GroupOperation.Reduce, localSumSq]);
+
+  // ── Step 3: Compute mean, variance, invStd ──
+  const meanVal = b.id(); b.emit(Op.FDiv, [p.tF32, meanVal, globalSum, dimF]);
+  const meanSumSq = b.id(); b.emit(Op.FDiv, [p.tF32, meanSumSq, globalSumSq, dimF]);
+  const meanSq = b.id(); b.emit(Op.FMul, [p.tF32, meanSq, meanVal, meanVal]);
+  const variance = b.id(); b.emit(Op.FSub, [p.tF32, variance, meanSumSq, meanSq]);
+  const varPlusEps = b.id(); b.emit(Op.FAdd, [p.tF32, varPlusEps, variance, epsF]);
+  const invStd = b.id(); b.emit(Op.ExtInst, [p.tF32, invStd, p.glslStd, GLSLstd450.InverseSqrt, varPlusEps]);
+
+  // Splat for vec4 ops
+  const splatMean = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatMean, meanVal, meanVal, meanVal, meanVal]);
+  const splatInvStd = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, splatInvStd, invStd, invStd, invStd, invStd]);
+
+  // ── Step 4: Normalize using registers + load W, B + store ──
+  for (let k = 0; k < maxIters; k++) {
+    const globalOff = b.id();
+    b.emit(Op.IAdd, [p.tU32, globalOff, rowOffset, kOffsets[k]]);
+
+    // Load W and B (indexed by column only, not rowOffset)
+    const ptrW = b.id();
+    b.emit(Op.AccessChain, [bufW.tPtrVec4, ptrW, bufW.varId, p.const0u, kOffsets[k]]);
+    const wv = b.id();
+    b.emit(Op.Load, [tVec4F32, wv, ptrW]);
+    const ptrB = b.id();
+    b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB, bufB.varId, p.const0u, kOffsets[k]]);
+    const bv = b.id();
+    b.emit(Op.Load, [tVec4F32, bv, ptrB]);
+
+    // normed = (x - mean) * invStd
+    const centered = b.id();
+    b.emit(Op.FSub, [tVec4F32, centered, regX[k], splatMean]);
+    const normed = b.id();
+    b.emit(Op.FMul, [tVec4F32, normed, centered, splatInvStd]);
+    // out = fma(normed, w, b)
+    const result = b.id();
+    b.emit(Op.ExtInst, [tVec4F32, result, p.glslStd, GLSLstd450.FMA, normed, wv, bv]);
+
+    // Store to output
+    const ptrC = b.id();
+    b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, globalOff]);
+    b.emit(Op.Store, [ptrC, result]);
+  }
+
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
 
@@ -4039,6 +4399,474 @@ export function kernelSiluVec4(wgSize = 256): Uint32Array {
   const ptrC = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
   b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: SiLU Vec4x2 (2 vec4 per thread for ILP) ─────────────────────────
+
+export function kernelSiluVec4x2(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOneF = b.id();
+  b.constantF32(p.tF32, constOneF, 1.0);
+  const oneVec = b.id();
+  b.constantComposite(tVec4F32, oneVec, [constOneF, constOneF, constOneF, constOneF]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // idx0 = gidX * 2, idx1 = gidX * 2 + 1
+  const idx0 = b.id();
+  b.emit(Op.IMul, [p.tU32, idx0, gidX, p.const2u]);
+  const idx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, idx1, idx0, p.const1u]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, idx0, labelEnd);
+
+  // Load element 0
+  const ptrA0 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA0, bufA.varId, p.const0u, idx0]);
+  const x0 = b.id();
+  b.emit(Op.Load, [tVec4F32, x0, ptrA0]);
+
+  // Compute silu(x0) = x / (1 + exp(-x))
+  const negX0 = b.id();
+  b.emit(Op.FNegate, [tVec4F32, negX0, x0]);
+  const expNegX0 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, expNegX0, p.glslStd, GLSLstd450.Exp, negX0]);
+  const denom0 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, denom0, oneVec, expNegX0]);
+  const y0 = b.id();
+  b.emit(Op.FDiv, [tVec4F32, y0, x0, denom0]);
+
+  // Store element 0
+  const ptrC0 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC0, bufC.varId, p.const0u, idx0]);
+  b.emit(Op.Store, [ptrC0, y0]);
+
+  // Bounds check for element 1
+  const idx1F = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, idx1F, idx1]);
+  const cmp1 = b.id();
+  b.emit(Op.FOrdGreaterThanEqual, [p.tBool, cmp1, idx1F, lenF]);
+
+  const labelSkip1 = b.id();
+  const labelDo1 = b.id();
+  b.emit(Op.SelectionMerge, [labelSkip1, 0]);
+  b.emit(Op.BranchConditional, [cmp1, labelSkip1, labelDo1]);
+  b.emit(Op.Label, [labelDo1]);
+
+  // Load element 1
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA1, bufA.varId, p.const0u, idx1]);
+  const x1 = b.id();
+  b.emit(Op.Load, [tVec4F32, x1, ptrA1]);
+
+  // Compute silu(x1)
+  const negX1 = b.id();
+  b.emit(Op.FNegate, [tVec4F32, negX1, x1]);
+  const expNegX1 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, expNegX1, p.glslStd, GLSLstd450.Exp, negX1]);
+  const denom1 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, denom1, oneVec, expNegX1]);
+  const y1 = b.id();
+  b.emit(Op.FDiv, [tVec4F32, y1, x1, denom1]);
+
+  // Store element 1
+  const ptrC1 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC1, bufC.varId, p.const0u, idx1]);
+  b.emit(Op.Store, [ptrC1, y1]);
+
+  b.emit(Op.Branch, [labelSkip1]);
+  b.emit(Op.Label, [labelSkip1]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: Fused SiLU-Mul (SwiGLU forward) ─────────────────────────────────
+
+/**
+ * C[i] = silu(A[i]) * B[i]  — fused SwiGLU activation
+ * Saves 1 dispatch per layer vs separate silu + mul.
+ * silu(x) = x / (1 + exp(-x))
+ *
+ * Bindings: 0=A(in), 1=B(in), 2=C(out)
+ * Push constants: { len: f32, _unused: f32 }
+ */
+export function kernelSiluMul(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // Load A[i] and B[i]
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
+  const a = b.id();
+  b.emit(Op.Load, [p.tF32, a, ptrA]);
+
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, p.const0u, gidX]);
+  const bVal = b.id();
+  b.emit(Op.Load, [p.tF32, bVal, ptrB]);
+
+  // silu(a) = a / (1 + exp(-a))
+  const negA = b.id();
+  b.emit(Op.FNegate, [p.tF32, negA, a]);
+  const expNegA = b.id();
+  b.emit(Op.ExtInst, [p.tF32, expNegA, p.glslStd, GLSLstd450.Exp, negA]);
+  const onePlusExp = b.id();
+  b.emit(Op.FAdd, [p.tF32, onePlusExp, constOne, expNegA]);
+  const siluA = b.id();
+  b.emit(Op.FDiv, [p.tF32, siluA, a, onePlusExp]);
+
+  // C = silu(A) * B
+  const result = b.id();
+  b.emit(Op.FMul, [p.tF32, result, siluA, bVal]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/** Vec4 variant of SiLU-Mul. */
+export function kernelSiluMulVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOneF = b.id();
+  b.constantF32(p.tF32, constOneF, 1.0);
+  const oneVec = b.id();
+  b.constantComposite(tVec4F32, oneVec, [constOneF, constOneF, constOneF, constOneF]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // Load A[i] and B[i] as vec4
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gidX]);
+  const a = b.id();
+  b.emit(Op.Load, [tVec4F32, a, ptrA]);
+
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB, bufB.varId, p.const0u, gidX]);
+  const bVal = b.id();
+  b.emit(Op.Load, [tVec4F32, bVal, ptrB]);
+
+  // silu(a) = a / (1 + exp(-a))
+  const negA = b.id();
+  b.emit(Op.FNegate, [tVec4F32, negA, a]);
+  const expNegA = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, expNegA, p.glslStd, GLSLstd450.Exp, negA]);
+  const onePlusExp = b.id();
+  b.emit(Op.FAdd, [tVec4F32, onePlusExp, oneVec, expNegA]);
+  const siluA = b.id();
+  b.emit(Op.FDiv, [tVec4F32, siluA, a, onePlusExp]);
+
+  // C = silu(A) * B
+  const result = b.id();
+  b.emit(Op.FMul, [tVec4F32, result, siluA, bVal]);
+
+  const ptrC = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrC, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: Fused SiLU-Mul Backward (SwiGLU backward) ───────────────────────
+
+/**
+ * Backward of C = silu(A) * B:
+ *   sig = sigmoid(A[i])
+ *   dA[i] = dC[i] * B[i] * sig * (1 + A[i] * (1 - sig))
+ *   dB[i] = dC[i] * A[i] * sig
+ *
+ * Bindings: 0=dC(in), 1=A(in), 2=B(in), 3=dA(out), 4=dB(out)
+ * Push constants: { len: f32, _unused: f32 }
+ */
+export function kernelSiluMulBackward(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufDC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufA  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufB  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const bufDA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false, true);
+  const bufDB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 4, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // Load inputs
+  const ptrDC = b.id();
+  b.emit(Op.AccessChain, [bufDC.tPtrF32, ptrDC, bufDC.varId, p.const0u, gidX]);
+  const dc = b.id();
+  b.emit(Op.Load, [p.tF32, dc, ptrDC]);
+
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
+  const aVal = b.id();
+  b.emit(Op.Load, [p.tF32, aVal, ptrA]);
+
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrF32, ptrB, bufB.varId, p.const0u, gidX]);
+  const bVal = b.id();
+  b.emit(Op.Load, [p.tF32, bVal, ptrB]);
+
+  // sig = 1 / (1 + exp(-a))
+  const negA = b.id();
+  b.emit(Op.FNegate, [p.tF32, negA, aVal]);
+  const expNegA = b.id();
+  b.emit(Op.ExtInst, [p.tF32, expNegA, p.glslStd, GLSLstd450.Exp, negA]);
+  const onePlusExp = b.id();
+  b.emit(Op.FAdd, [p.tF32, onePlusExp, constOne, expNegA]);
+  const sig = b.id();
+  b.emit(Op.FDiv, [p.tF32, sig, constOne, onePlusExp]);
+
+  // silu'(a) = sig * (1 + a * (1 - sig))
+  const oneMinusSig = b.id();
+  b.emit(Op.FSub, [p.tF32, oneMinusSig, constOne, sig]);
+  const aTimesOms = b.id();
+  b.emit(Op.FMul, [p.tF32, aTimesOms, aVal, oneMinusSig]);
+  const onePlus = b.id();
+  b.emit(Op.FAdd, [p.tF32, onePlus, constOne, aTimesOms]);
+  const siluDeriv = b.id();
+  b.emit(Op.FMul, [p.tF32, siluDeriv, sig, onePlus]);
+
+  // dA = dC * B * silu'(A)
+  const dcTimesB = b.id();
+  b.emit(Op.FMul, [p.tF32, dcTimesB, dc, bVal]);
+  const daVal = b.id();
+  b.emit(Op.FMul, [p.tF32, daVal, dcTimesB, siluDeriv]);
+
+  // dB = dC * silu(A) = dC * A * sig
+  const aSig = b.id();
+  b.emit(Op.FMul, [p.tF32, aSig, aVal, sig]);
+  const dbVal = b.id();
+  b.emit(Op.FMul, [p.tF32, dbVal, dc, aSig]);
+
+  // Store outputs
+  const ptrDA = b.id();
+  b.emit(Op.AccessChain, [bufDA.tPtrF32, ptrDA, bufDA.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrDA, daVal]);
+
+  const ptrDB = b.id();
+  b.emit(Op.AccessChain, [bufDB.tPtrF32, ptrDB, bufDB.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrDB, dbVal]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/** Vec4 variant of SiLU-Mul backward. */
+export function kernelSiluMulBackwardVec4(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufDC = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufA  = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufB  = declareStorageBufferVec4(b, tVec4F32, 0, 2, true);
+  const bufDA = declareStorageBufferVec4(b, tVec4F32, 0, 3, false, true);
+  const bufDB = declareStorageBufferVec4(b, tVec4F32, 0, 4, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constOneF = b.id();
+  b.constantF32(p.tF32, constOneF, 1.0);
+  const oneVec = b.id();
+  b.constantComposite(tVec4F32, oneVec, [constOneF, constOneF, constOneF, constOneF]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // Load inputs
+  const ptrDC = b.id();
+  b.emit(Op.AccessChain, [bufDC.tPtrVec4, ptrDC, bufDC.varId, p.const0u, gidX]);
+  const dc = b.id();
+  b.emit(Op.Load, [tVec4F32, dc, ptrDC]);
+
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gidX]);
+  const aVal = b.id();
+  b.emit(Op.Load, [tVec4F32, aVal, ptrA]);
+
+  const ptrB = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB, bufB.varId, p.const0u, gidX]);
+  const bVal = b.id();
+  b.emit(Op.Load, [tVec4F32, bVal, ptrB]);
+
+  // sig = 1 / (1 + exp(-a))
+  const negA = b.id();
+  b.emit(Op.FNegate, [tVec4F32, negA, aVal]);
+  const expNegA = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, expNegA, p.glslStd, GLSLstd450.Exp, negA]);
+  const onePlusExp = b.id();
+  b.emit(Op.FAdd, [tVec4F32, onePlusExp, oneVec, expNegA]);
+  const sig = b.id();
+  b.emit(Op.FDiv, [tVec4F32, sig, oneVec, onePlusExp]);
+
+  // silu'(a) = sig * (1 + a * (1 - sig))
+  const oneMinusSig = b.id();
+  b.emit(Op.FSub, [tVec4F32, oneMinusSig, oneVec, sig]);
+  const aTimesOms = b.id();
+  b.emit(Op.FMul, [tVec4F32, aTimesOms, aVal, oneMinusSig]);
+  const onePlus = b.id();
+  b.emit(Op.FAdd, [tVec4F32, onePlus, oneVec, aTimesOms]);
+  const siluDeriv = b.id();
+  b.emit(Op.FMul, [tVec4F32, siluDeriv, sig, onePlus]);
+
+  // dA = dC * B * silu'(A)
+  const dcTimesB = b.id();
+  b.emit(Op.FMul, [tVec4F32, dcTimesB, dc, bVal]);
+  const daVal = b.id();
+  b.emit(Op.FMul, [tVec4F32, daVal, dcTimesB, siluDeriv]);
+
+  // dB = dC * silu(A) = dC * A * sig
+  const aSig = b.id();
+  b.emit(Op.FMul, [tVec4F32, aSig, aVal, sig]);
+  const dbVal = b.id();
+  b.emit(Op.FMul, [tVec4F32, dbVal, dc, aSig]);
+
+  // Store outputs
+  const ptrDA = b.id();
+  b.emit(Op.AccessChain, [bufDA.tPtrVec4, ptrDA, bufDA.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrDA, daVal]);
+
+  const ptrDB = b.id();
+  b.emit(Op.AccessChain, [bufDB.tPtrVec4, ptrDB, bufDB.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrDB, dbVal]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);

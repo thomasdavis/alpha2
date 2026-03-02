@@ -63,6 +63,7 @@ typedef enum {
   VK_BUFFER_USAGE_TRANSFER_DST_BIT = 0x00000002,
   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT = 0x00000010,
   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT = 0x00000020,
+  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT = 0x00020000,
 } VkBufferUsageFlagBits;
 
 typedef enum {
@@ -409,6 +410,206 @@ typedef struct { VkFlags stageFlags; uint32_t offset; uint32_t size; } VkPushCon
 // Buffer copy region
 typedef struct { VkDeviceSize srcOffset; VkDeviceSize dstOffset; VkDeviceSize size; } VkBufferCopy;
 
+// ── Buffer Device Address (Vulkan 1.2 core) ────────────────────────────────
+
+typedef uint64_t VkDeviceAddress;
+
+#define VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO 1000060000
+#define VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO 1000244001
+#define VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT 0x00000002
+
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkFlags flags;
+  uint32_t deviceMask;
+} VkMemoryAllocateFlagsInfo;
+
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkBuffer buffer;
+} VkBufferDeviceAddressInfo;
+
+typedef VkDeviceAddress (*PFN_vkGetBufferDeviceAddress)(VkDevice, const VkBufferDeviceAddressInfo*);
+
+// ── VK_EXT_device_generated_commands ────────────────────────────────────────
+
+// sType values
+#define VK_STRUCTURE_TYPE_DGC_FEATURES_EXT             ((VkStructureType)1000572000)
+#define VK_STRUCTURE_TYPE_DGC_PROPERTIES_EXT           ((VkStructureType)1000572001)
+#define VK_STRUCTURE_TYPE_DGC_MEMORY_REQUIREMENTS_EXT  ((VkStructureType)1000572002)
+#define VK_STRUCTURE_TYPE_DGC_EXECUTION_SET_CREATE_EXT ((VkStructureType)1000572003)
+#define VK_STRUCTURE_TYPE_DGC_GENERATED_CMDS_INFO_EXT  ((VkStructureType)1000572004)
+#define VK_STRUCTURE_TYPE_DGC_WRITE_EXECUTION_SET_EXT  ((VkStructureType)1000572005)
+#define VK_STRUCTURE_TYPE_DGC_LAYOUT_CREATE_EXT        ((VkStructureType)1000572006)
+#define VK_STRUCTURE_TYPE_DGC_LAYOUT_TOKEN_EXT         ((VkStructureType)1000572007)
+#define VK_STRUCTURE_TYPE_DGC_WRITE_PIPELINE_EXT       ((VkStructureType)1000572008)
+#define VK_STRUCTURE_TYPE_DGC_EXECUTION_SET_PIPE_INFO_EXT ((VkStructureType)1000572010)
+#define VK_STRUCTURE_TYPE_DGC_PIPELINE_INFO_EXT        ((VkStructureType)1000572013)
+
+// Usage/layout flags
+#define VK_INDIRECT_COMMANDS_LAYOUT_USAGE_EXPLICIT_PREPROCESS_BIT_EXT 0x00000001
+#define VK_INDIRECT_COMMANDS_LAYOUT_USAGE_UNORDERED_SEQUENCES_BIT_EXT 0x00000002
+
+// Token types
+#define VK_INDIRECT_COMMANDS_TOKEN_TYPE_EXECUTION_SET_EXT  0
+#define VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT  1
+#define VK_INDIRECT_COMMANDS_TOKEN_TYPE_SEQUENCE_INDEX_EXT 2
+#define VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT       9
+
+// Execution set info type
+#define VK_INDIRECT_EXECUTION_SET_INFO_TYPE_PIPELINES_EXT 0
+
+// Handles
+typedef uint64_t VkIndirectCommandsLayoutEXT;
+typedef uint64_t VkIndirectExecutionSetEXT;
+
+// Features
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkBool32 deviceGeneratedCommandsEXT;
+  VkBool32 dynamicGeneratedPipelineLayout;
+} VkDGCFeaturesEXT;
+
+// Properties
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t maxIndirectPipelineCount;
+  uint32_t maxIndirectShaderObjectCount;
+  uint32_t maxIndirectSequenceCount;
+  uint32_t maxIndirectCommandsTokenCount;
+  uint32_t maxIndirectCommandsTokenOffset;
+  uint32_t maxIndirectCommandsIndirectStride;
+  VkFlags  supportedIndirectCommandsInputModes;
+  VkFlags  supportedIndirectCommandsShaderStages;
+  VkFlags  supportedIndirectCommandsShaderStagesPipelineBinding;
+  VkFlags  supportedIndirectCommandsShaderStagesShaderBinding;
+  VkBool32 deviceGeneratedCommandsTransformFeedback;
+  VkBool32 deviceGeneratedCommandsMultiDrawIndirectCount;
+} VkDGCPropertiesEXT;
+
+// Push constant token data
+typedef struct {
+  VkPushConstantRange updateRange;
+} VkIndirectCommandsPushConstantTokenEXT;
+
+// Execution set token data
+typedef struct {
+  uint32_t type;         // VkIndirectExecutionSetInfoTypeEXT
+  VkFlags  shaderStages;
+} VkIndirectCommandsExecutionSetTokenEXT;
+
+// Token data union
+typedef union {
+  const VkIndirectCommandsPushConstantTokenEXT*   pPushConstant;
+  const VkIndirectCommandsExecutionSetTokenEXT*   pExecutionSet;
+} VkIndirectCommandsTokenDataEXT;
+
+// Layout token
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  uint32_t type;  // VkIndirectCommandsTokenTypeEXT
+  VkIndirectCommandsTokenDataEXT data;
+  uint32_t offset;
+} VkIndirectCommandsLayoutTokenEXT;
+
+// Layout create info
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkFlags flags;
+  VkFlags shaderStages;
+  uint32_t indirectStride;
+  VkPipelineLayout pipelineLayout;
+  uint32_t tokenCount;
+  const VkIndirectCommandsLayoutTokenEXT* pTokens;
+} VkIndirectCommandsLayoutCreateInfoEXT;
+
+// Execution set pipeline info
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkPipeline initialPipeline;
+  uint32_t maxPipelineCount;
+} VkIndirectExecutionSetPipelineInfoEXT;
+
+// Execution set info union
+typedef union {
+  const VkIndirectExecutionSetPipelineInfoEXT* pPipelineInfo;
+} VkIndirectExecutionSetInfoEXT;
+
+// Execution set create info
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  uint32_t type;  // VkIndirectExecutionSetInfoTypeEXT
+  VkIndirectExecutionSetInfoEXT info;
+} VkIndirectExecutionSetCreateInfoEXT;
+
+// Write indirect execution set pipeline
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  uint32_t index;
+  VkPipeline pipeline;
+} VkWriteIndirectExecutionSetPipelineEXT;
+
+// Generated commands info (the main dispatch struct)
+typedef struct {
+  VkStructureType sType;
+  const void* pNext;
+  VkFlags shaderStages;
+  VkIndirectExecutionSetEXT indirectExecutionSet;
+  VkIndirectCommandsLayoutEXT indirectCommandsLayout;
+  VkDeviceAddress indirectAddress;
+  VkDeviceSize indirectAddressSize;
+  VkDeviceAddress preprocessAddress;
+  VkDeviceSize preprocessSize;
+  uint32_t maxSequenceCount;
+  VkDeviceAddress sequenceCountAddress;
+  uint32_t maxDrawCount;
+} VkGeneratedCommandsInfoEXT;
+
+// Pipeline info (chained into pNext of GeneratedCommandsInfo)
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkPipeline pipeline;
+} VkGeneratedCommandsPipelineInfoEXT;
+
+// Memory requirements query
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkIndirectExecutionSetEXT indirectExecutionSet;
+  VkIndirectCommandsLayoutEXT indirectCommandsLayout;
+  uint32_t maxSequenceCount;
+  uint32_t maxDrawCount;
+} VkGeneratedCommandsMemoryRequirementsInfoEXT;
+
+// VkMemoryRequirements2 (for DGC memory requirements query)
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkDeviceSize size;
+  VkDeviceSize alignment;
+  uint32_t memoryTypeBits;
+} VkMemoryRequirements2;
+
+// DGC function pointer types
+typedef void     (*PFN_vkGetGeneratedCommandsMemoryRequirementsEXT)(VkDevice, const VkGeneratedCommandsMemoryRequirementsInfoEXT*, VkMemoryRequirements2*);
+typedef void     (*PFN_vkCmdPreprocessGeneratedCommandsEXT)(VkCommandBuffer, const VkGeneratedCommandsInfoEXT*, VkCommandBuffer);
+typedef void     (*PFN_vkCmdExecuteGeneratedCommandsEXT)(VkCommandBuffer, VkBool32, const VkGeneratedCommandsInfoEXT*);
+typedef VkResult (*PFN_vkCreateIndirectCommandsLayoutEXT)(VkDevice, const VkIndirectCommandsLayoutCreateInfoEXT*, const void*, VkIndirectCommandsLayoutEXT*);
+typedef void     (*PFN_vkDestroyIndirectCommandsLayoutEXT)(VkDevice, VkIndirectCommandsLayoutEXT, const void*);
+typedef VkResult (*PFN_vkCreateIndirectExecutionSetEXT)(VkDevice, const VkIndirectExecutionSetCreateInfoEXT*, const void*, VkIndirectExecutionSetEXT*);
+typedef void     (*PFN_vkDestroyIndirectExecutionSetEXT)(VkDevice, VkIndirectExecutionSetEXT, const void*);
+typedef void     (*PFN_vkUpdateIndirectExecutionSetPipelineEXT)(VkDevice, VkIndirectExecutionSetEXT, uint32_t, const VkWriteIndirectExecutionSetPipelineEXT*);
+
 // ── Global state ────────────────────────────────────────────────────────────
 
 static void* vk_lib = NULL;
@@ -500,6 +701,39 @@ static int hasAsyncTransfer = 0;
 // Cooperative matrix state
 static int coopMatSupported = 0;
 static uint32_t coopMatM = 0, coopMatN = 0, coopMatK = 0;
+
+// Buffer Device Address (Vulkan 1.2 core)
+static int hasBDA = 0;
+static PFN_vkGetBufferDeviceAddress fp_vkGetBufferDeviceAddress = NULL;
+
+// VK_EXT_device_generated_commands (DGC)
+static int hasDGC = 0;
+static VkDGCPropertiesEXT dgcProperties;
+static PFN_vkGetGeneratedCommandsMemoryRequirementsEXT fp_vkGetGeneratedCommandsMemoryRequirementsEXT = NULL;
+static PFN_vkCmdPreprocessGeneratedCommandsEXT fp_vkCmdPreprocessGeneratedCommandsEXT = NULL;
+static PFN_vkCmdExecuteGeneratedCommandsEXT fp_vkCmdExecuteGeneratedCommandsEXT = NULL;
+static PFN_vkCreateIndirectCommandsLayoutEXT fp_vkCreateIndirectCommandsLayoutEXT = NULL;
+static PFN_vkDestroyIndirectCommandsLayoutEXT fp_vkDestroyIndirectCommandsLayoutEXT = NULL;
+static PFN_vkCreateIndirectExecutionSetEXT fp_vkCreateIndirectExecutionSetEXT = NULL;
+static PFN_vkDestroyIndirectExecutionSetEXT fp_vkDestroyIndirectExecutionSetEXT = NULL;
+static PFN_vkUpdateIndirectExecutionSetPipelineEXT fp_vkUpdateIndirectExecutionSetPipelineEXT = NULL;
+
+// DGC state: indirect commands layout, execution set, preprocess buffer
+static VkIndirectCommandsLayoutEXT dgcLayout = 0;
+static VkIndirectExecutionSetEXT dgcExecutionSet = 0;
+static VkBuffer dgcPreprocessBuffer = 0;
+static VkDeviceMemory dgcPreprocessMemory = 0;
+static VkDeviceSize dgcPreprocessSize = 0;
+static VkDeviceAddress dgcPreprocessAddress = 0;
+// DGC command stream buffer (CPU-writable, GPU-readable)
+static VkBuffer dgcCommandBuffer = 0;
+static VkDeviceMemory dgcCommandMemory = 0;
+static void* dgcCommandMapped = NULL;
+static VkDeviceSize dgcCommandSize = 0;
+static VkDeviceAddress dgcCommandAddress = 0;
+static uint32_t dgcMaxSequences = 0;  // max dispatches per DGC execute
+static uint32_t dgcIndirectStride = 0; // bytes per sequence in command stream
+static int dgcPipeSlot = -1;  // pipeline slot for binding before DGC execute
 
 // Function pointers
 static PFN_vkCreateInstance                       fp_vkCreateInstance;
@@ -668,6 +902,7 @@ typedef struct {
   int            active;
   int            slabAllocated; // 1 if from slab allocator (don't vkFreeMemory)
   uint64_t       lastWriteTimeline;  // timeline value when last dispatch wrote to this
+  VkDeviceAddress deviceAddress; // BDA (valid if hasBDA, 0 otherwise)
 } BufferSlot;
 
 typedef struct {
@@ -1070,12 +1305,17 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     if (feat12.shaderFloat16 && feat11.storageBuffer16BitAccess) {
       f16Supported = 1;
     }
+    // bufferDeviceAddress is _rest[29] in Vk12Features (Vulkan 1.2 core)
+    if (feat12._rest[29]) {
+      hasBDA = 1;
+    }
   }
 
-  // Probe device extensions (cooperative matrix, push descriptors)
+  // Probe device extensions (cooperative matrix, push descriptors, DGC)
   coopMatSupported = 0;
   int hasCoopMatExt = 0;
   hasPushDescriptors = 0;
+  int hasDGCExt = 0;
   if (fp_vkEnumerateDeviceExtensionProperties) {
     uint32_t extCount = 0;
     fp_vkEnumerateDeviceExtensionProperties(physDevice, NULL, &extCount, NULL);
@@ -1088,6 +1328,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
         }
         if (strcmp(exts[i].extensionName, "VK_KHR_push_descriptor") == 0) {
           hasPushDescriptors = 1;
+        }
+        if (strcmp(exts[i].extensionName, "VK_EXT_device_generated_commands") == 0) {
+          hasDGCExt = 1;
         }
       }
       free(exts);
@@ -1122,6 +1365,45 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
 
+  // Probe DGC features if extension present
+  VkDGCFeaturesEXT dgcFeatures = {0};
+  if (hasDGCExt && hasBDA && fp_vkGetPhysicalDeviceFeatures2) {
+    dgcFeatures.sType = VK_STRUCTURE_TYPE_DGC_FEATURES_EXT;
+    VkPhysicalDeviceFeatures2 features2c = {0};
+    features2c.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2c.pNext = &dgcFeatures;
+    fp_vkGetPhysicalDeviceFeatures2(physDevice, &features2c);
+    if (dgcFeatures.deviceGeneratedCommandsEXT) {
+      hasDGCExt = 2; // confirmed feature support
+    } else {
+      hasDGCExt = 0;
+    }
+  } else {
+    hasDGCExt = 0; // DGC requires BDA
+  }
+
+  // Query DGC properties if supported
+  if (hasDGCExt == 2) {
+    memset(&dgcProperties, 0, sizeof(dgcProperties));
+    dgcProperties.sType = VK_STRUCTURE_TYPE_DGC_PROPERTIES_EXT;
+    // Chain DGC properties into a properties2 query
+    typedef struct { VkStructureType sType; void* pNext; uint8_t _pad[512]; } VkPhysicalDeviceProperties2_generic;
+    VkPhysicalDeviceProperties2_generic props2 = {0};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &dgcProperties;
+    typedef void (*PFN_vkGetPhysicalDeviceProperties2)(VkPhysicalDevice, void*);
+    PFN_vkGetPhysicalDeviceProperties2 fp_getProps2 =
+      (PFN_vkGetPhysicalDeviceProperties2)dlsym(vk_lib, "vkGetPhysicalDeviceProperties2");
+    if (fp_getProps2) {
+      fp_getProps2(physDevice, &props2);
+      fprintf(stderr, "[helios:native] DGC properties: maxSequences=%u maxTokens=%u maxStride=%u computeStages=0x%x\n",
+        dgcProperties.maxIndirectSequenceCount,
+        dgcProperties.maxIndirectCommandsTokenCount,
+        dgcProperties.maxIndirectCommandsIndirectStride,
+        dgcProperties.supportedIndirectCommandsShaderStagesPipelineBinding);
+    }
+  }
+
   // Create logical device (with f16 features if supported)
   float priority = 1.0f;
   VkDeviceQueueCreateInfo queueCreates[2];
@@ -1141,22 +1423,29 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     };
   }
 
-  // Enable f16 features in pNext chain
+  // Enable Vulkan 1.1/1.2 features in pNext chain (f16 + BDA)
   Vk11Features enableFeat11 = {0};
   Vk12Features enableFeat12 = {0};
   VkPhysicalDeviceCooperativeMatrixFeaturesKHR enableCoopMat = {0};
+  VkDGCFeaturesEXT enableDGC = {0};
   void* devicePNext = NULL;
-  if (f16Supported) {
+  int needVk12 = f16Supported || hasBDA;
+  if (needVk12) {
     enableFeat12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    enableFeat12.shaderFloat16 = 1;
+    if (f16Supported) enableFeat12.shaderFloat16 = 1;
+    if (hasBDA) enableFeat12._rest[29] = 1; // bufferDeviceAddress
     enableFeat11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    enableFeat11.storageBuffer16BitAccess = 1;
+    if (f16Supported) enableFeat11.storageBuffer16BitAccess = 1;
     enableFeat11.pNext = &enableFeat12;
     devicePNext = &enableFeat11;
   }
 
+  // Track the tail of the pNext chain for appending optional features
+  // The chain is: feat11 → feat12 → [coopMat] → [dgc]
+  void** pNextTail = needVk12 ? (void**)&enableFeat12.pNext : NULL;
+
   // Enable push descriptors if supported
-  const char* enabledExtensions[4];
+  const char* enabledExtensions[8];
   uint32_t enabledExtCount = 0;
   if (hasPushDescriptors) {
     enabledExtensions[enabledExtCount++] = "VK_KHR_push_descriptor";
@@ -1166,17 +1455,29 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   if (hasCoopMatExt == 2) {
     enableCoopMat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
     enableCoopMat.cooperativeMatrix = 1;
-    // Chain into pNext
-    if (devicePNext) {
-      enableFeat12.pNext = &enableCoopMat;
-    } else if (f16Supported) {
-      enableFeat11.pNext = &enableFeat12;
-      enableFeat12.pNext = &enableCoopMat;
-      devicePNext = &enableFeat11;
+    if (pNextTail) {
+      *pNextTail = &enableCoopMat;
+      pNextTail = (void**)&enableCoopMat.pNext;
     } else {
       devicePNext = &enableCoopMat;
+      pNextTail = (void**)&enableCoopMat.pNext;
     }
     enabledExtensions[enabledExtCount++] = "VK_KHR_cooperative_matrix";
+  }
+
+  // Chain DGC features if supported (requires BDA)
+  if (hasDGCExt == 2) {
+    enableDGC.sType = VK_STRUCTURE_TYPE_DGC_FEATURES_EXT;
+    enableDGC.deviceGeneratedCommandsEXT = 1;
+    if (pNextTail) {
+      *pNextTail = &enableDGC;
+      pNextTail = (void**)&enableDGC.pNext;
+    } else {
+      devicePNext = &enableDGC;
+      pNextTail = (void**)&enableDGC.pNext;
+    }
+    enabledExtensions[enabledExtCount++] = "VK_EXT_device_generated_commands";
+    enabledExtensions[enabledExtCount++] = "VK_KHR_maintenance5";
   }
 
   VkDeviceCreateInfo devCreate = {
@@ -1193,6 +1494,8 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     f16Supported = 0;
     hasCoopMatExt = 0;
     hasPushDescriptors = 0;
+    hasBDA = 0;
+    hasDGCExt = 0;
     devCreate.pNext = NULL;
     devCreate.enabledExtensionCount = 0;
     devCreate.ppEnabledExtensionNames = NULL;
@@ -1205,10 +1508,12 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   fp_vkGetDeviceQueue(device, computeQueueFamily, 0, &computeQueue);
 
-  // Load push descriptor function pointer if extension was enabled
+  // Load extension function pointers via vkGetDeviceProcAddr
+  typedef void* (*PFN_vkGetDeviceProcAddr)(VkDevice, const char*);
+  PFN_vkGetDeviceProcAddr fp_getDevProcAddr = (PFN_vkGetDeviceProcAddr)dlsym(vk_lib, "vkGetDeviceProcAddr");
+
+  // Push descriptors
   if (hasPushDescriptors) {
-    typedef void* (*PFN_vkGetDeviceProcAddr)(VkDevice, const char*);
-    PFN_vkGetDeviceProcAddr fp_getDevProcAddr = (PFN_vkGetDeviceProcAddr)dlsym(vk_lib, "vkGetDeviceProcAddr");
     if (fp_getDevProcAddr) {
       fp_vkCmdPushDescriptorSetKHR = (PFN_vkCmdPushDescriptorSetKHR)fp_getDevProcAddr(device, "vkCmdPushDescriptorSetKHR");
       if (!fp_vkCmdPushDescriptorSetKHR) hasPushDescriptors = 0;
@@ -1216,6 +1521,39 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
       hasPushDescriptors = 0;
     }
   }
+
+  // Buffer Device Address (Vulkan 1.2 core)
+  if (hasBDA && fp_getDevProcAddr) {
+    fp_vkGetBufferDeviceAddress = (PFN_vkGetBufferDeviceAddress)fp_getDevProcAddr(device, "vkGetBufferDeviceAddress");
+    if (!fp_vkGetBufferDeviceAddress) {
+      fp_vkGetBufferDeviceAddress = (PFN_vkGetBufferDeviceAddress)dlsym(vk_lib, "vkGetBufferDeviceAddress");
+    }
+    if (!fp_vkGetBufferDeviceAddress) hasBDA = 0;
+  }
+
+  // Device Generated Commands (VK_EXT_device_generated_commands)
+  hasDGC = 0;
+  if (hasDGCExt == 2 && hasBDA && fp_getDevProcAddr) {
+    #define LOAD_DGC(name) fp_##name = (PFN_##name)fp_getDevProcAddr(device, #name)
+    LOAD_DGC(vkGetGeneratedCommandsMemoryRequirementsEXT);
+    LOAD_DGC(vkCmdPreprocessGeneratedCommandsEXT);
+    LOAD_DGC(vkCmdExecuteGeneratedCommandsEXT);
+    LOAD_DGC(vkCreateIndirectCommandsLayoutEXT);
+    LOAD_DGC(vkDestroyIndirectCommandsLayoutEXT);
+    LOAD_DGC(vkCreateIndirectExecutionSetEXT);
+    LOAD_DGC(vkDestroyIndirectExecutionSetEXT);
+    LOAD_DGC(vkUpdateIndirectExecutionSetPipelineEXT);
+    #undef LOAD_DGC
+    if (fp_vkCmdExecuteGeneratedCommandsEXT && fp_vkCreateIndirectCommandsLayoutEXT &&
+        fp_vkCreateIndirectExecutionSetEXT && fp_vkGetGeneratedCommandsMemoryRequirementsEXT) {
+      hasDGC = 1;
+      fprintf(stderr, "[helios:native] DGC enabled (VK_EXT_device_generated_commands)\n");
+    } else {
+      fprintf(stderr, "[helios:native] DGC function pointers incomplete, disabled\n");
+    }
+  }
+
+  fprintf(stderr, "[helios:native] BDA=%d DGC=%d\n", hasBDA, hasDGC);
 
   // Get transfer queue if separate family found
   hasAsyncTransfer = 0;
@@ -1577,6 +1915,12 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   napi_get_boolean(env, hasPushDescriptors, &val);
   napi_set_named_property(env, result, "hasPushDescriptors", val);
 
+  napi_get_boolean(env, hasBDA, &val);
+  napi_set_named_property(env, result, "hasBDA", val);
+
+  napi_get_boolean(env, hasDGC, &val);
+  napi_set_named_property(env, result, "hasDGC", val);
+
   return result;
 }
 
@@ -1600,10 +1944,12 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
   }
 
   uint32_t sharedFamilies[2] = {computeQueueFamily, transferQueueFamily};
+  VkFlags bufUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (hasBDA) bufUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   VkBufferCreateInfo bufInfo = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     .size = byteLength,
-    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    .usage = bufUsage,
     .sharingMode = hasAsyncTransfer ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
     .queueFamilyIndexCount = hasAsyncTransfer ? 2 : 0,
     .pQueueFamilyIndices = hasAsyncTransfer ? sharedFamilies : NULL,
@@ -1674,8 +2020,14 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
       return NULL;
     }
 
+    // Chain VkMemoryAllocateFlagsInfo for BDA
+    VkMemoryAllocateFlagsInfo allocFlags = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+      .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+    };
     VkMemoryAllocateInfo allocInfo = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = hasBDA ? &allocFlags : NULL,
       .allocationSize = memReq.size,
       .memoryTypeIndex = memType,
     };
@@ -1697,6 +2049,16 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
     }
   }
   buffers[slot].active = 1;
+
+  // Get buffer device address if BDA enabled
+  buffers[slot].deviceAddress = 0;
+  if (hasBDA && fp_vkGetBufferDeviceAddress) {
+    VkBufferDeviceAddressInfo addrInfo = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+      .buffer = buffers[slot].buffer,
+    };
+    buffers[slot].deviceAddress = fp_vkGetBufferDeviceAddress(device, &addrInfo);
+  }
 
   napi_value result;
   napi_create_int32(env, slot, &result);
@@ -3142,12 +3504,656 @@ static napi_value napi_waitIdle(napi_env env, napi_callback_info info) {
   return NULL;
 }
 
+// ── DGC infrastructure ──────────────────────────────────────────────────────
+
+// Helper: allocate a buffer with BDA, host-visible + coherent
+static int dgcAllocHostBuffer(VkDeviceSize size, VkBuffer* outBuf, VkDeviceMemory* outMem,
+                               void** outMapped, VkDeviceAddress* outAddr) {
+  // VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT = 0x100 (required for DGC to read command stream)
+  VkBufferCreateInfo bi = {
+    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    .size = size,
+    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | 0x00000100 /*INDIRECT_BUFFER*/,
+    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkResult r = fp_vkCreateBuffer(device, &bi, NULL, outBuf);
+  if (r != VK_SUCCESS) return 0;
+  VkMemoryRequirements req;
+  fp_vkGetBufferMemoryRequirements(device, *outBuf, &req);
+  VkFlags memFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  uint32_t mt = findMemoryType(req.memoryTypeBits, memFlags);
+  if (mt == UINT32_MAX) return 0;
+  VkMemoryAllocateFlagsInfo allocFlags = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+    .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+  };
+  VkMemoryAllocateInfo ai = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .pNext = &allocFlags,
+    .allocationSize = req.size,
+    .memoryTypeIndex = mt,
+  };
+  r = fp_vkAllocateMemory(device, &ai, NULL, outMem);
+  if (r != VK_SUCCESS) return 0;
+  fp_vkBindBufferMemory(device, *outBuf, *outMem, 0);
+  fp_vkMapMemory(device, *outMem, 0, size, 0, outMapped);
+  VkBufferDeviceAddressInfo addrInfo = {
+    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+    .buffer = *outBuf,
+  };
+  *outAddr = fp_vkGetBufferDeviceAddress(device, &addrInfo);
+  return 1;
+}
+
+// Helper: allocate a device-local buffer with BDA (for preprocess buffer)
+static int dgcAllocDeviceBuffer(VkDeviceSize size, VkBuffer* outBuf, VkDeviceMemory* outMem,
+                                 VkDeviceAddress* outAddr) {
+  // Preprocess buffer needs VK_BUFFER_USAGE_2_PREPROCESS_BUFFER_BIT_EXT (0x80000000000)
+  // This is a 64-bit flag, so we use VkBufferUsageFlags2CreateInfoKHR in pNext
+  // VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR = 1000470000
+  typedef struct {
+    VkStructureType sType;
+    const void* pNext;
+    uint64_t usage;
+  } VkBufferUsageFlags2CreateInfoKHR;
+  VkBufferUsageFlags2CreateInfoKHR usage2 = {
+    .sType = (VkStructureType)1000470000,
+    .usage = 0x00000010 /*TRANSFER_DST*/ | 0x00000020 /*STORAGE*/ | 0x00020000 /*SHADER_DEVICE_ADDRESS*/
+           | 0x80000000000ULL /*PREPROCESS_BUFFER_EXT*/,
+  };
+  VkBufferCreateInfo bi = {
+    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    .pNext = &usage2,
+    .size = size,
+    .usage = 0, // overridden by pNext usage2
+    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkResult r = fp_vkCreateBuffer(device, &bi, NULL, outBuf);
+  if (r != VK_SUCCESS) return 0;
+  VkMemoryRequirements req;
+  fp_vkGetBufferMemoryRequirements(device, *outBuf, &req);
+  uint32_t mt = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mt == UINT32_MAX) {
+    mt = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  }
+  if (mt == UINT32_MAX) return 0;
+  VkMemoryAllocateFlagsInfo allocFlags = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+    .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+  };
+  VkMemoryAllocateInfo ai = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .pNext = &allocFlags,
+    .allocationSize = req.size,
+    .memoryTypeIndex = mt,
+  };
+  r = fp_vkAllocateMemory(device, &ai, NULL, outMem);
+  if (r != VK_SUCCESS) return 0;
+  fp_vkBindBufferMemory(device, *outBuf, *outMem, 0);
+  VkBufferDeviceAddressInfo addrInfo = {
+    .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+    .buffer = *outBuf,
+  };
+  *outAddr = fp_vkGetBufferDeviceAddress(device, &addrInfo);
+  return 1;
+}
+
+static void dgcCleanup(void) {
+  if (dgcLayout && fp_vkDestroyIndirectCommandsLayoutEXT)
+    fp_vkDestroyIndirectCommandsLayoutEXT(device, dgcLayout, NULL);
+  dgcLayout = 0;
+  if (dgcExecutionSet && fp_vkDestroyIndirectExecutionSetEXT)
+    fp_vkDestroyIndirectExecutionSetEXT(device, dgcExecutionSet, NULL);
+  dgcExecutionSet = 0;
+  if (dgcPreprocessBuffer) { fp_vkDestroyBuffer(device, dgcPreprocessBuffer, NULL); dgcPreprocessBuffer = 0; }
+  if (dgcPreprocessMemory) { fp_vkFreeMemory(device, dgcPreprocessMemory, NULL); dgcPreprocessMemory = 0; }
+  dgcPreprocessSize = 0; dgcPreprocessAddress = 0;
+  if (dgcCommandBuffer) { fp_vkDestroyBuffer(device, dgcCommandBuffer, NULL); dgcCommandBuffer = 0; }
+  if (dgcCommandMemory) { fp_vkFreeMemory(device, dgcCommandMemory, NULL); dgcCommandMemory = 0; }
+  dgcCommandMapped = NULL; dgcCommandSize = 0; dgcCommandAddress = 0;
+  dgcMaxSequences = 0; dgcIndirectStride = 0;
+}
+
+// ── N-API: dgcSetup(pipelineSlot, maxPushConstantSize, maxSequences) ─────────
+//
+// Creates the DGC infrastructure for a SINGLE pipeline layout:
+//   1. Indirect commands layout: [PUSH_CONSTANT, DISPATCH]
+//   2. Indirect execution set (single pipeline)
+//   3. Query preprocess buffer requirements and allocate
+//   4. Allocate command stream buffer
+//
+// DGC command stream per-sequence layout (packed, written by CPU):
+//   uint8_t  pushData[maxPushConstantSize]  — kernel-specific push constants
+//   uint32_t groupsX, groupsY, groupsZ      — dispatch dimensions
+//
+// This approach uses a FIXED pipeline (no execution set switching) to avoid
+// the complexity of unified pipeline layouts. The pipeline must use BDA
+// push constants to pass buffer addresses per-dispatch.
+
+static napi_value napi_dgcSetup(napi_env env, napi_callback_info info) {
+  if (!hasDGC) {
+    napi_throw_error(env, NULL, "DGC not available");
+    return NULL;
+  }
+
+  size_t argc = 3;
+  napi_value args[3];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  int32_t pipeSlot;
+  napi_get_value_int32(env, args[0], &pipeSlot);
+  uint32_t maxPushSize;
+  napi_get_value_uint32(env, args[1], &maxPushSize);
+  uint32_t maxSeq;
+  napi_get_value_uint32(env, args[2], &maxSeq);
+
+  if (pipeSlot < 0 || pipeSlot >= MAX_PIPELINES || !pipelines[pipeSlot].active) {
+    napi_throw_error(env, NULL, "dgcSetup: invalid pipeline");
+    return NULL;
+  }
+
+  // Clean up any previous DGC state
+  dgcCleanup();
+
+  PipelineSlot* ps = &pipelines[pipeSlot];
+
+  // Align push constant size to 4 bytes
+  uint32_t pushAligned = (maxPushSize + 3) & ~3u;
+  // Stride = push constants + dispatch (3 × uint32)
+  uint32_t stride = pushAligned + 12;
+  // Ensure stride meets alignment (typically 4)
+  if (stride > dgcProperties.maxIndirectCommandsIndirectStride) {
+    napi_throw_error(env, NULL, "dgcSetup: stride exceeds device limit");
+    return NULL;
+  }
+
+  // Clamp maxSequences to device limit
+  if (maxSeq > dgcProperties.maxIndirectSequenceCount)
+    maxSeq = dgcProperties.maxIndirectSequenceCount;
+
+  dgcIndirectStride = stride;
+  dgcMaxSequences = maxSeq;
+  dgcPipeSlot = pipeSlot;
+
+  // ── Create indirect commands layout ──
+  // Token 0: PUSH_CONSTANT (offset 0, size pushAligned)
+  VkIndirectCommandsPushConstantTokenEXT pcToken = {
+    .updateRange = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = pushAligned },
+  };
+  // Token 1: DISPATCH (offset pushAligned)
+  VkIndirectCommandsLayoutTokenEXT tokens[2] = {
+    {
+      .sType = VK_STRUCTURE_TYPE_DGC_LAYOUT_TOKEN_EXT,
+      .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT,
+      .data = { .pPushConstant = &pcToken },
+      .offset = 0,
+    },
+    {
+      .sType = VK_STRUCTURE_TYPE_DGC_LAYOUT_TOKEN_EXT,
+      .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT,
+      .offset = pushAligned,
+    },
+  };
+  VkIndirectCommandsLayoutCreateInfoEXT layoutCI = {
+    .sType = VK_STRUCTURE_TYPE_DGC_LAYOUT_CREATE_EXT,
+    .flags = VK_INDIRECT_COMMANDS_LAYOUT_USAGE_UNORDERED_SEQUENCES_BIT_EXT,
+    .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT,
+    .indirectStride = stride,
+    .pipelineLayout = ps->layout,
+    .tokenCount = 2,
+    .pTokens = tokens,
+  };
+  VkResult r = fp_vkCreateIndirectCommandsLayoutEXT(device, &layoutCI, NULL, &dgcLayout);
+  if (r != VK_SUCCESS) {
+    fprintf(stderr, "[helios:native] DGC layout creation failed: %d\n", r);
+    napi_throw_error(env, NULL, "dgcSetup: vkCreateIndirectCommandsLayoutEXT failed");
+    return NULL;
+  }
+
+  // Skip execution set — use pipeline from pNext (simpler for fixed-pipeline DGC)
+  dgcExecutionSet = 0;
+
+  // ── Query preprocess buffer size ──
+  // Pass pipeline via pNext since indirectExecutionSet is VK_NULL_HANDLE
+  VkGeneratedCommandsPipelineInfoEXT memPipeInfo = {
+    .sType = VK_STRUCTURE_TYPE_DGC_PIPELINE_INFO_EXT,
+    .pipeline = ps->pipeline,
+  };
+  VkGeneratedCommandsMemoryRequirementsInfoEXT memReqInfo = {
+    .sType = VK_STRUCTURE_TYPE_DGC_MEMORY_REQUIREMENTS_EXT,
+    .pNext = &memPipeInfo,
+    .indirectExecutionSet = 0, // VK_NULL_HANDLE
+    .indirectCommandsLayout = dgcLayout,
+    .maxSequenceCount = maxSeq,
+    .maxDrawCount = 0,
+  };
+  VkMemoryRequirements2 memReq2 = {
+    .sType = 1000146003, // VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2
+  };
+  fp_vkGetGeneratedCommandsMemoryRequirementsEXT(device, &memReqInfo, &memReq2);
+  VkDeviceSize preprocessNeed = memReq2.size;
+  if (preprocessNeed < 4096) preprocessNeed = 4096;
+  fprintf(stderr, "[helios:native] DGC preprocess buffer: %llu bytes for %u sequences\n",
+    (unsigned long long)preprocessNeed, maxSeq);
+
+  // ── Allocate preprocess buffer (device-local) ──
+  if (!dgcAllocDeviceBuffer(preprocessNeed, &dgcPreprocessBuffer, &dgcPreprocessMemory, &dgcPreprocessAddress)) {
+    dgcCleanup();
+    napi_throw_error(env, NULL, "dgcSetup: preprocess buffer allocation failed");
+    return NULL;
+  }
+  dgcPreprocessSize = preprocessNeed;
+
+  // ── Allocate command stream buffer (host-visible for CPU writes) ──
+  VkDeviceSize cmdBufSize = (VkDeviceSize)stride * maxSeq;
+  if (cmdBufSize < 4096) cmdBufSize = 4096;
+  if (!dgcAllocHostBuffer(cmdBufSize, &dgcCommandBuffer, &dgcCommandMemory,
+                           &dgcCommandMapped, &dgcCommandAddress)) {
+    dgcCleanup();
+    napi_throw_error(env, NULL, "dgcSetup: command buffer allocation failed");
+    return NULL;
+  }
+  dgcCommandSize = cmdBufSize;
+
+  fprintf(stderr, "[helios:native] DGC setup complete: stride=%u maxSeq=%u cmdBuf=%llu preprocess=%llu\n",
+    stride, maxSeq, (unsigned long long)cmdBufSize, (unsigned long long)preprocessNeed);
+
+  napi_value result;
+  napi_get_boolean(env, true, &result);
+  return result;
+}
+
+// ── N-API: dgcExecute(sequenceCount: number, timelineValue: number) ──────────
+//
+// Executes previously-written DGC command stream.
+// The command stream must be written to dgcCommandMapped before calling this.
+// This records vkCmdExecuteGeneratedCommandsEXT into the current batch command buffer.
+//
+// Returns the timeline value for synchronization.
+
+static napi_value napi_dgcExecute(napi_env env, napi_callback_info info) {
+  if (!hasDGC || !dgcLayout) {
+    napi_throw_error(env, NULL, "dgcExecute: DGC not initialized");
+    return NULL;
+  }
+
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  uint32_t seqCount;
+  napi_get_value_uint32(env, args[0], &seqCount);
+  if (seqCount > dgcMaxSequences) seqCount = dgcMaxSequences;
+  if (seqCount == 0) return NULL;
+
+  // Use a fresh command buffer for DGC execution
+  // Wait for any in-flight work on this ring slot
+  uint32_t slot = g_ringHead;
+  if (g_ring[slot].timelineValue > 0) {
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed < g_ring[slot].timelineValue) {
+      waitTimelineValue(g_ring[slot].timelineValue);
+    }
+  }
+
+  if (g_ring[slot].descPool) {
+    fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
+  }
+
+  fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
+  VkCommandBufferBeginInfo beginInfo = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+
+  // Global memory barrier before DGC (ensure host writes + prior shader writes visible)
+  // VK_ACCESS_HOST_WRITE_BIT=0x4000, VK_ACCESS_INDIRECT_COMMAND_READ_BIT=0x1
+  // VK_PIPELINE_STAGE_HOST_BIT=0x4000, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT=0x2
+  VkMemoryBarrier preBarrier = {
+    .sType = 46, // VK_STRUCTURE_TYPE_MEMORY_BARRIER
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | 0x00004000 /*HOST_WRITE*/,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | 0x00000001 /*INDIRECT_COMMAND_READ*/,
+  };
+  fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | 0x00004000 /*HOST*/ ,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | 0x00000002 /*DRAW_INDIRECT*/,
+    0, 1, &preBarrier, 0, NULL, 0, NULL);
+
+  // Bind the compute pipeline (required: our layout has no EXECUTION_SET token,
+  // so the pipeline state is inherited from the command buffer)
+  // VK_PIPELINE_BIND_POINT_COMPUTE = 1
+  fp_vkCmdBindPipeline(g_ring[slot].cmd, 1 /*COMPUTE*/, pipelines[dgcPipeSlot].pipeline);
+
+  // Execute generated commands — pass pipeline via pNext (no execution set)
+  VkGeneratedCommandsPipelineInfoEXT pipeInfoDGC = {
+    .sType = VK_STRUCTURE_TYPE_DGC_PIPELINE_INFO_EXT,
+    .pipeline = pipelines[dgcPipeSlot].pipeline,
+  };
+  VkGeneratedCommandsInfoEXT genInfo = {
+    .sType = VK_STRUCTURE_TYPE_DGC_GENERATED_CMDS_INFO_EXT,
+    .pNext = &pipeInfoDGC,
+    .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT,
+    .indirectExecutionSet = 0, // VK_NULL_HANDLE — use pipeline from pNext
+    .indirectCommandsLayout = dgcLayout,
+    .indirectAddress = dgcCommandAddress,
+    .indirectAddressSize = (VkDeviceSize)dgcIndirectStride * seqCount,
+    .preprocessAddress = dgcPreprocessAddress,
+    .preprocessSize = dgcPreprocessSize,
+    .maxSequenceCount = seqCount,
+    .sequenceCountAddress = 0, // use maxSequenceCount
+    .maxDrawCount = 0,
+  };
+
+  // isPreprocessed=VK_FALSE: driver will preprocess + execute in one call
+  fp_vkCmdExecuteGeneratedCommandsEXT(g_ring[slot].cmd, 0, &genInfo);
+
+  // Post-execution barrier
+  VkMemoryBarrier postBarrier = {
+    .sType = 46,
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+  };
+  fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    0, 1, &postBarrier, 0, NULL, 0, NULL);
+
+  fp_vkEndCommandBuffer(g_ring[slot].cmd);
+
+  // Submit with timeline semaphore
+  uint64_t tv = nextTimelineValue;
+  VkTimelineSemaphoreSubmitInfo tsInfo = {
+    .sType = 1000207003, // VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
+    .signalSemaphoreValueCount = 1,
+    .pSignalSemaphoreValues = &tv,
+  };
+  VkSubmitInfo submitInfo = {
+    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+    .pNext = &tsInfo,
+    .commandBufferCount = 1,
+    .pCommandBuffers = &g_ring[slot].cmd,
+    .signalSemaphoreCount = 1,
+    .pSignalSemaphores = &timelineSem,
+  };
+  VkResult r = fp_vkQueueSubmit(computeQueue, 1, &submitInfo, 0);
+  if (r != VK_SUCCESS) {
+    char errbuf[128];
+    snprintf(errbuf, sizeof(errbuf), "dgcExecute: queue submit failed (VkResult=%d)", (int)r);
+    napi_throw_error(env, NULL, errbuf);
+    return NULL;
+  }
+  nextTimelineValue = tv + 1;
+  g_ring[slot].timelineValue = tv;
+  lastDispatchTimeline = tv;
+  g_ringHead = (g_ringHead + 1) % RING_SIZE;
+
+  napi_value result;
+  napi_create_double(env, (double)tv, &result);
+  return result;
+}
+
+// ── N-API: dgcGetCommandBufferPtr() → ArrayBuffer ───────────────────────────
+// Returns the mapped command stream buffer so JS can write DGC sequences directly.
+
+static napi_value napi_dgcGetCommandBuffer(napi_env env, napi_callback_info info) {
+  if (!dgcCommandMapped || !dgcCommandSize) {
+    napi_throw_error(env, NULL, "dgcGetCommandBuffer: DGC not initialized");
+    return NULL;
+  }
+  napi_value result;
+  napi_create_external_arraybuffer(env, dgcCommandMapped, (size_t)dgcCommandSize, NULL, NULL, &result);
+  return result;
+}
+
+// ── N-API: dgcGetBufferAddress(bufferSlot) → [lo, hi] ───────────────────────
+// Returns the 64-bit device address for a buffer as two uint32 values.
+
+static napi_value napi_dgcGetBufferAddress(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  int32_t slot;
+  napi_get_value_int32(env, args[0], &slot);
+
+  if (slot < 0 || slot >= MAX_BUFFERS || !buffers[slot].active || !hasBDA) {
+    napi_throw_error(env, NULL, "dgcGetBufferAddress: invalid buffer or BDA not available");
+    return NULL;
+  }
+
+  VkDeviceAddress addr = buffers[slot].deviceAddress;
+  napi_value result, lo, hi;
+  napi_create_uint32(env, (uint32_t)(addr & 0xFFFFFFFF), &lo);
+  napi_create_uint32(env, (uint32_t)(addr >> 32), &hi);
+  napi_create_array_with_length(env, 2, &result);
+  napi_set_element(env, result, 0, lo);
+  napi_set_element(env, result, 1, hi);
+  return result;
+}
+
+// ── N-API: dgcInfo() → { hasBDA, hasDGC, stride, maxSeq, props } ────────────
+static napi_value napi_dgcInfo(napi_env env, napi_callback_info info) {
+  napi_value result;
+  napi_create_object(env, &result);
+
+  napi_value v;
+  napi_get_boolean(env, hasBDA, &v);
+  napi_set_named_property(env, result, "hasBDA", v);
+  napi_get_boolean(env, hasDGC, &v);
+  napi_set_named_property(env, result, "hasDGC", v);
+  napi_create_uint32(env, dgcIndirectStride, &v);
+  napi_set_named_property(env, result, "stride", v);
+  napi_create_uint32(env, dgcMaxSequences, &v);
+  napi_set_named_property(env, result, "maxSequences", v);
+
+  if (hasDGC) {
+    napi_value props;
+    napi_create_object(env, &props);
+    napi_create_uint32(env, dgcProperties.maxIndirectPipelineCount, &v);
+    napi_set_named_property(env, props, "maxPipelines", v);
+    napi_create_uint32(env, dgcProperties.maxIndirectSequenceCount, &v);
+    napi_set_named_property(env, props, "maxSequences", v);
+    napi_create_uint32(env, dgcProperties.maxIndirectCommandsTokenCount, &v);
+    napi_set_named_property(env, props, "maxTokens", v);
+    napi_create_uint32(env, dgcProperties.maxIndirectCommandsIndirectStride, &v);
+    napi_set_named_property(env, props, "maxStride", v);
+    napi_create_uint32(env, dgcProperties.supportedIndirectCommandsShaderStagesPipelineBinding, &v);
+    napi_set_named_property(env, props, "computeStages", v);
+    napi_set_named_property(env, result, "properties", props);
+  }
+
+  return result;
+}
+
+// ── N-API: batchExecuteAllDGC(packed: ArrayBuffer, count: number) ────────────
+//
+// DGC batch execution for BDA binary ops (3 buffers + count param).
+// All ops must use the same pipeline (the one set up with dgcSetup).
+//
+// Packed format per op (28 bytes, fixed):
+//   int32  bufSlotA      — input buffer A handle
+//   int32  bufSlotB      — input buffer B handle
+//   int32  bufSlotC      — output buffer C handle
+//   uint32 elementCount  — number of elements
+//   uint32 gX            — dispatch group count X
+//   uint32 gY            — dispatch group count Y
+//   uint32 gZ            — dispatch group count Z
+//
+// Internally converts buffer handles to device addresses, writes DGC command
+// stream (push constants + dispatch), and executes via DGC in a single submit.
+
+static napi_value napi_batchExecuteAllDGC(napi_env env, napi_callback_info info) {
+  if (!hasDGC || !dgcLayout || !dgcCommandMapped) {
+    napi_throw_error(env, NULL, "batchExecuteAllDGC: DGC not initialized");
+    return NULL;
+  }
+
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+  void* packedData;
+  size_t packedLen;
+  napi_get_arraybuffer_info(env, args[0], &packedData, &packedLen);
+
+  uint32_t count;
+  napi_get_value_uint32(env, args[1], &count);
+
+  if (count > dgcMaxSequences) count = dgcMaxSequences;
+  if (count == 0) {
+    napi_value result;
+    napi_create_double(env, 0.0, &result);
+    return result;
+  }
+
+  // Parse packed data and write DGC command stream
+  const uint8_t* src = (const uint8_t*)packedData;
+  uint8_t* dst = (uint8_t*)dgcCommandMapped;
+  uint32_t stride = dgcIndirectStride; // push(32) + dispatch(12) = 44
+
+  for (uint32_t i = 0; i < count; i++) {
+    int32_t slotA, slotB, slotC;
+    uint32_t elemCount, gX, gY, gZ;
+
+    memcpy(&slotA, src, 4); src += 4;
+    memcpy(&slotB, src, 4); src += 4;
+    memcpy(&slotC, src, 4); src += 4;
+    memcpy(&elemCount, src, 4); src += 4;
+    memcpy(&gX, src, 4); src += 4;
+    memcpy(&gY, src, 4); src += 4;
+    memcpy(&gZ, src, 4); src += 4;
+
+    // Get device addresses for each buffer
+    VkDeviceAddress addrA = buffers[slotA].deviceAddress;
+    VkDeviceAddress addrB = buffers[slotB].deviceAddress;
+    VkDeviceAddress addrC = buffers[slotC].deviceAddress;
+
+    // Write push constants: [u64 addrA, u64 addrB, u64 addrC, u32 count, u32 pad]
+    uint8_t* seqDst = dst + (uint64_t)i * stride;
+    memcpy(seqDst + 0, &addrA, 8);
+    memcpy(seqDst + 8, &addrB, 8);
+    memcpy(seqDst + 16, &addrC, 8);
+    memcpy(seqDst + 24, &elemCount, 4);
+    uint32_t pad = 0;
+    memcpy(seqDst + 28, &pad, 4);
+
+    // Write dispatch: [gX, gY, gZ]
+    memcpy(seqDst + 32, &gX, 4);
+    memcpy(seqDst + 36, &gY, 4);
+    memcpy(seqDst + 40, &gZ, 4);
+  }
+
+  // Execute DGC (reuses dgcExecute logic but inlined for efficiency)
+  uint32_t slot = g_ringHead;
+  if (g_ring[slot].timelineValue > 0) {
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed < g_ring[slot].timelineValue) {
+      waitTimelineValue(g_ring[slot].timelineValue);
+    }
+  }
+
+  if (g_ring[slot].descPool) {
+    fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
+  }
+  dispatchCacheValid = 0;
+
+  fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
+  VkCommandBufferBeginInfo beginInfo = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+
+  // Pre-barrier: host writes + prior shader writes → indirect command read + shader access
+  VkMemoryBarrier preBarrier = {
+    .sType = 46,
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | 0x00004000 /*HOST_WRITE*/,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | 0x00000001 /*INDIRECT_COMMAND_READ*/,
+  };
+  fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | 0x00004000 /*HOST*/,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | 0x00000002 /*DRAW_INDIRECT*/,
+    0, 1, &preBarrier, 0, NULL, 0, NULL);
+
+  // Bind the pipeline (required for no-execution-set DGC)
+  fp_vkCmdBindPipeline(g_ring[slot].cmd, 1 /*COMPUTE*/, pipelines[dgcPipeSlot].pipeline);
+
+  // Execute generated commands
+  VkGeneratedCommandsPipelineInfoEXT pipeInfoDGC = {
+    .sType = VK_STRUCTURE_TYPE_DGC_PIPELINE_INFO_EXT,
+    .pipeline = pipelines[dgcPipeSlot].pipeline,
+  };
+  VkGeneratedCommandsInfoEXT genInfo = {
+    .sType = VK_STRUCTURE_TYPE_DGC_GENERATED_CMDS_INFO_EXT,
+    .pNext = &pipeInfoDGC,
+    .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT,
+    .indirectExecutionSet = 0,
+    .indirectCommandsLayout = dgcLayout,
+    .indirectAddress = dgcCommandAddress,
+    .indirectAddressSize = (VkDeviceSize)stride * count,
+    .preprocessAddress = dgcPreprocessAddress,
+    .preprocessSize = dgcPreprocessSize,
+    .maxSequenceCount = count,
+    .sequenceCountAddress = 0,
+    .maxDrawCount = 0,
+  };
+  fp_vkCmdExecuteGeneratedCommandsEXT(g_ring[slot].cmd, 0, &genInfo);
+
+  // Post-barrier: shader writes → shader reads
+  VkMemoryBarrier postBarrier = {
+    .sType = 46,
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+  };
+  fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    0, 1, &postBarrier, 0, NULL, 0, NULL);
+
+  fp_vkEndCommandBuffer(g_ring[slot].cmd);
+
+  // Submit with timeline semaphore
+  uint64_t tv = nextTimelineValue;
+  VkTimelineSemaphoreSubmitInfo tsInfo = {
+    .sType = 1000207003,
+    .signalSemaphoreValueCount = 1,
+    .pSignalSemaphoreValues = &tv,
+  };
+  VkSubmitInfo submitInfo = {
+    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+    .pNext = &tsInfo,
+    .commandBufferCount = 1,
+    .pCommandBuffers = &g_ring[slot].cmd,
+    .signalSemaphoreCount = 1,
+    .pSignalSemaphores = &timelineSem,
+  };
+  VkResult r = fp_vkQueueSubmit(computeQueue, 1, &submitInfo, 0);
+  if (r != VK_SUCCESS) {
+    char errbuf[128];
+    snprintf(errbuf, sizeof(errbuf), "batchExecuteAllDGC: queue submit failed (VkResult=%d)", (int)r);
+    napi_throw_error(env, NULL, errbuf);
+    return NULL;
+  }
+  nextTimelineValue = tv + 1;
+  g_ring[slot].timelineValue = tv;
+  lastDispatchTimeline = tv;
+  g_ringHead = (g_ringHead + 1) % RING_SIZE;
+
+  napi_value result;
+  napi_create_double(env, (double)tv, &result);
+  return result;
+}
+
 // ── N-API: destroy() ────────────────────────────────────────────────────────
 
 static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   if (!device) return NULL;
 
   fp_vkDeviceWaitIdle(device);
+
+  // Clean up DGC resources
+  dgcCleanup();
 
   // Destroy buffers (VkBuffer handles only — slab memory freed below)
   for (int i = 0; i < MAX_BUFFERS; i++) {
@@ -3268,6 +4274,12 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "gpuTime",         NULL, napi_gpuTime,         NULL, NULL, NULL, napi_default, NULL },
     { "waitIdle",        NULL, napi_waitIdle,        NULL, NULL, NULL, napi_default, NULL },
     { "destroy",         NULL, napi_destroy,         NULL, NULL, NULL, napi_default, NULL },
+    { "dgcInfo",         NULL, napi_dgcInfo,         NULL, NULL, NULL, napi_default, NULL },
+    { "dgcSetup",        NULL, napi_dgcSetup,        NULL, NULL, NULL, napi_default, NULL },
+    { "dgcExecute",      NULL, napi_dgcExecute,      NULL, NULL, NULL, napi_default, NULL },
+    { "dgcGetCommandBuffer", NULL, napi_dgcGetCommandBuffer, NULL, NULL, NULL, napi_default, NULL },
+    { "dgcGetBufferAddress", NULL, napi_dgcGetBufferAddress, NULL, NULL, NULL, napi_default, NULL },
+    { "batchExecuteAllDGC", NULL, napi_batchExecuteAllDGC, NULL, NULL, NULL, napi_default, NULL },
   };
   napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;

@@ -11,6 +11,7 @@ import {
   SpirVBuilder, Op, ExecutionModel, ExecutionMode, FunctionControl, GLSLstd450,
   preamble, declareStorageBuffer, declareStorageBufferVec4, declareParamsPushConstant,
   loadPushLen, loadPushScalar, emitBoundsCheck,
+  preambleBDA, declareBDAPushConstants, loadBDABuffer, loadBDAElement, storeBDAElement,
 } from "./helpers.js";
 
 // ── Kernel: Element-wise binary ops ─────────────────────────────────────────
@@ -83,6 +84,85 @@ export function kernelAdd(wgSize = 256): Uint32Array { return kernelBinaryOp(Op.
 export function kernelSub(wgSize = 256): Uint32Array { return kernelBinaryOp(Op.FSub, wgSize); }
 export function kernelMul(wgSize = 256): Uint32Array { return kernelBinaryOp(Op.FMul, wgSize); }
 export function kernelDiv(wgSize = 256): Uint32Array { return kernelBinaryOp(Op.FDiv, wgSize); }
+
+// ── BDA (Buffer Device Address) binary op kernels for DGC ───────────────────
+//
+// Push constants layout (32 bytes):
+//   u64 addrA  (offset 0)
+//   u64 addrB  (offset 8)
+//   u64 addrC  (offset 16)
+//   u32 count  (offset 24)
+//   u32 _pad   (offset 28)
+//
+// No descriptor sets — buffers accessed via PhysicalStorageBuffer addresses.
+
+function kernelBinaryOpBDA(opcode: number, wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preambleBDA(b, wgSize, 1, 1);
+
+  // Push constants: 3 buffer addresses (u64) + count (u32) + pad (u32)
+  const pc = declareBDAPushConstants(b, p.tU64, p.tU32, 3, 2);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd   = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  // Load global ID
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // Load count from push constants (member 3 = first u32 param)
+  const const3u = b.id();
+  b.constant(p.tU32, const3u, 3);
+  const ptrCount = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrU32, ptrCount, pc.varId, const3u]);
+  const count = b.id();
+  b.emit(Op.Load, [p.tU32, count, ptrCount]);
+
+  // Bounds check: if (gidX >= count) return
+  const oob = b.id();
+  b.emit(Op.UGreaterThanEqual, [p.tBool, oob, gidX, count]);
+  const labelBody = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [oob, labelEnd, labelBody]);
+  b.emit(Op.Label, [labelBody]);
+
+  // Load buffer pointers from push constants
+  const bufPtrA = loadBDABuffer(b, p, pc, 0);
+  const bufPtrB = loadBDABuffer(b, p, pc, 1);
+  const bufPtrC = loadBDABuffer(b, p, pc, 2);
+
+  // a = A[gidX], b = B[gidX]
+  const valA = loadBDAElement(b, p, bufPtrA, gidX);
+  const valB = loadBDAElement(b, p, bufPtrB, gidX);
+
+  // c = op(a, b)
+  const valC = b.id();
+  b.emit(opcode, [p.tF32, valC, valA, valB]);
+
+  // C[gidX] = c
+  storeBDAElement(b, p, bufPtrC, gidX, valC);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+export function kernelAddBDA(wgSize = 256): Uint32Array { return kernelBinaryOpBDA(Op.FAdd, wgSize); }
+export function kernelSubBDA(wgSize = 256): Uint32Array { return kernelBinaryOpBDA(Op.FSub, wgSize); }
+export function kernelMulBDA(wgSize = 256): Uint32Array { return kernelBinaryOpBDA(Op.FMul, wgSize); }
+export function kernelDivBDA(wgSize = 256): Uint32Array { return kernelBinaryOpBDA(Op.FDiv, wgSize); }
 
 // ── Kernel: Element-wise scale ──────────────────────────────────────────────
 
@@ -1338,6 +1418,117 @@ export function kernelSubVec4(wgSize = 256): Uint32Array { return kernelBinaryOp
 export function kernelMulVec4(wgSize = 256): Uint32Array { return kernelBinaryOpVec4(Op.FMul, wgSize); }
 export function kernelDivVec4(wgSize = 256): Uint32Array { return kernelBinaryOpVec4(Op.FDiv, wgSize); }
 
+// ── Coarsened vec4 binary ops (2 elements per thread for ILP) ───────────────
+
+/**
+ * Coarsened vec4 binary op: each thread processes 2 vec4 elements (8 floats).
+ * Doubles instruction-level parallelism by issuing 2 independent loads before
+ * computation, allowing memory latency hiding on bandwidth-bound operations.
+ *
+ * Push constants: { vec4Count: f32, _unused: f32 }
+ * Dispatch: ceil(vec4Count / 2 / wgSize) workgroups
+ */
+function kernelBinaryOpVec4x2(opcode: number, wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 2, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // idx0 = gidX * 2, idx1 = gidX * 2 + 1
+  const idx0 = b.id();
+  b.emit(Op.IMul, [p.tU32, idx0, gidX, p.const2u]);
+  const idx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, idx1, idx0, p.const1u]);
+
+  // Bounds check: if idx0 >= len, skip entirely
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, idx0, labelEnd);
+
+  // --- Process element 0 ---
+  const ptrA0 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA0, bufA.varId, p.const0u, idx0]);
+  const valA0 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA0, ptrA0]);
+
+  const ptrB0 = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB0, bufB.varId, p.const0u, idx0]);
+  const valB0 = b.id();
+  b.emit(Op.Load, [tVec4F32, valB0, ptrB0]);
+
+  // Issue both loads before computing — compiler can pipeline them
+  // Now also load element 1 (if in bounds, checked below)
+  // Check idx1 bounds
+  const idx1F = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, idx1F, idx1]);
+  const cmp1 = b.id();
+  b.emit(Op.FOrdGreaterThanEqual, [p.tBool, cmp1, idx1F, lenF]);
+
+  // Compute element 0
+  const valC0 = b.id();
+  b.emit(opcode, [tVec4F32, valC0, valA0, valB0]);
+  const ptrC0 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC0, bufC.varId, p.const0u, idx0]);
+  b.emit(Op.Store, [ptrC0, valC0]);
+
+  // --- Process element 1 (if in bounds) ---
+  const labelSkip1 = b.id();
+  const labelDo1 = b.id();
+  b.emit(Op.SelectionMerge, [labelSkip1, 0]);
+  b.emit(Op.BranchConditional, [cmp1, labelSkip1, labelDo1]);
+  b.emit(Op.Label, [labelDo1]);
+
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA1, bufA.varId, p.const0u, idx1]);
+  const valA1 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA1, ptrA1]);
+
+  const ptrB1 = b.id();
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB1, bufB.varId, p.const0u, idx1]);
+  const valB1 = b.id();
+  b.emit(Op.Load, [tVec4F32, valB1, ptrB1]);
+
+  const valC1 = b.id();
+  b.emit(opcode, [tVec4F32, valC1, valA1, valB1]);
+  const ptrC1 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC1, bufC.varId, p.const0u, idx1]);
+  b.emit(Op.Store, [ptrC1, valC1]);
+
+  b.emit(Op.Branch, [labelSkip1]);
+  b.emit(Op.Label, [labelSkip1]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+export function kernelAddVec4x2(wgSize = 256): Uint32Array { return kernelBinaryOpVec4x2(Op.FAdd, wgSize); }
+export function kernelSubVec4x2(wgSize = 256): Uint32Array { return kernelBinaryOpVec4x2(Op.FSub, wgSize); }
+export function kernelMulVec4x2(wgSize = 256): Uint32Array { return kernelBinaryOpVec4x2(Op.FMul, wgSize); }
+
 /**
  * Vec4 scale: C[i] = A[i] * scalar (vec4 × scalar)
  * Push constants: { vec4Count: f32, scalar: f32 }
@@ -1387,6 +1578,91 @@ export function kernelScaleVec4(wgSize = 256): Uint32Array {
   const ptrC = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
   b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * Vec4x2 scale: C[i] = A[i] * scalar — 2 vec4 per thread for ILP.
+ * Dispatch: ceil(vec4Count / 2 / wgSize) workgroups
+ */
+export function kernelScaleVec4x2(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const scalar = loadPushScalar(b, p, pc);
+
+  const idx0 = b.id();
+  b.emit(Op.IMul, [p.tU32, idx0, gidX, p.const2u]);
+  const idx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, idx1, idx0, p.const1u]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, idx0, labelEnd);
+
+  // Element 0
+  const ptrA0 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA0, bufA.varId, p.const0u, idx0]);
+  const valA0 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA0, ptrA0]);
+  const valC0 = b.id();
+  b.emit(Op.VectorTimesScalar, [tVec4F32, valC0, valA0, scalar]);
+  const ptrC0 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC0, bufC.varId, p.const0u, idx0]);
+  b.emit(Op.Store, [ptrC0, valC0]);
+
+  // Bounds check for element 1
+  const idx1F = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, idx1F, idx1]);
+  const cmp1 = b.id();
+  b.emit(Op.FOrdGreaterThanEqual, [p.tBool, cmp1, idx1F, lenF]);
+
+  const labelSkip1 = b.id();
+  const labelDo1 = b.id();
+  b.emit(Op.SelectionMerge, [labelSkip1, 0]);
+  b.emit(Op.BranchConditional, [cmp1, labelSkip1, labelDo1]);
+  b.emit(Op.Label, [labelDo1]);
+
+  // Element 1
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA1, bufA.varId, p.const0u, idx1]);
+  const valA1 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA1, ptrA1]);
+  const valC1 = b.id();
+  b.emit(Op.VectorTimesScalar, [tVec4F32, valC1, valA1, scalar]);
+  const ptrC1 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC1, bufC.varId, p.const0u, idx1]);
+  b.emit(Op.Store, [ptrC1, valC1]);
+
+  b.emit(Op.Branch, [labelSkip1]);
+  b.emit(Op.Label, [labelSkip1]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);
@@ -1558,6 +1834,92 @@ export function kernelReluVec4(wgSize = 256): Uint32Array {
   const ptrC = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
   b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * Vec4x2 relu: C[i] = max(A[i], 0) — 2 vec4 per thread for ILP.
+ * Dispatch: ceil(vec4Count / 2 / wgSize) workgroups
+ */
+export function kernelReluVec4x2(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const zeroVec4 = b.id();
+  b.constantComposite(tVec4F32, zeroVec4, [p.const0f, p.const0f, p.const0f, p.const0f]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const idx0 = b.id();
+  b.emit(Op.IMul, [p.tU32, idx0, gidX, p.const2u]);
+  const idx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, idx1, idx0, p.const1u]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, idx0, labelEnd);
+
+  // Element 0
+  const ptrA0 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA0, bufA.varId, p.const0u, idx0]);
+  const valA0 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA0, ptrA0]);
+  const valC0 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, valC0, p.glslStd, GLSLstd450.FMax, valA0, zeroVec4]);
+  const ptrC0 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC0, bufC.varId, p.const0u, idx0]);
+  b.emit(Op.Store, [ptrC0, valC0]);
+
+  // Bounds check for element 1
+  const idx1F = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, idx1F, idx1]);
+  const cmp1 = b.id();
+  b.emit(Op.FOrdGreaterThanEqual, [p.tBool, cmp1, idx1F, lenF]);
+
+  const labelSkip1 = b.id();
+  const labelDo1 = b.id();
+  b.emit(Op.SelectionMerge, [labelSkip1, 0]);
+  b.emit(Op.BranchConditional, [cmp1, labelSkip1, labelDo1]);
+  b.emit(Op.Label, [labelDo1]);
+
+  // Element 1
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA1, bufA.varId, p.const0u, idx1]);
+  const valA1 = b.id();
+  b.emit(Op.Load, [tVec4F32, valA1, ptrA1]);
+  const valC1 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, valC1, p.glslStd, GLSLstd450.FMax, valA1, zeroVec4]);
+  const ptrC1 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC1, bufC.varId, p.const0u, idx1]);
+  b.emit(Op.Store, [ptrC1, valC1]);
+
+  b.emit(Op.Branch, [labelSkip1]);
+  b.emit(Op.Label, [labelSkip1]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);
@@ -1899,6 +2261,143 @@ export function kernelGeluVec4(wgSize = 256): Uint32Array {
   const ptrC = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC, bufC.varId, p.const0u, gidX]);
   b.emit(Op.Store, [ptrC, valC]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+/**
+ * Vec4x2 GELU: 2 vec4 per thread for ILP.
+ * Dispatch: ceil(vec4Count / 2 / wgSize) workgroups
+ */
+export function kernelGeluVec4x2(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const tVec4F32 = b.id();
+  b.typeVector(tVec4F32, p.tF32, 4);
+
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constHalf = b.id();
+  b.constantF32(p.tF32, constHalf, 0.5);
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
+  const constCoeff = b.id();
+  b.constantF32(p.tF32, constCoeff, 0.044715);
+  const constSqrt2OverPi = b.id();
+  b.constantF32(p.tF32, constSqrt2OverPi, Math.sqrt(2.0 / Math.PI));
+
+  const halfVec = b.id();
+  b.constantComposite(tVec4F32, halfVec, [constHalf, constHalf, constHalf, constHalf]);
+  const oneVec = b.id();
+  b.constantComposite(tVec4F32, oneVec, [constOne, constOne, constOne, constOne]);
+  const coeffVec = b.id();
+  b.constantComposite(tVec4F32, coeffVec, [constCoeff, constCoeff, constCoeff, constCoeff]);
+  const sqrt2piVec = b.id();
+  b.constantComposite(tVec4F32, sqrt2piVec, [constSqrt2OverPi, constSqrt2OverPi, constSqrt2OverPi, constSqrt2OverPi]);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const idx0 = b.id();
+  b.emit(Op.IMul, [p.tU32, idx0, gidX, p.const2u]);
+  const idx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, idx1, idx0, p.const1u]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, idx0, labelEnd);
+
+  // Element 0
+  const ptrA0 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA0, bufA.varId, p.const0u, idx0]);
+  const x0 = b.id();
+  b.emit(Op.Load, [tVec4F32, x0, ptrA0]);
+
+  const x0_2 = b.id();
+  b.emit(Op.FMul, [tVec4F32, x0_2, x0, x0]);
+  const x0_3 = b.id();
+  b.emit(Op.FMul, [tVec4F32, x0_3, x0_2, x0]);
+  const cx0_3 = b.id();
+  b.emit(Op.FMul, [tVec4F32, cx0_3, coeffVec, x0_3]);
+  const inner0 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, inner0, x0, cx0_3]);
+  const tanhArg0 = b.id();
+  b.emit(Op.FMul, [tVec4F32, tanhArg0, sqrt2piVec, inner0]);
+  const t0 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, t0, p.glslStd, GLSLstd450.Tanh, tanhArg0]);
+  const onePlusT0 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, onePlusT0, oneVec, t0]);
+  const halfX0 = b.id();
+  b.emit(Op.FMul, [tVec4F32, halfX0, halfVec, x0]);
+  const y0 = b.id();
+  b.emit(Op.FMul, [tVec4F32, y0, halfX0, onePlusT0]);
+
+  const ptrC0 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC0, bufC.varId, p.const0u, idx0]);
+  b.emit(Op.Store, [ptrC0, y0]);
+
+  // Bounds check for element 1
+  const idx1F = b.id();
+  b.emit(Op.ConvertUToF, [p.tF32, idx1F, idx1]);
+  const cmp1 = b.id();
+  b.emit(Op.FOrdGreaterThanEqual, [p.tBool, cmp1, idx1F, lenF]);
+
+  const labelSkip1 = b.id();
+  const labelDo1 = b.id();
+  b.emit(Op.SelectionMerge, [labelSkip1, 0]);
+  b.emit(Op.BranchConditional, [cmp1, labelSkip1, labelDo1]);
+  b.emit(Op.Label, [labelDo1]);
+
+  // Element 1
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA1, bufA.varId, p.const0u, idx1]);
+  const x1 = b.id();
+  b.emit(Op.Load, [tVec4F32, x1, ptrA1]);
+
+  const x1_2 = b.id();
+  b.emit(Op.FMul, [tVec4F32, x1_2, x1, x1]);
+  const x1_3 = b.id();
+  b.emit(Op.FMul, [tVec4F32, x1_3, x1_2, x1]);
+  const cx1_3 = b.id();
+  b.emit(Op.FMul, [tVec4F32, cx1_3, coeffVec, x1_3]);
+  const inner1 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, inner1, x1, cx1_3]);
+  const tanhArg1 = b.id();
+  b.emit(Op.FMul, [tVec4F32, tanhArg1, sqrt2piVec, inner1]);
+  const t1 = b.id();
+  b.emit(Op.ExtInst, [tVec4F32, t1, p.glslStd, GLSLstd450.Tanh, tanhArg1]);
+  const onePlusT1 = b.id();
+  b.emit(Op.FAdd, [tVec4F32, onePlusT1, oneVec, t1]);
+  const halfX1 = b.id();
+  b.emit(Op.FMul, [tVec4F32, halfX1, halfVec, x1]);
+  const y1 = b.id();
+  b.emit(Op.FMul, [tVec4F32, y1, halfX1, onePlusT1]);
+
+  const ptrC1 = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC1, bufC.varId, p.const0u, idx1]);
+  b.emit(Op.Store, [ptrC1, y1]);
+
+  b.emit(Op.Branch, [labelSkip1]);
+  b.emit(Op.Label, [labelSkip1]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);

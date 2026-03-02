@@ -174,7 +174,7 @@ export function kernelTranspose(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   // Push constants as u32 (9 members) — custom declaration
   const numPC = 9;
@@ -308,7 +308,7 @@ export function kernelTranspose2DTiled(wgSize = 256): Uint32Array {
   const p = preamble(b, wgSize, 1, 1);
 
   const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false, true);
 
   // Push constants: {rows: u32, cols: u32}
   const tPCStruct = b.id();

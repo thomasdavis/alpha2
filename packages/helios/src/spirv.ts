@@ -110,6 +110,9 @@ export const Op = {
   GroupNonUniformFAdd:          350,
   GroupNonUniformFMax:          358,
   GroupNonUniformFMin:          355,
+  // Pointer conversion (SPV_KHR_physical_storage_buffer)
+  ConvertUToPtr:                120,
+  ConvertPtrToU:                121,
   // Cooperative matrix (VK_KHR_cooperative_matrix)
   OpTypeCooperativeMatrixKHR:   4456,
   OpCooperativeMatrixLoadKHR:   4457,
@@ -122,12 +125,14 @@ export const Op = {
 export const Capability = {
   Shader: 1,
   Float16: 9,
+  Int64: 11,
   VulkanMemoryModel: 5345,
   StorageBuffer16BitAccess: 4433, // SPV_KHR_16bit_storage
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
   GroupNonUniform: 61,
   GroupNonUniformArithmetic: 63,
   CooperativeMatrixKHR: 6022,
+  PhysicalStorageBufferAddresses: 5347, // SPV_KHR_physical_storage_buffer
 } as const;
 
 // Cooperative matrix usage
@@ -145,7 +150,10 @@ export const GroupOperation = {
 } as const;
 
 // Addressing/memory models
-export const AddressingModel = { Logical: 0 } as const;
+export const AddressingModel = {
+  Logical: 0,
+  PhysicalStorageBuffer64: 5348, // SPV_KHR_physical_storage_buffer
+} as const;
 export const MemoryModel = {
   GLSL450: 1,
   Vulkan: 3,
@@ -167,12 +175,14 @@ export const StorageClass = {
   Function: 7,
   PushConstant: 9,
   StorageBuffer: 12,
+  PhysicalStorageBuffer: 5349, // SPV_KHR_physical_storage_buffer
 } as const;
 
 // Decorations
 export const Decoration = {
   Block: 2,
   BufferBlock: 3,
+  Aliased: 5,
   ArrayStride: 6,
   Offset: 35,
   DescriptorSet: 34,

@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Native addon interface ──────────────────────────────────────────────────
 
 export interface NativeAddon {
-  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean };
+  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean };
   createBuffer(byteLength: number, hostVisible?: number): number;
   uploadBuffer(handle: number, data: Float32Array): void;
   fillBuffer(handle: number, byteSize: number, value: number): void;
@@ -28,6 +28,9 @@ export interface NativeAddon {
   batchDispatchMany(packed: ArrayBuffer, count: number): void;
   batchSubmit(): number;
   batchExecuteAll?(packed: ArrayBuffer, count: number): number;
+  batchExecuteAllDGC?(packed: ArrayBuffer, count: number): number;
+  dgcSetup?(pipelineSlot: number, pushConstantSize: number, maxSequences: number): boolean;
+  dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
   waitTimeline(value: number): void;
   getCompleted(): number;
   gpuTime(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
@@ -38,7 +41,7 @@ export interface NativeAddon {
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 let _native: NativeAddon | null = null;
-let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } | null = null;
+let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } | null = null;
 
 function findNativeAddon(): string {
   const envOverride = process.env.HELIOS_NATIVE_ADDON;
@@ -72,7 +75,7 @@ function findNativeAddon(): string {
 }
 
 /** Load the native addon and initialize the Vulkan device. */
-export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } {
+export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } {
   if (_deviceInfo) return _deviceInfo;
 
   const addonPath = findNativeAddon();

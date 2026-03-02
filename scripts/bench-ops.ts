@@ -43,12 +43,19 @@ function parseArgs(): CliOpts {
   };
 }
 
+// ── Hardware specs (NVIDIA L4) ─────────────────────────────────────────────
+
+const L4_MEM_BW_BYTES = 300e9;   // ~300 GB/s GDDR6
+const L4_FP16_TC_FLOPS = 120e12; // 120 TFLOP/s f16 tensor cores (dense)
+const L4_FP32_FLOPS = 30.3e12;   // 30.3 TFLOP/s fp32 (non-tensor)
+
 // ── Timing helpers ──────────────────────────────────────────────────────────
 
 interface OpResult {
   ms: number;
   tflops?: number;
   gbps?: number;
+  peakMs?: number;  // theoretical minimum time (roofline)
   note?: string;
 }
 
@@ -98,10 +105,16 @@ function main(): void {
     return onlyFilters.some(f => name.includes(f));
   }
 
-  function record(name: string, ms: number, opts?: { flops?: number; bytes?: number; note?: string }): void {
+  function record(name: string, ms: number, opts?: { flops?: number; bytes?: number; note?: string; tensorCore?: boolean }): void {
     const r: OpResult = { ms: Math.round(ms * 10000) / 10000 };
     if (opts?.flops && opts.flops > 0) r.tflops = Math.round((opts.flops / (ms / 1000)) / 1e12 * 1000) / 1000;
     if (opts?.bytes && opts.bytes > 0) r.gbps = Math.round((opts.bytes / (ms / 1000)) / 1e9 * 10) / 10;
+    // Roofline: theoretical min time = max(bandwidth_time, compute_time)
+    const bwMs = (opts?.bytes && opts.bytes > 0) ? (opts.bytes / L4_MEM_BW_BYTES) * 1000 : 0;
+    const peakFlops = opts?.tensorCore ? L4_FP16_TC_FLOPS : L4_FP32_FLOPS;
+    const computeMs = (opts?.flops && opts.flops > 0) ? (opts.flops / peakFlops) * 1000 : 0;
+    const peak = Math.max(bwMs, computeMs);
+    if (peak > 0) r.peakMs = Math.round(peak * 10000) / 10000;
     if (opts?.note) r.note = opts.note;
     results[name] = r;
   }
@@ -169,7 +182,7 @@ function main(): void {
     const ms = hasMatmulTransposed
       ? benchOp(() => (b as any).matmulTransposed(a, w))
       : benchOp(() => b.matmul(a, (b as any).transpose(w, 0, 1)));
-    record(name, ms, { flops: 2 * M * N * K, note });
+    record(name, ms, { flops: 2 * M * N * K, bytes: (M * K + K * N + M * N) * 4, tensorCore: true, note });
     release(a);
     release(w);
   }
@@ -195,7 +208,7 @@ function main(): void {
           release(at);
           return r;
         });
-    record(name, ms, { flops: 2 * M * N * K, note });
+    record(name, ms, { flops: 2 * M * N * K, bytes: (M * K + K * N + M * N) * 4, tensorCore: true, note });
     release(a);
     release(dout);
   }
@@ -207,7 +220,7 @@ function main(): void {
     const a = b.randn([sz, sz]);
     const bm = b.randn([sz, sz]);
     const ms = benchOp(() => b.matmul(a, bm));
-    record(sqName, ms, { flops: 2 * sz ** 3, note: `${sz}x${sz}x${sz}` });
+    record(sqName, ms, { flops: 2 * sz ** 3, bytes: 3 * sz * sz * 4, tensorCore: true, note: `${sz}x${sz}x${sz}` });
     release(a);
     release(bm);
   }
@@ -243,6 +256,33 @@ function main(): void {
       record("silu_bwd_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "SiLU backward (fused)" });
       release(xSilu);
       release(ySilu);
+    }
+
+    // Fused SiLU-Mul (SwiGLU forward: silu(a)*b in 1 dispatch instead of 2)
+    if (shouldRun("silu_mul_512x2752") && typeof (b as any).siluMul === "function") {
+      const smA = b.randn([512, 2752]);
+      const smB = b.randn([512, 2752]);
+      const ms = benchOp(() => (b as any).siluMul(smA, smB));
+      record("silu_mul_512x2752", ms, { bytes: sz2752 * 4 * 3, note: "fused SiLU*Mul (SwiGLU fwd)" });
+      release(smA);
+      release(smB);
+    }
+
+    // Fused SiLU-Mul Backward (SwiGLU backward: both da,db in 1 dispatch instead of 3)
+    if (shouldRun("silu_mul_bwd_512x2752") && typeof (b as any).siluMulBackward === "function") {
+      const smA = b.randn([512, 2752]);
+      const smB = b.randn([512, 2752]);
+      const smG = b.randn([512, 2752]);
+      // benchOp expects single TensorData; wrapper releases both outputs
+      const ms = benchOp(() => {
+        const [da, db] = (b as any).siluMulBackward(smA, smB, smG);
+        release(db);
+        return da;
+      });
+      record("silu_mul_bwd_512x2752", ms, { bytes: sz2752 * 4 * 5, note: "fused SiLU*Mul backward (SwiGLU bwd)" });
+      release(smA);
+      release(smB);
+      release(smG);
     }
 
     // SoftCap backward (complex fused: tanh + exp derivatives)
@@ -361,7 +401,8 @@ function main(): void {
         const result = (b as any).layerNormBackward(x, w, gradOut, 1e-5);
         return [result.dx, result.dw, result.db];
       });
-      record("layernorm_bwd_512x1024", msBwd, { note: "LayerNorm backward" });
+      // bwd reads: x, w, gradOut, writes: dx, dw, db  → ~5 full passes of [BT,D]
+      record("layernorm_bwd_512x1024", msBwd, { bytes: BT * D * 4 * 5, note: "LayerNorm backward" });
       release(gradOut);
     }
 
@@ -400,7 +441,8 @@ function main(): void {
 
     if (shouldRun("cross_entropy_fwd_512x64000")) {
       const ms = benchOp(() => (b as any).crossEntropy(logits, targets));
-      record("cross_entropy_fwd_512x64000", ms, { note: "CE loss forward" });
+      // CE fwd: internally does softmax (2 passes of [BT,V]) + NLL scatter-read + reduction
+      record("cross_entropy_fwd_512x64000", ms, { bytes: BT * V * 4 * 4, note: "CE loss forward" });
     }
 
     // CE backward
@@ -426,8 +468,12 @@ function main(): void {
         if (result.output && result.lse) return [result.output, result.lse];
         return [result];
       });
+      // Flash attn: reads Q,K,V [BH,T,Dh], writes O [BH,T,Dh] + LSE [BH,T]
+      // Multi-pass tiled so actual bandwidth >> single pass, but roofline = single pass minimum
       record("flash_attn_fwd_b1_h16_t512_d64", ms, {
-        flops: 2 * BH * T * T * Dh * 2, note: "Flash Attention fwd",
+        flops: 2 * BH * T * T * Dh * 2,
+        bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+        note: "Flash Attention fwd",
       });
     }
 
@@ -443,8 +489,11 @@ function main(): void {
           const result = (b as any).flashAttentionBackward(q, k, v, O, dO, lse, T, 1.0 / Math.sqrt(Dh), 30);
           return [result.dQ, result.dK, result.dV];
         });
+        // Flash bwd: reads Q,K,V,O,dO,LSE, writes dQ,dK,dV
         record("flash_attn_bwd_b1_h16_t512_d64", msBwd, {
-          flops: 2 * BH * T * T * Dh * 4, note: "Flash Attention bwd",
+          flops: 2 * BH * T * T * Dh * 4,
+          bytes: BH * T * Dh * 4 * 8 + BH * T * 4,
+          note: "Flash Attention bwd",
         });
       }
       release(dO);
@@ -705,7 +754,8 @@ function main(): void {
       const v = (b as any).slice(qkv, [0, 2 * D], [BT, 3 * D]);
       return [q, k, v];
     });
-    record("slice_qkv_512x3072", ms, { note: hasFused ? "fused 3-way slice" : "3-way slice for Q,K,V" });
+    // Reads full QKV [BT,3D], writes Q,K,V [BT,D] each
+    record("slice_qkv_512x3072", ms, { bytes: BT * 3 * D * 4 * 2, note: hasFused ? "fused 3-way slice" : "3-way slice for Q,K,V" });
     release(qkv);
   }
 
@@ -773,10 +823,13 @@ function main(): void {
     pad("operation", 38) +
     pad("helios_ms", 11) +
     pad("cuda_ms", 11) +
+    pad("peak_ms", 9) +
     pad("h_tflops", 10) +
     pad("c_tflops", 10) +
     pad("h_gbps", 9) +
     pad("c_gbps", 9) +
+    pad("h_eff%", 7) +
+    pad("c_eff%", 7) +
     pad("winner", 10) +
     "note";
   console.log(hdr);
@@ -797,10 +850,14 @@ function main(): void {
 
     const hMs = h ? h.ms.toFixed(3) : "n/a";
     const cMs = c ? c.ms.toFixed(3) : "n/a";
+    const peakMs = h?.peakMs ? h.peakMs.toFixed(3) : "";
     const hTf = h?.tflops ? h.tflops.toFixed(2) : "";
     const cTf = c?.tflops ? c.tflops.toFixed(2) : "";
     const hGb = h?.gbps ? h.gbps.toFixed(0) : "";
     const cGb = c?.gbps ? c.gbps.toFixed(0) : "";
+    // Efficiency: peak_ms / actual_ms × 100%
+    const hEff = (h?.peakMs && h.ms > 0) ? Math.round(h.peakMs / h.ms * 100).toString() : "";
+    const cEff = (h?.peakMs && c && c.ms > 0) ? Math.round(h.peakMs / c.ms * 100).toString() : "";
 
     let winner = "";
     if (h && c && h.ms > 0 && c.ms > 0) {
@@ -816,10 +873,13 @@ function main(): void {
       pad(op, 38) +
       pad(hMs, 11) +
       pad(cMs, 11) +
+      pad(peakMs, 9) +
       pad(hTf, 10) +
       pad(cTf, 10) +
       pad(hGb, 9) +
       pad(cGb, 9) +
+      pad(hEff, 7) +
+      pad(cEff, 7) +
       pad(winner, 10) +
       note,
     );

@@ -296,6 +296,203 @@ export function declareStorageBufferF16(
   return { varId, tPtrF16 };
 }
 
+// ── BDA (Buffer Device Address) helpers ─────────────────────────────────────
+//
+// For DGC (device-generated commands), kernels use PhysicalStorageBuffer
+// addressing instead of descriptor sets. Buffer addresses are passed as u64
+// push constants. This eliminates per-dispatch descriptor allocation.
+
+/**
+ * Set up the BDA preamble (PhysicalStorageBuffer addressing model).
+ * Like preamble() but adds Int64 + PhysicalStorageBufferAddresses capabilities
+ * and uses PhysicalStorageBuffer64 addressing model.
+ *
+ * Returns all IDs from preamble() plus BDA-specific types.
+ */
+export function preambleBDA(b: SpirVBuilder, wgX: number, wgY: number, wgZ: number) {
+  b.addCapability(Capability.Shader);
+  b.addCapability(Capability.Int64);
+  b.addCapability(Capability.PhysicalStorageBufferAddresses);
+  b.addExtension("SPV_KHR_physical_storage_buffer");
+
+  const glslStd = b.id();
+  b.addExtInstImport(glslStd, "GLSL.std.450");
+
+  b.setMemoryModel(AddressingModel.PhysicalStorageBuffer64, MemoryModel.GLSL450);
+
+  // Standard types
+  const tVoid = b.id();
+  const tF32  = b.id();
+  const tU32  = b.id();
+  const tBool = b.id();
+  const tVec3U32 = b.id();
+  const tFnVoid  = b.id();
+
+  b.typeVoid(tVoid);
+  b.typeFloat(tF32, 32);
+  b.typeInt(tU32, 32, 0);
+  b.typeBool(tBool);
+  b.typeVector(tVec3U32, tU32, 3);
+  b.typeFunction(tFnVoid, tVoid);
+
+  // BDA-specific types
+  const tU64 = b.id();
+  b.typeInt(tU64, 64, 0);
+
+  // RuntimeArray<f32> for buffer references
+  const tRuntimeArrayF32 = b.id();
+  b.typeRuntimeArray(tRuntimeArrayF32, tF32);
+  b.addDecorate(tRuntimeArrayF32, Decoration.ArrayStride, 4);
+
+  // Buffer struct (PhysicalStorageBuffer reference)
+  const tBufferStruct = b.id();
+  b.typeStruct(tBufferStruct, [tRuntimeArrayF32]);
+  b.addDecorate(tBufferStruct, Decoration.Block);
+  b.addMemberDecorate(tBufferStruct, 0, Decoration.Offset, 0);
+
+  // Pointer types for PSB
+  const tPtrPSB = b.id();
+  b.typePointer(tPtrPSB, StorageClass.PhysicalStorageBuffer, tBufferStruct);
+  const tPtrPSBF32 = b.id();
+  b.typePointer(tPtrPSBF32, StorageClass.PhysicalStorageBuffer, tF32);
+
+  // Built-in: GlobalInvocationId
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, tVec3U32);
+  const vGlobalId = b.id();
+  b.variable(tPtrInputVec3, vGlobalId, StorageClass.Input);
+  b.addDecorate(vGlobalId, Decoration.BuiltIn, BuiltIn.GlobalInvocationId);
+
+  // Constants
+  const const0u = b.id();
+  const const1u = b.id();
+  const const2u = b.id();
+  b.constant(tU32, const0u, 0);
+  b.constant(tU32, const1u, 1);
+  b.constant(tU32, const2u, 2);
+
+  const const0f = b.id();
+  b.constantF32(tF32, const0f, 0.0);
+
+  return {
+    glslStd, tVoid, tF32, tU32, tU64, tBool, tVec3U32, tFnVoid,
+    tPtrInputVec3, vGlobalId,
+    tRuntimeArrayF32, tBufferStruct, tPtrPSB, tPtrPSBF32,
+    const0u, const1u, const2u, const0f,
+    wgX, wgY, wgZ,
+  };
+}
+
+/**
+ * Declare a BDA push constant block with N u64 buffer addresses + M u32 params.
+ *
+ * Layout:
+ *   u64 addr[0]   (offset 0)
+ *   u64 addr[1]   (offset 8)
+ *   ...
+ *   u64 addr[N-1] (offset (N-1)*8)
+ *   u32 param[0]  (offset N*8)
+ *   u32 param[1]  (offset N*8+4)
+ *   ...
+ *
+ * Returns { varId, tPtrU64, tPtrU32 } for accessing members.
+ */
+export function declareBDAPushConstants(
+  b: SpirVBuilder,
+  tU64: number,
+  tU32: number,
+  numBuffers: number,
+  numU32Params: number,
+) {
+  const memberTypes: number[] = [];
+  for (let i = 0; i < numBuffers; i++) memberTypes.push(tU64);
+  for (let i = 0; i < numU32Params; i++) memberTypes.push(tU32);
+
+  const tStruct = b.id();
+  b.typeStruct(tStruct, memberTypes);
+  b.addDecorate(tStruct, Decoration.Block);
+
+  let offset = 0;
+  for (let i = 0; i < numBuffers; i++) {
+    b.addMemberDecorate(tStruct, i, Decoration.Offset, offset);
+    offset += 8; // u64
+  }
+  for (let i = 0; i < numU32Params; i++) {
+    b.addMemberDecorate(tStruct, numBuffers + i, Decoration.Offset, offset);
+    offset += 4; // u32
+  }
+
+  const tPtrStruct = b.id();
+  b.typePointer(tPtrStruct, StorageClass.PushConstant, tStruct);
+  const tPtrU64 = b.id();
+  b.typePointer(tPtrU64, StorageClass.PushConstant, tU64);
+  const tPtrU32 = b.id();
+  b.typePointer(tPtrU32, StorageClass.PushConstant, tU32);
+
+  const varId = b.id();
+  b.variable(tPtrStruct, varId, StorageClass.PushConstant);
+
+  return { varId, tPtrU64, tPtrU32, totalSize: offset };
+}
+
+/**
+ * Load a buffer address from BDA push constants and convert to PSB pointer.
+ * memberIndex is the push constant member index (0, 1, 2, ...).
+ */
+export function loadBDABuffer(
+  b: SpirVBuilder,
+  p: ReturnType<typeof preambleBDA>,
+  pc: ReturnType<typeof declareBDAPushConstants>,
+  memberIndex: number,
+): number {
+  const constIdx = b.id();
+  b.constant(p.tU32, constIdx, memberIndex);
+
+  const ptrAddr = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrU64, ptrAddr, pc.varId, constIdx]);
+  const addr = b.id();
+  b.emit(Op.Load, [p.tU64, addr, ptrAddr]);
+
+  // Convert u64 → PhysicalStorageBuffer pointer
+  const bufPtr = b.id();
+  b.emit(Op.ConvertUToPtr, [p.tPtrPSB, bufPtr, addr]);
+  return bufPtr;
+}
+
+/**
+ * Load f32 from a BDA buffer at index gid.
+ * bufPtr is the result of loadBDABuffer().
+ * Returns the loaded f32 value ID.
+ */
+export function loadBDAElement(
+  b: SpirVBuilder,
+  p: ReturnType<typeof preambleBDA>,
+  bufPtr: number,
+  gid: number,
+): number {
+  const ptr = b.id();
+  b.emit(Op.AccessChain, [p.tPtrPSBF32, ptr, bufPtr, p.const0u, gid]);
+  const val = b.id();
+  b.emit(Op.Load, [p.tF32, val, ptr, 2 /*Aligned*/, 4]);
+  return val;
+}
+
+/**
+ * Store f32 to a BDA buffer at index gid.
+ * bufPtr is the result of loadBDABuffer().
+ */
+export function storeBDAElement(
+  b: SpirVBuilder,
+  p: ReturnType<typeof preambleBDA>,
+  bufPtr: number,
+  gid: number,
+  value: number,
+): void {
+  const ptr = b.id();
+  b.emit(Op.AccessChain, [p.tPtrPSBF32, ptr, bufPtr, p.const0u, gid]);
+  b.emit(Op.Store, [ptr, value, 2 /*Aligned*/, 4]);
+}
+
 // ── Vec4 helpers ────────────────────────────────────────────────────────────
 
 /**

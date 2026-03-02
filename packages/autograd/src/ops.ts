@@ -347,6 +347,35 @@ export function silu(ctx: Ctx, a: Variable): Variable {
   });
 }
 
+/**
+ * Fused SiLU-Mul: output = silu(a) * b — single dispatch for SwiGLU.
+ * Backward: da = dout * b * silu'(a), db = dout * silu(a)
+ */
+export function siluMul(ctx: Ctx, a: Variable, b: Variable): Variable {
+  const aData = a.data, bData = b.data;
+  const B = ctx.backend;
+  const out = B.siluMul ? B.siluMul(aData, bData) : B.mul(B.silu(aData), bData);
+  return record(ctx, out, [a, b], (g, B2, release) => {
+    if (B2.siluMulBackward) return B2.siluMulBackward(aData, bData, g);
+    // Fallback: separate silu_backward and mul
+    const siluA = B2.silu(aData);
+    const ga = B2.mul(g, bData);
+    const da = B2.siluBackward ? B2.siluBackward(aData, ga) : (() => {
+      const src = aData.data as Float32Array;
+      const gArr = ga.data as Float32Array;
+      const grad = new Float32Array(src.length);
+      for (let i = 0; i < src.length; i++) {
+        const x = src[i]; const sig = 1 / (1 + Math.exp(-x));
+        grad[i] = gArr[i] * (sig * (1 + x * (1 - sig)));
+      }
+      return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
+    })();
+    const db = B2.mul(g, siluA);
+    if (release) { release(ga); release(siluA); }
+    return [da, db];
+  });
+}
+
 export function gelu(ctx: Ctx, a: Variable): Variable {
   const aData = a.data;
   return record(ctx, ctx.backend.gelu(aData), [a], (g, B, release) => {
@@ -698,6 +727,49 @@ export function slice(ctx: Ctx, a: Variable, starts: number[], ends: number[]): 
     }
     return [padded];
   });
+}
+
+/**
+ * Fused 3-way column slice: split [rows, 3*D] into 3 × [rows, D].
+ * Single GPU dispatch instead of 3 separate slice ops.
+ * Backward: 3 separate scatterSlice operations (same dispatch count as unfused).
+ */
+export function sliceQkv(ctx: Ctx, a: Variable): [Variable, Variable, Variable] {
+  const B = ctx.backend;
+  const data = a.data;
+  const [rows, cols3] = data.shape;
+  const D = cols3 / 3;
+
+  if (B.sliceQkv) {
+    const [qData, kData, vData] = B.sliceQkv(data);
+    const origShape = [...data.shape];
+    const q = record(ctx, qData, [a], (g, B2) => {
+      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 0], [rows, D])];
+      const z0 = B2.zeros([rows, D], g.dtype);
+      const z1 = B2.zeros([rows, D], g.dtype);
+      return [B2.cat([g, z0, z1], 1)];
+    });
+    const k = record(ctx, kData, [a], (g, B2) => {
+      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, D], [rows, 2 * D])];
+      const z0 = B2.zeros([rows, D], g.dtype);
+      const z1 = B2.zeros([rows, D], g.dtype);
+      return [B2.cat([z0, g, z1], 1)];
+    });
+    const v = record(ctx, vData, [a], (g, B2) => {
+      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 2 * D], [rows, 3 * D])];
+      const z0 = B2.zeros([rows, D], g.dtype);
+      const z1 = B2.zeros([rows, D], g.dtype);
+      return [B2.cat([z0, z1, g], 1)];
+    });
+    return [q, k, v];
+  }
+
+  // Fallback to 3 separate slices
+  return [
+    slice(ctx, a, [0, 0], [rows, D]),
+    slice(ctx, a, [0, D], [rows, 2 * D]),
+    slice(ctx, a, [0, 2 * D], [rows, 3 * D]),
+  ];
 }
 
 // ── Reshape / view ops ─────────────────────────────────────────────────────
