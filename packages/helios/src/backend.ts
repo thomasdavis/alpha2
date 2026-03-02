@@ -1791,7 +1791,7 @@ export class HeliosBackend implements Backend {
       // Persistent CTA: limit concurrent WGs so Phase 2 re-reads hit L2 cache.
       // Activates when total data exceeds ~32MB (L2 thrashing threshold on L4).
       const totalBytes = byteSize;
-      const L2_TARGET_MB = parseInt(process.env.HELIOS_SOFTMAX_L2_MB ?? "12", 10);
+      const L2_TARGET_MB = parseInt(process.env.HELIOS_SOFTMAX_L2_MB ?? "10", 10);
       const L2_TARGET = L2_TARGET_MB * 1024 * 1024;
       const usePCTA = softmaxEnv === "" && totalBytes > L2_TARGET && dim >= 4096;
 
