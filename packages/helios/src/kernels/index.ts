@@ -122,6 +122,14 @@ import {
   kernelFlashAttentionBackwardDKVV2,
 } from "./attention.js";
 
+// Cooperative matrix flash attention
+export { kernelFlashAttentionCoopForward } from "./attention-coop.js";
+import { kernelFlashAttentionCoopForward } from "./attention-coop.js";
+
+// Cooperative matrix 2 flash attention (VK_NV_cooperative_matrix2)
+export { kernelFlashAttentionCoop2Forward } from "./attention-coop2.js";
+import { kernelFlashAttentionCoop2Forward } from "./attention-coop2.js";
+
 // Copy / slice kernels
 export { kernelSlice2D, kernelSlice3Way, kernelSlice3WayVec4, kernelScatterSlice2D, kernelSlice3D, kernelScatterSlice3D } from "./copy.js";
 
@@ -302,20 +310,114 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           spirv = kernelLayerNormRegUnrolled(wgSize, iters);
         }
       }
-      // Flash attention kernels — name encodes params: flash_attn_{variant}_{Br}_{Bc}_{D}
+      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}
+      // Optional _sc suffix enables soft-capping (tanh clamping). Without _sc, softcap code
+      // is physically absent from the SPIR-V, eliminating ~25 ops/iter in forward, ~35 in backward.
       if (!spirv) {
-        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)_(\d+)_(\d+)_(\d+)$/);
+        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)$/);
         if (flashMatch) {
-          const [, variant, brS, bcS, dS] = flashMatch;
+          const [, variant, scSuffix, brS, bcS, dS] = flashMatch;
           const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
+          const useSoftCap = scSuffix === "_sc";
           switch (variant) {
-            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D); break;
+            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap); break;
             case "fwd_v2":     spirv = kernelFlashAttentionForwardV2(Br, Bc, D); break;
-            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D); break;
-            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D); break;
+            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap); break;
+            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap); break;
             case "bwd_dq_v2":  spirv = kernelFlashAttentionBackwardDQV2(Br, Bc, D); break;
             case "bwd_dkv_v2": spirv = kernelFlashAttentionBackwardDKVV2(Br, Bc, D); break;
           }
+        }
+      }
+      // Cooperative matrix flash attention — name: flash_attn_coop_fwd_{Br}_{Bc}_{D}
+      if (!spirv) {
+        const coopFlashMatch = name.match(/^flash_attn_coop_fwd_(\d+)_(\d+)_(\d+)$/);
+        if (coopFlashMatch) {
+          const [, brS, bcS, dS] = coopFlashMatch;
+          spirv = kernelFlashAttentionCoopForward(parseInt(brS), parseInt(bcS), parseInt(dS));
+        }
+      }
+      // Cooperative matrix 2 flash attention — names:
+      //   flash_attn_coop2_fwd_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_sc_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_sc30_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_sc_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_fwd_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_in16_nolse_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_qt{QT}_ls{LS}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
+      if (!spirv) {
+        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(?:_(wg|sg))?$/);
+        if (coop2FlashMatch) {
+          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, scopeRaw] = coop2FlashMatch;
+          const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
+          const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
+          const softCapConst = scSuffix === "_sc30" ? 30 : null;
+          const useF16Input = in16Suffix === "_in16";
+          const skipLseWrite = noLseSuffix === "_nolse";
+          const qTiles = qtS ? parseInt(qtS) : 1;
+          const localSize = lsS ? parseInt(lsS) : 64;
+          spirv = kernelFlashAttentionCoop2Forward(
+            parseInt(brS),
+            parseInt(bcS),
+            parseInt(dS),
+            "full",
+            scopeMode,
+            useSoftCap,
+            softCapConst,
+            useF16Input,
+            skipLseWrite,
+            qTiles,
+            localSize,
+          );
+        }
+      }
+      // Cooperative matrix 2 flash attention probes — names:
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}_qt{QT}_ls{LS}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
+      if (!spirv) {
+        const coop2ProbeMatch = name.match(/^flash_attn_coop2_probe_(qk|qk_mask|qk_softmax|pv)_fwd(_sc|_sc30)?(_in16)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(?:_(wg|sg))?$/);
+        if (coop2ProbeMatch) {
+          const [, modeRaw, scSuffix, in16Suffix, brS, bcS, dS, qtS, lsS, scopeRaw] = coop2ProbeMatch;
+          const mode = modeRaw as "qk" | "qk_mask" | "qk_softmax" | "pv";
+          const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
+          const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
+          const softCapConst = scSuffix === "_sc30" ? 30 : null;
+          const useF16Input = in16Suffix === "_in16";
+          const qTiles = qtS ? parseInt(qtS) : 1;
+          const localSize = lsS ? parseInt(lsS) : 64;
+          spirv = kernelFlashAttentionCoop2Forward(
+            parseInt(brS),
+            parseInt(bcS),
+            parseInt(dS),
+            mode,
+            scopeMode,
+            useSoftCap,
+            softCapConst,
+            useF16Input,
+            false,
+            qTiles,
+            localSize,
+          );
         }
       }
       // Cooperative matrix matmul — name encodes:

@@ -19,6 +19,7 @@
 
 const MAGIC = 0x07230203;
 const VERSION = 0x00010300;        // SPIR-V 1.3 (default for most Helios kernels)
+export const VERSION_1_6 = 0x00010600;  // SPIR-V 1.6 (required for SPV_NV_cooperative_matrix2)
 const GENERATOR = 0x00000000;      // Helios (unregistered)
 
 // Opcodes (only the ones we need)
@@ -119,6 +120,14 @@ export const Op = {
   OpCooperativeMatrixStoreKHR:  4458,
   OpCooperativeMatrixMulAddKHR: 4459,
   OpCooperativeMatrixLengthKHR: 4460,
+  // Cooperative matrix 2 (VK_NV_cooperative_matrix2 / SPV_NV_cooperative_matrix2)
+  OpCooperativeMatrixConvertNV:       5293,
+  OpCooperativeMatrixReduceNV:        5366,
+  OpCooperativeMatrixPerElementOpNV:  5369,
+  OpCooperativeMatrixTransposeNV:     5390,
+  // Function
+  FunctionParameter: 55,
+  FunctionCall:      57,
 } as const;
 
 // Capabilities
@@ -131,8 +140,13 @@ export const Capability = {
   StorageBufferStorageClass: 4443, // SPV_KHR_storage_buffer_storage_class
   GroupNonUniform: 61,
   GroupNonUniformArithmetic: 63,
+  GroupNonUniformClustered: 67,
   CooperativeMatrixKHR: 6022,
   PhysicalStorageBufferAddresses: 5347, // SPV_KHR_physical_storage_buffer
+  // VK_NV_cooperative_matrix2
+  CooperativeMatrixReductionsNV: 5430,
+  CooperativeMatrixConversionsNV: 5431,
+  CooperativeMatrixPerElementOperationsNV: 5432,
 } as const;
 
 // Cooperative matrix usage
@@ -147,6 +161,15 @@ export const GroupOperation = {
   Reduce: 0,
   InclusiveScan: 1,
   ExclusiveScan: 2,
+  ClusteredReduce: 3,
+} as const;
+
+// Cooperative matrix reduce mode (bitmask, VK_NV_cooperative_matrix2)
+export const CooperativeMatrixReduce = {
+  Row: 0x1,
+  Column: 0x2,
+  RowAndColumn: 0x3,
+  Reduce2x2: 0x4,
 } as const;
 
 // Addressing/memory models
@@ -209,6 +232,8 @@ export const BuiltIn = {
 export const GLSLstd450 = {
   Exp: 27,
   Log: 28,
+  Exp2: 29,
+  Log2: 30,
   Sqrt: 31,
   InverseSqrt: 32,
   Pow: 26,

@@ -36,7 +36,7 @@ import {
 
 // ── Kernel: Flash Attention Forward ──────────────────────────────────────────
 
-export function kernelFlashAttentionForward(Br: number, Bc: number, D: number): Uint32Array {
+export function kernelFlashAttentionForward(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
   const D4 = D >>> 2; // D must be divisible by 4
   const b = new SpirVBuilder();
   const p = preamble(b, Br, 1, 1);
@@ -62,6 +62,7 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number): 
 
   const constNegInf = b.id(); b.constant(p.tF32, constNegInf, 0xFF800000);
   const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
+  const constLog2e = b.id(); b.constantF32(p.tF32, constLog2e, Math.LOG2E);
   const vec4Zero = b.id(); b.constantNull(tVec4F32, vec4Zero);
 
   // Pre-generate d4 index constants (0..D4-1)
@@ -171,15 +172,17 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number): 
   const scale = b.id();
   b.emit(Op.Load, [p.tF32, scale, ptrScale]);
 
-  const ptrSoftCap = b.id();
-  b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
-  const softCapValue = b.id();
-  b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
-
-  const softCapEnabled = b.id();
-  b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
-  const invSoftCap = b.id();
-  b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  let softCapValue: number = 0, softCapEnabled: number = 0, invSoftCap: number = 0;
+  if (useSoftCap) {
+    const ptrSoftCap = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
+    softCapValue = b.id();
+    b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
+    softCapEnabled = b.id();
+    b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
+    invSoftCap = b.id();
+    b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  }
 
   // ── Compute vec4 base offset: baseOff4 = bhIdx * T * D4 ────────────────
   const TD4 = b.id();
@@ -422,14 +425,19 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number): 
   }
 
   // ── Soft capping: tanh(dot / cap) * cap if enabled ────────────────────
-  const dotDivCap = b.id();
-  b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
-  const tanhVal = b.id();
-  b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
-  const dotCapped = b.id();
-  b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
-  const dotAfterCap = b.id();
-  b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  let dotAfterCap: number;
+  if (useSoftCap) {
+    const dotDivCap = b.id();
+    b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
+    const tanhVal = b.id();
+    b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
+    const dotCapped = b.id();
+    b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
+    dotAfterCap = b.id();
+    b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  } else {
+    dotAfterCap = dotAcc;
+  }
 
   // ── Causal mask + out-of-bounds ─────────────────────────────────────────
   const oob = b.id();
@@ -449,13 +457,15 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number): 
 
   const mDiff = b.id();
   b.emit(Op.FSub, [p.tF32, mDiff, mOld, mNew]);
+  const mDiffLog2 = b.id(); b.emit(Op.FMul, [p.tF32, mDiffLog2, mDiff, constLog2e]);
   const alpha = b.id();
-  b.emit(Op.ExtInst, [p.tF32, alpha, p.glslStd, GLSLstd450.Exp, mDiff]);
+  b.emit(Op.ExtInst, [p.tF32, alpha, p.glslStd, GLSLstd450.Exp2, mDiffLog2]);
 
   const dotDiff = b.id();
   b.emit(Op.FSub, [p.tF32, dotDiff, dot, mNew]);
+  const dotDiffLog2 = b.id(); b.emit(Op.FMul, [p.tF32, dotDiffLog2, dotDiff, constLog2e]);
   const pj = b.id();
-  b.emit(Op.ExtInst, [p.tF32, pj, p.glslStd, GLSLstd450.Exp, dotDiff]);
+  b.emit(Op.ExtInst, [p.tF32, pj, p.glslStd, GLSLstd450.Exp2, dotDiffLog2]);
 
   const lOld = b.id();
   b.emit(Op.Load, [p.tF32, lOld, varL]);
@@ -1068,7 +1078,7 @@ export function kernelFlashAttentionForwardV2(
 // Push constants: { T, scale, softCapValue, _pad }
 // Dispatch: (ceil(T/Br), B*H, 1)  Workgroup: (Br, 1, 1)
 
-export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number): Uint32Array {
+export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Br, 1, 1);
@@ -1094,6 +1104,7 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   const constD4 = b.id(); b.constant(p.tU32, constD4, D4);
   const constNegInf = b.id(); b.constant(p.tF32, constNegInf, 0xFF800000);
   const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
+  const constLog2e = b.id(); b.constantF32(p.tF32, constLog2e, Math.LOG2E);
   const vec4Zero = b.id(); b.constantNull(tVec4F32, vec4Zero);
 
   const constD4Idx: number[] = [];
@@ -1157,10 +1168,13 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   const T = b.id(); b.emit(Op.ConvertFToU, [p.tU32, T, TF]);
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, p.const1u]);
   const scale = b.id(); b.emit(Op.Load, [p.tF32, scale, ptrScale]);
-  const ptrSoftCap = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
-  const softCapValue = b.id(); b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
-  const softCapEnabled = b.id(); b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
-  const invSoftCap = b.id(); b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  let softCapValue: number = 0, softCapEnabled: number = 0, invSoftCap: number = 0;
+  if (useSoftCap) {
+    const ptrSoftCap = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
+    softCapValue = b.id(); b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
+    softCapEnabled = b.id(); b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
+    invSoftCap = b.id(); b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  }
 
   // Base offsets
   const TD4 = b.id(); b.emit(Op.IMul, [p.tU32, TD4, T, constD4]);
@@ -1358,10 +1372,16 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   }
 
   // Soft capping
-  const dotDivCap = b.id(); b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
-  const tanhVal = b.id(); b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
-  const dotCapped = b.id(); b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
-  const dotAfterCap = b.id(); b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  let dotAfterCap: number;
+  let tanhVal: number = 0;
+  if (useSoftCap) {
+    const dotDivCap = b.id(); b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
+    tanhVal = b.id(); b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
+    const dotCapped = b.id(); b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
+    dotAfterCap = b.id(); b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  } else {
+    dotAfterCap = dotAcc;
+  }
 
   // Causal mask + OOB
   const oob = b.id(); b.emit(Op.UGreaterThanEqual, [p.tBool, oob, kPos, T]);
@@ -1369,9 +1389,10 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   const masked = b.id(); b.emit(Op.LogicalOr, [p.tBool, masked, oob, causal]);
   const dot = b.id(); b.emit(Op.Select, [p.tF32, dot, masked, constNegInf, dotAfterCap]);
 
-  // p_ij = exp(dot - lse_i)
+  // p_ij = exp2((dot - lse_i) * LOG2E)
   const dotMinusLSE = b.id(); b.emit(Op.FSub, [p.tF32, dotMinusLSE, dot, lse_i]);
-  const p_ij = b.id(); b.emit(Op.ExtInst, [p.tF32, p_ij, p.glslStd, GLSLstd450.Exp, dotMinusLSE]);
+  const dotMinusLSElog2 = b.id(); b.emit(Op.FMul, [p.tF32, dotMinusLSElog2, dotMinusLSE, constLog2e]);
+  const p_ij = b.id(); b.emit(Op.ExtInst, [p.tF32, p_ij, p.glslStd, GLSLstd450.Exp2, dotMinusLSElog2]);
 
   // dotDOV = SSA regDO · sV[j]
   const ptrSV0 = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSV0, sV, jD4]);
@@ -1392,12 +1413,16 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   const dS_ij = b.id(); b.emit(Op.FMul, [p.tF32, dS_ij, p_ij, dovMinusDi]);
 
   // dScore_ij with softcap derivative
-  const tanhSq = b.id(); b.emit(Op.FMul, [p.tF32, tanhSq, tanhVal, tanhVal]);
-  const deriv = b.id(); b.emit(Op.FSub, [p.tF32, deriv, const1f, tanhSq]);
-  const dSscale = b.id(); b.emit(Op.FMul, [p.tF32, dSscale, dS_ij, scale]);
-  const dScore_capped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_capped, dSscale, deriv]);
-  const dScore_uncapped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_uncapped, dS_ij, scale]);
-  const dScore_ij = b.id(); b.emit(Op.Select, [p.tF32, dScore_ij, softCapEnabled, dScore_capped, dScore_uncapped]);
+  let dScore_ij: number;
+  if (useSoftCap) {
+    const tanhSq = b.id(); b.emit(Op.FMul, [p.tF32, tanhSq, tanhVal, tanhVal]);
+    const deriv = b.id(); b.emit(Op.FSub, [p.tF32, deriv, const1f, tanhSq]);
+    const dSscale = b.id(); b.emit(Op.FMul, [p.tF32, dSscale, dS_ij, scale]);
+    const dScore_capped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_capped, dSscale, deriv]);
+    dScore_ij = dScore_capped;
+  } else {
+    dScore_ij = b.id(); b.emit(Op.FMul, [p.tF32, dScore_ij, dS_ij, scale]);
+  }
 
   // dQ accumulation using cached K (no redundant shared memory reload)
   for (let d4 = 0; d4 < D4; d4++) {
@@ -1456,7 +1481,7 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
 // Push constants: { T, scale, softCapValue, _pad }
 // Dispatch: (ceil(T/Bc), B*H, 1)  Workgroup: (Bc, 1, 1)
 
-export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: number): Uint32Array {
+export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Bc, 1, 1);
@@ -1481,6 +1506,7 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const constBrMinus1 = b.id(); b.constant(p.tU32, constBrMinus1, Br - 1);
   const constNegInf = b.id(); b.constant(p.tF32, constNegInf, 0xFF800000);
   const const1f = b.id(); b.constantF32(p.tF32, const1f, 1.0);
+  const constLog2e = b.id(); b.constantF32(p.tF32, constLog2e, Math.LOG2E);
   const vec4Zero = b.id(); b.constantNull(tVec4F32, vec4Zero);
 
   const constD4Idx: number[] = [];
@@ -1550,10 +1576,13 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const T = b.id(); b.emit(Op.ConvertFToU, [p.tU32, T, TF]);
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, p.const1u]);
   const scale = b.id(); b.emit(Op.Load, [p.tF32, scale, ptrScale]);
-  const ptrSoftCap = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
-  const softCapValue = b.id(); b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
-  const softCapEnabled = b.id(); b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
-  const invSoftCap = b.id(); b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  let softCapValue: number = 0, softCapEnabled: number = 0, invSoftCap: number = 0;
+  if (useSoftCap) {
+    const ptrSoftCap = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrSoftCap, pc.varId, p.const2u]);
+    softCapValue = b.id(); b.emit(Op.Load, [p.tF32, softCapValue, ptrSoftCap]);
+    softCapEnabled = b.id(); b.emit(Op.FOrdGreaterThan, [p.tBool, softCapEnabled, softCapValue, p.const0f]);
+    invSoftCap = b.id(); b.emit(Op.FDiv, [p.tF32, invSoftCap, const1f, softCapValue]);
+  }
 
   // Base offsets
   const TD4 = b.id(); b.emit(Op.IMul, [p.tU32, TD4, T, constD4]);
@@ -1695,10 +1724,16 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   }
 
   // Soft capping
-  const dotDivCap = b.id(); b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
-  const tanhVal = b.id(); b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
-  const dotCapped = b.id(); b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
-  const dotAfterCap = b.id(); b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  let dotAfterCap: number;
+  let tanhVal: number = 0;
+  if (useSoftCap) {
+    const dotDivCap = b.id(); b.emit(Op.FMul, [p.tF32, dotDivCap, dotAcc, invSoftCap]);
+    tanhVal = b.id(); b.emit(Op.ExtInst, [p.tF32, tanhVal, p.glslStd, GLSLstd450.Tanh, dotDivCap]);
+    const dotCapped = b.id(); b.emit(Op.FMul, [p.tF32, dotCapped, tanhVal, softCapValue]);
+    dotAfterCap = b.id(); b.emit(Op.Select, [p.tF32, dotAfterCap, softCapEnabled, dotCapped, dotAcc]);
+  } else {
+    dotAfterCap = dotAcc;
+  }
 
   // Causal mask: qPos < kRow or qPos >= T → -inf
   const oob = b.id(); b.emit(Op.UGreaterThanEqual, [p.tBool, oob, qPos, T]);
@@ -1706,11 +1741,12 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const masked = b.id(); b.emit(Op.LogicalOr, [p.tBool, masked, oob, causal]);
   const dot = b.id(); b.emit(Op.Select, [p.tF32, dot, masked, constNegInf, dotAfterCap]);
 
-  // p_ij = exp(dot - sLSE[i])
+  // p_ij = exp2((dot - sLSE[i]) * LOG2E)
   const ptrSLSEi = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSLSEi, sLSE, i]);
   const lse_i = b.id(); b.emit(Op.Load, [p.tF32, lse_i, ptrSLSEi]);
   const dotMinusLSE = b.id(); b.emit(Op.FSub, [p.tF32, dotMinusLSE, dot, lse_i]);
-  const p_ij = b.id(); b.emit(Op.ExtInst, [p.tF32, p_ij, p.glslStd, GLSLstd450.Exp, dotMinusLSE]);
+  const dotMinusLSElog2 = b.id(); b.emit(Op.FMul, [p.tF32, dotMinusLSElog2, dotMinusLSE, constLog2e]);
+  const p_ij = b.id(); b.emit(Op.ExtInst, [p.tF32, p_ij, p.glslStd, GLSLstd450.Exp2, dotMinusLSElog2]);
 
   // dV accumulation + dotDOV computation (interleaved, sharing sDO loads)
   let dovAcc = p.const0f;
@@ -1744,12 +1780,16 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const dS_ij = b.id(); b.emit(Op.FMul, [p.tF32, dS_ij, p_ij, dovMinusDi]);
 
   // dScore_ij with softcap derivative
-  const tanhSq = b.id(); b.emit(Op.FMul, [p.tF32, tanhSq, tanhVal, tanhVal]);
-  const deriv = b.id(); b.emit(Op.FSub, [p.tF32, deriv, const1f, tanhSq]);
-  const dSscale = b.id(); b.emit(Op.FMul, [p.tF32, dSscale, dS_ij, scale]);
-  const dScore_capped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_capped, dSscale, deriv]);
-  const dScore_uncapped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_uncapped, dS_ij, scale]);
-  const dScore_ij = b.id(); b.emit(Op.Select, [p.tF32, dScore_ij, softCapEnabled, dScore_capped, dScore_uncapped]);
+  let dScore_ij: number;
+  if (useSoftCap) {
+    const tanhSq = b.id(); b.emit(Op.FMul, [p.tF32, tanhSq, tanhVal, tanhVal]);
+    const deriv = b.id(); b.emit(Op.FSub, [p.tF32, deriv, const1f, tanhSq]);
+    const dSscale = b.id(); b.emit(Op.FMul, [p.tF32, dSscale, dS_ij, scale]);
+    const dScore_capped = b.id(); b.emit(Op.FMul, [p.tF32, dScore_capped, dSscale, deriv]);
+    dScore_ij = dScore_capped;
+  } else {
+    dScore_ij = b.id(); b.emit(Op.FMul, [p.tF32, dScore_ij, dS_ij, scale]);
+  }
 
   // dK accumulation using cached Q (no redundant shared memory reload)
   for (let d4 = 0; d4 < D4; d4++) {

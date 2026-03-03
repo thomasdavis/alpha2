@@ -285,6 +285,21 @@ typedef struct {
   uint32_t scope;  // VkScopeKHR
 } VkCooperativeMatrixPropertiesKHR;
 
+// Cooperative matrix 2 (VK_NV_cooperative_matrix2)
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV 1000593000
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkBool32 cooperativeMatrixWorkgroupScope;
+  VkBool32 cooperativeMatrixFlexibleDimensions;
+  VkBool32 cooperativeMatrixReductions;
+  VkBool32 cooperativeMatrixConversions;
+  VkBool32 cooperativeMatrixPerElementOperations;
+  VkBool32 cooperativeMatrixTensorAddressing;
+  VkBool32 cooperativeMatrixBlockLoads;
+} VkPhysicalDeviceCooperativeMatrix2FeaturesNV;
+
 typedef struct { char extensionName[256]; uint32_t specVersion; } VkExtensionProperties;
 
 // VkPhysicalDeviceVulkan11Features — storageBuffer16BitAccess is the first bool field
@@ -701,6 +716,7 @@ static int hasAsyncTransfer = 0;
 // Cooperative matrix state
 static int coopMatSupported = 0;
 static uint32_t coopMatM = 0, coopMatN = 0, coopMatK = 0;
+static int coopMat2Supported = 0;
 
 // Buffer Device Address (Vulkan 1.2 core)
 static int hasBDA = 0;
@@ -1313,7 +1329,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   // Probe device extensions (cooperative matrix, push descriptors, DGC)
   coopMatSupported = 0;
+  coopMat2Supported = 0;
   int hasCoopMatExt = 0;
+  int hasCoopMat2Ext = 0;
   hasPushDescriptors = 0;
   int hasDGCExt = 0;
   if (fp_vkEnumerateDeviceExtensionProperties) {
@@ -1328,6 +1346,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
         }
         if (strcmp(exts[i].extensionName, "VK_KHR_push_descriptor") == 0) {
           hasPushDescriptors = 1;
+        }
+        if (strcmp(exts[i].extensionName, "VK_NV_cooperative_matrix2") == 0) {
+          hasCoopMat2Ext = 1;
         }
         if (strcmp(exts[i].extensionName, "VK_EXT_device_generated_commands") == 0) {
           hasDGCExt = 1;
@@ -1362,6 +1383,24 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
       hasCoopMatExt = 2; // confirmed feature support
     } else {
       hasCoopMatExt = 0;
+    }
+  }
+
+  // Probe coopmat2 features if extension present (requires KHR coop mat)
+  VkPhysicalDeviceCooperativeMatrix2FeaturesNV coopMat2Features = {0};
+  if (hasCoopMat2Ext && hasCoopMatExt == 2 && fp_vkGetPhysicalDeviceFeatures2) {
+    coopMat2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV;
+    VkPhysicalDeviceFeatures2 features2cm2 = {0};
+    features2cm2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2cm2.pNext = &coopMat2Features;
+    fp_vkGetPhysicalDeviceFeatures2(physDevice, &features2cm2);
+    if (coopMat2Features.cooperativeMatrixWorkgroupScope &&
+        coopMat2Features.cooperativeMatrixReductions &&
+        coopMat2Features.cooperativeMatrixPerElementOperations &&
+        coopMat2Features.cooperativeMatrixConversions) {
+      hasCoopMat2Ext = 2; // confirmed feature support
+    } else {
+      hasCoopMat2Ext = 0;
     }
   }
 
@@ -1427,6 +1466,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   Vk11Features enableFeat11 = {0};
   Vk12Features enableFeat12 = {0};
   VkPhysicalDeviceCooperativeMatrixFeaturesKHR enableCoopMat = {0};
+  VkPhysicalDeviceCooperativeMatrix2FeaturesNV enableCoopMat2 = {0};
   VkDGCFeaturesEXT enableDGC = {0};
   void* devicePNext = NULL;
   int needVk12 = f16Supported || hasBDA;
@@ -1445,7 +1485,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   void** pNextTail = needVk12 ? (void**)&enableFeat12.pNext : NULL;
 
   // Enable push descriptors if supported
-  const char* enabledExtensions[8];
+  const char* enabledExtensions[10];
   uint32_t enabledExtCount = 0;
   if (hasPushDescriptors) {
     enabledExtensions[enabledExtCount++] = "VK_KHR_push_descriptor";
@@ -1463,6 +1503,27 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
       pNextTail = (void**)&enableCoopMat.pNext;
     }
     enabledExtensions[enabledExtCount++] = "VK_KHR_cooperative_matrix";
+  }
+
+  // Chain cooperative matrix 2 features if supported (requires KHR coop mat)
+  if (hasCoopMat2Ext == 2) {
+    enableCoopMat2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV;
+    enableCoopMat2.cooperativeMatrixWorkgroupScope = 1;
+    enableCoopMat2.cooperativeMatrixFlexibleDimensions = 1;
+    enableCoopMat2.cooperativeMatrixReductions = 1;
+    enableCoopMat2.cooperativeMatrixConversions = 1;
+    enableCoopMat2.cooperativeMatrixPerElementOperations = 1;
+    enableCoopMat2.cooperativeMatrixTensorAddressing = 1;
+    enableCoopMat2.cooperativeMatrixBlockLoads = 1;
+    if (pNextTail) {
+      *pNextTail = &enableCoopMat2;
+      pNextTail = (void**)&enableCoopMat2.pNext;
+    } else {
+      devicePNext = &enableCoopMat2;
+      pNextTail = (void**)&enableCoopMat2.pNext;
+    }
+    enabledExtensions[enabledExtCount++] = "VK_NV_cooperative_matrix2";
+    coopMat2Supported = 1;
   }
 
   // Chain DGC features if supported (requires BDA)
@@ -1493,6 +1554,8 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     // Retry without optional features
     f16Supported = 0;
     hasCoopMatExt = 0;
+    hasCoopMat2Ext = 0;
+    coopMat2Supported = 0;
     hasPushDescriptors = 0;
     hasBDA = 0;
     hasDGCExt = 0;
@@ -1920,6 +1983,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_get_boolean(env, hasDGC, &val);
   napi_set_named_property(env, result, "hasDGC", val);
+
+  napi_get_boolean(env, coopMat2Supported, &val);
+  napi_set_named_property(env, result, "coopMat2Supported", val);
 
   return result;
 }

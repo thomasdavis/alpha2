@@ -68,6 +68,11 @@ export async function benchCmd(args: string[]): Promise<void> {
     console.log(`Benchmarking: suite=e2e backend=${backendName} iters=${iters}\n`);
     await benchE2e(backend, iters);
   }
+  if (suite === "attn" || suite === "all") {
+    const backend = resolveBackend(backendName) as any;
+    console.log(`Benchmarking: suite=attn backend=${backendName} iters=${iters}\n`);
+    await benchAttn(backend, iters);
+  }
 }
 
 // ── GPU benchmark: helios vs cpu_ref vs webgpu element-wise ops ─────────────
@@ -932,6 +937,117 @@ async function benchE2e(backend: Backend, iters: number): Promise<void> {
   }, Math.min(iters, 20));
 
   console.log(`e2e forward (B=${B} T=${T} D=${D}): ${ms.toFixed(2)}ms/iter`);
+}
+
+// ── Flash attention benchmark ─────────────────────────────────────────────
+
+async function benchAttn(b: any, iters: number): Promise<void> {
+  console.log("── Flash Attention Benchmarks ──\n");
+
+  const BH = 16, T = 512, Dh = 64;
+  const warmup = Math.max(3, Math.floor(iters / 4));
+
+  const q = b.randn([BH, T, Dh]);
+  const k = b.randn([BH, T, Dh]);
+  const v = b.randn([BH, T, Dh]);
+  const scale = 1.0 / Math.sqrt(Dh);
+  const fwdFlops = 2 * BH * T * T * Dh * 2;
+  const bwdFlops = 2 * BH * T * T * Dh * 4;
+
+  const benchCustom = (fn: () => any[]) => {
+    for (let i = 0; i < warmup; i++) { const r = fn(); for (const t of r) if (t && typeof t === "object" && t.data) { /* keep alive */ } }
+    const start = performance.now();
+    for (let i = 0; i < iters; i++) fn();
+    return (performance.now() - start) / iters;
+  };
+
+  if (typeof b.flashAttention === "function") {
+    // Forward with softcap=30
+    const msFwd = benchCustom(() => {
+      const r = b.flashAttention(q, k, v, T, scale, 30);
+      return r.output ? [r.output, r.lse] : [r];
+    });
+    const fwdTflops = fwdFlops / (msFwd / 1000) / 1e12;
+    console.log(`flash_attn_fwd (softcap=30):     ${msFwd.toFixed(3)}ms  ${fwdTflops.toFixed(1)} TFLOP/s`);
+
+    // Forward with softcap=0 (compile-time specialization)
+    const msFwdNoSC = benchCustom(() => {
+      const r = b.flashAttention(q, k, v, T, scale, 0);
+      return r.output ? [r.output, r.lse] : [r];
+    });
+    const fwdNoSCTflops = fwdFlops / (msFwdNoSC / 1000) / 1e12;
+    console.log(`flash_attn_fwd (softcap=0):      ${msFwdNoSC.toFixed(3)}ms  ${fwdNoSCTflops.toFixed(1)} TFLOP/s`);
+
+    // Backward with softcap=30
+    if (typeof b.flashAttentionBackward === "function") {
+      const fwdResult = b.flashAttention(q, k, v, T, scale, 30);
+      const O = fwdResult.output ?? fwdResult;
+      const lse = fwdResult.lse;
+      const dO = b.randn([BH, T, Dh]);
+      if (lse) {
+        const msBwd = benchCustom(() => {
+          const r = b.flashAttentionBackward(q, k, v, O, dO, lse, T, scale, 30);
+          return [r.dQ, r.dK, r.dV];
+        });
+        const bwdTflops = bwdFlops / (msBwd / 1000) / 1e12;
+        console.log(`flash_attn_bwd (softcap=30):     ${msBwd.toFixed(3)}ms  ${bwdTflops.toFixed(1)} TFLOP/s`);
+      }
+
+      // Backward with softcap=0
+      const fwdNoSC = b.flashAttention(q, k, v, T, scale, 0);
+      const oNoSC = fwdNoSC.output ?? fwdNoSC;
+      const lseNoSC = fwdNoSC.lse;
+      if (lseNoSC) {
+        const msBwdNoSC = benchCustom(() => {
+          const r = b.flashAttentionBackward(q, k, v, oNoSC, dO, lseNoSC, T, scale, 0);
+          return [r.dQ, r.dK, r.dV];
+        });
+        const bwdNoSCTflops = bwdFlops / (msBwdNoSC / 1000) / 1e12;
+        console.log(`flash_attn_bwd (softcap=0):      ${msBwdNoSC.toFixed(3)}ms  ${bwdNoSCTflops.toFixed(1)} TFLOP/s`);
+      }
+    }
+  }
+
+  // Cooperative matrix flash attention forward
+  if (typeof b.flashAttentionCoop === "function") {
+    const msCoopFwd = benchCustom(() => {
+      const r = b.flashAttentionCoop(q, k, v, T, scale);
+      return r.output ? [r.output, r.lse] : [r];
+    });
+    const coopTflops = fwdFlops / (msCoopFwd / 1000) / 1e12;
+    console.log(`flash_attn_coop_fwd (tensor core): ${msCoopFwd.toFixed(3)}ms  ${coopTflops.toFixed(1)} TFLOP/s`);
+
+    // Correctness check: compare scalar vs coop
+    if (typeof b.flashAttention === "function") {
+      const scalarResult = b.flashAttention(q, k, v, T, scale, 0);
+      const coopResult = b.flashAttentionCoop(q, k, v, T, scale);
+      // Force GPU readback
+      const scalarO = scalarResult.output ?? scalarResult;
+      const coopO = coopResult.output;
+      if (scalarO && coopO && scalarO.data && coopO.data) {
+        const sD = scalarO.data instanceof Float32Array ? scalarO.data : new Float32Array(scalarO.data);
+        const cD = coopO.data instanceof Float32Array ? coopO.data : new Float32Array(coopO.data);
+        let maxAbsDiff = 0, maxRelDiff = 0, allZero = true;
+        const n = Math.min(sD.length, cD.length);
+        for (let i = 0; i < n; i++) {
+          if (cD[i] !== 0) allZero = false;
+          const absDiff = Math.abs(sD[i] - cD[i]);
+          if (absDiff > maxAbsDiff) maxAbsDiff = absDiff;
+          const denom = Math.max(Math.abs(sD[i]), 1e-8);
+          const relDiff = absDiff / denom;
+          if (relDiff > maxRelDiff) maxRelDiff = relDiff;
+        }
+        console.log(`  coop vs scalar: maxAbsDiff=${maxAbsDiff.toExponential(2)} maxRelDiff=${maxRelDiff.toExponential(2)} allZero=${allZero} n=${n}/${sD.length}`);
+        // Show first 8 values from each
+        console.log(`  scalar[0:8]: ${[...sD.slice(0, 8)].map(x => x.toFixed(4)).join(", ")}`);
+        console.log(`  coop  [0:8]: ${[...cD.slice(0, 8)].map(x => x.toFixed(4)).join(", ")}`);
+      } else {
+        console.log(`  correctness check: could not read output data (scalar=${!!scalarO?.data} coop=${!!coopO?.data})`);
+      }
+    }
+  }
+
+  console.log();
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

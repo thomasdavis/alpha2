@@ -341,6 +341,41 @@ def main():
     record("softmax_attn_16x512x512", ms,
            bytes_rw=BH * T * T * 4 * 2, note="attention softmax")
 
+    # Cache warmth experiment: hot / producer-hot / cold
+    sm_bytes = BH * T * T * 4 * 2
+
+    # hot_2x: run softmax twice, time total/2
+    def hot_2x():
+        F.softmax(attn_scores, dim=-1)
+        F.softmax(attn_scores, dim=-1)
+    ms = bench(hot_2x, W, I, sync)
+    record("softmax_attn_hot_2x", ms / 2,
+           bytes_rw=sm_bytes, note="L2-hot (2nd of 2 back-to-back)")
+
+    # producer-hot: add writes output, then softmax reads it
+    attn_a = torch.randn(BH, T, T, device=device)
+    attn_b = torch.randn(BH, T, T, device=device)
+    def producer_hot():
+        scores = attn_a + attn_b
+        return F.softmax(scores, dim=-1)
+    ms_prod = bench(producer_hot, W, I, sync)
+    ms_add = bench(lambda: attn_a + attn_b, W, I, sync)
+    record("softmax_attn_producer_hot", ms_prod - ms_add,
+           bytes_rw=sm_bytes, note="producer->consumer L2 reuse")
+    record("softmax_attn_producer_total", ms_prod,
+           bytes_rw=sm_bytes, note="add+softmax fused")
+
+    # cold: flush L2 with 128MB noise before each softmax
+    flush_buf = torch.randn(32 * 1024 * 1024, device=device)  # 128MB
+    def cold_softmax():
+        _ = flush_buf + flush_buf  # evict attn_scores from L2
+        return F.softmax(attn_scores, dim=-1)
+    ms_cold = bench(cold_softmax, W, I, sync)
+    ms_flush = bench(lambda: flush_buf + flush_buf, W, I, sync)
+    record("softmax_attn_cold", ms_cold - ms_flush,
+           bytes_rw=sm_bytes, note="L2-cold (after 128MB flush)")
+    del flush_buf, attn_a, attn_b
+
     logits_sm = torch.randn(BT, V, device=device)
     ms = bench(lambda: F.softmax(logits_sm, dim=-1), W, I, sync)
     record("softmax_logits_512x64000", ms,
@@ -373,6 +408,68 @@ def main():
     q = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
     k = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
     v = torch.randn(B, H, T, Dh, device=device, dtype=torch.float32)
+
+    # ── SDPA backend detection ─────────────────────────────────────────────
+    # Determine which backend PyTorch selects for our FP32 shape + TF32 config
+    try:
+        import torch.backends.cuda
+        print("\n=== SDPA Backend Detection ===")
+        print(f"  allow_tf32 (matmul): {torch.backends.cuda.matmul.allow_tf32}")
+        print(f"  allow_tf32 (cudnn):  {torch.backends.cudnn.allow_tf32}")
+
+        # Check which backends are eligible
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            # Test each backend individually
+            backends = {
+                "MATH": SDPBackend.MATH,
+                "EFFICIENT_ATTENTION": SDPBackend.EFFICIENT_ATTENTION,
+                "FLASH_ATTENTION": SDPBackend.FLASH_ATTENTION,
+            }
+            if hasattr(SDPBackend, "CUDNN_ATTENTION"):
+                backends["CUDNN_ATTENTION"] = SDPBackend.CUDNN_ATTENTION
+
+            for name, backend in backends.items():
+                try:
+                    with sdpa_kernel(backend):
+                        _ = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+                    print(f"  {name}: AVAILABLE")
+                except Exception as e:
+                    print(f"  {name}: unavailable ({e})")
+
+            # Time MATH-only backend for comparison
+            try:
+                with sdpa_kernel(SDPBackend.MATH):
+                    ms_math = bench(
+                        lambda: F.scaled_dot_product_attention(q, k, v, is_causal=True),
+                        W, I, sync,
+                    )
+                record("flash_attn_fwd_MATH_only", ms_math,
+                       flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd MATH-only (f32)")
+            except Exception as e:
+                print(f"  MATH-only timing failed: {e}")
+
+            # Time without TF32 for comparison
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            try:
+                ms_notf32 = bench(
+                    lambda: F.scaled_dot_product_attention(q, k, v, is_causal=True),
+                    W, I, sync,
+                )
+                record("flash_attn_fwd_noTF32", ms_notf32,
+                       flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd (f32, TF32 OFF)")
+            except Exception as e:
+                print(f"  noTF32 timing failed: {e}")
+            finally:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+
+        except ImportError:
+            print("  (SDPBackend not available — older PyTorch)")
+        print("=== End SDPA Detection ===\n")
+    except Exception as e:
+        print(f"SDPA detection failed: {e}")
 
     try:
         ms = bench(

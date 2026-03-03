@@ -10,6 +10,7 @@ export {
   Op,
   Capability,
   CooperativeMatrixUse,
+  CooperativeMatrixReduce,
   GroupOperation,
   AddressingModel,
   MemoryModel,
@@ -22,6 +23,7 @@ export {
   FunctionControl,
   Scope,
   MemorySemantics,
+  VERSION_1_6,
 } from "../spirv.js";
 
 import {
@@ -29,6 +31,7 @@ import {
   Op,
   Capability,
   CooperativeMatrixUse,
+  CooperativeMatrixReduce,
   GroupOperation,
   AddressingModel,
   MemoryModel,
@@ -41,6 +44,7 @@ import {
   FunctionControl,
   Scope,
   MemorySemantics,
+  VERSION_1_6,
 } from "../spirv.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

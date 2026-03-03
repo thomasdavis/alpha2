@@ -59,6 +59,35 @@ interface OpResult {
   note?: string;
 }
 
+interface FlashDispatchDebug {
+  requestedOp: "flashAttention" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
+  executedPath: "scalar" | "coop2";
+  mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv";
+  softCap: number;
+  BH: number;
+  T: number;
+  D: number;
+  kernelName: string;
+  pipelineKey: string;
+  pipelineHandle: number;
+  pipelineCreated: boolean;
+  scope?: "wg" | "sg";
+  fallbackReason?: string;
+}
+
+interface FlashBenchTrace {
+  firstTimed: FlashDispatchDebug | null;
+  pipelineCreatedWarmup: boolean;
+  pipelineCreatedTimed: boolean;
+  warmupWaitCalls: number;
+  timedWaitCalls: number;
+  kernels: string[];
+  pipelineKeys: string[];
+  paths: string[];
+  scopes: string[];
+  fallbackReasons: string[];
+}
+
 function median(arr: number[]): number {
   const s = arr.slice().sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)];
@@ -78,6 +107,10 @@ function main(): void {
     typeof bAny.flush === "function" ? bAny.flush.bind(bAny) : null;
   const releaseFn: ((td: TensorData) => void) | null =
     typeof bAny.releaseGpuTensor === "function" ? bAny.releaseGpuTensor.bind(bAny) : null;
+  const getFlashDispatchDebugFn: (() => FlashDispatchDebug | null) | null =
+    typeof bAny.getLastFlashDispatchDebug === "function" ? bAny.getLastFlashDispatchDebug.bind(bAny) : null;
+  const getWaitTimelineCountFn: (() => number) | null =
+    typeof bAny.getWaitTimelineCount === "function" ? bAny.getWaitTimelineCount.bind(bAny) : null;
 
   const info = typeof bAny.getDeviceInfo === "function" ? bAny.getDeviceInfo() : {};
 
@@ -155,6 +188,90 @@ function main(): void {
       for (const r of rs) release(r);
     }
     return median(times);
+  }
+
+  function benchCustomWithFlashTrace(fn: () => TensorData[]): { ms: number; trace: FlashBenchTrace } {
+    const traceEveryIter = (process.env.HELIOS_FLASH_BENCH_TRACE_EVERY_ITER ?? "0") === "1";
+    const kernels = new Set<string>();
+    const pipelineKeys = new Set<string>();
+    const paths = new Set<string>();
+    const scopes = new Set<string>();
+    const fallbackReasons = new Set<string>();
+    let firstTimed: FlashDispatchDebug | null = null;
+    let pipelineCreatedWarmup = false;
+    let pipelineCreatedTimed = false;
+
+    const waitBeforeWarmup = getWaitTimelineCountFn ? getWaitTimelineCountFn() : 0;
+    for (let i = 0; i < opts.warmup; i++) {
+      const rs = fn();
+      sync();
+      for (const r of rs) release(r);
+      if (traceEveryIter || i === opts.warmup - 1) {
+        const debug = getFlashDispatchDebugFn ? getFlashDispatchDebugFn() : null;
+        if (debug?.pipelineCreated) pipelineCreatedWarmup = true;
+      }
+    }
+    const waitAfterWarmup = getWaitTimelineCountFn ? getWaitTimelineCountFn() : waitBeforeWarmup;
+    const warmupWaitCalls = waitAfterWarmup - waitBeforeWarmup;
+
+    const times: number[] = [];
+    for (let i = 0; i < opts.iters; i++) {
+      const t0 = performance.now();
+      const rs = fn();
+      sync();
+      const elapsed = performance.now() - t0;
+      times.push(elapsed);
+      for (const r of rs) release(r);
+
+      if (traceEveryIter || i === 0) {
+        const debug = getFlashDispatchDebugFn ? getFlashDispatchDebugFn() : null;
+        if (!debug) continue;
+        if (!firstTimed) firstTimed = debug;
+        kernels.add(debug.kernelName);
+        pipelineKeys.add(debug.pipelineKey);
+        paths.add(debug.executedPath);
+        if (debug.scope) scopes.add(debug.scope);
+        if (debug.fallbackReason) fallbackReasons.add(debug.fallbackReason);
+        if (debug.pipelineCreated) pipelineCreatedTimed = true;
+      }
+    }
+    const waitAfterTimed = getWaitTimelineCountFn ? getWaitTimelineCountFn() : waitAfterWarmup;
+    const timedWaitCalls = waitAfterTimed - waitAfterWarmup;
+
+    return {
+      ms: median(times),
+      trace: {
+        firstTimed,
+        pipelineCreatedWarmup,
+        pipelineCreatedTimed,
+        warmupWaitCalls,
+        timedWaitCalls,
+        kernels: Array.from(kernels),
+        pipelineKeys: Array.from(pipelineKeys),
+        paths: Array.from(paths),
+        scopes: Array.from(scopes),
+        fallbackReasons: Array.from(fallbackReasons),
+      },
+    };
+  }
+
+  function logFlashTrace(opName: string, trace: FlashBenchTrace): void {
+    const first = trace.firstTimed;
+    const pipelineKey = first?.pipelineKey ?? (trace.pipelineKeys[0] ?? "n/a");
+    const kernelName = first?.kernelName ?? (trace.kernels[0] ?? "n/a");
+    const path = first?.executedPath ?? (trace.paths[0] ?? "n/a");
+    const scope = first?.scope ?? (trace.scopes[0] ?? "n/a");
+    const fallback = first?.fallbackReason ?? (trace.fallbackReasons[0] ?? "none");
+    const timedWaitAny = trace.timedWaitCalls > 0 ? "yes" : "no";
+    const timedExpected = opts.iters;
+    const timedExtraWaits = trace.timedWaitCalls - timedExpected;
+    console.error(
+      `[flash-debug] op=${opName} path=${path} kernel=${kernelName} scope=${scope} ` +
+      `pipelineKey=${pipelineKey} pipelineCreatedWarmup=${trace.pipelineCreatedWarmup} ` +
+      `pipelineCreatedTimed=${trace.pipelineCreatedTimed} queueWaitTimed=${timedWaitAny} ` +
+      `timedWaitCalls=${trace.timedWaitCalls}/${timedExpected} timedExtraWaits=${timedExtraWaits} ` +
+      `fallback=${fallback}`,
+    );
   }
 
   console.error(`[bench] Helios device: ${info.deviceName ?? "unknown"} coopMat=${info.coopMatSupported ?? false}`);
@@ -421,6 +538,59 @@ function main(): void {
       release(attnScores);
     }
 
+    // Cache warmth experiment: cold vs hot vs producer-hot
+    if (shouldRun("softmax_cache_test")) {
+      const smBytes = BH * T * T * 4 * 2;
+
+      // Test 1: "hot" — run softmax 2x back-to-back in same batch, time total/2
+      // The 2nd softmax reads input that was just read by the 1st → should be L2-hot
+      {
+        const attn = b.randn([BH, T, T]);
+        const ms = benchCustom(() => {
+          const r1 = (b as any).softmax(attn, -1);
+          const r2 = (b as any).softmax(attn, -1);
+          return [r1, r2];
+        });
+        record("softmax_attn_hot_2x", ms / 2, { bytes: smBytes, note: "L2-hot (2nd of 2 back-to-back)" });
+        release(attn);
+      }
+
+      // Test 2: "producer-hot" — add kernel writes output, then softmax reads it
+      // Simulates real attention: matmul writes scores, softmax reads them
+      {
+        const a1 = b.randn([BH, T, T]);
+        const a2 = b.randn([BH, T, T]);
+        const ms = benchCustom(() => {
+          const scores = b.add(a1, a2);  // producer: writes [BH,T,T] to GPU → L2-hot
+          const sm = (b as any).softmax(scores, -1);  // consumer reads L2-hot data
+          return [scores, sm];
+        });
+        // Subtract standalone add time to isolate softmax-only
+        const addMs = benchOp(() => b.add(a1, a2));
+        record("softmax_attn_producer_hot", ms - addMs, { bytes: smBytes, note: "producer→consumer L2 reuse" });
+        record("softmax_attn_producer_total", ms, { bytes: smBytes, note: "add+softmax fused" });
+        release(a1); release(a2);
+      }
+
+      // Test 3: "cold" — allocate fresh buffer each iteration to defeat L2
+      // Fill with 128MB of noise first to flush L2 (L4 has 48MB L2)
+      {
+        const flushBuf = b.randn([32 * 1024 * 1024]);  // 128MB to flush L2
+        const attn = b.randn([BH, T, T]);
+        const ms = benchCustom(() => {
+          // Read flushBuf to evict attn from L2
+          const trash = b.add(flushBuf, flushBuf);
+          const sm = (b as any).softmax(attn, -1);
+          return [trash, sm];
+        });
+        const flushMs = benchOp(() => b.add(flushBuf, flushBuf));
+        record("softmax_attn_cold", ms - flushMs, { bytes: smBytes, note: "L2-cold (after 128MB flush)" });
+        release(flushBuf); release(attn);
+      }
+
+      console.error("[cache-test] softmax_attn standard / hot_2x / producer_hot / cold measured");
+    }
+
     if (shouldRun("softmax_logits_512x64000")) {
       const logits = b.randn([BT, V]);
       const ms = benchOp(() => (b as any).softmax(logits, -1));
@@ -457,17 +627,25 @@ function main(): void {
 
   // ── 6. FLASH ATTENTION ────────────────────────────────────────────────────
 
-  if (typeof (b as any).flashAttention === "function" && (shouldRun("flash_attn_fwd") || shouldRun("flash_attn_bwd"))) {
+  const runFlashSection =
+    shouldRun("flash_attn") ||
+    shouldRun("flash_attn_fwd") ||
+    shouldRun("flash_attn_bwd") ||
+    shouldRun("flash_attn_coop") ||
+    shouldRun("flash_attn_coop2") ||
+    shouldRun("flash_attn_coop2_probe");
+  if (runFlashSection) {
     const q = b.randn([BH, T, Dh]);
     const k = b.randn([BH, T, Dh]);
     const v = b.randn([BH, T, Dh]);
 
     if (shouldRun("flash_attn_fwd_b1_h16_t512_d64")) {
-      const ms = benchCustom(() => {
+      const traced = benchCustomWithFlashTrace(() => {
         const result = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
         if (result.output && result.lse) return [result.output, result.lse];
         return [result];
       });
+      const ms = traced.ms;
       // Flash attn: reads Q,K,V [BH,T,Dh], writes O [BH,T,Dh] + LSE [BH,T]
       // Multi-pass tiled so actual bandwidth >> single pass, but roofline = single pass minimum
       record("flash_attn_fwd_b1_h16_t512_d64", ms, {
@@ -475,6 +653,7 @@ function main(): void {
         bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
         note: "Flash Attention fwd",
       });
+      logFlashTrace("flash_attn_fwd_b1_h16_t512_d64", traced.trace);
     }
 
     // Flash attention backward
@@ -497,6 +676,140 @@ function main(): void {
         });
       }
       release(dO);
+    }
+
+    // softcap=0 variants (compile-time specialized — no tanh code in SPIR-V)
+    if (shouldRun("flash_attn_fwd_nosc_b1_h16_t512_d64")) {
+      const traced = benchCustomWithFlashTrace(() => {
+        const result = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 0);
+        if (result.output && result.lse) return [result.output, result.lse];
+        return [result];
+      });
+      const ms = traced.ms;
+      record("flash_attn_fwd_nosc_b1_h16_t512_d64", ms, {
+        flops: 2 * BH * T * T * Dh * 2,
+        bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+        note: "Flash Attention fwd (no softcap)",
+      });
+      logFlashTrace("flash_attn_fwd_nosc_b1_h16_t512_d64", traced.trace);
+    }
+
+    if (shouldRun("flash_attn_bwd_nosc_b1_h16_t512_d64") && typeof (b as any).flashAttentionBackward === "function") {
+      const fwdNoSC = (b as any).flashAttention(q, k, v, T, 1.0 / Math.sqrt(Dh), 0);
+      const oNoSC = fwdNoSC.output ?? fwdNoSC;
+      const lseNoSC = fwdNoSC.lse;
+      const dONoSC = b.randn([BH, T, Dh]);
+
+      if (lseNoSC) {
+        const msBwd = benchCustom(() => {
+          const result = (b as any).flashAttentionBackward(q, k, v, oNoSC, dONoSC, lseNoSC, T, 1.0 / Math.sqrt(Dh), 0);
+          return [result.dQ, result.dK, result.dV];
+        });
+        record("flash_attn_bwd_nosc_b1_h16_t512_d64", msBwd, {
+          flops: 2 * BH * T * T * Dh * 4,
+          bytes: BH * T * Dh * 4 * 8 + BH * T * 4,
+          note: "Flash Attention bwd (no softcap)",
+        });
+      }
+      release(dONoSC);
+    }
+
+    // Cooperative matrix flash attention forward (tensor core accelerated)
+    if (shouldRun("flash_attn_coop_fwd_b1_h16_t512_d64") && typeof (b as any).flashAttentionCoop === "function") {
+      const ms = benchCustom(() => {
+        const result = (b as any).flashAttentionCoop(q, k, v, T, 1.0 / Math.sqrt(Dh));
+        if (result.output && result.lse) return [result.output, result.lse];
+        return [result];
+      });
+      record("flash_attn_coop_fwd_b1_h16_t512_d64", ms, {
+        flops: 2 * BH * T * T * Dh * 2,
+        bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+        note: "Flash Attention fwd (coop matrix, tensor core)",
+      });
+    }
+
+    // Cooperative matrix 2 flash attention forward (NV coop matrix 2: reduce, per-element ops)
+    if (shouldRun("flash_attn_coop2_fwd_b1_h16_t512_d64") && typeof (b as any).flashAttentionCoop2 === "function") {
+      const traced = benchCustomWithFlashTrace(() => {
+        const result = (b as any).flashAttentionCoop2(q, k, v, T, 1.0 / Math.sqrt(Dh));
+        if (result.output && result.lse) return [result.output, result.lse];
+        return [result];
+      });
+      const ms = traced.ms;
+      record("flash_attn_coop2_fwd_b1_h16_t512_d64", ms, {
+        flops: 2 * BH * T * T * Dh * 2,
+        bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+        note: "Flash Attention fwd (coop matrix 2, NV reduce+perElemOp)",
+      });
+      logFlashTrace("flash_attn_coop2_fwd_b1_h16_t512_d64", traced.trace);
+    }
+
+    if (shouldRun("flash_attn_coop2_fwd_sc_b1_h16_t512_d64") && typeof (b as any).flashAttentionCoop2 === "function") {
+      const traced = benchCustomWithFlashTrace(() => {
+        const result = (b as any).flashAttentionCoop2(q, k, v, T, 1.0 / Math.sqrt(Dh), 30);
+        if (result.output && result.lse) return [result.output, result.lse];
+        return [result];
+      });
+      const ms = traced.ms;
+      record("flash_attn_coop2_fwd_sc_b1_h16_t512_d64", ms, {
+        flops: 2 * BH * T * T * Dh * 2,
+        bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+        note: "Flash Attention fwd (coop matrix 2 + softcap=30)",
+      });
+      logFlashTrace("flash_attn_coop2_fwd_sc_b1_h16_t512_d64", traced.trace);
+    }
+
+    // Coop2 stage probes (driver 590+): isolate where the fused pipeline spends time.
+    {
+      const runAnyProbe =
+        shouldRun("flash_attn_coop2_probe") ||
+        shouldRun("flash_attn_coop2_probe_qk_b1_h16_t512_d64") ||
+        shouldRun("flash_attn_coop2_probe_qk_mask_b1_h16_t512_d64") ||
+        shouldRun("flash_attn_coop2_probe_qk_softmax_b1_h16_t512_d64") ||
+        shouldRun("flash_attn_coop2_probe_pv_b1_h16_t512_d64");
+      if (runAnyProbe && typeof (b as any).flashAttentionCoop2Probe === "function") {
+        const probeSpecs: Array<{ mode: "qk" | "qk_mask" | "qk_softmax" | "pv"; key: string; note: string; flops: number }> = [
+          {
+            mode: "qk",
+            key: "flash_attn_coop2_probe_qk_b1_h16_t512_d64",
+            note: "Probe: QK MMA only (no mask/softmax/PV)",
+            flops: 2 * BH * T * T * Dh,
+          },
+          {
+            mode: "qk_mask",
+            key: "flash_attn_coop2_probe_qk_mask_b1_h16_t512_d64",
+            note: "Probe: QK MMA + scale/mask (no softmax/PV)",
+            flops: 2 * BH * T * T * Dh,
+          },
+          {
+            mode: "qk_softmax",
+            key: "flash_attn_coop2_probe_qk_softmax_b1_h16_t512_d64",
+            note: "Probe: QK + scale/mask + coop2 softmax (no PV)",
+            flops: 2 * BH * T * T * Dh,
+          },
+          {
+            mode: "pv",
+            key: "flash_attn_coop2_probe_pv_b1_h16_t512_d64",
+            note: "Probe: PV MMA only (synthetic P, no QK/softmax)",
+            flops: 2 * BH * T * T * Dh,
+          },
+        ];
+
+        for (const spec of probeSpecs) {
+          if (!shouldRun(spec.key) && !shouldRun("flash_attn_coop2_probe")) continue;
+          const traced = benchCustomWithFlashTrace(() => {
+            const result = (b as any).flashAttentionCoop2Probe(spec.mode, q, k, v, T, 1.0 / Math.sqrt(Dh));
+            return [result.output, result.lse];
+          });
+          const ms = traced.ms;
+          record(spec.key, ms, {
+            flops: spec.flops,
+            bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
+            note: spec.note,
+          });
+          logFlashTrace(spec.key, traced.trace);
+        }
+      }
     }
 
     release(q);

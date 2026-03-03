@@ -109,6 +109,89 @@ if (WG_ENV) {
   }
 }
 
+type FlashCoop2ScopeTag = "wg" | "sg";
+
+type FlashDispatchPath = "scalar" | "coop2";
+
+export interface FlashDispatchDebug {
+  requestedOp: "flashAttention" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
+  executedPath: FlashDispatchPath;
+  mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv";
+  softCap: number;
+  BH: number;
+  T: number;
+  D: number;
+  kernelName: string;
+  pipelineKey: string;
+  pipelineHandle: number;
+  pipelineCreated: boolean;
+  scope?: FlashCoop2ScopeTag;
+  fallbackReason?: string;
+}
+
+interface PipelineLookupResult {
+  key: string;
+  handle: number;
+  created: boolean;
+}
+
+function parseFlashCoop2ScopeTag(): FlashCoop2ScopeTag {
+  const raw = (process.env.HELIOS_FLASH_COOP2_SCOPE ?? "workgroup").trim().toLowerCase();
+  if (raw === "subgroup" || raw === "sg") return "sg";
+  return "wg";
+}
+
+function parseFlashFwdPreferCoop2(): boolean {
+  const raw = (process.env.HELIOS_FLASH_FWD_PREFER_COOP2 ?? "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+function parseFlashFwdCoop2Strict(): boolean {
+  const raw = (process.env.HELIOS_FLASH_FWD_COOP2_STRICT ?? "0").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+function parseFlashDispatchDebugEnabled(): boolean {
+  const raw = (process.env.HELIOS_FLASH_DISPATCH_DEBUG ?? "0").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
+function parseFlashCoop2PreferF16Input(): boolean {
+  const raw = (process.env.HELIOS_FLASH_COOP2_F16_INPUT ?? "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+function parseFlashCoop2LocalSize(): number {
+  const raw = (process.env.HELIOS_FLASH_COOP2_LS ?? "128").trim();
+  const parsed = parseInt(raw, 10);
+  if (Number.isFinite(parsed) && (parsed === 32 || parsed === 64 || parsed === 128)) {
+    return parsed;
+  }
+  console.warn(`[helios] ignoring HELIOS_FLASH_COOP2_LS=${raw}; expected one of 32,64,128`);
+  return 64;
+}
+
+function parseFlashCoop2QTiles(): number {
+  const raw = (process.env.HELIOS_FLASH_COOP2_QT ?? "2").trim();
+  const parsed = parseInt(raw, 10);
+  if (Number.isFinite(parsed) && (parsed === 1 || parsed === 2 || parsed === 4)) return parsed;
+  console.warn(`[helios] ignoring HELIOS_FLASH_COOP2_QT=${raw}; expected one of 1,2,4`);
+  return 1;
+}
+
+function parseFlashCoop2BlockCols(): number {
+  const raw = (process.env.HELIOS_FLASH_COOP2_BC ?? "16").trim();
+  const parsed = parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed >= 16 && (parsed % 16) === 0) return parsed;
+  console.warn(`[helios] ignoring HELIOS_FLASH_COOP2_BC=${raw}; expected a multiple of 16 (>=16)`);
+  return 16;
+}
+
+function parseFlashCoop2SkipLseWrite(): boolean {
+  const raw = (process.env.HELIOS_FLASH_COOP2_SKIP_LSE_WRITE ?? "0").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
 let lastPush4A = NaN;
 let lastPush4B = NaN;
 let lastPush4C = NaN;
@@ -301,16 +384,37 @@ function autoTuneWgSize(vk: NativeAddon): void {
 // ── Pipeline cache ──────────────────────────────────────────────────────────
 
 const pipelineCache = new Map<string, number>();
+let waitTimelineCount = 0;
 
-function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): number {
-  const key = `${name}:${numBindings}:${pushSize}:${wgSize}`;
+function makePipelineCacheKey(name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): string {
+  return `${name}:${numBindings}:${pushSize}:${wgSize}`;
+}
+
+function getPipelineLookup(
+  vk: NativeAddon,
+  name: string,
+  numBindings: number,
+  pushSize = PUSH_SIZE,
+  wgSize = WG_SIZE,
+): PipelineLookupResult {
+  const key = makePipelineCacheKey(name, numBindings, pushSize, wgSize);
   let handle = pipelineCache.get(key);
-  if (handle !== undefined) return handle;
+  if (handle !== undefined) return { key, handle, created: false };
 
   const spirv = getKernelSpirv(name, wgSize);
   handle = vk.createPipeline(spirv, numBindings, pushSize);
   pipelineCache.set(key, handle);
-  return handle;
+  return { key, handle, created: true };
+}
+
+function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): number {
+  return getPipelineLookup(vk, name, numBindings, pushSize, wgSize).handle;
+}
+
+function waitTimelineTracked(vk: NativeAddon, timelineValue: number): void {
+  if (timelineValue <= 0) return;
+  waitTimelineCount++;
+  vk.waitTimeline(timelineValue);
 }
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
@@ -489,7 +593,7 @@ function invalidateCache(td: TensorData): void {
         // Must wait for GPU to finish before reading back (batch dispatch
         // does not set per-buffer lastWriteTimeline, so readBuffer alone
         // won't wait for in-place ops like AdamW on mapped/coherent memory).
-        if (tv > 0) vk.waitTimeline(tv);
+        waitTimelineTracked(vk, tv);
         cached = vk.readBuffer(handle);
       }
       return cached;
@@ -907,7 +1011,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
         // Flush any pending ops that might write to our output
         const tv = graph.flush();
         // Wait for the batch to complete on GPU before reading
-        if (tv > 0) vk.waitTimeline(tv);
+        waitTimelineTracked(vk, tv);
         const raw = vk.readBuffer(region.handle);
         // Buffer may be larger than shape (4MB pool rounding) — truncate
         const expected = shapeSize(shape);
@@ -932,7 +1036,7 @@ function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion)
     get data(): Uint16Array {
       // F16 data shouldn't normally be read back to CPU — this is a fallback
       const tv = graph.flush();
-      if (tv > 0) vk.waitTimeline(tv);
+      waitTimelineTracked(vk, tv);
       // readBuffer returns Float32Array; reinterpret as Uint16Array
       const f32 = vk.readBuffer(region.handle);
       return new Uint16Array(f32.buffer, f32.byteOffset, size);
@@ -951,6 +1055,7 @@ export interface GpuDeviceInfo {
   f16Supported: boolean;
   hasAsyncTransfer: boolean;
   coopMatSupported: boolean;
+  coopMat2Supported: boolean;
   coopMatM: number;
   coopMatN: number;
   coopMatK: number;
@@ -979,6 +1084,7 @@ export class HeliosBackend implements Backend {
   private _vendorId = 0;
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
+  private _coopMat2Supported = false;
   private _coopM = 0;
   private _coopN = 0;
   private _coopK = 0;
@@ -992,9 +1098,33 @@ export class HeliosBackend implements Backend {
   private _coopPaddedBatchedDispatches = 0;
   private _coopTransposedARewriteDispatches = 0;
   private _coopF16InputCache = new WeakMap<TensorData, TensorData>();
+  private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
+  private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
+  private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
+  private _flashFwdPreferCoop2 = parseFlashFwdPreferCoop2();
+  private _flashFwdCoop2Strict = parseFlashFwdCoop2Strict();
+  private _flashCoop2PreferF16Input = parseFlashCoop2PreferF16Input();
+  private _flashCoop2LocalSize = parseFlashCoop2LocalSize();
+  private _flashCoop2QTiles = parseFlashCoop2QTiles();
+  private _flashCoop2BlockCols = parseFlashCoop2BlockCols();
+  private _flashCoop2SkipLseWrite = parseFlashCoop2SkipLseWrite();
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
+
+  private setLastFlashDispatchDebug(debug: FlashDispatchDebug): void {
+    if (!this._flashDispatchDebugEnabled) return;
+    this._lastFlashDispatchDebug = debug;
+  }
+
+  getLastFlashDispatchDebug(): FlashDispatchDebug | null {
+    if (!this._flashDispatchDebugEnabled) return null;
+    return this._lastFlashDispatchDebug;
+  }
+
+  getWaitTimelineCount(): number {
+    return waitTimelineCount;
+  }
 
   private init(): NativeAddon {
     if (!this.initialized) {
@@ -1004,6 +1134,7 @@ export class HeliosBackend implements Backend {
       this._vendorId = info.vendorId;
       this._hasAsyncTransfer = info.hasAsyncTransfer;
       this._coopMatSupported = info.coopMatSupported;
+      this._coopMat2Supported = info.coopMat2Supported;
       this._coopM = info.coopMatM;
       this._coopN = info.coopMatN;
       this._coopK = info.coopMatK;
@@ -1015,6 +1146,7 @@ export class HeliosBackend implements Backend {
       const forceDisableCoop = process.env.HELIOS_DISABLE_COOP_MAT === "1";
       if (forceDisableCoop) {
         this._coopMatSupported = false;
+        this._coopMat2Supported = false;
         this._coopM = 0;
         this._coopN = 0;
         this._coopK = 0;
@@ -1049,7 +1181,7 @@ export class HeliosBackend implements Backend {
   syncGpu(): void {
     const vk = getNative();
     const tv = graph.flush();
-    if (tv > 0) vk.waitTimeline(tv);
+    waitTimelineTracked(vk, tv);
     processPendingDestroys(vk);
   }
 
@@ -1064,7 +1196,7 @@ export class HeliosBackend implements Backend {
     // destroys may all reference buffers still in use by in-flight GPU work.
     // Destroying them without waiting would cause undefined behavior.
     const tv = graph.flush();
-    if (tv > 0) vk.waitTimeline(tv);
+    waitTimelineTracked(vk, tv);
 
     // Drain the output pool — release all regions back to the buffer pool
     for (const [, regions] of outputPool) {
@@ -1140,6 +1272,7 @@ export class HeliosBackend implements Backend {
       f16Supported: this._f16Supported,
       hasAsyncTransfer: this._hasAsyncTransfer,
       coopMatSupported: this._coopMatSupported,
+      coopMat2Supported: this._coopMat2Supported,
       coopMatM: this._coopM,
       coopMatN: this._coopN,
       coopMatK: this._coopK,
@@ -3503,12 +3636,42 @@ export class HeliosBackend implements Backend {
     // Q/K/V are [BH, T, D] where BH = batch * nHeads
     const BH = Q.shape[0];
     const D = Q.shape[2];
+
+    const canUseCoop2Forward =
+      this._flashFwdPreferCoop2 &&
+      this._coopMat2Supported &&
+      Q.dtype === "f32" &&
+      K.dtype === "f32" &&
+      V.dtype === "f32" &&
+      D === 64 &&
+      K.shape[2] === D &&
+      V.shape[2] === D;
+    let fallbackReason: string | undefined;
+    if (canUseCoop2Forward) {
+      if (this._flashFwdCoop2Strict) {
+        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+      }
+      try {
+        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+      } catch (err) {
+        const fallbackMessage = err instanceof Error ? err.message : String(err);
+        fallbackReason = `coop2_error:${fallbackMessage}`;
+        if (DEBUG_COOP) {
+          console.warn(`[helios] flashAttention coop2 fallback -> scalar: ${fallbackMessage}`);
+        }
+      }
+    } else {
+      fallbackReason = "coop2_ineligible";
+    }
+
     // Br=32, Bc=16: halved Bc reduces shared memory (sK+sV: 16KB→8KB), doubling
     // occupancy from 3 to 6 WGs/SM on L4. V1 (runtime loop) avoids the SPIR-V code
     // bloat that V2's compile-time j-unrolling causes (40% regression from icache pressure).
     const Br = 32, Bc = 16;
-    const kernelName = `flash_attn_fwd_${Br}_${Bc}_${D}`;
-    const pipeline = getPipeline(vk, kernelName, 5, 16);
+    const scSuffix = softCap > 0 ? "_sc" : "";
+    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}`;
+    const pipelineLookup = getPipelineLookup(vk, kernelName, 5, 16);
+    const pipeline = pipelineLookup.handle;
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -3521,7 +3684,7 @@ export class HeliosBackend implements Backend {
     const lseBytes = BH * T * 4;
     const lseRegion = acquireOutputRegion(vk, lseBytes);
 
-    const push = new Float32Array([T, scale, softCap, 0]);
+    const push = push4Memo(T, scale, softCap, 0);
     const gX = Math.ceil(T / Br);
 
     graph.record({
@@ -3537,6 +3700,231 @@ export class HeliosBackend implements Backend {
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
     });
 
+    this.setLastFlashDispatchDebug({
+      requestedOp: "flashAttention",
+      executedPath: "scalar",
+      mode: "full",
+      softCap,
+      BH,
+      T,
+      D,
+      kernelName,
+      pipelineKey: pipelineLookup.key,
+      pipelineHandle: pipeline,
+      pipelineCreated: pipelineLookup.created,
+      fallbackReason,
+    });
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { output, lse };
+  }
+
+  flashAttentionCoop(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number): { output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 16, Bc = 16;
+    const kernelName = `flash_attn_coop_fwd_${Br}_${Bc}_${D}`;
+    const pipeline = getPipeline(vk, kernelName, 5, 16);
+
+    const bufQ = ensureGpu(vk, Q);
+    const bufK = ensureGpu(vk, K);
+    const bufV = ensureGpu(vk, V);
+
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = push4Memo(T, scale, 0, 0);
+    const gX = Math.ceil(T / Br);
+
+    graph.record({
+      kind: "matmul",
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [],
+      outputRegion: oRegion,
+      groups: [gX, BH, 1],
+      push,
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+    });
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { output, lse };
+  }
+
+  private resolveFlashCoop2Pipeline(
+    vk: NativeAddon,
+    baseKernelName: string,
+  ): {
+    kernelName: string;
+    pipeline: number;
+    pipelineKey: string;
+    pipelineCreated: boolean;
+    scope: FlashCoop2ScopeTag;
+    fallbackReason?: string;
+  } {
+    const preferredScope = this._flashCoop2ScopeResolved ?? parseFlashCoop2ScopeTag();
+    const preferredName = `${baseKernelName}_${preferredScope}`;
+    try {
+      const lookup = getPipelineLookup(vk, preferredName, 5, 16);
+      this._flashCoop2ScopeResolved = preferredScope;
+      return {
+        kernelName: preferredName,
+        pipeline: lookup.handle,
+        pipelineKey: lookup.key,
+        pipelineCreated: lookup.created,
+        scope: preferredScope,
+      };
+    } catch (err) {
+      if (preferredScope === "wg") {
+        const fallbackName = `${baseKernelName}_sg`;
+        const lookup = getPipelineLookup(vk, fallbackName, 5, 16);
+        this._flashCoop2ScopeResolved = "sg";
+        return {
+          kernelName: fallbackName,
+          pipeline: lookup.handle,
+          pipelineKey: lookup.key,
+          pipelineCreated: lookup.created,
+          scope: "sg",
+          fallbackReason: err instanceof Error ? `scope_wg_unavailable:${err.message}` : "scope_wg_unavailable",
+        };
+      }
+      throw err;
+    }
+  }
+
+  flashAttentionCoop2(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap = 0): { output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 16;
+    const qTilesPerWG = this._flashCoop2QTiles;
+    const Bc = this._flashCoop2BlockCols;
+    const localSize = this._flashCoop2LocalSize;
+    const useF16Input = this._f16Supported && this._flashCoop2PreferF16Input;
+    const skipLseWrite = this._flashCoop2SkipLseWrite;
+    const scSuffix = softCap === 30 ? "_sc30" : (softCap > 0 ? "_sc" : "");
+    const in16Suffix = useF16Input ? "_in16" : "";
+    const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
+    const noLseSuffix = skipLseWrite ? "_nolse" : "";
+    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}`;
+    const { kernelName, pipeline, pipelineKey, pipelineCreated, scope, fallbackReason } =
+      this.resolveFlashCoop2Pipeline(vk, baseKernelName);
+
+    const bufQ = useF16Input ? this.getCoopInputBuffer(vk, Q) : ensureGpu(vk, Q);
+    const bufK = useF16Input ? this.getCoopInputBuffer(vk, K) : ensureGpu(vk, K);
+    const bufV = useF16Input ? this.getCoopInputBuffer(vk, V) : ensureGpu(vk, V);
+
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = push4Memo(T, scale, softCap, 0);
+    const gX = Math.ceil(T / (Br * qTilesPerWG));
+
+    graph.record({
+      kind: "matmul",
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [],
+      outputRegion: oRegion,
+      groups: [gX, BH, 1],
+      push,
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+    });
+
+    this.setLastFlashDispatchDebug({
+      requestedOp: "flashAttentionCoop2",
+      executedPath: "coop2",
+      mode: "full",
+      softCap,
+      BH,
+      T,
+      D,
+      kernelName,
+      pipelineKey,
+      pipelineHandle: pipeline,
+      pipelineCreated,
+      scope,
+      fallbackReason,
+    });
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { output, lse };
+  }
+
+  flashAttentionCoop2Probe(
+    mode: "qk" | "qk_mask" | "qk_softmax" | "pv",
+    Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap = 0,
+  ): { output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 16, Bc = 16;
+    const qTilesPerWG = this._flashCoop2QTiles;
+    const localSize = this._flashCoop2LocalSize;
+    const useF16Input = this._f16Supported && this._flashCoop2PreferF16Input;
+    const scSuffix = softCap === 30 ? "_sc30" : (softCap > 0 ? "_sc" : "");
+    const in16Suffix = useF16Input ? "_in16" : "";
+    const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
+    const baseKernelName = `flash_attn_coop2_probe_${mode}_fwd${scSuffix}${in16Suffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}`;
+    const { kernelName, pipeline, pipelineKey, pipelineCreated, scope, fallbackReason } =
+      this.resolveFlashCoop2Pipeline(vk, baseKernelName);
+
+    const bufQ = useF16Input ? this.getCoopInputBuffer(vk, Q) : ensureGpu(vk, Q);
+    const bufK = useF16Input ? this.getCoopInputBuffer(vk, K) : ensureGpu(vk, K);
+    const bufV = useF16Input ? this.getCoopInputBuffer(vk, V) : ensureGpu(vk, V);
+
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = push4Memo(T, scale, softCap, 0);
+    const gX = Math.ceil(T / (Br * qTilesPerWG));
+
+    graph.record({
+      kind: "matmul",
+      kernel: kernelName,
+      pipeline,
+      inputBufs: [],
+      outputRegion: oRegion,
+      groups: [gX, BH, 1],
+      push,
+      pushSize: 16,
+      shape: [BH, T, D],
+      allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+    });
+
+    this.setLastFlashDispatchDebug({
+      requestedOp: "flashAttentionCoop2Probe",
+      executedPath: "coop2",
+      mode,
+      softCap,
+      BH,
+      T,
+      D,
+      kernelName,
+      pipelineKey,
+      pipelineHandle: pipeline,
+      pipelineCreated,
+      scope,
+      fallbackReason,
+    });
+
     const output = graphLazyTensor(vk, [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
@@ -3548,7 +3936,8 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
-    const Br = 32, BrDKV = 16, BcDQ = 16, BcDKV = 16;
+    const Br = 32, BrDKV = 32, BcDQ = 16, BcDKV = 32;
+    const scSuffix = softCap > 0 ? "_sc" : "";
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -3563,11 +3952,11 @@ export class HeliosBackend implements Backend {
     const dPreRegion = acquireOutputRegion(vk, dPreBytes);
 
     // dQ kernel: bindings [Q, K, V, dO, O, LSE, Dpre_out, dQ_out]
-    const dqKernel = `flash_attn_bwd_dq_${Br}_${BcDQ}_${D}`;
+    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}`;
     const dqPipeline = getPipeline(vk, dqKernel, 8, 16);
     const dqBytes = BH * T * D * 4;
     const dqRegion = acquireOutputRegion(vk, dqBytes);
-    const push = new Float32Array([T, scale, softCap, 0]);
+    const push = push4Memo(T, scale, softCap, 0);
 
     graph.record({
       kind: "backward",
@@ -3583,7 +3972,7 @@ export class HeliosBackend implements Backend {
     });
 
     // Step 2: dKV kernel reads D_precomp written by dQ kernel
-    const dkvKernel = `flash_attn_bwd_dkv_${BrDKV}_${BcDKV}_${D}`;
+    const dkvKernel = `flash_attn_bwd_dkv${scSuffix}_${BrDKV}_${BcDKV}_${D}`;
     const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
     const dkBytes = BH * T * D * 4;
     const dkRegion = acquireOutputRegion(vk, dkBytes);
@@ -3597,7 +3986,7 @@ export class HeliosBackend implements Backend {
       inputBufs: [],
       outputRegion: dkRegion,
       groups: [Math.ceil(T / BcDKV), BH, 1],
-      push: new Float32Array([T, scale, softCap, 0]),
+      push: push4Memo(T, scale, softCap, 0),
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
