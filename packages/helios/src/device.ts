@@ -33,7 +33,7 @@ export interface NativeAddon {
   dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
   waitTimeline(value: number): void;
   getCompleted(): number;
-  gpuTime(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array): number;
+  gpuTime(pipeline: number, buffers: number[], gX: number, gY?: number, gZ?: number, pushConstants?: Float32Array, iters?: number, warmup?: number): number;
   waitIdle(): void;
   destroy(): void;
 }

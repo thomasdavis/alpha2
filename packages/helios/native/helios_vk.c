@@ -3448,8 +3448,8 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  size_t argc = 6;
-  napi_value args[6];
+  size_t argc = 8;
+  napi_value args[8];
   napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 
   int32_t pipeSlot;
@@ -3489,66 +3489,141 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
     pushSize = 0;
   }
 
-  // Wait for any in-flight work
+  // Optional: iters (arg[6], default 1) and warmup (arg[7], default 0)
+  uint32_t iters = 1;
+  uint32_t warmup = 0;
+  if (argc > 6) napi_get_value_uint32(env, args[6], &iters);
+  if (argc > 7) napi_get_value_uint32(env, args[7], &warmup);
+  if (iters < 1) iters = 1;
+
+  // Use ring command buffer (same infrastructure as graph dispatch — required for
+  // cooperative matrix kernels which hang on standalone dispatchCmdBuf).
   waitTimelineValue(lastDispatchTimeline);
 
-  // Reset descriptor pool and allocate set
+  uint32_t slot = g_ringHead;
+  // Wait for this ring slot to be free
+  if (g_ring[slot].timelineValue > 0) {
+    uint64_t completed;
+    fp_vkGetSemaphoreCounterValue(device, timelineSem, &completed);
+    if (completed < g_ring[slot].timelineValue) {
+      waitTimelineValue(g_ring[slot].timelineValue);
+    }
+  }
+
+  // Reset singleDescPool (always exists, safe since gpuTime waits synchronously)
   fp_vkResetDescriptorPool(device, singleDescPool, 0);
   dispatchCacheValid = 0;
 
-  VkDescriptorSetAllocateInfo dsAllocInfo = {
-    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    .descriptorPool = singleDescPool,
-    .descriptorSetCount = 1,
-    .pSetLayouts = &ps->descLayout,
+  // Use ring command buffer (required for cooperative matrix kernels which hang
+  // on standalone dispatchCmdBuf). Ring cmd buf + timeline semaphore submission.
+  fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
+  VkCommandBufferBeginInfo beginInfo = {
+    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
-  VkDescriptorSet descSet;
-  fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+  fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
 
+  // Global memory barrier
+  VkMemoryBarrier memBarrier = {
+    .sType = 46, // VK_STRUCTURE_TYPE_MEMORY_BARRIER
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+  };
+  fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    0, 1, &memBarrier, 0, NULL, 0, NULL);
+
+  // Bind pipeline + descriptors + push constants ONCE (before warmup and timed dispatches)
   VkDescriptorBufferInfo bufInfos[32];
-  VkWriteDescriptorSet writes[32];
   for (uint32_t i = 0; i < bufCount; i++) {
     bufInfos[i] = (VkDescriptorBufferInfo){
       .buffer = buffers[bufSlots[i]].buffer,
       .offset = 0,
       .range = VK_WHOLE_SIZE,
     };
-    writes[i] = (VkWriteDescriptorSet){
-      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = descSet,
-      .dstBinding = i,
-      .descriptorCount = 1,
-      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      .pBufferInfo = &bufInfos[i],
+  }
+
+  fp_vkCmdResetQueryPool(g_ring[slot].cmd, timestampPool, 0, 2);
+  fp_vkCmdBindPipeline(g_ring[slot].cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
+
+  if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+    VkWriteDescriptorSet writes[32];
+    for (uint32_t i = 0; i < bufCount; i++) {
+      writes[i] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstBinding = i,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &bufInfos[i],
+      };
+    }
+    fp_vkCmdPushDescriptorSetKHR(g_ring[slot].cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+      ps->layout, 0, bufCount, writes);
+  } else {
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo dsAllocInfo = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = singleDescPool,
+      .descriptorSetCount = 1,
+      .pSetLayouts = &ps->descLayout,
     };
+    fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+    VkWriteDescriptorSet writes[32];
+    for (uint32_t i = 0; i < bufCount; i++) {
+      writes[i] = (VkWriteDescriptorSet){
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = descSet,
+        .dstBinding = i,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &bufInfos[i],
+      };
+    }
+    fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+    fp_vkCmdBindDescriptorSets(g_ring[slot].cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
   }
-  fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
 
-  // Record command buffer with timestamps
-  fp_vkResetCommandBuffer(dispatchCmdBuf, 0);
-  VkCommandBufferBeginInfo beginInfo = {
-    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-  };
-  fp_vkBeginCommandBuffer(dispatchCmdBuf, &beginInfo);
-
-  // Reset queries and write start timestamp
-  fp_vkCmdResetQueryPool(dispatchCmdBuf, timestampPool, 0, 2);
-  fp_vkCmdWriteTimestamp(dispatchCmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool, 0);
-
-  fp_vkCmdBindPipeline(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
-  fp_vkCmdBindDescriptorSets(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
   if (pushSize > 0) {
-    fp_vkCmdPushConstants(dispatchCmdBuf, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushDataPtr);
+    fp_vkCmdPushConstants(g_ring[slot].cmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushDataPtr);
   }
-  fp_vkCmdDispatch(dispatchCmdBuf, gX, gY, gZ);
 
-  // Write end timestamp
-  fp_vkCmdWriteTimestamp(dispatchCmdBuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, 1);
-  fp_vkEndCommandBuffer(dispatchCmdBuf);
+  // Warmup dispatches (untimed, cache warming)
+  for (uint32_t w = 0; w < warmup; w++) {
+    fp_vkCmdDispatch(g_ring[slot].cmd, gX, gY, gZ);
+    fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0, 1, &memBarrier, 0, NULL, 0, NULL);
+  }
 
-  // Submit synchronously with fence
-  submitCmdBufSync(dispatchCmdBuf);
+  // Start timestamp: BOTTOM_OF_PIPE when warmup > 0 (ensures warmup retired),
+  // TOP_OF_PIPE when warmup == 0 (preserves existing behavior for all current callers).
+  fp_vkCmdWriteTimestamp(g_ring[slot].cmd,
+    warmup > 0 ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    timestampPool, 0);
+
+  // Timed dispatches with compute→compute barriers (WAW serialization)
+  for (uint32_t i = 0; i < iters; i++) {
+    fp_vkCmdDispatch(g_ring[slot].cmd, gX, gY, gZ);
+    if (i + 1 < iters) {
+      fp_vkCmdPipelineBarrier(g_ring[slot].cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 1, &memBarrier, 0, NULL, 0, NULL);
+    }
+  }
+
+  fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, 1);
+  fp_vkEndCommandBuffer(g_ring[slot].cmd);
+
+  // Submit via timeline semaphore and wait synchronously
+  uint64_t tv = submitCmdBufAsync(g_ring[slot].cmd);
+  if (tv == 0) {
+    napi_throw_error(env, NULL, "gpuTime: timeline submit failed");
+    return NULL;
+  }
+  g_ring[slot].timelineValue = tv;
+  lastDispatchTimeline = tv;
+  g_ringHead = (g_ringHead + 1) % RING_SIZE;
+  waitTimelineValue(tv);
 
   // Read timestamps
   uint64_t timestamps[2] = {0, 0};
@@ -3557,6 +3632,8 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 
   double elapsedUs = (double)(timestamps[1] - timestamps[0]) * (double)timestampPeriodNs / 1000.0;
+  // Return per-iteration average
+  elapsedUs /= (double)iters;
 
   napi_value result;
   napi_create_double(env, elapsedUs, &result);

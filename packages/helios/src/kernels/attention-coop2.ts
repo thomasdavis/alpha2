@@ -84,7 +84,7 @@ function declareF16Ssbo(
   return { varId, tPtr: tPtrF16 };
 }
 
-export type FlashAttentionCoop2Mode = "full" | "qk" | "qk_mask" | "qk_softmax" | "pv";
+export type FlashAttentionCoop2Mode = "full" | "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only";
 export type FlashAttentionCoop2Scope = "subgroup" | "workgroup";
 
 export function kernelFlashAttentionCoop2Forward(
@@ -99,6 +99,7 @@ export function kernelFlashAttentionCoop2Forward(
   skipLseWrite = false,
   qTilesPerWG = 1,
   localSize = 64,
+  doubleBuf = false,
 ): Uint32Array {
   const WG = localSize;
   const qTiles = Math.max(1, Math.trunc(qTilesPerWG));
@@ -111,7 +112,21 @@ export function kernelFlashAttentionCoop2Forward(
   const isQKMaskMode = mode === "qk_mask";
   const isQKSoftmaxMode = mode === "qk_softmax";
   const isPVOnlyMode = mode === "pv";
+  const isKVOnlyMode = mode === "kv_only";
+  const isKVSynthMode = mode === "kv_synth";
+  const isPerElemOnlyMode = mode === "per_elem_only";
   const useSoftCapConst = useSoftCap && softCapConst !== null && Number.isFinite(softCapConst);
+
+  // ── Compile-time shift/mask for power-of-2 index math ──────────────────
+  function log2PoT(n: number): number {
+    if (n <= 0 || (n & (n - 1)) !== 0) return -1;
+    return 31 - Math.clz32(n);
+  }
+  const log2D = log2PoT(D);
+  const log2Bc = log2PoT(Bc);
+  const log2ThreadsPerRow = log2PoT(Math.max(1, Math.floor(localSize / Br)));
+  const log2QElemsPerThread = log2PoT((Br * D) / localSize);
+  const log2KVElemsPerThread = log2PoT((Bc * D) / localSize);
 
   const b = new SpirVBuilder(VERSION_1_6);
 
@@ -155,8 +170,20 @@ export function kernelFlashAttentionCoop2Forward(
   if ((WG % Br) !== 0) throw new Error(`flash_attn_coop2: WG=${WG} must be divisible by Br=${Br}`);
   if ((D % threadsPerRow) !== 0) throw new Error(`flash_attn_coop2: D=${D} must be divisible by threadsPerRow=${threadsPerRow}`);
   const constThreadsPerRow = b.id(); b.constant(tU32, constThreadsPerRow, threadsPerRow);
+
+  // ── Shift/mask constants for power-of-2 index math ─────────────────────
+  // Replace UDiv/UMod with ShiftRightLogical/BitwiseAnd in hot loops.
+  const constLog2D = log2D >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, log2D); return id; })() : null;
+  const constMaskD = log2D >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, D - 1); return id; })() : null;
+  const constLog2Bc = log2Bc >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, log2Bc); return id; })() : null;
+  const constLog2TPR = log2ThreadsPerRow >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, log2ThreadsPerRow); return id; })() : null;
+  const constMaskTPR = log2ThreadsPerRow >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, threadsPerRow - 1); return id; })() : null;
+  const constLog2QEpt = log2QElemsPerThread >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, log2QElemsPerThread); return id; })() : null;
+  const constLog2KVEpt = log2KVElemsPerThread >= 0 ? (() => { const id = b.id(); b.constant(tU32, id, log2KVElemsPerThread); return id; })() : null;
+
   const const0f = b.id(); b.constantF32(tF32, const0f, 0.0);
   const const0h = b.id(); b.constant(tF16, const0h, 0);
+  const const05h = isKVSynthMode ? (() => { const id = b.id(); b.constant(tF16, id, 0x3800); return id; })() : 0;
   const const1f = b.id(); b.constantF32(tF32, const1f, 1.0);
   const constNegInf = b.id(); b.constantF32(tF32, constNegInf, -Infinity);
   const constLog2e = b.id(); b.constantF32(tF32, constLog2e, Math.LOG2E);
@@ -192,6 +219,7 @@ export function kernelFlashAttentionCoop2Forward(
   b.typeCooperativeMatrixKHR(tCoopAcc, tF32, coopScope, constCoopM, constCoopN, constUseAcc);
 
   const constRowMajor = const0u;
+  const constColMajor = (() => { const id = b.id(); b.constant(tU32, id, 1); return id; })();
   const constNullAcc = b.id(); b.constantNull(tCoopAcc, constNullAcc);
 
   // ── Function types ───────────────────────────────────────────────────────
@@ -245,14 +273,17 @@ export function kernelFlashAttentionCoop2Forward(
   const tPtrArrSQ = b.id(); b.typePointer(tPtrArrSQ, StorageClass.Workgroup, tArrSQ);
   const sQ = b.id(); b.variable(tPtrArrSQ, sQ, StorageClass.Workgroup);
 
-  // sKT[D * Bc] f16 — K^T[D, Bc]
-  const constSKTSize = b.id(); b.constant(tU32, constSKTSize, D * Bc);
-  const tArrSKT = b.id(); b.typeArray(tArrSKT, tF16, constSKTSize);
-  const tPtrArrSKT = b.id(); b.typePointer(tPtrArrSKT, StorageClass.Workgroup, tArrSKT);
-  const sKT = b.id(); b.variable(tPtrArrSKT, sKT, StorageClass.Workgroup);
+  // sK[Bc * D * mul] f16 — K row-major [Bc, D], optionally double-buffered.
+  // CoopMatrixLoadKHR with ColumnMajor+strideD gives K^T for QK^T computation.
+  const skSize = Bc * D * (doubleBuf ? 2 : 1);
+  const constSKSize = b.id(); b.constant(tU32, constSKSize, skSize);
+  const tArrSK = b.id(); b.typeArray(tArrSK, tF16, constSKSize);
+  const tPtrArrSK = b.id(); b.typePointer(tPtrArrSK, StorageClass.Workgroup, tArrSK);
+  const sK = b.id(); b.variable(tPtrArrSK, sK, StorageClass.Workgroup);
 
-  // sV[Bc * D] f16 — V row-major
-  const constSVSize = b.id(); b.constant(tU32, constSVSize, Bc * D);
+  // sV[Bc * D * mul] f16 — V row-major, optionally double-buffered.
+  const svSize = Bc * D * (doubleBuf ? 2 : 1);
+  const constSVSize = b.id(); b.constant(tU32, constSVSize, svSize);
   const tArrSV = b.id(); b.typeArray(tArrSV, tF16, constSVSize);
   const tPtrArrSV = b.id(); b.typePointer(tPtrArrSV, StorageClass.Workgroup, tArrSV);
   const sV = b.id(); b.variable(tPtrArrSV, sV, StorageClass.Workgroup);
@@ -481,7 +512,7 @@ export function kernelFlashAttentionCoop2Forward(
   // ════════════════════════════════════════════════════════════════════════
   const fnMain = b.id();
   b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main",
-    [vWorkgroupId, vLocalId, sQ, sKT, sV, sScratch,
+    [vWorkgroupId, vLocalId, sQ, sK, sV, sScratch,
      bufQ.varId, bufK.varId, bufV.varId, bufO.varId, bufLSE.varId, pc.varId]);
   b.addExecutionMode(fnMain, ExecutionMode.LocalSize, WG, 1, 1);
   b.emit(Op.Function, [tVoid, fnMain, FunctionControl.None, tFnVoid]);
@@ -573,20 +604,19 @@ export function kernelFlashAttentionCoop2Forward(
 
       b.emit(Op.Label, [labelQLoadFast]);
       {
-        const elemsPerThread = (Br * D) / WG; // 16
+        const elemsPerThread = (Br * D) / WG;
+        // Precompute Q global base: baseOff + qBlockBaseTile * D
+        const qBlockBaseTileD = b.id();
+        if (constLog2D) b.emit(Op.ShiftLeftLogical, [tU32, qBlockBaseTileD, qBlockBaseTile, constLog2D]);
+        else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.IMul, [tU32, qBlockBaseTileD, qBlockBaseTile, cDv]); }
+        const qGlobalBase = b.id(); b.emit(Op.IAdd, [tU32, qGlobalBase, baseOff, qBlockBaseTileD]);
         for (let i = 0; i < elemsPerThread; i++) {
-          const constI = b.id(); b.constant(tU32, constI, i);
-          const constE = b.id(); b.constant(tU32, constE, elemsPerThread);
-          const tidTimesE = b.id(); b.emit(Op.IMul, [tU32, tidTimesE, tid, constE]);
-          const sharedIdx = b.id(); b.emit(Op.IAdd, [tU32, sharedIdx, tidTimesE, constI]);
-          const constDval = b.id(); b.constant(tU32, constDval, D);
-          const row = b.id(); b.emit(Op.UDiv, [tU32, row, sharedIdx, constDval]);
-          const col = b.id(); b.emit(Op.UMod, [tU32, col, sharedIdx, constDval]);
-          const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, qBlockBaseTile, row]);
-          const qRowD = b.id(); b.emit(Op.IMul, [tU32, qRowD, qRow, constDval]);
-          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, baseOff, qRowD]);
-          const gIdx2 = b.id(); b.emit(Op.IAdd, [tU32, gIdx2, gIdx, col]);
-          const ptrG = b.id(); b.emit(Op.AccessChain, [bufQ.tPtr, ptrG, bufQ.varId, const0u, gIdx2]);
+          // Coalesced: sharedIdx = i * WG + tid
+          const constIWG = b.id(); b.constant(tU32, constIWG, i * WG);
+          const sharedIdx = b.id(); b.emit(Op.IAdd, [tU32, sharedIdx, constIWG, tid]);
+          // Global address: qGlobalBase + sharedIdx (contiguous, no row/col decomposition needed)
+          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, qGlobalBase, sharedIdx]);
+          const ptrG = b.id(); b.emit(Op.AccessChain, [bufQ.tPtr, ptrG, bufQ.varId, const0u, gIdx]);
           let valF16: number;
           if (useF16Input) {
             valF16 = b.id(); b.emit(Op.Load, [tF16, valF16, ptrG]);
@@ -603,21 +633,24 @@ export function kernelFlashAttentionCoop2Forward(
 
       b.emit(Op.Label, [labelQLoadSlow]);
       {
-        const elemsPerThread = (Br * D) / WG; // 16
+        const elemsPerThread = (Br * D) / WG;
+        // Precompute Q global base (same as fast path)
+        const qBlockBaseTileD2 = b.id();
+        if (constLog2D) b.emit(Op.ShiftLeftLogical, [tU32, qBlockBaseTileD2, qBlockBaseTile, constLog2D]);
+        else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.IMul, [tU32, qBlockBaseTileD2, qBlockBaseTile, cDv]); }
+        const qGlobalBase2 = b.id(); b.emit(Op.IAdd, [tU32, qGlobalBase2, baseOff, qBlockBaseTileD2]);
         for (let i = 0; i < elemsPerThread; i++) {
-          const constI = b.id(); b.constant(tU32, constI, i);
-          const constE = b.id(); b.constant(tU32, constE, elemsPerThread);
-          const tidTimesE = b.id(); b.emit(Op.IMul, [tU32, tidTimesE, tid, constE]);
-          const sharedIdx = b.id(); b.emit(Op.IAdd, [tU32, sharedIdx, tidTimesE, constI]);
-          const constDval = b.id(); b.constant(tU32, constDval, D);
-          const row = b.id(); b.emit(Op.UDiv, [tU32, row, sharedIdx, constDval]);
-          const col = b.id(); b.emit(Op.UMod, [tU32, col, sharedIdx, constDval]);
+          // Coalesced: sharedIdx = i * WG + tid
+          const constIWG = b.id(); b.constant(tU32, constIWG, i * WG);
+          const sharedIdx = b.id(); b.emit(Op.IAdd, [tU32, sharedIdx, constIWG, tid]);
+          // Still need row for OOB check
+          const row = b.id();
+          if (constLog2D) b.emit(Op.ShiftRightLogical, [tU32, row, sharedIdx, constLog2D]);
+          else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.UDiv, [tU32, row, sharedIdx, cDv]); }
           const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, qBlockBaseTile, row]);
           const inBounds = b.id(); b.emit(Op.ULessThan, [tBool, inBounds, qRow, T]);
-          const qRowD = b.id(); b.emit(Op.IMul, [tU32, qRowD, qRow, constDval]);
-          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, baseOff, qRowD]);
-          const gIdx2 = b.id(); b.emit(Op.IAdd, [tU32, gIdx2, gIdx, col]);
-          const ptrG = b.id(); b.emit(Op.AccessChain, [bufQ.tPtr, ptrG, bufQ.varId, const0u, gIdx2]);
+          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, qGlobalBase2, sharedIdx]);
+          const ptrG = b.id(); b.emit(Op.AccessChain, [bufQ.tPtr, ptrG, bufQ.varId, const0u, gIdx]);
           let valF16Masked: number;
           if (useF16Input) {
             const valF16 = b.id(); b.emit(Op.Load, [tF16, valF16, ptrG]);
@@ -638,12 +671,154 @@ export function kernelFlashAttentionCoop2Forward(
   }
   b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: Q loaded
 
+  // ── Double-buffer KV staging infrastructure ───────────────────────────
+  let dbVarBufIdx = 0; // SPIR-V ID for buffer index variable (0 = doubleBuf disabled)
+  let dbConstBufSize = 0; // SPIR-V ID: Bc * D (buffer size for one KV set)
+  let curKOff = const0u; // SPIR-V ID: current buffer offset for sK reads
+  let curVOff = const0u;  // SPIR-V ID: current buffer offset for sV reads
+  if (doubleBuf) {
+    dbConstBufSize = b.id(); b.constant(tU32, dbConstBufSize, Bc * D);
+    dbVarBufIdx = b.id(); b.emit(Op.Variable, [tPtrFnU32, dbVarBufIdx, StorageClass.Function]);
+    b.emit(Op.Store, [dbVarBufIdx, const0u]);
+  }
+
+  // Helper: emit SPIR-V to load K and V from global into shared memory (non-transposed).
+  // kBlockBaseP/fullTBlockP are SPIR-V IDs. kOff/vOff are buffer offsets into sK/sV.
+  function emitKVLoad(kBlockBaseP: number, fullTBlockP: number, kOff: number, vOff: number) {
+    const labelKVFast = b.id();
+    const labelKVSlow = b.id();
+    const labelKVMerge = b.id();
+    b.emit(Op.SelectionMerge, [labelKVMerge, 0]);
+    b.emit(Op.BranchConditional, [fullTBlockP, labelKVFast, labelKVSlow]);
+
+    b.emit(Op.Label, [labelKVFast]);
+    {
+      const elemsPerThread = (Bc * D) / WG;
+      // Precompute global base: baseOff + kBlockBase * D.
+      // Since K/V are [BH,T,D] contiguous and shmem is non-transposed [Bc,D],
+      // the global address for flatIdx is simply globalBase + flatIdx.
+      let globalBase: number | undefined;
+      if (!isKVSynthMode) {
+        const kBlockBaseD = b.id();
+        if (constLog2D) b.emit(Op.ShiftLeftLogical, [tU32, kBlockBaseD, kBlockBaseP, constLog2D]);
+        else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.IMul, [tU32, kBlockBaseD, kBlockBaseP, cDv]); }
+        globalBase = b.id(); b.emit(Op.IAdd, [tU32, globalBase, baseOff, kBlockBaseD]);
+      }
+      for (let i = 0; i < elemsPerThread; i++) {
+        // Coalesced access: flatIdx = i * WG + tid.
+        // Adjacent threads access adjacent memory addresses → full cache line utilization.
+        // i*WG is a compile-time constant, so only 1 IAdd per element.
+        const constIWG = b.id(); b.constant(tU32, constIWG, i * WG);
+        const flatIdx = b.id(); b.emit(Op.IAdd, [tU32, flatIdx, constIWG, tid]);
+        if (!isKVSynthMode) {
+          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, globalBase!, flatIdx]);
+          // K: store non-transposed at sK[flatIdx + kOff] (same layout as V)
+          if (!isPVOnlyMode) {
+            const pGK = b.id(); b.emit(Op.AccessChain, [bufK.tPtr, pGK, bufK.varId, const0u, gIdx]);
+            let kF16: number;
+            if (useF16Input) { kF16 = b.id(); b.emit(Op.Load, [tF16, kF16, pGK]); }
+            else { const kF32 = b.id(); b.emit(Op.Load, [tF32, kF32, pGK]); kF16 = b.id(); b.emit(Op.FConvert, [tF16, kF16, kF32]); }
+            const kIB = b.id(); b.emit(Op.IAdd, [tU32, kIB, flatIdx, kOff]);
+            const pSK = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSK, sK, kIB]);
+            b.emit(Op.Store, [pSK, kF16]);
+          }
+          // V: store at sV[flatIdx + vOff]
+          const pGV = b.id(); b.emit(Op.AccessChain, [bufV.tPtr, pGV, bufV.varId, const0u, gIdx]);
+          let vF16: number;
+          if (useF16Input) { vF16 = b.id(); b.emit(Op.Load, [tF16, vF16, pGV]); }
+          else { const vF32 = b.id(); b.emit(Op.Load, [tF32, vF32, pGV]); vF16 = b.id(); b.emit(Op.FConvert, [tF16, vF16, vF32]); }
+          const vIB = b.id(); b.emit(Op.IAdd, [tU32, vIB, flatIdx, vOff]);
+          const pSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSV, sV, vIB]);
+          b.emit(Op.Store, [pSV, vF16]);
+        } else {
+          // kv_synth: write constant 0.5h to shmem (preserves shmem write cost, no global reads)
+          if (!isPVOnlyMode) {
+            const kIB = b.id(); b.emit(Op.IAdd, [tU32, kIB, flatIdx, kOff]);
+            const pSK = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSK, sK, kIB]);
+            b.emit(Op.Store, [pSK, const05h]);
+          }
+          const vIB = b.id(); b.emit(Op.IAdd, [tU32, vIB, flatIdx, vOff]);
+          const pSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSV, sV, vIB]);
+          b.emit(Op.Store, [pSV, const05h]);
+        }
+      }
+    }
+    b.emit(Op.Branch, [labelKVMerge]);
+
+    b.emit(Op.Label, [labelKVSlow]);
+    {
+      const elemsPerThread = (Bc * D) / WG;
+      // Precompute global base (same as fast path). OOB check uses j = flatIdx / D.
+      let globalBase2: number | undefined;
+      if (!isKVSynthMode) {
+        const kBlockBaseD = b.id();
+        if (constLog2D) b.emit(Op.ShiftLeftLogical, [tU32, kBlockBaseD, kBlockBaseP, constLog2D]);
+        else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.IMul, [tU32, kBlockBaseD, kBlockBaseP, cDv]); }
+        globalBase2 = b.id(); b.emit(Op.IAdd, [tU32, globalBase2, baseOff, kBlockBaseD]);
+      }
+      for (let i = 0; i < elemsPerThread; i++) {
+        // Coalesced access: flatIdx = i * WG + tid (same as fast path).
+        const constIWG = b.id(); b.constant(tU32, constIWG, i * WG);
+        const flatIdx = b.id(); b.emit(Op.IAdd, [tU32, flatIdx, constIWG, tid]);
+        if (!isKVSynthMode) {
+          // Still need j for OOB check: kRow = kBlockBase + flatIdx/D
+          const j = b.id();
+          if (constLog2D) b.emit(Op.ShiftRightLogical, [tU32, j, flatIdx, constLog2D]);
+          else { const cDv = b.id(); b.constant(tU32, cDv, D); b.emit(Op.UDiv, [tU32, j, flatIdx, cDv]); }
+          const kRow = b.id(); b.emit(Op.IAdd, [tU32, kRow, kBlockBaseP, j]);
+          const inB = b.id(); b.emit(Op.ULessThan, [tBool, inB, kRow, T]);
+          // Global address = globalBase + flatIdx (same simplification as fast path)
+          const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, globalBase2!, flatIdx]);
+          // K: store non-transposed at sK[flatIdx + kOff] with OOB masking
+          if (!isPVOnlyMode) {
+            const pGK = b.id(); b.emit(Op.AccessChain, [bufK.tPtr, pGK, bufK.varId, const0u, gIdx]);
+            let kF16M: number;
+            if (useF16Input) { const kF = b.id(); b.emit(Op.Load, [tF16, kF, pGK]); kF16M = b.id(); b.emit(Op.Select, [tF16, kF16M, inB, kF, const0h]); }
+            else { const kF = b.id(); b.emit(Op.Load, [tF32, kF, pGK]); const km = b.id(); b.emit(Op.Select, [tF32, km, inB, kF, const0f]); kF16M = b.id(); b.emit(Op.FConvert, [tF16, kF16M, km]); }
+            const kIB = b.id(); b.emit(Op.IAdd, [tU32, kIB, flatIdx, kOff]);
+            const pSK = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSK, sK, kIB]);
+            b.emit(Op.Store, [pSK, kF16M]);
+          }
+          // V: store at sV[flatIdx + vOff] with OOB masking
+          const pGV = b.id(); b.emit(Op.AccessChain, [bufV.tPtr, pGV, bufV.varId, const0u, gIdx]);
+          let vF16M: number;
+          if (useF16Input) { const vF = b.id(); b.emit(Op.Load, [tF16, vF, pGV]); vF16M = b.id(); b.emit(Op.Select, [tF16, vF16M, inB, vF, const0h]); }
+          else { const vF = b.id(); b.emit(Op.Load, [tF32, vF, pGV]); const vm = b.id(); b.emit(Op.Select, [tF32, vm, inB, vF, const0f]); vF16M = b.id(); b.emit(Op.FConvert, [tF16, vF16M, vm]); }
+          const vIB = b.id(); b.emit(Op.IAdd, [tU32, vIB, flatIdx, vOff]);
+          const pSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSV, sV, vIB]);
+          b.emit(Op.Store, [pSV, vF16M]);
+        } else {
+          // kv_synth: write constant 0.5h to shmem (no global reads, no OOB checks)
+          if (!isPVOnlyMode) {
+            const kIB = b.id(); b.emit(Op.IAdd, [tU32, kIB, flatIdx, kOff]);
+            const pSK = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSK, sK, kIB]);
+            b.emit(Op.Store, [pSK, const05h]);
+          }
+          const vIB = b.id(); b.emit(Op.IAdd, [tU32, vIB, flatIdx, vOff]);
+          const pSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, pSV, sV, vIB]);
+          b.emit(Op.Store, [pSV, const05h]);
+        }
+      }
+    }
+    b.emit(Op.Branch, [labelKVMerge]);
+    b.emit(Op.Label, [labelKVMerge]);
+  }
+
   // ── kBlock loop ──────────────────────────────────────────────────────────
   const constBrMinus1 = b.id(); b.constant(tU32, constBrMinus1, Br - 1);
   const constBcMinus1 = b.id(); b.constant(tU32, constBcMinus1, Bc - 1);
   const numKBlocks = b.id();
   const TplusBcm1 = b.id(); b.emit(Op.IAdd, [tU32, TplusBcm1, T, constBcMinus1]);
-  b.emit(Op.UDiv, [tU32, numKBlocks, TplusBcm1, constBc]);
+  if (constLog2Bc) b.emit(Op.ShiftRightLogical, [tU32, numKBlocks, TplusBcm1, constLog2Bc]);
+  else b.emit(Op.UDiv, [tU32, numKBlocks, TplusBcm1, constBc]);
+
+  // ── Double-buffer prologue: load KV[0] into buf[0] ───────────────────
+  if (doubleBuf) {
+    const kbEnd0 = b.id(); b.emit(Op.IAdd, [tU32, kbEnd0, const0u, constBc]);
+    const ft0 = b.id(); b.emit(Op.UGreaterThanEqual, [tBool, ft0, T, kbEnd0]);
+    emitKVLoad(const0u, ft0, const0u, const0u);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: KV[0] loaded
+  }
 
   b.emit(Op.Store, [varKBlock, const0u]);
   const labelLoopHead = b.id(); const labelLoopBody = b.id();
@@ -676,118 +851,39 @@ export function kernelFlashAttentionCoop2Forward(
   const kBlockEnd = b.id(); b.emit(Op.IAdd, [tU32, kBlockEnd, kBlockBase, constBc]);
   const fullTBlock = b.id(); b.emit(Op.UGreaterThanEqual, [tBool, fullTBlock, T, kBlockEnd]);
 
-  // ── Load K^T and V into shared ─────────────────────────────────────────
-  {
-    const labelKVLoadFast = b.id();
-    const labelKVLoadSlow = b.id();
-    const labelKVLoadMerge = b.id();
-    b.emit(Op.SelectionMerge, [labelKVLoadMerge, 0]);
-    b.emit(Op.BranchConditional, [fullTBlock, labelKVLoadFast, labelKVLoadSlow]);
-
-    b.emit(Op.Label, [labelKVLoadFast]);
+  // ── KV load / double-buffer prefetch ────────────────────────────────
+  if (doubleBuf) {
+    // Compute buffer offsets from current buffer index
+    const bufIdx = b.id(); b.emit(Op.Load, [tU32, bufIdx, dbVarBufIdx]);
+    curKOff = b.id(); b.emit(Op.IMul, [tU32, curKOff, bufIdx, dbConstBufSize]);
+    curVOff = b.id(); b.emit(Op.IMul, [tU32, curVOff, bufIdx, dbConstBufSize]);
+    // Next buffer offset: (1 - bufIdx) * bufSize
+    const oneMinusBuf = b.id(); b.emit(Op.ISub, [tU32, oneMinusBuf, const1u, bufIdx]);
+    const nextKOff = b.id(); b.emit(Op.IMul, [tU32, nextKOff, oneMinusBuf, dbConstBufSize]);
+    const nextVOff = b.id(); b.emit(Op.IMul, [tU32, nextVOff, oneMinusBuf, dbConstBufSize]);
+    // Prefetch KV[k+1] into next buffer (if there is a next kBlock)
+    const nextK = b.id(); b.emit(Op.IAdd, [tU32, nextK, kBlock, const1u]);
+    const hasNext = b.id(); b.emit(Op.ULessThan, [tBool, hasNext, nextK, numKBlocks]);
+    const labelPrefetch = b.id(); const labelPrefetchEnd = b.id();
+    b.emit(Op.SelectionMerge, [labelPrefetchEnd, 0]);
+    b.emit(Op.BranchConditional, [hasNext, labelPrefetch, labelPrefetchEnd]);
+    b.emit(Op.Label, [labelPrefetch]);
     {
-      const elemsPerThread = (Bc * D) / WG; // 16
-      for (let i = 0; i < elemsPerThread; i++) {
-        const constI = b.id(); b.constant(tU32, constI, i);
-        const constE = b.id(); b.constant(tU32, constE, elemsPerThread);
-        const tidTimesE = b.id(); b.emit(Op.IMul, [tU32, tidTimesE, tid, constE]);
-        const flatIdx = b.id(); b.emit(Op.IAdd, [tU32, flatIdx, tidTimesE, constI]);
-        const constDval = b.id(); b.constant(tU32, constDval, D);
-        const j = b.id(); b.emit(Op.UDiv, [tU32, j, flatIdx, constDval]);
-        const d = b.id(); b.emit(Op.UMod, [tU32, d, flatIdx, constDval]);
-        const kRow = b.id(); b.emit(Op.IAdd, [tU32, kRow, kBlockBase, j]);
-        const kRowD = b.id(); b.emit(Op.IMul, [tU32, kRowD, kRow, constDval]);
-        const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, baseOff, kRowD]);
-        const gIdx2 = b.id(); b.emit(Op.IAdd, [tU32, gIdx2, gIdx, d]);
-
-        if (!isPVOnlyMode) {
-          // K transposed: sKT[d * Bc + j]
-          const ptrGK = b.id(); b.emit(Op.AccessChain, [bufK.tPtr, ptrGK, bufK.varId, const0u, gIdx2]);
-          let kF16: number;
-          if (useF16Input) {
-            kF16 = b.id(); b.emit(Op.Load, [tF16, kF16, ptrGK]);
-          } else {
-            const kF32 = b.id(); b.emit(Op.Load, [tF32, kF32, ptrGK]);
-            kF16 = b.id(); b.emit(Op.FConvert, [tF16, kF16, kF32]);
-          }
-          const constBcVal = b.id(); b.constant(tU32, constBcVal, Bc);
-          const dTimesBc = b.id(); b.emit(Op.IMul, [tU32, dTimesBc, d, constBcVal]);
-          const ktIdx = b.id(); b.emit(Op.IAdd, [tU32, ktIdx, dTimesBc, j]);
-          const ptrSKT = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrSKT, sKT, ktIdx]);
-          b.emit(Op.Store, [ptrSKT, kF16]);
-        }
-
-        // V row-major: sV[j * D + d]
-        const ptrGV = b.id(); b.emit(Op.AccessChain, [bufV.tPtr, ptrGV, bufV.varId, const0u, gIdx2]);
-        let vF16: number;
-        if (useF16Input) {
-          vF16 = b.id(); b.emit(Op.Load, [tF16, vF16, ptrGV]);
-        } else {
-          const vF32 = b.id(); b.emit(Op.Load, [tF32, vF32, ptrGV]);
-          vF16 = b.id(); b.emit(Op.FConvert, [tF16, vF16, vF32]);
-        }
-        const ptrSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrSV, sV, flatIdx]);
-        b.emit(Op.Store, [ptrSV, vF16]);
-      }
+      const nextKBase = b.id(); b.emit(Op.IMul, [tU32, nextKBase, nextK, constBc]);
+      const nextKEnd = b.id(); b.emit(Op.IAdd, [tU32, nextKEnd, nextKBase, constBc]);
+      const nextFT = b.id(); b.emit(Op.UGreaterThanEqual, [tBool, nextFT, T, nextKEnd]);
+      emitKVLoad(nextKBase, nextFT, nextKOff, nextVOff);
     }
-    b.emit(Op.Branch, [labelKVLoadMerge]);
-
-    b.emit(Op.Label, [labelKVLoadSlow]);
-    {
-      const elemsPerThread = (Bc * D) / WG; // 16
-      for (let i = 0; i < elemsPerThread; i++) {
-        const constI = b.id(); b.constant(tU32, constI, i);
-        const constE = b.id(); b.constant(tU32, constE, elemsPerThread);
-        const tidTimesE = b.id(); b.emit(Op.IMul, [tU32, tidTimesE, tid, constE]);
-        const flatIdx = b.id(); b.emit(Op.IAdd, [tU32, flatIdx, tidTimesE, constI]);
-        const constDval = b.id(); b.constant(tU32, constDval, D);
-        const j = b.id(); b.emit(Op.UDiv, [tU32, j, flatIdx, constDval]);
-        const d = b.id(); b.emit(Op.UMod, [tU32, d, flatIdx, constDval]);
-        const kRow = b.id(); b.emit(Op.IAdd, [tU32, kRow, kBlockBase, j]);
-        const inBounds = b.id(); b.emit(Op.ULessThan, [tBool, inBounds, kRow, T]);
-        const kRowD = b.id(); b.emit(Op.IMul, [tU32, kRowD, kRow, constDval]);
-        const gIdx = b.id(); b.emit(Op.IAdd, [tU32, gIdx, baseOff, kRowD]);
-        const gIdx2 = b.id(); b.emit(Op.IAdd, [tU32, gIdx2, gIdx, d]);
-
-        if (!isPVOnlyMode) {
-          // K transposed: sKT[d * Bc + j]
-          const ptrGK = b.id(); b.emit(Op.AccessChain, [bufK.tPtr, ptrGK, bufK.varId, const0u, gIdx2]);
-          let kF16Masked: number;
-          if (useF16Input) {
-            const kF16 = b.id(); b.emit(Op.Load, [tF16, kF16, ptrGK]);
-            kF16Masked = b.id(); b.emit(Op.Select, [tF16, kF16Masked, inBounds, kF16, const0h]);
-          } else {
-            const kF32 = b.id(); b.emit(Op.Load, [tF32, kF32, ptrGK]);
-            const kMasked = b.id(); b.emit(Op.Select, [tF32, kMasked, inBounds, kF32, const0f]);
-            kF16Masked = b.id(); b.emit(Op.FConvert, [tF16, kF16Masked, kMasked]);
-          }
-          const constBcVal = b.id(); b.constant(tU32, constBcVal, Bc);
-          const dTimesBc = b.id(); b.emit(Op.IMul, [tU32, dTimesBc, d, constBcVal]);
-          const ktIdx = b.id(); b.emit(Op.IAdd, [tU32, ktIdx, dTimesBc, j]);
-          const ptrSKT = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrSKT, sKT, ktIdx]);
-          b.emit(Op.Store, [ptrSKT, kF16Masked]);
-        }
-
-        // V row-major: sV[j * D + d]
-        const ptrGV = b.id(); b.emit(Op.AccessChain, [bufV.tPtr, ptrGV, bufV.varId, const0u, gIdx2]);
-        let vF16Masked: number;
-        if (useF16Input) {
-          const vF16 = b.id(); b.emit(Op.Load, [tF16, vF16, ptrGV]);
-          vF16Masked = b.id(); b.emit(Op.Select, [tF16, vF16Masked, inBounds, vF16, const0h]);
-        } else {
-          const vF32 = b.id(); b.emit(Op.Load, [tF32, vF32, ptrGV]);
-          const vMasked = b.id(); b.emit(Op.Select, [tF32, vMasked, inBounds, vF32, const0f]);
-          vF16Masked = b.id(); b.emit(Op.FConvert, [tF16, vF16Masked, vMasked]);
-        }
-        const ptrSV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrSV, sV, flatIdx]);
-        b.emit(Op.Store, [ptrSV, vF16Masked]);
-      }
-    }
-    b.emit(Op.Branch, [labelKVLoadMerge]);
-    b.emit(Op.Label, [labelKVLoadMerge]);
+    b.emit(Op.Branch, [labelPrefetchEnd]);
+    b.emit(Op.Label, [labelPrefetchEnd]);
+  } else {
+    curKOff = const0u;
+    curVOff = const0u;
+    emitKVLoad(kBlockBase, fullTBlock, const0u, const0u);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: K/V loaded
   }
-  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: K/V loaded
 
+  if (!isKVOnlyMode)
   for (let qti = 0; qti < qTiles; qti++) {
     const qBlockBase = qBlockBaseArr[qti];
     const varO = varOArr[qti];
@@ -798,9 +894,15 @@ export function kernelFlashAttentionCoop2Forward(
     let pForPV: number | null = null;
 
     if (!isPVOnlyMode) {
-    // ── Step 1: QK^T via cooperative matrix ────────────────────────────────
-    // S[16x16] = Q[16xD] @ K^T[Dx16]
+    // ── Step 1: QK^T via cooperative matrix (or synthetic S for per_elem_only) ─
     let accS: number;
+    if (isPerElemOnlyMode) {
+      // per_elem_only: fill accumulator with 1.0 (synthetic S, same memory layout)
+      const ones = b.id();
+      b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, ones, constNullAcc, fnConstOne]);
+      accS = ones;
+    } else {
+    // S[16x16] = Q[16xD] @ K^T[Dx16]
     {
       const varAcc = b.id(); b.emit(Op.Variable, [tPtrFnCoopAcc, varAcc, StorageClass.Function]);
       b.emit(Op.Store, [varAcc, constNullAcc]);
@@ -812,11 +914,14 @@ export function kernelFlashAttentionCoop2Forward(
         const coopA = b.id();
         b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopA, coopA, ptrA, constRowMajor, constStrideD]);
 
-        const constBOff = b.id(); b.constant(tU32, constBOff, kStep * coopK * Bc);
-        const ptrB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrB, sKT, constBOff]);
-        const constStrideBc = b.id(); b.constant(tU32, constStrideBc, Bc);
+        // Load B (K^T) from sK with ColumnMajor layout.
+        // sK stores K[Bc, D] row-major. ColumnMajor+strideD reads K^T[D, Bc]:
+        //   element[i, j] = *(ptr + j*D + i) = sK[j*D + kStep*coopK + i]
+        const constBOff = b.id(); b.constant(tU32, constBOff, kStep * coopK);
+        const bOffBuf = b.id(); b.emit(Op.IAdd, [tU32, bOffBuf, constBOff, curKOff]);
+        const ptrB = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrB, sK, bOffBuf]);
         const coopB = b.id();
-        b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopB, ptrB, constRowMajor, constStrideBc]);
+        b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopB, ptrB, constColMajor, constStrideD]);
 
         const prevAcc = b.id(); b.emit(Op.Load, [tCoopAcc, prevAcc, varAcc]);
         const newAcc = b.id();
@@ -824,6 +929,7 @@ export function kernelFlashAttentionCoop2Forward(
         b.emit(Op.Store, [varAcc, newAcc]);
       }
       accS = b.id(); b.emit(Op.Load, [tCoopAcc, accS, varAcc]);
+    }
     }
 
     if (isQKOnlyMode) {
@@ -928,7 +1034,7 @@ export function kernelFlashAttentionCoop2Forward(
         const rowSumP = b.id();
         b.emit(Op.OpCooperativeMatrixReduceNV, [tCoopAcc, rowSumP, P, CooperativeMatrixReduce.Row, fnFAddCombine]);
 
-        if (isQKSoftmaxMode) {
+        if (isQKSoftmaxMode || isPerElemOnlyMode) {
           // Keep online-softmax recurrence in the probe to preserve comparable work.
           const oOld = b.id(); b.emit(Op.Load, [tCoopAcc, oOld, varO[0]]);
           const oScaled = b.id(); b.emit(Op.FMul, [tCoopAcc, oScaled, oOld, blockAlpha]);
@@ -941,7 +1047,7 @@ export function kernelFlashAttentionCoop2Forward(
           b.emit(Op.Store, [varL, lNew]);
           b.emit(Op.Store, [varM, mNew]);
         } else {
-          if (isFullMode) {
+          if (isFullMode || isKVSynthMode) {
             // ── Step 8: Rescale O and l ──────────────────────────────────────
             for (let t = 0; t < pvTiles; t++) {
               const oOld = b.id(); b.emit(Op.Load, [tCoopAcc, oOld, varO[t]]);
@@ -979,7 +1085,8 @@ export function kernelFlashAttentionCoop2Forward(
 
       for (let rn = 0; rn < pvTiles; rn++) {
         const constVOff = b.id(); b.constant(tU32, constVOff, rn * coopN);
-        const ptrV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrV, sV, constVOff]);
+        const vOffBuf = b.id(); b.emit(Op.IAdd, [tU32, vOffBuf, constVOff, curVOff]);
+        const ptrV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF16, ptrV, sV, vOffBuf]);
         const constStrideVD = b.id(); b.constant(tU32, constStrideVD, D);
         const coopV = b.id();
         b.emit(Op.OpCooperativeMatrixLoadKHR, [tCoopB, coopV, ptrV, constRowMajor, constStrideVD]);
@@ -990,6 +1097,14 @@ export function kernelFlashAttentionCoop2Forward(
         b.emit(Op.Store, [varO[rn], oNew]);
       }
     }
+  }
+
+  // ── Double-buffer: barrier after compute + flip buffer index ──────────
+  if (doubleBuf) {
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: prefetch visible + compute done
+    const curBuf = b.id(); b.emit(Op.Load, [tU32, curBuf, dbVarBufIdx]);
+    const flipped = b.id(); b.emit(Op.ISub, [tU32, flipped, const1u, curBuf]);
+    b.emit(Op.Store, [dbVarBufIdx, flipped]);
   }
 
   // ── kBlock loop continuation ─────────────────────────────────────────────
@@ -1006,7 +1121,7 @@ export function kernelFlashAttentionCoop2Forward(
   // ════════════════════════════════════════════════════════════════════════
   // OUTPUT
   // ════════════════════════════════════════════════════════════════════════
-  if (isFullMode) {
+  if (isFullMode || isKVSynthMode) {
     for (let qti = 0; qti < qTiles; qti++) {
       const qBlockBase = qBlockBaseArr[qti];
       const varO = varOArr[qti];
@@ -1016,8 +1131,12 @@ export function kernelFlashAttentionCoop2Forward(
     const lFinal = b.id(); b.emit(Op.Load, [tCoopAcc, lFinal, varL]);
 
     // Thread role: 4 threads per row
-    const myRow = b.id(); b.emit(Op.UDiv, [tU32, myRow, tid, constThreadsPerRow]);
-    const myColInRow = b.id(); b.emit(Op.UMod, [tU32, myColInRow, tid, constThreadsPerRow]);
+    const myRow = b.id();
+    if (constLog2TPR) b.emit(Op.ShiftRightLogical, [tU32, myRow, tid, constLog2TPR]);
+    else b.emit(Op.UDiv, [tU32, myRow, tid, constThreadsPerRow]);
+    const myColInRow = b.id();
+    if (constMaskTPR) b.emit(Op.BitwiseAnd, [tU32, myColInRow, tid, constMaskTPR]);
+    else b.emit(Op.UMod, [tU32, myColInRow, tid, constThreadsPerRow]);
     const dimsPerThread = D / threadsPerRow;
 
     if (!skipLseWrite) {
@@ -1139,8 +1258,12 @@ export function kernelFlashAttentionCoop2Forward(
       const varO = varOArr[qti];
 
     // Probe modes: write zero LSE and raw accumulator output (no final normalization).
-    const myRow = b.id(); b.emit(Op.UDiv, [tU32, myRow, tid, constThreadsPerRow]);
-    const myColInRow = b.id(); b.emit(Op.UMod, [tU32, myColInRow, tid, constThreadsPerRow]);
+    const myRow = b.id();
+    if (constLog2TPR) b.emit(Op.ShiftRightLogical, [tU32, myRow, tid, constLog2TPR]);
+    else b.emit(Op.UDiv, [tU32, myRow, tid, constThreadsPerRow]);
+    const myColInRow = b.id();
+    if (constMaskTPR) b.emit(Op.BitwiseAnd, [tU32, myColInRow, tid, constMaskTPR]);
+    else b.emit(Op.UMod, [tU32, myColInRow, tid, constThreadsPerRow]);
     const dimsPerThread = D / threadsPerRow;
 
     const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, qBlockBase, myRow]);

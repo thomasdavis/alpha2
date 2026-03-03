@@ -116,7 +116,7 @@ type FlashDispatchPath = "scalar" | "coop2";
 export interface FlashDispatchDebug {
   requestedOp: "flashAttention" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
   executedPath: FlashDispatchPath;
-  mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv";
+  mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only";
   softCap: number;
   BH: number;
   T: number;
@@ -191,6 +191,12 @@ function parseFlashCoop2SkipLseWrite(): boolean {
   const raw = (process.env.HELIOS_FLASH_COOP2_SKIP_LSE_WRITE ?? "0").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
 }
+
+function parseFlashCoop2DoubleBuf(): boolean {
+  const raw = (process.env.HELIOS_FLASH_COOP2_DOUBLE_BUF ?? "0").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
+}
+
 
 let lastPush4A = NaN;
 let lastPush4B = NaN;
@@ -1108,6 +1114,8 @@ export class HeliosBackend implements Backend {
   private _flashCoop2QTiles = parseFlashCoop2QTiles();
   private _flashCoop2BlockCols = parseFlashCoop2BlockCols();
   private _flashCoop2SkipLseWrite = parseFlashCoop2SkipLseWrite();
+  private _flashCoop2DoubleBuf = parseFlashCoop2DoubleBuf();
+
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
   setMinGpuSize(n: number): void { this._minGpuSize = n; }
@@ -3815,7 +3823,8 @@ export class HeliosBackend implements Backend {
     const in16Suffix = useF16Input ? "_in16" : "";
     const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
     const noLseSuffix = skipLseWrite ? "_nolse" : "";
-    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}`;
+    const dbSuffix = this._flashCoop2DoubleBuf ? "_db" : "";
+    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}`;
     const { kernelName, pipeline, pipelineKey, pipelineCreated, scope, fallbackReason } =
       this.resolveFlashCoop2Pipeline(vk, baseKernelName);
 
@@ -3866,7 +3875,7 @@ export class HeliosBackend implements Backend {
   }
 
   flashAttentionCoop2Probe(
-    mode: "qk" | "qk_mask" | "qk_softmax" | "pv",
+    mode: "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only",
     Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap = 0,
   ): { output: TensorData; lse: TensorData } {
@@ -3928,6 +3937,120 @@ export class HeliosBackend implements Backend {
     const output = graphLazyTensor(vk, [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
+  }
+
+  /**
+   * GPU-timestamp-measured flash attention dispatch (coop2 path).
+   * Uses vkCmdWriteTimestamp for true GPU kernel time.
+   * Optional iters/warmup for steady-state measurement.
+   * Returns per-iteration elapsed time in microseconds.
+   */
+  flashAttentionCoop2GpuTime(
+    mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only",
+    Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap = 0,
+    iters = 1, warmup = 0,
+  ): { gpuTimeUs: number; output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 16, Bc = 16;
+    const qTilesPerWG = this._flashCoop2QTiles;
+    const localSize = this._flashCoop2LocalSize;
+    const useF16Input = this._f16Supported && this._flashCoop2PreferF16Input;
+    const scSuffix = softCap === 30 ? "_sc30" : (softCap > 0 ? "_sc" : "");
+    const in16Suffix = useF16Input ? "_in16" : "";
+    const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
+
+    let baseKernelName: string;
+    if (mode === "full") {
+      const noLseSuffix = this._flashCoop2SkipLseWrite ? "_nolse" : "";
+      const dbSuffix = this._flashCoop2DoubleBuf ? "_db" : "";
+      baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}`;
+    } else {
+      baseKernelName = `flash_attn_coop2_probe_${mode}_fwd${scSuffix}${in16Suffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}`;
+    }
+    const { pipeline } = this.resolveFlashCoop2Pipeline(vk, baseKernelName);
+
+    // Flush any pending graph work and wait for completion before gpuTime
+    const tv = graph.flush();
+    if (tv > 0) vk.waitTimeline(tv);
+
+    const bufQ = useF16Input ? this.getCoopInputBuffer(vk, Q) : ensureGpu(vk, Q);
+    const bufK = useF16Input ? this.getCoopInputBuffer(vk, K) : ensureGpu(vk, K);
+    const bufV = useF16Input ? this.getCoopInputBuffer(vk, V) : ensureGpu(vk, V);
+
+    // Flush any graph work recorded by getCoopInputBuffer (e.g. F32→F16 cast)
+    const tv2 = graph.flush();
+    if (tv2 > 0) vk.waitTimeline(tv2);
+
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = push4Memo(T, scale, softCap, 0);
+    const gX = Math.ceil(T / (Br * qTilesPerWG));
+
+    const gpuTimeUs = vk.gpuTime(
+      pipeline,
+      [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      gX, BH, 1,
+      push,
+      iters, warmup,
+    );
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { gpuTimeUs, output, lse };
+  }
+
+  /**
+   * GPU-timestamp-measured flash attention dispatch (scalar path).
+   * Uses vkCmdWriteTimestamp for true GPU kernel time.
+   * Optional iters/warmup for steady-state measurement.
+   * Returns per-iteration elapsed time in microseconds.
+   */
+  flashAttentionGpuTime(
+    Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap = 0,
+    iters = 1, warmup = 0,
+  ): { gpuTimeUs: number; output: TensorData; lse: TensorData } {
+    const vk = this.init();
+    const BH = Q.shape[0];
+    const D = Q.shape[2];
+    const Br = 32, Bc = 16;
+    const scSuffix = softCap > 0 ? "_sc" : "";
+    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}`;
+    const pipeline = getPipeline(vk, kernelName, 5, 16);
+
+    // Flush any pending graph work and wait for completion before gpuTime
+    const tv = graph.flush();
+    if (tv > 0) vk.waitTimeline(tv);
+
+    const bufQ = ensureGpu(vk, Q);
+    const bufK = ensureGpu(vk, K);
+    const bufV = ensureGpu(vk, V);
+
+    const oBytes = BH * T * D * 4;
+    const oRegion = acquireOutputRegion(vk, oBytes);
+    const lseBytes = BH * T * 4;
+    const lseRegion = acquireOutputRegion(vk, lseBytes);
+
+    const push = push4Memo(T, scale, softCap, 0);
+    const gX = Math.ceil(T / Br);
+
+    const gpuTimeUs = vk.gpuTime(
+      pipeline,
+      [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      gX, BH, 1,
+      push,
+      iters, warmup,
+    );
+
+    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const lse = graphLazyTensor(vk, [BH, T], lseRegion);
+    return { gpuTimeUs, output, lse };
   }
 
   flashAttentionBackward(Q: TensorData, K: TensorData, V: TensorData,

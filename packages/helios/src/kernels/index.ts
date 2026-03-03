@@ -353,10 +353,11 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
       //   flash_attn_coop2_fwd_sc30_in16_nolse_{Br}_{Bc}_{D}_{sg|wg}
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_qt{QT}_ls{LS}_{sg|wg}
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
+      //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_db  (double-buffered KV staging)
       if (!spirv) {
-        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(?:_(wg|sg))?$/);
+        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(_db)?(?:_(wg|sg))?$/);
         if (coop2FlashMatch) {
-          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, scopeRaw] = coop2FlashMatch;
+          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, dbSuffix, scopeRaw] = coop2FlashMatch;
           const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
           const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
           const softCapConst = scSuffix === "_sc30" ? 30 : null;
@@ -364,6 +365,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           const skipLseWrite = noLseSuffix === "_nolse";
           const qTiles = qtS ? parseInt(qtS) : 1;
           const localSize = lsS ? parseInt(lsS) : 64;
+          const doubleBuf = dbSuffix === "_db";
           spirv = kernelFlashAttentionCoop2Forward(
             parseInt(brS),
             parseInt(bcS),
@@ -376,29 +378,31 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
             skipLseWrite,
             qTiles,
             localSize,
+            doubleBuf,
           );
         }
       }
       // Cooperative matrix 2 flash attention probes — names:
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_in16_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_in16_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_in16_{Br}_{Bc}_{D}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_{Br}_{Bc}_{D}_{sg|wg}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_{Br}_{Bc}_{D}_{sg|wg}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_{Br}_{Bc}_{D}_{sg|wg}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_in16_{Br}_{Bc}_{D}_{sg|wg}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc_in16_{Br}_{Bc}_{D}_{sg|wg}
-      //   flash_attn_coop2_probe_{qk|qk_mask|qk_softmax|pv}_fwd_sc30_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}
+      //   flash_attn_coop2_probe_{mode}_fwd_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc_in16_{Br}_{Bc}_{D}_{sg|wg}
+      //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}_{sg|wg}
       //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}_qt{QT}_ls{LS}_{sg|wg}
       //   flash_attn_coop2_probe_{mode}_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
+      //   mode = qk|qk_mask|qk_softmax|pv|kv_only|per_elem_only
       if (!spirv) {
-        const coop2ProbeMatch = name.match(/^flash_attn_coop2_probe_(qk|qk_mask|qk_softmax|pv)_fwd(_sc|_sc30)?(_in16)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(?:_(wg|sg))?$/);
+        const coop2ProbeMatch = name.match(/^flash_attn_coop2_probe_(qk|qk_mask|qk_softmax|pv|kv_only|kv_synth|per_elem_only)_fwd(_sc|_sc30)?(_in16)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(?:_(wg|sg))?$/);
         if (coop2ProbeMatch) {
           const [, modeRaw, scSuffix, in16Suffix, brS, bcS, dS, qtS, lsS, scopeRaw] = coop2ProbeMatch;
-          const mode = modeRaw as "qk" | "qk_mask" | "qk_softmax" | "pv";
+          const mode = modeRaw as "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only";
           const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
           const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
           const softCapConst = scSuffix === "_sc30" ? 30 : null;

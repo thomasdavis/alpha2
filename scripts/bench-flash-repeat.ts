@@ -5,6 +5,9 @@
  *
  * Usage:
  *   npx tsx scripts/bench-flash-repeat.ts --repeats=7 --iters=40 --warmup=6
+ *   npx tsx scripts/bench-flash-repeat.ts --repeats=7 --iters=40 --warmup=6 --gpu-time
+ *
+ * --gpu-time: Use Vulkan timestamp queries (GPU-only time, no CPU/queue overhead)
  *
  * Env toggles (examples):
  *   HELIOS_FLASH_COOP2_QT=2
@@ -21,6 +24,7 @@ interface CliOpts {
   iters: number;
   warmup: number;
   order: "default-first" | "direct-first" | "alternate";
+  gpuTime: boolean;
 }
 
 interface RepeatRow {
@@ -28,10 +32,17 @@ interface RepeatRow {
   msDirect: number;
   msQK: number;
   msPV: number;
+  msKVOnly: number;
+  // GPU timestamp versions (only when --gpu-time)
+  gpuFull?: number;
+  gpuQK?: number;
+  gpuPV?: number;
+  gpuKVOnly?: number;
   debugDefault?: string;
   debugDirect?: string;
   debugQK?: string;
   debugPV?: string;
+  debugKVOnly?: string;
 }
 
 function parseArgs(): CliOpts {
@@ -50,6 +61,7 @@ function parseArgs(): CliOpts {
       kv.order === "default-first" || kv.order === "direct-first" || kv.order === "alternate"
         ? kv.order
         : "alternate",
+    gpuTime: kv["gpu-time"] === "true",
   };
 }
 
@@ -88,6 +100,7 @@ function runOneRepeat(
   iters: number,
   warmup: number,
   order: "default-first" | "direct-first",
+  useGpuTime: boolean,
 ): RepeatRow {
   const sync: (() => void) = typeof bAny.syncGpu === "function" ? bAny.syncGpu.bind(bAny) : (() => {});
   const release: ((td: TensorData) => void) =
@@ -108,6 +121,27 @@ function runOneRepeat(
       sync();
       times.push(performance.now() - t0);
       for (const r of rs) release(r);
+    }
+    return median(times);
+  }
+
+  // GPU timestamp bench: uses vkCmdWriteTimestamp for true GPU kernel time
+  function benchGpuTime(mode: "full" | "qk" | "pv" | "kv_only"): number {
+    const hasMethod = typeof bAny.flashAttentionCoop2GpuTime === "function";
+    if (!hasMethod) return NaN;
+    // Warmup
+    for (let i = 0; i < warmup; i++) {
+      const out = bAny.flashAttentionCoop2GpuTime(mode, q, k, v, T, scale, 30);
+      release(out.output);
+      release(out.lse);
+    }
+    // Timed runs — gpuTimeUs is already GPU-only microseconds
+    const times: number[] = [];
+    for (let i = 0; i < iters; i++) {
+      const out = bAny.flashAttentionCoop2GpuTime(mode, q, k, v, T, scale, 30);
+      times.push(out.gpuTimeUs / 1000); // convert µs → ms for consistency
+      release(out.output);
+      release(out.lse);
     }
     return median(times);
   }
@@ -150,16 +184,39 @@ function runOneRepeat(
     return [out.output, out.lse];
   });
   const debugPV = mkDbg();
+  const msKVOnly = bench(() => {
+    const out = bAny.flashAttentionCoop2Probe("kv_only", q, k, v, T, scale, 30);
+    return [out.output, out.lse];
+  });
+  const debugKVOnly = mkDbg();
 
-  return { msDefault, msDirect, msQK, msPV, debugDefault, debugDirect, debugQK, debugPV };
+  // GPU timestamp measurements
+  let gpuFull: number | undefined;
+  let gpuQK: number | undefined;
+  let gpuPV: number | undefined;
+  let gpuKVOnly: number | undefined;
+  if (useGpuTime) {
+    gpuFull = benchGpuTime("full");
+    gpuQK = benchGpuTime("qk");
+    gpuPV = benchGpuTime("pv");
+    gpuKVOnly = benchGpuTime("kv_only");
+  }
+
+  return {
+    msDefault, msDirect, msQK, msPV, msKVOnly,
+    gpuFull, gpuQK, gpuPV, gpuKVOnly,
+    debugDefault, debugDirect, debugQK, debugPV, debugKVOnly,
+  };
 }
 
 function summarize(name: string, values: number[]): string {
-  const med = median(values);
-  const p90 = percentile(values, 90);
-  const tmean = trimmedMean(values);
-  const best = Math.min(...values);
-  const worst = Math.max(...values);
+  const valid = values.filter(v => !isNaN(v));
+  if (valid.length === 0) return `${name}: (no data)`;
+  const med = median(valid);
+  const p90 = percentile(valid, 90);
+  const tmean = trimmedMean(valid);
+  const best = Math.min(...valid);
+  const worst = Math.max(...valid);
   return `${name}: med=${med.toFixed(6)} p90=${p90.toFixed(6)} tmean=${tmean.toFixed(6)} best=${best.toFixed(6)} worst=${worst.toFixed(6)}`;
 }
 
@@ -174,36 +231,72 @@ function main(): void {
   const k = b.randn([BH, T, D]);
   const v = b.randn([BH, T, D]);
 
+  if (opts.gpuTime) {
+    console.error("GPU timestamp mode enabled (Vulkan vkCmdWriteTimestamp)");
+  }
+
   const rows: RepeatRow[] = [];
   for (let r = 0; r < opts.repeats; r++) {
     const orderForRepeat =
       opts.order === "alternate"
         ? ((r & 1) === 0 ? "default-first" : "direct-first")
         : opts.order;
-    const row = runOneRepeat(bAny, q, k, v, opts.iters, opts.warmup, orderForRepeat);
+    const row = runOneRepeat(bAny, q, k, v, opts.iters, opts.warmup, orderForRepeat, opts.gpuTime);
     rows.push(row);
-    console.error(
+    let line =
       `[repeat ${r + 1}/${opts.repeats}] order=${orderForRepeat} default=${row.msDefault.toFixed(6)} ` +
-      `direct=${row.msDirect.toFixed(6)} qk=${row.msQK.toFixed(6)} pv=${row.msPV.toFixed(6)}` +
-      `${row.debugDefault ? ` defaultKernel=${row.debugDefault}` : ""}` +
-      `${row.debugDirect ? ` directKernel=${row.debugDirect}` : ""}` +
-      `${row.debugQK ? ` qkKernel=${row.debugQK}` : ""}` +
-      `${row.debugPV ? ` pvKernel=${row.debugPV}` : ""}`,
-    );
+      `direct=${row.msDirect.toFixed(6)} qk=${row.msQK.toFixed(6)} pv=${row.msPV.toFixed(6)} kv_only=${row.msKVOnly.toFixed(6)}`;
+    if (row.gpuFull !== undefined) {
+      line += ` | GPU: full=${row.gpuFull.toFixed(6)} qk=${row.gpuQK!.toFixed(6)} pv=${row.gpuPV!.toFixed(6)} kv_only=${row.gpuKVOnly!.toFixed(6)}`;
+    }
+    line += `${row.debugDefault ? ` defaultKernel=${row.debugDefault}` : ""}`;
+    line += `${row.debugDirect ? ` directKernel=${row.debugDirect}` : ""}`;
+    console.error(line);
   }
 
   const defaults = rows.map(r => r.msDefault);
   const directs = rows.map(r => r.msDirect);
   const qks = rows.map(r => r.msQK);
   const pvs = rows.map(r => r.msPV);
+  const kvonlys = rows.map(r => r.msKVOnly);
   const deltas = rows.map(r => r.msDefault - r.msDirect);
 
-  console.log(`repeats=${opts.repeats} iters=${opts.iters} warmup=${opts.warmup} order=${opts.order}`);
+  console.log(`repeats=${opts.repeats} iters=${opts.iters} warmup=${opts.warmup} order=${opts.order} gpuTime=${opts.gpuTime}`);
+  console.log("");
+  console.log("=== Wall-clock (performance.now + syncGpu) ===");
   console.log(summarize("flashAttention", defaults));
   console.log(summarize("flashAttentionCoop2", directs));
   console.log(summarize("probe_qk", qks));
   console.log(summarize("probe_pv", pvs));
+  console.log(summarize("probe_kv_only", kvonlys));
   console.log(summarize("wrapper_delta(default-direct)", deltas));
+
+  if (opts.gpuTime) {
+    const gpuFulls = rows.map(r => r.gpuFull!);
+    const gpuQKs = rows.map(r => r.gpuQK!);
+    const gpuPVs = rows.map(r => r.gpuPV!);
+    const gpuKVOnlys = rows.map(r => r.gpuKVOnly!);
+    const gpuCompute = rows.map(r => r.gpuFull! - r.gpuKVOnly!);
+
+    console.log("");
+    console.log("=== GPU timestamp (vkCmdWriteTimestamp, kernel-only) ===");
+    console.log(summarize("gpu_full", gpuFulls));
+    console.log(summarize("gpu_qk", gpuQKs));
+    console.log(summarize("gpu_pv", gpuPVs));
+    console.log(summarize("gpu_kv_only", gpuKVOnlys));
+    console.log(summarize("gpu_compute_delta(full-kv_only)", gpuCompute));
+
+    // Compare wall-clock vs GPU time
+    const wallMed = median(directs);
+    const gpuMed = median(gpuFulls);
+    const overhead = wallMed - gpuMed;
+    console.log("");
+    console.log(`wall-clock median: ${wallMed.toFixed(6)} ms`);
+    console.log(`gpu-time median:   ${gpuMed.toFixed(6)} ms`);
+    console.log(`overhead (wall-gpu): ${overhead.toFixed(6)} ms (${((overhead / wallMed) * 100).toFixed(1)}%)`);
+  }
+
+  console.log("");
   console.log(JSON.stringify({ rows }, null, 2));
 
   release(q);
