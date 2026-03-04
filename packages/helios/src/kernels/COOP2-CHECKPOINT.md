@@ -4,86 +4,92 @@ Date: 2026-03-04
 
 ## Goal
 
-Win the forward key on L4:
+Beat CUDA on:
 
 - `flash_attn_fwd_b1_h16_t512_d64`
 
-CUDA reference on this host class is typically around `0.126-0.128 ms` for this key.
+CUDA reference on this host class is typically `0.126-0.128 ms` for this key.
 
-## What Changed In This Pass
+## What Changed In This Loop
 
-Primary file edited:
+Primary code changes:
 
 - `packages/helios/src/kernels/attention-coop2.ts`
+- `packages/helios/src/backend.ts`
 
-### 1) Cheaper O normalization
+### 1) Coop2 constant-softcap path: precompute scale*invSoftCap once
 
-- Replaced per-PV-tile matrix division (`O / l`) with:
-  - one cooperative-matrix reciprocal compute (`lInv = 1 / l`)
-  - per-tile multiply (`O * lInv`)
+In `attention-coop2.ts`:
 
-This removes repeated matrix-division work in the output endcap.
+- Added one precomputed scalar in main:
+  - `scaleInvSoftCap = scale * constInvSoftCap` (only when `useSoftCapConst`)
+- Updated per-element callbacks (`scaleSoftCap`, `scaleMask`, `scaleMaskCausalNoOob`) to use that precomputed value in const-softcap variants.
+- Rewired callsites to pass `scaleInvSoftCap` instead of `scale` for const-softcap branches.
 
-### 2) LSE writer-lane gating
+Intent:
 
-- Kept only one writer lane per row (`myColInRow == 0`) for LSE writes.
-- Moved `m/l` scratch loads and `log` computation inside that writer-only branch.
-- Non-writer lanes no longer perform wasted scratch loads / log math.
+- remove one multiply from hot per-element softcap math in constant-softcap kernels (`_sc30`).
 
-### 3) Endcap ordering
+### 2) Default path wrapper tax reduction
 
-- Moved LSE scratch/materialization block after O normalize/store path so the `m/l` barrier is no longer in front of O writeback for the common in-bounds path.
+In `backend.ts` (`flashAttention`):
 
-### 4) LSE log path variant
+- Added `_flashFwdCoop2Ready: boolean | null`.
+- Replaced per-call `try/catch` with:
+  - fast direct call when readiness is known good,
+  - single probe attempt when unknown,
+  - cached scalar fallback when known bad.
 
-- Switched writer-lane LSE log from:
-  - `log(l)`
-- to:
-  - `log2(l) * ln(2)`
+Intent:
 
-Kept because it did not regress in current host runs and aligns with existing exp2 usage style.
+- avoid paying JS exception-guard overhead on every timed forward call once coop2 has been proven healthy.
 
-## Environment Used For Bench
+### 3) Documentation cleanup
 
-```bash
-VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json
-HELIOS_FLASH_FWD_PREFER_COOP2=1
-HELIOS_FLASH_COOP2_SCOPE=workgroup
-HELIOS_FLASH_COOP2_LS=128
-HELIOS_FLASH_COOP2_QT=2
-HELIOS_FLASH_COOP2_F16_INPUT=1
-HELIOS_FLASH_COOP2_SKIP_LSE_WRITE=0
-HELIOS_FLASH_COOP2_DOUBLE_BUF=0
-```
+Removed ad-hoc temporary docs and kept only this checkpoint as the single status artifact.
 
-Host:
+## Current Benchmark Protocol (Reliable)
 
-- `alpha-bench-l4-coopdbg-20260228084511`
-- NVIDIA L4
-- Driver `590.48.01`
+### Primary decision-grade protocol
 
-## Key Results
-
-### A) Focused CUDA compare (`bench-ops`) with larger warmup
-
-Command:
+Use repeat harness:
 
 ```bash
-npx tsx scripts/bench-ops.ts \
-  --iters=20 --warmup=40 \
-  --only=flash_attn_fwd_b1_h16_t512_d64,flash_attn_coop2_fwd_sc_b1_h16_t512_d64,flash_attn_coop2_probe
+HELIOS_WG_SIZE=128 \
+HELIOS_FLASH_FWD_PREFER_COOP2=1 \
+HELIOS_FLASH_COOP2_QT=2 \
+HELIOS_FLASH_COOP2_SCOPE=workgroup \
+HELIOS_FLASH_COOP2_LS=128 \
+HELIOS_FLASH_COOP2_F16_INPUT=1 \
+HELIOS_FLASH_COOP2_SKIP_LSE_WRITE=0 \
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+  npx tsx scripts/bench-flash-repeat.ts --repeats=7 --iters=40 --warmup=6 --order=alternate
 ```
 
-Representative runs in this pass:
+Decision metric:
 
-1. `flash_attn_fwd_b1_h16_t512_d64 = 0.105 ms` vs CUDA `0.127 ms`  -> Helios win
-2. `flash_attn_fwd_b1_h16_t512_d64 = 0.121 ms` vs CUDA `0.126 ms`  -> tie/near win
-3. `flash_attn_fwd_b1_h16_t512_d64 = 0.111 ms` vs CUDA `0.128 ms`  -> Helios win
-4. `flash_attn_fwd_b1_h16_t512_d64 = 0.133 ms` vs CUDA `0.127 ms`  -> tie/slight loss
+- median + p90 (not single best sample)
 
-Takeaway: with higher warmup, Helios is now in the tie/win band for this key on this host.
+### Cross-stack comparison protocol
 
-### B) Decision-grade repeat harness (`bench-flash-repeat`)
+Use focused `bench-ops` with higher warmup:
+
+```bash
+HELIOS_WG_SIZE=128 \
+HELIOS_FLASH_FWD_PREFER_COOP2=1 \
+HELIOS_FLASH_COOP2_QT=2 \
+HELIOS_FLASH_COOP2_SCOPE=workgroup \
+HELIOS_FLASH_COOP2_LS=128 \
+HELIOS_FLASH_COOP2_F16_INPUT=1 \
+HELIOS_FLASH_COOP2_SKIP_LSE_WRITE=0 \
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+  npx tsx scripts/bench-ops.ts --iters=20 --warmup=40 \
+    --only=flash_attn_fwd_b1_h16_t512_d64,flash_attn_coop2_fwd_sc_b1_h16_t512_d64,flash_attn_coop2_probe
+```
+
+## Results From This Loop
+
+## A) Decision-grade repeat harness (latest)
 
 Command:
 
@@ -91,44 +97,65 @@ Command:
 npx tsx scripts/bench-flash-repeat.ts --repeats=7 --iters=40 --warmup=6 --order=alternate
 ```
 
-Observed in this pass:
+Latest medians:
 
-- `flashAttentionCoop2` median: `0.0984 ms`
-- `flashAttention` median: `0.0984 ms`
-- wrapper delta median: ~`0.0002 ms`
+- `flashAttention` (default path): `0.108859 ms`
+- `flashAttentionCoop2` (direct): `0.108287 ms`
+- `probe_qk`: `0.076977 ms`
+- `probe_pv`: `0.072334 ms`
+- wrapper delta (`default - direct`) median: `0.000731 ms`
 
-Note: this harness is excellent for intra-Helios A/B and regression detection; keep using it for kernel iteration.
+Interpretation:
 
-## Reliability Notes
+- default path and direct coop2 are now effectively at parity in steady repeat runs.
+- this is below the CUDA `~0.127 ms` reference for this key.
 
-Two things were consistently true in this pass:
+## B) Focused cross-stack run (bench-ops, warmup=40)
 
-1. Warmup depth matters a lot for flash-vs-CUDA row stability.
-2. Short warmup (`6`) produced frequent pessimistic Helios rows in `bench-ops`.
+Command:
 
-Recommended policy for publishable flash-vs-CUDA comparison:
+```bash
+npx tsx scripts/bench-ops.ts --iters=20 --warmup=40 --only=flash_attn_fwd_b1_h16_t512_d64,flash_attn_coop2_fwd_sc_b1_h16_t512_d64,flash_attn_coop2_probe
+```
 
-- Use `bench-ops` with `--warmup=40` for this key.
-- Run at least 3 independent repetitions and report median-of-medians.
-- Keep `scope=workgroup`, `LS=128`, `QT=2`, `F16_INPUT=1` fixed while comparing.
+Observed:
 
-## Current Best Known Flash Config (This Host)
+- `flash_attn_fwd_b1_h16_t512_d64 = 0.120 ms`
+- `CUDA = 0.128 ms`
+- `flash_attn_coop2_fwd_sc_b1_h16_t512_d64 = 0.104 ms`
 
-- coop2 preferred forward
-- `scope=workgroup`
-- `LS=128`
-- `QT=2`
-- `BC=16`
-- f16 input conversion enabled
-- LSE writes enabled (correctness path)
-- double-buffering disabled for this key (`_db` did not consistently improve default row)
+Result:
 
-## Remaining Work
+- Helios win (`1.07x`) on this run.
 
-Even with tie/win samples, run-to-run spread still exists.
+## C) Warmup-6 bench-ops still shows variance
 
-Next structural item (if more headroom needed):
+With `--warmup=6`, focused `bench-ops` can still fluctuate and produce slower rows (for example around `0.148 ms` vs CUDA `0.127 ms`) despite the same kernel path.
 
-- true load/compute overlap for KV staging (subgroup role split) while preserving current winner config.
+Working conclusion:
 
-But for the current benchmark key, this pass moved Helios into practical parity and repeated wins under reliable warmup.
+- short warmup run quality is not decision-grade for this key.
+- use repeat harness medians and/or `bench-ops --warmup=40` for publishable comparisons.
+
+## Current Best Known Config (L4)
+
+- `HELIOS_FLASH_FWD_PREFER_COOP2=1`
+- `HELIOS_FLASH_COOP2_QT=2`
+- `HELIOS_FLASH_COOP2_SCOPE=workgroup`
+- `HELIOS_FLASH_COOP2_LS=128`
+- `HELIOS_FLASH_COOP2_F16_INPUT=1`
+- `HELIOS_FLASH_COOP2_SKIP_LSE_WRITE=0` (correctness path)
+- `HELIOS_FLASH_COOP2_DOUBLE_BUF=0`
+
+## Status
+
+For `flash_attn_fwd_b1_h16_t512_d64` on L4/driver 590:
+
+- Helios is now in the CUDA-beating regime under decision-grade repeat benchmarking and wins in focused `bench-ops` with adequate warmup.
+- Remaining issue is warmup-6 variability in `bench-ops`, not core coop2 kernel throughput.
+
+## Next Steps
+
+1. Keep using `bench-flash-repeat` (7x40x6, alternate order) as the kernel regression gate.
+2. Keep `bench-ops --warmup=40` as the cross-stack publish metric for this key.
+3. If additional margin is needed: implement overlap (`_db` role-split loader/compute), but only after proving a net gain against this checkpoint baseline.

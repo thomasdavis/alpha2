@@ -1109,6 +1109,7 @@ export class HeliosBackend implements Backend {
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
   private _flashFwdPreferCoop2 = parseFlashFwdPreferCoop2();
   private _flashFwdCoop2Strict = parseFlashFwdCoop2Strict();
+  private _flashFwdCoop2Ready: boolean | null = null;
   private _flashCoop2PreferF16Input = parseFlashCoop2PreferF16Input();
   private _flashCoop2LocalSize = parseFlashCoop2LocalSize();
   private _flashCoop2QTiles = parseFlashCoop2QTiles();
@@ -3659,14 +3660,28 @@ export class HeliosBackend implements Backend {
       if (this._flashFwdCoop2Strict) {
         return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
       }
-      try {
+      if (this._flashFwdCoop2Ready === true) {
         return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
-      } catch (err) {
-        const fallbackMessage = err instanceof Error ? err.message : String(err);
-        fallbackReason = `coop2_error:${fallbackMessage}`;
-        if (DEBUG_COOP) {
-          console.warn(`[helios] flashAttention coop2 fallback -> scalar: ${fallbackMessage}`);
+      }
+      if (this._flashFwdCoop2Ready === null) {
+        try {
+          const result = this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+          this._flashFwdCoop2Ready = true;
+          return result;
+        } catch (err) {
+          this._flashFwdCoop2Ready = false;
+          const fallbackMessage = err instanceof Error ? err.message : String(err);
+          fallbackReason = `coop2_error:${fallbackMessage}`;
+          if (DEBUG_COOP) {
+            console.warn(`[helios] flashAttention coop2 fallback -> scalar: ${fallbackMessage}`);
+          }
         }
+      } else {
+        fallbackReason = "coop2_error_cached";
+      }
+      if (!fallbackReason) {
+        // Non-strict mode only reaches here when coop2 is disabled due cached failure.
+        fallbackReason = "coop2_error_cached";
       }
     } else {
       fallbackReason = "coop2_ineligible";

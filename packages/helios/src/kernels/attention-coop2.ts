@@ -328,11 +328,11 @@ export function kernelFlashAttentionCoop2Forward(
     const sscRow = b.id(); b.emit(Op.FunctionParameter, [tU32, sscRow]);
     const sscCol = b.id(); b.emit(Op.FunctionParameter, [tU32, sscCol]);
     const sscVal = b.id(); b.emit(Op.FunctionParameter, [tF32, sscVal]);
-    const sscScale = b.id(); b.emit(Op.FunctionParameter, [tF32, sscScale]);
+    // sscScaleInvSoftCap is precomputed once as (scale * invSoftCapConst).
+    const sscScaleInvSoftCap = b.id(); b.emit(Op.FunctionParameter, [tF32, sscScaleInvSoftCap]);
     const sscLabel = b.id(); b.emit(Op.Label, [sscLabel]);
     {
-      const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, sscVal, sscScale]);
-      const scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, scaled, constInvSoftCap]);
+      const scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, sscVal, sscScaleInvSoftCap]);
       const tanhVal = b.id(); b.emit(Op.ExtInst, [tF32, tanhVal, glslStd, GLSLstd450.Tanh, scaledInv]);
       const capped = b.id(); b.emit(Op.FMul, [tF32, capped, tanhVal, constSoftCap]);
       b.emit(Op.ReturnValue, [capped]);
@@ -386,16 +386,24 @@ export function kernelFlashAttentionCoop2Forward(
   const smT = b.id(); b.emit(Op.FunctionParameter, [tU32, smT]);
     const smLabel = b.id(); b.emit(Op.Label, [smLabel]);
   {
-    const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smVal, smScale]);
-    let score = scaled;
+    let score = b.id();
     if (useSoftCap) {
-      const invSoftCap = useSoftCapConst ? constInvSoftCap : b.id();
-      if (!useSoftCapConst) b.emit(Op.FDiv, [tF32, invSoftCap, const1f, smSoftCap]);
-      const scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, scaled, invSoftCap]);
+      let scaledInv = b.id();
+      if (useSoftCapConst) {
+        // smScale carries (scale * invSoftCapConst) for constant-softcap variants.
+        b.emit(Op.FMul, [tF32, scaledInv, smVal, smScale]);
+      } else {
+        const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smVal, smScale]);
+        const invSoftCap = b.id(); b.emit(Op.FDiv, [tF32, invSoftCap, const1f, smSoftCap]);
+        scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, scaled, invSoftCap]);
+      }
       const tanhVal = b.id(); b.emit(Op.ExtInst, [tF32, tanhVal, glslStd, GLSLstd450.Tanh, scaledInv]);
       const capVal = useSoftCapConst ? constSoftCap : smSoftCap;
       const capped = b.id(); b.emit(Op.FMul, [tF32, capped, tanhVal, capVal]);
       score = capped;
+    } else {
+      const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smVal, smScale]);
+      score = scaled;
     }
     const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, smQBlockBase, smRow]);
     const kCol = b.id(); b.emit(Op.IAdd, [tU32, kCol, smKBlockBase, smCol]);
@@ -425,16 +433,24 @@ export function kernelFlashAttentionCoop2Forward(
   const smcKBlockBase = b.id(); b.emit(Op.FunctionParameter, [tU32, smcKBlockBase]);
   const smcLabel = b.id(); b.emit(Op.Label, [smcLabel]);
   {
-    const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smcVal, smcScale]);
-    let score = scaled;
+    let score = b.id();
     if (useSoftCap) {
-      const invSoftCap = useSoftCapConst ? constInvSoftCap : b.id();
-      if (!useSoftCapConst) b.emit(Op.FDiv, [tF32, invSoftCap, const1f, smcSoftCap]);
-      const scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, scaled, invSoftCap]);
+      let scaledInv = b.id();
+      if (useSoftCapConst) {
+        // smcScale carries (scale * invSoftCapConst) for constant-softcap variants.
+        b.emit(Op.FMul, [tF32, scaledInv, smcVal, smcScale]);
+      } else {
+        const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smcVal, smcScale]);
+        const invSoftCap = b.id(); b.emit(Op.FDiv, [tF32, invSoftCap, const1f, smcSoftCap]);
+        scaledInv = b.id(); b.emit(Op.FMul, [tF32, scaledInv, scaled, invSoftCap]);
+      }
       const tanhVal = b.id(); b.emit(Op.ExtInst, [tF32, tanhVal, glslStd, GLSLstd450.Tanh, scaledInv]);
       const capVal = useSoftCapConst ? constSoftCap : smcSoftCap;
       const capped = b.id(); b.emit(Op.FMul, [tF32, capped, tanhVal, capVal]);
       score = capped;
+    } else {
+      const scaled = b.id(); b.emit(Op.FMul, [tF32, scaled, smcVal, smcScale]);
+      score = scaled;
     }
     const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, smcQBlockBase, smcRow]);
     const kCol = b.id(); b.emit(Op.IAdd, [tU32, kCol, smcKBlockBase, smcCol]);
@@ -555,6 +571,11 @@ export function kernelFlashAttentionCoop2Forward(
   const T = b.id(); b.emit(Op.ConvertFToU, [tU32, T, TF]);
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, const1u]);
   const scale = b.id(); b.emit(Op.Load, [tF32, scale, ptrScale]);
+  let scaleInvSoftCap = 0;
+  if (useSoftCap && useSoftCapConst) {
+    scaleInvSoftCap = b.id();
+    b.emit(Op.FMul, [tF32, scaleInvSoftCap, scale, constInvSoftCap]);
+  }
   let softCap = 0;
   if (useSoftCap && !useSoftCapConst) {
     const const2u = b.id(); b.constant(tU32, const2u, 2);
@@ -958,7 +979,7 @@ export function kernelFlashAttentionCoop2Forward(
         const scaledFast = b.id();
         if (useSoftCap) {
           if (useSoftCapConst) {
-            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledFast, accS, fnScaleSoftCap, scale]);
+            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledFast, accS, fnScaleSoftCap, scaleInvSoftCap]);
           } else {
             b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledFast, accS, fnScaleSoftCap, scale, softCap]);
           }
@@ -978,7 +999,7 @@ export function kernelFlashAttentionCoop2Forward(
         const scaledMasked = b.id();
         if (useSoftCap) {
           if (useSoftCapConst) {
-            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMaskCausalNoOob, scale, qBlockBase, kBlockBase]);
+            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMaskCausalNoOob, scaleInvSoftCap, qBlockBase, kBlockBase]);
           } else {
             b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMaskCausalNoOob, scale, softCap, qBlockBase, kBlockBase]);
           }
@@ -994,7 +1015,7 @@ export function kernelFlashAttentionCoop2Forward(
         const scaledMasked = b.id();
         if (useSoftCap) {
           if (useSoftCapConst) {
-            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMask, scale, qBlockBase, kBlockBase, T]);
+            b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMask, scaleInvSoftCap, qBlockBase, kBlockBase, T]);
           } else {
             b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, scaledMasked, accS, fnScaleMask, scale, softCap, qBlockBase, kBlockBase, T]);
           }
