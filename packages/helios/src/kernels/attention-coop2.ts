@@ -187,6 +187,7 @@ export function kernelFlashAttentionCoop2Forward(
   const const1f = b.id(); b.constantF32(tF32, const1f, 1.0);
   const constNegInf = b.id(); b.constantF32(tF32, constNegInf, -Infinity);
   const constLog2e = b.id(); b.constantF32(tF32, constLog2e, Math.LOG2E);
+  const constLn2 = b.id(); b.constantF32(tF32, constLn2, Math.LN2);
   const constInvBc = b.id(); b.constantF32(tF32, constInvBc, 1.0 / Bc);
   const constSoftCapValue = useSoftCapConst ? (softCapConst as number) : 1.0;
   const constSoftCap = b.id(); b.constantF32(tF32, constSoftCap, constSoftCapValue);
@@ -1139,45 +1140,15 @@ export function kernelFlashAttentionCoop2Forward(
     else b.emit(Op.UMod, [tU32, myColInRow, tid, constThreadsPerRow]);
     const dimsPerThread = D / threadsPerRow;
 
-    if (!skipLseWrite) {
-      // Keep m-load on the LSE path only; _nolse variants do not consume m.
-      const mFinal = b.id(); b.emit(Op.Load, [tCoopAcc, mFinal, varM]);
-      // Extract m/l via scratch for scalar LSE writeback.
-      const ptrScratchM = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrScratchM, sScratch, const0u]);
-      b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrScratchM, mFinal, constRowMajor, constBc]);
-      const const256u = b.id(); b.constant(tU32, const256u, Br * Bc);
-      const ptrScratchL = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrScratchL, sScratch, const256u]);
-      b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrScratchL, lFinal, constRowMajor, constBc]);
-
-      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: m/l stored
-
-      const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, qBlockBase, myRow]);
-      const qRowInBounds = b.id(); b.emit(Op.ULessThan, [tBool, qRowInBounds, qRow, T]);
-      const isLSEWriter = b.id(); b.emit(Op.IEqual, [tBool, isLSEWriter, myColInRow, const0u]);
-      const writeLSE = b.id(); b.emit(Op.LogicalAnd, [tBool, writeLSE, qRowInBounds, isLSEWriter]);
-      const mScrIdx = b.id(); b.emit(Op.IMul, [tU32, mScrIdx, myRow, constBc]);
-      const ptrMV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrMV, sScratch, mScrIdx]);
-      const mVal = b.id(); b.emit(Op.Load, [tF32, mVal, ptrMV]);
-      const lScrIdx = b.id(); b.emit(Op.IAdd, [tU32, lScrIdx, const256u, mScrIdx]);
-      const ptrLV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrLV, sScratch, lScrIdx]);
-      const lVal = b.id(); b.emit(Op.Load, [tF32, lVal, ptrLV]);
-      const logL = b.id(); b.emit(Op.ExtInst, [tF32, logL, glslStd, GLSLstd450.Log, lVal]);
-      const lseVal = b.id(); b.emit(Op.FAdd, [tF32, lseVal, mVal, logL]);
-      const lseIdx = b.id(); b.emit(Op.IAdd, [tU32, lseIdx, lseBaseOff, qRow]);
-      const ptrLSE = b.id(); b.emit(Op.AccessChain, [bufLSE.tPtr, ptrLSE, bufLSE.varId, const0u, lseIdx]);
-      const labelLSE = b.id(); const labelLSEEnd = b.id();
-      b.emit(Op.SelectionMerge, [labelLSEEnd, 0]);
-      b.emit(Op.BranchConditional, [writeLSE, labelLSE, labelLSEEnd]);
-      b.emit(Op.Label, [labelLSE]);
-      b.emit(Op.Store, [ptrLSE, lseVal]);
-      b.emit(Op.Branch, [labelLSEEnd]);
-      b.emit(Op.Label, [labelLSEEnd]);
-    }
-
-    // Normalize O by l
+    // Normalize O by l:
+    // compute reciprocal once (1/l) and reuse across all PV tiles to avoid
+    // repeating cooperative-matrix division in each tile.
+    const onesForInv = b.id();
+    b.emit(Op.OpCooperativeMatrixPerElementOpNV, [tCoopAcc, onesForInv, constNullAcc, fnConstOne]);
+    const lInv = b.id(); b.emit(Op.FDiv, [tCoopAcc, lInv, onesForInv, lFinal]);
     for (let rn = 0; rn < pvTiles; rn++) {
       const oRaw = b.id(); b.emit(Op.Load, [tCoopAcc, oRaw, varO[rn]]);
-      const oNorm = b.id(); b.emit(Op.FDiv, [tCoopAcc, oNorm, oRaw, lFinal]);
+      const oNorm = b.id(); b.emit(Op.FMul, [tCoopAcc, oNorm, oRaw, lInv]);
       b.emit(Op.Store, [varO[rn], oNorm]);
     }
 
@@ -1251,6 +1222,44 @@ export function kernelFlashAttentionCoop2Forward(
     }
     b.emit(Op.Branch, [labelOWriteMerge]);
     b.emit(Op.Label, [labelOWriteMerge]);
+
+    if (!skipLseWrite) {
+      // Keep m-load on the LSE path only; _nolse variants do not consume m.
+      const mFinal = b.id(); b.emit(Op.Load, [tCoopAcc, mFinal, varM]);
+      // Extract m/l via scratch for scalar LSE writeback.
+      const ptrScratchM = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrScratchM, sScratch, const0u]);
+      b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrScratchM, mFinal, constRowMajor, constBc]);
+      const const256u = b.id(); b.constant(tU32, const256u, Br * Bc);
+      const ptrScratchL = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrScratchL, sScratch, const256u]);
+      b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrScratchL, lFinal, constRowMajor, constBc]);
+
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]); // barrier: m/l stored
+
+      const qRow = b.id(); b.emit(Op.IAdd, [tU32, qRow, qBlockBase, myRow]);
+      const qRowInBounds = b.id(); b.emit(Op.ULessThan, [tBool, qRowInBounds, qRow, T]);
+      const isLSEWriter = b.id(); b.emit(Op.IEqual, [tBool, isLSEWriter, myColInRow, const0u]);
+      const writeLSE = b.id(); b.emit(Op.LogicalAnd, [tBool, writeLSE, qRowInBounds, isLSEWriter]);
+      const labelLSE = b.id(); const labelLSEEnd = b.id();
+      b.emit(Op.SelectionMerge, [labelLSEEnd, 0]);
+      b.emit(Op.BranchConditional, [writeLSE, labelLSE, labelLSEEnd]);
+      b.emit(Op.Label, [labelLSE]);
+      {
+        const mScrIdx = b.id(); b.emit(Op.IMul, [tU32, mScrIdx, myRow, constBc]);
+        const ptrMV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrMV, sScratch, mScrIdx]);
+        const mVal = b.id(); b.emit(Op.Load, [tF32, mVal, ptrMV]);
+        const lScrIdx = b.id(); b.emit(Op.IAdd, [tU32, lScrIdx, const256u, mScrIdx]);
+        const ptrLV = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrLV, sScratch, lScrIdx]);
+        const lVal = b.id(); b.emit(Op.Load, [tF32, lVal, ptrLV]);
+        const log2L = b.id(); b.emit(Op.ExtInst, [tF32, log2L, glslStd, GLSLstd450.Log2, lVal]);
+        const logL = b.id(); b.emit(Op.FMul, [tF32, logL, log2L, constLn2]);
+        const lseVal = b.id(); b.emit(Op.FAdd, [tF32, lseVal, mVal, logL]);
+        const lseIdx = b.id(); b.emit(Op.IAdd, [tU32, lseIdx, lseBaseOff, qRow]);
+        const ptrLSE = b.id(); b.emit(Op.AccessChain, [bufLSE.tPtr, ptrLSE, bufLSE.varId, const0u, lseIdx]);
+        b.emit(Op.Store, [ptrLSE, lseVal]);
+      }
+      b.emit(Op.Branch, [labelLSEEnd]);
+      b.emit(Op.Label, [labelLSEEnd]);
+    }
     }
   } else {
     for (let qti = 0; qti < qTiles; qti++) {
