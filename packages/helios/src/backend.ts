@@ -82,15 +82,16 @@ if (COOP_REG_TILES_ENV) {
 // Double buffering: overlap global memory loads with cooperative matrix MMA
 const ENABLE_COOP_DOUBLE_BUF = process.env.HELIOS_COOP_DOUBLE_BUF === "1";
 // Super-tile swizzle size for L2 cache reuse (0=disabled, must match kernel codegen)
-const COOP_SWIZZLE_SIZE = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
+const COOP_SWIZZLE_SIZE = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "4", 10);
 // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
 // 0 or 1 = disabled; 2-8 = fixed split count; -1 = auto (heuristic based on WG count).
 const COOP_SPLIT_K = parseInt(process.env.HELIOS_COOP_SPLIT_K ?? "0", 10);
 // Adaptive kMulti switch threshold (base WG count). Below this threshold, kMulti
 // drops to 2 when base kMulti>=4 to improve occupancy on smaller shapes.
+// Disabled by default (0): kMulti=4 is universally better even at low WG counts.
 const COOP_KMULTI_ADAPT_MIN_WGS = Math.max(
-  1,
-  parseInt(process.env.HELIOS_COOP_KMULTI_ADAPT_MIN_WGS ?? "512", 10) || 512,
+  0,
+  parseInt(process.env.HELIOS_COOP_KMULTI_ADAPT_MIN_WGS ?? "0", 10),
 );
 
 const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
@@ -2195,10 +2196,12 @@ export class HeliosBackend implements Backend {
     const useVec4 = dim % 4 === 0 && dim >= 16;
     const dimVec4 = dim / 4;
     // Register-resident unrolled: compile-time unrolled SSA registers.
-    // Eliminates Phase 2 re-read of X. Use larger wgSize for better occupancy
-    // when dim allows (multi-subgroup with shmem cross-subgroup reduce).
-    // Target: maximize occupancy. iters=1 at wgSize=dimVec4, capped at 256.
-    const lnRegWg = Math.min(256, Math.max(32, 1 << Math.floor(Math.log2(dimVec4))));
+    // Eliminates Phase 2 re-read of X. wgSize=64 (2 subgroups) is optimal:
+    // 4 vec4/thread gives good load pipelining while cross-subgroup reduce stays cheap.
+    // wgSize=256 (8 subgroups, 1 vec4/thread) has poor latency hiding despite fewer iters.
+    // wgSize=32 (1 subgroup, 8 vec4/thread) loses to wgSize=64 due to lower SM occupancy.
+    const lnRegWgEnv = parseInt(process.env.HELIOS_LN_REG_WG ?? "0", 10);
+    const lnRegWg = lnRegWgEnv > 0 ? lnRegWgEnv : Math.min(64, Math.max(32, 1 << Math.floor(Math.log2(dimVec4))));
     const lnItersPerThread = Math.ceil(dimVec4 / lnRegWg);
     const canUnrollLn = useVec4 && dimVec4 % lnRegWg === 0 && lnItersPerThread <= 16;
     // Tune wgSize for vec4 fallback: dimVec4>>1 → 128 for dim=1024.
@@ -3112,9 +3115,10 @@ export class HeliosBackend implements Backend {
     // arithmetic intensity than r2x2, then fall back to r2x2 if needed.
     // 128 WGs = ~2.2 WGs/SM on L4 (58 SMs). With r4x4 shmem ≈ 32KB, only 1 WG/SM
     // can be active, so < 128 WGs means many SMs sit idle during the second wave.
-    if (gX * gY < 128 && regTilesM >= 4 && regTilesN >= 4) {
+    const COOP_OCC_FALLBACK = parseInt(process.env.HELIOS_COOP_OCC_FALLBACK ?? "64", 10);
+    if (gX * gY < COOP_OCC_FALLBACK && regTilesM >= 4 && regTilesN >= 4) {
       // Try r4x2: 33% higher arithmetic intensity than r2x2, 2× WGs vs r4x4.
-      // Require ≥ 2*58=116 WGs so each SM gets at least 2 WGs (r4x2 shmem=24KB → 2/SM).
+      // Require ≥ 116 WGs (2 WGs/SM on L4). r4x2 at 64 WGs loses vs r2x2 at 128 WGs.
       const effM_42 = this._coopM * subgroupTilesY * 4;
       const effN_42 = this._coopN * subgroupTilesX * 2;
       if (M % effM_42 === 0 && N % effN_42 === 0) {
@@ -3270,8 +3274,10 @@ export class HeliosBackend implements Backend {
     // Standard path (no split-K)
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    // Pass gridX for GROUP_M swizzle (Triton-style); 0 disables
-    const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
+    // Pass gridX for GROUP_M swizzle (Triton-style); 0 disables.
+    // Only enable when grid is large enough — small M shapes (gY < 8) don't have
+    // enough tile rows for GROUP_M cycling to improve L2 reuse, and it can hurt.
+    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gY >= COOP_SWIZZLE_SIZE * 2) ? gX : 0;
     const push = push4Memo(M, N, K, swizzleGridX);
 
     graph.record({
@@ -3351,9 +3357,11 @@ export class HeliosBackend implements Backend {
     let gX = Math.ceil(N / (this._coopN * regTilesN * subgroupTilesX));
     let gY = Math.ceil(outM / (this._coopM * regTilesM * subgroupTilesY));
 
-    // Occupancy check: if r4x4 gives too few WGs (< 192), try r4x2 first for higher
-    // arithmetic intensity than r2x2, then fall back to r2x2 if needed.
-    if (gX * gY < 192 && regTilesM >= 4 && regTilesN >= 4) {
+    // Occupancy check: if r4x4 gives too few WGs (< 128), try r4x2 then r2x2.
+    // Backward path threshold: 128 WGs minimum for r4x4. Higher than forward (64)
+    // because transposed-A at very low WG counts (e.g. 64) regresses.
+    const BWD_OCC_THRESHOLD = parseInt(process.env.HELIOS_COOP_BWD_OCC_FALLBACK ?? "128", 10);
+    if (gX * gY < BWD_OCC_THRESHOLD && regTilesM >= 4 && regTilesN >= 4) {
       const effM_42 = this._coopM * subgroupTilesY * 4;
       const effN_42 = this._coopN * subgroupTilesX * 2;
       if (outM % effM_42 === 0 && N % effN_42 === 0) {
@@ -3484,7 +3492,7 @@ export class HeliosBackend implements Backend {
 
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const swizzleGridX = COOP_SWIZZLE_SIZE >= 2 ? gX : 0;
+    const swizzleGridX = (COOP_SWIZZLE_SIZE >= 2 && gY >= COOP_SWIZZLE_SIZE * 2) ? gX : 0;
     const push = push4Memo(outM, N, loopK, swizzleGridX);
 
     graph.record({
@@ -4122,7 +4130,10 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
-    const Br = 32, BrDKV = 32, BcDQ = 16, BcDKV = 32;
+    const Br = parseInt(process.env.HELIOS_FLASH_BWD_BR ?? "32", 10);
+    const BrDKV = parseInt(process.env.HELIOS_FLASH_BWD_BR_DKV ?? "32", 10);
+    const BcDQ = parseInt(process.env.HELIOS_FLASH_BWD_BC_DQ ?? "16", 10);
+    const BcDKV = parseInt(process.env.HELIOS_FLASH_BWD_BC_DKV ?? "32", 10);
     const scSuffix = softCap > 0 ? "_sc" : "";
 
     const bufQ = ensureGpu(vk, Q);
