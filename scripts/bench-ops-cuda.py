@@ -449,9 +449,9 @@ def main():
     # Determine which backend PyTorch selects for our FP32 shape + TF32 config
     try:
         import torch.backends.cuda
-        print("\n=== SDPA Backend Detection ===")
-        print(f"  allow_tf32 (matmul): {torch.backends.cuda.matmul.allow_tf32}")
-        print(f"  allow_tf32 (cudnn):  {torch.backends.cudnn.allow_tf32}")
+        print("\n=== SDPA Backend Detection ===", file=sys.stderr)
+        print(f"  allow_tf32 (matmul): {torch.backends.cuda.matmul.allow_tf32}", file=sys.stderr)
+        print(f"  allow_tf32 (cudnn):  {torch.backends.cudnn.allow_tf32}", file=sys.stderr)
 
         # Check which backends are eligible
         try:
@@ -469,9 +469,9 @@ def main():
                 try:
                     with sdpa_kernel(backend):
                         _ = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-                    print(f"  {name}: AVAILABLE")
+                    print(f"  {name}: AVAILABLE", file=sys.stderr)
                 except Exception as e:
-                    print(f"  {name}: unavailable ({e})")
+                    print(f"  {name}: unavailable ({e})", file=sys.stderr)
 
             # Time MATH-only backend for comparison
             try:
@@ -483,7 +483,7 @@ def main():
                 record("flash_attn_fwd_MATH_only", ms_math,
                        flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd MATH-only (f32)")
             except Exception as e:
-                print(f"  MATH-only timing failed: {e}")
+                print(f"  MATH-only timing failed: {e}", file=sys.stderr)
 
             # Time without TF32 for comparison
             torch.backends.cuda.matmul.allow_tf32 = False
@@ -496,16 +496,16 @@ def main():
                 record("flash_attn_fwd_noTF32", ms_notf32,
                        flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd (f32, TF32 OFF)")
             except Exception as e:
-                print(f"  noTF32 timing failed: {e}")
+                print(f"  noTF32 timing failed: {e}", file=sys.stderr)
             finally:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
 
         except ImportError:
-            print("  (SDPBackend not available — older PyTorch)")
-        print("=== End SDPA Detection ===\n")
+            print("  (SDPBackend not available — older PyTorch)", file=sys.stderr)
+        print("=== End SDPA Detection ===\n", file=sys.stderr)
     except Exception as e:
-        print(f"SDPA detection failed: {e}")
+        print(f"SDPA detection failed: {e}", file=sys.stderr)
 
     try:
         ms = bench(
