@@ -44,8 +44,9 @@ const LARGE_TILE_THRESHOLD_DEFAULT = 65_536; // prefer tile=32 once output plane
 const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
 
 const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
-let WG_SIZE = 256;  // default, overridden by auto-tuning
+let WG_SIZE = 128;  // stable default on L4; can be overridden by env/auto-tuning
 let wgAutoTuned = false;
+const ENABLE_WG_AUTOTUNE = process.env.HELIOS_WG_AUTOTUNE === "1";
 const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MANY === "1";
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
@@ -85,6 +86,12 @@ const COOP_SWIZZLE_SIZE = parseInt(process.env.HELIOS_COOP_SWIZZLE ?? "0", 10);
 // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
 // 0 or 1 = disabled; 2-8 = fixed split count; -1 = auto (heuristic based on WG count).
 const COOP_SPLIT_K = parseInt(process.env.HELIOS_COOP_SPLIT_K ?? "0", 10);
+// Adaptive kMulti switch threshold (base WG count). Below this threshold, kMulti
+// drops to 2 when base kMulti>=4 to improve occupancy on smaller shapes.
+const COOP_KMULTI_ADAPT_MIN_WGS = Math.max(
+  1,
+  parseInt(process.env.HELIOS_COOP_KMULTI_ADAPT_MIN_WGS ?? "512", 10) || 512,
+);
 
 const MATMUL_LARGE_TILE_THRESHOLD_ENV = process.env.HELIOS_MATMUL_LARGE_TILE_THRESHOLD;
 let LARGE_TILE_THRESHOLD = LARGE_TILE_THRESHOLD_DEFAULT;
@@ -332,16 +339,17 @@ function autoTuneWgSize(vk: NativeAddon): void {
   wgAutoTuned = true;
 
   try {
-    // Benchmark with a 256K element add kernel (large enough to saturate, small enough to be fast)
-    const testSize = 262144;
-    const byteSize = testSize * 4;
+    // Balanced auto-tune: include both latency-sensitive and throughput-sensitive sizes.
+    const testSmall = 8192;
+    const testLarge = 262144;
+    const byteSize = testLarge * 4;
     const bufA = vk.createBuffer(byteSize, 0);
     const bufB = vk.createBuffer(byteSize, 0);
     const bufC = vk.createBuffer(byteSize, 0);
     const pushBuf = new Float32Array(2);
 
     let bestTime = Infinity;
-    let bestWg = 256;
+    let bestWg = 64;
     let anyCandidate = false;
 
     for (const wg of WG_CANDIDATES) {
@@ -350,25 +358,40 @@ function autoTuneWgSize(vk: NativeAddon): void {
         const spirv = getKernelSpirv("add_vec4", wg);
         const pipe = vk.createPipeline(spirv, 3, PUSH_SIZE);
 
-        const vecSize = testSize >> 2;
-        pushBuf[0] = vecSize;
-        pushBuf[1] = 0;
-        const groups = Math.ceil(vecSize / wg);
-
-        // Warm up
-        vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
-
-        // Timed runs
-        let total = 0;
-        const iters = 5;
-        for (let i = 0; i < iters; i++) {
-          total += vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
+        // Small tensor latency probe.
+        let totalSmall = 0;
+        {
+          const vecSize = testSmall >> 2;
+          pushBuf[0] = vecSize;
+          pushBuf[1] = 0;
+          const groups = Math.ceil(vecSize / wg);
+          vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf); // warmup
+          for (let i = 0; i < 5; i++) {
+            totalSmall += vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
+          }
         }
-        const avg = total / iters;
+
+        // Larger tensor throughput probe.
+        let totalLarge = 0;
+        {
+          const vecSize = testLarge >> 2;
+          pushBuf[0] = vecSize;
+          pushBuf[1] = 0;
+          const groups = Math.ceil(vecSize / wg);
+          vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf); // warmup
+          for (let i = 0; i < 5; i++) {
+            totalLarge += vk.gpuTime(pipe, [bufA, bufB, bufC], groups, 1, 1, pushBuf);
+          }
+        }
+
+        const avgSmall = totalSmall / 5;
+        const avgLarge = totalLarge / 5;
+        // Prioritize small-op latency while still considering large-op throughput.
+        const score = avgSmall * 0.7 + avgLarge * 0.3;
         anyCandidate = true;
 
-        if (avg < bestTime) {
-          bestTime = avg;
+        if (score < bestTime) {
+          bestTime = score;
           bestWg = wg;
         }
       } catch {
@@ -380,10 +403,10 @@ function autoTuneWgSize(vk: NativeAddon): void {
     vk.destroyBuffer(bufB);
     vk.destroyBuffer(bufC);
 
-    WG_SIZE = anyCandidate ? bestWg : 256;
+    WG_SIZE = anyCandidate ? bestWg : 128;
   } catch {
-    // If timestamp queries aren't supported, keep default WG_SIZE=256
-    WG_SIZE = 256;
+    // If timestamp queries aren't supported, keep default WG_SIZE=128
+    WG_SIZE = 128;
   }
 }
 
@@ -769,6 +792,8 @@ class ComputeGraph {
   private dgcReady = false;
   // DGC packed buffer (reused across flushes)
   private dgcPackedBuf: ArrayBuffer | null = null;
+  // Regular packed buffer (reused across flushes to avoid allocation)
+  private packedBuf: ArrayBuffer | null = null;
 
   attach(vk: NativeAddon): void { this.vk = vk; }
 
@@ -854,7 +879,7 @@ class ComputeGraph {
    * Flush all pending ops as a single batch dispatch.
    * Returns the timeline value for the batch, or the last flush value if nothing pending.
    */
-  flush(): number {
+  flush(withWait = false): number {
     // Destroy buffers from previous flushes whose GPU work has completed
     if (this.vk) processPendingDestroys(this.vk);
 
@@ -924,6 +949,9 @@ class ComputeGraph {
     }
 
     // ── Regular path: pack ops into binary format for C dispatch ──
+    // Fresh ArrayBuffer allocations use zeroed pages (hot in L1/L2), which is faster
+    // for ops with larger packed sizes. Only reuse buffer for tiny dispatches where
+    // allocation overhead dominates.
     const packed = new ArrayBuffer(packedTotalBytes);
     const view = new DataView(packed);
     let offset = 0;
@@ -974,10 +1002,12 @@ class ComputeGraph {
     let tv: number;
     if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
       tv = vk.batchExecuteAll(packed, ops.length);
+      if (withWait && tv > 0) waitTimelineTracked(vk, tv);
     } else {
       vk.batchBegin();
       vk.batchDispatchMany(packed, ops.length);
       tv = vk.batchSubmit();
+      if (withWait && tv > 0) waitTimelineTracked(vk, tv);
     }
     this._lastFlushTimeline = tv;
     invalidateCompletedCache();
@@ -993,6 +1023,11 @@ class ComputeGraph {
     // FinalizationRegistry (gpuCleanup), which is the sole owner.
 
     return tv;
+  }
+
+  /** Flush all pending ops and wait for GPU completion. */
+  flushAndWait(): void {
+    this.flush(true);
   }
 }
 
@@ -1163,7 +1198,9 @@ export class HeliosBackend implements Backend {
       }
       const vk = getNative();
       graph.attach(vk);
-      autoTuneWgSize(vk);
+      if (ENABLE_WG_AUTOTUNE) {
+        autoTuneWgSize(vk);
+      }
 
       // Set up DGC (device-generated commands) if available
       if (info.hasDGC && process.env.HELIOS_DISABLE_DGC !== "1") {
@@ -1188,9 +1225,8 @@ export class HeliosBackend implements Backend {
    * become reclaimable. Call between training steps when VRAM is tight.
    */
   syncGpu(): void {
+    graph.flushAndWait();
     const vk = getNative();
-    const tv = graph.flush();
-    waitTimelineTracked(vk, tv);
     processPendingDestroys(vk);
   }
 
@@ -2158,15 +2194,16 @@ export class HeliosBackend implements Backend {
 
     const useVec4 = dim % 4 === 0 && dim >= 16;
     const dimVec4 = dim / 4;
-    // Register-resident unrolled: wgSize=32, compile-time unrolled SSA registers.
-    // Eliminates Phase 2 re-read of X. Requires dimVec4 % 32 == 0 and iters <= 16.
-    const lnItersPerThread = Math.ceil(dimVec4 / 32);
-    const canUnrollLn = useVec4 && dimVec4 % 32 === 0 && lnItersPerThread <= 16;
-    // Tune wgSize: dimVec4>>1 → 128 for dim=1024. 2 vec4/thread, 4 subgroups.
-    // Better than >>2 (wg=64, identical perf but fewer warps/SM).
-    // Much better than wg=256 (8 subgroups, barrier overhead dominates).
+    // Register-resident unrolled: compile-time unrolled SSA registers.
+    // Eliminates Phase 2 re-read of X. Use larger wgSize for better occupancy
+    // when dim allows (multi-subgroup with shmem cross-subgroup reduce).
+    // Target: maximize occupancy. iters=1 at wgSize=dimVec4, capped at 256.
+    const lnRegWg = Math.min(256, Math.max(32, 1 << Math.floor(Math.log2(dimVec4))));
+    const lnItersPerThread = Math.ceil(dimVec4 / lnRegWg);
+    const canUnrollLn = useVec4 && dimVec4 % lnRegWg === 0 && lnItersPerThread <= 16;
+    // Tune wgSize for vec4 fallback: dimVec4>>1 → 128 for dim=1024.
     const lnWg = canUnrollLn
-      ? 32
+      ? lnRegWg
       : useVec4
         ? Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4 >> 1)))))
         : WG_SIZE;
@@ -3118,7 +3155,7 @@ export class HeliosBackend implements Backend {
     // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < 512 && this._kMulti >= 4) ? 2 : this._kMulti;
+    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
     const kTileK = this._coopK * localKMulti;
 
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
@@ -3357,7 +3394,7 @@ export class HeliosBackend implements Backend {
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles
     // outweigh the occupancy penalty since many waves keep SMs busy.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < 512 && this._kMulti >= 4) ? 2 : this._kMulti;
+    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
     const kTileK = this._coopK * localKMulti;
     let splitK = 1;
     if (COOP_SPLIT_K !== 0 && batchSize === 1) {
@@ -3669,9 +3706,20 @@ export class HeliosBackend implements Backend {
           this._flashFwdCoop2Ready = true;
           return result;
         } catch (err) {
-          this._flashFwdCoop2Ready = false;
           const fallbackMessage = err instanceof Error ? err.message : String(err);
-          fallbackReason = `coop2_error:${fallbackMessage}`;
+          // Do not permanently disable coop2 on transient runtime failures.
+          // Retry on subsequent calls for OOM/device-loss style errors.
+          const msgLower = fallbackMessage.toLowerCase();
+          const transientFailure =
+            msgLower.includes("oom") ||
+            msgLower.includes("out of memory") ||
+            msgLower.includes("vkmallocatememory failed") ||
+            msgLower.includes("device lost") ||
+            msgLower.includes("temporarily unavailable");
+          this._flashFwdCoop2Ready = transientFailure ? null : false;
+          fallbackReason = transientFailure
+            ? `coop2_error_transient:${fallbackMessage}`
+            : `coop2_error:${fallbackMessage}`;
           if (DEBUG_COOP) {
             console.warn(`[helios] flashAttention coop2 fallback -> scalar: ${fallbackMessage}`);
           }

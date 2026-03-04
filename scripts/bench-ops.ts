@@ -36,7 +36,7 @@ function parseArgs(): CliOpts {
   }
   return {
     iters: Math.max(1, parseInt(kv.iters ?? "30", 10)),
-    warmup: Math.max(0, parseInt(kv.warmup ?? "8", 10)),
+    warmup: Math.max(0, parseInt(kv.warmup ?? "20", 10)),
     python: kv.python ?? "python3",
     cudaJson: kv["cuda-json"] ?? "",
     only: kv.only ?? "",

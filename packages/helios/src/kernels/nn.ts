@@ -2318,6 +2318,10 @@ export function kernelLayerNormRegUnrolled(wgSize = 32, maxIters = 8): Uint32Arr
   b.addCapability(Capability.GroupNonUniform);
   b.addCapability(Capability.GroupNonUniformArithmetic);
 
+  const SUBGROUP_SIZE = 32;
+  const numSubgroups = wgSize / SUBGROUP_SIZE;
+  const multiSubgroup = numSubgroups > 1;
+
   // vec4 type
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
@@ -2337,6 +2341,39 @@ export function kernelLayerNormRegUnrolled(wgSize = 32, maxIters = 8): Uint32Arr
   b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
   const const2u = b.id();
   b.constant(p.tU32, const2u, 2);
+
+  // Multi-subgroup shmem + barrier constants
+  let scopeWg: number | undefined;
+  let semAcqRelWg: number | undefined;
+  let const5u: number | undefined;
+  let const31u: number | undefined;
+  let sharedSum: number | undefined;
+  let sharedSumSq: number | undefined;
+  let tPtrSharedF32: number | undefined;
+  if (multiSubgroup) {
+    scopeWg = b.id();
+    b.constant(p.tU32, scopeWg, Scope.Workgroup);
+    semAcqRelWg = b.id();
+    b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+    const5u = b.id();
+    b.constant(p.tU32, const5u, 5);
+    const31u = b.id();
+    b.constant(p.tU32, const31u, 31);
+
+    // Shared memory: numSubgroups floats for sum and sumSq
+    const constNSG = b.id();
+    b.constant(p.tU32, constNSG, numSubgroups);
+    const tArrSG = b.id();
+    b.typeArray(tArrSG, p.tF32, constNSG);
+    const tPtrSG = b.id();
+    b.typePointer(tPtrSG, StorageClass.Workgroup, tArrSG);
+    tPtrSharedF32 = b.id();
+    b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+    sharedSum = b.id();
+    b.variable(tPtrSG, sharedSum, StorageClass.Workgroup);
+    sharedSumSq = b.id();
+    b.variable(tPtrSG, sharedSumSq, StorageClass.Workgroup);
+  }
 
   // Built-ins
   const tPtrInputVec3 = b.id();
@@ -2418,11 +2455,92 @@ export function kernelLayerNormRegUnrolled(wgSize = 32, maxIters = 8): Uint32Arr
     localSumSq = newSumSq;
   }
 
-  // ── Step 2: Subgroup reduce ──
-  const globalSum = b.id();
-  b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSum, scopeSubgroup, GroupOperation.Reduce, localSum]);
-  const globalSumSq = b.id();
-  b.emit(Op.GroupNonUniformFAdd, [p.tF32, globalSumSq, scopeSubgroup, GroupOperation.Reduce, localSumSq]);
+  // ── Step 2: Reduce across workgroup ──
+  // First: subgroup reduce (warp shuffle)
+  const sgSum = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgSum, scopeSubgroup, GroupOperation.Reduce, localSum]);
+  const sgSumSq = b.id();
+  b.emit(Op.GroupNonUniformFAdd, [p.tF32, sgSumSq, scopeSubgroup, GroupOperation.Reduce, localSumSq]);
+
+  let globalSum: number;
+  let globalSumSq: number;
+
+  if (multiSubgroup) {
+    // Multi-subgroup: cross-subgroup reduce via shared memory + 2 barriers
+    const subgroupId = b.id();
+    b.emit(Op.ShiftRightLogical, [p.tU32, subgroupId, localIdx, const5u!]);
+    const sgLane = b.id();
+    b.emit(Op.BitwiseAnd, [p.tU32, sgLane, localIdx, const31u!]);
+    const isLeader = b.id();
+    b.emit(Op.IEqual, [p.tBool, isLeader, sgLane, p.const0u]);
+
+    // Leaders write to shared
+    const wl = b.id(), wm = b.id();
+    b.emit(Op.SelectionMerge, [wm, 0]);
+    b.emit(Op.BranchConditional, [isLeader, wl, wm]);
+    b.emit(Op.Label, [wl]);
+    const pSGS = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32!, pSGS, sharedSum!, subgroupId]);
+    b.emit(Op.Store, [pSGS, sgSum]);
+    const pSGSq = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32!, pSGSq, sharedSumSq!, subgroupId]);
+    b.emit(Op.Store, [pSGSq, sgSumSq]);
+    b.emit(Op.Branch, [wm]);
+    b.emit(Op.Label, [wm]);
+
+    // Barrier 1
+    b.emit(Op.ControlBarrier, [scopeWg!, scopeWg!, semAcqRelWg!]);
+
+    // Thread 0 reduces shared[0..numSubgroups-1]
+    const sl = b.id(), sm = b.id();
+    const isT0 = b.id();
+    b.emit(Op.IEqual, [p.tBool, isT0, localIdx, p.const0u]);
+    b.emit(Op.SelectionMerge, [sm, 0]);
+    b.emit(Op.BranchConditional, [isT0, sl, sm]);
+    b.emit(Op.Label, [sl]);
+    const p0S = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32!, p0S, sharedSum!, p.const0u]);
+    let accS = b.id();
+    b.emit(Op.Load, [p.tF32, accS, p0S]);
+    const p0Sq = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32!, p0Sq, sharedSumSq!, p.const0u]);
+    let accSq = b.id();
+    b.emit(Op.Load, [p.tF32, accSq, p0Sq]);
+    for (let i = 1; i < numSubgroups; i++) {
+      const ci = b.id(); b.constant(p.tU32, ci, i);
+      const piS = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32!, piS, sharedSum!, ci]);
+      const viS = b.id();
+      b.emit(Op.Load, [p.tF32, viS, piS]);
+      const naS = b.id();
+      b.emit(Op.FAdd, [p.tF32, naS, accS, viS]);
+      accS = naS;
+      const piSq = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32!, piSq, sharedSumSq!, ci]);
+      const viSq = b.id();
+      b.emit(Op.Load, [p.tF32, viSq, piSq]);
+      const naSq = b.id();
+      b.emit(Op.FAdd, [p.tF32, naSq, accSq, viSq]);
+      accSq = naSq;
+    }
+    b.emit(Op.Store, [p0S, accS]);
+    b.emit(Op.Store, [p0Sq, accSq]);
+    b.emit(Op.Branch, [sm]);
+    b.emit(Op.Label, [sm]);
+
+    // Barrier 2
+    b.emit(Op.ControlBarrier, [scopeWg!, scopeWg!, semAcqRelWg!]);
+
+    // All threads read final result
+    const pGS = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32!, pGS, sharedSum!, p.const0u]);
+    globalSum = b.id(); b.emit(Op.Load, [p.tF32, globalSum, pGS]);
+    const pGSq = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32!, pGSq, sharedSumSq!, p.const0u]);
+    globalSumSq = b.id(); b.emit(Op.Load, [p.tF32, globalSumSq, pGSq]);
+  } else {
+    // Single subgroup: subgroup reduce is the global result
+    globalSum = sgSum;
+    globalSumSq = sgSumSq;
+  }
 
   // ── Step 3: Compute mean, variance, invStd ──
   const meanVal = b.id(); b.emit(Op.FDiv, [p.tF32, meanVal, globalSum, dimF]);
