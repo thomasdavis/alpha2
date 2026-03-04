@@ -76,6 +76,20 @@ def main():
         "capability": ".".join(map(str, torch.cuda.get_device_capability(0))),
         "iters": I,
         "warmup": W,
+        "methodology": {
+            "timing": "wall-clock (time.perf_counter) + torch.cuda.synchronize per iter",
+            "metric": "median of sorted times",
+            "tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+            "tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+            "dtype_default": "float32",
+            "notes": [
+                "Fair baseline: same dtype/algorithm as Helios (f32)",
+                "Gold baseline: best CUDA path (e.g. f16 SDPA, fused AdamW)",
+                "Ops marked (gold) show CUDA ceiling — may use different dtype/algorithm",
+                "SDPA does not support softcap — Helios main flash uses softcap=30",
+                "AdamW unfused = 7 separate PyTorch ops; gold = torch.optim.AdamW fused=True",
+            ],
+        },
         "ops": {},
     }
 
@@ -183,6 +197,28 @@ def main():
     ms = bench(silu_bwd, W, I, sync)
     record("silu_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 3, note="SiLU backward (fused)")
     del silu_x, silu_out, silu_grad
+
+    # Fused SiLU-Mul (SwiGLU forward: silu(gate) * up in one step)
+    gate_sm = torch.randn(512, 2752, device=device)
+    up_sm = torch.randn(512, 2752, device=device)
+    ms = bench(lambda: F.silu(gate_sm) * up_sm, W, I, sync)
+    record("silu_mul_512x2752", ms, bytes_rw=sz2752 * 4 * 3,
+           note="fused SiLU*Mul (SwiGLU fwd)")
+
+    # Fused SiLU-Mul backward (SwiGLU backward: computes dGate, dUp)
+    gate_bwd = gate_sm.clone().requires_grad_(True)
+    up_bwd = up_sm.clone().requires_grad_(True)
+    sm_fwd = F.silu(gate_bwd) * up_bwd
+    sm_g = torch.randn_like(sm_fwd)
+    def silu_mul_bwd():
+        if gate_bwd.grad is not None:
+            gate_bwd.grad.zero_()
+            up_bwd.grad.zero_()
+        sm_fwd.backward(sm_g, retain_graph=True)
+    ms = bench(silu_mul_bwd, W, I, sync)
+    record("silu_mul_bwd_512x2752", ms, bytes_rw=sz2752 * 4 * 5,
+           note="SiLU*Mul backward (SwiGLU bwd)")
+    del gate_sm, up_sm, gate_bwd, up_bwd, sm_fwd, sm_g
 
     # SoftCap backward (tanh + exp derivatives)
     sc_input = torch.randn(512, 2752, device=device, requires_grad=True)
@@ -477,7 +513,8 @@ def main():
             W, I, sync,
         )
         record("flash_attn_fwd_b1_h16_t512_d64", ms,
-               flops=2 * B * H * T * T * Dh * 2, note="SDPA fwd (f32)")
+               flops=2 * B * H * T * T * Dh * 2,
+               note="SDPA fwd (f32, no softcap — Helios uses softcap=30)")
     except Exception as exc:
         record("flash_attn_fwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
 
@@ -496,12 +533,96 @@ def main():
             out.backward(dO, retain_graph=True)
         ms = bench(flash_bwd, W, I, sync)
         record("flash_attn_bwd_b1_h16_t512_d64", ms,
-               flops=2 * B * H * T * T * Dh * 4, note="SDPA bwd (f32)")
+               flops=2 * B * H * T * T * Dh * 4,
+               note="SDPA bwd (f32, no softcap — Helios uses softcap=30)")
         del q2, k2, v2, out, dO
     except Exception as exc:
         record("flash_attn_bwd_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
 
+    # No-softcap variants (matching key for Helios no-softcap comparison).
+    # SDPA doesn't support softcap, so these are identical to the above —
+    # but Helios's main flash_attn_fwd uses softcap=30, so these provide
+    # the fair apples-to-apples comparison.
+    try:
+        ms = bench(
+            lambda: F.scaled_dot_product_attention(q, k, v, is_causal=True),
+            W, I, sync,
+        )
+        record("flash_attn_fwd_nosc_b1_h16_t512_d64", ms,
+               flops=2 * B * H * T * T * Dh * 2,
+               note="SDPA fwd (f32, no softcap — fair baseline)")
+    except Exception as exc:
+        record("flash_attn_fwd_nosc_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
+
+    try:
+        q_ns = q.clone().requires_grad_(True)
+        k_ns = k.clone().requires_grad_(True)
+        v_ns = v.clone().requires_grad_(True)
+        out_ns = F.scaled_dot_product_attention(q_ns, k_ns, v_ns, is_causal=True)
+        dO_ns = torch.randn_like(out_ns)
+        def flash_bwd_ns():
+            if q_ns.grad is not None:
+                q_ns.grad.zero_(); k_ns.grad.zero_(); v_ns.grad.zero_()
+            out_ns.backward(dO_ns, retain_graph=True)
+        ms = bench(flash_bwd_ns, W, I, sync)
+        record("flash_attn_bwd_nosc_b1_h16_t512_d64", ms,
+               flops=2 * B * H * T * T * Dh * 4,
+               note="SDPA bwd (f32, no softcap — fair baseline)")
+        del q_ns, k_ns, v_ns, out_ns, dO_ns
+    except Exception as exc:
+        record("flash_attn_bwd_nosc_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
+
     del q, k, v
+
+    # ── F16 FLASH ATTENTION (CUDA gold baseline) ─────────────────────────
+    # F16 SDPA uses Flash/Efficient backends — highly optimized CUDA kernels.
+    # Helios currently runs f32, so this shows the ceiling CUDA can achieve.
+    q16 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
+    k16 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
+    v16 = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16)
+
+    try:
+        ms = bench(
+            lambda: F.scaled_dot_product_attention(q16, k16, v16, is_causal=True),
+            W, I, sync,
+        )
+        backend_note = "SDPA fwd f16 (gold)"
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            for bname, be in [("FLASH", SDPBackend.FLASH_ATTENTION),
+                              ("EFFICIENT", SDPBackend.EFFICIENT_ATTENTION)]:
+                try:
+                    with sdpa_kernel(be):
+                        _ = F.scaled_dot_product_attention(q16, k16, v16, is_causal=True)
+                    backend_note = f"SDPA fwd f16 ({bname}, gold)"
+                    break
+                except Exception:
+                    pass
+        except ImportError:
+            pass
+        record("flash_attn_fwd_f16_b1_h16_t512_d64", ms,
+               flops=2 * B * H * T * T * Dh * 2, note=backend_note)
+    except Exception as exc:
+        record("flash_attn_fwd_f16_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
+
+    try:
+        q16b = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        k16b = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        v16b = torch.randn(B, H, T, Dh, device=device, dtype=torch.float16, requires_grad=True)
+        out16 = F.scaled_dot_product_attention(q16b, k16b, v16b, is_causal=True)
+        dO16 = torch.randn_like(out16)
+        def flash_bwd_f16():
+            if q16b.grad is not None:
+                q16b.grad.zero_(); k16b.grad.zero_(); v16b.grad.zero_()
+            out16.backward(dO16, retain_graph=True)
+        ms = bench(flash_bwd_f16, W, I, sync)
+        record("flash_attn_bwd_f16_b1_h16_t512_d64", ms,
+               flops=2 * B * H * T * T * Dh * 4, note="SDPA bwd f16 (gold)")
+        del q16b, k16b, v16b, out16, dO16
+    except Exception as exc:
+        record("flash_attn_bwd_f16_b1_h16_t512_d64", 0, note=f"FAILED: {exc}")
+
+    del q16, k16, v16
 
     # ── 7. EMBEDDING ─────────────────────────────────────────────────────────
 
@@ -547,7 +668,8 @@ def main():
 
     ms = bench(adamw_step, W, I, sync)
     record("adamw_step_8.5M", ms,
-           bytes_rw=p_size * 4 * 7, note="AdamW for 1 layer (~8.5M params)")
+           bytes_rw=p_size * 4 * 7,
+           note="AdamW unfused: 7 PyTorch ops (~8.5M params)")
     del param, grad, m, v_state
 
     # Full model AdamW: 4 layers × 8.5M = ~34M params
@@ -568,8 +690,34 @@ def main():
 
     ms = bench(adamw_step_big, W, I, sync)
     record("adamw_step_34M", ms,
-           bytes_rw=p_size4 * 4 * 7, note="AdamW 4 layers (~34M params)")
+           bytes_rw=p_size4 * 4 * 7,
+           note="AdamW unfused: 7 PyTorch ops (~34M params)")
     del param4, grad4, m4, v4
+
+    # Fused torch.optim.AdamW (gold baseline).
+    # PyTorch's built-in optimizer with fused=True uses a single CUDA kernel,
+    # providing a fairer comparison to Helios's fused adamwStep kernel.
+    # The manual implementation above (mul_/add_/addcmul_) is ~7 separate kernels.
+    for suffix, sz in [("8.5M", p_size), ("34M", p_size * 4)]:
+        fp = torch.nn.Parameter(torch.randn(sz, device=device))
+        fp.grad = torch.randn(sz, device=device)
+        opt = None
+        try:
+            opt = torch.optim.AdamW([fp], lr=3e-4, betas=(0.9, 0.999),
+                                     eps=1e-8, weight_decay=0.1, fused=True)
+            ms = bench(lambda: opt.step(), W, I, sync)
+            record(f"adamw_fused_{suffix}", ms,
+                   bytes_rw=sz * 4 * 7,
+                   note=f"torch.optim.AdamW fused=True ({suffix}, gold)")
+        except Exception:
+            # fused=True requires CUDA capability >= 7.0 and recent PyTorch
+            opt = torch.optim.AdamW([fp], lr=3e-4, betas=(0.9, 0.999),
+                                     eps=1e-8, weight_decay=0.1)
+            ms = bench(lambda: opt.step(), W, I, sync)
+            record(f"adamw_fused_{suffix}", ms,
+                   bytes_rw=sz * 4 * 7,
+                   note=f"torch.optim.AdamW ({suffix}, fused=True unavailable)")
+        del fp, opt
 
     # ── 8b. GRADIENT ACCUMULATION ─────────────────────────────────────────
     lm_grad = torch.randn(1024, V, device=device)
@@ -705,6 +853,56 @@ def main():
            note=f"200 sequential 64x64 adds, {per_add:.3f}ms/add")
 
     del small, small2
+
+    # CUDA graph launch overhead (gold baseline for dispatch batching).
+    # A CUDA graph captures the 200-add chain and replays it with minimal
+    # CPU overhead, showing the floor for dispatch-heavy workloads.
+    try:
+        cg_a = torch.randn(64, 64, device=device)
+        cg_b = torch.randn(64, 64, device=device)
+
+        # Warmup outside graph
+        for _ in range(3):
+            r = cg_a
+            for _ in range(200):
+                r = r + cg_b
+        sync()
+
+        # Capture graph
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            r = cg_a
+            for _ in range(200):
+                r = r + cg_b
+        torch.cuda.current_stream().wait_stream(s)
+
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            r = cg_a
+            for _ in range(200):
+                r = r + cg_b
+
+        # Warmup replay
+        for _ in range(W):
+            g.replay()
+        sync()
+
+        # Timed replay
+        times_cg = []
+        for _ in range(I):
+            t0 = time.perf_counter()
+            g.replay()
+            sync()
+            times_cg.append((time.perf_counter() - t0) * 1000)
+        times_cg.sort()
+        total_cg = times_cg[len(times_cg) // 2]
+        per_add_cg = total_cg / 200
+        record("launch_overhead_200_adds_cuda_graph", total_cg,
+               note=f"CUDA graph: 200 adds, {per_add_cg:.3f}ms/add (gold)")
+        del cg_a, cg_b, g
+    except Exception as e:
+        record("launch_overhead_200_adds_cuda_graph", 0, note=f"FAILED: {e}")
 
     # ── 11. TRANSPOSE ────────────────────────────────────────────────────────
 

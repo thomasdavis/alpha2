@@ -651,7 +651,7 @@ function main(): void {
       record("flash_attn_fwd_b1_h16_t512_d64", ms, {
         flops: 2 * BH * T * T * Dh * 2,
         bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
-        note: "Flash Attention fwd",
+        note: "Flash Attention fwd (f32, softcap=30 — CUDA has no softcap)",
       });
       logFlashTrace("flash_attn_fwd_b1_h16_t512_d64", traced.trace);
     }
@@ -672,7 +672,7 @@ function main(): void {
         record("flash_attn_bwd_b1_h16_t512_d64", msBwd, {
           flops: 2 * BH * T * T * Dh * 4,
           bytes: BH * T * Dh * 4 * 8 + BH * T * 4,
-          note: "Flash Attention bwd",
+          note: "Flash Attention bwd (f32, softcap=30 — CUDA has no softcap)",
         });
       }
       release(dO);
@@ -689,7 +689,7 @@ function main(): void {
       record("flash_attn_fwd_nosc_b1_h16_t512_d64", ms, {
         flops: 2 * BH * T * T * Dh * 2,
         bytes: BH * T * Dh * 4 * 4 + BH * T * 4,
-        note: "Flash Attention fwd (no softcap)",
+        note: "Flash Attention fwd (f32, no softcap — fair baseline vs CUDA)",
       });
       logFlashTrace("flash_attn_fwd_nosc_b1_h16_t512_d64", traced.trace);
     }
@@ -708,7 +708,7 @@ function main(): void {
         record("flash_attn_bwd_nosc_b1_h16_t512_d64", msBwd, {
           flops: 2 * BH * T * T * Dh * 4,
           bytes: BH * T * Dh * 4 * 8 + BH * T * 4,
-          note: "Flash Attention bwd (no softcap)",
+          note: "Flash Attention bwd (f32, no softcap — fair baseline vs CUDA)",
         });
       }
       release(dONoSC);
@@ -1126,6 +1126,9 @@ function main(): void {
   console.log(`Helios: ${info.deviceName ?? "unknown"} coopMat=${info.coopMatSupported ?? false}`);
   if (cudaInfo) console.log(`CUDA:   ${cudaInfo}`);
   console.log(`Config: iters=${opts.iters} warmup=${opts.warmup}`);
+  console.log("Methodology: wall-clock (performance.now) + syncGpu per iter, median of sorted times");
+  console.log("Fairness: both sides use f32 unless noted. (gold) = best CUDA path, may differ in dtype/algorithm.");
+  console.log("Notes: SDPA has no softcap. Helios flash_attn_fwd uses softcap=30; _nosc variant is the fair comparison.");
   console.log("");
 
   function pad(s: string, w: number): string {
@@ -1151,10 +1154,17 @@ function main(): void {
   let heliosWins = 0;
   let cudaWins = 0;
   let ties = 0;
+  let goldOnly = 0;  // CUDA gold baselines with no Helios equivalent
 
   const allOps = new Set([...Object.keys(results), ...Object.keys(cudaOps)]);
   // Sort by category
   const sortedOps = [...allOps].sort();
+
+  // Detect gold-only ops: CUDA-only entries whose note contains "(gold)"
+  const isGoldOnly = (op: string): boolean => {
+    const note = (cudaOps[op]?.note ?? "").toLowerCase();
+    return !results[op] && note.includes("gold");
+  };
 
   for (const op of sortedOps) {
     const h = results[op];
@@ -1173,7 +1183,10 @@ function main(): void {
     const cEff = (h?.peakMs && c && c.ms > 0) ? Math.round(h.peakMs / c.ms * 100).toString() : "";
 
     let winner = "";
-    if (h && c && h.ms > 0 && c.ms > 0) {
+    if (isGoldOnly(op)) {
+      winner = "(gold)";
+      goldOnly++;
+    } else if (h && c && h.ms > 0 && c.ms > 0) {
       const ratio = c.ms / h.ms;
       if (ratio > 1.05) { winner = `H ${ratio.toFixed(2)}×`; heliosWins++; }
       else if (ratio < 0.95) { winner = `C ${(1/ratio).toFixed(2)}×`; cudaWins++; }
@@ -1199,7 +1212,8 @@ function main(): void {
   }
 
   console.log("─".repeat(hdr.length));
-  console.log(`\nScore: Helios wins ${heliosWins} / CUDA wins ${cudaWins} / ties ${ties}`);
+  console.log(`\nScore: Helios wins ${heliosWins} / CUDA wins ${cudaWins} / ties ${ties}` +
+    (goldOnly > 0 ? ` / gold-only ${goldOnly}` : ""));
   console.log("");
 }
 
