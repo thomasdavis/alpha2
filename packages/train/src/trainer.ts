@@ -430,6 +430,41 @@ function analyzeSampleTrend(history: EvalSnapshot[]): SampleTrendStatus | null {
   };
 }
 
+function validateResumeModelCompatibility(
+  resumePath: string,
+  checkpointModel: ModelConfig | undefined,
+  activeModel: ModelConfig,
+): void {
+  if (!checkpointModel) return;
+  const diffs: string[] = [];
+  const check = (key: keyof ModelConfig, label = key): void => {
+    const a = checkpointModel[key];
+    const b = activeModel[key];
+    if (a !== b) diffs.push(`${label}: checkpoint=${String(a)} current=${String(b)}`);
+  };
+
+  check("vocabSize");
+  check("blockSize");
+  check("nLayer");
+  check("nEmbd");
+  check("nHead");
+  check("ffnActivation");
+  check("ffnDim");
+  check("dropout");
+
+  if (diffs.length === 0) return;
+
+  const allow = (process.env.ALPHA_ALLOW_RESUME_MISMATCH ?? "0").trim() === "1";
+  const msg =
+    `Resume checkpoint/model mismatch for ${resumePath}:\n` +
+    diffs.map((d) => `  - ${d}`).join("\n") +
+    `\nRefusing to resume to prevent silent divergence. ` +
+    `Use ALPHA_ALLOW_RESUME_MISMATCH=1 only for intentional migration experiments.`;
+
+  if (!allow) throw new Error(msg);
+  console.warn(`[warn] ${msg}`);
+}
+
 // ── Trainer ────────────────────────────────────────────────────────────────
 
 export interface TrainerDeps {
@@ -628,6 +663,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   if (resumePath) {
     const checkpoint = new FileCheckpoint();
     const state = await Effect.runPromise(checkpoint.load(resumePath));
+    validateResumeModelCompatibility(resumePath, state.modelConfig as ModelConfig | undefined, modelConfig);
     restoreParams(params, state.params);
     optimizer.loadStateDict(state.optimizerState);
     rng.setState(state.rngState);
@@ -915,6 +951,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const hasTotalSumSq = !!totalSumOfSquaresFn;
   const disableTotalSumSq = ((process.env.ALPHA_DISABLE_TOTAL_SUMSQ ?? "0").trim() === "1");
   const canUseTotalSumSq = hasTotalSumSq && !disableTotalSumSq;
+  let useTotalSumSq = canUseTotalSumSq;
   const disableGradNorm = ((process.env.ALPHA_DISABLE_GRAD_NORM ?? "0").trim() === "1");
   const readEnvInt = (name: string, fallback: number, min = 0): number => {
     const raw = process.env[name];
@@ -965,6 +1002,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
+  let repeatedSpikeNormStreak = 0;
+  let prevSpikeNorm = Number.NaN;
+  let hugeSpikeWindowStartStep = -1;
+  let hugeSpikeCountInWindow = 0;
   const evalHistory: EvalSnapshot[] = [];
   const dropoutRng = new DropoutRng(trainConfig.seed);
   const trainTape = new Tape();
@@ -1161,7 +1202,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const perParamNorms = perParamNormsBuf;
       perParamNorms.length = 0;
 
-      if (canUseTotalSumSq && grads.length > 0) {
+      if (useTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
         const totalSq = totalSumOfSquaresFn!(grads);
         gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]) * gradScaleAbs;
@@ -1297,6 +1338,53 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // spikeThreshold is an absolute grad_norm cap (e.g. 50 means skip when > 50).
       if (!nanDetected && spikeThreshold > 0 && gradNorm > spikeThreshold) {
         spikeSkips++;
+        if (useTotalSumSq) {
+          // Heuristic guard: repeated near-identical giant spike norms usually
+          // indicate a corrupted fast-path reduction, not meaningful gradient dynamics.
+          const sameAsPrev = Number.isFinite(prevSpikeNorm) &&
+            Math.abs(gradNorm - prevSpikeNorm) <= Math.max(1e-3, Math.abs(prevSpikeNorm) * 0.01);
+          repeatedSpikeNormStreak = sameAsPrev ? (repeatedSpikeNormStreak + 1) : 1;
+          prevSpikeNorm = gradNorm;
+
+          // Guard 2: if we see several massive spikes in a short window, treat it
+          // as fast-path corruption and fall back immediately.
+          const hugeSpikeThreshold = spikeThreshold * 200;
+          if (gradNorm >= hugeSpikeThreshold) {
+            if (hugeSpikeWindowStartStep < 0 || (stepNum - hugeSpikeWindowStartStep) > 64) {
+              hugeSpikeWindowStartStep = stepNum;
+              hugeSpikeCountInWindow = 1;
+            } else {
+              hugeSpikeCountInWindow++;
+            }
+          }
+
+          if (repeatedSpikeNormStreak >= 6 || hugeSpikeCountInWindow >= 3) {
+            const streakBeforeDisable = repeatedSpikeNormStreak;
+            const hugeSpikesBeforeDisable = hugeSpikeCountInWindow;
+            useTotalSumSq = false;
+            repeatedSpikeNormStreak = 0;
+            prevSpikeNorm = Number.NaN;
+            hugeSpikeWindowStartStep = -1;
+            hugeSpikeCountInWindow = 0;
+            console.warn(
+              `  [grad_norm] suspicious giant spike pattern detected at step ${stepNum}; ` +
+              `switching to per-parameter grad norm fallback`,
+            );
+            emitEvent({
+              step: stepNum,
+              level: "warn",
+              kind: "grad_norm_fastpath_disabled",
+              message: "disabled totalSumSq grad norm fast path after giant spike pattern",
+              payload: {
+                threshold: spikeThreshold,
+                gradNorm,
+                mode: "per_param_fallback",
+                repeatedSpikeNormStreak: streakBeforeDisable,
+                hugeSpikeCountInWindow: hugeSpikesBeforeDisable,
+              },
+            });
+          }
+        }
         const prevScale = runtimeLrScale;
         if (spikeLrBackoff < 1.0) {
           runtimeLrScale = Math.max(spikeLrMinScale, runtimeLrScale * spikeLrBackoff);
@@ -1328,6 +1416,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           },
         });
         nanDetected = true; // reuse the skip path
+      } else {
+        repeatedSpikeNormStreak = 0;
+        prevSpikeNorm = Number.NaN;
       }
     }
 
