@@ -16,6 +16,7 @@
     "@alpha/inference": "*",
     "@alpha/tokenizers": "*",
     "@alpha/train": "*",
+    "@alpha/ui": "*",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "ai": "^6.0.0",

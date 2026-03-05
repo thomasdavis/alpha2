@@ -1,0 +1,8 @@
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/01-cold-open.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/02-not-weights.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/03-cage-match.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/04-something-crawled-out.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/05-it-bred.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/06-final-form.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/07-punchline.mp3'
+file '/Users/ajaxdavis/repos/alpha2/movies/symbio-film/public/voiceover/08-tag.mp3'

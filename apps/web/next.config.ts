@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   transpilePackages: [
     "@alpha/core", "@alpha/db", "@alpha/tensor", "@alpha/autograd",
-    "@alpha/tokenizers", "@alpha/model", "@alpha/train",
+    "@alpha/tokenizers", "@alpha/model", "@alpha/train", "@alpha/ui",
   ],
   serverExternalPackages: [],
   async rewrites() {
