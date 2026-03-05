@@ -11,5 +11,7 @@ export * from "./components/charts.js";
 export * from "./components/run.js";
 export * from "./components/docs.js";
 export * from "./components/architecture.js";
+export * from "./components/symbio.js";
+export * from "./components/layers.js";
 export * from "./utils.js";
 export * from "./types.js";

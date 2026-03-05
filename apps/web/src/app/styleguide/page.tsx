@@ -14,6 +14,9 @@ import {
   ChartPanel,
   BaseMiniChart,
   Progress,
+  InteractiveLossChart,
+  SymbioSection,
+  LayersSection,
   MethodBadge, Endpoint, Required, SectionHeading, Pre,
   ArchBadge, PhaseBadge, KernelChip
 } from "@alpha/ui";
@@ -32,7 +35,10 @@ import {
   LineChart,
   Trophy,
   Book,
-  Server
+  Server,
+  ActivitySquare,
+  Microscope,
+  Layers
 } from "lucide-react";
 
 export default function StyleGuidePage() {
@@ -41,6 +47,55 @@ export default function StyleGuidePage() {
     step: i * 100,
     value: Math.sin(i / 5) * 10 + 50 + Math.random() * 5
   }));
+
+  const mockChartMetrics = Array.from({ length: 100 }, (_, i) => {
+    const layers: Record<string, number> = {
+      "embed": 0.1 * Math.random(),
+      "head": 0.05 * Math.random()
+    };
+    for(let l=0; l<6; l++) layers[String(l)] = Math.random() * Math.exp(-l/2);
+
+    return {
+      step: i * 50,
+      loss: 2.5 * Math.exp(-i / 40) + Math.random() * 0.1,
+      val_loss: i % 10 === 0 ? 2.6 * Math.exp(-i / 40) + Math.random() * 0.05 : null,
+      lr: 0.0006 * (1 - i / 100),
+      grad_norm: 0.1 + Math.random() * 0.2,
+      tokens_per_sec: 12000 + Math.random() * 1000,
+      ms_per_iter: 45,
+      elapsed_ms: 4500,
+      gpu_util_pct: 85,
+      gpu_vram_used_mb: 4096,
+      gpu_vram_total_mb: 16384,
+      timing_fwd_ms: 15,
+      timing_bwd_ms: 25,
+      timing_optim_ms: 2,
+      timing_data_ms: 1,
+      timing_flush_ms: 2,
+      timing_grad_norm_ms: 0.5,
+      timing_grad_clip_ms: 0.5,
+      gpu_ops_count: 120,
+      // Symbio specific
+      weight_entropy: 4.5 + Math.sin(i/10)*0.5,
+      effective_rank: 128 - (i/2),
+      free_energy: 2.1 - (i/50),
+      population_entropy: 1.2,
+      fitness_score: 0.8 + (i/200),
+      complexity_score: 0.4,
+      cusum_grad: Math.max(0, Math.sin(i/5)*4),
+      cusum_clip: Math.max(0, Math.cos(i/8)*3),
+      cusum_tps: 0.1,
+      cusum_val: 0.2,
+      // Layer specific
+      per_layer_grad_norms: JSON.stringify(layers)
+    };
+  });
+
+  const mockCheckpoints = [
+    { step: 1000 },
+    { step: 2500 },
+    { step: 4000 }
+  ];
 
   return (
     <div className="container mx-auto max-w-5xl px-4 py-12">
@@ -177,7 +232,48 @@ export default function StyleGuidePage() {
               />
             </ChartPanel>
           </div>
+
+          {/* Complex Charts Subsection */}
+          <div className="mt-8 space-y-6">
+            <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-text-primary">
+              <ActivitySquare className="h-4 w-4 text-accent" />
+              Complex Interactive Charts
+            </div>
+            
+            <Card>
+              <CardHeader>
+                <CardTitle>Interactive Loss Chart</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <InteractiveLossChart 
+                  metrics={mockChartMetrics as any} 
+                  checkpoints={mockCheckpoints} 
+                />
+              </CardContent>
+              <CardFooter className="bg-surface-2/30 text-[0.65rem] text-text-muted italic">
+                Note: This is a high-performance canvas implementation with interactive markers and tooltips.
+              </CardFooter>
+            </Card>
+          </div>
         </div>
+      </section>
+
+      {/* ── Symbiogenesis ────────────────────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-purple-400 pl-4 flex items-center gap-2">
+          <Microscope className="h-5 w-5 text-purple-400" />
+          Evolutionary Analytics
+        </h2>
+        <SymbioSection metrics={mockChartMetrics as any} />
+      </section>
+
+      {/* ── Per-Layer Analysis ─────────────────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-cyan-400 pl-4 flex items-center gap-2">
+          <Layers className="h-5 w-5 text-cyan-400" />
+          Transformer Layer Analysis
+        </h2>
+        <LayersSection metrics={mockChartMetrics as any} />
       </section>
 
       {/* ── Badges ─────────────────────────────────────────────────── */}
