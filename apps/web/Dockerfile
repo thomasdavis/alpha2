@@ -17,6 +17,7 @@ COPY packages/model/ packages/model/
 COPY packages/train/ packages/train/
 COPY packages/symbiogenesis/ packages/symbiogenesis/
 COPY packages/helios/ packages/helios/
+COPY packages/ui/ packages/ui/
 
 RUN npm ci
 RUN npx turbo build --filter=@alpha/web...
