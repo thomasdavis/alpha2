@@ -2,7 +2,15 @@
 
 import * as React from "react";
 import { Tip } from "./tooltip.js";
-import { ChartMetric, ChartCheckpoint, ActivationSwitchEvent, ComputedEvents, MarkerType, MarkerVisibility, MiniSeries } from "../types.js";
+import { 
+  ChartMetric, 
+  ChartCheckpoint, 
+  ActivationSwitchEvent, 
+  ComputedEvents, 
+  MarkerType, 
+  MarkerVisibility, 
+  MiniSeries 
+} from "../types.js";
 import { fmtNum, cn } from "../utils.js";
 
 // ── Constants & Config ──────────────────────────────────────────
@@ -113,7 +121,46 @@ export function detectBestValStep(metrics: ChartMetric[]): { step: number; loss:
   return { step: best.step, loss: best.val_loss! };
 }
 
-// ... rest of detection functions ...
+export function detectWarmupEnd(metrics: ChartMetric[]): number | null {
+  if (metrics.length < 3) return null;
+  let peakIdx = 0;
+  for (let i = 1; i < metrics.length; i++) {
+    if (metrics[i].lr > metrics[peakIdx].lr) peakIdx = i;
+  }
+  if (peakIdx <= 1 || peakIdx >= metrics.length - 2) return null;
+  return metrics[peakIdx].step;
+}
+
+export function detectOverfitStep(metrics: ChartMetric[]): number | null {
+  const valPts = metrics.filter((m) => m.val_loss != null);
+  if (valPts.length < 3) return null;
+  let minIdx = 0;
+  for (let i = 1; i < valPts.length; i++) {
+    if (valPts[i].val_loss! < valPts[minIdx].val_loss!) minIdx = i;
+  }
+  if (minIdx >= valPts.length - 2) return null;
+  const minVal = valPts[minIdx].val_loss!;
+  const afterMin = valPts.slice(minIdx + 1);
+  const avgAfter = afterMin.reduce((s, m) => s + m.val_loss!, 0) / afterMin.length;
+  if ((avgAfter - minVal) / minVal < 0.02) return null;
+  return valPts[minIdx].step;
+}
+
+export function computeEvents(metrics: ChartMetric[], checkpoints: ChartCheckpoint[], activationSwitches?: ActivationSwitchEvent[]): ComputedEvents {
+  const bestVal = detectBestValStep(metrics);
+  return {
+    checkpointSteps: checkpoints.map((c) => c.step),
+    bestValStep: bestVal?.step ?? null,
+    bestValLoss: bestVal?.loss ?? null,
+    warmupEndStep: detectWarmupEnd(metrics),
+    gradSpikeSteps: [], 
+    lossSpikeSteps: [],
+    overfitStep: detectOverfitStep(metrics),
+    activationSwitches: activationSwitches ?? [],
+    evoValEnvelope: [],
+    evoOverfitRegions: [],
+  };
+}
 
 // ── Core Charting Components (Base Implementations) ──────────────
 
