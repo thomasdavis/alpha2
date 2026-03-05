@@ -22,13 +22,13 @@
 
 :root {
   --bg: #ffffff;
-  --surface: #f9f9f9;
-  --surface-2: #f0f0f0;
-  --border: #e5e5e5;
-  --border-2: #d4d4d4;
-  --text-primary: #171717;
-  --text-secondary: #525252;
-  --text-muted: #a3a3a3;
+  --surface: #fdfdfd;
+  --surface-2: #f3f4f6;
+  --border: #e5e7eb;
+  --border-2: #d1d5db;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
   --accent: #2563eb;
   --green: #16a34a;
   --green-bg: #dcfce7;
@@ -40,30 +40,35 @@
   --blue-bg: #dbeafe;
 }
 
-[data-theme='dark'] {
+html[data-theme='dark'] {
   --bg: #0a0a0a;
   --surface: #111111;
   --surface-2: #1a1a1a;
   --border: #222222;
   --border-2: #333333;
   --text-primary: #e0e0e0;
-  --text-secondary: #888888;
+  --text-secondary: #a3a3a3;
   --text-muted: #555555;
-  --accent: #2563eb;
+  --accent: #3b82f6;
   --green: #4ade80;
-  --green-bg: #1a2f1a;
+  --green-bg: #14532d;
   --yellow: #f59e0b;
-  --yellow-bg: #3b2f1e;
+  --yellow-bg: #451a03;
   --red: #f87171;
-  --red-bg: #2d1f1f;
+  --red-bg: #450a0a;
   --blue: #60a5fa;
-  --blue-bg: #1e3a5f;
+  --blue-bg: #1e3a8a;
 }
 
 body {
-  background: var(--color-bg);
-  color: var(--color-text-primary);
+  background-color: var(--bg);
+  color: var(--text-primary);
   transition: background-color 0.2s, color 0.2s;
+}
+
+/* Ensure these are applied */
+* {
+  border-color: var(--border);
 }
 
 /* Blinking cursor for chat streaming */

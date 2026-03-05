@@ -8,8 +8,11 @@ import {
   type ChartMetric,
   Stat, DetailRow, InteractiveLossChart, MiniChart, StepTimeChart, ChartPanel,
   buildGpuSeries, buildLrSeries, buildGradNormSeries,
-  fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
 } from "@/components/charts";
+import {
+  fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
+  STATUS_STYLES, DOMAIN_STYLES
+} from "@alpha/ui";
 import { SymbioSection, extractActivationSwitchEvents } from "@/components/symbio-charts";
 import { LayersSection } from "@/components/layer-charts";
 import dynamic from "next/dynamic";
@@ -79,39 +82,6 @@ export interface RunDetailProps {
   checkpoints: CheckpointData[];
   samples: SampleData[];
 }
-
-// ── Constants ────────────────────────────────────────────────────
-
-const STATUS_STYLES: Record<string, { badge: string; bar: string; gradient: string }> = {
-  active: {
-    badge: "border-green/20 bg-green-bg text-green",
-    bar: "bg-gradient-to-r from-green/80 to-green",
-    gradient: "from-green-bg/50",
-  },
-  completed: {
-    badge: "border-blue/20 bg-blue-bg text-blue",
-    bar: "bg-gradient-to-r from-blue/80 to-blue",
-    gradient: "from-blue-bg/50",
-  },
-  stale: {
-    badge: "border-yellow/20 bg-yellow-bg text-yellow",
-    bar: "bg-gradient-to-r from-yellow/80 to-yellow",
-    gradient: "from-yellow-bg/50",
-  },
-  failed: {
-    badge: "border-red/20 bg-red-bg text-red",
-    bar: "bg-gradient-to-r from-red/80 to-red",
-    gradient: "from-red-bg/50",
-  },
-};
-
-const DOMAIN_STYLES: Record<string, string> = {
-  novels: "border-blue/20 bg-blue-bg text-blue",
-  chords: "border-yellow/20 bg-yellow-bg text-yellow",
-  abc: "border-green/20 bg-green-bg text-green",
-  dumb_finance: "border-red/20 bg-red-bg text-red",
-  concordance: "border-cyan-500/20 bg-cyan-950 text-cyan-400",
-};
 
 // ── Main Component ───────────────────────────────────────────────
 
@@ -219,22 +189,22 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
     <>
       {/* Breadcrumb */}
       <nav className="mb-4 flex items-center gap-1.5 text-xs text-text-muted">
-        <Link href="/runs" className="hover:text-text-secondary">Training Runs</Link>
+        <Link href="/runs" className="hover:text-text-secondary transition-colors">Training Runs</Link>
         <span>/</span>
         <span className="text-text-secondary">{run.id}</span>
       </nav>
 
       {/* Header */}
-      <div className={`mb-6 overflow-hidden rounded-xl border ${isActive ? "border-green/20" : "border-border"} bg-surface`}>
+      <div className={`mb-6 overflow-hidden rounded-xl border ${isActive ? "border-green/20" : "border-border"} bg-surface shadow-sm`}>
         <div className={`h-0.5 ${ss.bar}`} />
         <div className={`border-b border-border/50 bg-gradient-to-r ${ss.gradient} to-transparent px-5 py-4`}>
           <div className="flex flex-wrap items-center gap-2.5">
-            <span className="font-mono text-lg font-bold text-white">{run.id}</span>
+            <span className="font-mono text-lg font-bold text-text-primary">{run.id}</span>
             <span className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[0.65rem] font-bold uppercase ${ss.badge}`}>
               {isActive && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-green" />}
               {run.status}
             </span>
-            <span className={`rounded-md border px-2 py-0.5 text-[0.65rem] font-bold uppercase ${DOMAIN_STYLES[run.domain] ?? "border-border bg-surface-2 text-text-secondary"}`}>
+            <span className={`rounded-md border px-2 py-0.5 text-[0.65rem] font-bold uppercase ${(DOMAIN_STYLES[run.domain] as any)?.badge ?? "border-border bg-surface-2 text-text-secondary"}`}>
               {run.domain}
             </span>
             <span className="rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[0.65rem] font-semibold text-text-secondary">
@@ -263,10 +233,10 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
         <div className="px-5 py-4">
           <div className="mb-1.5 flex items-baseline justify-between">
             <span className="text-xs text-text-secondary">
-              Step <span className="font-mono font-bold text-white">{fmtNum(run.latest_step)}</span>
+              Step <span className="font-mono font-bold text-text-primary">{fmtNum(run.latest_step)}</span>
               <span className="text-text-muted"> / {fmtNum(run.total_iters)}</span>
             </span>
-            <span className="font-mono text-sm font-bold text-white">{progress.toFixed(1)}%</span>
+            <span className="font-mono text-sm font-bold text-text-primary">{progress.toFixed(1)}%</span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-surface-2">
             <div
@@ -308,9 +278,9 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
       {/* Timing stats */}
       {stats?.avgFwd != null && (
         <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Forward" value={`${stats.avgFwd.toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${(stats.avgFwd / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-cyan-400" />
-          <Stat label="Backward" value={`${(stats.avgBwd ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgBwd ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-orange-400" />
-          <Stat label="GPU Sync" value={`${(stats.avgFlush ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgFlush ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-rose-400" />
+          <Stat label="Forward" value={`${stats.avgFwd.toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${(stats.avgFwd / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-blue" />
+          <Stat label="Backward" value={`${(stats.avgBwd ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgBwd ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-yellow" />
+          <Stat label="GPU Sync" value={`${(stats.avgFlush ?? 0).toFixed(0)}ms`} sub={stats.avgMs > 0 ? `${((stats.avgFlush ?? 0) / stats.avgMs * 100).toFixed(0)}% of step` : undefined} color="text-red" />
           <Stat label="GPU Ops" value={stats.avgGpuOps != null ? fmtNum(stats.avgGpuOps) : "-"} sub="per step" />
           <Stat
             label="MFU"
@@ -328,7 +298,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Chart + config sidebar */}
       <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_280px]">
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
           <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
             Loss Curve <Tip text={tips.lossChart} />
           </div>
@@ -337,7 +307,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
         <div className="space-y-3">
           {/* Architecture */}
-          <div className="rounded-lg border border-border/60 bg-surface p-3">
+          <div className="rounded-lg border border-border/60 bg-surface p-3 shadow-sm">
             <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Architecture</div>
             <DetailRow label="Layers" value={run.n_layer} tip={tips.nLayer} />
             <DetailRow label="Embedding" value={run.n_embd} tip={tips.nEmbd} />
@@ -349,7 +319,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
           </div>
 
           {/* Training config */}
-          <div className="rounded-lg border border-border/60 bg-surface p-3">
+          <div className="rounded-lg border border-border/60 bg-surface p-3 shadow-sm">
             <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Training Config</div>
             <DetailRow label="Total iters" value={fmtNum(run.total_iters)} tip={tips.totalIters} />
             <DetailRow label="Batch size" value={run.batch_size} tip={tips.batchSize} />
@@ -417,7 +387,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
       {run.symbio ? <SymbioRiver metrics={metrics as any} /> : null}
 
       {/* Checkpoints */}
-      <div className="mb-6 rounded-lg border border-border bg-surface">
+      <div className="mb-6 rounded-lg border border-border bg-surface shadow-sm">
         <div className="border-b border-border px-4 py-3">
           <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
             Checkpoints ({checkpoints.length}) <Tip text={tips.checkpoint} />
@@ -432,7 +402,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             </div>
             {checkpoints.map((c) => (
               <div key={c.step} className="grid grid-cols-[80px_1fr_90px_100px_52px] gap-4 border-b border-border/30 px-4 py-2 text-xs last:border-0">
-                <span className="font-mono font-semibold text-white">{fmtNum(c.step)}</span>
+                <span className="font-mono font-semibold text-text-primary">{fmtNum(c.step)}</span>
                 <span className="truncate font-mono text-text-secondary">{c.filename}</span>
                 <span className="text-text-muted">{fmtBytes(c.file_size)}</span>
                 <span className="text-text-muted">{c.created_at ? timeAgo(c.created_at) : "-"}</span>
@@ -454,7 +424,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Samples */}
       {samples.length > 0 && (
-        <div className="mb-6 rounded-lg border border-border bg-surface">
+        <div className="mb-6 rounded-lg border border-border bg-surface shadow-sm">
           <div className="border-b border-border px-4 py-3">
             <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
               Sample Generations ({samples.length})
@@ -482,11 +452,11 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
                   </summary>
                   <div className="px-4 pb-3 pt-1">
                     <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Prompt</div>
-                    <div className="mb-3 rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary">
+                    <div className="mb-3 rounded border border-border/50 bg-surface-2 px-3 py-2 font-mono text-xs leading-relaxed text-text-secondary">
                       {s.prompt}
                     </div>
                     <div className="mb-1 text-[0.6rem] font-semibold uppercase tracking-wider text-text-muted">Output</div>
-                    <div className="whitespace-pre-wrap rounded border border-border/50 bg-[#0d0d0d] px-3 py-2 font-mono text-xs leading-relaxed text-text-primary">
+                    <div className="whitespace-pre-wrap rounded border border-border/50 bg-surface-2 px-3 py-2 font-mono text-xs leading-relaxed text-text-primary">
                       {s.output}
                     </div>
                   </div>
@@ -498,32 +468,39 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
       )}
 
       {/* Raw config */}
-      <div className="mb-6 space-y-2">
-        <button
-          onClick={() => setShowModelConfig(!showModelConfig)}
-          className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-left text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted transition-colors hover:border-border-2"
-        >
-          <span className="text-[0.7rem]">{showModelConfig ? "\u25BC" : "\u25B6"}</span>
-          Model Config JSON <Tip text={tips.rawConfig} />
-        </button>
-        {showModelConfig && modelConfig && (
-          <pre className="overflow-x-auto rounded-lg border border-border bg-[#0d0d0d] p-4 font-mono text-xs leading-relaxed text-text-secondary">
-            {JSON.stringify(modelConfig, null, 2)}
-          </pre>
-        )}
-
-        <button
-          onClick={() => setShowTrainConfig(!showTrainConfig)}
-          className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-left text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted transition-colors hover:border-border-2"
-        >
-          <span className="text-[0.7rem]">{showTrainConfig ? "\u25BC" : "\u25B6"}</span>
-          Train Config JSON <Tip text={tips.rawConfig} />
-        </button>
-        {showTrainConfig && trainConfig && (
-          <pre className="overflow-x-auto rounded-lg border border-border bg-[#0d0d0d] p-4 font-mono text-xs leading-relaxed text-text-secondary">
-            {JSON.stringify(trainConfig, null, 2)}
-          </pre>
-        )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">Model Config (JSON)</span>
+            <button
+              onClick={() => setShowModelConfig(!showModelConfig)}
+              className="text-[0.6rem] uppercase tracking-wider text-text-muted hover:text-accent"
+            >
+              {showModelConfig ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showModelConfig && (
+            <pre className="overflow-x-auto rounded-lg border border-border bg-surface-2 p-4 font-mono text-xs leading-relaxed text-text-secondary shadow-inner">
+              {JSON.stringify(modelConfig, null, 2)}
+            </pre>
+          )}
+        </div>
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">Training Config (JSON)</span>
+            <button
+              onClick={() => setShowTrainConfig(!showTrainConfig)}
+              className="text-[0.6rem] uppercase tracking-wider text-text-muted hover:text-accent"
+            >
+              {showTrainConfig ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showTrainConfig && (
+            <pre className="overflow-x-auto rounded-lg border border-border bg-surface-2 p-4 font-mono text-xs leading-relaxed text-text-secondary shadow-inner">
+              {JSON.stringify(trainConfig, null, 2)}
+            </pre>
+          )}
+        </div>
       </div>
     </>
   );

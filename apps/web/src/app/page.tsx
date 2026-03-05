@@ -32,7 +32,7 @@ function StatCard({
 }) {
   const content = (
     <Card className="px-4 py-3 transition-colors hover:border-border-2">
-      <div className="text-2xl font-bold text-white tracking-tight">{value}</div>
+      <div className="text-2xl font-bold text-text-primary tracking-tight">{value}</div>
       <div className="mt-1 text-[0.62rem] uppercase font-semibold tracking-widest text-text-muted">
         {label}
       </div>
@@ -57,7 +57,7 @@ function RunRow({ run }: { run: DbRunSummary }) {
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-white group-hover:text-accent transition-colors">
+          <span className="text-sm font-semibold text-text-primary group-hover:text-accent transition-colors">
             {run.id}
           </span>
           <StatusBadge status={run.status} />
@@ -67,7 +67,7 @@ function RunRow({ run }: { run: DbRunSummary }) {
           <span>&middot;</span>
           <span>{run.n_layer}L/{run.n_embd}D/{run.n_head}H</span>
           <span>&middot;</span>
-          <span>loss <span className="font-mono text-white/70">{formatLoss(bestLoss)}</span></span>
+          <span>loss <span className="font-mono text-text-primary/70">{formatLoss(bestLoss)}</span></span>
           <span>&middot;</span>
           <span>{timeAgo(run.updated_at)}</span>
         </div>
@@ -106,7 +106,7 @@ export default async function DashboardPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-white">Dashboard</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-text-primary">Dashboard</h1>
         <p className="mt-1 text-sm text-text-muted">
           Overview of all training activity and engine health.
         </p>
@@ -178,7 +178,7 @@ export default async function DashboardPage() {
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-white group-hover:text-accent transition-colors">
+                      <span className="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
                         {d.display_name}
                       </span>
                       <Badge variant={variantMap[d.id] || "outline"}>

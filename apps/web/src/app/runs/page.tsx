@@ -75,7 +75,7 @@ function RunCard({ run }: { run: DbRunSummary }) {
         <div className="flex items-start gap-4 p-4">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[0.95rem] font-bold text-white group-hover:text-accent transition-colors">
+              <span className="text-[0.95rem] font-bold text-text-primary group-hover:text-accent transition-colors">
                 {run.id}
               </span>
               <StatusBadge status={run.status} />
@@ -94,7 +94,7 @@ function RunCard({ run }: { run: DbRunSummary }) {
               <span className="text-border">|</span>
               <span className="flex items-center gap-1.5">
                 <span className="text-text-muted">LOSS</span>
-                <span className="font-mono text-white">{formatLoss(bestLoss)}</span> <Tip text={tips.loss} />
+                <span className="font-mono text-text-primary">{formatLoss(bestLoss)}</span> <Tip text={tips.loss} />
               </span>
               <span className="text-border">|</span>
               <span className="flex items-center gap-1.5 text-text-muted">
@@ -128,7 +128,7 @@ export default async function RunsPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Training Runs</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-text-primary">Training Runs</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
             <Badge variant="outline" className="border-border/50 text-text-muted font-normal lowercase tracking-normal">
               {runs.length} total

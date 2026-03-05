@@ -26,14 +26,14 @@ export default function StyleGuidePage() {
   return (
     <div className="container mx-auto max-w-5xl px-4 py-12">
       <header className="mb-12 border-b border-border pb-8">
-        <h1 className="text-4xl font-bold tracking-tight text-white mb-2">Alpha Style Guide</h1>
+        <h1 className="text-4xl font-bold tracking-tight text-text-primary mb-2">Alpha Style Guide</h1>
         <p className="text-text-secondary text-lg">
           Core UI components for the Alpha training system. All components are built with React 19, Tailwind CSS v4, and Lucide Icons.
         </p>
       </header>
 
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-white mb-6 border-l-4 border-accent pl-4">Buttons</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-accent pl-4">Buttons</h2>
         <div className="grid gap-8">
           <Card>
             <CardHeader>
@@ -80,7 +80,7 @@ export default function StyleGuidePage() {
       </section>
 
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-white mb-6 border-l-4 border-green pl-4">Badges</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-green pl-4">Badges</h2>
         <Card>
           <CardHeader>
             <CardTitle>Status & Categorization</CardTitle>
@@ -110,7 +110,7 @@ export default function StyleGuidePage() {
       </section>
 
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-white mb-6 border-l-4 border-purple-400 pl-4">Cards & Layout</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-purple-400 pl-4">Cards & Layout</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <Card>
             <CardHeader>
@@ -168,43 +168,43 @@ export default function StyleGuidePage() {
       </section>
 
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-white mb-6 border-l-4 border-yellow pl-4">Typography & Colors</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-yellow pl-4">Typography & Colors</h2>
         <Card>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-6">
             <div className="space-y-4">
               <h3 className="text-text-muted uppercase text-[0.65rem] font-bold tracking-widest">Colors</h3>
               <div className="grid grid-cols-4 gap-4">
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-accent border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-accent border border-black/5" />
                   <span className="text-[0.6rem] text-text-muted font-mono">accent</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-green border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-green border border-black/5" />
                   <span className="text-[0.6rem] text-text-muted font-mono">green</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-yellow border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-yellow border border-black/5" />
                   <span className="text-[0.6rem] text-text-muted font-mono">yellow</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-red border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-red border border-black/5" />
                   <span className="text-[0.6rem] text-text-muted font-mono">red</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-surface border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-bg border border-border" />
+                  <span className="text-[0.6rem] text-text-muted font-mono">bg</span>
+                </div>
+                <div className="space-y-2">
+                  <div className="h-12 w-full rounded-md bg-surface border border-border" />
                   <span className="text-[0.6rem] text-text-muted font-mono">surface</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-surface-2 border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-surface-2 border border-border" />
                   <span className="text-[0.6rem] text-text-muted font-mono">surface-2</span>
                 </div>
                 <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-border border border-white/10" />
+                  <div className="h-12 w-full rounded-md bg-border border border-border-2" />
                   <span className="text-[0.6rem] text-text-muted font-mono">border</span>
-                </div>
-                <div className="space-y-2">
-                  <div className="h-12 w-full rounded-md bg-border-2 border border-white/10" />
-                  <span className="text-[0.6rem] text-text-muted font-mono">border-2</span>
                 </div>
               </div>
             </div>
@@ -213,8 +213,8 @@ export default function StyleGuidePage() {
               <h3 className="text-text-muted uppercase text-[0.65rem] font-bold tracking-widest">Text Hierarchy</h3>
               <div className="space-y-4">
                 <div>
-                  <div className="text-white text-3xl font-bold">Heading 1</div>
-                  <span className="text-[0.6rem] text-text-muted font-mono">3xl / bold / white</span>
+                  <div className="text-text-primary text-3xl font-bold">Heading 1</div>
+                  <span className="text-[0.6rem] text-text-muted font-mono">3xl / bold / text-primary</span>
                 </div>
                 <div>
                   <div className="text-text-primary text-xl font-semibold">Heading 2</div>

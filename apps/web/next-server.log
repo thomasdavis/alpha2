@@ -28,8 +28,9 @@ Import trace for requested module:
 ./src/lib/engine.ts
 ./src/lib/init.ts
 Found 1 run(s): 20260224064526_4kwo
+createDb failed: cannot change into wal mode from within a transaction
 DB synced: 1 runs, 0 new metrics
- ✓ Ready in 6.7s
+ ✓ Ready in 9.3s
  ⚠ ./src/lib/engine.ts
 Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
 
@@ -56,84 +57,5 @@ Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (i
 Import trace for requested module:
 ./src/lib/engine.ts
 ./src/lib/init.ts
- GET /styleguide 200 in 8983ms
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
- GET /styleguide 200 in 531ms
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
- GET /styleguide 200 in 452ms
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
- ⚠ ./src/lib/engine.ts
-Attempted import error: 'prepareInferenceWeights' is not exported from '@alpha/inference' (imported as 'prepareInferenceWeights').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
-
-./src/lib/engine.ts
-Attempted import error: 'SessionPool' is not exported from '@alpha/inference' (imported as 'SessionPool').
-
-Import trace for requested module:
-./src/lib/engine.ts
-./src/lib/init.ts
+ GET /styleguide 200 in 16505ms
+ GET /styleguide 200 in 179ms
