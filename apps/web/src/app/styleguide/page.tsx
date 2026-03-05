@@ -18,7 +18,8 @@ import {
   SymbioSection,
   LayersSection,
   MethodBadge, Endpoint, Required, SectionHeading, Pre,
-  ArchBadge, PhaseBadge, KernelChip
+  ArchBadge, PhaseBadge, KernelChip,
+  Spinner, EmptyState
 } from "@alpha/ui";
 import { 
   Activity, 
@@ -274,6 +275,49 @@ export default function StyleGuidePage() {
           Transformer Layer Analysis
         </h2>
         <LayersSection metrics={mockChartMetrics as any} />
+      </section>
+
+      {/* ── Feedback & States ────────────────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-red pl-4 flex items-center gap-2">
+          <Activity className="h-5 w-5 text-red" />
+          Feedback & States
+        </h2>
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Loading Spinners</CardTitle>
+            </CardHeader>
+            <CardContent className="flex items-end gap-6">
+              <div className="flex flex-col items-center gap-2">
+                <Spinner size="sm" />
+                <span className="text-xs text-text-muted font-mono">sm</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Spinner size="md" />
+                <span className="text-xs text-text-muted font-mono">md</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Spinner size="lg" />
+                <span className="text-xs text-text-muted font-mono">lg</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Empty State</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <EmptyState 
+                title="No training runs found" 
+                description="Sync runs from disk or start a new training job to see data here."
+                icon={<Activity className="h-6 w-6" />}
+                action={<Button variant="outline" size="sm" className="mt-2">Refresh Data</Button>}
+              />
+            </CardContent>
+          </Card>
+        </div>
       </section>
 
       {/* ── Badges ─────────────────────────────────────────────────── */}

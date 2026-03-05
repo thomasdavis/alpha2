@@ -7,7 +7,7 @@ import { LossChart } from "@/components/loss-chart";
 import { TrainingDataPreview } from "./training-data";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
-import { StatCard, DetailRow, Progress } from "@alpha/ui";
+import { StatCard, DetailRow, Progress, Card } from "@alpha/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +109,7 @@ export default async function ModelDetailPage({
       </div>
 
       {/* Inference status */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+      <Card className="mb-6 p-4">
         {inferenceAvailable ? (
           <div className="flex flex-wrap items-center gap-3">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-green-bg px-3 py-1 text-xs font-semibold text-green">
@@ -137,7 +137,7 @@ export default async function ModelDetailPage({
             <Tip text={tips.inferenceUnavailable} />
           </span>
         )}
-      </div>
+      </Card>
 
       {/* Stats grid */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -148,7 +148,7 @@ export default async function ModelDetailPage({
       </div>
 
       {/* Progress */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+      <Card className="mb-6 p-4">
         <div className="mb-2 flex justify-between text-sm text-text-secondary">
           <span>
             Step {(run.latest_step ?? 0).toLocaleString()} /{" "}
@@ -162,19 +162,19 @@ export default async function ModelDetailPage({
           variant={run.status === "active" ? "success" : run.status === "failed" ? "danger" : run.status === "stale" ? "warning" : "blue"}
           className="h-2"
         />
-      </div>
+      </Card>
 
       {/* Loss chart */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+      <Card className="mb-6 p-4">
         <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
           Loss over training <Tip text={tips.lossChart} />
         </h2>
         <LossChart runId={run.id} />
-      </div>
+      </Card>
 
       {/* Config + checkpoints */}
       <div className="grid gap-6 sm:grid-cols-2">
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <Card className="p-4">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Model Architecture <Tip text={tips.architecture} />
           </h2>
@@ -187,9 +187,9 @@ export default async function ModelDetailPage({
             <DetailRow label="Dropout" value={run.dropout} tip={tips.dropout} />
             <DetailRow label="Est. params" value={formatParams(run.estimated_params)} tip={tips.params} />
           </div>
-        </div>
+        </Card>
 
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <Card className="p-4">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Training Config
           </h2>
@@ -203,11 +203,11 @@ export default async function ModelDetailPage({
             <DetailRow label="Optimizer" value={run.optimizer} tip={tips.optimizer} />
             <DetailRow label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} tip={tips.msPerIter} />
           </div>
-        </div>
+        </Card>
 
         {/* Raw JSON configs */}
         {(modelConfigJson || trainConfigJson) && (
-          <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
+          <Card className="p-4 sm:col-span-2">
             <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
               Raw Config JSON <Tip text={tips.rawConfig} />
             </h2>
@@ -215,20 +215,20 @@ export default async function ModelDetailPage({
               {modelConfigJson && (
                 <div>
                   <div className="mb-1 text-[0.65rem] uppercase tracking-wider text-text-muted">model_config</div>
-                  <pre className="max-h-48 overflow-auto rounded bg-[#0d0d0d] p-3 text-[0.7rem] leading-relaxed text-text-secondary">{modelConfigJson}</pre>
+                  <pre className="max-h-48 overflow-auto rounded bg-surface-2 p-3 text-[0.7rem] leading-relaxed text-text-secondary">{modelConfigJson}</pre>
                 </div>
               )}
               {trainConfigJson && (
                 <div>
                   <div className="mb-1 text-[0.65rem] uppercase tracking-wider text-text-muted">train_config</div>
-                  <pre className="max-h-48 overflow-auto rounded bg-[#0d0d0d] p-3 text-[0.7rem] leading-relaxed text-text-secondary">{trainConfigJson}</pre>
+                  <pre className="max-h-48 overflow-auto rounded bg-surface-2 p-3 text-[0.7rem] leading-relaxed text-text-secondary">{trainConfigJson}</pre>
                 </div>
               )}
             </div>
-          </div>
+          </Card>
         )}
 
-        <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
+        <Card className="p-4 sm:col-span-2">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Checkpoints ({checkpoints.length}) <Tip text={tips.checkpoint} />
           </h2>
@@ -251,15 +251,15 @@ export default async function ModelDetailPage({
               ))}
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Training data preview */}
-        <div className="rounded-lg border border-border bg-surface p-4 sm:col-span-2">
+        <Card className="p-4 sm:col-span-2">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Training Data <Tip text={tips.trainingData} />
           </h2>
           <TrainingDataPreview runId={run.id} />
-        </div>
+        </Card>
       </div>
     </>
   );

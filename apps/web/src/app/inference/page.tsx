@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Card, Button } from "@alpha/ui";
 
 interface ModelConfig {
   nLayer: number;
@@ -39,9 +40,7 @@ export default function InferencePage() {
   const [topk, setTopk] = useState(40);
   const [topP, setTopP] = useState(1.0);
   const [generating, setGenerating] = useState(false);
-  const [tokens, setTokens] = useState<{ text: string; isPrompt: boolean }[]>(
-    []
-  );
+  const [tokens, setTokens] = useState<{ text: string; isPrompt: boolean }[]>([]);
   const [status, setStatus] = useState("");
 
   const sourceRef = useRef<EventSource | null>(null);
@@ -192,14 +191,14 @@ export default function InferencePage() {
 
   return (
     <>
-      <h1 className="mb-1 text-lg font-bold text-white">Inference</h1>
+      <h1 className="mb-1 text-lg font-bold text-text-primary">Inference</h1>
       <p className="mb-6 text-xs text-text-muted">
         Text generation with streaming output
       </p>
 
       <div className="mx-auto max-w-3xl space-y-4">
         {/* Model selector */}
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <Card className="p-4">
           <label className="mb-1.5 block text-xs font-medium text-text-secondary">
             Model
           </label>
@@ -222,10 +221,10 @@ export default function InferencePage() {
               No models loaded yet. Models become available automatically after training runs upload checkpoints.
             </p>
           )}
-        </div>
+        </Card>
 
         {/* Prompt + controls */}
-        <div className="rounded-lg border border-border bg-surface p-4">
+        <Card className="p-4">
           <label className="mb-1.5 block text-xs font-medium text-text-secondary">
             Prompt
           </label>
@@ -299,23 +298,23 @@ export default function InferencePage() {
             </div>
 
             <div className="flex gap-2">
-              <button
+              <Button
+                variant="primary"
                 onClick={doGenerate}
                 disabled={generating || !modelId}
-                className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Generate
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="secondary"
                 onClick={doStop}
                 disabled={!generating}
-                className="rounded border border-border-2 px-4 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Stop
-              </button>
+              </Button>
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* Output area */}
         <div

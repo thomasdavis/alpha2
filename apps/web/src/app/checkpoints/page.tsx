@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getClient } from "@/lib/db";
 import { listRuns, listCheckpoints } from "@alpha/db";
 import { formatBytes, timeAgo } from "@/lib/format";
+import { Card, EmptyState } from "@alpha/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -43,13 +44,13 @@ export default async function CheckpointsPage() {
   return (
     <>
       <div className="mb-6">
-        <h1 className="text-lg font-bold text-white">Checkpoints</h1>
+        <h1 className="text-lg font-bold text-text-primary">Checkpoints</h1>
         <p className="mt-0.5 text-xs text-text-muted">
           {allCheckpoints.length} checkpoints across {runs.length} runs &middot; {formatBytes(totalSize)} total
         </p>
       </div>
 
-      <div className="rounded-lg border border-border bg-surface">
+      <Card>
         {/* Table header */}
         <div className="grid grid-cols-[1fr_80px_100px_80px_44px] gap-4 border-b border-border px-4 py-2.5 text-[0.68rem] font-semibold uppercase tracking-wider text-text-muted sm:grid-cols-[1fr_1fr_100px_100px_100px_52px]">
           <span>Run</span>
@@ -61,9 +62,7 @@ export default async function CheckpointsPage() {
         </div>
 
         {allCheckpoints.length === 0 ? (
-          <div className="px-4 py-8 text-center text-xs text-text-muted">
-            No checkpoints found.
-          </div>
+          <EmptyState title="No checkpoints found" description="Sync runs from disk or start a training run." />
         ) : (
           allCheckpoints.map((c, i) => (
             <div
@@ -72,7 +71,7 @@ export default async function CheckpointsPage() {
             >
               <Link
                 href={`/runs/${encodeURIComponent(c.runId)}`}
-                className="truncate font-medium text-white hover:text-accent"
+                className="truncate font-medium text-text-primary hover:text-accent"
               >
                 {c.runId}
               </Link>
@@ -101,7 +100,7 @@ export default async function CheckpointsPage() {
             </div>
           ))
         )}
-      </div>
+      </Card>
     </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
+import { Button, Card, CardContent } from "@alpha/ui";
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -466,13 +467,13 @@ function ChatPage() {
     >
       {/* ── Header bar ── */}
       <div className="flex shrink-0 items-center gap-3 border-b border-border bg-surface px-4 py-2.5">
-        <h1 className="whitespace-nowrap text-sm font-semibold text-white">
+        <h1 className="whitespace-nowrap text-sm font-semibold text-text-primary">
           Alpha Chat
         </h1>
         <select
           value={modelId}
           onChange={(e) => handleModelChange(e.target.value)}
-          className="rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-xs text-text-primary outline-none"
+          className="rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-xs text-text-primary outline-none focus:border-accent"
         >
           {models.map((m) => (
             <option key={m.id} value={m.id}>
@@ -482,18 +483,20 @@ function ChatPage() {
         </select>
         <span className="text-[0.7rem] text-text-muted">{modelInfo}</span>
         <span className="flex-1" />
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => setSettingsOpen((v) => !v)}
-          className="rounded border border-border-2 px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
         >
           Settings
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           onClick={clearChat}
-          className="rounded border border-border-2 px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
         >
           Clear
-        </button>
+        </Button>
       </div>
 
       {/* ── Settings panel ── */}
@@ -577,8 +580,8 @@ function ChatPage() {
               key={i}
               className={`mx-auto w-full max-w-[720px] px-5 py-3 ${
                 msg.role === "user"
-                  ? "mb-2 self-center rounded-xl bg-[#1a2744]"
-                  : "mb-2 bg-[#161616]"
+                  ? "mb-2 self-center rounded-xl bg-surface-2/70"
+                  : "mb-2 bg-surface"
               }`}
             >
               <div className="mb-1 text-[0.7rem] uppercase tracking-wider text-text-secondary">
@@ -587,8 +590,8 @@ function ChatPage() {
               <div
                 className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${
                   msg.role === "assistant"
-                    ? "font-mono text-[0.85rem]"
-                    : ""
+                    ? "font-mono text-[0.85rem] text-text-primary"
+                    : "text-text-primary"
                 }`}
               >
                 {msg.content}
@@ -604,9 +607,11 @@ function ChatPage() {
                 msg.role === "assistant" &&
                 msg.content.trim() &&
                 !generating && (
-                  <button
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2.5 text-yellow border-yellow/30 bg-yellow-bg/50 hover:bg-yellow-bg hover:text-yellow/90 gap-1.5"
                     onClick={() => openMusicModal(msg.content, i)}
-                    className="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-[#5a4420] bg-yellow-bg px-3 py-1.5 text-xs text-yellow transition-colors hover:border-[#7a6030] hover:bg-[#4a3a24]"
                   >
                     <svg
                       viewBox="0 0 24 24"
@@ -615,19 +620,21 @@ function ChatPage() {
                       <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
                     </svg>
                     Make Music
-                  </button>
+                  </Button>
                 )}
 
               {/* Inline audio player */}
               {msg.audioUrl && (
                 <div className="mt-2 flex items-center gap-2.5 rounded-lg border border-border bg-surface-2 px-3 py-2">
                   <audio controls src={msg.audioUrl} className="h-8 flex-1" />
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={() => downloadAudio(msg.audioUrl!)}
-                    className="rounded-md bg-blue-bg px-2 py-1 text-[0.72rem] text-blue transition-colors hover:bg-[#254a75]"
+                    className="bg-blue hover:bg-blue/90"
                   >
                     MP3
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
@@ -654,13 +661,14 @@ function ChatPage() {
             style={{ minHeight: 44, maxHeight: 150 }}
             autoFocus
           />
-          <button
+          <Button
+            variant="primary"
             onClick={sendMessage}
             disabled={generating}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-lg text-white transition-colors hover:bg-accent/80 disabled:cursor-not-allowed disabled:bg-border-2"
+            className="h-[44px] w-[44px] shrink-0 p-0 text-lg"
           >
             &#9654;
-          </button>
+          </Button>
         </div>
         <div className="mx-auto mt-1 min-h-[1em] max-w-[720px] text-[0.7rem] text-text-muted">
           {status}
@@ -670,13 +678,13 @@ function ChatPage() {
       {/* ── Music generation modal ── */}
       {musicModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
           onClick={(e) => {
             if (e.target === e.currentTarget) closeMusicModal();
           }}
         >
-          <div className="relative w-[90%] max-w-[440px] rounded-xl border border-border-2 bg-surface p-6">
-            <h3 className="mb-1 text-base font-semibold text-white">
+          <Card className="relative w-[90%] max-w-[440px] p-6 shadow-2xl">
+            <h3 className="mb-1 text-base font-semibold text-text-primary">
               Generate Music
             </h3>
 
@@ -702,7 +710,7 @@ function ChatPage() {
               <select
                 value={musicStyle}
                 onChange={(e) => setMusicStyle(e.target.value)}
-                className="flex-1 rounded-md border border-border-2 bg-surface-2 px-2.5 py-2 text-xs text-text-primary outline-none"
+                className="flex-1 rounded-md border border-border-2 bg-surface-2 px-2.5 py-2 text-xs text-text-primary outline-none focus:border-accent"
               >
                 {MUSIC_STYLES.map((s) => (
                   <option key={s.value} value={s.value}>
@@ -714,19 +722,20 @@ function ChatPage() {
 
             {/* Actions */}
             <div className="mt-4 flex justify-end gap-2">
-              <button
+              <Button
+                variant="outline"
                 onClick={closeMusicModal}
-                className="rounded-md border border-border-2 bg-surface-2 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-border-2 hover:text-text-primary"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
                 onClick={generateMusic}
                 disabled={musicGenerating}
-                className="rounded-md bg-[#b45309] px-4 py-2 text-sm text-white transition-colors hover:bg-[#d97706] disabled:cursor-not-allowed disabled:bg-[#5a4420] disabled:text-text-secondary"
+                className="bg-yellow hover:bg-yellow/90 text-black"
               >
                 Generate
-              </button>
+              </Button>
             </div>
 
             {/* Status */}
@@ -741,27 +750,31 @@ function ChatPage() {
               <div className="mt-3 flex flex-col gap-2">
                 <audio controls src={musicBlobUrl} className="h-9 w-full" />
                 <div className="flex gap-2">
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={() => downloadAudio(musicBlobUrl)}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-blue-bg px-3 py-1.5 text-xs text-blue transition-colors hover:bg-[#254a75]"
+                    className="bg-blue hover:bg-blue/90 flex-1"
                   >
                     Download MP3
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={resetModal}
-                    className="rounded-md border border-border-2 bg-surface-2 px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-border-2 hover:text-text-primary"
+                    className="flex-1"
                   >
                     Generate another
-                  </button>
+                  </Button>
                 </div>
                 {musicMeta && (
-                  <div className="text-[0.7rem] text-text-muted">
+                  <div className="text-[0.7rem] text-text-muted text-center mt-1">
                     {musicMeta}
                   </div>
                 )}
               </div>
             )}
-          </div>
+          </Card>
         </div>
       )}
 
