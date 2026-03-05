@@ -1065,7 +1065,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
     : trainConfig.lrMin;
   const decayDenom = Math.max(1, totalIters - warmup);
-  let lossScale = useLossScaling ? 65536.0 : 1.0; // start high, will auto-tune down
+  let lossScale = useLossScaling ? 1024.0 : 1.0; // start safer, will auto-tune down
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
@@ -1461,20 +1461,22 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         }
       }
 
-      // NaN guard on gradient norm (backward produced NaN even though loss was finite)
-      if (!isFinite(gradNorm)) {
+      // NaN guard: if forward (loss) or backward (gradNorm) produced non-finite values,
+      // reduce lossScale and skip the optimizer update.
+      if (nanDetected || !isFinite(gradNorm)) {
         if (useLossScaling) {
           // Dynamic loss scaling: halve the scale and retry
-          lossScale /= 2;
+          const oldScale = lossScale;
+          lossScale = Math.max(1.0, lossScale / 2);
           lossScaleReductions++;
-          console.warn(`  [loss_scale] grad overflow at step ${stepNum} — reducing scale to ${lossScale}`);
+          console.warn(`  [loss_scale] NaN/overflow at step ${stepNum} — reducing scale ${oldScale} -> ${lossScale}`);
           if (!gradNanLogged) {
             emitEvent({
               step: stepNum,
               level: "warn",
               kind: "grad_overflow",
-              message: `gradient overflow detected; reducing loss scale to ${lossScale}`,
-              payload: { lossScale, lossScaleReductions, useLossScaling: true },
+              message: `NaN or gradient overflow detected; reducing loss scale to ${lossScale}`,
+              payload: { lossScale, lossScaleReductions, useLossScaling: true, nanFromForward: nanDetected },
             });
             gradNanLogged = true;
           }
@@ -1493,7 +1495,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
             });
           }
         }
-        nanDetected = true;
+        nanDetected = true; // Ensure optimizer step is skipped
       } else if (useLossScaling) {
         // Track consecutive successes for scale growth
         scaleSuccessCount++;
