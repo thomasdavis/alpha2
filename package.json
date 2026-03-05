@@ -12,7 +12,7 @@
     "test": "turbo test",
     "lint": "turbo lint",
     "clean": "turbo clean",
-    "typecheck": "turbo build -- --noEmit",
+    "typecheck": "tsc -b --noEmit",
     "train": "node --expose-gc apps/cli/dist/main.js train",
     "train:dev": "npx tsx apps/cli/src/main.ts train",
     "sample": "node apps/cli/dist/main.js sample",
@@ -44,12 +44,20 @@
     "fleet:logs": "node apps/cli/dist/main.js fleet logs",
     "fleet:ssh": "node apps/cli/dist/main.js fleet ssh",
     "fleet:run": "node apps/cli/dist/main.js fleet run",
-    "fleet:download": "node apps/cli/dist/main.js fleet download"
+    "fleet:download": "node apps/cli/dist/main.js fleet download",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "**/*.{js,jsx,ts,tsx}": [
+      "bash -c 'npx turbo build --filter=@alpha/web...'"
+    ]
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.2",
     "turbo": "^2.4.0",
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.7.0"
   },
   "packageManager": "npm@10.8.0",
   "engines": {

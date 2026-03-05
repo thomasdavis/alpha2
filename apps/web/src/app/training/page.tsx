@@ -287,21 +287,21 @@ function LiveRunCard({ run }: { run: LiveRun }) {
             metrics={chartMetrics}
             title="GPU & VRAM"
             noDataMsg="No GPU data"
-            formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
-            formatRight={(v) => v.toFixed(0) + "%"}
+            formatLeft={(v: number) => (v / 1024).toFixed(1) + "G"}
+            formatRight={(v: number) => v.toFixed(0) + "%"}
             buildSeries={buildGpuSeries}
           />
           <MiniChart
             metrics={chartMetrics}
             title="Learning Rate"
-            formatLeft={(v) => v.toExponential(1)}
+            formatLeft={(v: number) => v.toExponential(1)}
             buildSeries={buildLrSeries}
           />
           <MiniChart
             metrics={chartMetrics}
             title="Grad Norm"
             logScale
-            formatLeft={(v) => v.toExponential(0)}
+            formatLeft={(v: number) => v.toExponential(0)}
             buildSeries={buildGradNormSeries}
           />
           <StepTimeChart metrics={chartMetrics} />

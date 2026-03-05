@@ -1,0 +1,25 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/ui" },
+    { "path": "packages/tokenizers" },
+    { "path": "packages/helios" },
+    { "path": "packages/bench" },
+    { "path": "packages/symbiogenesis" },
+    { "path": "packages/autograd" },
+    { "path": "packages/tests" },
+    { "path": "packages/model" },
+    { "path": "packages/train" },
+    { "path": "packages/db" },
+    { "path": "packages/inference" },
+    { "path": "packages/tensor" },
+    { "path": "packages/effect-runtime" },
+    { "path": "packages/historic-chat-gen" },
+    { "path": "packages/datagen" },
+    { "path": "apps/tui" },
+    { "path": "apps/web" },
+    { "path": "apps/cli" },
+    { "path": "apps/hf" }
+  ]
+}

@@ -15,8 +15,29 @@ import {
   MARKER_HELP_TEXTS,
   TIMING_PHASES,
   fmtNum,
+  fmtParams,
+  fmtDuration,
   cn,
+  Tooltip,
 } from "@alpha/ui";
+
+export {
+  type ChartMetric,
+  type ChartCheckpoint,
+  type MiniSeries,
+  type MarkerType,
+  type MarkerVisibility,
+  type ActivationSwitchEvent,
+  type ComputedEvents,
+  MARKER_COLORS,
+  MARKER_LABELS,
+  MARKER_HELP_TEXTS,
+  TIMING_PHASES,
+  fmtNum,
+  fmtParams,
+  fmtDuration,
+  cn,
+};
 
 // ── Shared Detection Logic ───────────────────────────────────────
 
@@ -313,11 +334,11 @@ function drawLossChart(canvas: HTMLCanvasElement, metrics: ChartMetric[], hoverI
 
 function MarkerPillHelp({ marker }: { marker: MarkerType }) {
   return (
-    <Tip text={MARKER_HELP_TEXTS[marker]}>
+    <Tooltip text={MARKER_HELP_TEXTS[marker]}>
       <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-border/60 bg-surface-2 text-[0.5rem] font-bold text-text-muted hover:border-text-muted transition-colors">
         ?
       </span>
-    </Tip>
+    </Tooltip>
   );
 }
 
@@ -478,10 +499,22 @@ function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { 
   });
 }
 
-export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, formatRight, noDataMsg, pinnedStep, onPinStep }: any) {
+interface MiniChartProps {
+  metrics: ChartMetric[];
+  title: string;
+  buildSeries: (m: ChartMetric[]) => MiniSeries[];
+  logScale?: boolean;
+  formatLeft?: (v: number) => string;
+  formatRight?: (v: number) => string;
+  noDataMsg?: string;
+  pinnedStep?: number | null;
+  onPinStep?: (step: number) => void;
+}
+
+export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, formatRight, noDataMsg, pinnedStep, onPinStep }: MiniChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const series = useMemo(() => buildSeries(metrics), [metrics, buildSeries]);
-  const hasData = series.some((s: any) => s.data.length >= 2);
+  const hasData = series.some((s) => s.data.length >= 2);
 
   useEffect(() => {
     if (canvasRef.current && hasData) drawMiniChart(canvasRef.current, series, { logScale, formatLeft, formatRight }, null, pinnedStep);
@@ -490,12 +523,12 @@ export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, f
   return (
     <div className="relative">
       <div className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-text-primary">{title}</div>
-      {hasData ? <canvas ref={canvasRef} className="h-48 w-full rounded-xl border border-border/50 bg-surface shadow-inner" /> : <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">No Telemetry</div>}
+      {hasData ? <canvas ref={canvasRef} className="h-48 w-full rounded-xl border border-border/50 bg-surface shadow-inner" /> : <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">{noDataMsg || "No Telemetry"}</div>}
     </div>
   );
 }
 
-export function StepTimeChart({ metrics, pinnedStep, onPinStep }: any) {
+export function StepTimeChart({ metrics, pinnedStep, onPinStep }: { metrics: ChartMetric[]; pinnedStep?: number | null; onPinStep?: (step: number) => void }) {
   return <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">Step Analysis Pending</div>;
 }
 
