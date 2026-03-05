@@ -19,7 +19,8 @@ import {
   LayersSection,
   MethodBadge, Endpoint, Required, SectionHeading, Pre,
   ArchBadge, PhaseBadge, KernelChip,
-  Spinner, EmptyState
+  Spinner, EmptyState,
+  Input, Select
 } from "@alpha/ui";
 import { 
   Activity, 
@@ -39,7 +40,9 @@ import {
   Server,
   ActivitySquare,
   Microscope,
-  Layers
+  Layers,
+  Search,
+  Plus
 } from "lucide-react";
 
 export default function StyleGuidePage() {
@@ -76,7 +79,6 @@ export default function StyleGuidePage() {
       timing_grad_norm_ms: 0.5,
       timing_grad_clip_ms: 0.5,
       gpu_ops_count: 120,
-      // Symbio specific
       weight_entropy: 4.5 + Math.sin(i/10)*0.5,
       effective_rank: 128 - (i/2),
       free_energy: 2.1 - (i/50),
@@ -87,7 +89,6 @@ export default function StyleGuidePage() {
       cusum_clip: Math.max(0, Math.cos(i/8)*3),
       cusum_tps: 0.1,
       cusum_val: 0.2,
-      // Layer specific
       per_layer_grad_norms: JSON.stringify(layers)
     };
   });
@@ -103,7 +104,7 @@ export default function StyleGuidePage() {
       <header className="mb-12 border-b border-border pb-8">
         <h1 className="text-4xl font-bold tracking-tight text-text-primary mb-2">Alpha Style Guide</h1>
         <p className="text-text-secondary text-lg">
-          Core UI components for the Alpha training system. All components are built with React 19, Tailwind CSS v4, and Lucide Icons.
+          Comprehensive UI reference for the Alpha GPT training system.
         </p>
       </header>
 
@@ -119,23 +120,105 @@ export default function StyleGuidePage() {
               <CardTitle>Variants</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-4">
-              <Button variant="primary">Primary Button</Button>
-              <Button variant="secondary">Secondary Button</Button>
-              <Button variant="outline">Outline Button</Button>
-              <Button variant="ghost">Ghost Button</Button>
-              <Button variant="danger">Danger Button</Button>
+              <Button variant="primary">Primary</Button>
+              <Button variant="secondary">Secondary</Button>
+              <Button variant="outline">Outline</Button>
+              <Button variant="ghost">Ghost</Button>
+              <Button variant="danger">Danger</Button>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Sizes</CardTitle>
+              <CardTitle>Sizes (Comparative)</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-wrap items-end gap-4">
-              <Button size="sm">Small</Button>
-              <Button size="md">Medium</Button>
-              <Button size="lg">Large</Button>
-              <Button size="icon" variant="outline"><Settings className="h-4 w-4" /></Button>
+            <CardContent className="flex flex-wrap items-center gap-6">
+              <div className="flex flex-col items-center gap-2">
+                <Button size="sm">Small Button</Button>
+                <span className="text-[0.6rem] text-text-muted font-mono">sm (h-7)</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Button size="md">Medium Button</Button>
+                <span className="text-[0.6rem] text-text-muted font-mono">md (h-9)</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Button size="lg">Large Button</Button>
+                <span className="text-[0.6rem] text-text-muted font-mono">lg (h-11)</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Button size="icon" variant="outline"><Settings className="h-4 w-4" /></Button>
+                <span className="text-[0.6rem] text-text-muted font-mono">icon</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>States</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-4">
+              <Button loading>Loading State</Button>
+              <Button variant="secondary" loading>Saving...</Button>
+              <Button disabled>Disabled</Button>
+              <Button variant="outline" disabled>Disabled Outline</Button>
+              <Button variant="primary" className="gap-2">
+                <Plus className="h-4 w-4" />
+                With Icon
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      {/* ── Forms ──────────────────────────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-orange-500 pl-4 flex items-center gap-2">
+          <Settings className="h-5 w-5 text-orange-500" />
+          Forms & Inputs
+        </h2>
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Text Inputs</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[0.65rem] font-bold uppercase tracking-wider text-text-muted">Standard Input</label>
+                <Input placeholder="Enter prompt..." />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[0.65rem] font-bold uppercase tracking-wider text-text-muted">With Icon (CSS)</label>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" />
+                  <Input className="pl-9" placeholder="Search models..." />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[0.65rem] font-bold uppercase tracking-wider text-text-muted">Disabled</label>
+                <Input disabled value="Read only value" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Select Inputs</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[0.65rem] font-bold uppercase tracking-wider text-text-muted">Model Selector</label>
+                <Select>
+                  <option>Alpha-GPT-Small (step 50k)</option>
+                  <option>Alpha-GPT-Medium (step 120k)</option>
+                  <option>Alpha-LLaMA-Tiny (step 10k)</option>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[0.65rem] font-bold uppercase tracking-wider text-text-muted">Disabled Select</label>
+                <Select disabled>
+                  <option>Optimization active...</option>
+                </Select>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -148,7 +231,6 @@ export default function StyleGuidePage() {
           Charts & Data
         </h2>
         <div className="grid gap-6">
-          {/* Stats Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Stat label="Loss" value="0.4521" color="text-yellow" tip="Current cross-entropy loss" />
             <Stat label="Throughput" value="12.4k" sub="tokens/sec" color="text-green" tip="Tokens processed per second" />
@@ -157,13 +239,9 @@ export default function StyleGuidePage() {
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">
-            {/* Sparklines */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  Sparklines
-                  <Activity className="h-4 w-4 text-text-muted" />
-                </CardTitle>
+                <CardTitle className="flex items-center justify-between">Sparklines</CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="flex items-center justify-between">
@@ -174,67 +252,21 @@ export default function StyleGuidePage() {
                   <span className="text-xs text-text-secondary">Validation Loss</span>
                   <Sparkline data={[2, 1.8, 1.9, 1.5, 1.6, 1.4, 1.3]} variant="blue" />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-text-secondary">Gradient Spikes</span>
-                  <Sparkline data={[0.1, 0.1, 0.8, 0.1, 0.2, 0.9, 0.1]} variant="danger" />
-                </div>
               </CardContent>
             </Card>
 
-            {/* Detail Rows */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  Detail Table
-                  <Terminal className="h-4 w-4 text-text-muted" />
-                </CardTitle>
+                <CardTitle>Detail Table</CardTitle>
               </CardHeader>
               <CardContent>
                 <DetailRow label="Optimizer" value="AdamW" tip="Weight Decay Adaptive Moments" />
                 <DetailRow label="Learning Rate" value="6.0e-4" />
-                <DetailRow label="Weight Decay" value="0.1" />
                 <DetailRow label="Batch Size" value="512" />
-                <DetailRow label="Block Size" value="1024" />
               </CardContent>
             </Card>
           </div>
 
-          {/* Progress Section */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Training Progress</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="space-y-2">
-                <div className="flex justify-between text-[0.65rem] uppercase font-bold text-text-muted">
-                  <span>Iteration 45,000 / 50,000</span>
-                  <span>90%</span>
-                </div>
-                <Progress value={90} variant="default" className="h-2" />
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-[0.65rem] uppercase font-bold text-text-muted">
-                  <span>Checkpoint Sync</span>
-                  <span className="text-green">Healthy</span>
-                </div>
-                <Progress value={100} variant="success" className="h-1.5" />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* New Charts Subsection */}
-          <div className="grid gap-6">
-            <ChartPanel title="Optimization Telemetry" helpText="Visualization of internal training dynamics using the BaseMiniChart component.">
-              <BaseMiniChart 
-                data={mockMiniData} 
-                title="Gradient Norm (L2)" 
-                height={180} 
-                formatValue={(v) => v.toFixed(1)} 
-              />
-            </ChartPanel>
-          </div>
-
-          {/* Complex Charts Subsection */}
           <div className="mt-8 space-y-6">
             <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-text-primary">
               <ActivitySquare className="h-4 w-4 text-accent" />
@@ -251,9 +283,6 @@ export default function StyleGuidePage() {
                   checkpoints={mockCheckpoints} 
                 />
               </CardContent>
-              <CardFooter className="bg-surface-2/30 text-[0.65rem] text-text-muted italic">
-                Note: This is a high-performance canvas implementation with interactive markers and tooltips.
-              </CardFooter>
             </Card>
           </div>
         </div>
@@ -354,7 +383,7 @@ export default function StyleGuidePage() {
         </Card>
       </section>
 
-      {/* ── Domain Specific Components ───────────────────────────────── */}
+      {/* ── Documentation & Architecture ────────────────────────────── */}
       <section className="mb-16">
         <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-blue pl-4 flex items-center gap-2">
           <Book className="h-5 w-5 text-blue" />
@@ -381,7 +410,7 @@ export default function StyleGuidePage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Architecture Diagram Elements</CardTitle>
+              <CardTitle>Architecture Elements</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2">
@@ -393,9 +422,7 @@ export default function StyleGuidePage() {
                 <PhaseBadge variant="forward">Forward</PhaseBadge>
                 <PhaseBadge variant="backward">Backward</PhaseBadge>
               </div>
-              <KernelChip name="gemm_coop">
-                Cooperative matrix multiplication kernel using tensor cores.
-              </KernelChip>
+              <KernelChip name="gemm_coop">Cooperative Tensor Core Kernel</KernelChip>
             </CardContent>
           </Card>
         </div>

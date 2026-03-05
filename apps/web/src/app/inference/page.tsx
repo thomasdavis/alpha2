@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Card, Button } from "@alpha/ui";
+import { Card, Button, Select, Input } from "@alpha/ui";
 
 interface ModelConfig {
   nLayer: number;
@@ -53,6 +53,7 @@ export default function InferencePage() {
     fetch("/api/models")
       .then((r) => r.json())
       .then((data: Model[]) => {
+        if (!Array.isArray(data)) return;
         setModels(data);
         if (data.length > 0) {
           setModelId(data[0].id);
@@ -91,6 +92,8 @@ export default function InferencePage() {
   }, [finish]);
 
   const doGenerate = useCallback(() => {
+    if (!modelId) return;
+    
     // Stop any existing stream
     if (sourceRef.current) {
       sourceRef.current.close();
@@ -128,15 +131,19 @@ export default function InferencePage() {
         return;
       }
 
-      const data = JSON.parse(e.data);
-      const token: string = data.token;
+      try {
+        const data = JSON.parse(e.data);
+        const token: string = data.token;
 
-      if (isFirst) {
-        isFirst = false;
-        setTokens((prev) => [...prev, { text: token, isPrompt: true }]);
-      } else {
-        tokenCountRef.current++;
-        setTokens((prev) => [...prev, { text: token, isPrompt: false }]);
+        if (isFirst) {
+          isFirst = false;
+          setTokens((prev) => [...prev, { text: token, isPrompt: true }]);
+        } else {
+          tokenCountRef.current++;
+          setTokens((prev) => [...prev, { text: token, isPrompt: false }]);
+        }
+      } catch (err) {
+        console.error("Parse error", e.data);
       }
     };
 
@@ -202,17 +209,16 @@ export default function InferencePage() {
           <label className="mb-1.5 block text-xs font-medium text-text-secondary">
             Model
           </label>
-          <select
+          <Select
             value={modelId}
             onChange={(e) => handleModelChange(e.target.value)}
-            className="w-full rounded border border-border-2 bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
           >
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name} [{m.domain || "novels"}] (step {m.step})
               </option>
             ))}
-          </select>
+          </Select>
           {modelInfo && (
             <div className="mt-2 text-xs text-text-muted">{modelInfo}</div>
           )}
@@ -228,7 +234,7 @@ export default function InferencePage() {
           <label className="mb-1.5 block text-xs font-medium text-text-secondary">
             Prompt
           </label>
-          <input
+          <Input
             type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -238,7 +244,7 @@ export default function InferencePage() {
                 ? "Enter chord progression..."
                 : "Enter prompt..."
             }
-            className="mb-4 w-full rounded border border-border-2 bg-surface-2 px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+            className="mb-4"
           />
 
           <div className="flex flex-wrap items-end gap-4">
@@ -246,54 +252,54 @@ export default function InferencePage() {
               <label className="mb-1 block text-xs text-text-secondary">
                 Steps
               </label>
-              <input
+              <Input
                 type="number"
                 value={steps}
                 onChange={(e) => setSteps(Number(e.target.value))}
                 min={1}
                 max={500}
-                className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
+                className="w-20"
               />
             </div>
             <div>
               <label className="mb-1 block text-xs text-text-secondary">
                 Temperature
               </label>
-              <input
+              <Input
                 type="number"
                 value={temperature}
                 onChange={(e) => setTemperature(Number(e.target.value))}
                 min={0.1}
                 max={2.0}
                 step={0.1}
-                className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
+                className="w-20"
               />
             </div>
             <div>
               <label className="mb-1 block text-xs text-text-secondary">
                 Top-k
               </label>
-              <input
+              <Input
                 type="number"
                 value={topk}
                 onChange={(e) => setTopk(Number(e.target.value))}
                 min={0}
                 max={200}
-                className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
+                className="w-20"
               />
             </div>
             <div>
               <label className="mb-1 block text-xs text-text-secondary">
                 Top-p
               </label>
-              <input
+              <Input
                 type="number"
                 value={topP}
                 onChange={(e) => setTopP(Number(e.target.value))}
                 min={0}
                 max={1}
                 step={0.05}
-                className="w-20 rounded border border-border-2 bg-surface-2 px-2 py-1.5 text-sm text-text-primary outline-none focus:border-accent"
+                className="w-20"
               />
             </div>
 
@@ -302,6 +308,7 @@ export default function InferencePage() {
                 variant="primary"
                 onClick={doGenerate}
                 disabled={generating || !modelId}
+                loading={generating}
               >
                 Generate
               </Button>

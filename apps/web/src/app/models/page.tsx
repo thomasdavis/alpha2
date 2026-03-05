@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
-import { StatCard, FilterBtn, Spinner, EmptyState, Card } from "@alpha/ui";
+import { StatCard, FilterBtn, Spinner, EmptyState, Card, Select } from "@alpha/ui";
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -227,7 +227,7 @@ export default function ModelsPage() {
 
       {/* Filters + sort */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="flex gap-1 rounded-lg border border-border bg-surface p-0.5">
+        <Card className="flex gap-1 p-0.5 shadow-none">
           <FilterBtn active={filterDomain === "all"} onClick={() => setFilterDomain("all")}>
             All
           </FilterBtn>
@@ -239,19 +239,19 @@ export default function ModelsPage() {
               </FilterBtn>
             );
           })}
-        </div>
+        </Card>
         <span className="flex-1" />
-        <select
+        <Select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as SortKey)}
-          className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs text-text-secondary outline-none"
+          className="w-40"
         >
           <option value="recent">Most recent</option>
           <option value="loss">Sort by loss</option>
           <option value="params">Sort by params</option>
           <option value="step">Sort by step</option>
           <option value="name">Sort by name</option>
-        </select>
+        </Select>
       </div>
 
       {/* Model table */}

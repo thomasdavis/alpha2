@@ -15,5 +15,7 @@ export * from "./components/symbio.js";
 export * from "./components/layers.js";
 export * from "./components/spinner.js";
 export * from "./components/empty-state.js";
+export * from "./components/input.js";
+export * from "./components/select.js";
 export * from "./utils.js";
 export * from "./types.js";
