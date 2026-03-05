@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Tip } from "./tooltip.js";
 import { ChartMetric, ChartCheckpoint, ActivationSwitchEvent, ComputedEvents, MarkerType, MarkerVisibility, MiniSeries } from "../types.js";
-import { fmtNum } from "../utils.js";
+import { fmtNum, cn } from "../utils.js";
 
 // ── Constants & Config ──────────────────────────────────────────
 
@@ -43,6 +43,18 @@ export const MARKER_LABELS: Record<MarkerType, string> = {
   evoOverfit: "Evo Overfit",
 };
 
+export const MARKER_HELP_TEXTS: Record<MarkerType, string> = {
+  checkpoints: "Significant training states saved to disk.",
+  bestVal: "Point of lowest validation loss achieved.",
+  warmupEnd: "End of initial learning rate linear warmup.",
+  gradSpikes: "Sudden jumps in gradient norm (potential instability).",
+  lossSpikes: "Sudden jumps in training loss.",
+  overfit: "Detected onset of training/validation divergence.",
+  activationSwitch: "Evolutionary step: activation function was mutated/swapped.",
+  evoValEnvelope: "Rolling best validation loss across all candidates.",
+  evoOverfit: "Localized overfit regions for specific candidates.",
+};
+
 export const TIMING_PHASES = [
   { key: "timing_fwd_ms" as const, label: "Forward", color: "#22d3ee" },
   { key: "timing_bwd_ms" as const, label: "Backward", color: "#f97316" },
@@ -79,9 +91,9 @@ export function ChartHelpIcon({ text }: { text: string }) {
 
 export function ChartPanel({ title, helpText, children }: { title: string; helpText?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">{title}</span>
+    <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-[0.65rem] font-bold uppercase tracking-widest text-text-primary">{title}</span>
         {helpText && <ChartHelpIcon text={helpText} />}
       </div>
       {children}
@@ -101,4 +113,96 @@ export function detectBestValStep(metrics: ChartMetric[]): { step: number; loss:
   return { step: best.step, loss: best.val_loss! };
 }
 
-// ... other detection functions would go here if needed in multiple places ...
+// ... rest of detection functions ...
+
+// ── Core Charting Components (Base Implementations) ──────────────
+
+export function BaseMiniChart({ 
+  data, 
+  title, 
+  height = 200,
+  logScale = false,
+  formatValue = (v: number) => v.toFixed(2)
+}: { 
+  data: { step: number; value: number }[]; 
+  title: string;
+  height?: number;
+  logScale?: boolean;
+  formatValue?: (v: number) => string;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || data.length < 2) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const style = getComputedStyle(document.documentElement);
+    const bg = style.getPropertyValue("--bg").trim() || "#0a0a0a";
+    const border = style.getPropertyValue("--border").trim() || "#222222";
+    const textMuted = style.getPropertyValue("--text-muted").trim() || "#555";
+    const accent = style.getPropertyValue("--accent").trim() || "#2563eb";
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const pad = { top: 10, right: 10, bottom: 20, left: 40 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+
+    const minStep = data[0].step;
+    const maxStep = data[data.length - 1].step;
+    const rangeS = maxStep - minStep || 1;
+
+    const values = data.map(d => d.value);
+    let minV = Math.min(...values);
+    let maxV = Math.max(...values);
+    if (minV === maxV) { minV -= 0.1; maxV += 0.1; }
+    const rangeV = maxV - minV || 1;
+
+    const sx = (s: number) => pad.left + ((s - minStep) / rangeS) * cw;
+    const sy = (v: number) => pad.top + (1 - (v - minV) / rangeV) * ch;
+
+    // Grid
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (i / 4) * ch;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    }
+
+    // Line
+    ctx.beginPath();
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5;
+    data.forEach((d, i) => {
+      const x = sx(d.step);
+      const y = sy(d.value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = textMuted;
+    ctx.font = "9px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(formatValue(maxV), pad.left - 4, pad.top + 3);
+    ctx.fillText(formatValue(minV), pad.left - 4, pad.top + ch + 3);
+  }, [data, logScale, formatValue]);
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[0.6rem] font-bold uppercase tracking-widest text-text-muted">{title}</div>
+      <canvas ref={canvasRef} className="w-full rounded-lg border border-border/50 shadow-inner" style={{ height }} />
+    </div>
+  );
+}

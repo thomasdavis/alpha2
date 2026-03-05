@@ -7,7 +7,13 @@ import {
   CardTitle, 
   CardContent, 
   CardFooter,
-  Badge
+  Badge,
+  Stat,
+  DetailRow,
+  Sparkline,
+  ChartPanel,
+  BaseMiniChart,
+  Progress
 } from "@alpha/ui";
 import { 
   Activity, 
@@ -19,10 +25,19 @@ import {
   Download,
   Terminal,
   Play,
-  Settings
+  Settings,
+  BarChart3,
+  LineChart,
+  Trophy
 } from "lucide-react";
 
 export default function StyleGuidePage() {
+  const mockSparkData = [1.2, 1.1, 1.3, 0.9, 0.8, 0.7, 0.75, 0.6, 0.55, 0.5, 0.48, 0.45];
+  const mockMiniData = Array.from({ length: 50 }, (_, i) => ({
+    step: i * 100,
+    value: Math.sin(i / 5) * 10 + 50 + Math.random() * 5
+  }));
+
   return (
     <div className="container mx-auto max-w-5xl px-4 py-12">
       <header className="mb-12 border-b border-border pb-8">
@@ -32,8 +47,12 @@ export default function StyleGuidePage() {
         </p>
       </header>
 
+      {/* ── Buttons ─────────────────────────────────────────────────── */}
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-accent pl-4">Buttons</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-accent pl-4 flex items-center gap-2">
+          <Play className="h-5 w-5 text-accent" />
+          Buttons
+        </h2>
         <div className="grid gap-8">
           <Card>
             <CardHeader>
@@ -59,28 +78,110 @@ export default function StyleGuidePage() {
               <Button size="icon" variant="outline"><Settings className="h-4 w-4" /></Button>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>States</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-4">
-              <Button disabled>Disabled Button</Button>
-              <Button variant="outline" className="gap-2">
-                <Download className="h-4 w-4" />
-                With Icon
-              </Button>
-              <Button variant="primary" className="gap-2">
-                <Play className="h-4 w-4" />
-                Start Training
-              </Button>
-            </CardContent>
-          </Card>
         </div>
       </section>
 
+      {/* ── Charts & Data ────────────────────────────────────────────── */}
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-green pl-4">Badges</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-yellow pl-4 flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-yellow" />
+          Charts & Data
+        </h2>
+        <div className="grid gap-6">
+          {/* Stats Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Stat label="Loss" value="0.4521" color="text-yellow" tip="Current cross-entropy loss" />
+            <Stat label="Throughput" value="12.4k" sub="tokens/sec" color="text-green" tip="Tokens processed per second" />
+            <Stat label="VRAM" value="14.2 GB" sub="85% utilized" color="text-blue" />
+            <Stat label="MFU" value="42.1%" color="text-rose-400" tip="Model FLOPS Utilization" />
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Sparklines */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  Sparklines
+                  <Activity className="h-4 w-4 text-text-muted" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-secondary">Active Training</span>
+                  <Sparkline data={mockSparkData} variant="success" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-secondary">Validation Loss</span>
+                  <Sparkline data={[2, 1.8, 1.9, 1.5, 1.6, 1.4, 1.3]} variant="blue" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-secondary">Gradient Spikes</span>
+                  <Sparkline data={[0.1, 0.1, 0.8, 0.1, 0.2, 0.9, 0.1]} variant="danger" />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Detail Rows */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  Detail Table
+                  <Terminal className="h-4 w-4 text-text-muted" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DetailRow label="Optimizer" value="AdamW" tip="Weight Decay Adaptive Moments" />
+                <DetailRow label="Learning Rate" value="6.0e-4" />
+                <DetailRow label="Weight Decay" value="0.1" />
+                <DetailRow label="Batch Size" value="512" />
+                <DetailRow label="Block Size" value="1024" />
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Progress Section */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Training Progress</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <div className="flex justify-between text-[0.65rem] uppercase font-bold text-text-muted">
+                  <span>Iteration 45,000 / 50,000</span>
+                  <span>90%</span>
+                </div>
+                <Progress value={90} variant="default" className="h-2" />
+              </div>
+              <div className="space-y-2">
+                <div className="flex justify-between text-[0.65rem] uppercase font-bold text-text-muted">
+                  <span>Checkpoint Sync</span>
+                  <span className="text-green">Healthy</span>
+                </div>
+                <Progress value={100} variant="success" className="h-1.5" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* New Charts Subsection */}
+          <div className="grid gap-6">
+            <ChartPanel title="Optimization Telemetry" helpText="Visualization of internal training dynamics using the BaseMiniChart component.">
+              <BaseMiniChart 
+                data={mockMiniData} 
+                title="Gradient Norm (L2)" 
+                height={180} 
+                formatValue={(v) => v.toFixed(1)} 
+              />
+            </ChartPanel>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Badges ─────────────────────────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-green pl-4 flex items-center gap-2">
+          <Trophy className="h-5 w-5 text-green" />
+          Badges & Status
+        </h2>
         <Card>
           <CardHeader>
             <CardTitle>Status & Categorization</CardTitle>
@@ -109,70 +210,16 @@ export default function StyleGuidePage() {
         </Card>
       </section>
 
+      {/* ── Typography & Colors ────────────────────────────────────────── */}
       <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-purple-400 pl-4">Cards & Layout</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Cpu className="h-4 w-4 text-accent" />
-                System Status
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-text-secondary leading-relaxed">
-                Helios engine is currently utilizing 85% of GPU VRAM. Training throughput is stable at 12k tokens/sec.
-              </p>
-            </CardContent>
-            <CardFooter className="flex justify-between border-t border-border mt-4 pt-4">
-              <span className="text-[0.6rem] text-text-muted font-mono uppercase">L4 Tensor Core</span>
-              <Badge variant="success">Healthy</Badge>
-            </CardFooter>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Zap className="h-4 w-4 text-yellow" />
-                Evolutionary Search
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-text-secondary leading-relaxed">
-                Symbiogenesis generation 12 complete. Discovered 3 potential candidates with better loss than GELU.
-              </p>
-            </CardContent>
-            <CardFooter className="flex justify-between border-t border-border mt-4 pt-4">
-              <span className="text-[0.6rem] text-text-muted font-mono uppercase">G-Alpha.1</span>
-              <Button size="sm" variant="outline">Analyze</Button>
-            </CardFooter>
-          </Card>
-
-          <Card className="border-accent/30 bg-accent/5">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-accent">
-                <Terminal className="h-4 w-4" />
-                CLI Deployment
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-text-secondary leading-relaxed">
-                Quickly deploy Alpha models to edge devices using our pre-compiled SPIR-V binary outputs.
-              </p>
-            </CardContent>
-            <CardFooter className="flex justify-end mt-4 pt-4">
-              <Button size="sm">Deploy Now</Button>
-            </CardFooter>
-          </Card>
-        </div>
-      </section>
-
-      <section className="mb-16">
-        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-yellow pl-4">Typography & Colors</h2>
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-purple-400 pl-4 flex items-center gap-2">
+          <Zap className="h-5 w-5 text-purple-400" />
+          Typography & Colors
+        </h2>
         <Card>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-6">
             <div className="space-y-4">
-              <h3 className="text-text-muted uppercase text-[0.65rem] font-bold tracking-widest">Colors</h3>
+              <h3 className="text-text-muted uppercase text-[0.65rem] font-bold tracking-widest">Theme Palette</h3>
               <div className="grid grid-cols-4 gap-4">
                 <div className="space-y-2">
                   <div className="h-12 w-full rounded-md bg-accent border border-black/5" />

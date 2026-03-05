@@ -7,5 +7,6 @@ export * from "./components/sparkline.js";
 export * from "./components/tooltip.js";
 export * from "./components/stat.js";
 export * from "./components/detail-row.js";
+export * from "./components/charts.js";
 export * from "./utils.js";
 export * from "./types.js";
