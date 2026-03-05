@@ -275,6 +275,9 @@ export async function trainCmd(args: string[]): Promise<void> {
   console.log(`Implementations available:\n${listImplementations()}\n`);
 
   // Resolve implementations
+  const noFallback = boolArg(kv, "no-fallback", false) || boolArg(kv, "noFallback", false);
+  if (noFallback) process.env.HELIOS_NO_FALLBACK = "1";
+
   const backend = resolveBackend(trainConfig.backend);
   let mixedPrecisionEnabled = boolArg(kv, "fp16", false);
   const minGpuSizeOverride = kv["minGpuSize"] !== undefined ? intArg(kv, "minGpuSize", 0) : null;

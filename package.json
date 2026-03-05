@@ -37,6 +37,7 @@
     "fleet": "node apps/cli/dist/main.js fleet",
     "fleet:status": "node apps/cli/dist/main.js fleet status",
     "fleet:deploy": "node apps/cli/dist/main.js fleet deploy",
+    "fleet:stable": "npm run fleet:deploy -- alpha-bench-l4-coopdbg-20260228084511 && npm run fleet:train -- alpha-bench-l4-coopdbg-20260228084511 --runtime=binary --dgc=true --no-fallback=true --sampleInterval=200",
     "fleet:setup": "node apps/cli/dist/main.js fleet setup",
     "fleet:train": "node apps/cli/dist/main.js fleet train",
     "fleet:resume": "node apps/cli/dist/main.js fleet resume",

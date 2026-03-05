@@ -1339,6 +1339,12 @@ export class HeliosBackend implements Backend {
     this.resetCoopF16InputCache(true);
   }
 
+  private checkFallback(reason: string): void {
+    if (process.env.HELIOS_NO_FALLBACK === "1" || process.env.HELIOS_NO_FALLBACK === "true") {
+      throw new Error(`[helios] fallback forbidden by HELIOS_NO_FALLBACK: ${reason}`);
+    }
+  }
+
   /** Flush the compute graph — executes all pending GPU ops as a single batch. */
   flush(): void {
     graph.flush();
@@ -1931,6 +1937,7 @@ export class HeliosBackend implements Backend {
       return this.gpuReduceSumOfSquares(data);
     }
     // CPU fallback: sum of element-wise squares
+    this.checkFallback("sumOfSquares");
     const arr = data.data as Float32Array;
     let acc = 0;
     for (let i = 0; i < arr.length; i++) acc += arr[i] * arr[i];
@@ -2086,6 +2093,7 @@ export class HeliosBackend implements Backend {
     const size = shapeSize(t.shape);
     if (size < this._minGpuSize) {
       // CPU fallback
+      this.checkFallback("checkFinite");
       const arr = t.data as Float32Array;
       for (let i = 0; i < arr.length; i++) {
         if (!isFinite(arr[i])) return makeTensor([], "f32", Float32Array.from([1.0]));
@@ -2176,6 +2184,7 @@ export class HeliosBackend implements Backend {
     }
 
     // CPU fallback: only f32↔f16 supported
+    this.checkFallback("castDtype");
     if (a.dtype === "f32" && targetDtype === "f16") {
       const f32 = a.data as Float32Array;
       const u16 = new Uint16Array(size);
@@ -2400,6 +2409,7 @@ export class HeliosBackend implements Backend {
       return this.gpuBinaryOp(input, gradOutput, "gelu_backward");
     }
     // CPU fallback
+    this.checkFallback("geluBackward");
     const SQRT2PI = Math.sqrt(2 / Math.PI);
     const src = input.data as Float32Array;
     const grad = gradOutput.data as Float32Array;
@@ -2421,6 +2431,7 @@ export class HeliosBackend implements Backend {
       return this.gpuBinaryOp(input, gradOutput, "silu_backward");
     }
     // CPU fallback: silu'(x) = sigma(x) * (1 + x * (1 - sigma(x)))
+    this.checkFallback("siluBackward");
     const src = input.data as Float32Array;
     const grad = gradOutput.data as Float32Array;
     const out = new Float32Array(src.length);
@@ -2462,6 +2473,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, a.shape, region);
     }
     // CPU fallback
+    this.checkFallback("siluMul");
     const aArr = a.data as Float32Array;
     const bArr = b.data as Float32Array;
     const out = new Float32Array(size);
@@ -2507,6 +2519,7 @@ export class HeliosBackend implements Backend {
       ];
     }
     // CPU fallback
+    this.checkFallback("siluMulBackward");
     const aArr = aData.data as Float32Array;
     const bArr = bData.data as Float32Array;
     const gArr = gradOutput.data as Float32Array;
@@ -2530,6 +2543,7 @@ export class HeliosBackend implements Backend {
     if (size >= this._minGpuSize && this.shapesEqual(input.shape, gradOutput.shape)) {
       return this.gpuBinaryOp(input, gradOutput, "relu_backward", true);
     }
+    this.checkFallback("reluBackward");
     const src = input.data as Float32Array;
     const grad = gradOutput.data as Float32Array;
     const out = new Float32Array(src.length);
@@ -2563,6 +2577,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, input.shape, region);
     }
     // CPU fallback
+    this.checkFallback("clampBackward");
     const src = input.data as Float32Array;
     const grad = gradOutput.data as Float32Array;
     const out = new Float32Array(src.length);
@@ -2597,6 +2612,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, input.shape, region);
     }
     // CPU fallback
+    this.checkFallback("softCap");
     return this.cpuUnary(input, (x) => {
       const scaled = Math.max(-80, Math.min(80, x / cap));
       return Math.tanh(scaled) * cap;
@@ -2631,6 +2647,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, input.shape, region);
     }
     // CPU fallback
+    this.checkFallback("softCapBackward");
     const src = input.data as Float32Array;
     const grad = gradOutput.data as Float32Array;
     const out = new Float32Array(src.length);
@@ -2671,6 +2688,7 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, residual.shape, region);
     }
     // CPU fallback: residual + projected * mask
+    this.checkFallback("residualDropoutAdd");
     const rArr = residual.data as Float32Array;
     const pArr = projected.data as Float32Array;
     const mArr = mask.data as Float32Array;
@@ -2724,6 +2742,7 @@ export class HeliosBackend implements Backend {
     }
 
     // CPU fallback
+    this.checkFallback("crossEntropyBackward");
     const probsArr = probs.data as Float32Array;
     const out = new Float32Array(totalElements);
     const scale = gradScalar / N;
@@ -2779,6 +2798,7 @@ export class HeliosBackend implements Backend {
     }
 
     // CPU fallback
+    this.checkFallback("embeddingBackward");
     const out = new Float32Array(outputSize);
     const gradArr = gradOutput.data as Float32Array;
     for (let i = 0; i < nIdx; i++) {
@@ -2862,6 +2882,7 @@ export class HeliosBackend implements Backend {
     }
 
     // CPU fallback
+    this.checkFallback("layerNormBackward");
     const n = numRows;
     const xArr = x.data as Float32Array;
     const wArr = weight.data as Float32Array;
@@ -3010,6 +3031,7 @@ export class HeliosBackend implements Backend {
     // Use compute FLOPs threshold like regular matmul
     if (M * N * K >= MATMUL_GPU_FLOPS_THRESHOLD) return this.gpuMatmulTransposed(a, b, M, N, K);
     // CPU fallback: materialize transpose then multiply
+    this.checkFallback("matmulTransposed");
     const bT = this.transpose(b, bNdim - 2, bNdim - 1);
     return this.cpuMatmul(a, bT);
   }
@@ -3026,6 +3048,7 @@ export class HeliosBackend implements Backend {
     // Use compute FLOPs threshold like regular matmul
     if (M * N * K >= MATMUL_GPU_FLOPS_THRESHOLD) return this.gpuMatmulTransposedA(a, b, M, N, K);
     // CPU fallback: materialize transpose then multiply
+    this.checkFallback("matmulTransposedA");
     const aT = this.transpose(a, aNdim - 2, aNdim - 1);
     return this.cpuMatmul(aT, b);
   }
@@ -3789,18 +3812,18 @@ export class HeliosBackend implements Backend {
         pushSize: PUSH_SIZE,
         shape: a.shape as number[],
         allBufs: [bufA, bufB],
-      });
-      invalidateCache(a);
-      this._coopF16InputCache.delete(a);
-      return;
-    }
-    // CPU fallback
-    const aArr = a.data as Float32Array;
-    const bArr = b.data as Float32Array;
-    for (let i = 0; i < size; i++) aArr[i] += bArr[i];
-    this._coopF16InputCache.delete(a);
-  }
-
+        });
+        invalidateCache(a);
+        this._coopF16InputCache.delete(a);
+        return;
+        }
+        // CPU fallback
+        this.checkFallback("addInplace");
+        const aArr = a.data as Float32Array;
+        const bArr = b.data as Float32Array;
+        for (let i = 0; i < size; i++) aArr[i] += bArr[i];
+        this._coopF16InputCache.delete(a);
+        }
   // ── In-place scale: A *= scalar on GPU ─────────────────────────────────────
 
   scaleInplace(a: TensorData, scalar: number): void {
@@ -3831,14 +3854,14 @@ export class HeliosBackend implements Backend {
       invalidateCache(a);
       this._coopF16InputCache.delete(a);
       return;
-    }
-    if (a.dtype === "f32") {
+      }
+      this.checkFallback("scaleInplace");
+      if (a.dtype === "f32") {
       const arr = a.data as Float32Array;
       for (let i = 0; i < size; i++) arr[i] *= scalar;
       this._coopF16InputCache.delete(a);
       return;
-    }
-    // Generic fallback for non-f32 dtypes: compute out-of-place then copy back.
+      }    // Generic fallback for non-f32 dtypes: compute out-of-place then copy back.
     const scaled = this.scale(a, scalar);
     const src = scaled.data as any;
     const dst = a.data as any;
@@ -4421,6 +4444,7 @@ export class HeliosBackend implements Backend {
     }
 
     // CPU fallback
+    this.checkFallback("embedding");
     const Ctor = dtypeArray(weight.dtype);
     const out = new Ctor(totalElements);
     for (let i = 0; i < nIdx; i++) {
@@ -5188,6 +5212,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuUnary(a: TensorData, fn: (x: number) => number): TensorData {
+    this.checkFallback("cpuUnary");
     const Ctor = dtypeArray(a.dtype);
     const out = new Ctor(a.data.length);
     for (let i = 0; i < a.data.length; i++) out[i] = fn(a.data[i]);
@@ -5195,6 +5220,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuBinaryOp(a: TensorData, b: TensorData, fn: (x: number, y: number) => number): TensorData {
+    this.checkFallback("cpuBinaryOp");
     if (this.shapesEqual(a.shape, b.shape)) {
       const size = shapeSize(a.shape);
       const Ctor = dtypeArray(a.dtype);
@@ -5215,6 +5241,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuMatmul(a: TensorData, b: TensorData): TensorData {
+    this.checkFallback("cpuMatmul");
     const aNdim = a.shape.length, bNdim = b.shape.length;
     if (aNdim < 2 || bNdim < 2) throw new Error("matmul requires 2D+");
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
@@ -5236,6 +5263,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuSoftmax(a: TensorData, axis?: number): TensorData {
+    this.checkFallback("cpuSoftmax");
     const ndim = a.shape.length;
     const ax = axis !== undefined ? (axis < 0 ? axis + ndim : axis) : ndim - 1;
     const dimSize = a.shape[ax];
@@ -5258,6 +5286,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuLogSoftmax(a: TensorData, axis?: number): TensorData {
+    this.checkFallback("cpuLogSoftmax");
     const ndim = a.shape.length;
     const ax = axis !== undefined ? (axis < 0 ? axis + ndim : axis) : ndim - 1;
     const dimSize = a.shape[ax];
@@ -5281,6 +5310,7 @@ export class HeliosBackend implements Backend {
   }
 
   private cpuLayerNorm(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData {
+    this.checkFallback("cpuLayerNorm");
     const dim = x.shape[x.shape.length - 1];
     const outer = shapeSize(x.shape) / dim;
     const Ctor = dtypeArray(x.dtype);

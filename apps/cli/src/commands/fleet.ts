@@ -643,9 +643,16 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
     if (!kv["logEvery"]) effectiveArgs.push("--logEvery=25");
   }
   const flagStr = effectiveArgs.join(" ");
+  const dgcEnabled = kv["dgc"] === "true" || kv["dgc"] === "1";
+  const noFallbackEnabled = kv["no-fallback"] === "true" || kv["noFallback"] === "true";
+  
+  let envStr = "";
+  if (dgcEnabled) envStr += "export HELIOS_DISABLE_DGC=0; ";
+  if (noFallbackEnabled) envStr += "export HELIOS_NO_FALLBACK=1; ";
+
   const l4Env = isL4Instance
-    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi; if [ -z \"${VK_ICD_FILENAMES:-}\" ]; then if [ -f /etc/vulkan/icd.d/nvidia_icd_headless.json ]; then export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json; elif [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json; fi; fi;"
-    : "";
+    ? `${envStr}if [ -z \"\${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi; if [ -z \"\${VK_ICD_FILENAMES:-}\" ]; then if [ -f /etc/vulkan/icd.d/nvidia_icd_headless.json ]; then export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json; elif [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json; fi; fi;`
+    : envStr;
   const nohupBin = "/usr/bin/nohup";
   const useNixShell = kv["nix"] === "true" || kv["useNix"] === "true";
   const shellCmd = useNixShell
