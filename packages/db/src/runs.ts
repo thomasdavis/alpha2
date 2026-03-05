@@ -31,6 +31,35 @@ export interface UpsertRunInput {
   symbio_mode?: string | null;
 }
 
+function readStaleAfterSeconds(): number {
+  const raw = process.env.ALPHA_RUN_STALE_SECS;
+  if (!raw) return 180;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return 180;
+  return Math.max(30, Math.min(86_400, parsed));
+}
+
+async function refreshRunStatuses(client: Client): Promise<void> {
+  await client.batch([
+    {
+      sql: `UPDATE runs
+            SET status = 'completed'
+            WHERE status = 'active'
+              AND total_iters IS NOT NULL
+              AND latest_step >= total_iters`,
+      args: [],
+    },
+    {
+      sql: `UPDATE runs
+            SET status = 'stale'
+            WHERE status = 'active'
+              AND (total_iters IS NULL OR latest_step < total_iters)
+              AND updated_at < datetime('now', ?)`,
+      args: [`-${readStaleAfterSeconds()} seconds`],
+    },
+  ], "write");
+}
+
 export async function upsertRun(client: Client, input: UpsertRunInput): Promise<void> {
   const mc = input.model_config as any;
   const tc = input.train_config as any;
@@ -120,6 +149,7 @@ export async function upsertRun(client: Client, input: UpsertRunInput): Promise<
 }
 
 export async function getRun(client: Client, id: string): Promise<DbRun | null> {
+  await refreshRunStatuses(client);
   const result = await client.execute({
     sql: "SELECT * FROM runs WHERE id = ?",
     args: [id],
@@ -131,6 +161,7 @@ export async function listRuns(
   client: Client,
   opts?: { status?: RunStatus; domain?: string; limit?: number }
 ): Promise<DbRunSummary[]> {
+  await refreshRunStatuses(client);
   const conditions: string[] = [];
   const args: InValue[] = [];
 

@@ -86,10 +86,11 @@ function record(
   ctx: Ctx,
   data: TensorData,
   inputs: Variable[],
-  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]) => TensorData[]
+  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]) => TensorData[],
+  cleanup?: (release?: (td: TensorData) => void) => void,
 ): Variable {
   const out = new Variable(data, true);
-  ctx.tape.record({ output: out, inputs, backward });
+  ctx.tape.record({ output: out, inputs, backward, cleanup });
   return out;
 }
 
@@ -196,10 +197,19 @@ export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
 export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
   const B = ctx.backend;
+  const tBFallback = B.matmulTransposed
+    ? null
+    : B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1);
+  let tBLive: TensorData | null = tBFallback;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!tBLive) return;
+    if (release) release(tBLive);
+    tBLive = null;
+  };
   // Use fused kernel if available, otherwise fall back to transpose + matmul
   const out = B.matmulTransposed
     ? B.matmulTransposed(aData, bData)
-    : B.matmul(aData, B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1));
+    : B.matmul(aData, tBFallback!);
   return record(ctx, out, [a, b], (g, B, release, needsGrad) => {
     // C = A @ B^T where B is [N, K]
     let ga: TensorData | null = null;
@@ -220,7 +230,7 @@ export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
       }
     }
     return [ga!, gb!];
-  });
+  }, cleanup);
 }
 
 // ── Reductions ─────────────────────────────────────────────────────────────
@@ -354,11 +364,18 @@ export function silu(ctx: Ctx, a: Variable): Variable {
 export function siluMul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
   const B = ctx.backend;
-  const out = B.siluMul ? B.siluMul(aData, bData) : B.mul(B.silu(aData), bData);
+  const siluFallback = B.siluMul ? null : B.silu(aData);
+  let siluFallbackLive: TensorData | null = siluFallback;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!siluFallbackLive) return;
+    if (release) release(siluFallbackLive);
+    siluFallbackLive = null;
+  };
+  const out = B.siluMul ? B.siluMul(aData, bData) : B.mul(siluFallback!, bData);
   return record(ctx, out, [a, b], (g, B2, release) => {
     if (B2.siluMulBackward) return B2.siluMulBackward(aData, bData, g);
     // Fallback: separate silu_backward and mul
-    const siluA = B2.silu(aData);
+    const siluA = siluFallbackLive ?? B2.silu(aData);
     const ga = B2.mul(g, bData);
     const da = B2.siluBackward ? B2.siluBackward(aData, ga) : (() => {
       const src = aData.data as Float32Array;
@@ -371,9 +388,14 @@ export function siluMul(ctx: Ctx, a: Variable, b: Variable): Variable {
       return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
     })();
     const db = B2.mul(g, siluA);
-    if (release) { release(ga); release(siluA); }
+    if (release) release(ga);
+    if (siluFallbackLive && release) release(siluFallbackLive);
+    siluFallbackLive = null;
+    if (!siluFallbackLive && siluA !== siluFallback) {
+      if (release) release(siluA);
+    }
     return [da, db];
-  });
+  }, cleanup);
 }
 
 export function gelu(ctx: Ctx, a: Variable): Variable {
@@ -404,18 +426,30 @@ export function gelu(ctx: Ctx, a: Variable): Variable {
 export function matmulTransposedGelu(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
   const B = ctx.backend;
+  const tBFallback = B.matmulTransposed
+    ? null
+    : B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1);
+  let tBLive: TensorData | null = tBFallback;
   const mmOut = B.matmulTransposed
     ? B.matmulTransposed(aData, bData)
-    : B.matmul(aData, B.transpose(bData, bData.shape.length - 2, bData.shape.length - 1));
+    : B.matmul(aData, tBFallback!);
+  let mmOutLive: TensorData | null = mmOut;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (mmOutLive && release) release(mmOutLive);
+    mmOutLive = null;
+    if (tBLive && release) release(tBLive);
+    tBLive = null;
+  };
   const geluOut = B.gelu(mmOut);
   return record(ctx, geluOut, [a, b], (g, B2, release, needsGrad) => {
     // Chain rule: d(gelu(mmOut))/d(inputs) = gelu'(mmOut) * d(mmOut)/d(inputs)
+    const mmRef = mmOutLive ?? mmOut;
     const dMM = B2.geluBackward
-      ? B2.geluBackward(mmOut, g)
+      ? B2.geluBackward(mmRef, g)
       : (() => {
           // CPU fallback for gelu backward
           const SQRT2PI = Math.sqrt(2 / Math.PI);
-          const src = mmOut.data as Float32Array;
+          const src = mmRef.data as Float32Array;
           const grad = g.data as Float32Array;
           const out = new Float32Array(src.length);
           for (let i = 0; i < src.length; i++) {
@@ -426,9 +460,12 @@ export function matmulTransposedGelu(ctx: Ctx, a: Variable, b: Variable): Variab
             const dInner = SQRT2PI * (1 + 3 * 0.044715 * x * x);
             out[i] = grad[i] * (0.5 * (1 + tanh_val) + 0.5 * x * sech2 * dInner);
           }
-          return { shape: [...mmOut.shape], dtype: mmOut.dtype, data: out } as TensorData;
+          return { shape: [...mmRef.shape], dtype: mmRef.dtype, data: out } as TensorData;
         })();
-    if (release) release(mmOut);
+    if (mmOutLive && release) release(mmOutLive);
+    mmOutLive = null;
+    if (tBLive && release) release(tBLive);
+    tBLive = null;
     let ga: TensorData | null = null;
     let gb: TensorData | null = null;
     if (!needsGrad || needsGrad[0]) {
@@ -446,7 +483,7 @@ export function matmulTransposedGelu(ctx: Ctx, a: Variable, b: Variable): Variab
     }
     if (release) release(dMM);
     return [ga!, gb!];
-  });
+  }, cleanup);
 }
 
 // ── NN ops ─────────────────────────────────────────────────────────────────
@@ -557,10 +594,18 @@ export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Va
     mask = ctx.backend.clone(cpuMask);
   }
 
+  let maskLive: TensorData | null = mask;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!maskLive) return;
+    if (release) release(maskLive);
+    maskLive = null;
+  };
+
   const out = ctx.backend.mul(aData, mask);
   return record(ctx, out, [a], (g, B) => {
-    return [B.mul(g, mask)];
-  });
+    const m = maskLive ?? mask;
+    return [B.mul(g, m)];
+  }, cleanup);
 }
 
 /**
@@ -601,27 +646,43 @@ export function residualDropoutAdd(
     mask = ctx.backend.clone(cpuMask);
   }
 
+  let maskLive: TensorData | null = mask;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!maskLive) return;
+    if (release) release(maskLive);
+    maskLive = null;
+  };
+
   // Use fused kernel if backend supports it
   if (ctx.backend.residualDropoutAdd) {
     const out = ctx.backend.residualDropoutAdd(resData, projData, mask);
     return record(ctx, out, [residual, projected], (g, B, release) => {
+      const m = maskLive ?? mask;
       // grad_residual = upstream_grad (pass-through via broadcast reduction)
       const ga = reduceBroadcast(B, g, resData.shape, release);
       // grad_projected = upstream_grad * mask
-      const gb = B.mul(g, mask);
+      const gb = B.mul(g, m);
       return [ga, gb];
-    });
+    }, cleanup);
   }
 
   // Fallback: separate ops
   const dropOut = ctx.backend.mul(projData, mask);
+  let dropOutLive: TensorData | null = dropOut;
+  const fallbackCleanup = (release?: (td: TensorData) => void): void => {
+    if (dropOutLive && release) release(dropOutLive);
+    dropOutLive = null;
+    cleanup(release);
+  };
   const out = ctx.backend.add(resData, dropOut);
   return record(ctx, out, [residual, projected], (g, B, release) => {
+    const m = maskLive ?? mask;
     const ga = reduceBroadcast(B, g, resData.shape, release);
-    const gb = B.mul(g, mask);
-    if (release) release(dropOut);
+    const gb = B.mul(g, m);
+    if (dropOutLive && release) release(dropOutLive);
+    dropOutLive = null;
     return [ga, gb];
-  });
+  }, fallbackCleanup);
 }
 
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
@@ -640,20 +701,27 @@ export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
 
 export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
   const logitsData = logits.data;
+  let targetsLive: TensorData | null = targets;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!targetsLive) return;
+    if (release) release(targetsLive);
+    targetsLive = null;
+  };
   return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
-    if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, targets, g)];
+    const tgt = targetsLive ?? targets;
+    if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, tgt, g)];
     // CPU fallback: (softmax(logits) - one_hot(targets)) * gScalar / N
     const probs = B.softmax(logitsData, -1);
     const [N, C] = logitsData.shape;
     const gScalar = (g.data as Float32Array)[0];
     const oneHotArr = new Float32Array(N * C);
-    for (let i = 0; i < N; i++) oneHotArr[targets.data[i] + i * C] = 1.0;
+    for (let i = 0; i < N; i++) oneHotArr[tgt.data[i] + i * C] = 1.0;
     const oneHot: TensorData = { shape: [N, C], dtype: logitsData.dtype, data: oneHotArr };
     const diff = B.sub(probs, oneHot);
     const result = B.scale(diff, gScalar / N);
     if (release) { release(probs); release(diff); }
     return [result];
-  });
+  }, cleanup);
 }
 
 // ── Flash Attention ────────────────────────────────────────────────────────
@@ -674,12 +742,19 @@ export function flashAttention(
   if (!B.flashAttention) throw new Error("flashAttention requires GPU backend");
 
   const { output, lse } = B.flashAttention(q.data, k.data, v.data, T, scale, softCap);
+  let lseForBackward: TensorData | null = lse;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (!lseForBackward) return;
+    if (release) release(lseForBackward);
+    lseForBackward = null;
+  };
 
-  return record(ctx, output, [q, k, v], (g, B2, release, needsGrad) => {
+  return record(ctx, output, [q, k, v], (g, B2, _release, needsGrad) => {
     if (!B2.flashAttentionBackward) throw new Error("flashAttentionBackward requires GPU backend");
+    if (!lseForBackward) throw new Error("flashAttention backward missing LSE buffer");
 
     const { dQ, dK, dV } = B2.flashAttentionBackward(
-      q.data, k.data, v.data, output, g, lse, T, scale, softCap,
+      q.data, k.data, v.data, output, g, lseForBackward, T, scale, softCap,
     );
 
     return [
@@ -687,7 +762,7 @@ export function flashAttention(
       (!needsGrad || needsGrad[1]) ? dK : null as any,
       (!needsGrad || needsGrad[2]) ? dV : null as any,
     ];
-  });
+  }, cleanup);
 }
 
 // ── Slice ──────────────────────────────────────────────────────────────────

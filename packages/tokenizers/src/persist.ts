@@ -34,6 +34,7 @@ export function saveArtifacts(
           vocabSize: artifacts.vocabSize,
           vocab: artifacts.vocab,
           ...(artifacts.merges ? { merges: artifacts.merges } : {}),
+          ...(artifacts.specialTokens ? { specialTokens: artifacts.specialTokens } : {}),
         },
         null,
         2,
@@ -83,6 +84,9 @@ export function loadArtifacts(
         vocab: data.vocab as string[],
         ...(Array.isArray(data.merges)
           ? { merges: data.merges as [number, number][] }
+          : {}),
+        ...(Array.isArray(data.specialTokens)
+          ? { specialTokens: data.specialTokens as string[] }
           : {}),
       };
 

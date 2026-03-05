@@ -1134,8 +1134,11 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   const char* spinEnv = getenv("HELIOS_SPIN_WAIT");
   if (spinEnv) spinWaitIters = atoi(spinEnv);
 
-  // Load libvulkan.so
-  vk_lib = dlopen("libvulkan.so.1", RTLD_NOW);
+  // Load Vulkan loader. Try common absolute paths first so nix-based shells
+  // can still find the host driver without mutating LD_LIBRARY_PATH.
+  vk_lib = dlopen("/usr/lib/x86_64-linux-gnu/libvulkan.so.1", RTLD_NOW);
+  if (!vk_lib) vk_lib = dlopen("/lib/x86_64-linux-gnu/libvulkan.so.1", RTLD_NOW);
+  if (!vk_lib) vk_lib = dlopen("libvulkan.so.1", RTLD_NOW);
   if (!vk_lib) vk_lib = dlopen("libvulkan.so", RTLD_NOW);
   if (!vk_lib) {
     napi_throw_error(env, NULL, "Failed to load libvulkan.so — is Vulkan installed?");

@@ -19,6 +19,8 @@ export interface TapeEntry {
    *  The optional needsGrad array indicates which inputs actually need gradients,
    *  allowing closures to skip expensive computations for non-parameter inputs. */
   backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]): TensorData[];
+  /** Optional release hook for non-output auxiliary tensors captured by the op. */
+  cleanup?(release?: (td: TensorData) => void): void;
 }
 
 // ── Variable ───────────────────────────────────────────────────────────────
@@ -59,11 +61,24 @@ export class Tape {
     // Initialize loss grad: use provided gradient or default to ones
     loss.grad = initialGrad ?? backend.ones(loss.data.shape, loss.data.dtype);
 
+    // Guard against double-release when backward closures alias gradients
+    // across multiple inputs (e.g. returning the same TensorData object).
+    const released = releaseTensor ? new Set<TensorData>() : null;
+    const releaseOnce = (td: TensorData): void => {
+      if (!releaseTensor || !released) return;
+      if (released.has(td)) return;
+      released.add(td);
+      releaseTensor(td);
+    };
+
     // Walk tape in reverse
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const entry = this.entries[i];
       const outGrad = entry.output.grad;
-      if (!outGrad) continue;
+      if (!outGrad) {
+        if (entry.cleanup) entry.cleanup(releaseTensor);
+        continue;
+      }
 
       // Compute needsGrad mask only when at least one input does not require grads.
       let needsGrad: boolean[] | undefined = undefined;
@@ -75,36 +90,55 @@ export class Tape {
       }
       const inputGrads = entry.backward(outGrad, backend, releaseTensor, needsGrad);
 
+      // Track how many trainable inputs consume each gradient tensor.
+      // Some ops legitimately alias grads across inputs (e.g. add/sub paths).
+      // Releasing the first consumer would force later consumers down a slow
+      // readback path (or worse, use-after-release semantics).
+      const gradUseCount = new Map<TensorData, number>();
       for (let j = 0; j < entry.inputs.length; j++) {
-        const input = entry.inputs[j];
-        if (!input.requiresGrad) continue;
+        if (!entry.inputs[j].requiresGrad) continue;
         const g = inputGrads[j];
         if (!g) continue;
+        gradUseCount.set(g, (gradUseCount.get(g) ?? 0) + 1);
+      }
+
+      for (let j = 0; j < entry.inputs.length; j++) {
+        const input = entry.inputs[j];
+        const g = inputGrads[j];
+        if (!g) continue;
+        if (!input.requiresGrad) {
+          if (!gradUseCount.has(g)) {
+            releaseOnce(g);
+          }
+          continue;
+        }
 
         if (input.grad) {
           // In-place accumulation: A += B without allocating a new tensor
           if (backend.addInplace) {
             backend.addInplace(input.grad, g);
-            if (releaseTensor) releaseTensor(g);
           } else {
             const oldGrad = input.grad;
             input.grad = backend.add(input.grad, g);
-            if (releaseTensor) {
-              releaseTensor(oldGrad);
-              releaseTensor(g);
-            }
+            releaseOnce(oldGrad);
           }
         } else {
           input.grad = backend.clone(g);
-          // Release original g — we cloned it into input.grad
-          if (releaseTensor) releaseTensor(g);
+        }
+
+        const remainingUses = (gradUseCount.get(g) ?? 0) - 1;
+        if (remainingUses <= 0) {
+          gradUseCount.delete(g);
+          releaseOnce(g);
+        } else {
+          gradUseCount.set(g, remainingUses);
         }
       }
 
       // Release this entry's outGrad — it's been fully consumed.
       // (This frees GPU buffers from grad accumulation of previous entries.)
-      if (releaseTensor && outGrad) {
-        releaseTensor(outGrad);
+      if (outGrad) {
+        releaseOnce(outGrad);
         entry.output.grad = null;
       }
 
@@ -114,9 +148,11 @@ export class Tape {
       // during backward (from O(tape_size) to O(current_entry) activations).
       // Null out .data so clear() won't double-free.
       if (releaseTensor) {
-        releaseTensor(entry.output.data);
+        releaseOnce(entry.output.data);
         (entry.output as { data: TensorData | null }).data = null!;
       }
+
+      if (entry.cleanup) entry.cleanup(releaseTensor);
     }
   }
 
@@ -147,10 +183,12 @@ export class Tape {
         if (entry.output.grad) {
           releaseTensor(entry.output.grad);
         }
+        if (entry.cleanup) entry.cleanup(releaseTensor);
         entry.output.grad = null;
       }
     } else {
       for (const entry of this.entries) {
+        if (entry.cleanup) entry.cleanup();
         entry.output.grad = null;
       }
     }

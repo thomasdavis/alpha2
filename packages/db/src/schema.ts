@@ -209,4 +209,10 @@ export const migrations: string[][] = [
     `CREATE INDEX IF NOT EXISTS idx_events_run_step_desc ON events(run_id, step DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_events_run_created_desc ON events(run_id, created_at DESC)`,
   ],
+
+  // Version 11: sample step tracking for timeline-correlated inference review
+  [
+    `ALTER TABLE samples ADD COLUMN step INTEGER`,
+    `CREATE INDEX IF NOT EXISTS idx_samples_run_step_desc ON samples(run_id, step DESC, idx ASC)`,
+  ],
 ];

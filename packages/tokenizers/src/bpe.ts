@@ -20,6 +20,52 @@ interface Merge {
   readonly newId: number;
 }
 
+export interface BpeTokenizerOptions {
+  readonly reservedTokens?: readonly string[];
+  readonly enableEnvReservedTokens?: boolean;
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function normalizeTokenList(tokens: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of tokens) {
+    const trimmed = token.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  // Longer tokens first for greedy pre-tokenization.
+  out.sort((a, b) => b.length - a.length);
+  return out;
+}
+
+function readReservedTokensFromEnv(): string[] {
+  const raw = process.env.ALPHA_BPE_RESERVED_TOKENS;
+  if (!raw) return [];
+  return normalizeTokenList(raw.split(","));
+}
+
+function buildTrainingSample(input: string, maxChars: number): string {
+  if (input.length <= maxChars) return input;
+  // Cover the full corpus instead of only the prefix; prefix-only sampling
+  // biases merges toward early records and degrades downstream tokenization.
+  const windows = 32;
+  const span = Math.max(1, Math.floor(maxChars / windows));
+  const parts: string[] = [];
+  for (let i = 0; i < windows; i++) {
+    const start = Math.floor(((input.length - span) * i) / Math.max(1, windows - 1));
+    parts.push(input.slice(start, start + span));
+  }
+  return parts.join("");
+}
+
 export class BpeTokenizer implements Tokenizer {
   readonly name = "bpe";
 
@@ -38,8 +84,16 @@ export class BpeTokenizer implements Tokenizer {
   /** Cached merge rank lookup for fast encoding. */
   private _mergeRank: Map<number, { rank: number; newId: number }> | null = null;
 
-  constructor(vocabSize = 2000) {
+  /** Reserved multi-character tokens (e.g. chat role markers). */
+  private _reservedTokens: string[] = [];
+
+  /** Cached reserved token ids for fast merge-boundary checks. */
+  private _reservedTokenIds = new Set<number>();
+
+  constructor(vocabSize = 2000, options: BpeTokenizerOptions = {}) {
     this._targetVocabSize = vocabSize;
+    const envTokens = options.enableEnvReservedTokens === false ? [] : readReservedTokensFromEnv();
+    this._reservedTokens = normalizeTokenList([...(options.reservedTokens ?? []), ...envTokens]);
   }
 
   // ── Public interface ─────────────────────────────────────────────────────
@@ -66,19 +120,25 @@ export class BpeTokenizer implements Tokenizer {
         // Base vocabulary: sorted unique characters from full input.
         const baseChars = [...new Set(input)].sort();
         this._vocab = [...baseChars];
+        // Reserve requested multi-character tokens as atomic units.
+        for (const token of this._reservedTokens) {
+          if (!this._vocab.includes(token)) this._vocab.push(token);
+        }
         this._rebuildStoi();
+        this._refreshReservedTokenIds();
         this._merges = [];
 
-        // Cap training corpus for efficiency -- pair statistics stabilise
-        // well before 500K chars, so there's no quality loss.
-        const maxTrainChars = 500_000;
-        const trainText = input.length > maxTrainChars ? input.slice(0, maxTrainChars) : input;
+        // Cap training corpus for efficiency, but sample from the whole file
+        // to avoid merge bias from only the earliest records.
+        const maxTrainChars = readPositiveIntEnv("ALPHA_BPE_MAX_TRAIN_CHARS", 500_000);
+        const trainText = buildTrainingSample(input, maxTrainChars);
 
         // Working corpus as Int32Array for cache-friendly access.
-        let len = trainText.length;
+        const trainIds = this._tokenizeToIds(trainText);
+        let len = trainIds.length;
         let corpus = new Int32Array(len);
         for (let i = 0; i < len; i++) {
-          corpus[i] = this._stoi.get(trainText[i])!;
+          corpus[i] = trainIds[i];
         }
 
         // Encode pair as single number: left * 65536 + right
@@ -87,11 +147,12 @@ export class BpeTokenizer implements Tokenizer {
         // Initial pair count.
         const pairCounts = new Map<number, number>();
         for (let i = 0; i < len - 1; i++) {
+          if (!this._isMergeablePair(corpus[i], corpus[i + 1])) continue;
           const key = pairKey(corpus[i], corpus[i + 1]);
           pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
         }
 
-        const numMerges = this._targetVocabSize - baseChars.length;
+        const numMerges = this._targetVocabSize - this._vocab.length;
         for (let m = 0; m < numMerges; m++) {
           if (pairCounts.size === 0) break;
 
@@ -109,6 +170,10 @@ export class BpeTokenizer implements Tokenizer {
 
           const leftId = (bestKey / 65536) | 0;
           const rightId = bestKey % 65536;
+          if (!this._isMergeablePair(leftId, rightId)) {
+            pairCounts.delete(bestKey);
+            continue;
+          }
           const newToken = this._vocab[leftId] + this._vocab[rightId];
           const newId = this._vocab.length;
 
@@ -131,15 +196,17 @@ export class BpeTokenizer implements Tokenizer {
               // Decrement old pairs around this site.
               if (write > 0) {
                 const prev = corpus[write - 1];
-                const oldPairL = pairKey(prev, leftId);
-                const c = pairCounts.get(oldPairL);
-                if (c !== undefined) {
-                  if (c <= 1) pairCounts.delete(oldPairL);
-                  else pairCounts.set(oldPairL, c - 1);
+                if (this._isMergeablePair(prev, leftId)) {
+                  const oldPairL = pairKey(prev, leftId);
+                  const c = pairCounts.get(oldPairL);
+                  if (c !== undefined) {
+                    if (c <= 1) pairCounts.delete(oldPairL);
+                    else pairCounts.set(oldPairL, c - 1);
+                  }
                 }
               }
               const next = i + 2 < len ? corpus[i + 2] : -1;
-              if (next >= 0) {
+              if (next >= 0 && this._isMergeablePair(rightId, next)) {
                 const oldPairR = pairKey(rightId, next);
                 const c = pairCounts.get(oldPairR);
                 if (c !== undefined) {
@@ -154,10 +221,12 @@ export class BpeTokenizer implements Tokenizer {
               // Add new pairs around merged token.
               if (write > 0) {
                 const prev = corpus[write - 1];
-                const np = pairKey(prev, newId);
-                pairCounts.set(np, (pairCounts.get(np) ?? 0) + 1);
+                if (this._isMergeablePair(prev, newId)) {
+                  const np = pairKey(prev, newId);
+                  pairCounts.set(np, (pairCounts.get(np) ?? 0) + 1);
+                }
               }
-              if (next >= 0) {
+              if (next >= 0 && this._isMergeablePair(newId, next)) {
                 const np = pairKey(newId, next);
                 pairCounts.set(np, (pairCounts.get(np) ?? 0) + 1);
               }
@@ -184,6 +253,7 @@ export class BpeTokenizer implements Tokenizer {
           vocabSize: this._vocab.length,
           vocab: this._vocab,
           merges: this._merges.map((m) => [m.left, m.right] as [number, number]),
+          ...(this._reservedTokens.length > 0 ? { specialTokens: this._reservedTokens } : {}),
         } satisfies TokenizerArtifacts;
       },
       catch: (cause) => new TokenizerError({ message: String(cause), cause }),
@@ -198,24 +268,18 @@ export class BpeTokenizer implements Tokenizer {
    * Each token position is visited a constant number of times.
    */
   encode(text: string): Int32Array {
-    // Start with character-level ids.
-    const charIds: number[] = [];
-    for (const ch of text) {
-      const id = this._stoi.get(ch);
-      if (id !== undefined) {
-        charIds.push(id);
-      }
-    }
+    // Start with pre-tokenized ids (reserved tokens + chars fallback).
+    const tokenIds = this._tokenizeToIds(text);
 
-    const n = charIds.length;
+    const n = tokenIds.length;
     if (this._merges.length === 0 || n <= 1) {
-      return new Int32Array(charIds);
+      return new Int32Array(tokenIds);
     }
 
     // For small vocabs (< 1000 merges), use the simpler O(M×N) approach
     // which avoids typed-array allocation overhead.
     if (this._merges.length < 1000) {
-      return this._encodeSimple(charIds);
+      return this._encodeSimple(tokenIds);
     }
 
     // Build merge rank lookup (cached across encode calls)
@@ -236,7 +300,7 @@ export class BpeTokenizer implements Tokenizer {
     const deleted = new Uint8Array(n);
 
     for (let i = 0; i < n; i++) {
-      nodeId[i] = charIds[i];
+      nodeId[i] = tokenIds[i];
       nodePrev[i] = i - 1;
       nodeNext[i] = i + 1;
     }
@@ -294,7 +358,8 @@ export class BpeTokenizer implements Tokenizer {
 
     // Initialize heap with all mergeable adjacent pairs
     for (let i = 0; i < n - 1; i++) {
-      const info = mr.get(pk(charIds[i], charIds[i + 1]));
+      if (!this._isMergeablePair(tokenIds[i], tokenIds[i + 1])) continue;
+      const info = mr.get(pk(tokenIds[i], tokenIds[i + 1]));
       if (info) heapPush(info.rank, i);
     }
 
@@ -306,6 +371,7 @@ export class BpeTokenizer implements Tokenizer {
       if (deleted[pos]) continue;
       const nxt = nodeNext[pos];
       if (nxt === -1 || deleted[nxt]) continue;
+      if (!this._isMergeablePair(nodeId[pos], nodeId[nxt])) continue;
       const info = mr.get(pk(nodeId[pos], nodeId[nxt]));
       if (!info || info.rank !== rank) continue;
 
@@ -318,15 +384,19 @@ export class BpeTokenizer implements Tokenizer {
       // New pair with left neighbor → push to heap
       const prv = nodePrev[pos];
       if (prv !== -1 && !deleted[prv]) {
-        const pInfo = mr.get(pk(nodeId[prv], nodeId[pos]));
-        if (pInfo) heapPush(pInfo.rank, prv);
+        if (this._isMergeablePair(nodeId[prv], nodeId[pos])) {
+          const pInfo = mr.get(pk(nodeId[prv], nodeId[pos]));
+          if (pInfo) heapPush(pInfo.rank, prv);
+        }
       }
 
       // New pair with right neighbor → push to heap
       const nxtNext = nodeNext[pos];
       if (nxtNext !== -1 && !deleted[nxtNext]) {
-        const pInfo = mr.get(pk(nodeId[pos], nodeId[nxtNext]));
-        if (pInfo) heapPush(pInfo.rank, pos);
+        if (this._isMergeablePair(nodeId[pos], nodeId[nxtNext])) {
+          const pInfo = mr.get(pk(nodeId[pos], nodeId[nxtNext]));
+          if (pInfo) heapPush(pInfo.rank, pos);
+        }
       }
     }
 
@@ -363,7 +433,11 @@ export class BpeTokenizer implements Tokenizer {
    */
   loadArtifacts(artifacts: TokenizerArtifacts): void {
     this._vocab = [...artifacts.vocab];
+    if (Array.isArray(artifacts.specialTokens) && artifacts.specialTokens.length > 0) {
+      this._reservedTokens = normalizeTokenList(artifacts.specialTokens);
+    }
     this._rebuildStoi();
+    this._refreshReservedTokenIds();
     this._mergeRank = null; // invalidate cache
 
     if (artifacts.merges) {
@@ -386,6 +460,46 @@ export class BpeTokenizer implements Tokenizer {
     for (let i = 0; i < this._vocab.length; i++) {
       this._stoi.set(this._vocab[i], i);
     }
+  }
+
+  /** Refresh cached reserved-token ids after vocab changes. */
+  private _refreshReservedTokenIds(): void {
+    this._reservedTokenIds.clear();
+    for (const token of this._reservedTokens) {
+      const id = this._stoi.get(token);
+      if (id !== undefined) this._reservedTokenIds.add(id);
+    }
+  }
+
+  /** Reserved tokens act as hard boundaries and must not participate in merges. */
+  private _isMergeablePair(leftId: number, rightId: number): boolean {
+    return !this._reservedTokenIds.has(leftId) && !this._reservedTokenIds.has(rightId);
+  }
+
+  /** Tokenize text into ids while honoring reserved multi-character tokens first. */
+  private _tokenizeToIds(text: string): number[] {
+    const ids: number[] = [];
+    let i = 0;
+    while (i < text.length) {
+      let matched = false;
+      for (const token of this._reservedTokens) {
+        if (!text.startsWith(token, i)) continue;
+        const id = this._stoi.get(token);
+        if (id === undefined) continue;
+        ids.push(id);
+        i += token.length;
+        matched = true;
+        break;
+      }
+      if (matched) continue;
+      const cp = text.codePointAt(i);
+      if (cp === undefined) break;
+      const ch = String.fromCodePoint(cp);
+      const id = this._stoi.get(ch);
+      if (id !== undefined) ids.push(id);
+      i += ch.length;
+    }
+    return ids;
   }
 
   /**

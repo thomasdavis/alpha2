@@ -459,10 +459,51 @@ function poolMaxForSize(byteSize: number): number {
 const bufferPool = new Map<number, number[]>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
+const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFFER_POOL_ENTRIES ?? "2048", 10));
+const MAX_OUTPUT_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_OUTPUT_POOL_ENTRIES ?? "2048", 10));
+const LIVE_ALLOC_SOFT_CAP = Math.max(0, parseInt(process.env.HELIOS_LIVE_ALLOC_SOFT_CAP ?? "7000", 10));
+const LIVE_ALLOC_HARD_CAP = Math.max(LIVE_ALLOC_SOFT_CAP + 1, parseInt(process.env.HELIOS_LIVE_ALLOC_HARD_CAP ?? "7800", 10));
 
 let _totalAllocCount = 0;
 let _totalAllocBytes = 0;
 let _liveAllocCount = 0;
+
+function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
+  // Ensure pooled buffers are not still referenced by in-flight work.
+  graph.flushAndWait();
+  processPendingDestroys(vk);
+
+  const targetLive = aggressive
+    ? Math.max(0, LIVE_ALLOC_SOFT_CAP - 256)
+    : LIVE_ALLOC_SOFT_CAP;
+  if (_liveAllocCount <= targetLive) return;
+
+  for (const [size, regions] of [...outputPool.entries()]) {
+    while (regions.length > 0 && _liveAllocCount > targetLive) {
+      const region = regions.pop()!;
+      vk.destroyBuffer(region.handle);
+      if (_liveAllocCount > 0) _liveAllocCount--;
+      outputPoolEntries--;
+      outputPoolBytes -= size;
+    }
+    if (regions.length === 0) outputPool.delete(size);
+    if (_liveAllocCount <= targetLive) break;
+  }
+
+  if (_liveAllocCount > targetLive) {
+    for (const [size, handles] of [...bufferPool.entries()]) {
+      while (handles.length > 0 && _liveAllocCount > targetLive) {
+        const handle = handles.pop()!;
+        vk.destroyBuffer(handle);
+        if (_liveAllocCount > 0) _liveAllocCount--;
+        bufferPoolEntries--;
+        bufferPoolBytes -= size;
+      }
+      if (handles.length === 0) bufferPool.delete(size);
+      if (_liveAllocCount <= targetLive) break;
+    }
+  }
+}
 
 function acquireBuffer(vk: NativeAddon, byteSize: number): number {
   // Round to 4MB bins above 1MB. NVIDIA Vulkan driver has 4× bandwidth degradation
@@ -477,10 +518,28 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
   }
   _totalAllocCount++;
   _totalAllocBytes += rounded;
-  _liveAllocCount++;
+  const createFreshBuffer = (): number => {
+    _liveAllocCount++;
+    try {
+      return vk.createBuffer(rounded, 0); // device-local (staging handled in C)
+    } catch (err) {
+      if (_liveAllocCount > 0) _liveAllocCount--;
+      throw err;
+    }
+  };
+
+  if (_liveAllocCount >= LIVE_ALLOC_HARD_CAP) {
+    trimPoolsForAllocPressure(vk, true);
+  }
+
   try {
-    return vk.createBuffer(rounded, 0); // device-local (staging handled in C)
-  } catch (e) {
+    return createFreshBuffer();
+  } catch (_firstErr) {
+    // Last-chance allocator recovery: aggressively trim pooled handles and retry once.
+    trimPoolsForAllocPressure(vk, true);
+    try {
+      return createFreshBuffer();
+    } catch (e) {
     console.error(`[helios OOM] acquireBuffer failed: requesting ${(byteSize / 1048576).toFixed(1)}MB`);
     console.error(`[helios OOM] total allocated: ${(_totalAllocBytes / 1048576).toFixed(1)}MB across ${_totalAllocCount} allocs (${_liveAllocCount} live)`);
     // Count pool sizes
@@ -488,9 +547,10 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
     for (const [sz, bufs] of bufferPool) { poolCount += bufs.length; poolBytes += sz * bufs.length; }
     console.error(`[helios OOM] buffer pool: ${poolCount} buffers, ${(poolBytes / 1048576).toFixed(1)}MB`);
     let outPoolBytes = 0, outPoolCount = 0;
-    for (const [sz, regs] of outputPool) { outPoolCount += regs.length; outPoolCount += regs.length; outPoolBytes += sz * regs.length; }
+      for (const [sz, regs] of outputPool) { outPoolCount += regs.length; outPoolBytes += sz * regs.length; }
     console.error(`[helios OOM] output pool: ${outPoolCount} regions, ${(outPoolBytes / 1048576).toFixed(1)}MB`);
-    throw e;
+      throw e;
+    }
   }
 }
 
@@ -498,7 +558,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
   const rounded = roundPoolSize(byteSize);
   let pool = bufferPool.get(rounded);
   if (!pool) { pool = []; bufferPool.set(rounded, pool); }
-  if (pool.length < poolMaxForSize(rounded)) {
+  if (pool.length < poolMaxForSize(rounded) && bufferPoolEntries < MAX_BUFFER_POOL_ENTRIES) {
     pool.push(handle);
     bufferPoolEntries++;
     bufferPoolBytes += rounded;
@@ -699,7 +759,7 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
   region.readyValue = submitValue;
   let pool = outputPool.get(region.byteSize);
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
-  if (pool.length < poolMaxForSize(region.byteSize)) {
+  if (pool.length < poolMaxForSize(region.byteSize) && outputPoolEntries < MAX_OUTPUT_POOL_ENTRIES) {
     pool.push(region);
     outputPoolEntries++;
     outputPoolBytes += region.byteSize;
@@ -1139,7 +1199,8 @@ export class HeliosBackend implements Backend {
   private _coopPadded2DDispatches = 0;
   private _coopPaddedBatchedDispatches = 0;
   private _coopTransposedARewriteDispatches = 0;
-  private _coopF16InputCache = new WeakMap<TensorData, TensorData>();
+  private _coopF16InputCache = new Map<TensorData, TensorData>();
+  private _coopF16InputCacheLastFlushTimeline = -1;
   private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
   private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
@@ -1214,12 +1275,32 @@ export class HeliosBackend implements Backend {
     return getNative();
   }
 
-  private resetCoopF16InputCache(): void {
-    this._coopF16InputCache = new WeakMap<TensorData, TensorData>();
+  private resetCoopF16InputCache(releaseCached = true): void {
+    if (releaseCached && this._coopF16InputCache.size > 0) {
+      for (const casted of this._coopF16InputCache.values()) {
+        releaseGpuBufferFor(casted);
+      }
+    }
+    this._coopF16InputCache.clear();
+    this._coopF16InputCacheLastFlushTimeline = graph.lastFlushTimeline;
+  }
+
+  /**
+   * Coop f16 input casts are temporary by design. Keeping them across many flushes
+   * causes GPU handle growth when V8 GC lags behind training allocation rate.
+   * Evicting all cached casts when a batch has completed makes lifetime explicit.
+   */
+  private evictCoopF16InputCacheForCompletedBatch(): void {
+    const lastFlushTimeline = graph.lastFlushTimeline;
+    if (lastFlushTimeline === this._coopF16InputCacheLastFlushTimeline) return;
+    this.resetCoopF16InputCache(true);
   }
 
   /** Flush the compute graph — executes all pending GPU ops as a single batch. */
-  flush(): void { graph.flush(); }
+  flush(): void {
+    graph.flush();
+    this.evictCoopF16InputCacheForCompletedBatch();
+  }
 
   /**
    * Flush GPU work AND wait for completion so all pending buffer releases
@@ -1227,6 +1308,7 @@ export class HeliosBackend implements Backend {
    */
   syncGpu(): void {
     graph.flushAndWait();
+    this.evictCoopF16InputCacheForCompletedBatch();
     const vk = getNative();
     processPendingDestroys(vk);
   }
@@ -1243,6 +1325,7 @@ export class HeliosBackend implements Backend {
     // Destroying them without waiting would cause undefined behavior.
     const tv = graph.flush();
     waitTimelineTracked(vk, tv);
+    this.evictCoopF16InputCacheForCompletedBatch();
 
     // Drain the output pool — release all regions back to the buffer pool
     for (const [, regions] of outputPool) {
@@ -1258,6 +1341,7 @@ export class HeliosBackend implements Backend {
     for (const [, handles] of bufferPool) {
       for (const handle of handles) {
         vk.destroyBuffer(handle);
+        if (_liveAllocCount > 0) _liveAllocCount--;
       }
     }
     bufferPool.clear();
@@ -1266,7 +1350,7 @@ export class HeliosBackend implements Backend {
 
     // Safe to destroy now — GPU sync above guarantees all work has completed
     processPendingDestroys(vk);
-    this.resetCoopF16InputCache();
+    this.resetCoopF16InputCache(false);
   }
 
   /**
@@ -2072,6 +2156,7 @@ export class HeliosBackend implements Backend {
     if (td.dtype === "f16") return this.ensureGpuF16(vk, td);
     if (td.dtype !== "f32") throw new Error(`Helios coop matmul only supports f32/f16 inputs (got ${td.dtype})`);
 
+    this.evictCoopF16InputCacheForCompletedBatch();
     let casted = this._coopF16InputCache.get(td);
     if (!casted) {
       casted = this.castDtype(td, "f16");

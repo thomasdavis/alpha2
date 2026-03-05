@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, sub, mul, div, mean, sum } from "@alpha/autograd";
+import { Variable, Tape, add, sub, mul, div, mean, sum, dropout, residualDropoutAdd } from "@alpha/autograd";
 
 /**
  * Tests that backward-pass intermediate GPU tensors are properly released
@@ -172,6 +172,80 @@ describe("Memory leak: backward release", () => {
     }
     // Should be releasing something
     expect(releaseCounts[0]).toBeGreaterThan(0);
+  });
+
+  it("tape clear releases auxiliary tensors via entry cleanup", () => {
+    const tape = new Tape();
+    const input = makeVar([1, 2], [2]);
+    const outputData = B.fromArray([3, 4], [2]);
+    const out = new Variable(outputData, true);
+    const aux = B.fromArray([9, 9], [2]);
+
+    tape.record({
+      output: out,
+      inputs: [input],
+      backward: (g) => [g],
+      cleanup: (release) => { if (release) release(aux); },
+    });
+
+    const { fn: release } = makeReleaseSpy();
+    tape.clear(release);
+
+    expect(release).toHaveBeenCalledWith(aux);
+  });
+
+  it("entry cleanup runs once across backward + clear", () => {
+    const tape = new Tape();
+    const input = makeVar([1, 2], [2]);
+    const outputData = B.fromArray([3, 4], [2]);
+    const out = new Variable(outputData, true);
+    const aux = B.fromArray([5, 6], [2]);
+    let auxLive: typeof aux | null = aux;
+
+    tape.record({
+      output: out,
+      inputs: [input],
+      backward: (g) => [g],
+      cleanup: (release) => {
+        if (!auxLive) return;
+        if (release) release(auxLive);
+        auxLive = null;
+      },
+    });
+
+    const { fn: release } = makeReleaseSpy();
+    tape.backward(out, B, release);
+    tape.clear(release);
+
+    const releasedAux = release.mock.calls.filter((call) => call[0] === aux).length;
+    expect(releasedAux).toBe(1);
+  });
+
+  it("dropout clear releases output and mask cleanup when backward is skipped", () => {
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const a = makeVar([1, 2, 3, 4], [4]);
+    dropout(ctx, a, 0.1, true);
+
+    const { fn: release } = makeReleaseSpy();
+    tape.clear(release);
+
+    // output data + captured mask
+    expect(release.mock.calls.length).toBe(2);
+  });
+
+  it("residualDropoutAdd clear releases output + mask + fallback dropout intermediate", () => {
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const residual = makeVar([1, 2, 3, 4], [4]);
+    const projected = makeVar([5, 6, 7, 8], [4]);
+    residualDropoutAdd(ctx, residual, projected, 0.1, true);
+
+    const { fn: release } = makeReleaseSpy();
+    tape.clear(release);
+
+    // output data + captured mask + fallback mul(proj, mask) tensor
+    expect(release.mock.calls.length).toBe(3);
   });
 
   it("gradient correctness: broadcast add still produces correct numerical gradients", () => {

@@ -130,6 +130,7 @@ export interface DbRunSummary extends DbRun {
 export interface DbSample {
   run_id: string;
   idx: number;
+  step: number | null;
   prompt: string;
   output: string;
   created_at: string;

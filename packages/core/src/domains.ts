@@ -174,6 +174,42 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "super_chat",
+    {
+      id: "super_chat",
+      displayName: "Super Chat",
+      tokenizer: "bpe-chat-4k",
+      samplePrompts: [
+        "<|user|> Hello, how are you? <|assistant|>",
+        "<|user|> What do you like to do for fun? <|assistant|>",
+        "<|user|> Tell me about yourself. <|assistant|>",
+      ],
+      modelDefaults: {
+        blockSize: 256,
+        nLayer: 6,
+        nEmbd: 192,
+        nHead: 6,
+        dropout: 0.1,
+      },
+      trainDefaults: {
+        tokenizer: "bpe-chat-4k",
+        lr: 8e-5,
+        lrMin: 8e-6,
+        warmupIters: 2000,
+        beta2: 0.95,
+        eps: 1e-8,
+        weightDecay: 0.01,
+        batchSize: 10,
+        gradAccumSteps: 2,
+        gradClip: 0.4,
+        spikeThreshold: 60,
+        packed: true,
+        sampleInterval: 200,
+        evalInterval: 200,
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */

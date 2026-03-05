@@ -281,6 +281,13 @@ interface ValBucketLoader {
   tokenCount: number;
 }
 
+interface SampleQualityStats {
+  avgTokenLength: number;
+  uniqueTokenRatio: number;
+  repeated3GramRate: number;
+  repeated4GramRate: number;
+}
+
 function clamp01(x: number, lo = 0.01, hi = 0.5): number {
   if (!Number.isFinite(x)) return lo;
   return Math.min(hi, Math.max(lo, x));
@@ -428,6 +435,62 @@ function analyzeSampleTrend(history: EvalSnapshot[]): SampleTrendStatus | null {
     valLossDelta,
     gapDelta,
   };
+}
+
+function computeRepeatedNGramRate(tokenSeqs: string[][], n: number): number {
+  let total = 0;
+  let repeated = 0;
+  for (const tokens of tokenSeqs) {
+    if (tokens.length < n) continue;
+    const seen = new Map<string, number>();
+    for (let i = 0; i <= tokens.length - n; i++) {
+      const key = tokens.slice(i, i + n).join("\u0001");
+      const next = (seen.get(key) ?? 0) + 1;
+      seen.set(key, next);
+      total++;
+      if (next > 1) repeated++;
+    }
+  }
+  if (total <= 0) return 0;
+  return repeated / total;
+}
+
+function computeSampleQualityStats(samples: Array<{ prompt: string; output: string }>): SampleQualityStats | null {
+  if (samples.length === 0) return null;
+  const tokenSeqs = samples.map((s) =>
+    s.output
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0),
+  );
+  const flat = tokenSeqs.flat();
+  if (flat.length === 0) {
+    return {
+      avgTokenLength: 0,
+      uniqueTokenRatio: 0,
+      repeated3GramRate: 0,
+      repeated4GramRate: 0,
+    };
+  }
+  const unique = new Set(flat);
+  const totalChars = flat.reduce((acc, t) => acc + t.length, 0);
+  return {
+    avgTokenLength: totalChars / flat.length,
+    uniqueTokenRatio: unique.size / flat.length,
+    repeated3GramRate: computeRepeatedNGramRate(tokenSeqs, 3),
+    repeated4GramRate: computeRepeatedNGramRate(tokenSeqs, 4),
+  };
+}
+
+function computeTensorNormSqCpu(data: TensorData): number {
+  const arr = data.data as Float32Array;
+  let sumSq = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    sumSq += v * v;
+  }
+  return sumSq;
 }
 
 function validateResumeModelCompatibility(
@@ -1031,7 +1094,18 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let lastAdaptivePurgeStep = 0;
   const spikeLrBackoff = readEnvFloat("ALPHA_SPIKE_LR_BACKOFF", 0.5, 0.01, 1.0);
   const spikeLrMinScale = readEnvFloat("ALPHA_SPIKE_LR_MIN_SCALE", 0.1, 0.001, 1.0);
+  const forceCpuGradNormDefault = ((process.env.ALPHA_FORCE_CPU_GRAD_NORM ?? "0").trim() === "1");
+  const gradNormCpuRecheck = ((process.env.ALPHA_GRAD_NORM_CPU_RECHECK ?? "1").trim() !== "0");
+  const gradNormCpuSticky = ((process.env.ALPHA_GRAD_NORM_CPU_STICKY ?? "1").trim() !== "0");
+  const gradNormMismatchRatio = readEnvFloat("ALPHA_GRAD_NORM_MISMATCH_RATIO", 8, 1, 10_000);
+  const gradNormSuspiciousThreshold = readEnvFloat(
+    "ALPHA_GRAD_NORM_SUSPICIOUS_THRESHOLD",
+    Math.max(500, gradClip > 0 ? gradClip * 5000 : 2000),
+    0,
+  );
   let runtimeLrScale = 1.0;
+  let useCpuGradNorm = forceCpuGradNormDefault;
+  let gradNormMismatchStreak = 0;
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
@@ -1143,6 +1217,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (capturePhaseTimings) bwdMs += _bwd1 - _fwd1;
       // Release tape intermediates but keep param gradients for accumulation
       trainTape.clear(releaseFn);
+      // DataLoader reuses batch TensorData objects in a ring. Explicitly release
+      // their GPU buffers so the next in-place refill re-uploads fresh token ids.
+      if (releaseFn) {
+        releaseFn(batch.inputs);
+        releaseFn(batch.targets);
+      }
     }
 
     // Single CPU readback of accumulated loss (triggers one flush+wait)
@@ -1202,7 +1282,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const perParamNorms = perParamNormsBuf;
       perParamNorms.length = 0;
 
-      if (useTotalSumSq && grads.length > 0) {
+      const computeGradNormCpu = (): number => {
+        let gradNormSq = 0;
+        for (let i = 0; i < grads.length; i++) {
+          const val = computeTensorNormSqCpu(grads[i]);
+          gradNormSq += val;
+          if (collectPerParamNorms && gradNames) perParamNorms.push({ name: gradNames[i], normSq: val * gradScaleSq });
+        }
+        return Math.sqrt(gradNormSq) * gradScaleAbs;
+      };
+
+      if (useCpuGradNorm && grads.length > 0) {
+        // Safety mode: avoid GPU reduction kernels for grad norm entirely.
+        gradNorm = computeGradNormCpu();
+      } else if (useTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
         const totalSq = totalSumOfSquaresFn!(grads);
         gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]) * gradScaleAbs;
@@ -1232,6 +1325,63 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           for (const g2 of g2Intermediates) releaseFn(g2);
           for (const part of sqNormParts) releaseFn(part);
         }
+      }
+
+      if (
+        gradNormCpuRecheck &&
+        !useCpuGradNorm &&
+        grads.length > 0 &&
+        Number.isFinite(gradNorm) &&
+        gradNorm >= gradNormSuspiciousThreshold
+      ) {
+        const gradNormGpu = gradNorm;
+        // Re-check suspiciously large norms on CPU to avoid reduction-kernel artifacts.
+        if (collectPerParamNorms) perParamNorms.length = 0;
+        const gradNormCpu = computeGradNormCpu();
+        const minMag = Math.max(1e-12, Math.min(Math.abs(gradNormGpu), Math.abs(gradNormCpu)));
+        const maxMag = Math.max(Math.abs(gradNormGpu), Math.abs(gradNormCpu));
+        const mismatchRatio = maxMag / minMag;
+        const mismatch = !Number.isFinite(mismatchRatio) || mismatchRatio >= gradNormMismatchRatio;
+        gradNorm = gradNormCpu;
+
+        if (mismatch) {
+          gradNormMismatchStreak++;
+          console.warn(
+            `  [grad_norm] suspicious GPU/CPU mismatch at step ${stepNum}: ` +
+            `gpu=${gradNormGpu.toFixed(3)} cpu=${gradNormCpu.toFixed(3)} ratio=${mismatchRatio.toFixed(2)}x`,
+          );
+          emitEvent({
+            step: stepNum,
+            level: "warn",
+            kind: "grad_norm_cpu_recheck_mismatch",
+            message: "grad_norm GPU/CPU mismatch detected; using CPU grad norm result",
+            payload: {
+              gpuGradNorm: gradNormGpu,
+              cpuGradNorm: gradNormCpu,
+              mismatchRatio,
+              mismatchStreak: gradNormMismatchStreak,
+            },
+          });
+          if (gradNormCpuSticky && gradNormMismatchStreak >= 2) {
+            useCpuGradNorm = true;
+            useTotalSumSq = false;
+            console.warn("  [grad_norm] switching to CPU grad norm mode for run stability");
+            emitEvent({
+              step: stepNum,
+              level: "warn",
+              kind: "grad_norm_cpu_mode_enabled",
+              message: "enabled CPU grad norm mode after repeated GPU/CPU mismatch",
+              payload: {
+                suspiciousThreshold: gradNormSuspiciousThreshold,
+                mismatchRatioThreshold: gradNormMismatchRatio,
+              },
+            });
+          }
+        } else {
+          gradNormMismatchStreak = 0;
+        }
+      } else if (!useCpuGradNorm) {
+        gradNormMismatchStreak = 0;
       }
 
       // Detailed per-param diagnostics are expensive; keep them off the hot path
@@ -1926,6 +2076,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           if (releaseFn) releaseFn(vl.data);
         }
         evalTape.clear(releaseFn);
+        if (releaseFn) {
+          releaseFn(valBatch.inputs);
+          releaseFn(valBatch.targets);
+        }
         // Flush between eval iters to process deferred releases
         if (flushFn) flushFn();
       }
@@ -1955,6 +2109,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
               if (releaseFn) releaseFn(bucketLoss.data);
             }
             bucketTape.clear(releaseFn);
+            if (releaseFn) {
+              releaseFn(bucketBatch.inputs);
+              releaseFn(bucketBatch.targets);
+            }
             if (flushFn) flushFn();
           }
           const bucketLossAvg = bucketLossSum / valBucketEvalIters;
@@ -2080,6 +2238,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           }
 
           const trend = analyzeSampleTrend(evalHistory);
+          const sampleQuality = computeSampleQualityStats(samples);
           if (trend) {
             const span = `${trend.windowStartStep}->${trend.windowEndStep}`;
             const gapSign = trend.gapDelta >= 0 ? "+" : "";
@@ -2112,6 +2271,27 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           } else {
             console.log("  [train_status] insufficient eval history for plateau/overfitting analysis");
           }
+          if (sampleQuality) {
+            console.log(
+              `  [sample_quality] uniq_ratio=${sampleQuality.uniqueTokenRatio.toFixed(3)} ` +
+              `rep3=${sampleQuality.repeated3GramRate.toFixed(3)} ` +
+              `rep4=${sampleQuality.repeated4GramRate.toFixed(3)} ` +
+              `avg_tok_len=${sampleQuality.avgTokenLength.toFixed(2)}`,
+            );
+            if (sampleQuality.repeated4GramRate >= 0.20) {
+              emitEvent({
+                step: stepNum,
+                level: "warn",
+                kind: "sample_degeneracy_warning",
+                message: "high repeated 4-gram rate in inference samples",
+                payload: {
+                  repeated4GramRate: sampleQuality.repeated4GramRate,
+                  repeated3GramRate: sampleQuality.repeated3GramRate,
+                  uniqueTokenRatio: sampleQuality.uniqueTokenRatio,
+                },
+              });
+            }
+          }
 
           emitEvent({
             step: stepNum,
@@ -2125,6 +2305,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
                 outputPreview: sample.output.slice(0, 160),
               })),
               trend: trend ?? null,
+              sampleQuality: sampleQuality ?? null,
             },
           });
 

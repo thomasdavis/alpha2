@@ -13,6 +13,7 @@ import { Effect } from "effect";
 
 type GpuProfile = "auto" | "none" | "l4";
 type PlanningIssueLevel = "warn" | "error";
+const CHAT_SPECIAL_TOKENS = ["<|user|>", "<|assistant|>", "<|end_of_text|>"] as const;
 
 interface PlanningIssue {
   level: PlanningIssueLevel;
@@ -343,14 +344,36 @@ export async function trainCmd(args: string[]): Promise<void> {
     const fs = await import("node:fs/promises");
     const hasArtifacts = await fs.access(tokenizerArtifactsPath).then(() => true).catch(() => false);
     if (hasArtifacts) {
-      tokenizerArtifacts = await Effect.runPromise(loadArtifacts(tokenizerArtifactsPath));
-      const tokWithArtifacts = tokenizer as any;
-      if (typeof tokWithArtifacts.loadArtifacts === "function") {
-        tokWithArtifacts.loadArtifacts(tokenizerArtifacts as any);
+      const loadedArtifacts = await Effect.runPromise(loadArtifacts(tokenizerArtifactsPath));
+      const requiresChatSpecialTokens = trainConfig.tokenizer.startsWith("bpe-chat");
+      const loadedSpecialTokens = new Set(loadedArtifacts.specialTokens ?? []);
+      const loadedVocab = new Set(loadedArtifacts.vocab);
+      const missingSpecialMetadata = requiresChatSpecialTokens
+        ? CHAT_SPECIAL_TOKENS.filter((token) => !loadedSpecialTokens.has(token))
+        : [];
+      const missingSpecialVocab = requiresChatSpecialTokens
+        ? CHAT_SPECIAL_TOKENS.filter((token) => !loadedVocab.has(token))
+        : [];
+
+      if (missingSpecialMetadata.length > 0 || missingSpecialVocab.length > 0) {
+        const reasons: string[] = [];
+        if (missingSpecialMetadata.length > 0) reasons.push(`missing specialTokens metadata: ${missingSpecialMetadata.join(", ")}`);
+        if (missingSpecialVocab.length > 0) reasons.push(`missing vocab entries: ${missingSpecialVocab.join(", ")}`);
+        console.warn(`Tokenizer artifacts: stale/incompatible for ${trainConfig.tokenizer}; rebuilding (${reasons.join("; ")})`);
+        const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
+        tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));
+        await Effect.runPromise(saveArtifacts(tokenizerArtifactsPath, tokenizerArtifacts));
+        console.log(`Tokenizer artifacts: rebuilt and saved to ${tokenizerArtifactsPath}`);
       } else {
-        throw new Error(`Tokenizer ${tokenizer.name} does not support loading artifacts`);
+        tokenizerArtifacts = loadedArtifacts;
+        const tokWithArtifacts = tokenizer as any;
+        if (typeof tokWithArtifacts.loadArtifacts === "function") {
+          tokWithArtifacts.loadArtifacts(tokenizerArtifacts as any);
+        } else {
+          throw new Error(`Tokenizer ${tokenizer.name} does not support loading artifacts`);
+        }
+        console.log(`Tokenizer artifacts: loaded ${tokenizerArtifactsPath}`);
       }
-      console.log(`Tokenizer artifacts: loaded ${tokenizerArtifactsPath}`);
     } else {
       const text = await loadTextSample(dataPath, 100 * 1024 * 1024);
       tokenizerArtifacts = await Effect.runPromise(tokenizer.build(text));

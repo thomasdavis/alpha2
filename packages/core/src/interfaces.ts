@@ -11,6 +11,7 @@ export interface TokenizerArtifacts {
   readonly vocabSize: number;
   readonly vocab: readonly string[];
   readonly merges?: readonly [number, number][];
+  readonly specialTokens?: readonly string[];
 }
 
 export interface Tokenizer {

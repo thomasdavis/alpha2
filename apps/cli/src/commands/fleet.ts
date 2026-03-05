@@ -236,16 +236,59 @@ function red(s: string): string { return `\x1b[31m${s}\x1b[0m`; }
 function yellow(s: string): string { return `\x1b[33m${s}\x1b[0m`; }
 function cyan(s: string): string { return `\x1b[36m${s}\x1b[0m`; }
 
-// Detect whether instance has compiled binary or full repo.
-// Prefer binary — it's always freshly deployed, and uses the system linker
-// which can find system Vulkan libs (Nix's node uses a Nix linker that can't).
-async function trainPrefix(config: FleetConfig, host: string): Promise<string> {
+interface TrainRuntime {
+  prefix: string;
+  workdir: string;
+}
+
+// Resolve remote training entrypoint/runtime.
+// Modes:
+// - auto   : prefer compiled binary in deployDir
+// - binary : force compiled binary in deployDir
+// - node   : force Node dist entrypoint (deployDir first, then /home/ajax/alpha-repo)
+async function resolveTrainRuntime(
+  config: FleetConfig,
+  host: string,
+  modeRaw?: string,
+): Promise<TrainRuntime | null> {
   const dir = config.deployDir;
+  const mode = (modeRaw ?? "auto").toLowerCase();
+  if (mode !== "auto" && mode !== "binary" && mode !== "node") {
+    throw new Error(`Unknown runtime mode: ${modeRaw}. Use auto|binary|node.`);
+  }
+
+  const hasNodeRuntime = async (candidateDir: string): Promise<boolean> => {
+    // Runtime sanity probe: ensure the node entrypoint can resolve workspace deps.
+    const probe = `cd ${candidateDir} && test -f apps/cli/dist/main.js && node apps/cli/dist/main.js --help >/dev/null 2>&1`;
+    const { code } = await ssh(config, host, probe);
+    return code === 0;
+  };
+
   const { code: hasBin } = await ssh(config, host, `test -x ${dir}/alpha`);
-  if (hasBin === 0) return `./alpha`;
-  const { code: hasRepo } = await ssh(config, host, `test -f ${dir}/apps/cli/dist/main.js`);
-  if (hasRepo === 0) return `node apps/cli/dist/main.js`;
-  return "";
+  const hasBinary = hasBin === 0;
+
+  const legacyRepoDir = "/home/ajax/alpha-repo";
+  const [hasNodeInDeploy, hasNodeInLegacy] = await Promise.all([
+    hasNodeRuntime(dir),
+    hasNodeRuntime(legacyRepoDir),
+  ]);
+
+  if (mode === "binary") {
+    if (!hasBinary) return null;
+    return { prefix: "./alpha", workdir: dir };
+  }
+
+  if (mode === "node") {
+    if (hasNodeInDeploy) return { prefix: "node apps/cli/dist/main.js", workdir: dir };
+    if (hasNodeInLegacy) return { prefix: "node apps/cli/dist/main.js", workdir: legacyRepoDir };
+    return null;
+  }
+
+  // auto mode
+  if (hasBinary) return { prefix: "./alpha", workdir: dir };
+  if (hasNodeInDeploy) return { prefix: "node apps/cli/dist/main.js", workdir: dir };
+  if (hasNodeInLegacy) return { prefix: "node apps/cli/dist/main.js", workdir: legacyRepoDir };
+  return null;
 }
 
 // ── Subcommands ────────────────────────────────────────────────────────────
@@ -560,12 +603,14 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   const kv = parseTrainKV(trainArgs);
   const isL4Instance = /\bl4\b/i.test(inst.gpu);
 
-  // Detect train command
-  const prefix = await trainPrefix(config, inst.host);
-  if (!prefix) {
+  // Detect train command/runtime
+  const runtimeMode = kv["runtime"];
+  const runtime = await resolveTrainRuntime(config, inst.host, runtimeMode);
+  if (!runtime) {
     console.error(red(`  No alpha binary or repo found on ${name}. Run: alpha fleet deploy ${name}`));
     process.exit(1);
   }
+  const { prefix, workdir } = runtime;
 
   // Check for existing training
   if (kv["force"] !== "true") {
@@ -582,7 +627,15 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   }
 
   // Build the training command
-  const effectiveArgs = trainArgs.filter(a => a.startsWith("--") && !a.startsWith("--force"));
+  const effectiveArgs = trainArgs
+    .filter(a => a !== "--")
+    .filter(a =>
+      a.startsWith("--") &&
+      !a.startsWith("--force") &&
+      !a.startsWith("--runtime") &&
+      !a.startsWith("--nix") &&
+      !a.startsWith("--useNix"),
+    );
   if (isL4Instance) {
     if (!kv["gpuProfile"]) effectiveArgs.push("--gpuProfile=l4");
     if (!kv["backend"]) effectiveArgs.push("--backend=helios");
@@ -591,15 +644,28 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
   }
   const flagStr = effectiveArgs.join(" ");
   const l4Env = isL4Instance
-    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
+    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi; if [ -z \"${VK_ICD_FILENAMES:-}\" ]; then if [ -f /etc/vulkan/icd.d/nvidia_icd_headless.json ]; then export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json; elif [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json; fi; fi;"
     : "";
-  const nixCmd = `${NIX_SOURCE} nix develop path:${dir}#train --command bash -c`;
-  const inner = `source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
-  const trainCmd = `cd ${dir} && ${nixCmd} '${inner}'`;
+  const nohupBin = "/usr/bin/nohup";
+  const useNixShell = kv["nix"] === "true" || kv["useNix"] === "true";
+  const shellCmd = useNixShell
+    ? `${NIX_SOURCE} nix develop path:${workdir}#train --command bash -c`
+    : "bash -lc";
+  const inner = `set -a; source .env.local 2>/dev/null || true; set +a; ${l4Env} ${nohupBin} ${prefix} train ${flagStr} > train.log 2>&1 & echo $!`;
+  const trainCmd = `cd ${workdir} && ${shellCmd} '${inner}'`;
 
   console.log(bold(`\n  Starting training on ${name}`) + dim(` (${inst.host})\n`));
   if (isL4Instance && !kv["gpuProfile"]) {
     console.log(dim("  auto-tuning for L4: --gpuProfile=l4 --backend=helios --minGpuSize=2048 --logEvery=25"));
+  }
+  if (runtimeMode) {
+    console.log(dim(`  runtime override: ${runtimeMode}`));
+  }
+  if (workdir !== dir) {
+    console.log(dim(`  workdir: ${workdir}`));
+  }
+  if (useNixShell) {
+    console.log(dim("  env shell: nix develop #train"));
   }
   console.log(dim(`  ${prefix} train ${flagStr}\n`));
 
@@ -613,7 +679,7 @@ async function fleetTrain(config: FleetConfig, name: string, trainArgs: string[]
 
   console.log(green(`  Training started!`));
   console.log(`  PID: ${bold(pid || "?")}`);
-  console.log(`  Log: ${dir}/train.log`);
+  console.log(`  Log: ${workdir}/train.log`);
   console.log(dim(`\n  View logs: alpha fleet logs ${name}`));
   console.log(dim(`  Stop:      alpha fleet stop ${name}\n`));
 }
@@ -705,18 +771,34 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
       if (cfg.fp16) flagMap["fp16"] = "true";
 
       // User overrides from extraArgs take precedence
-      const overrides = parseTrainKV(extraArgs);
+      const overrides = parseTrainKV(extraArgs.filter(a => a !== "--"));
       for (const [k, v] of Object.entries(overrides)) {
-        if (k !== "run" && k !== "force") flagMap[k] = v;
+        if (k !== "run" && k !== "force" && k !== "runtime" && k !== "nix" && k !== "useNix") flagMap[k] = v;
       }
 
       originalFlags = Object.entries(flagMap).map(([k, v]) => `--${k}=${v}`).join(" ");
     } catch {
       console.log(yellow("  Could not parse config.json, using only provided flags."));
-      originalFlags = extraArgs.filter(a => a.startsWith("--") && !a.startsWith("--run")).join(" ");
+      originalFlags = extraArgs
+        .filter(a => a !== "--")
+        .filter(a =>
+          a.startsWith("--") &&
+          !a.startsWith("--run") &&
+          !a.startsWith("--nix") &&
+          !a.startsWith("--useNix"),
+        )
+        .join(" ");
     }
   } else {
-    originalFlags = extraArgs.filter(a => a.startsWith("--") && !a.startsWith("--run")).join(" ");
+    originalFlags = extraArgs
+      .filter(a => a !== "--")
+      .filter(a =>
+        a.startsWith("--") &&
+        !a.startsWith("--run") &&
+        !a.startsWith("--nix") &&
+        !a.startsWith("--useNix"),
+      )
+      .join(" ");
   }
   if (isL4Instance) {
     if (!/\s--gpuProfile=/.test(` ${originalFlags} `)) originalFlags += " --gpuProfile=l4";
@@ -740,19 +822,25 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
     }
   }
 
-  // Detect train command
-  const prefix = await trainPrefix(config, inst.host);
-  if (!prefix) {
+  // Detect train command/runtime
+  const runtimeMode = kv["runtime"];
+  const runtime = await resolveTrainRuntime(config, inst.host, runtimeMode);
+  if (!runtime) {
     console.error(red(`  No alpha binary or repo found on ${name}. Run: alpha fleet deploy ${name}`));
     process.exit(1);
   }
+  const { prefix, workdir } = runtime;
 
   const l4Env = isL4Instance
-    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi;"
+    ? "if [ -z \"${HELIOS_WG_SIZE:-}\" ]; then export HELIOS_WG_SIZE=256; fi; if [ -z \"${VK_ICD_FILENAMES:-}\" ]; then if [ -f /etc/vulkan/icd.d/nvidia_icd_headless.json ]; then export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json; elif [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json; fi; fi;"
     : "";
-  const nixCmd = `${NIX_SOURCE} nix develop path:${dir}#train --command bash -c`;
-  const inner = `source .env.local 2>/dev/null; ${l4Env} nohup ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
-  const trainCmd = `cd ${dir} && ${nixCmd} '${inner}'`;
+  const nohupBin = "/usr/bin/nohup";
+  const useNixShell = kv["nix"] === "true" || kv["useNix"] === "true";
+  const shellCmd = useNixShell
+    ? `${NIX_SOURCE} nix develop path:${workdir}#train --command bash -c`
+    : "bash -lc";
+  const inner = `set -a; source .env.local 2>/dev/null || true; set +a; ${l4Env} ${nohupBin} ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags} > train.log 2>&1 & echo $!`;
+  const trainCmd = `cd ${workdir} && ${shellCmd} '${inner}'`;
 
   console.log(dim(`\n  ${prefix} train --resume=${ckptPath} --runDir=${runDir} ${originalFlags}\n`));
 

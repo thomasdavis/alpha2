@@ -10,6 +10,8 @@ import { CharTokenizer } from "./char.js";
 import { BpeTokenizer } from "./bpe.js";
 import { WordTokenizer } from "./word.js";
 
+const CHAT_SPECIAL_TOKENS = ["<|user|>", "<|assistant|>", "<|end_of_text|>"] as const;
+
 // ── Re-exports ────────────────────────────────────────────────────────────
 export { CharTokenizer } from "./char.js";
 export { BpeTokenizer } from "./bpe.js";
@@ -39,4 +41,6 @@ tokenizerRegistry.register("bpe-4k", () => new BpeTokenizer(4000));
 tokenizerRegistry.register("bpe-16k", () => new BpeTokenizer(16000));
 tokenizerRegistry.register("bpe-32k", () => new BpeTokenizer(32000));
 tokenizerRegistry.register("bpe-64k", () => new BpeTokenizer(64000));
+tokenizerRegistry.register("bpe-chat", () => new BpeTokenizer(2000, { reservedTokens: CHAT_SPECIAL_TOKENS }));
+tokenizerRegistry.register("bpe-chat-4k", () => new BpeTokenizer(4000, { reservedTokens: CHAT_SPECIAL_TOKENS }));
 tokenizerRegistry.register("word", () => new WordTokenizer());

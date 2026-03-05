@@ -110,7 +110,7 @@ export async function POST(request: Request) {
     };
     try {
       const client = await getClient();
-      await insertSamples(client, runId, samples);
+      await insertSamples(client, runId, samples, Number.isFinite(step as number) ? (step as number) : null);
       if (Number.isFinite(step as number)) {
         await updateRunProgress(client, runId, {
           latest_step: step as number,

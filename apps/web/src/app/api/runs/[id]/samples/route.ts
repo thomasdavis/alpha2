@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { getClient } from "@/lib/db";
 import { getSamples } from "@alpha/db";
 import { jsonResponse } from "@/lib/server-state";
@@ -5,11 +6,14 @@ import { jsonResponse } from "@/lib/server-state";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  const stepRaw = request.nextUrl.searchParams.get("step");
+  const stepParsed = stepRaw ? Number.parseInt(stepRaw, 10) : Number.NaN;
+  const step = Number.isFinite(stepParsed) ? stepParsed : undefined;
   const client = await getClient();
-  const samples = await getSamples(client, id);
+  const samples = await getSamples(client, id, { step });
   return jsonResponse(samples);
 }
