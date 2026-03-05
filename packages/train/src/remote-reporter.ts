@@ -3,7 +3,7 @@
  *
  * Fire-and-forget: network errors never block training.
  */
-import type { StepMetrics } from "./trainer.js";
+import type { SampleTrendStatus, StepMetrics, TrainingEvent } from "./trainer.js";
 import type { ModelConfig, TrainConfig } from "@alpha/core";
 
 export interface RemoteReporterConfig {
@@ -15,6 +15,8 @@ export interface RemoteReporterConfig {
   batchSize?: number;
   /** Max time between flushes in ms (default: 5000) */
   flushInterval?: number;
+  /** Heartbeat interval in ms (default: 60_000) */
+  heartbeatInterval?: number;
   /** Discord webhook URL for notifications */
   discordWebhook?: string;
 }
@@ -46,7 +48,11 @@ export interface RemoteReporter {
   /** Upload a checkpoint to the remote server for inference */
   uploadCheckpoint(info: { step: number; path: string; runId: string }): void;
   /** Send sample generations to the server for display */
-  sendSamples(samples: SampleGeneration[], step?: number): Promise<void>;
+  sendSamples(samples: SampleGeneration[], step?: number, trend?: SampleTrendStatus): Promise<void>;
+  /** Send a single run event to the server event log */
+  sendEvent(event: TrainingEvent): Promise<void>;
+  /** Send a batch of run events to the server event log */
+  sendEvents(events: TrainingEvent[]): Promise<void>;
 }
 
 /** Max chunk size for chunked uploads (1MB — safely under Railway CDN limit) */
@@ -129,6 +135,8 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
   const { url, secret, discordWebhook } = config;
   const batchSize = config.batchSize ?? 10;
   const flushInterval = config.flushInterval ?? 30_000;
+  const heartbeatInterval = config.heartbeatInterval ?? 60_000;
+  const MAX_BUFFERED_METRICS = 5_000;
 
   let runId = "";
   let domain: string | undefined;
@@ -138,6 +146,10 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
   let trainingDataSent = false;
   let buffer: StepMetrics[] = [];
   let timer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatInFlight = false;
+  let flushInFlight = false;
+  let lastStep = 0;
   const pendingUploads: Promise<void>[] = [];
 
   const headers: Record<string, string> = {
@@ -147,7 +159,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
 
   let postErrorCount = 0;
 
-  async function post(path: string, body: unknown): Promise<void> {
+  async function post(path: string, body: unknown): Promise<boolean> {
     try {
       const res = await fetch(`${url}${path}`, {
         method: "POST",
@@ -162,39 +174,76 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
           const text = await res.text().catch(() => "");
           console.warn(`  [remote] POST ${path} failed: ${res.status} ${text.slice(0, 200)} (error #${postErrorCount})`);
         }
+        return false;
       } else {
         // Reset on success
         if (postErrorCount > 0) {
           console.log(`  [remote] POST ${path} recovered after ${postErrorCount} errors`);
           postErrorCount = 0;
         }
+        return true;
       }
     } catch (e) {
       postErrorCount++;
       if (postErrorCount <= 5 || postErrorCount % 100 === 0) {
         console.warn(`  [remote] POST ${path} error: ${(e as Error).message} (error #${postErrorCount})`);
       }
+      return false;
     }
   }
 
   async function flushBuffer(): Promise<void> {
-    if (buffer.length === 0 || !runId) return;
+    if (flushInFlight || buffer.length === 0 || !runId) return;
+    flushInFlight = true;
     const batch = buffer;
     buffer = [];
-    await post("/api/ingest", { type: "metrics", runId, metrics: batch });
+    try {
+      const ok = await post("/api/ingest", { type: "metrics", runId, metrics: batch });
+      if (!ok) {
+        buffer = batch.concat(buffer);
+        if (buffer.length > MAX_BUFFERED_METRICS) {
+          const dropCount = buffer.length - MAX_BUFFERED_METRICS;
+          buffer = buffer.slice(dropCount);
+          if (postErrorCount <= 5 || postErrorCount % 100 === 0) {
+            console.warn(`  [remote] dropped ${dropCount} buffered metric(s) after repeated ingest failures`);
+          }
+        }
+      }
+    } finally {
+      flushInFlight = false;
+    }
+
+    // Drain quickly after recovery without waiting for the next timer tick.
+    if (buffer.length >= batchSize) {
+      void flushBuffer();
+    }
   }
 
   function startTimer(): void {
     if (timer) return;
     timer = setInterval(() => {
-      flushBuffer();
+      void flushBuffer();
     }, flushInterval);
+    if (!heartbeatTimer) {
+      heartbeatTimer = setInterval(() => {
+        if (!runId || heartbeatInFlight) return;
+        heartbeatInFlight = true;
+        void post("/api/ingest", { type: "heartbeat", runId, step: lastStep })
+          .finally(() => {
+            heartbeatInFlight = false;
+          });
+      }, heartbeatInterval);
+    }
   }
 
   function stopTimer(): void {
     if (timer) {
       clearInterval(timer);
       timer = null;
+    }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
   }
 
@@ -271,6 +320,7 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     get runId() { return runId; },
     async registerRun(info) {
       runId = info.runId;
+      lastStep = 0;
       domain = info.domain;
       storedModelConfig = info.modelConfig;
       storedTrainConfig = info.trainConfig;
@@ -313,15 +363,24 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
     },
 
     onStep(metrics: StepMetrics) {
+      if (Number.isFinite(metrics.step)) {
+        lastStep = Math.max(lastStep, metrics.step);
+      }
       buffer.push(metrics);
       if (buffer.length >= batchSize) {
-        flushBuffer();
+        void flushBuffer();
       }
     },
 
     async complete(finalStep: number) {
       stopTimer();
-      await flushBuffer();
+      // Keep flushing until buffer drains, allowing one in-flight request at a time.
+      while (buffer.length > 0 || flushInFlight) {
+        await flushBuffer();
+        if (flushInFlight) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        }
+      }
       // Wait for any in-flight checkpoint uploads before marking complete
       if (pendingUploads.length > 0) {
         console.log(`  waiting for ${pendingUploads.length} checkpoint upload(s)...`);
@@ -347,14 +406,20 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
       await flushBuffer();
     },
 
-    async sendSamples(samples: SampleGeneration[], step?: number) {
-      await post("/api/ingest", { type: "samples", runId, samples });
+    async sendSamples(samples: SampleGeneration[], step?: number, trend?: SampleTrendStatus) {
+      await post("/api/ingest", { type: "samples", runId, samples, step, trend });
 
       if (discordWebhook && samples.length > 0) {
         const sampleFields = samples.map((s, i) => ({
           name: `Prompt ${i + 1}: "${s.prompt}"`,
           value: `\`\`\`\n${s.output.slice(0, 300)}${s.output.length > 300 ? "..." : ""}\n\`\`\``,
         }));
+        if (trend) {
+          sampleFields.push({
+            name: "Training Status",
+            value: `${trend.summary}\nwindow ${trend.windowStartStep}->${trend.windowEndStep}`,
+          });
+        }
         await sendDiscord(discordWebhook, [{
           title: `📝 Inference Samples${step ? ` (Step ${step})` : ""}`,
           color: 0xff9800,
@@ -363,6 +428,30 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
           timestamp: new Date().toISOString(),
         }]);
       }
+    },
+
+    async sendEvent(event: TrainingEvent) {
+      if (!runId) return;
+      await post("/api/ingest", {
+        type: "event",
+        runId,
+        event: {
+          ...event,
+          timestamp: event.timestamp ?? new Date().toISOString(),
+        },
+      });
+    },
+
+    async sendEvents(events: TrainingEvent[]) {
+      if (!runId || events.length === 0) return;
+      await post("/api/ingest", {
+        type: "events",
+        runId,
+        events: events.map((event) => ({
+          ...event,
+          timestamp: event.timestamp ?? new Date().toISOString(),
+        })),
+      });
     },
 
     uploadCheckpoint(info: { step: number; path: string; runId: string }) {
@@ -415,8 +504,35 @@ export function createRemoteReporter(config: RemoteReporterConfig): RemoteReport
           });
 
           console.log(`  checkpoint uploaded to ${url} (step ${info.step})`);
+          await post("/api/ingest", {
+            type: "event",
+            runId,
+            event: {
+              step: info.step,
+              level: "info",
+              kind: "checkpoint_uploaded",
+              message: `checkpoint uploaded (step ${info.step})`,
+              payload: {
+                fullBytes: checkpointBuf.length,
+                inferenceBytes: inferBuf.length,
+              },
+              timestamp: new Date().toISOString(),
+            },
+          });
         } catch (e) {
           console.error(`  checkpoint upload failed: ${e}`);
+          await post("/api/ingest", {
+            type: "event",
+            runId,
+            event: {
+              step: info.step,
+              level: "error",
+              kind: "checkpoint_upload_failed",
+              message: `checkpoint upload failed at step ${info.step}`,
+              payload: { error: (e as Error).message ?? String(e) },
+              timestamp: new Date().toISOString(),
+            },
+          });
         }
       })();
       pendingUploads.push(p);

@@ -228,7 +228,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     evalIters: intArg(kv, "evalIters", tDefaults.evalIters ?? defaultTrainConfig.evalIters),
     seed: intArg(kv, "seed", tDefaults.seed ?? defaultTrainConfig.seed),
     backend: strArg(kv, "backend", tDefaults.backend ?? defaultTrainConfig.backend),
-    tokenizer: domain ? domain.tokenizer : strArg(kv, "tokenizer", defaultTrainConfig.tokenizer),
+    tokenizer: strArg(kv, "tokenizer", domain?.tokenizer ?? defaultTrainConfig.tokenizer),
     optimizer: strArg(kv, "optim", tDefaults.optimizer ?? defaultTrainConfig.optimizer),
     logLevel: strArg(kv, "log", (tDefaults.logLevel ?? defaultTrainConfig.logLevel)) as any,
     logEvery: intArg(kv, "logEvery", tDefaults.logEvery ?? defaultTrainConfig.logEvery ?? 1),
@@ -386,7 +386,11 @@ export async function trainCmd(args: string[]): Promise<void> {
   const reporter = enableRemote && remoteUrl && remoteSecret
     ? createRemoteReporter({ url: remoteUrl, secret: remoteSecret, discordWebhook })
     : null;
-  const postSamples = boolArg(kv, "postSamples", true);
+  const defaultPostSamples = backend.name === "cpu_ref";
+  const postSamples = boolArg(kv, "postSamples", defaultPostSamples);
+  if (!kv["postSamples"] && !defaultPostSamples) {
+    console.log("Post-training sample generation: disabled by default for GPU backends (use --postSamples=true to force)");
+  }
 
   if (reporter) {
     console.log(`Remote reporting: ${remoteUrl}`);
@@ -423,7 +427,10 @@ export async function trainCmd(args: string[]): Promise<void> {
     // Skip intermediate checkpoint uploads — only upload final checkpoint after training
     onCheckpoint: undefined,
     onSamples: reporter
-      ? (samples, step) => reporter.sendSamples(samples, step)
+      ? (samples, step, trend) => reporter.sendSamples(samples, step, trend)
+      : undefined,
+    onEvent: reporter
+      ? (event) => reporter.sendEvent(event)
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
     mixedPrecision: mixedPrecisionEnabled,
@@ -456,19 +463,27 @@ export async function trainCmd(args: string[]): Promise<void> {
   if (postSamples) {
     console.log("\n── sample generations ──");
     for (const prompt of allPrompts) {
-      // Flush GPU between samples to reclaim buffers
-      if (flushFn) flushFn();
-      const output = runSample(
-        trainedModelConfig, params, backend, rng,
-        (t) => tokenizer.encode(t),
-        (t) => tokenizer.decode(t),
-        prompt,
-        { steps: 100, temperature: 0.8, topk: 40, topp: 1.0 },
-        releaseFn, flushFn,
-      );
-      console.log(`\n  prompt: "${prompt}"`);
-      console.log(`  output: ${output}`);
-      samples.push({ prompt, output });
+      try {
+        // Flush GPU between samples to reclaim buffers
+        if (flushFn) flushFn();
+        if (typeof globalThis.gc === "function") {
+          (globalThis as any).gc();
+        }
+        if (flushFn) flushFn();
+        const output = runSample(
+          trainedModelConfig, params, backend, rng,
+          (t) => tokenizer.encode(t),
+          (t) => tokenizer.decode(t),
+          prompt,
+          { steps: 100, temperature: 0.8, topk: 40, topp: 1.0 },
+          releaseFn, flushFn,
+        );
+        console.log(`\n  prompt: "${prompt}"`);
+        console.log(`  output: ${output}`);
+        samples.push({ prompt, output });
+      } catch (e) {
+        console.warn(`  post-sample failed for prompt "${prompt}": ${(e as Error).message}`);
+      }
     }
   } else {
     console.log("\nSkipping post-training sample generation (--postSamples=false)");

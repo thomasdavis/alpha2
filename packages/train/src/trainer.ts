@@ -7,7 +7,7 @@
 import type {
   ModelConfig, TrainConfig, Backend, Tokenizer, Optimizer, Rng, TensorData, SampleConfig,
 } from "@alpha/core";
-import { shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
+import { SeededRng, shapeSize, hashConfig, runId as makeRunId } from "@alpha/core";
 import { Tape, DropoutRng } from "@alpha/autograd";
 import { initGPT, gptForward, collectParamEntries, countParams, clearForwardCache, type GPTParams } from "@alpha/model";
 import {
@@ -104,6 +104,86 @@ async function queryGpuStats(blocking = false): Promise<GpuStats | null> {
   return _gpuStatsCache;
 }
 
+function parseCliSampleOutput(stdout: string): string {
+  const lines = stdout.split(/\r?\n/);
+  const out: string[] = [];
+  let inOutput = false;
+  for (const raw of lines) {
+    const line = raw ?? "";
+    if (!inOutput) {
+      if (line.trim() === "---") inOutput = true;
+      continue;
+    }
+    if (line.trim() === "--- stats ---") break;
+    if (line.trim().length === 0) continue;
+    out.push(line);
+  }
+  return out.join("\n").trim() || "(no output captured)";
+}
+
+async function sampleFromCheckpointCli(
+  checkpointPath: string,
+  prompts: string[],
+  cfg: SampleConfig,
+): Promise<{ prompt: string; output: string }[]> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const { execFile } = await import("node:child_process");
+  const cliEntry = path.resolve(process.cwd(), "apps/cli/dist/main.js");
+  const exeBase = path.basename(process.execPath).toLowerCase();
+  const isCompiledAlpha = exeBase === "alpha" || exeBase.startsWith("alpha-");
+
+  await fs.access(checkpointPath);
+  if (!isCompiledAlpha) {
+    await fs.access(cliEntry);
+  }
+
+  const runSampleOnce = (prompt: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const args = isCompiledAlpha
+        ? [
+            "sample",
+            `--checkpoint=${checkpointPath}`,
+            "--backend=cpu_ref",
+            `--steps=${cfg.steps}`,
+            `--temp=${cfg.temperature}`,
+            `--topk=${cfg.topk}`,
+            `--topp=${cfg.topp ?? 1}`,
+            `--prompt=${prompt}`,
+          ]
+        : [
+            cliEntry,
+            "sample",
+            `--checkpoint=${checkpointPath}`,
+            "--backend=cpu_ref",
+            `--steps=${cfg.steps}`,
+            `--temp=${cfg.temperature}`,
+            `--topk=${cfg.topk}`,
+            `--topp=${cfg.topp ?? 1}`,
+            `--prompt=${prompt}`,
+          ];
+      execFile(
+        process.execPath,
+        args,
+        { timeout: 120_000, maxBuffer: 8 * 1024 * 1024, encoding: "utf-8" },
+        (err, stdout) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve(parseCliSampleOutput(stdout ?? ""));
+        },
+      );
+    });
+
+  const samples: { prompt: string; output: string }[] = [];
+  for (const prompt of prompts) {
+    const output = await runSampleOnce(prompt);
+    samples.push({ prompt, output });
+  }
+  return samples;
+}
+
 // ── Step metrics ───────────────────────────────────────────────────────────
 
 export interface StepMetrics {
@@ -166,6 +246,190 @@ export interface StepMetrics {
   per_layer_grad_norms?: string;
 }
 
+export type TrainingEventLevel = "debug" | "info" | "warn" | "error";
+
+export interface TrainingEvent {
+  step?: number;
+  level?: TrainingEventLevel;
+  kind: string;
+  message: string;
+  payload?: Record<string, unknown> | null;
+  timestamp?: string;
+}
+
+export interface SampleTrendStatus {
+  summary: string;
+  plateauLikely: boolean;
+  overfittingLikely: boolean;
+  windowStartStep: number;
+  windowEndStep: number;
+  trainLossDelta: number;
+  valLossDelta: number;
+  gapDelta: number;
+}
+
+interface EvalSnapshot {
+  step: number;
+  trainLoss: number;
+  valLoss: number;
+}
+
+interface ValBucketLoader {
+  name: "short" | "medium" | "long";
+  loader: DataLoader;
+  sampleCount: number;
+  tokenCount: number;
+}
+
+function clamp01(x: number, lo = 0.01, hi = 0.5): number {
+  if (!Number.isFinite(x)) return lo;
+  return Math.min(hi, Math.max(lo, x));
+}
+
+function fnv1a32(input: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function splitByDelimiterDeterministic(
+  rawText: string,
+  delimiter: string,
+  valFraction: number,
+  seed: number,
+): { trainText: string; valText: string; trainCount: number; valCount: number } | null {
+  if (!rawText.includes(delimiter)) return null;
+
+  const chunks = rawText.split(delimiter);
+  const trainParts: string[] = [];
+  const valParts: string[] = [];
+  let trainCount = 0;
+  let valCount = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const body = chunks[i].trim();
+    if (body.length === 0) continue;
+    const sample = `${body}${delimiter}\n`;
+    const hash = fnv1a32(`${seed}:${i}:${body.slice(0, 64)}`);
+    const takeVal = (hash / 0x1_0000_0000) < valFraction;
+    if (takeVal) {
+      valParts.push(sample);
+      valCount++;
+    } else {
+      trainParts.push(sample);
+      trainCount++;
+    }
+  }
+
+  if (trainCount === 0 || valCount === 0) return null;
+
+  return {
+    trainText: trainParts.join(""),
+    valText: valParts.join(""),
+    trainCount,
+    valCount,
+  };
+}
+
+function buildValBucketLoaders(
+  valText: string,
+  delimiter: string,
+  tokenizer: Tokenizer,
+  batchSize: number,
+  blockSize: number,
+  seed: number,
+): ValBucketLoader[] {
+  const rawSamples = valText
+    .split(delimiter)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (rawSamples.length < 32) return [];
+
+  const lengths = rawSamples.map((s) => s.length).sort((a, b) => a - b);
+  const p33 = lengths[Math.floor((lengths.length - 1) * 0.33)];
+  const p66 = lengths[Math.floor((lengths.length - 1) * 0.66)];
+
+  const short: string[] = [];
+  const medium: string[] = [];
+  const long: string[] = [];
+  for (const sample of rawSamples) {
+    const wrapped = `${sample}${delimiter}\n`;
+    if (sample.length <= p33) short.push(wrapped);
+    else if (sample.length <= p66) medium.push(wrapped);
+    else long.push(wrapped);
+  }
+
+  const buckets: Array<{ name: ValBucketLoader["name"]; samples: string[] }> = [
+    { name: "short", samples: short },
+    { name: "medium", samples: medium },
+    { name: "long", samples: long },
+  ];
+
+  const loaders: ValBucketLoader[] = [];
+  for (let i = 0; i < buckets.length; i++) {
+    const bucket = buckets[i];
+    if (bucket.samples.length < 8) continue;
+    const text = bucket.samples.join("");
+    const tokens = tokenizer.encode(text);
+    if (tokens.length <= blockSize + 1) continue;
+    loaders.push({
+      name: bucket.name,
+      loader: new DataLoader(tokens, new SeededRng(seed + 1000 + i), batchSize, blockSize),
+      sampleCount: bucket.samples.length,
+      tokenCount: tokens.length,
+    });
+  }
+
+  return loaders;
+}
+
+function analyzeSampleTrend(history: EvalSnapshot[]): SampleTrendStatus | null {
+  const WINDOW = 6;
+  if (history.length < WINDOW) return null;
+  const window = history.slice(-WINDOW);
+  const first = window[0];
+  const last = window[window.length - 1];
+  const trainLossDelta = last.trainLoss - first.trainLoss;
+  const valLossDelta = last.valLoss - first.valLoss;
+  const firstGap = first.valLoss - first.trainLoss;
+  const lastGap = last.valLoss - last.trainLoss;
+  const gapDelta = lastGap - firstGap;
+  const trainRel = (first.trainLoss - last.trainLoss) / Math.max(1e-6, Math.abs(first.trainLoss));
+  const valRel = (first.valLoss - last.valLoss) / Math.max(1e-6, Math.abs(first.valLoss));
+
+  // Plateau: both train and validation have moved by <1% over the recent window.
+  const plateauLikely = Math.abs(trainRel) < 0.01 && Math.abs(valRel) < 0.01;
+  // Overfitting: train improves while validation degrades and gap widens.
+  const overfittingLikely = trainRel > 0.01 && valRel < -0.003 && gapDelta > 0.03;
+
+  let summary = "trend=unclear";
+  if (overfittingLikely) {
+    summary = `overfitting_likely (train ${trainLossDelta.toFixed(4)}, val ${valLossDelta.toFixed(4)}, gap +${gapDelta.toFixed(4)})`;
+  } else if (plateauLikely) {
+    summary = `plateau_likely (train ${trainLossDelta.toFixed(4)}, val ${valLossDelta.toFixed(4)})`;
+  } else if (trainLossDelta < 0 && valLossDelta < 0) {
+    summary = `improving (train ${trainLossDelta.toFixed(4)}, val ${valLossDelta.toFixed(4)})`;
+  } else if (trainLossDelta < 0 && valLossDelta >= 0) {
+    summary = `possible_generalization_drift (train ${trainLossDelta.toFixed(4)}, val +${valLossDelta.toFixed(4)})`;
+  } else {
+    summary = `unstable_or_regressing (train ${trainLossDelta.toFixed(4)}, val ${valLossDelta.toFixed(4)})`;
+  }
+
+  return {
+    summary,
+    plateauLikely,
+    overfittingLikely,
+    windowStartStep: first.step,
+    windowEndStep: last.step,
+    trainLossDelta,
+    valLossDelta,
+    gapDelta,
+  };
+}
+
 // ── Trainer ────────────────────────────────────────────────────────────────
 
 export interface TrainerDeps {
@@ -188,7 +452,8 @@ export interface TrainerDeps {
     infra?: { gpuName: string; gpuVendor: string; gpuVramMb: number; hostname: string; cpuCount: number; ramTotalMb: number; osPlatform: string };
   }) => void | Promise<void>;
   onCheckpoint?: (info: { step: number; path: string; runId: string }) => void;
-  onSamples?: (samples: { prompt: string; output: string }[], step: number) => void | Promise<void>;
+  onSamples?: (samples: { prompt: string; output: string }[], step: number, trend?: SampleTrendStatus) => void | Promise<void>;
+  onEvent?: (event: TrainingEvent) => void | Promise<void>;
   samplePrompts?: string[];
   domain?: string;
   activationCheckpointing?: boolean;
@@ -198,12 +463,30 @@ export interface TrainerDeps {
 export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; modelConfig: ModelConfig }> {
   const {
     backend, tokenizer, optimizer, rng, modelConfig, trainConfig,
-    dataPath, valDataPath, resumePath, onStep, onStart,
+    dataPath, valDataPath, resumePath, onStep, onStart, onEvent,
   } = deps;
 
   const dataTag = dataPath.split("/").pop()?.replace(/\.[^.]+$/, "").replace(/-/g, "_");
   const rid = makeRunId(dataTag);
   const configHash = hashConfig({ ...modelConfig, ...trainConfig } as any);
+  const emitEvent = (event: TrainingEvent): void => {
+    if (!onEvent) return;
+    const normalized: TrainingEvent = {
+      ...event,
+      level: event.level ?? "info",
+      timestamp: event.timestamp ?? new Date().toISOString(),
+    };
+    try {
+      const maybePromise = onEvent(normalized);
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        void (maybePromise as Promise<void>).then(undefined, (e: unknown) => {
+          console.warn(`  [remote] event emit failed: ${(e as Error).message}`);
+        });
+      }
+    } catch (e) {
+      console.warn(`  [remote] event emit failed: ${(e as Error).message}`);
+    }
+  };
 
   // Set up run directory
   const runDir = deps.runDir ?? `runs/${rid}`;
@@ -260,6 +543,18 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const isLargeFile = fileStat.size > 200 * 1024 * 1024; // >200MB
   let trainTokens: Int32Array;
   let valTokens: Int32Array;
+  let valBucketLoaders: ValBucketLoader[] = [];
+  const valBucketEvalEnabledRaw = (process.env.ALPHA_VAL_BUCKET_EVAL ?? "0").trim().toLowerCase();
+  const valBucketEvalEnabled = (
+    valBucketEvalEnabledRaw === "1" ||
+    valBucketEvalEnabledRaw === "true" ||
+    valBucketEvalEnabledRaw === "yes" ||
+    valBucketEvalEnabledRaw === "on"
+  );
+  const valBucketEvalItersRaw = Number.parseInt(process.env.ALPHA_VAL_BUCKET_EVAL_ITERS ?? "2", 10);
+  const valBucketEvalIters = Number.isFinite(valBucketEvalItersRaw) && valBucketEvalItersRaw > 0
+    ? valBucketEvalItersRaw
+    : 2;
 
   if (isLargeFile) {
     console.log(`Large dataset (${(fileStat.size / 1024 / 1024).toFixed(0)}MB) — using chunked tokenization...`);
@@ -278,9 +573,47 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       trainTokens = tokenizer.encode(rawText);
       valTokens = tokenizer.encode(valRaw);
     } else {
-      const splitIdx = Math.floor(rawText.length * 0.9);
-      trainTokens = tokenizer.encode(rawText.slice(0, splitIdx));
-      valTokens = tokenizer.encode(rawText.slice(splitIdx));
+      const splitMode = (process.env.ALPHA_TEXT_SPLIT_MODE ?? "auto").toLowerCase();
+      const splitFraction = clamp01(
+        Number.parseFloat(process.env.ALPHA_TEXT_SPLIT_VAL_FRACTION ?? "0.1"),
+      );
+      const canUseDelimiterSplit = splitMode !== "contiguous";
+      const delimiter = process.env.ALPHA_TEXT_SPLIT_DELIMITER ?? "<|end_of_text|>";
+      const byDelimiter = canUseDelimiterSplit
+        ? splitByDelimiterDeterministic(rawText, delimiter, splitFraction, trainConfig.seed)
+        : null;
+
+      if (byDelimiter) {
+        console.log(
+          `Data split: delimiter-aware (${delimiter}) train=${byDelimiter.trainCount} val=${byDelimiter.valCount} ` +
+          `(~${((byDelimiter.valCount / (byDelimiter.trainCount + byDelimiter.valCount)) * 100).toFixed(1)}% val)`,
+        );
+        trainTokens = tokenizer.encode(byDelimiter.trainText);
+        valTokens = tokenizer.encode(byDelimiter.valText);
+        if (valBucketEvalEnabled) {
+          valBucketLoaders = buildValBucketLoaders(
+            byDelimiter.valText,
+            delimiter,
+            tokenizer,
+            trainConfig.batchSize,
+            modelConfig.blockSize,
+            trainConfig.seed,
+          );
+          if (valBucketLoaders.length > 0) {
+            const bucketInfo = valBucketLoaders
+              .map((b) => `${b.name}:${b.sampleCount} samples/${b.tokenCount} tok`)
+              .join(" | ");
+            console.log(`Val buckets: enabled (${bucketInfo}), evalIters=${valBucketEvalIters}`);
+          } else {
+            console.log("Val buckets: enabled but insufficient data per bucket; skipping");
+          }
+        }
+      } else {
+        const splitIdx = Math.floor(rawText.length * (1 - splitFraction));
+        console.log(`Data split: contiguous (${((splitFraction) * 100).toFixed(1)}% tail as val)`);
+        trainTokens = tokenizer.encode(rawText.slice(0, splitIdx));
+        valTokens = tokenizer.encode(rawText.slice(splitIdx));
+      }
     }
   }
 
@@ -304,6 +637,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       resumedActivationGraph = (state as any).symbioActivationGraph;
     }
     console.log(`Resumed from step ${startStep}${resumedActivationGraph ? ` (activation: ${nameGraph(resumedActivationGraph)})` : ""}`);
+    emitEvent({
+      step: startStep,
+      level: "info",
+      kind: "run_resumed",
+      message: `resumed training from checkpoint step ${startStep}`,
+      payload: {
+        resumePath,
+        activationGraph: resumedActivationGraph ? nameGraph(resumedActivationGraph) : null,
+      },
+    });
   }
 
   // Collect infrastructure metadata (GPU runs only)
@@ -333,8 +676,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     } catch { /* infra collection is best-effort */ }
   }
 
-  // Notify start
-  if (onStart) await onStart({ runId: rid, configHash, totalParams, dataPath, infra });
+  // Notify start (non-blocking): remote ingest outages should never stall training startup.
+  if (onStart) {
+    try {
+      const maybePromise = onStart({ runId: rid, configHash, totalParams, dataPath, infra });
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        void (maybePromise as Promise<void>).then(undefined, (e: unknown) => {
+          console.warn(`  [remote] run_start failed: ${(e as Error).message}`);
+        });
+      }
+    } catch (e) {
+      console.warn(`  [remote] run_start failed: ${(e as Error).message}`);
+    }
+  }
 
   // Log header
   const paramBytes = totalParams * 4;
@@ -369,6 +723,26 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   }
 
   console.log(``);
+  emitEvent({
+    step: startStep,
+    level: "info",
+    kind: "training_started",
+    message: `training started (run_id=${rid})`,
+    payload: {
+      runId: rid,
+      backend: backend.name,
+      tokenizer: tokenizer.name,
+      optimizer: optimizer.name,
+      totalIters: trainConfig.iters,
+      batchSize: trainConfig.batchSize,
+      gradAccumSteps: trainConfig.gradAccumSteps,
+      learningRate: trainConfig.lr,
+      warmupIters: trainConfig.warmupIters,
+      evalInterval: trainConfig.evalInterval,
+      sampleInterval: trainConfig.sampleInterval,
+      totalParams,
+    },
+  });
 
   // Create data loaders from pre-tokenized arrays
   const packed = trainConfig.packed;
@@ -513,6 +887,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     typeof backendAny.syncGpu === "function"
       ? backendAny.syncGpu.bind(backendAny)
       : undefined;
+  const purgeBufferPoolsFn: (() => void) | undefined =
+    typeof backendAny.purgeBufferPools === "function"
+      ? backendAny.purgeBufferPools.bind(backendAny)
+      : undefined;
   const gpuMemStatsFn: (() => any) | undefined =
     typeof backendAny.gpuMemStats === "function"
       ? backendAny.gpuMemStats.bind(backendAny)
@@ -535,12 +913,22 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : undefined;
   const hasSumSq = !!sumOfSquaresFn;
   const hasTotalSumSq = !!totalSumOfSquaresFn;
+  const disableTotalSumSq = ((process.env.ALPHA_DISABLE_TOTAL_SUMSQ ?? "0").trim() === "1");
+  const canUseTotalSumSq = hasTotalSumSq && !disableTotalSumSq;
+  const disableGradNorm = ((process.env.ALPHA_DISABLE_GRAD_NORM ?? "0").trim() === "1");
   const readEnvInt = (name: string, fallback: number, min = 0): number => {
     const raw = process.env[name];
     if (!raw) return fallback;
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed < min) return fallback;
     return parsed;
+  };
+  const readEnvFloat = (name: string, fallback: number, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY): number => {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
   };
 
   // Training loop
@@ -562,6 +950,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const evalIters = trainConfig.evalIters;
   const evalInterval = trainConfig.evalInterval;
   const sampleInterval = trainConfig.sampleInterval;
+  let latestCheckpointPath: string | null = null;
   const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * gradAccumSteps;
   const warmup = trainConfig.warmupIters > 0
     ? trainConfig.warmupIters
@@ -576,33 +965,46 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
+  const evalHistory: EvalSnapshot[] = [];
   const dropoutRng = new DropoutRng(trainConfig.seed);
   const trainTape = new Tape();
   const gradTensors: TensorData[] = [];
   const gradNamesBuf: string[] = [];
   const perParamNormsBuf: { name: string; normSq: number }[] = [];
   // Defaults are set from the latest strict (`status=ok`) adaptive 20-run sweep.
-  const ADAPTIVE_MEM_STATS_POLL_EVERY = readEnvInt("ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY", 16, 1);
-  const ADAPTIVE_SYNC_MIN_INTERVAL = readEnvInt("ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL", 10, 1);
+  const ADAPTIVE_MEM_STATS_POLL_EVERY = readEnvInt("ALPHA_ADAPTIVE_MEM_STATS_POLL_EVERY", 8, 1);
+  const ADAPTIVE_SYNC_MIN_INTERVAL = readEnvInt("ALPHA_ADAPTIVE_SYNC_MIN_INTERVAL", 6, 1);
   const ADAPTIVE_SYNC_DEFERRED_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_DEFERRED_THRESHOLD", 28, 0);
   const ADAPTIVE_SYNC_PENDING_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_PENDING_THRESHOLD", 24, 0);
+  const ADAPTIVE_SYNC_LIVE_ALLOCS_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_SYNC_LIVE_ALLOCS_THRESHOLD", 5200, 0);
+  const ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD = readEnvInt("ALPHA_ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD", 6000, 0);
+  const ADAPTIVE_PURGE_MIN_INTERVAL = readEnvInt(
+    "ALPHA_ADAPTIVE_PURGE_MIN_INTERVAL",
+    Math.max(16, ADAPTIVE_SYNC_MIN_INTERVAL),
+    1,
+  );
   const GPU_METRICS_SAMPLE_EVERY = readEnvInt("ALPHA_GPU_METRICS_SAMPLE_EVERY", 75, 1);
   let memStatsCache: any | null = null;
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
+  let lastAdaptivePurgeStep = 0;
+  const spikeLrBackoff = readEnvFloat("ALPHA_SPIKE_LR_BACKOFF", 0.5, 0.01, 1.0);
+  const spikeLrMinScale = readEnvFloat("ALPHA_SPIKE_LR_MIN_SCALE", 0.1, 0.001, 1.0);
+  let runtimeLrScale = 1.0;
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
     const stepNum = step + 1;
 
     // Learning rate schedule: linear warmup + cosine decay to lrMin
-    let lr: number;
+    let baseLr: number;
     if (step < warmup) {
-      lr = lrMin + (trainConfig.lr - lrMin) * stepNum / warmup;
+      baseLr = lrMin + (trainConfig.lr - lrMin) * stepNum / warmup;
     } else {
       const decay = (step - warmup) / decayDenom;
-      lr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
+      baseLr = lrMin + (trainConfig.lr - lrMin) * 0.5 * (1 + Math.cos(Math.PI * decay));
     }
+    let lr = Math.max(lrMin * spikeLrMinScale, baseLr * runtimeLrScale);
     if (setOptimizerLrFn) setOptimizerLrFn(lr);
 
     // Reset per-step GPU ops counter
@@ -615,10 +1017,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const accumSteps = gradAccumSteps;
     const stepSeedBase = trainConfig.seed + step * 1000;
     let nanDetected = false;
+    let lossNanLogged = false;
+    let gradNanLogged = false;
     let lossVal = 0;
     let dataLoadMs = 0;
     let fwdMs = 0;
     let bwdMs = 0;
+    let stepBatchHash = 0x811c9dc5;
+    let stepBatchTokMin = Number.POSITIVE_INFINITY;
+    let stepBatchTokMax = Number.NEGATIVE_INFINITY;
 
     // GPU-side loss accumulation: avoid per-microstep CPU readback for grad accumulation.
     // For accumSteps=1, skip the no-op GPU scale/add path and read loss directly.
@@ -630,6 +1037,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const batch = trainLoader.nextBatch();
       const _dl1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) dataLoadMs += _dl1 - _dl0;
+      const inputTokens = batch.inputs.data as Int32Array;
+      const hashSampleCount = Math.min(64, inputTokens.length);
+      for (let i = 0; i < hashSampleCount; i++) {
+        const tok = inputTokens[i] | 0;
+        stepBatchHash ^= tok;
+        stepBatchHash = Math.imul(stepBatchHash, 0x01000193);
+        if (tok < stepBatchTokMin) stepBatchTokMin = tok;
+        if (tok > stepBatchTokMax) stepBatchTokMax = tok;
+      }
       dropoutRng.reset(stepSeedBase + microStep, 0);
       const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
       const _fwd1 = capturePhaseTimings ? performance.now() : 0;
@@ -669,6 +1085,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         lossVal = (lossDataRef!.data as Float32Array)[0];
         if (!isFinite(lossVal)) {
           console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
+          if (!lossNanLogged) {
+            emitEvent({
+              step: stepNum,
+              level: "warn",
+              kind: "loss_nan",
+              message: `loss became non-finite; skipping optimizer update (step ${stepNum})`,
+              payload: { microStep, accumSteps },
+            });
+            lossNanLogged = true;
+          }
           nanDetected = true;
         }
       }
@@ -683,6 +1109,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       lossVal = (lossAccum.data as Float32Array)[0];
       if (!isFinite(lossVal)) {
         console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
+        if (!lossNanLogged) {
+          emitEvent({
+            step: stepNum,
+            level: "warn",
+            kind: "loss_nan",
+            message: `accumulated loss became non-finite; skipping optimizer update (step ${stepNum})`,
+            payload: { accumSteps },
+          });
+          lossNanLogged = true;
+        }
         nanDetected = true;
       }
       if (releaseFn) releaseFn(lossAccum);
@@ -693,13 +1129,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const gradScaleFactor = 1.0 / (accumSteps * lossScale);
     const gradScaleAbs = Math.abs(gradScaleFactor);
     let gradNorm = 0;
-    const needsGradNorm =
+    const needsGradNorm = !disableGradNorm && (
       gradClip > 0 ||
       spikeThreshold > 0 ||
       useLossScaling ||
       traceEnabled ||
       symbioEnabled ||
-      stepNum % 500 === 0;
+      stepNum % 500 === 0
+    );
     const _t3 = capturePhaseTimings ? performance.now() : 0;
 
     // Collect gradients and compute gradient norm via backend ops (stays on GPU).
@@ -724,7 +1161,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const perParamNorms = perParamNormsBuf;
       perParamNorms.length = 0;
 
-      if (hasTotalSumSq && grads.length > 0) {
+      if (canUseTotalSumSq && grads.length > 0) {
         // Fast path: one scalar readback for total grad norm.
         const totalSq = totalSumOfSquaresFn!(grads);
         gradNorm = Math.sqrt((totalSq.data as Float32Array)[0]) * gradScaleAbs;
@@ -822,9 +1259,28 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           lossScale /= 2;
           lossScaleReductions++;
           console.warn(`  [loss_scale] grad overflow at step ${stepNum} — reducing scale to ${lossScale}`);
+          if (!gradNanLogged) {
+            emitEvent({
+              step: stepNum,
+              level: "warn",
+              kind: "grad_overflow",
+              message: `gradient overflow detected; reducing loss scale to ${lossScale}`,
+              payload: { lossScale, lossScaleReductions, useLossScaling: true },
+            });
+            gradNanLogged = true;
+          }
           scaleSuccessCount = 0;
         } else {
           console.warn(`  [warn] grad_norm=NaN at step ${stepNum} — skipping optimizer update`);
+          if (!gradNanLogged) {
+            emitEvent({
+              step: stepNum,
+              level: "warn",
+              kind: "grad_norm_nan",
+              message: `grad_norm became non-finite; skipping optimizer update (step ${stepNum})`,
+            });
+            gradNanLogged = true;
+          }
         }
         nanDetected = true;
       } else if (useLossScaling) {
@@ -841,7 +1297,36 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // spikeThreshold is an absolute grad_norm cap (e.g. 50 means skip when > 50).
       if (!nanDetected && spikeThreshold > 0 && gradNorm > spikeThreshold) {
         spikeSkips++;
-        console.warn(`  [spike] grad_norm=${gradNorm.toFixed(1)} > ${spikeThreshold} — skipping step ${stepNum} (${spikeSkips} total skips)`);
+        const prevScale = runtimeLrScale;
+        if (spikeLrBackoff < 1.0) {
+          runtimeLrScale = Math.max(spikeLrMinScale, runtimeLrScale * spikeLrBackoff);
+          lr = Math.max(lrMin * spikeLrMinScale, baseLr * runtimeLrScale);
+          if (setOptimizerLrFn) setOptimizerLrFn(lr);
+        }
+        const batchHashHex = `0x${(stepBatchHash >>> 0).toString(16).padStart(8, "0")}`;
+        const tokRange = Number.isFinite(stepBatchTokMin) && Number.isFinite(stepBatchTokMax)
+          ? `${stepBatchTokMin}:${stepBatchTokMax}`
+          : "n/a";
+        console.warn(
+          `  [spike] grad_norm=${gradNorm.toFixed(1)} > ${spikeThreshold} — skipping step ${stepNum} ` +
+          `(${spikeSkips} total skips) | lr_scale ${prevScale.toFixed(4)}->${runtimeLrScale.toFixed(4)} ` +
+          `| batch_hash=${batchHashHex} tok_range=${tokRange}`,
+        );
+        emitEvent({
+          step: stepNum,
+          level: "warn",
+          kind: "spike_skip",
+          message: `spike skip: grad_norm=${gradNorm.toFixed(1)} exceeded threshold ${spikeThreshold}`,
+          payload: {
+            gradNorm,
+            spikeThreshold,
+            spikeSkips,
+            lrScalePrev: prevScale,
+            lrScaleNext: runtimeLrScale,
+            batchHash: batchHashHex,
+            tokenRange: tokRange,
+          },
+        });
         nanDetected = true; // reuse the skip path
       }
     }
@@ -897,6 +1382,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         for (const chk of finiteChecks) {
           if ((chk.data as Float32Array)[0] !== 0) {
             console.warn(`  [warn] Inf/NaN in gradients (norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
+            if (!gradNanLogged) {
+              emitEvent({
+                step: stepNum,
+                level: "warn",
+                kind: "grad_non_finite",
+                message: `non-finite gradients detected; skipping optimizer update`,
+                payload: { gradNorm },
+              });
+              gradNanLogged = true;
+            }
             nanDetected = true;
             break;
           }
@@ -916,6 +1411,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         for (const { s } of spotResults) {
           if (!isFinite((s.data as Float32Array)[0])) {
             console.warn(`  [warn] Inf in gradients (norm=${gradNorm.toFixed(1)}) — skipping optimizer update`);
+            if (!gradNanLogged) {
+              emitEvent({
+                step: stepNum,
+                level: "warn",
+                kind: "grad_non_finite",
+                message: `non-finite gradients detected via spot-check; skipping optimizer update`,
+                payload: { gradNorm },
+              });
+              gradNanLogged = true;
+            }
             nanDetected = true;
             break;
           }
@@ -1003,7 +1508,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       memStatsStep &&
       (
         memStatsStep.deferredReleases > ADAPTIVE_SYNC_DEFERRED_THRESHOLD ||
-        (memStatsStep.pendingDestroys ?? 0) > ADAPTIVE_SYNC_PENDING_THRESHOLD
+        (memStatsStep.pendingDestroys ?? 0) > ADAPTIVE_SYNC_PENDING_THRESHOLD ||
+        (memStatsStep.liveAllocs ?? 0) > ADAPTIVE_SYNC_LIVE_ALLOCS_THRESHOLD
       )
     );
     const needSync = syncEvery === 1 ? true :
@@ -1011,12 +1517,54 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Adaptive: rate-limit syncs under sustained pressure to avoid serializing every step.
       (adaptiveSyncPressure && (stepNum - lastAdaptiveSyncStep >= ADAPTIVE_SYNC_MIN_INTERVAL || stepNum === totalIters));
     if (needSync) {
+      let didSync = false;
       if (syncGpuFn) {
         syncGpuFn();
+        didSync = true;
       } else if (flushFn) {
         flushFn();
+        didSync = true;
       }
-      if (syncEvery <= 0) {
+
+      // Re-sample memory stats after sync so purge decisions use current pressure.
+      if (didSync && gpuMemStatsFn) {
+        memStatsStep = gpuMemStatsFn();
+        memStatsCache = memStatsStep;
+        lastMemStatsProbeStep = stepNum;
+      }
+
+      const liveAllocsAfterSync = memStatsStep?.liveAllocs ?? 0;
+      const shouldPurgePools = !!(
+        purgeBufferPoolsFn &&
+        liveAllocsAfterSync > ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD &&
+        (stepNum - lastAdaptivePurgeStep >= ADAPTIVE_PURGE_MIN_INTERVAL || stepNum === totalIters)
+      );
+      if (shouldPurgePools) {
+        console.warn(
+          `  [gpu_mem] liveAllocs=${liveAllocsAfterSync} exceeded purge threshold ${ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD}; purging pools`,
+        );
+        emitEvent({
+          step: stepNum,
+          level: "warn",
+          kind: "gpu_mem_purge",
+          message: `purging GPU pools: liveAllocs=${liveAllocsAfterSync} exceeded threshold ${ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD}`,
+          payload: {
+            liveAllocs: liveAllocsAfterSync,
+            purgeThreshold: ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD,
+            deferredReleases: memStatsStep?.deferredReleases ?? null,
+            pendingDestroys: memStatsStep?.pendingDestroys ?? null,
+          },
+        });
+        purgeBufferPoolsFn();
+        lastAdaptivePurgeStep = stepNum;
+        if (gpuMemStatsFn) {
+          memStatsStep = gpuMemStatsFn();
+          memStatsCache = memStatsStep;
+          lastMemStatsProbeStep = stepNum;
+        }
+      }
+
+      if (syncEvery <= 0 && didSync) {
         lastAdaptiveSyncStep = stepNum;
       }
     }
@@ -1291,6 +1839,40 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (flushFn) flushFn();
       }
       metrics.valLoss = valLossSum / evalIters;
+      if (Number.isFinite(metrics.valLoss) && Number.isFinite(lossVal)) {
+        evalHistory.push({ step: stepNum, trainLoss: lossVal, valLoss: metrics.valLoss });
+        if (evalHistory.length > 64) evalHistory.shift();
+      }
+
+      if (valBucketLoaders.length > 0) {
+        const bucketParts: string[] = [];
+        for (const bucket of valBucketLoaders) {
+          let bucketLossSum = 0;
+          for (let bi = 0; bi < valBucketEvalIters; bi++) {
+            const bucketBatch = bucket.loader.nextBatch();
+            const bucketTape = new Tape();
+            const { loss: bucketLoss } = gptForward(
+              activeModelConfig,
+              params,
+              backend,
+              bucketTape,
+              bucketBatch.inputs,
+              bucketBatch.targets,
+            );
+            if (bucketLoss) {
+              bucketLossSum += (bucketLoss.data.data as Float32Array)[0];
+              if (releaseFn) releaseFn(bucketLoss.data);
+            }
+            bucketTape.clear(releaseFn);
+            if (flushFn) flushFn();
+          }
+          const bucketLossAvg = bucketLossSum / valBucketEvalIters;
+          bucketParts.push(`${bucket.name}=${bucketLossAvg.toFixed(4)}`);
+        }
+        if (bucketParts.length > 0) {
+          console.log(`  [val_bucket] ${bucketParts.join(" | ")} (iters=${valBucketEvalIters})`);
+        }
+      }
 
       // Eval-time diagnostic summary
       console.log(
@@ -1299,6 +1881,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         `grad_norm=${needsGradNorm ? gradNorm.toFixed(2) : "n/a"}, ` +
         `clip_pct=${((clippedSteps / stepNum) * 100).toFixed(1)}%`
       );
+      emitEvent({
+        step: stepNum,
+        level: "info",
+        kind: "eval_summary",
+        message: `eval step ${stepNum}: val_loss=${metrics.valLoss.toFixed(4)}`,
+        payload: {
+          trainLoss: lossVal,
+          valLoss: metrics.valLoss,
+          gradNorm: needsGradNorm ? gradNorm : null,
+          clipPct: (clippedSteps / stepNum) * 100,
+          evalIters,
+        },
+      });
     }
 
     // Log
@@ -1344,6 +1939,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
       await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       console.log(`  checkpoint saved: ${ckptPath}`);
+      emitEvent({
+        step: stepNum,
+        level: "info",
+        kind: "checkpoint_saved",
+        message: `checkpoint saved at step ${stepNum}`,
+        payload: { path: ckptPath },
+      });
+      latestCheckpointPath = ckptPath;
       if (deps.onCheckpoint) deps.onCheckpoint({ step: stepNum, path: ckptPath, runId: rid });
     }
 
@@ -1360,22 +1963,89 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           if (flushFn) flushFn();
 
           const sampleCfg: SampleConfig = { steps: 50, temperature: 0.8, topk: 40 };
-          const samples: { prompt: string; output: string }[] = [];
+          const prompts = deps.samplePrompts.slice(0, 3);
+          const useCheckpointSampler =
+            process.env.ALPHA_SAMPLE_FROM_CHECKPOINT !== "0" &&
+            backend.name !== "cpu_ref" &&
+            !!latestCheckpointPath;
+          let samples: { prompt: string; output: string }[] = [];
 
-          for (const prompt of deps.samplePrompts.slice(0, 3)) {
-            const output = runSample(
-              activeModelConfig, params, backend, rng,
-              (t) => tokenizer.encode(t),
-              (t) => tokenizer.decode(t),
-              prompt, sampleCfg, releaseFn, flushFn,
-            );
-            console.log(`  sample: "${prompt}" → ${output}`);
-            samples.push({ prompt, output });
+          if (useCheckpointSampler && latestCheckpointPath) {
+            samples = await sampleFromCheckpointCli(latestCheckpointPath, prompts, sampleCfg);
+          } else {
+            for (const prompt of prompts) {
+              const output = runSample(
+                activeModelConfig, params, backend, rng,
+                (t) => tokenizer.encode(t),
+                (t) => tokenizer.decode(t),
+                prompt, sampleCfg, releaseFn, flushFn,
+              );
+              samples.push({ prompt, output });
+            }
           }
 
-          if (deps.onSamples) await deps.onSamples(samples, stepNum);
+          for (const sample of samples) {
+            console.log(`  sample: "${sample.prompt}" → ${sample.output}`);
+          }
+
+          const trend = analyzeSampleTrend(evalHistory);
+          if (trend) {
+            const span = `${trend.windowStartStep}->${trend.windowEndStep}`;
+            const gapSign = trend.gapDelta >= 0 ? "+" : "";
+            console.log(
+              `  [train_status] ${trend.summary} | window=${span} ` +
+              `| train_delta=${trend.trainLossDelta.toFixed(4)} ` +
+              `| val_delta=${trend.valLossDelta.toFixed(4)} ` +
+              `| gap_delta=${gapSign}${trend.gapDelta.toFixed(4)}`,
+            );
+            if (trend.plateauLikely || trend.overfittingLikely) {
+              const reason = trend.overfittingLikely ? "overfitting likely" : "loss plateau likely";
+              console.warn(`  [train_status] ${reason} — consider stopping this run and investigating config/data.`);
+              emitEvent({
+                step: stepNum,
+                level: "warn",
+                kind: "train_status_warning",
+                message: reason,
+                payload: {
+                  summary: trend.summary,
+                  windowStartStep: trend.windowStartStep,
+                  windowEndStep: trend.windowEndStep,
+                  trainLossDelta: trend.trainLossDelta,
+                  valLossDelta: trend.valLossDelta,
+                  gapDelta: trend.gapDelta,
+                  plateauLikely: trend.plateauLikely,
+                  overfittingLikely: trend.overfittingLikely,
+                },
+              });
+            }
+          } else {
+            console.log("  [train_status] insufficient eval history for plateau/overfitting analysis");
+          }
+
+          emitEvent({
+            step: stepNum,
+            level: "info",
+            kind: "samples_generated",
+            message: `generated ${samples.length} inference samples`,
+            payload: {
+              sampleCount: samples.length,
+              samples: samples.map((sample) => ({
+                prompt: sample.prompt,
+                outputPreview: sample.output.slice(0, 160),
+              })),
+              trend: trend ?? null,
+            },
+          });
+
+          if (deps.onSamples) await deps.onSamples(samples, stepNum, trend ?? undefined);
         } catch (e) {
           console.warn(`  sample generation failed: ${(e as Error).message}`);
+          emitEvent({
+            step: stepNum,
+            level: "error",
+            kind: "sample_generation_failed",
+            message: `sample generation failed: ${(e as Error).message}`,
+          });
         }
       }
     }
@@ -1384,6 +2054,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const totalTime = performance.now() - startTime;
   console.log(`\n── training complete ──`);
   console.log(`total time: ${(totalTime / 1000).toFixed(1)}s`);
+  emitEvent({
+    step: totalIters,
+    level: "info",
+    kind: "training_complete",
+    message: `training complete in ${(totalTime / 1000).toFixed(1)}s`,
+    payload: {
+      totalIters,
+      durationMs: totalTime,
+      spikeSkips,
+      clippedSteps,
+      lossScaleReductions,
+    },
+  });
 
   await flushMetrics();
   await metricsHandle.close();

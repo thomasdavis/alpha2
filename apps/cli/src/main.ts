@@ -27,6 +27,7 @@ import { evalCmd } from "./commands/eval.js";
 import { benchCmd } from "./commands/bench.js";
 import { datagenCmd } from "./commands/datagen.js";
 import { fleetCmd } from "./commands/fleet.js";
+import { eventsCmd } from "./commands/events.js";
 
 const USAGE = `
 alpha — a tiny, readable GPT training system
@@ -39,6 +40,7 @@ Commands:
   bench            Run benchmarks
   datagen          Generate synthetic training data
   fleet            Manage remote training instances
+  events           Tail remote run event logs
 
 Options:
   --help, -h       Show this help
@@ -49,6 +51,7 @@ Examples:
   alpha sample --checkpoint=runs/.../checkpoint-1000.json --prompt="ROMEO:" --steps=200
   alpha eval --checkpoint=runs/.../checkpoint-1000.json --data=data/val.txt
   alpha bench --suite=ops --backend=cpu_ref
+  alpha events --run=super_chat_... --url=https://alpha.omegaai.dev --last=100 --poll=2
 `.trim();
 
 async function main() {
@@ -75,6 +78,8 @@ async function main() {
     await datagenCmd(args.slice(1));
   } else if (command === "fleet") {
     await fleetCmd(args.slice(1));
+  } else if (command === "events") {
+    await eventsCmd(args.slice(1));
   } else {
     console.error(`Unknown command: ${args.join(" ")}`);
     console.log(USAGE);

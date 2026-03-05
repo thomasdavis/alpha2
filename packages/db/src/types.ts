@@ -135,4 +135,17 @@ export interface DbSample {
   created_at: string;
 }
 
+export type EventLevel = "debug" | "info" | "warn" | "error";
+
+export interface DbEvent {
+  id: number;
+  run_id: string;
+  step: number | null;
+  level: EventLevel;
+  kind: string;
+  message: string;
+  payload_json: string | null;
+  created_at: string;
+}
+
 export type RunStatus = "active" | "completed" | "stale" | "failed";

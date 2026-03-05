@@ -191,4 +191,22 @@ export const migrations: string[][] = [
   [
     `ALTER TABLE metrics ADD COLUMN per_layer_grad_norms TEXT`,
   ],
+
+  // Version 10: event log timeline for runs
+  [
+    `CREATE TABLE IF NOT EXISTS events (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      step         INTEGER,
+      level        TEXT NOT NULL DEFAULT 'info'
+                   CHECK(level IN ('debug','info','warn','error')),
+      kind         TEXT NOT NULL,
+      message      TEXT NOT NULL,
+      payload_json TEXT,
+      created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_events_run_id_desc ON events(run_id, id DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_events_run_step_desc ON events(run_id, step DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_events_run_created_desc ON events(run_id, created_at DESC)`,
+  ],
 ];
