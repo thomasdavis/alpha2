@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ThemeToggle } from "@alpha/ui";
 
 interface NavItem {
   href: string;
@@ -82,6 +83,18 @@ const nav: NavItem[] = [
     ),
     match: (p) => p === "/models" || p.startsWith("/models/"),
   },
+  {
+    href: "/styleguide",
+    label: "Style Guide",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14.5 13.5V2.5h-13v11h13z" />
+        <path d="M1.5 5.5h13" />
+        <path d="M5.5 5.5v8" />
+      </svg>
+    ),
+    match: (p) => p === "/styleguide",
+  },
 ];
 
 const tools: NavItem[] = [
@@ -140,15 +153,18 @@ export function Sidebar() {
   return (
     <aside className="fixed left-0 top-0 z-20 flex h-full w-56 flex-col border-r border-border bg-surface">
       {/* Brand */}
-      <div className="flex h-14 items-center gap-2.5 px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-xs font-bold text-white">
-          A
+      <div className="flex h-14 items-center justify-between px-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-xs font-bold text-white">
+            A
+          </div>
+          <span className="text-sm font-semibold text-text-primary">Alpha</span>
         </div>
-        <span className="text-sm font-semibold text-white">Alpha</span>
+        <ThemeToggle />
       </div>
 
       {/* Main nav */}
-      <nav className="flex-1 space-y-0.5 px-3 pt-2">
+      <nav className="flex-1 space-y-0.5 px-3 pt-2 overflow-y-auto">
         <div className="mb-2 px-2 text-[0.6rem] font-semibold uppercase tracking-widest text-text-muted">
           Training
         </div>
@@ -162,7 +178,7 @@ export function Sidebar() {
               href={item.href}
               className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.8rem] transition-colors hover:no-underline ${
                 active
-                  ? "bg-surface-2 font-medium text-white"
+                  ? "bg-surface-2 font-medium text-text-primary border border-border/50"
                   : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
               }`}
             >
@@ -187,7 +203,7 @@ export function Sidebar() {
               href={item.href}
               className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[0.8rem] transition-colors hover:no-underline ${
                 active
-                  ? "bg-surface-2 font-medium text-white"
+                  ? "bg-surface-2 font-medium text-text-primary border border-border/50"
                   : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
               }`}
             >
@@ -212,36 +228,18 @@ export function Sidebar() {
 
 export function MobileHeader() {
   const pathname = usePathname();
-  const current = nav.find((item) =>
-    item.match ? item.match(pathname) : pathname === item.href
-  );
 
   return (
-    <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b border-border bg-surface px-4 lg:hidden">
-      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-xs font-bold text-white">
-        A
+    <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
+      <div className="flex items-center gap-3">
+        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-xs font-bold text-white">
+          A
+        </div>
+        <span className="text-sm font-semibold text-text-primary">Alpha</span>
       </div>
-      <span className="text-sm font-semibold text-white">Alpha</span>
-      <nav className="ml-4 flex gap-1">
-        {nav.map((item) => {
-          const active = item.match
-            ? item.match(pathname)
-            : pathname === item.href;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`rounded-md px-2.5 py-1.5 text-xs transition-colors hover:no-underline ${
-                active
-                  ? "bg-surface-2 font-medium text-white"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
+      <div className="flex items-center gap-2">
+        <ThemeToggle />
+      </div>
     </header>
   );
 }

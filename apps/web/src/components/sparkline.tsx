@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { Sparkline as UISparkline } from "@alpha/ui";
 
 export function Sparkline({
   runId,
@@ -9,74 +10,34 @@ export function Sparkline({
   runId: string;
   status: string;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [data, setData] = useState<number[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
     fetch(`/api/runs/${encodeURIComponent(runId)}/metrics?last=60`)
       .then((r) => r.json())
       .then((metrics: Array<{ loss: number }>) => {
         if (metrics.length === 0) return;
-        const values = metrics.map((m) => m.loss);
-        draw(canvas, values, status);
+        setData(metrics.map((m) => m.loss));
         setLoaded(true);
       })
       .catch(() => {});
-  }, [runId, status]);
+  }, [runId]);
+
+  const variantMap: Record<string, "success" | "blue" | "warning" | "danger"> = {
+    active: "success",
+    completed: "blue",
+    stale: "warning",
+    failed: "danger",
+  };
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="h-8 w-28 shrink-0 self-center"
-      style={{ opacity: loaded ? 1 : 0.3 }}
-    />
+    <div style={{ opacity: loaded ? 1 : 0.3 }} className="transition-opacity duration-300">
+      <UISparkline 
+        data={data} 
+        variant={variantMap[status] || "default"} 
+        className="h-8 w-28 shrink-0 self-center"
+      />
+    </div>
   );
-}
-
-function draw(canvas: HTMLCanvasElement, values: number[], status: string) {
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
-  ctx.scale(dpr, dpr);
-
-  const colors: Record<string, string> = {
-    completed: "#60a5fa",
-    active: "#4ade80",
-    stale: "#f59e0b",
-    failed: "#f87171",
-  };
-  const color = colors[status] ?? "#888";
-
-  if (values.length === 1) {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(w / 2, h / 2, 3, 0, Math.PI * 2);
-    ctx.fill();
-    return;
-  }
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-
-  ctx.beginPath();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.lineJoin = "round";
-
-  for (let i = 0; i < values.length; i++) {
-    const x = (i / (values.length - 1)) * w;
-    const y = h - ((values[i] - min) / range) * (h - 4) - 2;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
 }

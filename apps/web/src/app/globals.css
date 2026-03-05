@@ -1,28 +1,69 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0a0a0a;
-  --color-surface: #111111;
-  --color-surface-2: #1a1a1a;
-  --color-border: #222222;
-  --color-border-2: #333333;
-  --color-text-primary: #e0e0e0;
-  --color-text-secondary: #888888;
-  --color-text-muted: #555555;
-  --color-accent: #2563eb;
-  --color-green: #4ade80;
-  --color-green-bg: #1a2f1a;
-  --color-yellow: #f59e0b;
-  --color-yellow-bg: #3b2f1e;
-  --color-red: #f87171;
-  --color-red-bg: #2d1f1f;
-  --color-blue: #60a5fa;
-  --color-blue-bg: #1e3a5f;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-green: var(--green);
+  --color-green-bg: var(--green-bg);
+  --color-yellow: var(--yellow);
+  --color-yellow-bg: var(--yellow-bg);
+  --color-red: var(--red);
+  --color-red-bg: var(--red-bg);
+  --color-blue: var(--blue);
+  --color-blue-bg: var(--blue-bg);
+}
+
+:root {
+  --bg: #ffffff;
+  --surface: #f9f9f9;
+  --surface-2: #f0f0f0;
+  --border: #e5e5e5;
+  --border-2: #d4d4d4;
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-muted: #a3a3a3;
+  --accent: #2563eb;
+  --green: #16a34a;
+  --green-bg: #dcfce7;
+  --yellow: #ca8a04;
+  --yellow-bg: #fef9c3;
+  --red: #dc2626;
+  --red-bg: #fee2e2;
+  --blue: #2563eb;
+  --blue-bg: #dbeafe;
+}
+
+[data-theme='dark'] {
+  --bg: #0a0a0a;
+  --surface: #111111;
+  --surface-2: #1a1a1a;
+  --border: #222222;
+  --border-2: #333333;
+  --text-primary: #e0e0e0;
+  --text-secondary: #888888;
+  --text-muted: #555555;
+  --accent: #2563eb;
+  --green: #4ade80;
+  --green-bg: #1a2f1a;
+  --yellow: #f59e0b;
+  --yellow-bg: #3b2f1e;
+  --red: #f87171;
+  --red-bg: #2d1f1f;
+  --blue: #60a5fa;
+  --blue-bg: #1e3a5f;
 }
 
 body {
   background: var(--color-bg);
   color: var(--color-text-primary);
+  transition: background-color 0.2s, color 0.2s;
 }
 
 /* Blinking cursor for chat streaming */

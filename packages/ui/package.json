@@ -16,7 +16,8 @@
   "dependencies": {
     "lucide-react": "^0.474.0",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "recharts": "^2.15.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",
