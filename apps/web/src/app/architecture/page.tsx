@@ -1,142 +1,4 @@
-/* ── helper components ────────────────────────────────────────── */
-
-function Badge({ variant, children }: { variant: "cpu" | "gpu" | "dispatch"; children: React.ReactNode }) {
-  const styles = {
-    cpu: "bg-blue-bg text-blue",
-    gpu: "bg-yellow-bg text-yellow",
-    dispatch: "bg-[#2a1a3a] text-purple-400",
-  };
-  return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide ${styles[variant]}`}>
-      {children}
-    </span>
-  );
-}
-
-function Shape({ children }: { children: React.ReactNode }) {
-  return <span className="ml-1 text-[0.65rem] text-text-muted font-mono">{children}</span>;
-}
-
-function Card({
-  variant,
-  title,
-  shape,
-  children,
-  className,
-}: {
-  variant: "cpu" | "gpu" | "dispatch";
-  title: string;
-  shape?: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  const border = { cpu: "border-l-blue", gpu: "border-l-yellow", dispatch: "border-l-purple-400" };
-  return (
-    <div className={`rounded-md border border-border bg-surface pl-0 ${className ?? ""}`}>
-      <div className={`border-l-2 ${border[variant]} rounded-md px-3 py-2.5`}>
-        <div className="mb-1 flex items-center gap-2 text-[0.8rem] font-semibold text-white">
-          {title}
-          {shape && <Shape>{shape}</Shape>}
-        </div>
-        <div className="text-[0.75rem] leading-relaxed text-text-secondary">{children}</div>
-      </div>
-    </div>
-  );
-}
-
-function SectionHeading({ color, children }: { color?: string; children: React.ReactNode }) {
-  return (
-    <h2
-      className="mb-3 mt-10 border-b border-border pb-2 text-[1.1rem] font-semibold text-white"
-      style={color ? { color } : undefined}
-    >
-      {children}
-    </h2>
-  );
-}
-
-function PhaseBadge({ variant, children }: { variant: "forward" | "backward" | "optimize"; children: React.ReactNode }) {
-  const styles = {
-    forward: "bg-green-bg text-green",
-    backward: "bg-red-bg text-red",
-    optimize: "bg-yellow-bg text-yellow",
-  };
-  return (
-    <span className={`inline-block rounded px-2 py-1 text-[0.7rem] font-bold uppercase tracking-wider ${styles[variant]}`}>
-      {children}
-    </span>
-  );
-}
-
-function KernelChip({ name, children }: { name: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-md border border-border bg-surface px-3 py-2.5 transition-colors hover:border-border-2">
-      <div className="mb-0.5 text-[0.75rem] font-semibold text-yellow">{name}</div>
-      <div className="text-[0.65rem] leading-relaxed text-text-secondary">{children}</div>
-    </div>
-  );
-}
-
-function InfraChip({ name, children }: { name: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-md border border-border bg-surface px-3 py-2.5">
-      <div className="mb-0.5 text-[0.75rem] font-semibold text-yellow">{name}</div>
-      <div className="text-[0.65rem] leading-relaxed text-text-secondary">{children}</div>
-    </div>
-  );
-}
-
-function Arrow() {
-  return (
-    <div className="flex justify-center py-1">
-      <svg width="16" height="20" viewBox="0 0 16 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-text-muted">
-        <line x1="8" y1="0" x2="8" y2="16" />
-        <polyline points="4,12 8,17 12,12" />
-      </svg>
-    </div>
-  );
-}
-
-function TransferStrip({ direction, children }: { direction: "upload" | "download"; children: React.ReactNode }) {
-  const bg = direction === "upload" ? "from-blue-bg/50 to-yellow-bg/50" : "from-yellow-bg/50 to-blue-bg/50";
-  return (
-    <div className={`my-4 flex items-center justify-center gap-3 rounded-md border border-dashed border-border-2 bg-gradient-to-r ${bg} px-4 py-2.5 text-[0.7rem] text-text-secondary`}>
-      {direction === "upload" ? (
-        <>
-          <Badge variant="cpu">CPU</Badge>
-          <span className="flex gap-0.5">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" style={{ animationDelay: "0.15s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" style={{ animationDelay: "0.3s" }} />
-          </span>
-          <span>{children}</span>
-          <span className="flex gap-0.5">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" style={{ animationDelay: "0.45s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" style={{ animationDelay: "0.6s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-yellow" style={{ animationDelay: "0.75s" }} />
-          </span>
-          <Badge variant="gpu">GPU</Badge>
-        </>
-      ) : (
-        <>
-          <Badge variant="gpu">GPU</Badge>
-          <span className="flex gap-0.5">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" style={{ animationDelay: "0.15s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" style={{ animationDelay: "0.3s" }} />
-          </span>
-          <span>{children}</span>
-          <span className="flex gap-0.5">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" style={{ animationDelay: "0.45s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" style={{ animationDelay: "0.6s" }} />
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" style={{ animationDelay: "0.75s" }} />
-          </span>
-          <Badge variant="cpu">CPU</Badge>
-        </>
-      )}
-    </div>
-  );
-}
+import { ArchBadge, Shape, ArchCard, ArchSectionHeading, PhaseBadge, KernelChip, InfraChip, Arrow, TransferStrip } from "@alpha/ui";
 
 /* ── page ─────────────────────────────────────────────────────── */
 
@@ -144,7 +6,7 @@ export default function ArchitecturePage() {
   return (
     <div className="mx-auto max-w-[900px]">
       {/* Header */}
-      <h1 className="mb-1 text-lg font-bold text-white">Architecture</h1>
+      <h1 className="mb-1 text-lg font-bold text-text-primary">Architecture</h1>
       <p className="mb-2 text-sm leading-relaxed text-text-secondary">
         CPU vs GPU computation map. Every component &mdash; tensors, autograd, model, tokenizers,
         training loop &mdash; is hand-written TypeScript with zero ML dependencies.
@@ -152,9 +14,9 @@ export default function ArchitecturePage() {
 
       {/* Legend */}
       <div className="mb-8 flex flex-wrap gap-3">
-        <Badge variant="cpu">CPU &mdash; TypeScript</Badge>
-        <Badge variant="gpu">GPU &mdash; Vulkan / SPIR-V</Badge>
-        <Badge variant="dispatch">Backend Dispatch</Badge>
+        <ArchBadge variant="cpu">CPU &mdash; TypeScript</ArchBadge>
+        <ArchBadge variant="gpu">GPU &mdash; Vulkan / SPIR-V</ArchBadge>
+        <ArchBadge variant="dispatch">Backend Dispatch</ArchBadge>
         <span className="inline-flex items-center gap-1.5 rounded border border-dashed border-border-2 px-1.5 py-0.5 text-[0.62rem] text-text-muted">
           <span className="inline-block h-px w-4 border-t border-dashed border-text-muted" />
           Data Transfer
@@ -165,32 +27,32 @@ export default function ArchitecturePage() {
       {/* PHASE 1: CPU-ONLY                          */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#60a5fa">CPU-Only Operations</SectionHeading>
+      <ArchSectionHeading color="#60a5fa">CPU-Only Operations</ArchSectionHeading>
       <p className="mb-4 text-[0.8rem] text-text-secondary">
         Always run on CPU regardless of tensor size. Orchestration, I/O, and control flow.
       </p>
 
       <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-        <Card variant="cpu" title="Data Loading">
+        <ArchCard variant="cpu" title="Data Loading">
           Tokenization (BPE / char / word), batch sampling, text I/O.{" "}
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">DataLoader.nextBatch()</code>{" "}
           picks random offsets &rarr; [B, T] token windows.
-        </Card>
-        <Card variant="cpu" title="RNG & Seeding">
+        </ArchCard>
+        <ArchCard variant="cpu" title="RNG & Seeding">
           Deterministic seeded RNG (seed=42). Weight init N(0, 0.02), dropout masks, data sampling order.
-        </Card>
-        <Card variant="cpu" title="LR Schedule">
+        </ArchCard>
+        <ArchCard variant="cpu" title="LR Schedule">
           Warmup: linear ramp over ~10% of steps.
           Cosine decay: <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">lr &times; 0.5(1+cos(&pi;&middot;decay))</code>.
-        </Card>
-        <Card variant="cpu" title="Checkpoint I/O">
+        </ArchCard>
+        <ArchCard variant="cpu" title="Checkpoint I/O">
           Binary v2: <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">ALPH</code> magic + JSON header + packed Float32.
           Saves params, optimizer m/v buffers, RNG state.
-        </Card>
-        <Card variant="cpu" title="Metrics & Logging">
+        </ArchCard>
+        <ArchCard variant="cpu" title="Metrics & Logging">
           JSONL step metrics (loss, lr, grad norm, tokens/sec). Remote sync to{" "}
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">alpha.omegaai.dev</code>.
-        </Card>
+        </ArchCard>
       </div>
 
       {/* ═══════════════════════════════════════════ */}
@@ -211,8 +73,8 @@ export default function ArchitecturePage() {
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-purple-400">&lt; 1M</code> &rarr; CPU
         </p>
         <div className="mt-2 flex gap-4">
-          <span className="flex items-center gap-1.5 rounded border border-blue/20 bg-blue-bg/50 px-2 py-1 text-[0.65rem] text-blue">&larr; CPU path <Badge variant="cpu">TypeScript</Badge></span>
-          <span className="flex items-center gap-1.5 rounded border border-yellow/20 bg-yellow-bg/50 px-2 py-1 text-[0.65rem] text-yellow">GPU path &rarr; <Badge variant="gpu">SPIR-V</Badge></span>
+          <span className="flex items-center gap-1.5 rounded border border-blue/20 bg-blue-bg/50 px-2 py-1 text-[0.65rem] text-blue">&larr; CPU path <ArchBadge variant="cpu">TypeScript</ArchBadge></span>
+          <span className="flex items-center gap-1.5 rounded border border-yellow/20 bg-yellow-bg/50 px-2 py-1 text-[0.65rem] text-yellow">GPU path &rarr; <ArchBadge variant="gpu">SPIR-V</ArchBadge></span>
         </div>
       </div>
 
@@ -222,9 +84,9 @@ export default function ArchitecturePage() {
       {/* PHASE 2: FORWARD PASS                      */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#4ade80">
+      <ArchSectionHeading color="#4ade80">
         <PhaseBadge variant="forward">&triangleright; Forward Pass</PhaseBadge>
-      </SectionHeading>
+      </ArchSectionHeading>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* ─── CPU LANE ─── */}
@@ -233,35 +95,35 @@ export default function ArchitecturePage() {
             CPU &mdash; TypeScript
           </div>
           <div className="space-y-2">
-            <Card variant="cpu" title="Token Embedding" shape="[B,T] → [B,T,nEmbd]">
+            <ArchCard variant="cpu" title="Token Embedding" shape="[B,T] → [B,T,nEmbd]">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">embedding(wte, tokens)</code> &mdash;
               gather rows from weight table. Tape records backward for gradient scatter.
-            </Card>
-            <Card variant="cpu" title="Position Embedding" shape="[B,T] → [B,T,nEmbd]">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Position Embedding" shape="[B,T] → [B,T,nEmbd]">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">embedding(wpe, 0..T-1)</code> &mdash;
               positional encoding lookup.
-            </Card>
-            <Card variant="cpu" title="Add Embeddings" shape="[B,T,nEmbd]">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Add Embeddings" shape="[B,T,nEmbd]">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">tokEmb + posEmb</code> &mdash;
               element-wise sum. Small models stay on CPU.
-            </Card>
-            <Card variant="cpu" title="Causal Mask" shape="[T,T]">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Causal Mask" shape="[T,T]">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">causalMask(T)</code> &mdash;
               lower triangle = 0, upper = &minus;&infin;. Always CPU (small, created once).
-            </Card>
-            <Card variant="cpu" title="Reshape / Transpose">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Reshape / Transpose">
               View operations: reshape to multi-head [B, nHead, T, headDim], transpose for attention,
               concat heads. No computation &mdash; pointer reinterpretation.
-            </Card>
-            <Card variant="cpu" title="Residual Connections">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Residual Connections">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">x = x + attnOut</code>,{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">x = x + mlpOut</code> &mdash;
               identity shortcuts stabilizing deep nets.
-            </Card>
-            <Card variant="cpu" title="Tape Recording">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Tape Recording">
               Every op appends to global Tape: output Variable, input Variables, backward closure.
               Enables reverse-mode autodiff.
-            </Card>
+            </ArchCard>
           </div>
         </div>
 
@@ -281,62 +143,62 @@ export default function ArchitecturePage() {
             {/* Attention */}
             <div className="mb-2 text-[0.6rem] font-semibold uppercase tracking-widest text-text-muted">&mdash; Multi-Head Attention &mdash;</div>
             <div className="space-y-2">
-              <Card variant="gpu" title="Q, K, V Projections" shape="[B&middot;T,nEmbd]&sup2;">
+              <ArchCard variant="gpu" title="Q, K, V Projections" shape="[B&middot;T,nEmbd]&sup2;">
                 3&times; tiled matmul:{" "}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">x @ Wq</code>,{" "}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">x @ Wk</code>,{" "}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">x @ Wv</code>.
                 16&times;16 shared memory tiles.
-              </Card>
-              <Card variant="gpu" title="Attention Scores" shape="[B,nHead,T,T]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="Attention Scores" shape="[B,nHead,T,T]">
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">Q @ K&#7488; / &radic;headDim</code> &mdash;
                 batched matmul + fused scale. Largest tensor in the forward pass.
-              </Card>
-              <Card variant="gpu" title="Softmax" shape="[B&middot;nHead,T,T]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="Softmax" shape="[B&middot;nHead,T,T]">
                 Fused row-wise kernel: max &rarr; subtract &rarr; exp &rarr; sum &rarr; normalize.
                 One workgroup per row, tree reduction in shared memory.
-              </Card>
-              <Card variant="gpu" title="Value Weighting" shape="[B,nHead,T,headDim]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="Value Weighting" shape="[B,nHead,T,headDim]">
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">scores @ V</code> &mdash;
                 tiled matmul combining attention weights with value vectors.
-              </Card>
-              <Card variant="gpu" title="Output Projection" shape="[B&middot;T,nEmbd]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="Output Projection" shape="[B&middot;T,nEmbd]">
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">concat(heads) @ Wo</code> &mdash; final attention matmul.
-              </Card>
+              </ArchCard>
             </div>
 
             {/* MLP */}
             <div className="mb-2 mt-4 text-[0.6rem] font-semibold uppercase tracking-widest text-text-muted">&mdash; Feed-Forward MLP &mdash;</div>
             <div className="space-y-2">
-              <Card variant="gpu" title="LayerNorm" shape="&times;2 per layer">
+              <ArchCard variant="gpu" title="LayerNorm" shape="&times;2 per layer">
                 Fused kernel: mean &rarr; variance &rarr; normalize &rarr; &gamma;x+&beta;. One workgroup per token. Pre-norm architecture.
-              </Card>
-              <Card variant="gpu" title="MLP FC1" shape="[B&middot;T,nEmbd] → [B&middot;T,4&middot;nEmbd]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="MLP FC1" shape="[B&middot;T,nEmbd] → [B&middot;T,4&middot;nEmbd]">
                 Tiled matmul expanding to 4&times; hidden dimension.
-              </Card>
-              <Card variant="gpu" title="GELU Activation" shape="[B&middot;T,4&middot;nEmbd]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="GELU Activation" shape="[B&middot;T,4&middot;nEmbd]">
                 Fused tanh approximation:{" "}
                 <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">0.5x(1+tanh(&radic;(2/&pi;)(x+0.044715x&sup3;)))</code>.
                 Uses vec4 kernel when aligned.
-              </Card>
-              <Card variant="gpu" title="MLP FC2" shape="[B&middot;T,4&middot;nEmbd] → [B&middot;T,nEmbd]">
+              </ArchCard>
+              <ArchCard variant="gpu" title="MLP FC2" shape="[B&middot;T,4&middot;nEmbd] → [B&middot;T,nEmbd]">
                 Tiled matmul projecting back to model dimension.
-              </Card>
+              </ArchCard>
             </div>
           </div>
 
           <div className="mt-2 space-y-2">
-            <Card variant="gpu" title="Final LayerNorm" shape="[B,T,nEmbd]">
+            <ArchCard variant="gpu" title="Final LayerNorm" shape="[B,T,nEmbd]">
               Last normalization before vocabulary projection.
-            </Card>
-            <Card variant="gpu" title="LM Head Projection" shape="[B,T,vocabSize]">
+            </ArchCard>
+            <ArchCard variant="gpu" title="LM Head Projection" shape="[B,T,vocabSize]">
               Matmul projecting to vocabulary logits.
-            </Card>
-            <Card variant="gpu" title="Cross-Entropy Loss" shape="→ scalar">
+            </ArchCard>
+            <ArchCard variant="gpu" title="Cross-Entropy Loss" shape="→ scalar">
               Log-softmax + NLL:{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">-log(softmax(logits)[target])</code>{" "}
               averaged over B&times;T tokens.
-            </Card>
+            </ArchCard>
           </div>
         </div>
       </div>
@@ -353,9 +215,9 @@ export default function ArchitecturePage() {
       {/* PHASE 3: BACKWARD PASS                     */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#f87171">
+      <ArchSectionHeading color="#f87171">
         <PhaseBadge variant="backward">&triangleleft; Backward Pass</PhaseBadge>
-      </SectionHeading>
+      </ArchSectionHeading>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* CPU */}
@@ -364,24 +226,24 @@ export default function ArchitecturePage() {
             CPU &mdash; Tape Walker
           </div>
           <div className="space-y-2">
-            <Card variant="cpu" title="Initialize Loss Gradient">
+            <ArchCard variant="cpu" title="Initialize Loss Gradient">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">loss.grad = ones(shape)</code> &mdash;
               seed the backward pass with dL/dL = 1.
-            </Card>
-            <Card variant="cpu" title="Reverse Tape Walk">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Reverse Tape Walk">
               Walk recorded tape from newest &rarr; oldest entry. Each entry calls its backward closure:{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">entry.backward(grad, backend)</code>.
               Gradients accumulate with += for multi-use variables (residuals).
-            </Card>
-            <Card variant="cpu" title="Broadcasting Undo">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Broadcasting Undo">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">reduceBroadcast(grad, originalShape)</code> &mdash;
               sums over broadcast dims. E.g., [1, 512] broadcast to [64, 512] &rarr; sum over batch.
-            </Card>
-            <Card variant="cpu" title="Gradient Norm & Clipping">
+            </ArchCard>
+            <ArchCard variant="cpu" title="Gradient Norm & Clipping">
               Collect all param gradients &rarr; compute global L2 norm.
               If <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">norm &gt; gradClip</code>: scale by{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">gradClip / norm</code>.
-            </Card>
+            </ArchCard>
           </div>
         </div>
 
@@ -391,26 +253,26 @@ export default function ArchitecturePage() {
             GPU &mdash; Gradient Kernels
           </div>
           <div className="space-y-2">
-            <Card variant="gpu" title="CrossEntropy Backward">
+            <ArchCard variant="gpu" title="CrossEntropy Backward">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">softmax(logits) &minus; oneHot(targets) / N</code>.
               Reuses forward softmax values.
-            </Card>
-            <Card variant="gpu" title="MatMul Backward" shape="&times;8 per layer">
+            </ArchCard>
+            <ArchCard variant="gpu" title="MatMul Backward" shape="&times;8 per layer">
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">dA = G @ B&#7488;</code>,{" "}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">dB = A&#7488; @ G</code>.
               Each forward matmul produces 2 backward matmuls. Dominates backward compute.
-            </Card>
-            <Card variant="gpu" title="LayerNorm Backward">
+            </ArchCard>
+            <ArchCard variant="gpu" title="LayerNorm Backward">
               Full analytical gradient: normalized input, scale/bias updates. Fused kernel matching forward structure.
-            </Card>
-            <Card variant="gpu" title="Activation Backward">
+            </ArchCard>
+            <ArchCard variant="gpu" title="Activation Backward">
               GELU: derivative of tanh approximation.
               Softmax: <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">s &times; (g &minus; &Sigma;(g&middot;s))</code>.
-            </Card>
-            <Card variant="gpu" title="Element-wise Backward">
+            </ArchCard>
+            <ArchCard variant="gpu" title="Element-wise Backward">
               add / sub / mul / div / exp / log / sqrt &mdash; each has trivial derivative.
               Uses same vec4 kernel variants as forward.
-            </Card>
+            </ArchCard>
           </div>
         </div>
       </div>
@@ -419,31 +281,31 @@ export default function ArchitecturePage() {
       {/* PHASE 4: OPTIMIZER                         */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#f59e0b">
+      <ArchSectionHeading color="#f59e0b">
         <PhaseBadge variant="optimize">&orarr; Optimizer &mdash; AdamW</PhaseBadge>
-      </SectionHeading>
+      </ArchSectionHeading>
       <p className="mb-4 text-[0.8rem] text-text-secondary">
         All optimizer operations run on CPU. In-place parameter updates with decoupled weight decay.
       </p>
 
       <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-        <Card variant="cpu" title="Momentum">
+        <ArchCard variant="cpu" title="Momentum">
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">m = &beta;&#8321;&middot;m + (1&minus;&beta;&#8321;)&middot;g</code><br />
           Exponential moving average of gradients. Per-parameter buffer.
-        </Card>
-        <Card variant="cpu" title="Variance">
+        </ArchCard>
+        <ArchCard variant="cpu" title="Variance">
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">v = &beta;&#8322;&middot;v + (1&minus;&beta;&#8322;)&middot;g&sup2;</code><br />
           EMA of squared gradients (RMSprop component).
-        </Card>
-        <Card variant="cpu" title="Bias Correction">
+        </ArchCard>
+        <ArchCard variant="cpu" title="Bias Correction">
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">m&#770; = m/(1&minus;&beta;&#8321;&#7511;)</code><br />
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">v&#770; = v/(1&minus;&beta;&#8322;&#7511;)</code><br />
           Corrects for zero-init bias.
-        </Card>
-        <Card variant="cpu" title="Param Update">
+        </ArchCard>
+        <ArchCard variant="cpu" title="Param Update">
           <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.65rem] text-text-primary">p &minus;= lr&middot;(m&#770;/(&radic;v&#770;+&epsilon;) + wd&middot;p)</code><br />
           Decoupled weight decay applied directly to params.
-        </Card>
+        </ArchCard>
       </div>
 
       <div className="my-4 flex items-center justify-center gap-2 text-[0.7rem] text-text-muted">
@@ -459,7 +321,7 @@ export default function ArchitecturePage() {
       {/* GPU KERNEL INVENTORY                       */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#ff9100">GPU Kernel Inventory &mdash; SPIR-V Compute Shaders</SectionHeading>
+      <ArchSectionHeading color="#ff9100">GPU Kernel Inventory &mdash; SPIR-V Compute Shaders</ArchSectionHeading>
       <p className="mb-4 text-[0.8rem] text-text-secondary">
         25+ hand-written compute shaders generated by the TypeScript SPIR-V assembler.
       </p>
@@ -503,7 +365,7 @@ export default function ArchitecturePage() {
       {/* GPU INFRASTRUCTURE                         */}
       {/* ═══════════════════════════════════════════ */}
 
-      <SectionHeading color="#ff9100">GPU Infrastructure &mdash; Vulkan Native Layer</SectionHeading>
+      <ArchSectionHeading color="#ff9100">GPU Infrastructure &mdash; Vulkan Native Layer</ArchSectionHeading>
       <p className="mb-4 text-[0.8rem] text-text-secondary">
         Zero external dependencies. Custom Vulkan bridge, SPIR-V assembler, and memory management.
       </p>

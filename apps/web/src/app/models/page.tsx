@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
+import { StatCard, FilterBtn } from "@alpha/ui";
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -357,34 +358,5 @@ export default function ModelsPage() {
         checkpoints uploaded to the inference server and can be used for chat and text generation.
       </p>
     </>
-  );
-}
-
-// ── Sub-components ────────────────────────────────────────────────
-
-function StatCard({ label, value, accent, tip }: { label: string; value: string; accent?: boolean; tip?: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-surface px-4 py-3">
-      <div className={`text-lg font-semibold ${accent ? "text-green" : "text-white"}`}>{value}</div>
-      <div className="text-[0.65rem] uppercase tracking-wider text-text-muted">
-        {label}
-        {tip && <Tip text={tip} />}
-      </div>
-    </div>
-  );
-}
-
-function FilterBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-        active
-          ? "bg-surface-2 font-medium text-white"
-          : "text-text-muted hover:text-text-secondary"
-      }`}
-    >
-      {children}
-    </button>
   );
 }

@@ -7,22 +7,9 @@ import { LossChart } from "@/components/loss-chart";
 import { TrainingDataPreview } from "./training-data";
 import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
+import { StatCard, DetailRow, Progress } from "@alpha/ui";
 
 export const dynamic = "force-dynamic";
-
-function Detail({ label, value, tip }: { label: string; value: string | number | null; tip?: string }) {
-  return (
-    <tr>
-      <td className="py-0.5 pr-4 text-xs text-text-muted">
-        {label}
-        {tip && <Tip text={tip} />}
-      </td>
-      <td className="py-0.5 font-mono text-xs text-text-primary">
-        {value ?? "-"}
-      </td>
-    </tr>
-  );
-}
 
 // Check if model is loaded in the inference engine (direct import, no HTTP)
 async function checkInferenceStatus(id: string): Promise<boolean> {
@@ -154,38 +141,10 @@ export default async function ModelDetailPage({
 
       {/* Stats grid */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-lg border border-border bg-surface px-4 py-3">
-          <div className="text-lg font-bold text-white">
-            {formatParams(run.estimated_params)}
-          </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">
-            Params <Tip text={tips.params} />
-          </div>
-        </div>
-        <div className="rounded-lg border border-border bg-surface px-4 py-3">
-          <div className="text-lg font-bold text-white">
-            {formatLoss(run.last_loss)}
-          </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">
-            Last loss <Tip text={tips.lastLoss} />
-          </div>
-        </div>
-        <div className="rounded-lg border border-border bg-surface px-4 py-3">
-          <div className="text-lg font-bold text-white">
-            {formatLoss(run.best_val_loss)}
-          </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">
-            Best val loss <Tip text={tips.bestValLoss} />
-          </div>
-        </div>
-        <div className="rounded-lg border border-border bg-surface px-4 py-3">
-          <div className="text-lg font-bold text-white">
-            {avgTps > 0 ? avgTps.toFixed(0) : "-"}
-          </div>
-          <div className="text-[0.68rem] uppercase text-text-muted">
-            Avg tok/sec <Tip text={tips.tokPerSec} />
-          </div>
-        </div>
+        <StatCard label="Params" value={formatParams(run.estimated_params)} tip={tips.params} />
+        <StatCard label="Last loss" value={formatLoss(run.last_loss)} tip={tips.lastLoss} />
+        <StatCard label="Best val loss" value={formatLoss(run.best_val_loss)} tip={tips.bestValLoss} />
+        <StatCard label="Avg tok/sec" value={avgTps > 0 ? avgTps.toFixed(0) : "-"} tip={tips.tokPerSec} />
       </div>
 
       {/* Progress */}
@@ -198,12 +157,11 @@ export default async function ModelDetailPage({
           </span>
           <span>{p}%</span>
         </div>
-        <div className="h-2 rounded-full bg-surface-2">
-          <div
-            className={`h-full rounded-full ${barColors[run.status] ?? "bg-text-muted"}`}
-            style={{ width: `${p}%` }}
-          />
-        </div>
+        <Progress 
+          value={p} 
+          variant={run.status === "active" ? "success" : run.status === "failed" ? "danger" : run.status === "stale" ? "warning" : "blue"}
+          className="h-2"
+        />
       </div>
 
       {/* Loss chart */}
@@ -220,35 +178,31 @@ export default async function ModelDetailPage({
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Model Architecture <Tip text={tips.architecture} />
           </h2>
-          <table className="w-full">
-            <tbody>
-              <Detail label="Vocab size" value={run.vocab_size} tip={tips.vocabSize} />
-              <Detail label="Block size" value={run.block_size} tip={tips.blockSize} />
-              <Detail label="Layers" value={run.n_layer} tip={tips.nLayer} />
-              <Detail label="Embedding dim" value={run.n_embd} tip={tips.nEmbd} />
-              <Detail label="Heads" value={run.n_head} tip={tips.nHead} />
-              <Detail label="Dropout" value={run.dropout} tip={tips.dropout} />
-              <Detail label="Est. params" value={formatParams(run.estimated_params)} tip={tips.params} />
-            </tbody>
-          </table>
+          <div className="flex flex-col">
+            <DetailRow label="Vocab size" value={run.vocab_size} tip={tips.vocabSize} />
+            <DetailRow label="Block size" value={run.block_size} tip={tips.blockSize} />
+            <DetailRow label="Layers" value={run.n_layer} tip={tips.nLayer} />
+            <DetailRow label="Embedding dim" value={run.n_embd} tip={tips.nEmbd} />
+            <DetailRow label="Heads" value={run.n_head} tip={tips.nHead} />
+            <DetailRow label="Dropout" value={run.dropout} tip={tips.dropout} />
+            <DetailRow label="Est. params" value={formatParams(run.estimated_params)} tip={tips.params} />
+          </div>
         </div>
 
         <div className="rounded-lg border border-border bg-surface p-4">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
             Training Config
           </h2>
-          <table className="w-full">
-            <tbody>
-              <Detail label="Total iters" value={run.total_iters} tip={tips.totalIters} />
-              <Detail label="Batch size" value={run.batch_size} tip={tips.batchSize} />
-              <Detail label="Learning rate" value={run.lr} tip={tips.lr} />
-              <Detail label="Seed" value={run.seed} tip={tips.seed} />
-              <Detail label="Backend" value={run.backend} tip={tips.backend} />
-              <Detail label="Tokenizer" value={run.tokenizer} tip={tips.tokenizer} />
-              <Detail label="Optimizer" value={run.optimizer} tip={tips.optimizer} />
-              <Detail label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} tip={tips.msPerIter} />
-            </tbody>
-          </table>
+          <div className="flex flex-col">
+            <DetailRow label="Total iters" value={run.total_iters} tip={tips.totalIters} />
+            <DetailRow label="Batch size" value={run.batch_size} tip={tips.batchSize} />
+            <DetailRow label="Learning rate" value={run.lr} tip={tips.lr} />
+            <DetailRow label="Seed" value={run.seed} tip={tips.seed} />
+            <DetailRow label="Backend" value={run.backend} tip={tips.backend} />
+            <DetailRow label="Tokenizer" value={run.tokenizer} tip={tips.tokenizer} />
+            <DetailRow label="Optimizer" value={run.optimizer} tip={tips.optimizer} />
+            <DetailRow label="Avg ms/iter" value={avgMsPerIter > 0 ? avgMsPerIter.toFixed(1) + " ms" : "-"} tip={tips.msPerIter} />
+          </div>
         </div>
 
         {/* Raw JSON configs */}

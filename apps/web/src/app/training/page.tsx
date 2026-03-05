@@ -5,9 +5,12 @@ import { Tip } from "@/components/tooltip";
 import { tips } from "@/components/tip-data";
 import {
   type ChartMetric,
-  Stat, DetailRow, InteractiveLossChart, MiniChart, StepTimeChart,
-  buildGpuSeries, buildLrSeries, buildGradNormSeries,
   fmtParams, fmtDuration, fmtNum,
+  LiveRunCard, Stat, DetailRow, Badge
+} from "@alpha/ui";
+import {
+  InteractiveLossChart, MiniChart, StepTimeChart,
+  buildGpuSeries, buildLrSeries, buildGradNormSeries,
 } from "@/components/charts";
 
 const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "";
@@ -103,9 +106,9 @@ function toChartMetric(m: StepMetric): ChartMetric {
   };
 }
 
-// ── LiveRunCard ────────────────────────────────────────────────
+// ── Full LiveRunDetail ────────────────────────────────────────────────
 
-function LiveRunCard({ run }: { run: LiveRun }) {
+function LiveRunDetail({ run }: { run: LiveRun }) {
   const last = run.metrics[run.metrics.length - 1];
   const pct = last && run.totalIters > 0 ? Math.min(100, (last.step / run.totalIters) * 100) : 0;
   const mc = run.modelConfig;
@@ -502,7 +505,7 @@ export default function TrainingPage() {
       ) : (
         <div className="space-y-5">
           {activeRuns.map((run) => (
-            <LiveRunCard key={run.id} run={run} />
+            <LiveRunDetail key={run.id} run={run} />
           ))}
         </div>
       )}
@@ -516,7 +519,7 @@ export default function TrainingPage() {
           </h2>
           <div className="space-y-5">
             {recentlyCompleted.map((run) => (
-              <LiveRunCard key={run.id} run={run} />
+              <LiveRunDetail key={run.id} run={run} />
             ))}
           </div>
         </div>

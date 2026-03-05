@@ -62,6 +62,11 @@ export function fmtDate(iso: string | null): string {
     + " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
+export function pct(step: number, total: number): number {
+  if (!total) return 0;
+  return Math.min(Math.round((step / total) * 100), 100);
+}
+
 export const STATUS_STYLES: Record<string, { badge: string; bar: string; gradient: string; variant: any }> = {
   active: {
     badge: "border-green/20 bg-green-bg text-green",

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { cn } from "../utils.js";
+import { cn, STATUS_STYLES, DOMAIN_STYLES } from "../utils.js";
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: "default" | "secondary" | "outline" | "danger" | "success" | "warning" | "blue";
@@ -25,6 +25,24 @@ function Badge({ className, variant = "default", ...props }: BadgeProps) {
       )}
       {...props}
     />
+  );
+}
+
+export function StatusBadge({ status, className, ...props }: { status: string } & React.HTMLAttributes<HTMLDivElement>) {
+  const ss = STATUS_STYLES[status] || STATUS_STYLES.stale;
+  return (
+    <Badge variant={ss.variant} className={className} {...props}>
+      {status}
+    </Badge>
+  );
+}
+
+export function DomainBadge({ domain, className, ...props }: { domain: string } & React.HTMLAttributes<HTMLDivElement>) {
+  const ds = DOMAIN_STYLES[domain] || { variant: "outline" };
+  return (
+    <Badge variant={ds.variant} className={className} {...props}>
+      {domain}
+    </Badge>
   );
 }
 

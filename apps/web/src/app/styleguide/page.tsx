@@ -13,7 +13,9 @@ import {
   Sparkline,
   ChartPanel,
   BaseMiniChart,
-  Progress
+  Progress,
+  MethodBadge, Endpoint, Required, SectionHeading, Pre,
+  ArchBadge, PhaseBadge, KernelChip
 } from "@alpha/ui";
 import { 
   Activity, 
@@ -28,7 +30,9 @@ import {
   Settings,
   BarChart3,
   LineChart,
-  Trophy
+  Trophy,
+  Book,
+  Server
 } from "lucide-react";
 
 export default function StyleGuidePage() {
@@ -208,6 +212,53 @@ export default function StyleGuidePage() {
             </Badge>
           </CardContent>
         </Card>
+      </section>
+
+      {/* ── Domain Specific Components ───────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-blue pl-4 flex items-center gap-2">
+          <Book className="h-5 w-5 text-blue" />
+          Documentation & Architecture
+        </h2>
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>API Documentation</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-2">
+                <MethodBadge method="GET" />
+                <MethodBadge method="POST" />
+                <Endpoint path="/v1/models" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-text-primary">Some Field</span>
+                <Required />
+              </div>
+              <Pre>{"{\n  \"model\": \"alpha-1\"\n}"}</Pre>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Architecture Diagram Elements</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-2">
+                <ArchBadge variant="cpu">CPU</ArchBadge>
+                <ArchBadge variant="gpu">GPU</ArchBadge>
+                <ArchBadge variant="dispatch">Dispatch</ArchBadge>
+              </div>
+              <div className="flex items-center gap-2">
+                <PhaseBadge variant="forward">Forward</PhaseBadge>
+                <PhaseBadge variant="backward">Backward</PhaseBadge>
+              </div>
+              <KernelChip name="gemm_coop">
+                Cooperative matrix multiplication kernel using tensor cores.
+              </KernelChip>
+            </CardContent>
+          </Card>
+        </div>
       </section>
 
       {/* ── Typography & Colors ────────────────────────────────────────── */}

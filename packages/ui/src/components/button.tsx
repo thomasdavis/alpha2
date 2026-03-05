@@ -40,4 +40,19 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 Button.displayName = "Button";
 
+export function FilterBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+        active
+          ? "bg-surface-2 font-medium text-text-primary"
+          : "text-text-muted hover:text-text-secondary"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export { Button };

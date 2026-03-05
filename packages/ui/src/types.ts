@@ -58,3 +58,28 @@ export interface ComputedEvents {
   evoValEnvelope: { step: number; loss: number }[];
   evoOverfitRegions: { startStep: number; endStep: number }[];
 }
+
+export interface RunSummaryData {
+  id: string;
+  domain: string;
+  status: string;
+  estimated_params: number | null;
+  n_layer: number;
+  n_embd: number;
+  n_head: number;
+  best_val_loss: number | null;
+  last_loss: number | null;
+  updated_at: string;
+  latest_step: number;
+  total_iters: number;
+}
+
+export interface LiveRunData {
+  id: string;
+  domain: string;
+  status: string;
+  totalParams: number | null;
+  totalIters: number;
+  metrics: any[]; // Using any to avoid coupling too deeply with cli types, UI can map it
+}
+
