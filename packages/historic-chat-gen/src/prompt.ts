@@ -41,6 +41,20 @@ export function buildPrompt(assignment: ConversationAssignment): {
     mentorship: "one figure teaching or guiding the other, with mutual respect",
     reluctant_agreement: "starting from opposing positions but gradually finding common ground",
     comedic_misunderstanding: "a conversation full of cultural misunderstandings and unintentional humor",
+    storytelling_exchange: "sharing personal anecdotes and stories to illustrate their points, each tale prompting another",
+    drinking_buddies: "loose, candid, and uninhibited as if sharing drinks at a tavern late at night",
+    conspiracy_theorizing: "suspicious and paranoid, connecting dots that may not exist, feeding each other's wildest theories",
+    flirtatious_banter: "playful, charming, and witty with romantic undertones and clever wordplay",
+    passive_aggressive: "polite and composed on the surface but subtly cutting and pointed underneath",
+    confessional: "vulnerable and raw, admitting failures, regrets, and private doubts to each other",
+    competitive_oneupmanship: "each trying to outdo the other with grander claims, bigger achievements, and better stories",
+    awkward_small_talk: "stilted and uncomfortable, two people who have little in common struggling to fill the silence",
+    mutual_admiration: "genuinely impressed by each other, warmly building on each other's ideas and praising insights",
+    hostile_interrogation: "aggressive questioning and demands for answers, like a cross-examination under pressure",
+    nostalgic_reminiscence: "wistfully recalling the past, sharing bittersweet memories and lamenting what has been lost",
+    conspiratorial_whisper: "sharing secrets and suspicions in hushed tones, bonding over an us-versus-them mentality",
+    deadpan_sarcasm: "dry, understated wit where every compliment might be an insult and nothing is said directly",
+    panicked_urgency: "something urgent is happening and decisions must be made now — frantic energy and rushed thinking",
   };
 
   const toneDesc = toneDescriptions[tone] ?? tone;

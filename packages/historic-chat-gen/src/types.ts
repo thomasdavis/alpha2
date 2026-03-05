@@ -28,7 +28,21 @@ export type Tone =
   | "philosophical_inquiry"
   | "mentorship"
   | "reluctant_agreement"
-  | "comedic_misunderstanding";
+  | "comedic_misunderstanding"
+  | "storytelling_exchange"
+  | "drinking_buddies"
+  | "conspiracy_theorizing"
+  | "flirtatious_banter"
+  | "passive_aggressive"
+  | "confessional"
+  | "competitive_oneupmanship"
+  | "awkward_small_talk"
+  | "mutual_admiration"
+  | "hostile_interrogation"
+  | "nostalgic_reminiscence"
+  | "conspiratorial_whisper"
+  | "deadpan_sarcasm"
+  | "panicked_urgency";
 
 export const TONES: Tone[] = [
   "formal_debate",
@@ -38,6 +52,20 @@ export const TONES: Tone[] = [
   "mentorship",
   "reluctant_agreement",
   "comedic_misunderstanding",
+  "storytelling_exchange",
+  "drinking_buddies",
+  "conspiracy_theorizing",
+  "flirtatious_banter",
+  "passive_aggressive",
+  "confessional",
+  "competitive_oneupmanship",
+  "awkward_small_talk",
+  "mutual_admiration",
+  "hostile_interrogation",
+  "nostalgic_reminiscence",
+  "conspiratorial_whisper",
+  "deadpan_sarcasm",
+  "panicked_urgency",
 ];
 
 export interface ConversationAssignment {
