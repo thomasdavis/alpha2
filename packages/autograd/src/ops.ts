@@ -719,7 +719,11 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
     const oneHot: TensorData = { shape: [N, C], dtype: logitsData.dtype, data: oneHotArr };
     const diff = B.sub(probs, oneHot);
     const result = B.scale(diff, gScalar / N);
-    if (release) { release(probs); release(diff); }
+    if (release) {
+      release(oneHot);
+      release(probs);
+      release(diff);
+    }
     return [result];
   }, cleanup);
 }
@@ -818,23 +822,29 @@ export function sliceQkv(ctx: Ctx, a: Variable): [Variable, Variable, Variable] 
   if (B.sliceQkv) {
     const [qData, kData, vData] = B.sliceQkv(data);
     const origShape = [...data.shape];
-    const q = record(ctx, qData, [a], (g, B2) => {
+    const q = record(ctx, qData, [a], (g, B2, release) => {
       if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 0], [rows, D])];
       const z0 = B2.zeros([rows, D], g.dtype);
       const z1 = B2.zeros([rows, D], g.dtype);
-      return [B2.cat([g, z0, z1], 1)];
+      const res = B2.cat([g, z0, z1], 1);
+      if (release) { release(z0); release(z1); }
+      return [res];
     });
-    const k = record(ctx, kData, [a], (g, B2) => {
+    const k = record(ctx, kData, [a], (g, B2, release) => {
       if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, D], [rows, 2 * D])];
       const z0 = B2.zeros([rows, D], g.dtype);
       const z1 = B2.zeros([rows, D], g.dtype);
-      return [B2.cat([z0, g, z1], 1)];
+      const res = B2.cat([z0, g, z1], 1);
+      if (release) { release(z0); release(z1); }
+      return [res];
     });
-    const v = record(ctx, vData, [a], (g, B2) => {
+    const v = record(ctx, vData, [a], (g, B2, release) => {
       if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 2 * D], [rows, 3 * D])];
       const z0 = B2.zeros([rows, D], g.dtype);
       const z1 = B2.zeros([rows, D], g.dtype);
-      return [B2.cat([z0, z1, g], 1)];
+      const res = B2.cat([z0, z1, g], 1);
+      if (release) { release(z0); release(z1); }
+      return [res];
     });
     return [q, k, v];
   }

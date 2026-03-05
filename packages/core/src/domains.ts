@@ -187,10 +187,11 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       ],
       modelDefaults: {
         blockSize: 256,
-        nLayer: 6,
-        nEmbd: 192,
-        nHead: 6,
+        nLayer: 4,
+        nEmbd: 128,
+        nHead: 4,
         dropout: 0.1,
+        ffnActivation: "silu",
       },
       trainDefaults: {
         tokenizer: "bpe-chat-4k",

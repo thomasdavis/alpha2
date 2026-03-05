@@ -318,6 +318,7 @@ export async function trainCmd(args: string[]): Promise<void> {
   noDecayNames.add("wpe");
   noDecayNames.add("lnF.weight");
   noDecayNames.add("lnF.bias");
+  noDecayNames.add("lmHead.weight");
   for (let i = 0; i < modelConfig.nLayer; i++) {
     noDecayNames.add(`layer.${i}.ln1.weight`);
     noDecayNames.add(`layer.${i}.ln1.bias`);

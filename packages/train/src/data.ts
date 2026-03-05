@@ -113,7 +113,10 @@ export class DataLoader {
       targets.set(this.tokens.subarray(start + 1, start + T + 1), dst);
     }
 
-    return batch;
+    return {
+      inputs: { ...batch.inputs },
+      targets: { ...batch.targets },
+    };
   }
 
   /**
@@ -157,7 +160,10 @@ export class DataLoader {
       cursors[b] = pos;
     }
 
-    return batch;
+    return {
+      inputs: { ...batch.inputs },
+      targets: { ...batch.targets },
+    };
   }
 
   /** Steps per epoch (approximate, for logging). */

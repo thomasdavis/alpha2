@@ -459,14 +459,30 @@ function poolMaxForSize(byteSize: number): number {
 const bufferPool = new Map<number, number[]>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
-const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFFER_POOL_ENTRIES ?? "2048", 10));
-const MAX_OUTPUT_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_OUTPUT_POOL_ENTRIES ?? "2048", 10));
-const LIVE_ALLOC_SOFT_CAP = Math.max(0, parseInt(process.env.HELIOS_LIVE_ALLOC_SOFT_CAP ?? "7000", 10));
-const LIVE_ALLOC_HARD_CAP = Math.max(LIVE_ALLOC_SOFT_CAP + 1, parseInt(process.env.HELIOS_LIVE_ALLOC_HARD_CAP ?? "7800", 10));
+const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFFER_POOL_ENTRIES ?? "512", 10));
+const MAX_OUTPUT_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_OUTPUT_POOL_ENTRIES ?? "512", 10));
+const LIVE_ALLOC_SOFT_CAP = Math.max(0, parseInt(process.env.HELIOS_LIVE_ALLOC_SOFT_CAP ?? "8000", 10));
+const LIVE_ALLOC_HARD_CAP = Math.max(LIVE_ALLOC_SOFT_CAP + 1, parseInt(process.env.HELIOS_LIVE_ALLOC_HARD_CAP ?? "10000", 10));
 
 let _totalAllocCount = 0;
 let _totalAllocBytes = 0;
 let _liveAllocCount = 0;
+
+function getLiveAllocCount(): number {
+  const native = getNative();
+  if (native && (native as any).getGpuStats) {
+    return (native as any).getGpuStats().liveAllocs;
+  }
+  return _liveAllocCount;
+}
+
+function getTotalAllocBytes(): number {
+  const native = getNative();
+  if (native && (native as any).getGpuStats) {
+    return Number((native as any).getGpuStats().totalBytes);
+  }
+  return _totalAllocBytes;
+}
 
 function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
   // Ensure pooled buffers are not still referenced by in-flight work.
@@ -476,10 +492,10 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
   const targetLive = aggressive
     ? Math.max(0, LIVE_ALLOC_SOFT_CAP - 256)
     : LIVE_ALLOC_SOFT_CAP;
-  if (_liveAllocCount <= targetLive) return;
+  if (getLiveAllocCount() <= targetLive) return;
 
   for (const [size, regions] of [...outputPool.entries()]) {
-    while (regions.length > 0 && _liveAllocCount > targetLive) {
+    while (regions.length > 0 && getLiveAllocCount() > targetLive) {
       const region = regions.pop()!;
       vk.destroyBuffer(region.handle);
       if (_liveAllocCount > 0) _liveAllocCount--;
@@ -487,12 +503,12 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
       outputPoolBytes -= size;
     }
     if (regions.length === 0) outputPool.delete(size);
-    if (_liveAllocCount <= targetLive) break;
+    if (getLiveAllocCount() <= targetLive) break;
   }
 
-  if (_liveAllocCount > targetLive) {
+  if (getLiveAllocCount() > targetLive) {
     for (const [size, handles] of [...bufferPool.entries()]) {
-      while (handles.length > 0 && _liveAllocCount > targetLive) {
+      while (handles.length > 0 && getLiveAllocCount() > targetLive) {
         const handle = handles.pop()!;
         vk.destroyBuffer(handle);
         if (_liveAllocCount > 0) _liveAllocCount--;
@@ -500,7 +516,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
         bufferPoolBytes -= size;
       }
       if (handles.length === 0) bufferPool.delete(size);
-      if (_liveAllocCount <= targetLive) break;
+      if (getLiveAllocCount() <= targetLive) break;
     }
   }
 }
@@ -530,7 +546,7 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
     }
   };
 
-  if (_liveAllocCount >= LIVE_ALLOC_HARD_CAP) {
+  if (getLiveAllocCount() >= LIVE_ALLOC_HARD_CAP) {
     trimPoolsForAllocPressure(vk, true);
   }
 
@@ -543,7 +559,7 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
       return createFreshBuffer();
     } catch (e) {
     console.error(`[helios OOM] acquireBuffer failed: requesting ${(byteSize / 1048576).toFixed(1)}MB`);
-    console.error(`[helios OOM] total allocated: ${(_totalAllocBytes / 1048576).toFixed(1)}MB across ${_totalAllocCount} allocs (${_liveAllocCount} live)`);
+    console.error(`[helios OOM] total allocated: ${(getTotalAllocBytes() / 1048576).toFixed(1)}MB across ${_totalAllocCount} allocs (${getLiveAllocCount()} live)`);
     // Count pool sizes
     let poolBytes = 0, poolCount = 0;
     for (const [sz, bufs] of bufferPool) { poolCount += bufs.length; poolBytes += sz * bufs.length; }
@@ -677,10 +693,7 @@ function releaseGpuBufferFor(td: TensorData): void {
   _diagReleasesThisStep++;
   if (info.refs <= 0) {
     info.released = true;
-    // Defer release through the compute graph — the buffer may be referenced
-    // by pending GPU operations that haven't been submitted yet. The deferred
-    // release goes to the timeline-aware outputPool after the next graph flush,
-    // ensuring the buffer isn't reused until the GPU has finished with it.
+    gpuResidence.delete(td);
     graph.deferRelease({ handle: info.handle, byteSize: info.byteSize, readyValue: 0 });
   }
 }
@@ -3688,7 +3701,11 @@ export class HeliosBackend implements Backend {
       ? this.scatterSlice(b, [alignedN, alignedK], [0, 0], [N, K])
       : this.scatterSlice(b, [alignedK, alignedN], [0, 0], [K, N]);
     const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [], 1, transposed);
-    return this.slice(paddedOut, [0, 0], [M, N]);
+    const res = this.slice(paddedOut, [0, 0], [M, N]);
+    releaseGpuBufferFor(paddedA);
+    releaseGpuBufferFor(paddedB);
+    releaseGpuBufferFor(paddedOut);
+    return res;
   }
 
   private tryPaddedCoopMatmulBatched(
@@ -3725,7 +3742,13 @@ export class HeliosBackend implements Backend {
 
     const paddedOut = this.gpuMatmulCoop(vk, paddedA, paddedB, alignedM, alignedN, alignedK, [batchSize], batchSize, transposed);
     const cropped = this.slice(paddedOut, [0, 0, 0], [batchSize, M, N]);
-    return this.reshape(cropped, [...aBatch, M, N]);
+    const res = this.reshape(cropped, [...aBatch, M, N]);
+    
+    releaseGpuBufferFor(paddedA);
+    releaseGpuBufferFor(paddedB);
+    releaseGpuBufferFor(paddedOut);
+    
+    return res;
   }
 
   private canUseCoopWithOptionalPadding(M: number, N: number, K: number): boolean {

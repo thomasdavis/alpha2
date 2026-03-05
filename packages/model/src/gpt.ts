@@ -241,17 +241,16 @@ function transformerBlock(
   const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
   const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
+  const softCapVal = config.softCap ?? 30.0;
+
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
   if (ctx.backend.flashAttention) {
     // Flash attention path: causal masking + softcap are handled inside the kernel.
-    // Attention-level dropout is skipped — residual dropouts (after attention output
-    // and after MLP output) still provide regularization. This matches modern
-    // architectures (LLaMA, Mistral) which don't use attention dropout.
     const qFA = reshape(ctx, q, [Batch * nHead, T, headDim]);
     const kFA = reshape(ctx, k, [Batch * nHead, T, headDim]);
     const vFA = reshape(ctx, v, [Batch * nHead, T, headDim]);
-    const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), 30);
+    const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), softCapVal);
     attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
   } else {
     // Standard multi-dispatch attention (CPU fallback)
@@ -261,7 +260,7 @@ function transformerBlock(
 
     const kT = transpose(ctx, kH, 2, 3);
     const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
-    const scores = softCap(ctx, rawScores, 30);
+    const scores = softCap(ctx, rawScores, softCapVal);
 
     const maskedScores = new Variable(
       ctx.backend.maskedFill(scores.data, mask, -1e9),

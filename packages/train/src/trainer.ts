@@ -1065,7 +1065,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
     : trainConfig.lrMin;
   const decayDenom = Math.max(1, totalIters - warmup);
-  let lossScale = useLossScaling ? 1024.0 : 1.0; // start safer, will auto-tune down
+  let lossScale = useLossScaling ? 128.0 : 1.0; // start very safe, will auto-tune up
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
@@ -1840,6 +1840,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           },
         });
         purgeBufferPoolsFn();
+
+        // Manual GC trigger to accelerate FinalizationRegistry cleanup of GPU handles.
+        // Requires node --expose-gc.
+        if (typeof global !== "undefined" && (global as any).gc) {
+          (global as any).gc();
+        }
+
         lastAdaptivePurgeStep = stepNum;
         if (gpuMemStatsFn) {
           memStatsStep = gpuMemStatsFn();
