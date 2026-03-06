@@ -1193,6 +1193,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         }
       }
 
+      // Pause cooperative matmul during backward to avoid f16 precision loss
+      // on large gradient values that can overflow f16 range (>65504).
+      const backendAnyBw = backend as any;
+      if (typeof backendAnyBw.coopMatmulPaused === "boolean") {
+        backendAnyBw.coopMatmulPaused = true;
+      }
       // Loss scaling: pass scaled initial gradient for backward.
       // This scales all gradients by lossScale, preventing f16 underflow.
       // Gradients are unscaled back before the optimizer step.
@@ -1201,6 +1207,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         trainTape.backward(loss, backend, releaseFn, scaledGrad);
       } else {
         trainTape.backward(loss, backend, releaseFn);
+      }
+      if (typeof backendAnyBw.coopMatmulPaused === "boolean") {
+        backendAnyBw.coopMatmulPaused = false;
       }
       if (!useGpuLossAccum) {
         lossVal = (lossDataRef!.data as Float32Array)[0];

@@ -1215,6 +1215,7 @@ export class HeliosBackend implements Backend {
   private _vendorId = 0;
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
+  private _coopMatPaused = false; // Temporarily disable coop matmul (e.g. during backward)
   private _coopMat2Supported = false;
   private _coopM = 0;
   private _coopN = 0;
@@ -1458,6 +1459,11 @@ export class HeliosBackend implements Backend {
       minGpuSize: this._minGpuSize,
     };
   }
+
+  /** Temporarily pause/resume cooperative matmul (f16 tensor cores).
+   *  Use during backward pass to avoid f16 precision loss on large gradients. */
+  set coopMatmulPaused(v: boolean) { this._coopMatPaused = v; }
+  get coopMatmulPaused(): boolean { return this._coopMatPaused; }
 
   getMatmulCoopStats(): CoopMatmulStats {
     const hit = this._matmulDispatches > 0 ? this._coopDispatches / this._matmulDispatches : 0;
@@ -2194,6 +2200,7 @@ export class HeliosBackend implements Backend {
   }
 
   private canUseCoopMatmulDtypes(a: TensorData, b: TensorData): boolean {
+    if (this._coopMatPaused) return false;
     const aOk = a.dtype === "f32" || a.dtype === "f16";
     const bOk = b.dtype === "f32" || b.dtype === "f16";
     return aOk && bOk;
