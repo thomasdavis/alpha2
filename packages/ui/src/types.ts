@@ -19,6 +19,8 @@ export interface ChartMetric {
   timing_grad_norm_ms: number | null;
   timing_grad_clip_ms: number | null;
   gpu_ops_count: number | null;
+  clip_coef?: number | null;
+  clip_pct?: number | null;
   per_layer_grad_norms?: string | null;
 }
 

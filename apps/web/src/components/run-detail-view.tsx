@@ -8,6 +8,10 @@ import {
   type ChartMetric,
   Stat, DetailRow, InteractiveLossChart, MiniChart, StepTimeChart, ChartPanel,
   buildGpuSeries, buildLrSeries, buildGradNormSeries,
+  buildThroughputSeries, buildStepTimeSeries, buildClipSeries,
+  buildGpuOpsSeries, buildPerplexitySeries, buildTrainValGapSeries,
+  buildLossVelocitySeries, buildSmoothedLossSeries, buildFwdBwdRatioSeries,
+  buildTimingPhaseSeries,
 } from "@/components/charts";
 import {
   fmtParams, fmtLoss, fmtBytes, fmtDuration, fmtNum, timeAgo, fmtDate,
@@ -337,6 +341,31 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Mini charts */}
       <div className="mb-6 space-y-4">
+        {/* Row: Throughput + Step Time */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartPanel title="Throughput (tok/s)" helpText="Tokens processed per second over training. Declining throughput may indicate memory pressure, thermal throttling, or increasing model complexity.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => (v / 1000).toFixed(1) + "k"}
+              buildSeries={buildThroughputSeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+          <ChartPanel title="Step Time (ms/iter)" helpText="Total wall-clock time per training step. Increases may indicate memory fragmentation, garbage collection, or GPU thermal throttling.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(0) + "ms"}
+              buildSeries={buildStepTimeSeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+        </div>
+
+        {/* GPU & VRAM */}
         <ChartPanel title="GPU & VRAM" helpText="GPU utilization percentage and video RAM usage over training time. High GPU utilization (>80%) means the hardware is being used efficiently. VRAM tracks memory consumption to detect leaks or pressure.">
           <MiniChart
             metrics={metrics}
@@ -349,8 +378,35 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             onPinStep={handlePinStep}
           />
         </ChartPanel>
+
+        {/* Row: Perplexity + Train/Val Gap */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <ChartPanel title="Learning Rate" helpText="The learning rate schedule over training. Typically starts low (warmup), peaks, then decays via cosine annealing. The shape of this curve directly affects convergence speed and final model quality.">
+          <ChartPanel title="Perplexity" helpText="Exponential of the loss (exp(loss)). Represents the effective vocabulary size the model is uncertain over. Lower is better.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(0)}
+              buildSeries={buildPerplexitySeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+          <ChartPanel title="Train/Val Gap" helpText="Difference between validation loss and training loss. A growing gap signals overfitting.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(3)}
+              buildSeries={buildTrainValGapSeries}
+              noDataMsg="No validation data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+        </div>
+
+        {/* Row: LR + Grad Norm */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartPanel title="Learning Rate" helpText="The learning rate schedule over training. Typically starts low (warmup), peaks, then decays via cosine annealing.">
             <MiniChart
               metrics={metrics}
               title=""
@@ -360,7 +416,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               onPinStep={handlePinStep}
             />
           </ChartPanel>
-          <ChartPanel title="Grad Norm" helpText="The L2 norm of all gradients at each step (log scale). Stable training shows consistent gradient norms. Sudden spikes indicate training instability, exploding gradients, or data anomalies. Values that trend to zero indicate vanishing gradients.">
+          <ChartPanel title="Grad Norm" helpText="L2 norm of all gradients at each step (log scale). Spikes indicate instability, vanishing trends indicate vanishing gradients.">
             <MiniChart
               metrics={metrics}
               title=""
@@ -372,9 +428,89 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             />
           </ChartPanel>
         </div>
-        <ChartPanel title="Step Time Breakdown" helpText="How time is spent within each training step. Forward pass computes the loss, backward pass computes gradients, optimizer updates weights, GPU sync flushes compute queues, and data loading prepares the next batch. Bottlenecks appear as dominant phases.">
+
+        {/* Row: Smoothed Loss + Loss Velocity */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartPanel title="Smoothed Loss (EMA)" helpText="Exponential moving average of training loss overlaid on raw loss. Reveals the true learning trend by filtering step-to-step noise.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(3)}
+              buildSeries={buildSmoothedLossSeries}
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+          <ChartPanel title="Loss Velocity" helpText="Rate of loss change per 1000 steps. Negative means learning. Values near zero indicate convergence.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(2)}
+              buildSeries={buildLossVelocitySeries}
+              noDataMsg="Insufficient data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+        </div>
+
+        {/* Row: Gradient Clipping + GPU Ops */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartPanel title="Gradient Clipping" helpText="Clip coefficient and cumulative clip percentage. Clip coef < 1.0 means gradients are being clipped.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(2)}
+              formatRight={(v) => v.toFixed(0) + "%"}
+              buildSeries={buildClipSeries}
+              noDataMsg="No clipping data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+          <ChartPanel title="GPU Operations" helpText="GPU compute operations dispatched per training step.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(0)}
+              buildSeries={buildGpuOpsSeries}
+              noDataMsg="No GPU ops data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+        </div>
+
+        {/* Step Time Breakdown (Stacked) */}
+        <ChartPanel title="Step Time Breakdown" helpText="How time is spent within each training step. Forward pass computes the loss, backward pass computes gradients, optimizer updates weights, GPU sync flushes compute queues, and data loading prepares the next batch.">
           <StepTimeChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
         </ChartPanel>
+
+        {/* Row: Timing Phases + Fwd/Bwd Ratio */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <ChartPanel title="Timing Phase Lines" helpText="Per-phase timing over training. Shows how forward, backward, optimizer, sync, and data loading evolve independently.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(0) + "ms"}
+              buildSeries={buildTimingPhaseSeries}
+              noDataMsg="No timing data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+          <ChartPanel title="Backward / Forward Ratio" helpText="Ratio of backward pass time to forward pass time. Typically 2-3x for standard transformers.">
+            <MiniChart
+              metrics={metrics}
+              title=""
+              formatLeft={(v) => v.toFixed(2) + "x"}
+              buildSeries={buildFwdBwdRatioSeries}
+              noDataMsg="No timing data"
+              pinnedStep={pinnedStep}
+              onPinStep={handlePinStep}
+            />
+          </ChartPanel>
+        </div>
       </div>
 
       {/* Symbio section */}

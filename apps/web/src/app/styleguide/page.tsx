@@ -1,11 +1,11 @@
 "use client";
 
-import { 
-  Button, 
-  Card, 
-  CardHeader, 
-  CardTitle, 
-  CardContent, 
+import {
+  Button,
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
   CardFooter,
   Badge,
   Stat,
@@ -13,6 +13,8 @@ import {
   Sparkline,
   ChartPanel,
   BaseMiniChart,
+  MiniChart,
+  StepTimeChart,
   Progress,
   InteractiveLossChart,
   SymbioSection,
@@ -20,7 +22,20 @@ import {
   MethodBadge, Endpoint, Required, SectionHeading, Pre,
   ArchBadge, PhaseBadge, KernelChip,
   Spinner, EmptyState,
-  Input, Select
+  Input, Select,
+  buildGpuSeries,
+  buildLrSeries,
+  buildGradNormSeries,
+  buildThroughputSeries,
+  buildStepTimeSeries,
+  buildClipSeries,
+  buildGpuOpsSeries,
+  buildPerplexitySeries,
+  buildTrainValGapSeries,
+  buildLossVelocitySeries,
+  buildSmoothedLossSeries,
+  buildFwdBwdRatioSeries,
+  buildTimingPhaseSeries,
 } from "@alpha/ui";
 import { 
   Activity, 
@@ -52,33 +67,43 @@ export default function StyleGuidePage() {
     value: Math.sin(i / 5) * 10 + 50 + Math.random() * 5
   }));
 
-  const mockChartMetrics = Array.from({ length: 100 }, (_, i) => {
+  const mockChartMetrics = Array.from({ length: 200 }, (_, i) => {
     const layers: Record<string, number> = {
       "embed": 0.1 * Math.random(),
       "head": 0.05 * Math.random()
     };
-    for(let l=0; l<6; l++) layers[String(l)] = Math.random() * Math.exp(-l/2);
+    for(let l=0; l<12; l++) layers[String(l)] = Math.random() * Math.exp(-l/3);
+
+    const fwdMs = 14 + Math.random() * 3 + (i > 150 ? Math.random() * 2 : 0);
+    const bwdMs = 22 + Math.random() * 5 + (i > 150 ? Math.random() * 3 : 0);
+    const optimMs = 1.5 + Math.random() * 0.8;
+    const dataMs = 0.5 + Math.random() * 1.2;
+    const flushMs = 1.5 + Math.random() * 1.5;
+    const gradNorm = 0.1 + Math.random() * 0.2 + (i === 80 ? 2.5 : 0) + (i === 140 ? 1.8 : 0);
+    const clipCoef = gradNorm > 1.0 ? 1.0 / gradNorm : 1.0;
 
     return {
       step: i * 50,
-      loss: 2.5 * Math.exp(-i / 40) + Math.random() * 0.1,
-      val_loss: i % 10 === 0 ? 2.6 * Math.exp(-i / 40) + Math.random() * 0.05 : null,
-      lr: 0.0006 * (1 - i / 100),
-      grad_norm: 0.1 + Math.random() * 0.2,
-      tokens_per_sec: 12000 + Math.random() * 1000,
-      ms_per_iter: 45,
-      elapsed_ms: 4500,
-      gpu_util_pct: 85,
-      gpu_vram_used_mb: 4096,
+      loss: 2.5 * Math.exp(-i / 60) + Math.random() * 0.08 + (i === 80 ? 0.3 : 0),
+      val_loss: i % 10 === 0 ? 2.6 * Math.exp(-i / 55) + Math.random() * 0.05 + (i > 160 ? (i - 160) * 0.003 : 0) : null,
+      lr: i < 20 ? 0.0006 * (i / 20) : 0.0006 * Math.cos(((i - 20) / 180) * Math.PI / 2),
+      grad_norm: gradNorm,
+      tokens_per_sec: 11000 + i * 8 + Math.random() * 800 - (i > 150 ? (i - 150) * 5 : 0),
+      ms_per_iter: fwdMs + bwdMs + optimMs + dataMs + flushMs,
+      elapsed_ms: (fwdMs + bwdMs + optimMs + dataMs + flushMs) * 1000,
+      gpu_util_pct: 75 + Math.random() * 15 + Math.min(i * 0.05, 8),
+      gpu_vram_used_mb: 3800 + i * 2 + Math.random() * 100,
       gpu_vram_total_mb: 16384,
-      timing_fwd_ms: 15,
-      timing_bwd_ms: 25,
-      timing_optim_ms: 2,
-      timing_data_ms: 1,
-      timing_flush_ms: 2,
-      timing_grad_norm_ms: 0.5,
-      timing_grad_clip_ms: 0.5,
-      gpu_ops_count: 120,
+      timing_fwd_ms: fwdMs,
+      timing_bwd_ms: bwdMs,
+      timing_optim_ms: optimMs,
+      timing_data_ms: dataMs,
+      timing_flush_ms: flushMs,
+      timing_grad_norm_ms: 0.3 + Math.random() * 0.3,
+      timing_grad_clip_ms: 0.2 + Math.random() * 0.2,
+      gpu_ops_count: 115 + Math.floor(Math.random() * 15),
+      clip_coef: clipCoef,
+      clip_pct: i > 0 ? Math.min(100, (i / 200) * 30 + Math.random() * 5) : 0,
       weight_entropy: 4.5 + Math.sin(i/10)*0.5,
       effective_rank: 128 - (i/2),
       free_energy: 2.1 - (i/50),
@@ -284,6 +309,162 @@ export default function StyleGuidePage() {
                 />
               </CardContent>
             </Card>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Training Analytics (All Runs) ────────────────────────────── */}
+      <section className="mb-16">
+        <h2 className="text-2xl font-semibold text-text-primary mb-6 border-l-4 border-green pl-4 flex items-center gap-2">
+          <LineChart className="h-5 w-5 text-green" />
+          Training Analytics
+        </h2>
+        <p className="text-sm text-text-secondary mb-6">
+          Charts available for every training run. These visualize throughput, timing, gradient health, perplexity, and convergence dynamics.
+        </p>
+
+        <div className="grid gap-6">
+          {/* Row 1: Throughput + Step Time */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Throughput (tok/s)" helpText="Tokens processed per second over training. Declining throughput may indicate memory pressure, thermal throttling, or increasing model complexity.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => (v / 1000).toFixed(1) + "k"}
+                buildSeries={buildThroughputSeries}
+              />
+            </ChartPanel>
+            <ChartPanel title="Step Time (ms/iter)" helpText="Total wall-clock time per training step. Increases may indicate memory fragmentation, garbage collection, or GPU thermal throttling.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(0) + "ms"}
+                buildSeries={buildStepTimeSeries}
+              />
+            </ChartPanel>
+          </div>
+
+          {/* Row 2: Perplexity + Train/Val Gap */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Perplexity" helpText="Exponential of the loss (exp(loss)). Represents the effective vocabulary size the model is uncertain over. Lower perplexity means more confident, better predictions.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(0)}
+                buildSeries={buildPerplexitySeries}
+              />
+            </ChartPanel>
+            <ChartPanel title="Train/Val Gap" helpText="Difference between validation loss and training loss (val_loss - train_loss). A growing gap signals overfitting: the model memorizes training data instead of learning generalizable patterns.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(3)}
+                buildSeries={buildTrainValGapSeries}
+                noDataMsg="No validation data"
+              />
+            </ChartPanel>
+          </div>
+
+          {/* Row 3: Gradient Clipping + GPU Ops */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Gradient Clipping" helpText="Clip coefficient (left axis) and cumulative clip percentage (right axis). Clip coef < 1.0 means gradients are being clipped. High clip percentage indicates the model is frequently hitting the gradient norm ceiling.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(2)}
+                formatRight={(v) => v.toFixed(0) + "%"}
+                buildSeries={buildClipSeries}
+                noDataMsg="No clipping data"
+              />
+            </ChartPanel>
+            <ChartPanel title="GPU Operations" helpText="Number of GPU compute operations dispatched per training step. Useful for detecting kernel launch overhead and comparing different model architectures.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(0)}
+                buildSeries={buildGpuOpsSeries}
+                noDataMsg="No GPU ops data"
+              />
+            </ChartPanel>
+          </div>
+
+          {/* Row 4: Smoothed Loss + Loss Velocity */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Smoothed Loss (EMA)" helpText="Exponential moving average of training loss with alpha=0.05, overlaid on raw loss. The EMA reveals the true learning trend by filtering out step-to-step noise.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(3)}
+                buildSeries={buildSmoothedLossSeries}
+              />
+            </ChartPanel>
+            <ChartPanel title="Loss Velocity" helpText="Rate of loss change per 1000 steps (dLoss/dStep * 1000), computed over a 10-step window. Negative values mean the model is learning. Values approaching zero indicate convergence or a learning rate plateau.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(2)}
+                buildSeries={buildLossVelocitySeries}
+                noDataMsg="Insufficient data"
+              />
+            </ChartPanel>
+          </div>
+
+          {/* Row 5: Timing Phases + Fwd/Bwd Ratio */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Timing Phase Breakdown" helpText="Per-phase timing over training. Shows how forward, backward, optimizer, GPU sync, and data loading times evolve. Useful for identifying bottleneck shifts during training.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(0) + "ms"}
+                buildSeries={buildTimingPhaseSeries}
+              />
+            </ChartPanel>
+            <ChartPanel title="Backward / Forward Ratio" helpText="Ratio of backward pass time to forward pass time. Typically 2-3x for standard transformers. Higher ratios may indicate gradient accumulation overhead or memory-bound backward passes.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toFixed(2) + "x"}
+                buildSeries={buildFwdBwdRatioSeries}
+                noDataMsg="No timing data"
+              />
+            </ChartPanel>
+          </div>
+
+          {/* Full-width: Step Time Stacked Chart */}
+          <ChartPanel title="Step Time Breakdown (Stacked)" helpText="Stacked bar chart showing how time is distributed across training phases within each step. Hover for per-phase breakdown.">
+            <StepTimeChart metrics={mockChartMetrics as any} />
+          </ChartPanel>
+
+          {/* Full-width: GPU & VRAM */}
+          <ChartPanel title="GPU & VRAM" helpText="GPU utilization percentage and video RAM usage over training time.">
+            <MiniChart
+              metrics={mockChartMetrics as any}
+              title=""
+              formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
+              formatRight={(v) => v.toFixed(0) + "%"}
+              buildSeries={buildGpuSeries}
+            />
+          </ChartPanel>
+
+          {/* LR + Grad Norm */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartPanel title="Learning Rate Schedule" helpText="The learning rate schedule over training. Warmup, peak, then cosine annealing decay.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                formatLeft={(v) => v.toExponential(1)}
+                buildSeries={buildLrSeries}
+              />
+            </ChartPanel>
+            <ChartPanel title="Gradient Norm" helpText="L2 norm of all gradients at each step. Spikes indicate instability.">
+              <MiniChart
+                metrics={mockChartMetrics as any}
+                title=""
+                logScale
+                formatLeft={(v) => v.toExponential(0)}
+                buildSeries={buildGradNormSeries}
+              />
+            </ChartPanel>
           </div>
         </div>
       </section>

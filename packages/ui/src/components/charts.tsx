@@ -577,7 +577,158 @@ export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, f
 }
 
 export function StepTimeChart({ metrics, pinnedStep, onPinStep }: { metrics: ChartMetric[]; pinnedStep?: number | null; onPinStep?: (step: number) => void }) {
-  return <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">Step Analysis Pending</div>;
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [tooltip, setTooltip] = React.useState<{ x: number; y: number; step: number; phases: { label: string; color: string; ms: number }[] } | null>(null);
+
+  const timed = React.useMemo(() => {
+    const pts = metrics.filter(m => m.timing_fwd_ms != null);
+    if (pts.length <= 400) return pts;
+    const stride = Math.ceil(pts.length / 400);
+    return pts.filter((_, i) => i % stride === 0);
+  }, [metrics]);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container || timed.length < 2) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = container.clientWidth;
+    const h = 192;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(dpr, dpr);
+
+    const style = getComputedStyle(document.documentElement);
+    const bg = style.getPropertyValue("--bg").trim() || "#0a0a0a";
+    const border = style.getPropertyValue("--border").trim() || "#222";
+    const textMuted = style.getPropertyValue("--text-muted").trim() || "#555";
+
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const pad = { top: 10, right: 16, bottom: 24, left: 48 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+
+    const maxStep = timed[timed.length - 1].step;
+    const sx = (step: number) => pad.left + (step / (maxStep || 1)) * cw;
+
+    // Compute stacked totals to find max
+    let maxTotal = 0;
+    for (const m of timed) {
+      const total = (m.timing_fwd_ms ?? 0) + (m.timing_bwd_ms ?? 0) + (m.timing_optim_ms ?? 0) + (m.timing_flush_ms ?? 0) + (m.timing_data_ms ?? 0);
+      if (total > maxTotal) maxTotal = total;
+    }
+    maxTotal = maxTotal || 1;
+    const sy = (ms: number) => ch - (ms / maxTotal) * ch;
+
+    // Grid
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (i / 4) * ch;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+      ctx.fillStyle = textMuted;
+      ctx.font = "9px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText((maxTotal * (1 - i / 4)).toFixed(0) + "ms", pad.left - 4, y + 3);
+    }
+
+    // Stacked areas (bottom to top: data, gpu sync, optimizer, backward, forward)
+    const phases = TIMING_PHASES.slice().reverse();
+    const barW = Math.max(1, cw / timed.length);
+
+    for (let pi = 0; pi < phases.length; pi++) {
+      ctx.fillStyle = phases[pi].color + "cc";
+      for (let i = 0; i < timed.length; i++) {
+        const m = timed[i];
+        let cumBelow = 0;
+        for (let j = pi + 1; j < phases.length; j++) {
+          cumBelow += (m[phases[j].key] as number) ?? 0;
+        }
+        const val = (m[phases[pi].key] as number) ?? 0;
+        const x = sx(m.step);
+        const yTop = pad.top + sy(cumBelow + val);
+        const yBot = pad.top + sy(cumBelow);
+        ctx.fillRect(x, yTop, barW, yBot - yTop);
+      }
+    }
+
+    // X labels
+    ctx.fillStyle = textMuted;
+    ctx.font = "9px monospace";
+    ctx.textAlign = "center";
+    const ticks = [0, Math.round(maxStep * 0.25), Math.round(maxStep * 0.5), Math.round(maxStep * 0.75), maxStep];
+    for (const s of ticks) ctx.fillText(fmtNum(s), sx(s), h - 6);
+  }, [timed]);
+
+  if (timed.length < 2) {
+    return <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">No timing data</div>;
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <canvas
+        ref={canvasRef}
+        className="w-full rounded-xl border border-border/50 bg-surface shadow-inner cursor-crosshair"
+        onMouseMove={(e) => {
+          const canvas = canvasRef.current;
+          if (!canvas || timed.length < 2) return;
+          const rect = canvas.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const padL = 48, padR = 16;
+          const cw = rect.width - padL - padR;
+          if (mx < padL || mx > rect.width - padR) { setTooltip(null); return; }
+          const maxStep = timed[timed.length - 1].step;
+          const stepAt = ((mx - padL) / cw) * maxStep;
+          let idx = 0;
+          for (let i = 1; i < timed.length; i++) {
+            if (Math.abs(timed[i].step - stepAt) < Math.abs(timed[idx].step - stepAt)) idx = i;
+          }
+          const m = timed[idx];
+          setTooltip({
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top,
+            step: m.step,
+            phases: TIMING_PHASES.map(p => ({ label: p.label, color: p.color, ms: (m[p.key] as number) ?? 0 })),
+          });
+        }}
+        onMouseLeave={() => setTooltip(null)}
+      />
+      {tooltip && (
+        <div
+          className="pointer-events-none absolute z-20 min-w-[160px] rounded-lg border border-border-2 bg-surface-2/95 p-2.5 shadow-xl backdrop-blur-sm text-[0.65rem]"
+          style={{ left: tooltip.x < 200 ? tooltip.x + 12 : undefined, right: tooltip.x >= 200 ? (containerRef.current?.clientWidth ?? 400) - tooltip.x + 12 : undefined, top: Math.max(4, tooltip.y - 80) }}
+        >
+          <div className="mb-1.5 font-mono font-bold text-text-primary">Step {fmtNum(tooltip.step)}</div>
+          {tooltip.phases.filter(p => p.ms > 0).map(p => (
+            <div key={p.label} className="flex justify-between gap-3">
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: p.color }} />{p.label}</span>
+              <span className="font-mono font-bold text-text-primary">{p.ms.toFixed(1)}ms</span>
+            </div>
+          ))}
+          <div className="mt-1 border-t border-border/50 pt-1 flex justify-between gap-3">
+            <span className="text-text-muted">Total</span>
+            <span className="font-mono font-bold text-text-primary">{tooltip.phases.reduce((s, p) => s + p.ms, 0).toFixed(1)}ms</span>
+          </div>
+        </div>
+      )}
+      {/* Legend */}
+      <div className="mt-2 flex flex-wrap gap-3 justify-center">
+        {TIMING_PHASES.map(p => (
+          <div key={p.key} className="flex items-center gap-1 text-[0.6rem] text-text-muted">
+            <span className="inline-block h-2 w-2 rounded-sm" style={{ background: p.color }} />
+            {p.label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Core Charting Components (Base Implementations) ──────────────
@@ -683,3 +834,84 @@ export const buildGpuSeries = (m: ChartMetric[]): MiniSeries[] => {
 
 export const buildLrSeries = (m: ChartMetric[]): MiniSeries[] => [{ data: m.map(x => ({ step: x.step, value: x.lr })), color: "#22d3ee", label: "LR" }];
 export const buildGradNormSeries = (m: ChartMetric[]): MiniSeries[] => [{ data: m.map(x => ({ step: x.step, value: x.grad_norm })), color: "#f97316", label: "norm" }];
+
+export const buildThroughputSeries = (m: ChartMetric[]): MiniSeries[] => [
+  { data: m.map(x => ({ step: x.step, value: x.tokens_per_sec })), color: "#10b981", label: "tok/s" },
+];
+
+export const buildStepTimeSeries = (m: ChartMetric[]): MiniSeries[] => [
+  { data: m.map(x => ({ step: x.step, value: x.ms_per_iter })), color: "#f472b6", label: "ms/iter" },
+];
+
+export const buildClipSeries = (m: ChartMetric[]): MiniSeries[] => {
+  const coef = m.filter(x => x.clip_coef != null).map(x => ({ step: x.step, value: x.clip_coef! }));
+  const pct = m.filter(x => x.clip_pct != null).map(x => ({ step: x.step, value: x.clip_pct! }));
+  return [
+    { data: coef, color: "#f59e0b", label: "Clip Coef", axis: "left" as const },
+    { data: pct, color: "#f472b6", label: "Clip %", axis: "right" as const },
+  ];
+};
+
+export const buildGpuOpsSeries = (m: ChartMetric[]): MiniSeries[] => {
+  const ops = m.filter(x => x.gpu_ops_count != null).map(x => ({ step: x.step, value: x.gpu_ops_count! }));
+  return [{ data: ops, color: "#a78bfa", label: "ops" }];
+};
+
+export const buildPerplexitySeries = (m: ChartMetric[]): MiniSeries[] => {
+  const valPts = m.filter(x => x.val_loss != null);
+  return [
+    { data: m.map(x => ({ step: x.step, value: Math.exp(x.loss) })), color: "#f59e0b", label: "Train PPL" },
+    ...(valPts.length > 1 ? [{ data: valPts.map(x => ({ step: x.step, value: Math.exp(x.val_loss!) })), color: "#2563eb", label: "Val PPL" }] : []),
+  ];
+};
+
+export const buildTrainValGapSeries = (m: ChartMetric[]): MiniSeries[] => {
+  const valPts = m.filter(x => x.val_loss != null);
+  if (valPts.length < 2) return [];
+  return [{ data: valPts.map(x => ({ step: x.step, value: x.val_loss! - x.loss })), color: "#ef4444", label: "Gap" }];
+};
+
+export const buildLossVelocitySeries = (m: ChartMetric[]): MiniSeries[] => {
+  if (m.length < 10) return [];
+  const windowSize = 10;
+  const velocity: { step: number; value: number }[] = [];
+  for (let i = windowSize; i < m.length; i++) {
+    const dLoss = m[i].loss - m[i - windowSize].loss;
+    const dStep = m[i].step - m[i - windowSize].step || 1;
+    velocity.push({ step: m[i].step, value: (dLoss / dStep) * 1000 });
+  }
+  return [{ data: velocity, color: "#22d3ee", label: "dL/dStep" }];
+};
+
+export const buildSmoothedLossSeries = (m: ChartMetric[]): MiniSeries[] => {
+  if (m.length < 5) return [];
+  const alpha = 0.05;
+  let ema = m[0].loss;
+  const smoothed = m.map(x => {
+    ema = alpha * x.loss + (1 - alpha) * ema;
+    return { step: x.step, value: ema };
+  });
+  const raw = m.map(x => ({ step: x.step, value: x.loss }));
+  return [
+    { data: raw, color: "#f59e0b40", label: "Raw" },
+    { data: smoothed, color: "#f59e0b", label: "EMA" },
+  ];
+};
+
+export const buildFwdBwdRatioSeries = (m: ChartMetric[]): MiniSeries[] => {
+  const pts = m.filter(x => x.timing_fwd_ms != null && x.timing_bwd_ms != null && x.timing_fwd_ms! > 0);
+  if (pts.length < 2) return [];
+  return [{ data: pts.map(x => ({ step: x.step, value: x.timing_bwd_ms! / x.timing_fwd_ms! })), color: "#a78bfa", label: "Bwd/Fwd" }];
+};
+
+export const buildTimingPhaseSeries = (m: ChartMetric[]): MiniSeries[] => {
+  const pts = m.filter(x => x.timing_fwd_ms != null);
+  if (pts.length < 2) return [];
+  return [
+    { data: pts.map(x => ({ step: x.step, value: x.timing_fwd_ms! })), color: "#22d3ee", label: "Forward" },
+    { data: pts.map(x => ({ step: x.step, value: x.timing_bwd_ms ?? 0 })), color: "#f97316", label: "Backward" },
+    { data: pts.map(x => ({ step: x.step, value: x.timing_optim_ms ?? 0 })), color: "#10b981", label: "Optimizer" },
+    { data: pts.map(x => ({ step: x.step, value: x.timing_flush_ms ?? 0 })), color: "#f43f5e", label: "GPU Sync" },
+    { data: pts.map(x => ({ step: x.step, value: x.timing_data_ms ?? 0 })), color: "#64748b", label: "Data" },
+  ];
+};
