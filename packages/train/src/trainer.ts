@@ -1099,6 +1099,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let lastAdaptivePurgeStep = 0;
   const spikeLrBackoff = readEnvFloat("ALPHA_SPIKE_LR_BACKOFF", 0.5, 0.01, 1.0);
   const spikeLrMinScale = readEnvFloat("ALPHA_SPIKE_LR_MIN_SCALE", 0.1, 0.001, 1.0);
+  const spikeLrRecoverySteps = Math.round(readEnvFloat("ALPHA_SPIKE_LR_RECOVERY_STEPS", 200, 10, 10_000));
+  let stepsSinceLastSpike = 0;
   const forceCpuGradNormDefault = ((process.env.ALPHA_FORCE_CPU_GRAD_NORM ?? "0").trim() === "1");
   const gradNormCpuRecheck = ((process.env.ALPHA_GRAD_NORM_CPU_RECHECK ?? "1").trim() !== "0");
   const gradNormCpuSticky = ((process.env.ALPHA_GRAD_NORM_CPU_STICKY ?? "1").trim() !== "0");
@@ -1583,10 +1585,30 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           },
         });
         nanDetected = true; // reuse the skip path
+        stepsSinceLastSpike = 0;
       } else {
         repeatedSpikeNormStreak = 0;
         prevSpikeNorm = Number.NaN;
       }
+    }
+
+    // LR scale recovery: after enough clean steps, gradually restore lr toward 1.0
+    if (!nanDetected && runtimeLrScale < 1.0) {
+      stepsSinceLastSpike++;
+      if (stepsSinceLastSpike >= spikeLrRecoverySteps) {
+        const prevScale = runtimeLrScale;
+        // Recover by doubling (inverse of the 0.5 backoff) but cap at 1.0
+        runtimeLrScale = Math.min(1.0, runtimeLrScale / spikeLrBackoff);
+        lr = Math.max(lrMin * spikeLrMinScale, baseLr * runtimeLrScale);
+        if (setOptimizerLrFn) setOptimizerLrFn(lr);
+        stepsSinceLastSpike = 0;
+        console.log(
+          `  [spike_recovery] lr_scale ${prevScale.toFixed(4)}->${runtimeLrScale.toFixed(4)} ` +
+          `after ${spikeLrRecoverySteps} clean steps`,
+        );
+      }
+    } else if (nanDetected) {
+      stepsSinceLastSpike = 0;
     }
 
     const _t4 = capturePhaseTimings ? performance.now() : 0;
