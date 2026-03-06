@@ -135,9 +135,19 @@ export function kernelCastF32ToF16(wgSize = 256): Uint32Array {
   const valF32 = b.id();
   b.emit(Op.Load, [p.tF32, valF32, ptrA]);
 
-  // Convert f32 → f16
+  // Clamp f32 to f16 representable range before conversion to prevent Inf.
+  // f16 max = 65504. Without clamping, large gradient values in backward pass
+  // overflow to Inf in f16, then produce NaN in cooperative matmul.
+  const f16Max = b.id();
+  b.constantF32(p.tF32, f16Max, 65504.0);
+  const f16Min = b.id();
+  b.constantF32(p.tF32, f16Min, -65504.0);
+  const clamped = b.id();
+  b.emit(Op.ExtInst, [p.tF32, clamped, p.glslStd, GLSLstd450.FClamp, valF32, f16Min, f16Max]);
+
+  // Convert clamped f32 → f16
   const valF16 = b.id();
-  b.emit(Op.FConvert, [tF16, valF16, valF32]);
+  b.emit(Op.FConvert, [tF16, valF16, clamped]);
 
   // Store f16
   const ptrC = b.id();
