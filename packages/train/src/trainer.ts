@@ -1139,6 +1139,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const accumSteps = gradAccumSteps;
     const stepSeedBase = trainConfig.seed + step * 1000;
     let nanDetected = false;
+    let spikeDetectedThisStep = false;
     let lossNanLogged = false;
     let gradNanLogged = false;
     let gradNanCount = 0;
@@ -1585,6 +1586,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           },
         });
         nanDetected = true; // reuse the skip path
+        spikeDetectedThisStep = true;
         stepsSinceLastSpike = 0;
       } else {
         repeatedSpikeNormStreak = 0;
@@ -1592,23 +1594,23 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
     }
 
-    // LR scale recovery: after enough clean steps, gradually restore lr toward 1.0
-    if (!nanDetected && runtimeLrScale < 1.0) {
+    // LR scale recovery: after enough steps without a spike, restore lr toward 1.0.
+    // Note: NaN grad steps do NOT reset the counter — only actual gradient spikes
+    // (which set stepsSinceLastSpike=0 above) reset it. NaN is a separate phenomenon
+    // (~8% baseline) and would prevent recovery if counted.
+    if (runtimeLrScale < 1.0 && !spikeDetectedThisStep) {
       stepsSinceLastSpike++;
       if (stepsSinceLastSpike >= spikeLrRecoverySteps) {
         const prevScale = runtimeLrScale;
-        // Recover by doubling (inverse of the 0.5 backoff) but cap at 1.0
         runtimeLrScale = Math.min(1.0, runtimeLrScale / spikeLrBackoff);
         lr = Math.max(lrMin * spikeLrMinScale, baseLr * runtimeLrScale);
         if (setOptimizerLrFn) setOptimizerLrFn(lr);
         stepsSinceLastSpike = 0;
         console.log(
           `  [spike_recovery] lr_scale ${prevScale.toFixed(4)}->${runtimeLrScale.toFixed(4)} ` +
-          `after ${spikeLrRecoverySteps} clean steps`,
+          `after ${spikeLrRecoverySteps} steps without spike`,
         );
       }
-    } else if (nanDetected) {
-      stepsSinceLastSpike = 0;
     }
 
     const _t4 = capturePhaseTimings ? performance.now() : 0;
