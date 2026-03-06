@@ -2203,7 +2203,13 @@ export class HeliosBackend implements Backend {
     if (td.dtype === "f16") return this.ensureGpuF16(vk, td);
     if (td.dtype !== "f32") throw new Error(`Helios coop matmul only supports f32/f16 inputs (got ${td.dtype})`);
 
-    this.evictCoopF16InputCacheForCompletedBatch();
+    // NOTE: Do NOT call evictCoopF16InputCacheForCompletedBatch() here!
+    // castDtype() below calls graph.record() which may trigger an auto-flush.
+    // If eviction runs on the NEXT getCoopInputBuffer call (which sees the new
+    // timeline), it releases the f16 buffer that was just created — while the
+    // caller still holds the handle for use in the matmul dispatch. This causes
+    // the buffer to be recycled and overwritten before the matmul reads it.
+    // Eviction is done at safe points: flush(), syncGpu(), purgeBufferPools().
     let casted = this._coopF16InputCache.get(td);
     if (!casted) {
       casted = this.castDtype(td, "f16");
