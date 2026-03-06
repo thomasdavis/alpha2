@@ -167,7 +167,7 @@ async function sampleFromCheckpointCli(
       execFile(
         process.execPath,
         args,
-        { timeout: 120_000, maxBuffer: 8 * 1024 * 1024, encoding: "utf-8" },
+        { timeout: 300_000, maxBuffer: 8 * 1024 * 1024, encoding: "utf-8" },
         (err, stdout) => {
           if (err) {
             reject(err);
@@ -2267,12 +2267,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           }
           if (flushFn) flushFn();
 
-          const sampleCfg: SampleConfig = { steps: 50, temperature: 0.8, topk: 40 };
-          const prompts = deps.samplePrompts.slice(0, 3);
+          const sampleCfg: SampleConfig = { steps: 15, temperature: 0.8, topk: 40 };
+          // Limit to 1 prompt for checkpoint CLI sampler (slow cpu_ref autograd path)
+          // and 3 for in-process GPU sampler
           const useCheckpointSampler =
             process.env.ALPHA_SAMPLE_FROM_CHECKPOINT !== "0" &&
             backend.name !== "cpu_ref" &&
             !!latestCheckpointPath;
+          const prompts = deps.samplePrompts.slice(0, useCheckpointSampler ? 1 : 3);
           let samples: { prompt: string; output: string }[] = [];
 
           if (useCheckpointSampler && latestCheckpointPath) {
