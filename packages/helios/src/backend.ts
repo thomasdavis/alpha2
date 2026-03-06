@@ -514,12 +514,14 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
     const handle = pool.pop()!;
     bufferPoolEntries--;
     bufferPoolBytes -= rounded;
+    _flowBufferPoolHits++;
     return handle;
   }
   _totalAllocCount++;
   _totalAllocBytes += rounded;
   const createFreshBuffer = (): number => {
     _liveAllocCount++;
+    _flowNewCreates++;
     try {
       return vk.createBuffer(rounded, 0); // device-local (staging handled in C)
     } catch (err) {
@@ -565,6 +567,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
   } else {
     vk.destroyBuffer(handle);
     _liveAllocCount--;
+    _flowDestroys++;
   }
 }
 
@@ -578,6 +581,23 @@ interface GpuHandle { handle: number; byteSize: number; refs: number; released: 
 
 /** Maps TensorData → its GPU buffer. Keyed on the object identity. */
 const gpuResidence = new WeakMap<object, GpuHandle>();
+
+// ── Leak diagnostics ──
+let _diagAllocsThisStep = 0;
+let _diagReleasesThisStep = 0;
+let _diagFrReleasesThisStep = 0;
+
+
+// ── Buffer flow counters (reset per gpuMemStats call) ──
+let _flowNewCreates = 0;        // vk.createBuffer calls (new allocs)
+let _flowDestroys = 0;          // vk.destroyBuffer calls
+let _flowOutputPoolHits = 0;    // acquireOutputRegion reused from pool
+let _flowOutputPoolMisses = 0;  // acquireOutputRegion created new
+let _flowOutputPoolReturns = 0; // releaseOutputRegion → pool
+let _flowOutputPoolOverflows = 0; // releaseOutputRegion → pendingDestroys
+let _flowBufferPoolHits = 0;    // acquireBuffer reused from bufferPool
+let _flowEnsureGpuHits = 0;     // ensureGpu found existing
+let _flowEnsureGpuUploads = 0;  // ensureGpu uploaded new
 
 /**
  * Auto-release GPU buffers when TensorData is garbage collected.
@@ -593,6 +613,7 @@ const gpuResidence = new WeakMap<object, GpuHandle>();
 const gpuCleanup = new FinalizationRegistry<GpuHandle>((info) => {
   if (info.released) return; // already explicitly released
   info.refs--;
+  _diagFrReleasesThisStep++;
   if (info.refs <= 0) {
     info.released = true;
     try {
@@ -604,7 +625,7 @@ const gpuCleanup = new FinalizationRegistry<GpuHandle>((info) => {
 /** Get or create a GPU buffer for a TensorData. Returns the buffer handle. */
 function ensureGpu(vk: NativeAddon, td: TensorData): number {
   const existing = gpuResidence.get(td);
-  if (existing) return existing.handle;
+  if (existing) { _flowEnsureGpuHits++; return existing.handle; }
   // Upload to a new device-local buffer
   const byteSize = td.data.length * 4;
   const handle = acquireBuffer(vk, byteSize);
@@ -624,6 +645,7 @@ function ensureGpu(vk: NativeAddon, td: TensorData): number {
   const info: GpuHandle = { handle, byteSize: rounded, refs: 1, released: false };
   gpuResidence.set(td, info);
   gpuCleanup.register(td, info);
+  _flowEnsureGpuUploads++;
   return handle;
 }
 
@@ -652,6 +674,7 @@ function releaseGpuBufferFor(td: TensorData): void {
   if (!info || info.released) return;
   info.refs--;
   gpuResidence.delete(td);
+  _diagReleasesThisStep++;
   if (info.refs <= 0) {
     info.released = true;
     // Defer release through the compute graph — the buffer may be referenced
@@ -740,10 +763,12 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
         const region = pool.splice(i, 1)[0];
         outputPoolEntries--;
         outputPoolBytes -= rounded;
+        _flowOutputPoolHits++;
         return region;
       }
     }
   }
+  _flowOutputPoolMisses++;
   return { handle: acquireBuffer(vk, rounded), byteSize: rounded, readyValue: 0 };
 }
 
@@ -763,10 +788,12 @@ function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
     pool.push(region);
     outputPoolEntries++;
     outputPoolBytes += region.byteSize;
+    _flowOutputPoolReturns++;
   } else {
     // Pool full — defer buffer destruction until GPU has finished using it.
     // The buffer's memory may still be referenced by the just-submitted batch.
     pendingDestroys.push({ handle: region.handle, readyValue: submitValue });
+    _flowOutputPoolOverflows++;
   }
 }
 
@@ -779,6 +806,7 @@ function processPendingDestroys(vk: NativeAddon): void {
     if (pendingDestroys[i].readyValue <= completed) {
       vk.destroyBuffer(pendingDestroys[i].handle);
       _liveAllocCount--;
+      _flowDestroys++;
     } else {
       pendingDestroys[writeIdx++] = pendingDestroys[i];
     }
@@ -1125,6 +1153,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
   // Track GPU residence so subsequent ops can find this buffer
   gpuResidence.set(td, gpuInfo);
   gpuCleanup.register(td, gpuInfo);
+  _diagAllocsThisStep++;
   return td;
 }
 
@@ -1365,8 +1394,8 @@ export class HeliosBackend implements Backend {
   }
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
-  gpuMemStats(): { bufferPoolEntries: number; bufferPoolBytes: number; outputPoolEntries: number; outputPoolBytes: number; deferredReleases: number; pendingDestroys: number; outputPoolSizeClasses: number; totalAllocs: number; totalAllocMB: number; liveAllocs: number } {
-    return {
+  gpuMemStats(): Record<string, number> {
+    const stats = {
       bufferPoolEntries, bufferPoolBytes,
       outputPoolEntries, outputPoolBytes,
       deferredReleases: graph.deferredReleaseCount,
@@ -1375,7 +1404,25 @@ export class HeliosBackend implements Backend {
       totalAllocs: _totalAllocCount,
       totalAllocMB: Math.round(_totalAllocBytes / 1024 / 1024),
       liveAllocs: _liveAllocCount,
+      diagAllocsThisStep: _diagAllocsThisStep,
+      diagReleasesThisStep: _diagReleasesThisStep,
+      diagFrReleasesThisStep: _diagFrReleasesThisStep,
+      // Running totals (never reset) — compute deltas externally
+      flowNewCreates: _flowNewCreates,
+      flowDestroys: _flowDestroys,
+      flowOutputPoolHits: _flowOutputPoolHits,
+      flowOutputPoolMisses: _flowOutputPoolMisses,
+      flowOutputPoolReturns: _flowOutputPoolReturns,
+      flowOutputPoolOverflows: _flowOutputPoolOverflows,
+      flowBufferPoolHits: _flowBufferPoolHits,
+      flowEnsureGpuHits: _flowEnsureGpuHits,
+      flowEnsureGpuUploads: _flowEnsureGpuUploads,
     };
+    // Only reset per-step diag counters (not flow totals)
+    _diagAllocsThisStep = 0;
+    _diagReleasesThisStep = 0;
+    _diagFrReleasesThisStep = 0;
+    return stats;
   }
 
   /** Detailed pool breakdown: size → count for the top N entries by bytes. */
@@ -4273,6 +4320,11 @@ export class HeliosBackend implements Backend {
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
     });
+
+    // Release intermediate D_precomp buffer — only needed between dQ and dKV kernels.
+    // Without this, one buffer leaks per layer per step (~16/step), eventually
+    // hitting Vulkan's live allocation limit and corrupting training.
+    graph.deferRelease(dPreRegion);
 
     const dQ = graphLazyTensor(vk, [BH, T, D], dqRegion);
     const dK = graphLazyTensor(vk, [BH, T, D], dkRegion);

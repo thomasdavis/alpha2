@@ -145,6 +145,7 @@ async function sampleFromCheckpointCli(
             "sample",
             `--checkpoint=${checkpointPath}`,
             "--backend=cpu_ref",
+            "--slow",
             `--steps=${cfg.steps}`,
             `--temp=${cfg.temperature}`,
             `--topk=${cfg.topk}`,
@@ -156,6 +157,7 @@ async function sampleFromCheckpointCli(
             "sample",
             `--checkpoint=${checkpointPath}`,
             "--backend=cpu_ref",
+            "--slow",
             `--steps=${cfg.steps}`,
             `--temp=${cfg.temperature}`,
             `--topk=${cfg.topk}`,
@@ -565,7 +567,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   } = deps;
 
   const dataTag = dataPath.split("/").pop()?.replace(/\.[^.]+$/, "").replace(/-/g, "_");
-  const rid = makeRunId(dataTag);
+  // When resuming into an existing runDir, reuse the directory name as run ID
+  // so that remote reporting appends to the same dashboard entry.
+  const rid = deps.runDir ? deps.runDir.split("/").pop()! : makeRunId(dataTag);
   const configHash = hashConfig({ ...modelConfig, ...trainConfig } as any);
   const emitEvent = (event: TrainingEvent): void => {
     if (!onEvent) return;
@@ -1089,6 +1093,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   );
   const GPU_METRICS_SAMPLE_EVERY = readEnvInt("ALPHA_GPU_METRICS_SAMPLE_EVERY", 75, 1);
   let memStatsCache: any | null = null;
+  let lastFlowStats: any | null = null;
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
   let lastAdaptivePurgeStep = 0;
@@ -1712,8 +1717,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // - non-trace mode: sparse snapshots to minimize training-loop overhead
     const shouldLogGpuMem = !!gpuMemStatsFn && (
       traceEnabled
-        ? (stepNum <= 20 || stepNum % 5 === 0)
-        : (stepNum === 1 || stepNum === totalIters || stepNum % 50 === 0)
+        ? (stepNum % 5 === 0)
+        : (stepNum === totalIters || stepNum % 50 === 0)
     );
     let memStatsStep: any | null = memStatsCache;
     const adaptiveMemControl = gcEvery <= 0 || syncEvery <= 0;
@@ -1820,7 +1825,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const stats = memStatsStep ?? gpuMemStatsFn!();
       const breakdown = traceEnabled && poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
-      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${breakdown}`);
+      const diagStr = stats.diagAllocsThisStep != null ? ` | glt_allocs=${stats.diagAllocsThisStep} glt_rel=${stats.diagReleasesThisStep} fr=${stats.diagFrReleasesThisStep}` : "";
+      let flowStr = "";
+      if (stats.flowNewCreates != null) {
+        const d = (k: string) => (stats as any)[k] - ((lastFlowStats as any)?.[k] ?? 0);
+        flowStr = ` | Δflow: new=${d("flowNewCreates")} dest=${d("flowDestroys")} oHit=${d("flowOutputPoolHits")} oMiss=${d("flowOutputPoolMisses")} oRet=${d("flowOutputPoolReturns")} oOvf=${d("flowOutputPoolOverflows")} bHit=${d("flowBufferPoolHits")} gHit=${d("flowEnsureGpuHits")} gUp=${d("flowEnsureGpuUploads")}`;
+        lastFlowStats = { ...stats };
+      }
+      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${diagStr}${flowStr}${breakdown}`);
     }
 
     // Metrics

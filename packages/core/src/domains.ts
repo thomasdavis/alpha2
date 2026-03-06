@@ -210,6 +210,46 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "nanochat",
+    {
+      id: "nanochat",
+      displayName: "NanoChat",
+      tokenizer: "bpe-chat-4k",
+      samplePrompts: [
+        "<|user|> Hello! Who are you? <|assistant|>",
+        "<|user|> What is the meaning of life? <|assistant|>",
+        "<|user|> Tell me something interesting about science. <|assistant|>",
+        "<|user|> Can you help me understand how computers work? <|assistant|>",
+        "<|user|> What do you think about music? <|assistant|>",
+        "<|user|> I had a rough day today. <|assistant|>",
+      ],
+      modelDefaults: {
+        blockSize: 512,
+        nLayer: 16,
+        nEmbd: 512,
+        nHead: 8,
+        dropout: 0,
+        ffnActivation: "swiglu",
+      },
+      trainDefaults: {
+        tokenizer: "bpe-chat-4k",
+        lr: 3e-4,
+        lrMin: 3e-5,
+        warmupIters: 500,
+        beta2: 0.95,
+        eps: 1e-8,
+        weightDecay: 0.1,
+        batchSize: 4,
+        gradAccumSteps: 4,
+        gradClip: 1.0,
+        spikeThreshold: 50,
+        packed: true,
+        sampleInterval: 500,
+        evalInterval: 250,
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */
