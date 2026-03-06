@@ -42,7 +42,9 @@ try {
   process.exit(1);
 }
 
-const cmd = [
+const isDarwin = process.platform === "darwin";
+
+const cmdParts = [
   "gcc",
   "-shared",
   "-fPIC",
@@ -51,10 +53,19 @@ const cmd = [
   "-flto",
   "-Wall",
   `-I${nodeDir}`,
-  "-o", out,
-  src,
-  "-ldl",
-].join(" ");
+];
+
+if (isDarwin) {
+  cmdParts.push("-undefined", "dynamic_lookup");
+}
+
+cmdParts.push("-o", out, src);
+
+if (!isDarwin) {
+  cmdParts.push("-ldl");
+}
+
+const cmd = cmdParts.join(" ");
 
 console.log(`Helios: compiling native addon...`);
 console.log(`  ${cmd}`);

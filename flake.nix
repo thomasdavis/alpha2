@@ -26,7 +26,7 @@
 
         train = pkgs.mkShell {
           name = "alpha-train";
-          packages = basePkgs ++ (pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
+          packages = basePkgs ++ (with pkgs; [ bun ]) ++ (pkgs.lib.optionals pkgs.stdenv.isLinux (with pkgs; [
             xorg.xorgserver  # Xvfb
             vulkan-tools     # vulkaninfo
           ]));

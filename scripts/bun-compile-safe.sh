@@ -6,6 +6,7 @@ TIMEOUT_SEC="${BUN_COMPILE_TIMEOUT_SEC:-90}"
 OUT_DIR="${BUN_COMPILE_OUT_DIR:-.bun-out}"
 ENTRY="${BUN_COMPILE_ENTRY:-./apps/cli/dist/main.js}"
 OUTFILE="${BUN_COMPILE_OUTFILE:-${OUT_DIR}/alpha}"
+TARGET="${BUN_COMPILE_TARGET:-}" # e.g. bun-linux-x64-baseline
 
 echo "[bun:compile] building TypeScript + native addon..."
 npm run build -w @alpha/cli
@@ -14,10 +15,15 @@ npm run build:native -w @alpha/helios
 mkdir -p "${OUT_DIR}"
 
 run_compile() {
+  local args=("--compile" "${ENTRY}" "--outfile" "${OUTFILE}")
+  if [[ -n "${TARGET}" ]]; then
+    args+=("--target" "${TARGET}")
+  fi
+  
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${TIMEOUT_SEC}" bun build --compile "${ENTRY}" --outfile "${OUTFILE}"
+    timeout "${TIMEOUT_SEC}" bun build "${args[@]}"
   else
-    bun build --compile "${ENTRY}" --outfile "${OUTFILE}"
+    bun build "${args[@]}"
   fi
 }
 

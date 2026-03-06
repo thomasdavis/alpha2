@@ -7,6 +7,13 @@
 
 ## Current Repo State (What Changed)
 
+### Major Stability & Memory Pass (2026-03-06)
+- **Solved "Too Many Objects" OOM**: Implemented a native slab allocator in `helios_vk.c` to consolidate thousands of small buffers into large slabs. This prevents hitting the L4 driver's hard limit (~8500 allocations).
+- **Fixed Gradient & Intermediate Leaks**: Identified and corrected memory leaks in `crossEntropy`, `sliceQkv`, and `reduceBroadcast` backward closures. Also fixed leaks in padded coop matmuls.
+- **Optimized Autograd Tape**: `Tape.backward` now takes direct ownership of gradients when use-count is 1, halving the number of `TensorData` objects created during backward passes.
+- **Fixed Attention softCap**: Resolved a critical bug where `softCap` was hardcoded to 30.0 in `gpt.ts`. It now correctly respects model/domain configuration, preventing numerical divergence.
+- **Improved L4 Telemetry**: Added `getGpuStats()` to the native addon to track true driver-level allocation counts and bytes.
+
 ### Flash / Helios / Perf
 - Coop2 flash-attention path has been heavily optimized and instrumented (kernel variants, probes, qt variants, no-lse variants, scope/runtime controls).
 - Additional allocator/memory-pressure controls and telemetry exist in Helios backend/native path.

@@ -464,9 +464,13 @@ async function fleetDeploy(config: FleetConfig, name: string, kv: Record<string,
   }
 
   // Step 1: Build locally
-  console.log(bold("\n  Building binary...\n"));
+  console.log(bold("\n  Building binary (linux-x64)...\n"));
   try {
-    execSync("npm run bun:compile", { stdio: "inherit", cwd: process.cwd() });
+    execSync("./scripts/bun-compile-safe.sh", { 
+      stdio: "inherit", 
+      cwd: process.cwd(),
+      env: { ...process.env, BUN_COMPILE_TARGET: "bun-linux-x64-baseline" }
+    });
   } catch {
     console.error(red("\n  Build failed. Fix errors and retry."));
     process.exit(1);
