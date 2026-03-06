@@ -1139,6 +1139,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let nanDetected = false;
     let lossNanLogged = false;
     let gradNanLogged = false;
+    let gradNanCount = 0;
     let lossVal = 0;
     let dataLoadMs = 0;
     let fwdMs = 0;
@@ -1468,14 +1469,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           scaleSuccessCount = 0;
         } else {
           console.warn(`  [warn] grad_norm=NaN at step ${stepNum} — skipping optimizer update`);
-          if (!gradNanLogged) {
+          gradNanCount++;
+          // Emit event for every NaN (rate-limited: first 5, then every 10th)
+          if (gradNanCount <= 5 || gradNanCount % 10 === 0) {
             emitEvent({
               step: stepNum,
               level: "warn",
               kind: "grad_norm_nan",
               message: `grad_norm became non-finite; skipping optimizer update (step ${stepNum})`,
+              payload: { nanCount: gradNanCount, totalSteps: stepNum },
             });
-            gradNanLogged = true;
           }
         }
         nanDetected = true;
@@ -2209,6 +2212,38 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       });
       latestCheckpointPath = ckptPath;
       if (deps.onCheckpoint) deps.onCheckpoint({ step: stepNum, path: ckptPath, runId: rid });
+
+      // Emit GPU diagnostics event at eval intervals for remote monitoring
+      const diagPayload: Record<string, unknown> = {
+        gradNanCount,
+        gradNanPct: stepNum > 0 ? ((gradNanCount / stepNum) * 100).toFixed(2) : "0",
+      };
+      if (gpuMemStatsFn) {
+        const ms = gpuMemStatsFn();
+        diagPayload.bufferPoolMB = Math.round(ms.bufferPoolBytes / 1024 / 1024);
+        diagPayload.outputPoolMB = Math.round(ms.outputPoolBytes / 1024 / 1024);
+        diagPayload.liveAllocs = ms.liveAllocs;
+        diagPayload.totalAllocs = ms.totalAllocs;
+      }
+      if (gpuStats) {
+        diagPayload.gpuUtilPct = gpuStats.utilPct;
+        diagPayload.vramUsedMB = gpuStats.vramUsedMb;
+        diagPayload.vramTotalMB = gpuStats.vramTotalMb;
+      }
+      const backendAny = backend as any;
+      if (typeof backendAny.getMatmulCoopStats === "function") {
+        const cs = backendAny.getMatmulCoopStats();
+        diagPayload.coopHitRate = cs.coopHitRate;
+        diagPayload.coopDispatches = cs.coopDispatches;
+        diagPayload.totalMatmulDispatches = cs.totalMatmulDispatches;
+      }
+      emitEvent({
+        step: stepNum,
+        level: "info",
+        kind: "gpu_diagnostics",
+        message: `GPU diagnostics at step ${stepNum}`,
+        payload: diagPayload,
+      });
     }
 
     // Generate inference samples at sampleInterval (decoupled from checkpointing)
