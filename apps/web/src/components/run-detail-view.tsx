@@ -98,10 +98,10 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
   const [showModelConfig, setShowModelConfig] = useState(true);
   const [showTrainConfig, setShowTrainConfig] = useState(true);
   const [copiedJson, setCopiedJson] = useState(false);
-  const [pinnedStep, setPinnedStep] = useState<number | null>(null);
+  const [pinnedSteps, setPinnedSteps] = useState<number[]>([]);
 
   const handlePinStep = useCallback((step: number) => {
-    setPinnedStep(prev => prev === step ? null : step);
+    setPinnedSteps(prev => prev.includes(step) ? prev.filter(s => s !== step) : [...prev, step]);
   }, []);
 
   const poll = useCallback(async () => {
@@ -300,13 +300,37 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
         </div>
       )}
 
+      {/* Pinned markers bar */}
+      {pinnedSteps.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-purple-500/20 bg-purple-500/5 px-4 py-2.5">
+          <span className="text-[0.6rem] font-bold uppercase tracking-widest text-purple-400">Markers</span>
+          {pinnedSteps.map(step => (
+            <button
+              key={step}
+              onClick={() => handlePinStep(step)}
+              className="flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[0.62rem] font-mono font-bold text-purple-400 transition-colors hover:bg-purple-500/20"
+              title={`Remove marker at step ${fmtNum(step)}`}
+            >
+              {fmtNum(step)}
+              <span className="text-purple-400/60">&times;</span>
+            </button>
+          ))}
+          <button
+            onClick={() => setPinnedSteps([])}
+            className="ml-auto text-[0.6rem] font-semibold uppercase tracking-wider text-purple-400/60 transition-colors hover:text-purple-400"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+
       {/* Chart + config sidebar */}
       <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_280px]">
         <div className="rounded-lg border border-border bg-surface p-4 shadow-sm">
           <div className="mb-2 text-[0.65rem] font-semibold uppercase tracking-wider text-text-muted">
-            Loss Curve <Tip text={tips.lossChart} />
+            Loss Curve <Tip text={tips.lossChart} /> <span className="text-text-muted/50 ml-1 normal-case">click any chart to add markers</span>
           </div>
-          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} pinnedStep={pinnedStep} onPinStep={handlePinStep} activationSwitches={activationSwitches} />
+          <InteractiveLossChart metrics={metrics} checkpoints={checkpoints} pinnedSteps={pinnedSteps} onPinStep={handlePinStep} activationSwitches={activationSwitches} />
         </div>
 
         <div className="space-y-3">
@@ -349,7 +373,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               title=""
               formatLeft={(v) => (v / 1000).toFixed(1) + "k"}
               buildSeries={buildThroughputSeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -359,7 +383,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               title=""
               formatLeft={(v) => v.toFixed(0) + "ms"}
               buildSeries={buildStepTimeSeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -374,7 +398,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
             formatLeft={(v) => (v / 1024).toFixed(1) + "G"}
             formatRight={(v) => v.toFixed(0) + "%"}
             buildSeries={buildGpuSeries}
-            pinnedStep={pinnedStep}
+            pinnedSteps={pinnedSteps}
             onPinStep={handlePinStep}
           />
         </ChartPanel>
@@ -387,7 +411,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               title=""
               formatLeft={(v) => v.toFixed(0)}
               buildSeries={buildPerplexitySeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -398,7 +422,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatLeft={(v) => v.toFixed(3)}
               buildSeries={buildTrainValGapSeries}
               noDataMsg="No validation data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -412,7 +436,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               title=""
               formatLeft={(v) => v.toExponential(1)}
               buildSeries={buildLrSeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -423,7 +447,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               logScale
               formatLeft={(v) => v.toExponential(0)}
               buildSeries={buildGradNormSeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -437,7 +461,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               title=""
               formatLeft={(v) => v.toFixed(3)}
               buildSeries={buildSmoothedLossSeries}
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -448,7 +472,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatLeft={(v) => v.toFixed(2)}
               buildSeries={buildLossVelocitySeries}
               noDataMsg="Insufficient data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -464,7 +488,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatRight={(v) => v.toFixed(0) + "%"}
               buildSeries={buildClipSeries}
               noDataMsg="No clipping data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -475,7 +499,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatLeft={(v) => v.toFixed(0)}
               buildSeries={buildGpuOpsSeries}
               noDataMsg="No GPU ops data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -483,7 +507,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
         {/* Step Time Breakdown (Stacked) */}
         <ChartPanel title="Step Time Breakdown" helpText="How time is spent within each training step. Forward pass computes the loss, backward pass computes gradients, optimizer updates weights, GPU sync flushes compute queues, and data loading prepares the next batch.">
-          <StepTimeChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+          <StepTimeChart metrics={metrics} pinnedSteps={pinnedSteps} onPinStep={handlePinStep} />
         </ChartPanel>
 
         {/* Row: Timing Phases + Fwd/Bwd Ratio */}
@@ -495,7 +519,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatLeft={(v) => v.toFixed(0) + "ms"}
               buildSeries={buildTimingPhaseSeries}
               noDataMsg="No timing data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -506,7 +530,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
               formatLeft={(v) => v.toFixed(2) + "x"}
               buildSeries={buildFwdBwdRatioSeries}
               noDataMsg="No timing data"
-              pinnedStep={pinnedStep}
+              pinnedSteps={pinnedSteps}
               onPinStep={handlePinStep}
             />
           </ChartPanel>
@@ -514,7 +538,7 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
       </div>
 
       {/* Symbio section */}
-      <SymbioSection metrics={metrics as any} run={run as any} pinnedStep={pinnedStep} onPinStep={handlePinStep} />
+      <SymbioSection metrics={metrics as any} run={run as any} pinnedSteps={pinnedSteps} onPinStep={handlePinStep} />
 
       {/* Per-layer analysis */}
       <LayersSection metrics={metrics as any} />

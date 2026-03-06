@@ -96,10 +96,10 @@ export function SymbioStatsGrid({ metrics }: { metrics: SymbioMetric[] }) {
   );
 }
 
-export function CusumChart({ metrics, sensitivity = 5.0, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; sensitivity?: number; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
+export function CusumChart({ metrics, sensitivity = 5.0, pinnedSteps, onPinStep }: { metrics: SymbioMetric[]; sensitivity?: number; pinnedSteps?: number[]; onPinStep?: (s: number) => void }) {
   const theme = useChartTheme();
   const data = metrics.filter((m) => m.cusum_grad != null).map((m) => ({ step: m.step, grad: m.cusum_grad, clip: m.cusum_clip, tps: m.cusum_tps, val: m.cusum_val }));
-  
+
   return (
     <ResponsiveContainer width="100%" height={220}>
       <LineChart data={data} onClick={(e: any) => e?.activeLabel && onPinStep?.(Number(e.activeLabel))}>
@@ -107,7 +107,9 @@ export function CusumChart({ metrics, sensitivity = 5.0, pinnedStep, onPinStep }
         <XAxis dataKey="step" stroke={theme.text} tick={{ fontSize: 10 }} tickFormatter={fmtNum} />
         <YAxis stroke={theme.text} tick={{ fontSize: 10 }} />
         <RTooltip content={<CustomTooltipContent />} />
-        {pinnedStep != null && <ReferenceLine x={pinnedStep} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} />}
+        {(pinnedSteps ?? []).map(step => (
+          <ReferenceLine key={step} x={step} stroke="rgba(168,85,247,0.7)" strokeWidth={1.5} strokeDasharray="4 3" />
+        ))}
         <ReferenceLine y={sensitivity} stroke="#ef4444" strokeDasharray="6 3" />
         <Line type="monotone" dataKey="grad" name="Gradient" stroke="#f59e0b" dot={false} strokeWidth={1.5} />
         <Line type="monotone" dataKey="clip" name="Clipping" stroke="#f472b6" dot={false} strokeWidth={1.5} />
@@ -126,7 +128,7 @@ export interface SymbioRunData {
   symbio_mode?: string | null;
 }
 
-export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: { metrics: SymbioMetric[]; run?: SymbioRunData; pinnedStep?: number | null; onPinStep?: (s: number) => void }) {
+export function SymbioSection({ metrics, run, pinnedSteps, onPinStep }: { metrics: SymbioMetric[]; run?: SymbioRunData; pinnedSteps?: number[]; onPinStep?: (s: number) => void }) {
   const hasSymbio = metrics.some((m) => m.weight_entropy != null || m.cusum_grad != null);
   if (!hasSymbio && !run?.symbio) return null;
 
@@ -135,12 +137,12 @@ export function SymbioSection({ metrics, run, pinnedStep, onPinStep }: { metrics
       <div className="border-b border-border pb-2">
         <h2 className="text-lg font-bold text-text-primary uppercase tracking-wider">Evolutionary Analysis (Symbiogenesis)</h2>
       </div>
-      
+
       <SymbioStatsGrid metrics={metrics} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartPanel title="CUSUM Statistical Monitors" helpText={SYMBIO_HELP.cusum}>
-          <CusumChart metrics={metrics} pinnedStep={pinnedStep} onPinStep={onPinStep} />
+          <CusumChart metrics={metrics} pinnedSteps={pinnedSteps} onPinStep={onPinStep} />
         </ChartPanel>
         
         <ChartPanel title="Information Bottleneck (MI)" helpText={SYMBIO_HELP.mi}>

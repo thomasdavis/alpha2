@@ -280,7 +280,50 @@ function splitIntoCandidateSegments(metrics: ChartMetric[]): Array<{ start: numb
   return segments;
 }
 
-function drawLossChart(canvas: HTMLCanvasElement, metrics: ChartMetric[], hoverIdx: number | null, events: ComputedEvents, markers: MarkerVisibility, pinnedStep: number | null = null) {
+const PINNED_MARKER_COLOR = "#a855f7";
+
+function drawPinnedMarkers(ctx: CanvasRenderingContext2D, pinnedSteps: number[], sx: (step: number) => number, top: number, bottom: number, w: number) {
+  if (pinnedSteps.length === 0) return;
+  ctx.save();
+  ctx.strokeStyle = PINNED_MARKER_COLOR;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.fillStyle = PINNED_MARKER_COLOR;
+  ctx.font = "bold 9px monospace";
+  ctx.textAlign = "center";
+  for (const step of pinnedSteps) {
+    const x = sx(step);
+    if (x < 0 || x > w) continue;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+    // Step label at top
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.85;
+    const label = fmtNum(step);
+    const tw = ctx.measureText(label).width + 6;
+    ctx.fillStyle = PINNED_MARKER_COLOR + "30";
+    ctx.fillRect(x - tw / 2, top - 1, tw, 13);
+    ctx.fillStyle = PINNED_MARKER_COLOR;
+    ctx.fillText(label, x, top + 9);
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([4, 3]);
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function findNearestStep(metrics: ChartMetric[], mouseX: number, padL: number, cw: number, maxStep: number): number | null {
+  if (metrics.length < 2 || cw <= 0) return null;
+  const stepAt = ((mouseX - padL) / cw) * maxStep;
+  let lo = 0, hi = metrics.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (metrics[mid].step < stepAt) lo = mid + 1; else hi = mid; }
+  if (lo > 0 && Math.abs(metrics[lo - 1].step - stepAt) < Math.abs(metrics[lo].step - stepAt)) lo--;
+  return metrics[lo].step;
+}
+
+function drawLossChart(canvas: HTMLCanvasElement, metrics: ChartMetric[], hoverIdx: number | null, events: ComputedEvents, markers: MarkerVisibility, pinnedSteps: number[] = []) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -385,6 +428,9 @@ function drawLossChart(canvas: HTMLCanvasElement, metrics: ChartMetric[], hoverI
     ctx.setLineDash([]);
   }
 
+  // Pinned step markers
+  drawPinnedMarkers(ctx, pinnedSteps, sx, pad.top, h - pad.bottom, w);
+
   // Hover crosshair
   if (hoverIdx != null) {
     const m = metrics[hoverIdx];
@@ -424,7 +470,7 @@ function MarkerTogglePill({ marker, enabled, onToggle }: { marker: MarkerType; e
   );
 }
 
-export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinStep, activationSwitches }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedStep?: number | null; onPinStep?: (step: number) => void; activationSwitches?: ActivationSwitchEvent[] }) {
+export function InteractiveLossChart({ metrics, checkpoints, pinnedSteps, onPinStep, activationSwitches }: { metrics: ChartMetric[]; checkpoints: ChartCheckpoint[]; pinnedSteps?: number[]; onPinStep?: (step: number) => void; activationSwitches?: ActivationSwitchEvent[] }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const [tooltip, setTooltip] = React.useState<LossTooltip | null>(null);
   const hoverRef = React.useRef<number | null>(null);
@@ -433,8 +479,8 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
   const events = React.useMemo(() => computeEvents(metrics, checkpoints, activationSwitches), [metrics, checkpoints, activationSwitches]);
 
   const draw = React.useCallback((idx: number | null = null) => {
-    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, markers, pinnedStep ?? null);
-  }, [metrics, events, markers, pinnedStep]);
+    if (canvasRef.current) drawLossChart(canvasRef.current, metrics, idx, events, markers, pinnedSteps ?? []);
+  }, [metrics, events, markers, pinnedSteps]);
 
   React.useEffect(() => {
     draw();
@@ -482,7 +528,16 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
         ))}
       </div>
       <div className="relative">
-        <canvas ref={canvasRef} className="h-64 w-full cursor-crosshair rounded-xl border border-border/50 bg-surface shadow-inner" onMouseMove={onMove} onMouseLeave={() => { hoverRef.current = null; setTooltip(null); draw(); }} />
+        <canvas ref={canvasRef} className="h-64 w-full cursor-crosshair rounded-xl border border-border/50 bg-surface shadow-inner" onMouseMove={onMove} onMouseLeave={() => { hoverRef.current = null; setTooltip(null); draw(); }} onClick={(e) => {
+          const canvas = canvasRef.current;
+          if (!canvas || metrics.length < 2 || !onPinStep) return;
+          const rect = canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const padL = 56, padR = 20, cw = canvas.clientWidth - padL - padR;
+          if (mouseX < padL || mouseX > canvas.clientWidth - padR) return;
+          const step = findNearestStep(metrics, mouseX, padL, cw, metrics[metrics.length - 1].step);
+          if (step != null) onPinStep(step);
+        }} />
         {tooltip && (
           <div className="pointer-events-none absolute z-20 min-w-[180px] rounded-xl border border-border-2 bg-surface-2/95 p-3 shadow-2xl backdrop-blur-sm" style={{ left: tooltip.pointX < tooltip.containerWidth * 0.65 ? tooltip.pointX + 16 : undefined, right: tooltip.pointX >= tooltip.containerWidth * 0.65 ? tooltip.containerWidth - tooltip.pointX + 16 : undefined, top: Math.max(4, tooltip.mouseY - 100) }}>
             <div className="mb-2 font-mono text-[0.75rem] font-bold text-text-primary">Step {tooltip.metric.step.toLocaleString()}</div>
@@ -501,7 +556,7 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedStep, onPinSt
 
 // ── Mini Charts ──────────────────────────────────────────────────
 
-function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { logScale?: boolean; formatLeft?: (v: number) => string; formatRight?: (v: number) => string }, hoverStep: number | null = null, pinnedStep: number | null = null) {
+function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { logScale?: boolean; formatLeft?: (v: number) => string; formatRight?: (v: number) => string }, hoverStep: number | null = null, pinnedSteps: number[] = []) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -532,19 +587,20 @@ function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { 
 
   series.forEach(s => {
     ctx.beginPath(); ctx.strokeStyle = s.color; ctx.lineWidth = 1.5;
+    const values = s.data.map(dv => dv.value);
+    const minV = Math.min(...values);
+    const maxV = Math.max(...values);
+    const rangeV = maxV - minV || 1;
     s.data.forEach((d, i) => {
       const x = sx(d.step);
-      // Normalized Y for preview purposes in BaseMiniChart, but here we'd normally use real values.
-      // For the generic UI version, we'll use a simple range normalization.
-      const values = s.data.map(dv => dv.value);
-      const minV = Math.min(...values);
-      const maxV = Math.max(...values);
-      const rangeV = maxV - minV || 1;
       const y = pad.top + (1 - (d.value - minV) / rangeV) * ch;
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
   });
+
+  // Pinned markers
+  drawPinnedMarkers(ctx, pinnedSteps, sx, pad.top, h - pad.bottom, w);
 }
 
 export interface MiniChartProps {
@@ -555,28 +611,42 @@ export interface MiniChartProps {
   formatLeft?: (v: number) => string;
   formatRight?: (v: number) => string;
   noDataMsg?: string;
-  pinnedStep?: number | null;
+  pinnedSteps?: number[];
   onPinStep?: (step: number) => void;
 }
 
-export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, formatRight, noDataMsg, pinnedStep, onPinStep }: MiniChartProps) {
+export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, formatRight, noDataMsg, pinnedSteps, onPinStep }: MiniChartProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const series = React.useMemo(() => buildSeries(metrics), [metrics, buildSeries]);
   const hasData = series.some((s) => s.data.length >= 2);
 
   React.useEffect(() => {
-    if (canvasRef.current && hasData) drawMiniChart(canvasRef.current, series, { logScale, formatLeft, formatRight }, null, pinnedStep);
-  }, [series, hasData, logScale, formatLeft, formatRight, pinnedStep]);
+    if (canvasRef.current && hasData) drawMiniChart(canvasRef.current, series, { logScale, formatLeft, formatRight }, null, pinnedSteps ?? []);
+  }, [series, hasData, logScale, formatLeft, formatRight, pinnedSteps]);
+
+  const handleClick = React.useCallback((e: React.MouseEvent) => {
+    if (!onPinStep || metrics.length < 2) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const hasRight = series.some(s => s.axis === "right");
+    const padL = 48, padR = hasRight ? 42 : 16;
+    const cw = canvas.clientWidth - padL - padR;
+    if (mouseX < padL || mouseX > canvas.clientWidth - padR) return;
+    const step = findNearestStep(metrics, mouseX, padL, cw, metrics[metrics.length - 1].step);
+    if (step != null) onPinStep(step);
+  }, [metrics, series, onPinStep]);
 
   return (
     <div className="relative">
       <div className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-text-primary">{title}</div>
-      {hasData ? <canvas ref={canvasRef} className="h-48 w-full rounded-xl border border-border/50 bg-surface shadow-inner" /> : <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">{noDataMsg || "No Telemetry"}</div>}
+      {hasData ? <canvas ref={canvasRef} className="h-48 w-full cursor-crosshair rounded-xl border border-border/50 bg-surface shadow-inner" onClick={handleClick} /> : <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">{noDataMsg || "No Telemetry"}</div>}
     </div>
   );
 }
 
-export function StepTimeChart({ metrics, pinnedStep, onPinStep }: { metrics: ChartMetric[]; pinnedStep?: number | null; onPinStep?: (step: number) => void }) {
+export function StepTimeChart({ metrics, pinnedSteps, onPinStep }: { metrics: ChartMetric[]; pinnedSteps?: number[]; onPinStep?: (step: number) => void }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = React.useState<{ x: number; y: number; step: number; phases: { label: string; color: string; ms: number }[] } | null>(null);
@@ -659,13 +729,16 @@ export function StepTimeChart({ metrics, pinnedStep, onPinStep }: { metrics: Cha
       }
     }
 
+    // Pinned markers
+    drawPinnedMarkers(ctx, pinnedSteps ?? [], sx, pad.top, h - pad.bottom, w);
+
     // X labels
     ctx.fillStyle = textMuted;
     ctx.font = "9px monospace";
     ctx.textAlign = "center";
     const ticks = [0, Math.round(maxStep * 0.25), Math.round(maxStep * 0.5), Math.round(maxStep * 0.75), maxStep];
     for (const s of ticks) ctx.fillText(fmtNum(s), sx(s), h - 6);
-  }, [timed]);
+  }, [timed, pinnedSteps]);
 
   if (timed.length < 2) {
     return <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">No timing data</div>;
@@ -699,6 +772,17 @@ export function StepTimeChart({ metrics, pinnedStep, onPinStep }: { metrics: Cha
           });
         }}
         onMouseLeave={() => setTooltip(null)}
+        onClick={(e) => {
+          if (!onPinStep || timed.length < 2) return;
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const padL = 48, padR = 16, cw = rect.width - padL - padR;
+          if (mx < padL || mx > rect.width - padR) return;
+          const step = findNearestStep(timed, mx, padL, cw, timed[timed.length - 1].step);
+          if (step != null) onPinStep(step);
+        }}
       />
       {tooltip && (
         <div
