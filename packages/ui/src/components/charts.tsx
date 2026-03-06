@@ -556,6 +556,32 @@ export function InteractiveLossChart({ metrics, checkpoints, pinnedSteps, onPinS
 
 // ── Mini Charts ──────────────────────────────────────────────────
 
+interface MiniChartLayout {
+  pad: { top: number; right: number; bottom: number; left: number };
+  cw: number;
+  ch: number;
+  maxStep: number;
+  sx: (step: number) => number;
+  seriesRanges: Array<{ minV: number; maxV: number; rangeV: number }>;
+}
+
+function computeMiniLayout(w: number, h: number, series: MiniSeries[]): MiniChartLayout {
+  const hasRight = series.some((s) => s.axis === "right");
+  const pad = { top: 12, right: hasRight ? 50 : 16, bottom: 28, left: 48 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+  const allSteps = series.flatMap((s) => s.data.map((d) => d.step));
+  const maxStep = allSteps.length > 0 ? Math.max(...allSteps) : 1;
+  const sx = (step: number) => pad.left + (step / maxStep) * cw;
+  const seriesRanges = series.map(s => {
+    const values = s.data.map(dv => dv.value);
+    const minV = Math.min(...values);
+    const maxV = Math.max(...values);
+    return { minV, maxV, rangeV: maxV - minV || 1 };
+  });
+  return { pad, cw, ch, maxStep, sx, seriesRanges };
+}
+
 function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { logScale?: boolean; formatLeft?: (v: number) => string; formatRight?: (v: number) => string }, hoverStep: number | null = null, pinnedSteps: number[] = []) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -571,26 +597,53 @@ function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { 
 
   ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
 
-  const hasRight = series.some((s) => s.axis === "right");
-  const pad = { top: 12, right: hasRight ? 42 : 16, bottom: 28, left: 48 };
-  const cw = w - pad.left - pad.right; const ch = h - pad.top - pad.bottom;
+  const layout = computeMiniLayout(w, h, series);
+  const { pad, cw, ch, maxStep, sx, seriesRanges } = layout;
 
-  const allSteps = series.flatMap((s) => s.data.map((d) => d.step));
-  const maxStep = allSteps.length > 0 ? Math.max(...allSteps) : 1;
-  const sx = (step: number) => pad.left + (step / maxStep) * cw;
-
+  // Grid lines
   ctx.strokeStyle = border; ctx.lineWidth = 0.5;
   for (let i = 0; i <= 4; i++) {
     const y = pad.top + (i / 4) * ch;
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
   }
 
-  series.forEach(s => {
+  // Y-axis labels (left axis from first series, right axis from right-axis series)
+  const leftSeries = series.find(s => s.axis !== "right");
+  const rightSeries = series.find(s => s.axis === "right");
+  ctx.font = "9px monospace";
+  if (leftSeries) {
+    const li = series.indexOf(leftSeries);
+    const { minV, maxV } = seriesRanges[li];
+    const fmt = opts.formatLeft ?? ((v: number) => v.toFixed(1));
+    ctx.fillStyle = textMuted;
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 4; i++) {
+      const val = maxV - (i / 4) * (maxV - minV);
+      ctx.fillText(fmt(val), pad.left - 4, pad.top + (i / 4) * ch + 3);
+    }
+  }
+  if (rightSeries) {
+    const ri = series.indexOf(rightSeries);
+    const { minV, maxV } = seriesRanges[ri];
+    const fmt = opts.formatRight ?? ((v: number) => v.toFixed(1));
+    ctx.fillStyle = textMuted;
+    ctx.textAlign = "left";
+    for (let i = 0; i <= 4; i++) {
+      const val = maxV - (i / 4) * (maxV - minV);
+      ctx.fillText(fmt(val), w - pad.right + 4, pad.top + (i / 4) * ch + 3);
+    }
+  }
+
+  // X-axis labels
+  ctx.fillStyle = textMuted;
+  ctx.textAlign = "center";
+  const xTicks = [0, Math.round(maxStep * 0.25), Math.round(maxStep * 0.5), Math.round(maxStep * 0.75), maxStep];
+  for (const s of xTicks) ctx.fillText(fmtNum(s), sx(s), h - 8);
+
+  // Draw lines
+  series.forEach((s, si) => {
     ctx.beginPath(); ctx.strokeStyle = s.color; ctx.lineWidth = 1.5;
-    const values = s.data.map(dv => dv.value);
-    const minV = Math.min(...values);
-    const maxV = Math.max(...values);
-    const rangeV = maxV - minV || 1;
+    const { minV, rangeV } = seriesRanges[si];
     s.data.forEach((d, i) => {
       const x = sx(d.step);
       const y = pad.top + (1 - (d.value - minV) / rangeV) * ch;
@@ -601,6 +654,38 @@ function drawMiniChart(canvas: HTMLCanvasElement, series: MiniSeries[], opts: { 
 
   // Pinned markers
   drawPinnedMarkers(ctx, pinnedSteps, sx, pad.top, h - pad.bottom, w);
+
+  // Hover crosshair + dots
+  if (hoverStep != null) {
+    const hx = sx(hoverStep);
+    ctx.strokeStyle = textMuted + "80";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(hx, pad.top); ctx.lineTo(hx, h - pad.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw dots at hover point for each series
+    series.forEach((s, si) => {
+      const { minV, rangeV } = seriesRanges[si];
+      // Find nearest data point in this series
+      let best = 0;
+      for (let i = 1; i < s.data.length; i++) {
+        if (Math.abs(s.data[i].step - hoverStep) < Math.abs(s.data[best].step - hoverStep)) best = i;
+      }
+      if (s.data.length > 0) {
+        const d = s.data[best];
+        const x = sx(d.step);
+        const y = pad.top + (1 - (d.value - minV) / rangeV) * ch;
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        ctx.strokeStyle = bg;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    });
+  }
 }
 
 export interface MiniChartProps {
@@ -615,33 +700,156 @@ export interface MiniChartProps {
   onPinStep?: (step: number) => void;
 }
 
+interface MiniTooltipData {
+  pointX: number;
+  mouseY: number;
+  containerWidth: number;
+  step: number;
+  values: Array<{ label: string; color: string; value: number; format?: (v: number) => string }>;
+}
+
 export function MiniChart({ metrics, title, buildSeries, logScale, formatLeft, formatRight, noDataMsg, pinnedSteps, onPinStep }: MiniChartProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const hoverRef = React.useRef<number | null>(null);
+  const [tooltip, setTooltip] = React.useState<MiniTooltipData | null>(null);
   const series = React.useMemo(() => buildSeries(metrics), [metrics, buildSeries]);
   const hasData = series.some((s) => s.data.length >= 2);
+  const opts = React.useMemo(() => ({ logScale, formatLeft, formatRight }), [logScale, formatLeft, formatRight]);
+
+  const draw = React.useCallback((hoverStep: number | null = null) => {
+    if (canvasRef.current && hasData) drawMiniChart(canvasRef.current, series, opts, hoverStep, pinnedSteps ?? []);
+  }, [series, hasData, opts, pinnedSteps]);
 
   React.useEffect(() => {
-    if (canvasRef.current && hasData) drawMiniChart(canvasRef.current, series, { logScale, formatLeft, formatRight }, null, pinnedSteps ?? []);
-  }, [series, hasData, logScale, formatLeft, formatRight, pinnedSteps]);
+    draw(hoverRef.current);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const obs = new ResizeObserver(() => draw(hoverRef.current));
+    obs.observe(canvas);
+    return () => obs.disconnect();
+  }, [draw]);
+
+  const getLayout = React.useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const hasRight = series.some(s => s.axis === "right");
+    const padL = 48, padR = hasRight ? 50 : 16;
+    return { padL, padR, cw: canvas.clientWidth - padL - padR, maxStep: metrics.length > 0 ? metrics[metrics.length - 1].step : 1 };
+  }, [series, metrics]);
+
+  const onMove = React.useCallback((e: React.MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasData) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const lay = getLayout();
+    if (!lay) return;
+    const { padL, padR, cw, maxStep } = lay;
+    if (mouseX < padL || mouseX > canvas.clientWidth - padR) {
+      hoverRef.current = null;
+      setTooltip(null);
+      draw();
+      return;
+    }
+
+    const stepAt = (mouseX - padL) / cw * maxStep;
+    // Find nearest step across all series
+    let bestStep = 0;
+    let bestDist = Infinity;
+    for (const s of series) {
+      for (const d of s.data) {
+        const dist = Math.abs(d.step - stepAt);
+        if (dist < bestDist) { bestDist = dist; bestStep = d.step; }
+      }
+    }
+
+    hoverRef.current = bestStep;
+    draw(bestStep);
+
+    const pointX = padL + (bestStep / maxStep) * cw;
+    const values = series.map(s => {
+      let best = 0;
+      for (let i = 1; i < s.data.length; i++) {
+        if (Math.abs(s.data[i].step - bestStep) < Math.abs(s.data[best].step - bestStep)) best = i;
+      }
+      return {
+        label: s.label,
+        color: s.color,
+        value: s.data.length > 0 ? s.data[best].value : 0,
+        format: s.axis === "right" ? formatRight : formatLeft,
+      };
+    });
+
+    setTooltip({ pointX, mouseY, containerWidth: canvas.clientWidth, step: bestStep, values });
+  }, [series, hasData, draw, getLayout, formatLeft, formatRight]);
 
   const handleClick = React.useCallback((e: React.MouseEvent) => {
-    if (!onPinStep || metrics.length < 2) return;
+    if (!onPinStep || !hasData) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
-    const hasRight = series.some(s => s.axis === "right");
-    const padL = 48, padR = hasRight ? 42 : 16;
-    const cw = canvas.clientWidth - padL - padR;
+    const lay = getLayout();
+    if (!lay) return;
+    const { padL, padR, cw, maxStep } = lay;
     if (mouseX < padL || mouseX > canvas.clientWidth - padR) return;
-    const step = findNearestStep(metrics, mouseX, padL, cw, metrics[metrics.length - 1].step);
+    const step = findNearestStep(metrics, mouseX, padL, cw, maxStep);
     if (step != null) onPinStep(step);
-  }, [metrics, series, onPinStep]);
+  }, [metrics, hasData, onPinStep, getLayout]);
+
+  const onLeave = React.useCallback(() => {
+    hoverRef.current = null;
+    setTooltip(null);
+    draw();
+  }, [draw]);
+
+  if (!hasData) {
+    return (
+      <div className="relative">
+        <div className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-text-primary">{title}</div>
+        <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">{noDataMsg || "No Telemetry"}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative">
       <div className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-text-primary">{title}</div>
-      {hasData ? <canvas ref={canvasRef} className="h-48 w-full cursor-crosshair rounded-xl border border-border/50 bg-surface shadow-inner" onClick={handleClick} /> : <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-border/50 bg-surface-2/20 text-[0.65rem] text-text-muted uppercase tracking-widest">{noDataMsg || "No Telemetry"}</div>}
+      <div className="relative">
+        <canvas
+          ref={canvasRef}
+          className="h-48 w-full cursor-crosshair rounded-xl border border-border/50 bg-surface shadow-inner"
+          onMouseMove={onMove}
+          onMouseLeave={onLeave}
+          onClick={handleClick}
+        />
+        {tooltip && (
+          <div
+            className="pointer-events-none absolute z-20 min-w-[140px] rounded-xl border border-border-2 bg-surface-2/95 p-2.5 shadow-2xl backdrop-blur-sm"
+            style={{
+              left: tooltip.pointX < tooltip.containerWidth * 0.65 ? tooltip.pointX + 12 : undefined,
+              right: tooltip.pointX >= tooltip.containerWidth * 0.65 ? tooltip.containerWidth - tooltip.pointX + 12 : undefined,
+              top: Math.max(4, tooltip.mouseY - 60),
+            }}
+          >
+            <div className="mb-1.5 font-mono text-[0.7rem] font-bold text-text-primary">Step {fmtNum(tooltip.step)}</div>
+            <div className="space-y-1 text-[0.65rem]">
+              {tooltip.values.map((v, i) => (
+                <div key={i} className="flex justify-between gap-3">
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: v.color }} />
+                    <span className="text-text-muted">{v.label}</span>
+                  </span>
+                  <span className="font-mono font-bold" style={{ color: v.color }}>
+                    {v.format ? v.format(v.value) : v.value.toFixed(4)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
