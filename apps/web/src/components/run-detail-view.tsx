@@ -98,10 +98,22 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
   const [showModelConfig, setShowModelConfig] = useState(true);
   const [showTrainConfig, setShowTrainConfig] = useState(true);
   const [copiedJson, setCopiedJson] = useState(false);
-  const [pinnedSteps, setPinnedSteps] = useState<number[]>([]);
+
+  const storageKey = `alpha-markers-${run.id}`;
+  const [pinnedSteps, setPinnedSteps] = useState<number[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(storageKey);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(storageKey, JSON.stringify(pinnedSteps)); } catch {}
+  }, [pinnedSteps, storageKey]);
 
   const handlePinStep = useCallback((step: number) => {
-    setPinnedSteps(prev => prev.includes(step) ? prev.filter(s => s !== step) : [...prev, step]);
+    setPinnedSteps(prev => prev.includes(step) ? prev.filter(s => s !== step) : [...prev, step].sort((a, b) => a - b));
   }, []);
 
   const poll = useCallback(async () => {
@@ -302,25 +314,50 @@ export function RunDetailView({ run, metrics: initialMetrics, checkpoints: initi
 
       {/* Pinned markers bar */}
       {pinnedSteps.length > 0 && (
-        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-purple-500/20 bg-purple-500/5 px-4 py-2.5">
-          <span className="text-[0.6rem] font-bold uppercase tracking-widest text-purple-400">Markers</span>
-          {pinnedSteps.map(step => (
+        <div className="mb-4 rounded-lg border border-purple-500/20 bg-purple-500/5 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-purple-500/10">
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full bg-purple-500" />
+              <span className="text-[0.62rem] font-bold uppercase tracking-widest text-purple-400">
+                {pinnedSteps.length} Marker{pinnedSteps.length > 1 ? "s" : ""}
+              </span>
+              <span className="text-[0.58rem] text-purple-400/40">click chart to add &middot; click marker to remove</span>
+            </div>
             <button
-              key={step}
-              onClick={() => handlePinStep(step)}
-              className="flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[0.62rem] font-mono font-bold text-purple-400 transition-colors hover:bg-purple-500/20"
-              title={`Remove marker at step ${fmtNum(step)}`}
+              onClick={() => setPinnedSteps([])}
+              className="rounded-md border border-purple-500/20 bg-purple-500/10 px-2.5 py-1 text-[0.58rem] font-semibold uppercase tracking-wider text-purple-400/70 transition-colors hover:bg-purple-500/20 hover:text-purple-400"
             >
-              {fmtNum(step)}
-              <span className="text-purple-400/60">&times;</span>
+              Clear all
             </button>
-          ))}
-          <button
-            onClick={() => setPinnedSteps([])}
-            className="ml-auto text-[0.6rem] font-semibold uppercase tracking-wider text-purple-400/60 transition-colors hover:text-purple-400"
-          >
-            Clear all
-          </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 px-4 py-2.5">
+            {pinnedSteps.map(step => {
+              const m = metrics.find(mt => mt.step === step);
+              return (
+                <button
+                  key={step}
+                  onClick={() => handlePinStep(step)}
+                  className="group flex items-center gap-2 rounded-lg border border-purple-500/25 bg-purple-500/8 px-2.5 py-1.5 transition-all hover:border-red/40 hover:bg-red/10"
+                >
+                  <span className="font-mono text-[0.68rem] font-bold text-purple-400 group-hover:text-red">
+                    {fmtNum(step)}
+                  </span>
+                  {m && (
+                    <span className="flex items-center gap-1.5 border-l border-purple-500/20 pl-2 text-[0.6rem] text-purple-400/60 group-hover:text-red/60">
+                      <span className="text-yellow">{fmtLoss(m.loss)}</span>
+                      {m.val_loss != null && <span className="text-blue">{fmtLoss(m.val_loss)}</span>}
+                      <span className="text-green">{fmtNum(m.tokens_per_sec)} t/s</span>
+                    </span>
+                  )}
+                  <span className="text-purple-400/30 transition-colors group-hover:text-red">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3">
+                      <path d="M5.28 4.22a.75.75 0 00-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 101.06 1.06L8 9.06l2.72 2.72a.75.75 0 101.06-1.06L9.06 8l2.72-2.72a.75.75 0 00-1.06-1.06L8 6.94 5.28 4.22z" />
+                    </svg>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
