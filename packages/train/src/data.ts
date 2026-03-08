@@ -177,7 +177,7 @@ export class DataLoader {
 }
 
 /** V8 max string length (~512MB for Latin-1, ~256MB for two-byte). Stay well below. */
-const MAX_STRING_BYTES = 200 * 1024 * 1024;
+const MAX_STRING_BYTES = 30 * 1024 * 1024; // 30MB — BPE tokenizer hits V8 array limits on larger strings
 
 /** Load text from a file path. For files > 200MB, throws — use loadTextSample instead. */
 export async function loadText(path: string): Promise<string> {
