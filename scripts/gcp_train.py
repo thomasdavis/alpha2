@@ -712,6 +712,16 @@ def train_pipeline(args):
         train_args_parts.append(f"--symbio-config={args.symbio_config}")
     if args.activation:
         train_args_parts.append(f"--activation={args.activation}")
+    if args.lr_min is not None:
+        train_args_parts.append(f"--lrMin={args.lr_min}")
+    if args.packed:
+        train_args_parts.append("--packed=true")
+    if args.max_dataset_passes is not None:
+        train_args_parts.append(f"--maxDatasetPasses={args.max_dataset_passes}")
+    if args.post_samples:
+        train_args_parts.append("--postSamples=true")
+    if args.extra_train_flags:
+        train_args_parts.append(args.extra_train_flags)
     train_args = " ".join(train_args_parts)
 
     machine_type = args.machine_type
@@ -836,6 +846,11 @@ def main():
     parser.add_argument("--symbio", action="store_true", help="Enable symbiogenesis mode")
     parser.add_argument("--symbio-config", default=None, help="Path to symbio config JSON")
     parser.add_argument("--activation", default=None, help="FFN activation: gelu, silu, relu, swiglu")
+    parser.add_argument("--lr-min", type=float, default=None, help="Minimum learning rate for cosine schedule")
+    parser.add_argument("--packed", action="store_true", help="Enable sequence packing")
+    parser.add_argument("--max-dataset-passes", type=int, default=None, help="Maximum dataset passes")
+    parser.add_argument("--post-samples", action="store_true", help="Post samples to Discord")
+    parser.add_argument("--extra-train-flags", default="", help="Extra flags to pass to train command")
     parser.add_argument("--stop-after", action="store_true",
                         help="Stop instance after training completes")
 
