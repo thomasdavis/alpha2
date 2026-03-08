@@ -38,6 +38,7 @@ export const tokenizerRegistry = new Registry<Tokenizer>("tokenizer");
 tokenizerRegistry.register("char", () => new CharTokenizer());
 tokenizerRegistry.register("bpe", () => new BpeTokenizer());
 tokenizerRegistry.register("bpe-4k", () => new BpeTokenizer(4000));
+tokenizerRegistry.register("bpe-8k", () => new BpeTokenizer(8000));
 tokenizerRegistry.register("bpe-16k", () => new BpeTokenizer(16000));
 tokenizerRegistry.register("bpe-32k", () => new BpeTokenizer(32000));
 tokenizerRegistry.register("bpe-64k", () => new BpeTokenizer(64000));

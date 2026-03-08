@@ -250,6 +250,44 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
       },
     },
   ],
+  [
+    "fine_corpus",
+    {
+      id: "fine_corpus",
+      displayName: "Fine Corpus",
+      tokenizer: "bpe-8k",
+      samplePrompts: [
+        "The ",
+        "In the early ",
+        "According to ",
+        "One of the most ",
+        "Scientists have ",
+      ],
+      modelDefaults: {
+        blockSize: 512,
+        nLayer: 8,
+        nEmbd: 384,
+        nHead: 6,
+        dropout: 0,
+      },
+      trainDefaults: {
+        tokenizer: "bpe-8k",
+        lr: 6e-4,
+        lrMin: 6e-5,
+        warmupIters: 500,
+        beta2: 0.999,
+        eps: 1e-8,
+        weightDecay: 0.1,
+        batchSize: 4,
+        gradAccumSteps: 1,
+        gradClip: 1.0,
+        spikeThreshold: 10000,
+        packed: true,
+        sampleInterval: 2000,
+        evalInterval: 500,
+      },
+    },
+  ],
 ]);
 
 /** Look up a domain by id. Returns undefined if not found. */
