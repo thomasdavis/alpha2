@@ -704,6 +704,8 @@ def train_pipeline(args):
         train_args_parts.append(f"--spikeThreshold={args.spike_threshold}")
     if args.fp16:
         train_args_parts.append("--fp16=true")
+    elif args.no_fp16:
+        train_args_parts.append("--fp16=false")
     if args.checkpoint:
         train_args_parts.append("--checkpoint=true")
     if args.symbio:
@@ -842,6 +844,7 @@ def main():
     parser.add_argument("--beta2", type=float, default=None, help="Adam beta2")
     parser.add_argument("--spike-threshold", type=float, default=None, help="Skip optimizer step when grad_norm > threshold × EMA")
     parser.add_argument("--fp16", action="store_true", help="Enable mixed precision (f16 activations + loss scaling)")
+    parser.add_argument("--no-fp16", action="store_true", help="Explicitly disable mixed precision (override L4 auto-enable)")
     parser.add_argument("--checkpoint", action="store_true", help="Enable activation checkpointing")
     parser.add_argument("--symbio", action="store_true", help="Enable symbiogenesis mode")
     parser.add_argument("--symbio-config", default=None, help="Path to symbio config JSON")
