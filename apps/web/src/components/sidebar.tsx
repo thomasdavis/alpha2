@@ -135,6 +135,17 @@ const tools: NavItem[] = [
     match: (p) => p === "/chat",
   },
   {
+    href: "/report",
+    label: "Model Report",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 1.5h8a1 1 0 011 1v11a1 1 0 01-1 1H4a1 1 0 01-1-1v-11a1 1 0 011-1z" />
+        <path d="M6 5h4M6 8h4M6 11h2" />
+      </svg>
+    ),
+    match: (p) => p.startsWith("/report"),
+  },
+  {
     href: "/docs",
     label: "API Docs",
     icon: (
