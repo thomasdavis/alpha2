@@ -642,7 +642,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   // Load data — use chunked tokenization for large files to avoid V8 string limit
   const fileStat = await fs.stat(dataPath);
-  const isLargeFile = fileStat.size > 200 * 1024 * 1024; // >200MB
+  const isLargeFile = fileStat.size > 50 * 1024 * 1024; // >50MB — chunked tokenization avoids V8 array size limits
   let trainTokens: Int32Array;
   let valTokens: Int32Array;
   let valBucketLoaders: ValBucketLoader[] = [];
