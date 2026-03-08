@@ -307,6 +307,7 @@ async function benchTrain(iters: number): Promise<void> {
     warmupIters: -1, // disable warmup for bench
     sampleInterval: 0, // no samples during bench
     spikeThreshold: 0,
+    embGradScale: 1.0,
     syncEvery: 1,
     gcEvery: 0,
     packed: false,

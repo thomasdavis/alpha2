@@ -803,7 +803,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const effectiveBatch = trainConfig.batchSize * trainConfig.gradAccumSteps;
   const accumStr = trainConfig.gradAccumSteps > 1 ? ` (${trainConfig.batchSize}×${trainConfig.gradAccumSteps})` : "";
   console.log(`seed: ${trainConfig.seed} | block_size: ${modelConfig.blockSize} | batch: ${effectiveBatch}${accumStr}`);
-  console.log(`iters: ${trainConfig.iters} | lr: ${trainConfig.lr}`);
+  console.log(`iters: ${trainConfig.iters} | lr: ${trainConfig.lr}${trainConfig.embGradScale < 1 ? ` | embGradScale: ${trainConfig.embGradScale}` : ""}`);
   if (deps.activationCheckpointing) console.log(`activation_checkpointing: enabled`);
   if (deps.mixedPrecision) console.log(`mixed_precision: f16 activations enabled`);
 
@@ -982,6 +982,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   };
   refreshParamCaches();
 
+  // Pre-compute embedding param indices for gradient scaling.
+  // Recomputed whenever refreshParamCaches is called via paramNames update.
+  let embParamIndices: number[] = [];
+  const recomputeEmbIndices = (): void => {
+    embParamIndices = [];
+    for (let i = 0; i < paramNames.length; i++) {
+      if (paramNames[i] === "wte" || paramNames[i] === "wpe") {
+        embParamIndices.push(i);
+      }
+    }
+  };
+  recomputeEmbIndices();
+
   const backendAny = backend as any;
   const setOptimizerLrFn: ((lr: number) => void) | undefined =
     typeof (optimizer as any).setLr === "function"
@@ -1065,6 +1078,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const capturePhaseTimings = traceEnabled;
   const gradAccumSteps = trainConfig.gradAccumSteps;
   const gradClip = trainConfig.gradClip;
+  const embGradScale = trainConfig.embGradScale;
   const spikeThreshold = trainConfig.spikeThreshold;
   const evalIters = trainConfig.evalIters;
   const evalInterval = trainConfig.evalInterval;
@@ -1734,6 +1748,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const _t4b = capturePhaseTimings ? performance.now() : 0;
 
     if (!nanDetected) {
+      // Scale down embedding gradients to prevent them dominating the optimization.
+      // Embedding grads (wte, wpe) are typically 100–600× larger than layer grads.
+      if (embGradScale > 0 && embGradScale < 1 && embParamIndices.length > 0) {
+        for (const idx of embParamIndices) {
+          const grad = paramVars[idx].grad;
+          if (grad) paramVars[idx].grad = backend.scale(grad, embGradScale);
+        }
+      }
+
       // Fast path: consume cached param entries directly.
       if (optimizerStepParamEntries) {
         optimizerStepParamEntries(paramEntries, effectiveGradScale);
@@ -2063,6 +2086,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
               params = transferred.params;
               totalParams = countParams(params);
               refreshParamCaches();
+              recomputeEmbIndices();
               if (symbioConfig.carryOptimizerStateAcrossCandidates) {
                 const optCarry = carryOptimizerStateAcrossSwitch(optimizer, prevParams, params);
                 console.log(
@@ -2079,6 +2103,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
               params = initGPT(activeModelConfig, backend, rng as any);
               totalParams = countParams(params);
               refreshParamCaches();
+              recomputeEmbIndices();
               optimizer.loadStateDict({ step: 0, buffers: new Map() });
             }
             clearForwardCache();

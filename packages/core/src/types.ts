@@ -98,6 +98,8 @@ export interface TrainConfig {
   readonly gradAccumSteps: number;
   readonly sampleInterval: number;
   readonly spikeThreshold: number;
+  /** Scale factor for embedding (wte/wpe) gradients. 1.0 = no scaling, 0.1 = scale down 10x. */
+  readonly embGradScale: number;
   /** GPU sync cadence: sync every N steps (0 = adaptive based on pool pressure) */
   readonly syncEvery: number;
   /** GC cadence: run gc() every N steps (0 = disabled, requires --expose-gc) */
@@ -131,6 +133,7 @@ export const defaultTrainConfig: TrainConfig = {
   gradAccumSteps: 1,
   sampleInterval: 100,
   spikeThreshold: 0,
+  embGradScale: 1.0,
   syncEvery: 0,
   gcEvery: 0,
   packed: false,
