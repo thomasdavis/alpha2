@@ -816,11 +816,26 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : `0x${gpu.vendorId.toString(16)}`;
     console.log(`gpu: ${gpu.deviceName} (${vendorName})`);
     console.log(`  f16: ${gpu.f16Supported} | async_transfer: ${gpu.hasAsyncTransfer} | wg_size: ${gpu.workgroupSize} | min_gpu: ${gpu.minGpuSize}`);
+
+    // Fail-fast if running on software/wrong GPU when a real GPU is expected
+    if (vendorName !== "NVIDIA") {
+      throw new Error(
+        `GPU guard: expected NVIDIA GPU but found ${gpu.deviceName} (vendor=${vendorName}). ` +
+        `Check VK_ICD_FILENAMES and Vulkan driver installation.`
+      );
+    }
+
     if (smokePreflight) {
       if (smokePreflight.reason && smokePreflight.reason !== "verification mismatch") {
         console.log(`  smoke_test: FAIL (${smokePreflight.reason})`);
       } else {
         console.log(`  smoke_test: ${smokePreflight.verified ? "PASS" : "FAIL"} | gpu_throughput: ${smokePreflight.throughputGBps.toFixed(1)} GB/s`);
+      }
+      if (!smokePreflight.verified) {
+        throw new Error(
+          `GPU smoke test FAILED (${smokePreflight.reason || "verification mismatch"}). ` +
+          `Training will not proceed on an unverified GPU.`
+        );
       }
     }
   }
