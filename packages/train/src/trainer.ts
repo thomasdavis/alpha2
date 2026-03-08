@@ -1760,9 +1760,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     );
     let memStatsStep: any | null = memStatsCache;
     const adaptiveMemControl = gcEvery <= 0 || syncEvery <= 0;
+    // Probe every step when under memory pressure, otherwise every POLL_EVERY steps
+    const underMemPressure = !!(memStatsCache && (memStatsCache.liveAllocs ?? 0) > ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD * 0.6);
     const shouldProbeAdaptiveMem = adaptiveMemControl && (
       stepNum === 1 ||
       stepNum === totalIters ||
+      underMemPressure ||
       stepNum - lastMemStatsProbeStep >= ADAPTIVE_MEM_STATS_POLL_EVERY
     );
     if (gpuMemStatsFn && (shouldLogGpuMem || shouldProbeAdaptiveMem)) {
@@ -1773,8 +1776,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     const needGc = typeof globalThis.gc === "function" && (
       gcEvery > 0 ? stepNum % gcEvery === 0 :
-      // Adaptive: GC when deferred releases pile up
-      !!(memStatsStep && memStatsStep.deferredReleases > 50)
+      // Adaptive: GC when deferred releases pile up OR live allocs are high.
+      // Without the liveAllocs check, FinalizationRegistry-based cleanup never
+      // triggers because GC doesn't run → GPU buffers for unreachable tensors
+      // stay "live" → OOM on constrained VRAM (e.g. L4 23GB).
+      !!(memStatsStep && (
+        memStatsStep.deferredReleases > 50 ||
+        (memStatsStep.liveAllocs ?? 0) > ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD * 0.75
+      ))
     );
     if (needGc) {
       (globalThis as any).gc();
@@ -1796,10 +1805,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         (memStatsStep.liveAllocs ?? 0) > ADAPTIVE_SYNC_LIVE_ALLOCS_THRESHOLD
       )
     );
+    // Emergency sync: bypass min-interval when liveAllocs approaching hard cap
+    const emergencySyncPressure = !!(memStatsStep && (memStatsStep.liveAllocs ?? 0) > ADAPTIVE_PURGE_LIVE_ALLOCS_THRESHOLD * 0.85);
     const needSync = syncEvery === 1 ? true :
       syncEvery > 0 ? stepNum % syncEvery === 0 :
       // Adaptive: rate-limit syncs under sustained pressure to avoid serializing every step.
-      (adaptiveSyncPressure && (stepNum - lastAdaptiveSyncStep >= ADAPTIVE_SYNC_MIN_INTERVAL || stepNum === totalIters));
+      // But bypass rate limit when approaching OOM (emergency sync).
+      emergencySyncPressure || (adaptiveSyncPressure && (stepNum - lastAdaptiveSyncStep >= ADAPTIVE_SYNC_MIN_INTERVAL || stepNum === totalIters));
     if (needSync) {
       let didSync = false;
       if (syncGpuFn) {
