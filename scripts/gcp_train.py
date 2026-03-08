@@ -562,7 +562,16 @@ def run_training(ip: str, remote_data_path: str, train_args: str,
     run_dir = f"{wd}/runs/{run_id}"
 
     # Export env vars so metrics stream to the dashboard
-    env_exports = "export DISPLAY=:99 && "
+    # Vulkan ICD: prefer headless, fall back to standard nvidia_icd.json
+    env_exports = (
+        "export DISPLAY=:99 && "
+        "if [ -z \"${VK_ICD_FILENAMES:-}\" ]; then "
+        "if [ -f /etc/vulkan/icd.d/nvidia_icd_headless.json ]; then "
+        "export VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json; "
+        "elif [ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]; then "
+        "export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json; "
+        "fi; fi && "
+    )
     for var in ["ALPHA_REMOTE_URL", "ALPHA_REMOTE_SECRET", "DISCORD_WEBHOOK_URL"]:
         val = os.environ.get(var)
         if val:
