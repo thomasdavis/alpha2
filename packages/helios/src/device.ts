@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export interface NativeAddon {
   initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean };
-  createBuffer(byteLength: number, hostVisible?: number): number;
+  createBuffer(byteLength: number, hostVisible?: number, temporary?: number): number;
   uploadBuffer(handle: number, data: Float32Array): void;
   fillBuffer(handle: number, byteSize: number, value: number): void;
   readBuffer(handle: number): Float32Array;

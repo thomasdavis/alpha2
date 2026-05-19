@@ -7,6 +7,16 @@
 
 ## Current Repo State (What Changed)
 
+### Allocator OOM Fix + Training Run (2026-03-07)
+- **Fixed critical allocator OOM**: Added reclaim cycle in `acquireOutputRegion` — when live allocs exceed threshold, flush GPU, force GC, process deferred releases, then retry pool lookup. This prevents the L4 driver's ~5500 allocation limit from being hit.
+- **Root cause**: L4 Vulkan driver has a hard limit on concurrent `vkAllocateMemory` calls (~5500). The JS-side allocator was creating individual allocations per tensor instead of suballocating from slabs (slab is disabled for device-local buffers). During backward pass, intermediate tensors pile up faster than GC can reclaim them.
+- **Added `syncGpu()` after each grad accumulation micro-step** to flush deferred buffer releases between backward passes.
+- **Made `MAX_PENDING_OPS` configurable** via `HELIOS_MAX_PENDING_OPS` env var.
+- **Training hyperparameters updated to nanoGPT recipes**: lr=1e-3, warmup=500, cosine decay, weightDecay=0.1, gradClip=1.0, dropout=0.0, GELU activation.
+- **Current stable training config**: 4 layers, 128 dim, 4 heads, block=256, batch=16, accum=2 (f32 — fp16 has overflow issues). ~1.85M params, 65K tok/s on L4.
+- **Known limitation**: Bigger models (192+ dim, 6+ layers) trigger allocation pressure that slows training to ~1K tok/s due to constant GC+flush. Needs device-local slab allocator to fix properly.
+- **fp16 issue**: Gradient overflow in backward pass even with loss scaling. Needs investigation — may be related to matmul precision or missing gradient clamp.
+
 ### Major Stability & Memory Pass (2026-03-06)
 - **Solved "Too Many Objects" OOM**: Implemented a native slab allocator in `helios_vk.c` to consolidate thousands of small buffers into large slabs. This prevents hitting the L4 driver's hard limit (~8500 allocations).
 - **Fixed Gradient & Intermediate Leaks**: Identified and corrected memory leaks in `crossEntropy`, `sliceQkv`, and `reduceBroadcast` backward closures. Also fixed leaks in padded coop matmuls.

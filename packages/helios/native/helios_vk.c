@@ -817,9 +817,10 @@ static PFN_vkGetQueryPoolResults                  fp_vkGetQueryPoolResults;
 
 // ── Memory sub-allocator (slab allocator) ────────────────────────────────────
 
-#define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)   // 64 MB per slab
-#define SLAB_MAX_SIZE       (1024 * 1024 * 1024)  // 1 GB max per slab
+#define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)    // 64 MB per slab
+#define SLAB_MAX_SIZE       (256 * 1024 * 1024)   // 256 MB max per slab (limit fragmentation waste)
 #define MAX_SLABS           64
+#define SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)  // 8 GB max total per pool
 
 typedef struct {
   VkDeviceMemory memory;
@@ -837,8 +838,9 @@ typedef struct {
   int      hostVisible;
 } SlabPool;
 
-static SlabPool devicePool = {0};  // device-local
-static SlabPool hostPool = {0};    // host-visible + coherent
+static SlabPool devicePool = {0};      // device-local (persistent/param buffers)
+static SlabPool deviceTempPool = {0};  // device-local (temporary/intermediate buffers)
+static SlabPool hostPool = {0};        // host-visible + coherent
 static VkDeviceSize slabAlignment = 256;  // queried at init from a probe buffer
 
 static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
@@ -867,6 +869,11 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
 
   // Need a new slab
   if (pool->slabCount >= MAX_SLABS) return 0;
+
+  // Check total pool bytes cap to prevent unbounded VRAM growth from fragmentation
+  VkDeviceSize totalPoolBytes = 0;
+  for (uint32_t i = 0; i < pool->slabCount; i++) totalPoolBytes += pool->slabs[i].capacity;
+  if (totalPoolBytes >= SLAB_POOL_MAX_BYTES) return 0;
 
   VkDeviceSize slabSize = SLAB_INITIAL_SIZE;
   // Make slab big enough for this allocation
@@ -1931,6 +1938,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   // Initialize slab pools
   memset(&devicePool, 0, sizeof(devicePool));
+  memset(&deviceTempPool, 0, sizeof(deviceTempPool));
   memset(&hostPool, 0, sizeof(hostPool));
   {
     // Find memory types for each pool
@@ -1939,9 +1947,13 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     if (devType == UINT32_MAX) devType = findMemoryType(0xFFFFFFFF, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     devicePool.memoryTypeIdx = devType;
     devicePool.hostVisible = 0;
+    // Temp pool shares the same memory type as device pool
+    deviceTempPool.memoryTypeIdx = devType;
+    deviceTempPool.hostVisible = 0;
     // Check if device-local is also host-visible (integrated GPU)
     if (devType != UINT32_MAX && (memProps.memoryTypes[devType].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
       devicePool.hostVisible = 1;
+      deviceTempPool.hostVisible = 1;
     }
 
     // Host-visible + coherent
@@ -1993,11 +2005,11 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   return result;
 }
 
-// ── N-API: createBuffer(byteLength, hostVisible) ────────────────────────────
+// ── N-API: createBuffer(byteLength, hostVisible, temporary) ─────────────────
 
 static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2];
+  size_t argc = 3;
+  napi_value args[3];
   napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 
   uint32_t byteLength;
@@ -2005,6 +2017,9 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
 
   int32_t hostVisible = 1;
   if (argc > 1) napi_get_value_int32(env, args[1], &hostVisible);
+
+  int32_t temporary = 0;
+  if (argc > 2) napi_get_value_int32(env, args[2], &temporary);
 
   int slot = allocBufferSlot();
   if (slot < 0) {
@@ -2045,14 +2060,15 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
     hostVisible = 1;
   }
 
-  SlabPool* pool = useHostPool ? &hostPool : &devicePool;
+  // Select slab pool:
+  // - host-visible → hostPool (staging, long-lived)
+  // - device-local + temporary → deviceTempPool (intermediates, freed between steps)
+  // - device-local + persistent → individual allocation (model params, few and long-lived)
+  // Separating temp and persistent device buffers into different pools prevents
+  // persistent params from blocking slab reclamation when intermediates are freed.
+  SlabPool* pool = useHostPool ? &hostPool : &deviceTempPool;
   SlabAlloc salloc;
-  // Slab allocation for device-local buffers is DISABLED: persistent buffers
-  // (model params) share slabs with temporary buffers (intermediates), preventing
-  // slab space reclamation even with refcounting. The JS-side buffer pool handles
-  // buffer recycling; individual vkAllocateMemory/vkFreeMemory properly returns
-  // memory to the driver. Host-visible buffers still use slab (staging is long-lived).
-  int slabCompatible = useHostPool
+  int slabCompatible = (useHostPool || temporary)
     ? (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0
     : 0;
   if (slabCompatible && slabPoolAlloc(pool, memReq.size, &salloc)) {
@@ -2413,8 +2429,8 @@ static napi_value napi_destroyBuffer(napi_env env, napi_callback_info info) {
       // This prevents unbounded slab growth during training where buffers are
       // constantly created and destroyed through the JS-side buffer pool.
       VkDeviceMemory slabMem = buffers[slot].memory;
-      SlabPool* pools[2] = { &devicePool, &hostPool };
-      for (int p = 0; p < 2; p++) {
+      SlabPool* pools[3] = { &devicePool, &deviceTempPool, &hostPool };
+      for (int p = 0; p < 3; p++) {
         for (uint32_t si = 0; si < pools[p]->slabCount; si++) {
           if (pools[p]->slabs[si].memory == slabMem) {
             if (pools[p]->slabs[si].refCount > 0) {
@@ -4314,16 +4330,14 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   }
 
   // Destroy slab pools
-  for (uint32_t i = 0; i < devicePool.slabCount; i++) {
-    if (devicePool.slabs[i].mapped) fp_vkUnmapMemory(device, devicePool.slabs[i].memory);
-    fp_vkFreeMemory(device, devicePool.slabs[i].memory, NULL);
+  SlabPool* cleanupPools[3] = { &devicePool, &deviceTempPool, &hostPool };
+  for (int cp = 0; cp < 3; cp++) {
+    for (uint32_t i = 0; i < cleanupPools[cp]->slabCount; i++) {
+      if (cleanupPools[cp]->slabs[i].mapped) fp_vkUnmapMemory(device, cleanupPools[cp]->slabs[i].memory);
+      fp_vkFreeMemory(device, cleanupPools[cp]->slabs[i].memory, NULL);
+    }
+    memset(cleanupPools[cp], 0, sizeof(SlabPool));
   }
-  memset(&devicePool, 0, sizeof(devicePool));
-  for (uint32_t i = 0; i < hostPool.slabCount; i++) {
-    if (hostPool.slabs[i].mapped) fp_vkUnmapMemory(device, hostPool.slabs[i].memory);
-    fp_vkFreeMemory(device, hostPool.slabs[i].memory, NULL);
-  }
-  memset(&hostPool, 0, sizeof(hostPool));
 
   // Destroy pipelines
   for (int i = 0; i < MAX_PIPELINES; i++) {

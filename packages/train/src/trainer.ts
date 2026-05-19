@@ -1270,6 +1270,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         releaseFn(batch.inputs);
         releaseFn(batch.targets);
       }
+      // Sync GPU after each micro-step to fully reclaim deferred buffer releases.
+      // Without this, backward-pass intermediates pile up across accumulation steps,
+      // causing allocation count to grow unbounded and OOM on the driver side.
+      // syncGpu() flushes, waits for completion, and processes pending destroys.
+      if (accumSteps > 1 && typeof (backend as any).syncGpu === "function") {
+        (backend as any).syncGpu();
+      }
     }
 
     // Single CPU readback of accumulated loss (triggers one flush+wait)
