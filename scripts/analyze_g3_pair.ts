@@ -27,6 +27,20 @@ interface Metric {
   gpu_allocator_free_range_overflows?: number;
 }
 
+interface ModelConfig {
+  vocabSize: number;
+  blockSize: number;
+  nLayer: number;
+  nEmbd: number;
+  nHead: number;
+  dropout: number;
+  ffnActivation: string;
+  ffnDim: number;
+  normType: string;
+  posEnc: string;
+  tieEmbeddings: boolean;
+}
+
 interface RunSummary {
   dir: string;
   contract: Contract;
@@ -79,7 +93,7 @@ async function summarize(dir: string, expectedVariant: Contract["variant"]): Pro
     totalParams?: number;
     dataStats?: { trainTokens?: number; valTokens?: number };
     trainConfig: { batchSize: number; gradAccumSteps: number; iters: number };
-    modelConfig: { blockSize: number };
+    modelConfig: ModelConfig;
   };
   if (contract.variant !== expectedVariant) throw new Error(`${dir}: contract variant ${contract.variant} != ${expectedVariant}`);
   const rows = metricsText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Metric);
@@ -97,6 +111,24 @@ async function summarize(dir: string, expectedVariant: Contract["variant"]): Pro
   const totalParams = config.totalParams;
   if (totalParams !== contract.expected_params) {
     throw new Error(`${dir}: params ${String(totalParams)} != contract ${contract.expected_params}`);
+  }
+  const expectedModel: ModelConfig = {
+    vocabSize: 12288,
+    blockSize: 1024,
+    nLayer: expectedVariant === "llama" ? 16 : 14,
+    nEmbd: 512,
+    nHead: 8,
+    dropout: 0,
+    ffnActivation: "swiglu",
+    ffnDim: 1408,
+    normType: expectedVariant === "llama" ? "rmsnorm" : "layernorm",
+    posEnc: expectedVariant === "llama" ? "rope" : "learned",
+    tieEmbeddings: expectedVariant === "llama",
+  };
+  for (const key of Object.keys(expectedModel) as (keyof ModelConfig)[]) {
+    if (config.modelConfig[key] !== expectedModel[key]) {
+      throw new Error(`${dir}: modelConfig.${key} ${String(config.modelConfig[key])} != ${String(expectedModel[key])}`);
+    }
   }
   const tokens = config.trainConfig.iters * config.trainConfig.batchSize * config.trainConfig.gradAccumSteps * config.modelConfig.blockSize;
   if (tokens !== contract.expected_tokens) throw new Error(`${dir}: tokens ${tokens} != contract ${contract.expected_tokens}`);

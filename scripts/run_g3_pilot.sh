@@ -28,7 +28,13 @@ pilot_lr_min=$(PILOT_LR="$pilot_lr" node -e '
 case "$variant" in
   llama)
     expected_params=57688576
-    architecture_args=()
+    architecture_args=(
+      --layers=16
+      --normType=rmsnorm
+      --posEnc=rope
+      --ropeTheta=10000
+      --tieEmbeddings=true
+    )
     ;;
   gpt2)
     expected_params=58094592
@@ -96,6 +102,13 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --data="$data" \
   --domain=alpha_llama \
   --tokenizerArtifacts="$tokenizer" \
+  --vocabSize=12288 \
+  --block=1024 \
+  --dim=512 \
+  --heads=8 \
+  --dropout=0 \
+  --activation=swiglu \
+  --ffnDim=1408 \
   --batch=16 \
   --accumSteps=1 \
   --steps=6104 \
