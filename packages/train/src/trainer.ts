@@ -617,10 +617,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   await fs.mkdir(runDir, { recursive: true });
   const configObj: Record<string, unknown> = { modelConfig, trainConfig, configHash, runId: rid };
   if (deps.domain) configObj.domain = deps.domain;
-  await fs.writeFile(
-    path.join(runDir, "config.json"),
-    JSON.stringify(configObj, null, 2),
-  );
+  const configPath = path.join(runDir, "config.json");
+  async function writeConfig(): Promise<void> {
+    const tmp = configPath + ".tmp";
+    await fs.writeFile(tmp, JSON.stringify(configObj, null, 2));
+    await fs.rename(tmp, configPath);
+  }
+  await writeConfig();
 
   // Buffered metrics log — flushes every 50 steps, on checkpoint, and on exit
   const metricsPath = path.join(runDir, "metrics.jsonl");
@@ -766,6 +769,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   rng.seed(trainConfig.seed);
   let params = initGPT(modelConfig, backend, rng as any);
   let totalParams = countParams(params);
+  configObj.totalParams = totalParams;
+  await writeConfig();
 
   // Resume from checkpoint
   let startStep = 0;
@@ -907,14 +912,29 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   // Create data loaders from pre-tokenized arrays (or SFT conversation loaders).
   const packed = trainConfig.packed;
+  // Data order must not depend on how many random draws a model architecture
+  // needs for parameter initialization. Separate streams make equal-token
+  // architecture comparisons use identical train/validation windows.
+  const trainDataRng = new SeededRng(trainConfig.seed ^ 0x4f1bbcdc);
+  const valDataRng = new SeededRng(trainConfig.seed ^ 0x7a2d91e3);
   const trainLoader: BatchSource = sftMode
     ? sftTrain!
-    : new DataLoader(trainTokens, rng, trainConfig.batchSize, modelConfig.blockSize, packed);
+    : new DataLoader(trainTokens, trainDataRng, trainConfig.batchSize, modelConfig.blockSize, packed);
   const valLoader: BatchSource | undefined = sftMode
     ? (sftVal ?? undefined)
     : (valTokens.length > 0
-        ? new DataLoader(valTokens, rng, trainConfig.batchSize, modelConfig.blockSize)
+        ? new DataLoader(valTokens, valDataRng, trainConfig.batchSize, modelConfig.blockSize)
         : undefined);
+  if (startStep > 0) {
+    const trainBatches = startStep * trainConfig.gradAccumSteps;
+    const completedEvals = trainConfig.evalInterval > 0
+      ? Math.floor(startStep / trainConfig.evalInterval)
+      : 0;
+    const valBatches = completedEvals * trainConfig.evalIters;
+    trainLoader.seekBatches(trainBatches);
+    valLoader?.seekBatches(valBatches);
+    console.log(`Data resume: train_batches=${trainBatches} val_batches=${valBatches}`);
+  }
   if (packed && !sftMode) {
     console.log(`Sequence packing: ON (${trainLoader.stepsPerEpoch} steps/epoch)`);
   }

@@ -21,9 +21,11 @@ run_dir=${4:?run directory required}
 
 case "$variant" in
   llama)
+    expected_params=57688576
     architecture_args=()
     ;;
   gpt2)
+    expected_params=58094592
     architecture_args=(
       --layers=14
       --normType=layernorm
@@ -55,6 +57,31 @@ export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512
 export ALPHA_GPU_METRICS_SAMPLE_EVERY=100
 
 mkdir -p "$run_dir"
+source_commit=$(git rev-parse HEAD)
+data_sha256=$(sha256sum "$data" | awk '{print $1}')
+tokenizer_sha256=$(sha256sum "$tokenizer" | awk '{print $1}')
+contract_tmp="$run_dir/pilot-contract.json.tmp"
+VARIANT="$variant" EXPECTED_PARAMS="$expected_params" SOURCE_COMMIT="$source_commit" \
+DATA_PATH="$data" DATA_SHA256="$data_sha256" TOKENIZER_PATH="$tokenizer" \
+TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" node -e '
+  const fs = require("node:fs");
+  const contract = {
+    schema: "alpha-g3-pilot-contract-v1",
+    variant: process.env.VARIANT,
+    expected_params: Number(process.env.EXPECTED_PARAMS),
+    expected_steps: 6104,
+    batch_size: 16,
+    block_size: 1024,
+    grad_accum_steps: 1,
+    expected_tokens: 100007936,
+    source_commit: process.env.SOURCE_COMMIT,
+    data: { path: process.env.DATA_PATH, sha256: process.env.DATA_SHA256 },
+    tokenizer: { path: process.env.TOKENIZER_PATH, sha256: process.env.TOKENIZER_SHA256 },
+    started_utc: new Date().toISOString(),
+  };
+  fs.writeFileSync(process.env.CONTRACT_TMP, JSON.stringify(contract, null, 2) + "\n", { flag: "wx" });
+'
+mv "$contract_tmp" "$run_dir/pilot-contract.json"
 exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --data="$data" \
   --domain=alpha_llama \

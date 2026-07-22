@@ -27,6 +27,8 @@ export interface DataBatch {
  */
 export interface BatchSource {
   nextBatch(): DataBatch;
+  /** Position a freshly constructed loader after `count` already-consumed batches. */
+  seekBatches(count: number): void;
   readonly stepsPerEpoch: number;
   readonly length: number;
 }
@@ -104,6 +106,23 @@ export class DataLoader implements BatchSource {
   /** Get the next batch (dispatches to random or packed mode). */
   nextBatch(): DataBatch {
     return this.packed ? this.nextBatchPacked() : this.nextBatchRandom();
+  }
+
+  seekBatches(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`batch count must be a non-negative integer: ${count}`);
+    this.batchRingIdx = count % this.batchRing.length;
+    if (this.packed) {
+      const stride = Math.floor(this.tokens.length / this.batchSize);
+      const offset = (count * this.blockSize) % this.tokens.length;
+      for (let b = 0; b < this.batchSize; b++) {
+        this.cursors![b] = (b * stride + offset) % this.tokens.length;
+      }
+      return;
+    }
+    // Random mode consumes one draw per batch item. The loader owns a fresh,
+    // data-only RNG, so replaying draws positions it exactly without touching
+    // model initialization or dropout streams.
+    for (let i = 0; i < count * this.batchSize; i++) this.rng.next();
   }
 
   /** Random mode: each batch item gets an independent random window. */
@@ -339,6 +358,12 @@ export class SftDataLoader implements BatchSource {
       targets: { ...batch.targets },
       lossMask: { ...batch.lossMask! },
     };
+  }
+
+  seekBatches(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`batch count must be a non-negative integer: ${count}`);
+    this.cursor = (count * this.batchSize) % this.examples.length;
+    this.batchRingIdx = count % this.batchRing.length;
   }
 
   get stepsPerEpoch(): number {
