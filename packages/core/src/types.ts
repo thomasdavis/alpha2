@@ -61,6 +61,18 @@ export interface ModelConfig {
   readonly softCap?: number;
   /** Activation expression tree for composed mode (from symbiogenesis). */
   readonly activationGraph?: unknown;
+  // ── Llama-form architecture knobs (all default to the GPT-2-style behaviour
+  //    so existing configs/checkpoints keep working unchanged) ──
+  /** Normalization layer type. "layernorm" (mean-centered, weight+bias) is the
+   *  default; "rmsnorm" is the Llama variant (weight only, no mean/bias). */
+  readonly normType?: "layernorm" | "rmsnorm";
+  /** Positional encoding. "learned" uses a wpe embedding table (GPT-2 default);
+   *  "rope" applies rotary position embeddings to q/k and drops wpe entirely. */
+  readonly posEnc?: "learned" | "rope";
+  /** RoPE base frequency (θ). Only used when posEnc==="rope". Default 10000. */
+  readonly ropeTheta?: number;
+  /** Tie the LM head to the token-embedding table (single shared weight). */
+  readonly tieEmbeddings?: boolean;
 }
 
 export const defaultModelConfig: ModelConfig = {

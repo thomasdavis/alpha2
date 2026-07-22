@@ -2,10 +2,20 @@ export {
   AdamW, Lion, Adafactor, SGD, createOptimizerRegistry,
   type AdamWConfig, type LionConfig, type AdafactorConfig,
 } from "./optimizers.js";
-export { DataLoader, loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText, type DataBatch } from "./data.js";
+export {
+  DataLoader, loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText,
+  SftDataLoader, loadSftExamples, buildSftExample, resolveChatSpecialIds, splitSftExamples,
+  CHAT_USER_TOKEN, CHAT_ASSISTANT_TOKEN, CHAT_EOT_TOKEN,
+  type DataBatch, type BatchSource, type SftExample, type ChatSpecialIds,
+} from "./data.js";
 export {
   FileCheckpoint, buildCheckpointState, restoreParams,
 } from "./checkpoint.js";
+export {
+  writeSafetensors, checkpointToLlamaStateDict, buildLlamaConfig, buildGenerationConfig,
+  exportHfModel, llamaFormViolations, llamaIntermediateSize, resolveBosEosId,
+  type SafeTensor,
+} from "./hf_export.js";
 export { sample } from "./sample.js";
 export { train, type TrainerDeps, type StepMetrics } from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";

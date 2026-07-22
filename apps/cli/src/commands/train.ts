@@ -203,6 +203,15 @@ export async function trainCmd(args: string[]): Promise<void> {
   const mDefaults = domain?.modelDefaults ?? {};
   const tDefaults = domain?.trainDefaults ?? {};
 
+  // Llama-form architecture knobs (default to GPT-2-style / undefined so nothing
+  // changes for non-Llama configs). Propagated from the domain's modelDefaults —
+  // WITHOUT this, `--domain=alpha_llama` silently trained a GPT-2 model (learned
+  // wpe, LayerNorm, untied), which would then fail HF export / Stage-5.
+  const normTypeVal = (kv["normType"] ?? mDefaults.normType) as ModelConfig["normType"] | undefined;
+  const posEncVal = (kv["posEnc"] ?? mDefaults.posEnc) as ModelConfig["posEnc"] | undefined;
+  const ropeThetaVal = kv["ropeTheta"] !== undefined ? intArg(kv, "ropeTheta", 10000) : mDefaults.ropeTheta;
+  const tieEmbeddingsVal = kv["tieEmbeddings"] !== undefined ? boolArg(kv, "tieEmbeddings", false) : mDefaults.tieEmbeddings;
+
   let modelConfig: ModelConfig = {
     vocabSize: intArg(kv, "vocabSize", mDefaults.vocabSize ?? defaultModelConfig.vocabSize),
     blockSize: intArg(kv, "block", mDefaults.blockSize ?? defaultModelConfig.blockSize),
@@ -211,7 +220,11 @@ export async function trainCmd(args: string[]): Promise<void> {
     nHead: intArg(kv, "heads", mDefaults.nHead ?? defaultModelConfig.nHead),
     dropout: floatArg(kv, "dropout", mDefaults.dropout ?? defaultModelConfig.dropout),
     ffnActivation: (strArg(kv, "activation", mDefaults.ffnActivation ?? defaultModelConfig.ffnActivation ?? "gelu") as ModelConfig["ffnActivation"]),
-    ffnDim: kv["ffnDim"] ? intArg(kv, "ffnDim", 0) : undefined,
+    ffnDim: kv["ffnDim"] ? intArg(kv, "ffnDim", 0) : (mDefaults.ffnDim ?? undefined),
+    normType: normTypeVal,
+    posEnc: posEncVal,
+    ropeTheta: ropeThetaVal,
+    tieEmbeddings: tieEmbeddingsVal,
   };
 
   let trainConfig: TrainConfig = {
@@ -466,6 +479,7 @@ export async function trainCmd(args: string[]): Promise<void> {
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
     mixedPrecision: mixedPrecisionEnabled,
+    sft: boolArg(kv, "sft", false),
   });
 
   const coopStats = typeof backendAny.getMatmulCoopStats === "function"

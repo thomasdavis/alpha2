@@ -1,5 +1,5 @@
 /**
- * Optimized pure-TS inference engine for Alpha GPT models.
+ * Optimized pure-TS inference engine for Alpha models (GPT-2-form AND Llama-form).
  *
  * Bypasses autograd/tape machinery for 10-20× faster CPU inference via:
  * - KV cache (avoid recomputing prior tokens)
@@ -7,6 +7,13 @@
  * - Zero allocation in the decode loop (pre-allocated buffers)
  * - Last-token-only LM head (skip vocabSize computation for all but final position)
  * - Fused layernorm, attention scoring, in-place GELU
+ *
+ * Architecture-aware (mirrors packages/model gptForward / cpu_ref exactly):
+ * - Positional encoding: learned wpe (GPT-2) OR RoPE on q/k (Llama, posEnc="rope").
+ * - Normalization: LayerNorm (weight+bias) OR RMSNorm (weight only, normType="rmsnorm").
+ * - FFN: GELU 4× (fc1/fc2) OR SwiGLU (fc_gate/fc_up/fc_proj, ffnActivation="swiglu").
+ * - LM head: separate lmHead OR tied to wte (tieEmbeddings=true → no lmHead param).
+ * - softCap on attention scores: applied for GPT-2 (30), OFF for RoPE unless set.
  *
  * Architecture: weights (immutable, shared) are separate from sessions (mutable,
  * per-request) so concurrent requests cannot corrupt each other's KV cache.
@@ -16,28 +23,41 @@ import type { SeededRng } from "@alpha/core";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+/** MLP weights — GELU (fc1/fc2) or SwiGLU (gate/up/proj). ffnDim = hidden width. */
+type MlpWeights =
+  | { kind: "gelu"; fc1: Float32Array; fc2: Float32Array; ffnDim: number }
+  | { kind: "swiglu"; fcGate: Float32Array; fcUp: Float32Array; fcProj: Float32Array; ffnDim: number };
+
 interface InferenceLayer {
-  ln1W: Float32Array;  // [nEmbd]
-  ln1B: Float32Array;  // [nEmbd]
-  wq: Float32Array;    // [nEmbd, nEmbd]
-  wk: Float32Array;    // [nEmbd, nEmbd]
-  wv: Float32Array;    // [nEmbd, nEmbd]
-  wo: Float32Array;    // [nEmbd, nEmbd]
-  ln2W: Float32Array;  // [nEmbd]
-  ln2B: Float32Array;  // [nEmbd]
-  fc1: Float32Array;   // [4*nEmbd, nEmbd]
-  fc2: Float32Array;   // [nEmbd, 4*nEmbd]
+  norm1W: Float32Array;          // [nEmbd]
+  norm1B: Float32Array | null;   // [nEmbd] — null under RMSNorm
+  wq: Float32Array;              // [nEmbd, nEmbd]
+  wk: Float32Array;              // [nEmbd, nEmbd]
+  wv: Float32Array;              // [nEmbd, nEmbd]
+  wo: Float32Array;              // [nEmbd, nEmbd]
+  norm2W: Float32Array;          // [nEmbd]
+  norm2B: Float32Array | null;   // [nEmbd] — null under RMSNorm
+  mlp: MlpWeights;
 }
 
 /** Immutable model weights — safe to share across concurrent requests. */
 export interface InferenceWeights {
   config: ModelConfig;
-  wte: Float32Array;     // [vocabSize, nEmbd]
-  wpe: Float32Array;     // [blockSize, nEmbd]
+  wte: Float32Array;             // [vocabSize, nEmbd]
+  wpe: Float32Array | null;      // [blockSize, nEmbd] — null under RoPE
   layers: InferenceLayer[];
-  lnFW: Float32Array;    // [nEmbd]
-  lnFB: Float32Array;    // [nEmbd]
-  lmHead: Float32Array;  // [vocabSize, nEmbd]
+  lnFW: Float32Array;            // [nEmbd]
+  lnFB: Float32Array | null;     // [nEmbd] — null under RMSNorm
+  lmHead: Float32Array;          // [vocabSize, nEmbd] — === wte when tied
+
+  // ── Derived architecture flags (mirrors ModelConfig defaults) ──
+  useRope: boolean;              // posEnc === "rope"
+  useRms: boolean;               // normType === "rmsnorm"
+  ropeTheta: number;             // RoPE base frequency (default 10000)
+  softCapVal: number;            // attention-score clamp magnitude; 0 = off
+  ffnHidden: number;             // MLP hidden width (scratch sizing)
+  ropeCos: Float32Array | null;  // [blockSize * headDim/2] precomputed cos
+  ropeSin: Float32Array | null;  // [blockSize * headDim/2] precomputed sin
 }
 
 /** Mutable per-request session — KV cache + pre-allocated decode buffers. */
@@ -57,7 +77,8 @@ export interface InferenceSession {
   _attnScores: Float32Array;  // [blockSize]
   _attnOut: Float32Array;     // [nEmbd]
   _projected: Float32Array;   // [nEmbd]
-  _mlpHidden: Float32Array;   // [4*nEmbd]
+  _mlpHidden: Float32Array;   // [ffnHidden]
+  _mlpUp?: Float32Array;      // [ffnHidden] — SwiGLU only (the "up" projection)
   _mlpOut: Float32Array;      // [nEmbd]
   _logits: Float32Array;      // [vocabSize]
   _sampleBuf: Float32Array;   // [vocabSize] — scratch for sampling
@@ -72,6 +93,7 @@ export interface InferenceSession {
   _prefillScores?: Float32Array;
   _prefillProj?: Float32Array;
   _prefillMlpH?: Float32Array;
+  _prefillMlpUp?: Float32Array; // SwiGLU only
   _prefillLastLn?: Float32Array;
   _prefillMaxT?: number;      // max T these buffers were allocated for
 }
@@ -82,6 +104,7 @@ export type InferenceModel = InferenceWeights & InferenceSession;
 // ── Math primitives ────────────────────────────────────────────────────────
 
 const SQRT_2_OVER_PI = Math.sqrt(2 / Math.PI);
+const NORM_EPS = 1e-5;
 
 function layerNorm(
   out: Float32Array, outOff: number,
@@ -100,9 +123,67 @@ function layerNorm(
   }
   variance /= N;
 
-  const invStd = 1 / Math.sqrt(variance + 1e-5);
+  const invStd = 1 / Math.sqrt(variance + NORM_EPS);
   for (let i = 0; i < N; i++) {
     out[outOff + i] = (x[xOff + i] - mean) * invStd * w[i] + b[i];
+  }
+}
+
+/** RMSNorm: out = x / sqrt(mean(x^2)+eps) * w. No mean-centering, no bias.
+ *  Matches packages/tensor/src/cpu_ref.ts rmsNorm exactly. */
+function rmsNorm(
+  out: Float32Array, outOff: number,
+  x: Float32Array, xOff: number,
+  w: Float32Array,
+  N: number,
+): void {
+  let ms = 0;
+  for (let i = 0; i < N; i++) {
+    const xi = x[xOff + i];
+    ms += xi * xi;
+  }
+  ms /= N;
+  const invRms = 1 / Math.sqrt(ms + NORM_EPS);
+  for (let i = 0; i < N; i++) {
+    out[outOff + i] = x[xOff + i] * invRms * w[i];
+  }
+}
+
+/** Dispatch to the configured normalization. `b` is ignored (may be null) under RMSNorm. */
+function applyNorm(
+  out: Float32Array, outOff: number,
+  x: Float32Array, xOff: number,
+  w: Float32Array, b: Float32Array | null,
+  N: number, useRms: boolean,
+): void {
+  if (useRms) rmsNorm(out, outOff, x, xOff, w, N);
+  else layerNorm(out, outOff, x, xOff, w, b as Float32Array, N);
+}
+
+/**
+ * Apply RoPE (HF-Llama rotate_half convention) in place to a [nEmbd] = [nHead][headDim]
+ * vector at absolute position `pos`. Splits each head dim in HALF (first/second):
+ *   out[i]      = a*cos - b*sin
+ *   out[i+half] = b*cos + a*sin,   a=v[i], b=v[i+half], (cos,sin)=table[pos,i]
+ * Mirrors packages/tensor/src/cpu_ref.ts rope + packages/autograd ropeTables.
+ */
+function ropeInPlace(
+  v: Float32Array, off: number,
+  nHead: number, headDim: number, pos: number,
+  cosTable: Float32Array, sinTable: Float32Array,
+): void {
+  const half = headDim >> 1;
+  const csBase = pos * half;
+  for (let h = 0; h < nHead; h++) {
+    const base = off + h * headDim;
+    for (let i = 0; i < half; i++) {
+      const c = cosTable[csBase + i];
+      const s = sinTable[csBase + i];
+      const a = v[base + i];
+      const bb = v[base + i + half];
+      v[base + i] = a * c - bb * s;
+      v[base + i + half] = bb * c + a * s;
+    }
   }
 }
 
@@ -163,6 +244,13 @@ function geluInPlace(x: Float32Array, off: number, N: number): void {
   }
 }
 
+function siluInPlace(x: Float32Array, off: number, N: number): void {
+  for (let i = 0; i < N; i++) {
+    const xi = x[off + i];
+    x[off + i] = xi / (1 + Math.exp(-xi));
+  }
+}
+
 function writeCachePos(
   cache: Float32Array,
   vec: Float32Array, vecOff: number,
@@ -180,18 +268,37 @@ function writeCachePos(
 
 // ── Model preparation ──────────────────────────────────────────────────────
 
-function extractF32(param: { data: Float32Array | number[] }): Float32Array {
+type Param = { shape: number[]; data: Float32Array | number[] };
+
+function extractF32(param: Param): Float32Array {
   if (param.data instanceof Float32Array) return param.data;
   return new Float32Array(param.data);
+}
+
+/** Extract a param that may be absent (RMSNorm biases, tied lmHead, etc.). */
+function extractF32OrNull(param: Param | undefined): Float32Array | null {
+  if (!param) return null;
+  return extractF32(param);
 }
 
 /** Prepare immutable weights from checkpoint params. */
 export function prepareInferenceWeights(
   config: ModelConfig,
-  params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
+  params: Record<string, Param>,
 ): InferenceWeights {
-  const { nLayer, nEmbd } = config;
+  const { nLayer, nEmbd, nHead, blockSize } = config;
+  const headDim = nEmbd / nHead;
 
+  const useRope = (config.posEnc ?? "learned") === "rope";
+  const useRms = (config.normType ?? "layernorm") === "rmsnorm";
+  const tied = config.tieEmbeddings === true;
+  const ropeTheta = config.ropeTheta ?? 10000;
+  // softCap: explicit config wins; else GPT-2 default 30, but OFF under RoPE.
+  const softCapVal = config.softCap ?? (useRope ? 0 : 30);
+  const activation = config.ffnActivation ?? "gelu";
+  const isSwiglu = activation === "swiglu";
+
+  let ffnHidden = 0;
   const layers: InferenceLayer[] = [];
   for (let i = 0; i < nLayer; i++) {
     // Support both grouped wqkv (new) and separate wq/wk/wv (old) checkpoints
@@ -209,26 +316,72 @@ export function prepareInferenceWeights(
       wv = extractF32(params[`layer.${i}.attn.wv`]);
     }
 
+    // MLP — SwiGLU (fc_gate/fc_up/fc_proj) or GELU (fc1/fc2). Prefer explicit
+    // config, but fall back to whichever weights exist (robust to older configs).
+    let mlp: MlpWeights;
+    const gateParam = params[`layer.${i}.mlp.fc_gate`];
+    if (isSwiglu || gateParam) {
+      const fcGate = extractF32(params[`layer.${i}.mlp.fc_gate`]);
+      const fcUp = extractF32(params[`layer.${i}.mlp.fc_up`]);
+      const fcProj = extractF32(params[`layer.${i}.mlp.fc_proj`]);
+      const ffnDim = fcGate.length / nEmbd;
+      mlp = { kind: "swiglu", fcGate, fcUp, fcProj, ffnDim };
+      ffnHidden = Math.max(ffnHidden, ffnDim);
+    } else {
+      const fc1 = extractF32(params[`layer.${i}.mlp.fc1`]);
+      const fc2 = extractF32(params[`layer.${i}.mlp.fc2`]);
+      const ffnDim = fc1.length / nEmbd;
+      mlp = { kind: "gelu", fc1, fc2, ffnDim };
+      ffnHidden = Math.max(ffnHidden, ffnDim);
+    }
+
     layers.push({
-      ln1W: extractF32(params[`layer.${i}.ln1.weight`]),
-      ln1B: extractF32(params[`layer.${i}.ln1.bias`]),
+      norm1W: extractF32(params[`layer.${i}.ln1.weight`]),
+      norm1B: extractF32OrNull(params[`layer.${i}.ln1.bias`]),
       wq, wk, wv,
       wo: extractF32(params[`layer.${i}.attn.wo`]),
-      ln2W: extractF32(params[`layer.${i}.ln2.weight`]),
-      ln2B: extractF32(params[`layer.${i}.ln2.bias`]),
-      fc1: extractF32(params[`layer.${i}.mlp.fc1`]),
-      fc2: extractF32(params[`layer.${i}.mlp.fc2`]),
+      norm2W: extractF32(params[`layer.${i}.ln2.weight`]),
+      norm2B: extractF32OrNull(params[`layer.${i}.ln2.bias`]),
+      mlp,
     });
+  }
+
+  const wte = extractF32(params["wte"]);
+  // Tied embeddings: the checkpoint omits lmHead; the head IS wte.
+  const lmHead = tied ? wte : extractF32(params["lmHead"]);
+
+  // Precompute RoPE cos/sin tables [blockSize, headDim/2] once (mirrors ropeTables).
+  let ropeCos: Float32Array | null = null;
+  let ropeSin: Float32Array | null = null;
+  if (useRope) {
+    const half = headDim >> 1;
+    ropeCos = new Float32Array(blockSize * half);
+    ropeSin = new Float32Array(blockSize * half);
+    for (let i = 0; i < half; i++) {
+      const invFreq = Math.pow(ropeTheta, (-2 * i) / headDim);
+      for (let pos = 0; pos < blockSize; pos++) {
+        const angle = pos * invFreq;
+        ropeCos[pos * half + i] = Math.cos(angle);
+        ropeSin[pos * half + i] = Math.sin(angle);
+      }
+    }
   }
 
   return {
     config,
-    wte: extractF32(params["wte"]),
-    wpe: extractF32(params["wpe"]),
+    wte,
+    wpe: useRope ? null : extractF32OrNull(params["wpe"]),
     layers,
     lnFW: extractF32(params["lnF.weight"]),
-    lnFB: extractF32(params["lnF.bias"]),
-    lmHead: extractF32(params["lmHead"]),
+    lnFB: extractF32OrNull(params["lnF.bias"]),
+    lmHead,
+    useRope,
+    useRms,
+    ropeTheta,
+    softCapVal,
+    ffnHidden,
+    ropeCos,
+    ropeSin,
   };
 }
 
@@ -236,8 +389,10 @@ export function prepareInferenceWeights(
 export function createSession(weights: InferenceWeights): InferenceSession {
   const { nLayer, nEmbd, nHead, blockSize, vocabSize } = weights.config;
   const headDim = nEmbd / nHead;
+  const ffnHidden = weights.ffnHidden || 4 * nEmbd;
+  const swiglu = weights.layers.some((l) => l.mlp.kind === "swiglu");
 
-  return {
+  const session: InferenceSession = {
     config: weights.config,
     kCache: Array.from({ length: nLayer }, () => new Float32Array(nHead * blockSize * headDim)),
     vCache: Array.from({ length: nLayer }, () => new Float32Array(nHead * blockSize * headDim)),
@@ -249,18 +404,20 @@ export function createSession(weights: InferenceWeights): InferenceSession {
     _attnScores: new Float32Array(blockSize),
     _attnOut: new Float32Array(nEmbd),
     _projected: new Float32Array(nEmbd),
-    _mlpHidden: new Float32Array(4 * nEmbd),
+    _mlpHidden: new Float32Array(ffnHidden),
     _mlpOut: new Float32Array(nEmbd),
     _logits: new Float32Array(vocabSize),
     _sampleBuf: new Float32Array(vocabSize),
     _prefillLastLn: new Float32Array(nEmbd),
   };
+  if (swiglu) session._mlpUp = new Float32Array(ffnHidden);
+  return session;
 }
 
 /** @deprecated Use prepareInferenceWeights + createSession instead. */
 export function prepareInferenceModel(
   config: ModelConfig,
-  params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
+  params: Record<string, Param>,
 ): InferenceModel {
   const weights = prepareInferenceWeights(config, params);
   const session = createSession(weights);
@@ -294,6 +451,7 @@ export function cloneSession(session: InferenceSession): InferenceSession {
     _sampleBuf: new Float32Array(session._sampleBuf),
     _prefillLastLn: session._prefillLastLn ? new Float32Array(session._prefillLastLn) : undefined,
   };
+  if (session._mlpUp) copy._mlpUp = new Float32Array(session._mlpUp);
   if (session._prefillX) copy._prefillX = new Float32Array(session._prefillX);
   if (session._prefillLn) copy._prefillLn = new Float32Array(session._prefillLn);
   if (session._prefillQ) copy._prefillQ = new Float32Array(session._prefillQ);
@@ -303,12 +461,13 @@ export function cloneSession(session: InferenceSession): InferenceSession {
   if (session._prefillScores) copy._prefillScores = new Float32Array(session._prefillScores);
   if (session._prefillProj) copy._prefillProj = new Float32Array(session._prefillProj);
   if (session._prefillMlpH) copy._prefillMlpH = new Float32Array(session._prefillMlpH);
+  if (session._prefillMlpUp) copy._prefillMlpUp = new Float32Array(session._prefillMlpUp);
   if (session._prefillMaxT !== undefined) copy._prefillMaxT = session._prefillMaxT;
   return copy;
 }
 
 export function countModelParams(
-  params: Record<string, { shape: number[]; data: Float32Array | number[] }>,
+  params: Record<string, Param>,
 ): number {
   let total = 0;
   for (const key of Object.keys(params)) {
@@ -320,10 +479,36 @@ export function countModelParams(
   return total;
 }
 
+// ── MLP forward (single-row and batched) ───────────────────────────────────
+
+/** Single-row MLP forward: lnOut[nEmbd] → out[nEmbd]. Uses session scratch. */
+function mlpForwardRow(
+  out: Float32Array, outOff: number,
+  lnOut: Float32Array, lnOff: number,
+  mlp: MlpWeights, nEmbd: number,
+  hiddenBuf: Float32Array, upBuf: Float32Array | undefined,
+): void {
+  if (mlp.kind === "swiglu") {
+    const ffnDim = mlp.ffnDim;
+    matvecMul(hiddenBuf, 0, lnOut, lnOff, mlp.fcGate, 0, ffnDim, nEmbd);
+    matvecMul(upBuf!, 0, lnOut, lnOff, mlp.fcUp, 0, ffnDim, nEmbd);
+    siluInPlace(hiddenBuf, 0, ffnDim);
+    for (let j = 0; j < ffnDim; j++) hiddenBuf[j] *= upBuf![j];
+    matvecMul(out, outOff, hiddenBuf, 0, mlp.fcProj, 0, nEmbd, ffnDim);
+  } else {
+    const ffnDim = mlp.ffnDim;
+    matvecMul(hiddenBuf, 0, lnOut, lnOff, mlp.fc1, 0, ffnDim, nEmbd);
+    geluInPlace(hiddenBuf, 0, ffnDim);
+    matvecMul(out, outOff, hiddenBuf, 0, mlp.fc2, 0, nEmbd, ffnDim);
+  }
+}
+
 // ── Prefill (batch process all prompt tokens) ──────────────────────────────
 
-function ensurePrefillBuffers(session: InferenceSession, T: number): void {
+function ensurePrefillBuffers(session: InferenceSession, weights: InferenceWeights, T: number): void {
   const { nEmbd } = session.config;
+  const ffnHidden = weights.ffnHidden || 4 * nEmbd;
+  const swiglu = weights.layers.some((l) => l.mlp.kind === "swiglu");
   if (session._prefillMaxT && session._prefillMaxT >= T) return;
   session._prefillX = new Float32Array(T * nEmbd);
   session._prefillLn = new Float32Array(T * nEmbd);
@@ -333,7 +518,8 @@ function ensurePrefillBuffers(session: InferenceSession, T: number): void {
   session._prefillAttn = new Float32Array(T * nEmbd);
   session._prefillScores = new Float32Array(T * T);
   session._prefillProj = new Float32Array(T * nEmbd);
-  session._prefillMlpH = new Float32Array(T * 4 * nEmbd);
+  session._prefillMlpH = new Float32Array(T * ffnHidden);
+  if (swiglu) session._prefillMlpUp = new Float32Array(T * ffnHidden);
   session._prefillMaxT = T;
 }
 
@@ -364,10 +550,11 @@ export function prefill(
     tokens = sessionOrTokens as Int32Array;
   }
 
-  const { wte, wpe, layers, lnFW, lnFB, lmHead } = weights;
+  const { wte, wpe, layers, lnFW, lnFB, lmHead, useRope, useRms, softCapVal, ropeCos, ropeSin } = weights;
   const { nEmbd, nHead, vocabSize, blockSize } = weights.config;
   const headDim = nEmbd / nHead;
   const scaleVal = 1 / Math.sqrt(headDim);
+  const capOn = softCapVal > 0;
   const T = tokens.length;
 
   if (T <= 0) throw new RangeError("prefill requires at least 1 token");
@@ -376,7 +563,7 @@ export function prefill(
   const { kCache, vCache } = session;
 
   // Reuse prefill scratch buffers from session
-  ensurePrefillBuffers(session, T);
+  ensurePrefillBuffers(session, weights, T);
   const x = session._prefillX!;
   const lnBuf = session._prefillLn!;
   const Q = session._prefillQ!;
@@ -386,14 +573,17 @@ export function prefill(
   const scores = session._prefillScores!;
   const proj = session._prefillProj!;
   const mlpH = session._prefillMlpH!;
+  const mlpUp = session._prefillMlpUp;
 
-  // Token + position embeddings
+  // Token (+ optional learned position) embeddings
   for (let t = 0; t < T; t++) {
     const xOff = t * nEmbd;
     const wteOff = tokens[t] * nEmbd;
-    const wpeOff = t * nEmbd;
-    for (let i = 0; i < nEmbd; i++) {
-      x[xOff + i] = wte[wteOff + i] + wpe[wpeOff + i];
+    if (wpe) {
+      const wpeOff = t * nEmbd;
+      for (let i = 0; i < nEmbd; i++) x[xOff + i] = wte[wteOff + i] + wpe[wpeOff + i];
+    } else {
+      for (let i = 0; i < nEmbd; i++) x[xOff + i] = wte[wteOff + i];
     }
   }
 
@@ -401,15 +591,23 @@ export function prefill(
   for (let l = 0; l < layers.length; l++) {
     const layer = layers[l];
 
-    // ── LN1 ──
+    // ── Norm 1 ──
     for (let t = 0; t < T; t++) {
-      layerNorm(lnBuf, t * nEmbd, x, t * nEmbd, layer.ln1W, layer.ln1B, nEmbd);
+      applyNorm(lnBuf, t * nEmbd, x, t * nEmbd, layer.norm1W, layer.norm1B, nEmbd, useRms);
     }
 
     // ── Q, K, V projections: [T, nEmbd] @ W[nEmbd, nEmbd] ──
     tiledMatmul(Q, 0, lnBuf, 0, layer.wq, 0, T, nEmbd, nEmbd);
     tiledMatmul(K, 0, lnBuf, 0, layer.wk, 0, T, nEmbd, nEmbd);
     tiledMatmul(V, 0, lnBuf, 0, layer.wv, 0, T, nEmbd, nEmbd);
+
+    // ── RoPE rotate q/k per position (before caching K) ──
+    if (useRope) {
+      for (let t = 0; t < T; t++) {
+        ropeInPlace(Q, t * nEmbd, nHead, headDim, t, ropeCos!, ropeSin!);
+        ropeInPlace(K, t * nEmbd, nHead, headDim, t, ropeCos!, ropeSin!);
+      }
+    }
 
     // ── Store K, V in cache for all positions ──
     for (let t = 0; t < T; t++) {
@@ -433,8 +631,10 @@ export function prefill(
             score += Q[qOff + d] * kCache[l][kOff + d];
           }
           score *= scaleVal;
-          if (score > 30) score = 30;
-          else if (score < -30) score = -30;
+          if (capOn) {
+            if (score > softCapVal) score = softCapVal;
+            else if (score < -softCapVal) score = -softCapVal;
+          }
           scores[t1 * T + t2] = score;
           if (score > maxScore) maxScore = score;
         }
@@ -464,22 +664,34 @@ export function prefill(
     tiledMatmul(proj, 0, attnOut, 0, layer.wo, 0, T, nEmbd, nEmbd);
     for (let i = 0; i < T * nEmbd; i++) x[i] += proj[i];
 
-    // ── LN2 ──
+    // ── Norm 2 ──
     for (let t = 0; t < T; t++) {
-      layerNorm(lnBuf, t * nEmbd, x, t * nEmbd, layer.ln2W, layer.ln2B, nEmbd);
+      applyNorm(lnBuf, t * nEmbd, x, t * nEmbd, layer.norm2W, layer.norm2B, nEmbd, useRms);
     }
 
-    // ── MLP: fc1 → GELU → fc2 + residual ──
-    tiledMatmul(mlpH, 0, lnBuf, 0, layer.fc1, 0, T, 4 * nEmbd, nEmbd);
-    geluInPlace(mlpH, 0, T * 4 * nEmbd);
-    tiledMatmul(proj, 0, mlpH, 0, layer.fc2, 0, T, nEmbd, 4 * nEmbd);
+    // ── MLP + residual (GELU or SwiGLU), batched over all T positions ──
+    const mlp = layer.mlp;
+    if (mlp.kind === "swiglu") {
+      const ffnDim = mlp.ffnDim;
+      // gate = lnBuf @ fcGate^T ; up = lnBuf @ fcUp^T ; h = silu(gate) ⊙ up
+      tiledMatmul(mlpH, 0, lnBuf, 0, mlp.fcGate, 0, T, ffnDim, nEmbd);
+      tiledMatmul(mlpUp!, 0, lnBuf, 0, mlp.fcUp, 0, T, ffnDim, nEmbd);
+      siluInPlace(mlpH, 0, T * ffnDim);
+      for (let i = 0; i < T * ffnDim; i++) mlpH[i] *= mlpUp![i];
+      tiledMatmul(proj, 0, mlpH, 0, mlp.fcProj, 0, T, nEmbd, ffnDim);
+    } else {
+      const ffnDim = mlp.ffnDim;
+      tiledMatmul(mlpH, 0, lnBuf, 0, mlp.fc1, 0, T, ffnDim, nEmbd);
+      geluInPlace(mlpH, 0, T * ffnDim);
+      tiledMatmul(proj, 0, mlpH, 0, mlp.fc2, 0, T, nEmbd, ffnDim);
+    }
     for (let i = 0; i < T * nEmbd; i++) x[i] += proj[i];
   }
 
   // Final layer norm — only for last position
   const lastOff = (T - 1) * nEmbd;
   const lastLn = session._prefillLastLn ?? new Float32Array(nEmbd);
-  layerNorm(lastLn, 0, x, lastOff, lnFW, lnFB, nEmbd);
+  applyNorm(lastLn, 0, x, lastOff, lnFW, lnFB, nEmbd, useRms);
 
   // LM head — only for last position
   const logits = session._logits;
@@ -520,10 +732,11 @@ export function decodeStep(
     pos = tokenOrPos;
   }
 
-  const { wte, wpe, layers, lnFW, lnFB, lmHead } = weights;
+  const { wte, wpe, layers, lnFW, lnFB, lmHead, useRope, useRms, softCapVal, ropeCos, ropeSin } = weights;
   const { nEmbd, nHead, vocabSize, blockSize } = weights.config;
   const headDim = nEmbd / nHead;
   const scaleVal = 1 / Math.sqrt(headDim);
+  const capOn = softCapVal > 0;
   const seqLen = pos + 1;
 
   if (pos < 0 || pos >= blockSize) throw new RangeError(`decodeStep pos (${pos}) out of range [0, ${blockSize})`);
@@ -538,25 +751,34 @@ export function decodeStep(
   const attnOut = session._attnOut;
   const projected = session._projected;
   const mlpHidden = session._mlpHidden;
+  const mlpUp = session._mlpUp;
   const mlpOut = session._mlpOut;
   const logits = session._logits;
 
-  // Token + position embedding
+  // Token (+ optional learned position) embedding
   const wteOff = token * nEmbd;
-  const wpeOff = pos * nEmbd;
-  for (let i = 0; i < nEmbd; i++) {
-    x[i] = wte[wteOff + i] + wpe[wpeOff + i];
+  if (wpe) {
+    const wpeOff = pos * nEmbd;
+    for (let i = 0; i < nEmbd; i++) x[i] = wte[wteOff + i] + wpe[wpeOff + i];
+  } else {
+    for (let i = 0; i < nEmbd; i++) x[i] = wte[wteOff + i];
   }
 
   // Transformer blocks
   for (let l = 0; l < layers.length; l++) {
     const layer = layers[l];
 
-    layerNorm(lnOut, 0, x, 0, layer.ln1W, layer.ln1B, nEmbd);
+    applyNorm(lnOut, 0, x, 0, layer.norm1W, layer.norm1B, nEmbd, useRms);
 
     matvecMul(q, 0, lnOut, 0, layer.wq, 0, nEmbd, nEmbd);
     matvecMul(k, 0, lnOut, 0, layer.wk, 0, nEmbd, nEmbd);
     matvecMul(v, 0, lnOut, 0, layer.wv, 0, nEmbd, nEmbd);
+
+    // RoPE rotate q/k at the current absolute position before caching K.
+    if (useRope) {
+      ropeInPlace(q, 0, nHead, headDim, pos, ropeCos!, ropeSin!);
+      ropeInPlace(k, 0, nHead, headDim, pos, ropeCos!, ropeSin!);
+    }
 
     writeCachePos(kCache[l], k, 0, pos, nHead, blockSize, headDim);
     writeCachePos(vCache[l], v, 0, pos, nHead, blockSize, headDim);
@@ -574,8 +796,10 @@ export function decodeStep(
           score += q[qOff + d] * kCache[l][kOff + d];
         }
         score *= scaleVal;
-        if (score > 30) score = 30;
-        else if (score < -30) score = -30;
+        if (capOn) {
+          if (score > softCapVal) score = softCapVal;
+          else if (score < -softCapVal) score = -softCapVal;
+        }
         attnScores[t] = score;
         if (score > maxScore) maxScore = score;
       }
@@ -603,16 +827,14 @@ export function decodeStep(
     matvecMul(projected, 0, attnOut, 0, layer.wo, 0, nEmbd, nEmbd);
     for (let i = 0; i < nEmbd; i++) x[i] += projected[i];
 
-    layerNorm(lnOut, 0, x, 0, layer.ln2W, layer.ln2B, nEmbd);
+    applyNorm(lnOut, 0, x, 0, layer.norm2W, layer.norm2B, nEmbd, useRms);
 
-    matvecMul(mlpHidden, 0, lnOut, 0, layer.fc1, 0, 4 * nEmbd, nEmbd);
-    geluInPlace(mlpHidden, 0, 4 * nEmbd);
-    matvecMul(mlpOut, 0, mlpHidden, 0, layer.fc2, 0, nEmbd, 4 * nEmbd);
+    mlpForwardRow(mlpOut, 0, lnOut, 0, layer.mlp, nEmbd, mlpHidden, mlpUp);
 
     for (let i = 0; i < nEmbd; i++) x[i] += mlpOut[i];
   }
 
-  layerNorm(lnOut, 0, x, 0, lnFW, lnFB, nEmbd);
+  applyNorm(lnOut, 0, x, 0, lnFW, lnFB, nEmbd, useRms);
   matvecMul(logits, 0, lnOut, 0, lmHead, 0, vocabSize, nEmbd);
 
   return logits;

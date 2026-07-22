@@ -423,6 +423,66 @@ export class CpuRefBackend implements Backend {
     return makeTensor(shape, x.dtype, out);
   }
 
+  rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
+    // x: [..., dim], weight: [dim]. Normalize over the last dimension by the
+    // root-mean-square (no mean-subtraction, no bias) — the Llama variant.
+    //   out[j] = x[j] / sqrt(mean(x^2) + eps) * weight[j]
+    const shape = x.shape;
+    const dim = shape[shape.length - 1];
+    const outer = shapeSize(shape) / dim;
+    const Ctor = dtypeArray(x.dtype);
+    const xd = numData(x);
+    const wd = numData(weight);
+    const out = new Ctor(xd.length) as NumericArray;
+
+    for (let i = 0; i < outer; i++) {
+      const off = i * dim;
+      let ms = 0;
+      for (let j = 0; j < dim; j++) ms += xd[off + j] * xd[off + j];
+      ms /= dim;
+      const invRms = 1 / Math.sqrt(ms + eps);
+      for (let j = 0; j < dim; j++) {
+        out[off + j] = xd[off + j] * invRms * wd[j];
+      }
+    }
+
+    return makeTensor(shape, x.dtype, out);
+  }
+
+  rope(x: TensorData, cos: TensorData, sin: TensorData): TensorData {
+    // x: [B*H, T, D] (head-major). cos/sin: [T, D/2]. HF-Llama rotate_half
+    // convention (split the head dim in HALF, first/second):
+    //   out[i]       = x[i]       * c_i - x[i+D/2] * s_i
+    //   out[i + D/2] = x[i + D/2] * c_i + x[i]     * s_i     for i in [0, D/2)
+    // where (c_i, s_i) = (cos[t,i], sin[t,i]) for this row's position t.
+    const shape = x.shape;
+    const D = shape[shape.length - 1];
+    const T = shape[shape.length - 2];
+    const half = D >> 1;
+    const rows = shapeSize(shape) / D; // = B*H*T
+    const Ctor = dtypeArray(x.dtype);
+    const xd = numData(x);
+    const cd = numData(cos);
+    const sd = numData(sin);
+    const out = new Ctor(xd.length) as NumericArray;
+
+    for (let r = 0; r < rows; r++) {
+      const t = r % T;               // position within the sequence
+      const xBase = r * D;
+      const csBase = t * half;
+      for (let i = 0; i < half; i++) {
+        const c = cd[csBase + i];
+        const s = sd[csBase + i];
+        const a = xd[xBase + i];
+        const bb = xd[xBase + i + half];
+        out[xBase + i] = a * c - bb * s;
+        out[xBase + i + half] = bb * c + a * s;
+      }
+    }
+
+    return makeTensor(shape, x.dtype, out);
+  }
+
   gelu(a: TensorData): TensorData {
     const SQRT_2_OVER_PI = Math.sqrt(2 / Math.PI);
     return unaryOp(a, (x) => {
@@ -561,6 +621,32 @@ export class CpuRefBackend implements Backend {
       loss -= lpd[i * C + cls];
     }
     loss /= N;
+
+    const Ctor = dtypeArray(logits.dtype);
+    return makeTensor([], logits.dtype, Ctor.from([loss]) as NumericArray);
+  }
+
+  crossEntropyMasked(logits: TensorData, targets: TensorData, mask: TensorData): TensorData {
+    // logits: [N, C], targets: [N] class idx, mask: [N] per-row weights.
+    // Returns scalar = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1).
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+
+    const logProbs = this.logSoftmax(logits, 1);
+    const td = numData(targets);
+    const lpd = numData(logProbs);
+    const md = numData(mask);
+
+    let loss = 0;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) {
+      const m = md[i];
+      sumMask += m;
+      loss -= lpd[i * C + td[i]] * m;
+    }
+    // Floor the denominator at 1 so an all-zero mask (padding-only row / no
+    // assistant tokens) yields exactly 0 instead of 0/0 = NaN.
+    loss /= Math.max(sumMask, 1);
 
     const Ctor = dtypeArray(logits.dtype);
     return makeTensor([], logits.dtype, Ctor.from([loss]) as NumericArray);

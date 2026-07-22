@@ -23,7 +23,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import { HeliosBackend, destroyDevice, getDeviceInfo } from "@alpha/helios";
 import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type TensorData, type Backend } from "@alpha/core";
-import { Tape, Variable, castToF16, castToF32, sum } from "@alpha/autograd";
+import { Tape, Variable, castToF16, castToF32, sum, rmsNorm, rope } from "@alpha/autograd";
 import { initGPT, gptForward, collectParamEntries } from "@alpha/model";
 import { AdamW } from "@alpha/train";
 
@@ -119,6 +119,13 @@ describeGpu("per-op forward parity", () => {
     assertClose("layerNorm", f32(g), f32(c), FWD_REL_TOL, FWD_ABS_TOL);
   });
 
+  it("rmsNorm [6,16]", () => {
+    const x = rnd(41, 96, -2, 2), w = rnd(42, 16, 0.5, 1.5);
+    const c = cpu.rmsNorm(cpu.fromArray(x, [6, 16]), cpu.fromArray(w, [16]), 1e-5);
+    const g = gpu.rmsNorm(gpu.fromArray(x, [6, 16]), gpu.fromArray(w, [16]), 1e-5);
+    assertClose("rmsNorm", f32(g), f32(c), FWD_REL_TOL, FWD_ABS_TOL);
+  });
+
   it("gelu [64]", () => {
     const x = rnd(7, 64, -4, 4);
     assertClose("gelu", f32(gpu.gelu(gpu.fromArray(x, [64]))), f32(cpu.gelu(cpu.fromArray(x, [64]))), FWD_REL_TOL, FWD_ABS_TOL);
@@ -160,6 +167,39 @@ describeGpu("per-op forward parity", () => {
     const ref = Float32Array.from(x, (v) => cap * Math.tanh(v / cap));
     const g = gpu.softCap!(gpu.fromArray(x, [64]), cap);
     assertClose("softCap", f32(g), ref, FWD_REL_TOL, FWD_ABS_TOL);
+  });
+});
+
+// ── 1.5 Masked cross-entropy parity (assistant-only SFT) ─────────────────────
+
+describeGpu("masked cross-entropy parity", () => {
+  const N = 6, C = 10;
+  const logitData = rnd(51, N * C, -3, 3);
+  const targetIdx = [1, 3, 0, 9, 4, 7];
+  const maskVals = [1, 0, 0.5, 1, 0, 1]; // fractional + zero rows
+  const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+  const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+
+  it("crossEntropyMasked forward matches cpu_ref", () => {
+    const c = cpu.crossEntropyMasked!(cpu.fromArray(logitData, [N, C]), targets, mask);
+    const g = gpu.crossEntropyMasked!(gpu.fromArray(logitData, [N, C]), targets, mask);
+    relCloseScalar("crossEntropyMasked", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
+  });
+
+  it("crossEntropyMaskedBackward matches the (softmax-onehot)*mask/sum(mask) reference", () => {
+    const grad: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([1]) };
+    const g = gpu.crossEntropyMaskedBackward!(gpu.fromArray(logitData, [N, C]), targets, mask, grad);
+    // Reference computed on cpu_ref (which has no fused masked-backward).
+    const probs = cpu.softmax(cpu.fromArray(logitData, [N, C]), -1).data as Float32Array;
+    const denom = maskVals.reduce((a, b) => a + b, 0);
+    const ref = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      for (let c = 0; c < C; c++) ref[i * C + c] = (probs[i * C + c] - (c === targetIdx[i] ? 1 : 0)) * maskVals[i] / Math.max(denom, 1);
+    }
+    assertClose("crossEntropyMaskedBackward", f32(g), ref, GRAD_REL_TOL, GRAD_ABS_TOL);
+    // Masked-out rows (1 and 4) are bit-exactly zero on GPU too.
+    const gd = f32(g);
+    for (const r of [1, 4]) for (let c = 0; c < C; c++) expect(gd[r * C + c]).toBe(0);
   });
 });
 
@@ -205,6 +245,36 @@ describeGpu("tiny-GPT forward parity", () => {
 
     assertClose("logits", f32(resG.logits.data), f32(resC.logits.data), LOGITS_REL_TOL, LOGITS_ABS_TOL);
     relCloseScalar("loss", f32(resG.loss!.data)[0], f32(resC.loss!.data)[0], LOSS_REL_TOL);
+  });
+});
+
+// ── 2.5 Tiny-GPT masked (SFT) forward + backward parity ──────────────────────
+
+describeGpu("tiny-GPT masked-loss parity (lossMask threaded)", () => {
+  it("masked loss + every parameter gradient match cpu_ref", () => {
+    const batch = makeBatch(GPT_CONFIG, 99);
+    const T = GPT_CONFIG.blockSize;
+    // [BATCH, T] mask: alternating + guaranteed zeros and ones.
+    const mData = new Float32Array(BATCH * T);
+    const r = new SeededRng(321);
+    for (let i = 0; i < mData.length; i++) mData[i] = r.next() < 0.5 ? 1 : 0;
+    mData[0] = 1; mData[mData.length - 1] = 0;
+    const mask: TensorData = { shape: [BATCH, T], dtype: "f32", data: mData };
+
+    const run = (backend: Backend) => {
+      const params = initGPT(GPT_CONFIG, backend, new SeededRng(GPT_SEED));
+      const tape = new Tape();
+      const res = gptForward(GPT_CONFIG, params, backend, tape, batch.tokens, batch.targets, false, false, false, undefined, undefined, mask);
+      tape.backward(res.loss!, backend);
+      return { loss: f32(res.loss!.data)[0], entries: new Map(collectParamEntries(params)) };
+    };
+    const c = run(cpu);
+    const g = run(gpu);
+    relCloseScalar("masked-loss", g.loss, c.loss, LOSS_REL_TOL);
+    for (const [name, vC] of c.entries) {
+      const vG = g.entries.get(name)!;
+      assertClose(`masked-grad ${name}`, f32(vG.grad!), f32(vC.grad!), GRAD_REL_TOL, GRAD_ABS_TOL);
+    }
   });
 });
 
@@ -327,6 +397,95 @@ describeGpu("mixed precision (f16 casts)", () => {
     expect(Number.isFinite(mpLoss), `mp loss non-finite (${mpLoss})`).toBe(true);
     expect(Math.abs(mpLoss - fpLoss) / Math.max(Math.abs(fpLoss), 1e-6),
       `mp loss ${mpLoss} vs fp32 ${fpLoss}`).toBeLessThan(0.05);
+  });
+});
+
+// ── 4.6 RMSNorm + RoPE autograd fwd/bwd parity (new Llama-form ops) ──────────
+
+describeGpu("rmsNorm / rope autograd parity", () => {
+  it("rmsNorm forward + input/weight gradients match cpu_ref", () => {
+    const xData = rnd(43, 96, -2, 2);
+    const wData = rnd(44, 16, 0.5, 1.5);
+    const run = (backend: Backend) => {
+      const ctx = { tape: new Tape(), backend };
+      const x = new Variable(backend.fromArray(xData, [6, 16]), true);
+      const w = new Variable(backend.fromArray(wData, [16]), true);
+      const out = rmsNorm(ctx, x, w, 1e-5);
+      const loss = sum(ctx, out);
+      ctx.tape.backward(loss, backend);
+      return { out: Float32Array.from(f32(out.data)), dx: Float32Array.from(f32(x.grad!)), dw: Float32Array.from(f32(w.grad!)) };
+    };
+    const c = run(cpu);
+    const g = run(gpu);
+    assertClose("rmsNorm.out", g.out, c.out, FWD_REL_TOL, FWD_ABS_TOL);
+    assertClose("rmsNorm.dx", g.dx, c.dx, GRAD_REL_TOL, GRAD_ABS_TOL);
+    assertClose("rmsNorm.dw", g.dw, c.dw, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+
+  it("rope forward + input gradient match cpu_ref ([B*H,T,D]=[4,8,16])", () => {
+    const xData = rnd(45, 4 * 8 * 16, -2, 2);
+    const run = (backend: Backend) => {
+      const ctx = { tape: new Tape(), backend };
+      const x = new Variable(backend.fromArray(xData, [4, 8, 16]), true);
+      const out = rope(ctx, x, 16, 0, 10000);
+      const loss = sum(ctx, out);
+      ctx.tape.backward(loss, backend);
+      return { out: Float32Array.from(f32(out.data)), dx: Float32Array.from(f32(x.grad!)) };
+    };
+    const c = run(cpu);
+    const g = run(gpu);
+    assertClose("rope.out", g.out, c.out, FWD_REL_TOL, FWD_ABS_TOL);
+    assertClose("rope.dx", g.dx, c.dx, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+});
+
+// ── 4.7 Llama-form tied model: 20-step Helios loop, zero non-finite ─────────
+
+describeGpu("Llama-form tied model training loop", () => {
+  const LLAMA_CONFIG: ModelConfig = {
+    vocabSize: 32, blockSize: 16, nLayer: 2, nEmbd: 32, nHead: 4, dropout: 0,
+    ffnActivation: "swiglu", normType: "rmsnorm", posEnc: "rope", ropeTheta: 10000,
+    tieEmbeddings: true,
+  };
+
+  it("20 steps: zero non-finite loss/grads; loss decreases; tied structure", () => {
+    const batch = makeBatch(LLAMA_CONFIG, 99);
+    const cfg = { lr: 1e-3, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0.1 };
+    const release = releaser(gpu);
+    const params = initGPT(LLAMA_CONFIG, gpu, new SeededRng(GPT_SEED));
+    const opt = new AdamW(gpu, cfg);
+    const entries = collectParamEntries(params);
+    const names = entries.map(([n]) => n);
+    // Tied/rope structure: single tied embedding, no wpe, no lmHead entry.
+    expect(names).not.toContain("wpe");
+    expect(names).not.toContain("lmHead");
+    expect(names.filter((n) => n === "wte")).toHaveLength(1);
+
+    const losses: number[] = [];
+    for (let step = 0; step < 20; step++) {
+      const tape = new Tape();
+      const res = gptForward(LLAMA_CONFIG, params, gpu, tape, batch.tokens, batch.targets, false);
+      const lossVal = f32(res.loss!.data)[0];
+      losses.push(lossVal);
+      expect(Number.isFinite(lossVal), `step ${step} loss non-finite (${lossVal})`).toBe(true);
+      tape.backward(res.loss!, gpu, release);
+      for (const [name, v] of entries) {
+        const g = v.grad;
+        if (!g) throw new Error(`step ${step}: ${name} has null grad`);
+        const gd = g.data as Float32Array;
+        for (let i = 0; i < gd.length; i++) {
+          if (!Number.isFinite(gd[i])) throw new Error(`step ${step}: ${name}[${i}] grad non-finite`);
+        }
+      }
+      opt.stepParamEntries(entries as any);
+      for (const [, v] of entries) {
+        if (v.grad && release) release(v.grad);
+        v.grad = null;
+      }
+      tape.clear(release);
+      (gpu as unknown as { flush?: () => void }).flush?.();
+    }
+    expect(losses[losses.length - 1]).toBeLessThan(losses[0]); // it learned
   });
 });
 

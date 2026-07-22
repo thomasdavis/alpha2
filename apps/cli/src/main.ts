@@ -21,9 +21,12 @@ try {
   }
 } catch { /* .env.local is optional */ }
 import { tokenizerBuildCmd } from "./commands/tokenizer-build.js";
+import { tokenizerExportHfCmd } from "./commands/tokenizer-export-hf.js";
 import { trainCmd } from "./commands/train.js";
 import { sampleCmd } from "./commands/sample.js";
 import { evalCmd } from "./commands/eval.js";
+import { exportHfCmd } from "./commands/export-hf.js";
+import { logitsCmd } from "./commands/logits.js";
 import { benchCmd } from "./commands/bench.js";
 import { datagenCmd } from "./commands/datagen.js";
 import { fleetCmd } from "./commands/fleet.js";
@@ -33,10 +36,13 @@ const USAGE = `
 alpha — a tiny, readable GPT training system
 
 Commands:
-  tokenizer build  Build tokenizer artifacts from text
-  train            Train a GPT model
+  tokenizer build      Build tokenizer artifacts from text
+  tokenizer export-hf  Export byte-BPE artifacts to a HF tokenizer.json dir
+  train                Train a GPT model
   sample           Generate text from a checkpoint
   eval             Evaluate a checkpoint on validation data
+  export-hf        Export an alpha_llama checkpoint to a HF LlamaForCausalLM repo
+  logits           Dump cpu_ref forward logits for prompts (golden-token test)
   bench            Run benchmarks
   datagen          Generate synthetic training data
   fleet            Manage remote training instances
@@ -47,6 +53,8 @@ Options:
 
 Examples:
   alpha tokenizer build --type=bpe --input=data/train.txt --vocabSize=2000 --out=artifacts/tokenizer.json
+  alpha tokenizer build --type=bpe-byte-12k --input=data/train.txt --out=artifacts/tokenizer.json
+  alpha tokenizer export-hf --artifacts=artifacts/tokenizer.json --out=hf/tokenizer
   alpha train --data=data/train.txt --iters=1000 --batch=64 --block=256
   alpha sample --checkpoint=runs/.../checkpoint-1000.json --prompt="ROMEO:" --steps=200
   alpha eval --checkpoint=runs/.../checkpoint-1000.json --data=data/val.txt
@@ -66,12 +74,18 @@ async function main() {
 
   if (command === "tokenizer" && args[1] === "build") {
     await tokenizerBuildCmd(args.slice(2));
+  } else if (command === "tokenizer" && args[1] === "export-hf") {
+    await tokenizerExportHfCmd(args.slice(2));
   } else if (command === "train") {
     await trainCmd(args.slice(1));
   } else if (command === "sample") {
     await sampleCmd(args.slice(1));
   } else if (command === "eval") {
     await evalCmd(args.slice(1));
+  } else if (command === "export-hf") {
+    await exportHfCmd(args.slice(1));
+  } else if (command === "logits") {
+    await logitsCmd(args.slice(1));
   } else if (command === "bench") {
     await benchCmd(args.slice(1));
   } else if (command === "datagen") {

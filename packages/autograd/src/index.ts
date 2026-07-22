@@ -6,7 +6,7 @@ export {
   sum, mean,
   exp, log, sqrt, relu, silu, siluMul, gelu, clamp, softCap,
   dropout, residualDropoutAdd,
-  embedding, layerNorm, softmax, crossEntropy,
+  embedding, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   flashAttention,
   slice, sliceQkv, reshape, transpose,
   castToF16, castToF32,

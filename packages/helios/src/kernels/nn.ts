@@ -3047,6 +3047,12 @@ export function kernelLayerNormBackward(wgSize = 256): Uint32Array {
     emitTreeReduce();
     const ptr = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptr, sharedMem, p.const0u]);
     const val = b.id(); b.emit(Op.Load, [p.tF32, val, ptr]);
+    // Trailing barrier: guarantee ALL threads have read sharedMem[0] before any
+    // thread reaches the NEXT reduction's store (otherwise a fast thread clobbers
+    // sharedMem[0] mid-read → corrupted second-phase reduction). This multi-
+    // reduction hazard is masked by NVIDIA warp lockstep but exposed on software/
+    // relaxed schedulers (proven: rmsNorm dx diverged ~4e3 without it).
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
     return val;
   }
 
@@ -3494,6 +3500,554 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
   return b.build();
 }
 
+// ── Kernel: Fused RMSNorm (one workgroup per row) ────────────────────────────
+
+/**
+ * Fused RMS normalization — LayerNorm minus the mean-subtraction and the bias:
+ *   1. Compute mean-of-squares via shared-memory reduction
+ *   2. invRms = 1 / sqrt(ms + eps)
+ *   3. out = x * invRms * weight
+ *
+ * Bindings: 0=X(in), 1=weight(in), 2=C(out)
+ * Push constants: { dim: f32, eps: f32 }
+ * Dispatch: (numRows, 1, 1)
+ */
+export function kernelRmsNorm(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufX = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufW = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id();
+  b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  const dimF = loadPushLen(b, p, pc);
+  const dimU = b.id();
+  b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const epsF = loadPushScalar(b, p, pc);
+  const rowOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffset, row, dimU]);
+
+  // ── Phase 1: sum of squares ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  function emitAccLoop(loadFn: (globalIdx: number) => number): void {
+    const head = b.id();
+    const body = b.id();
+    const merge = b.id();
+    const cont = b.id();
+    b.emit(Op.Branch, [head]);
+    b.emit(Op.Label, [head]);
+    const ci = b.id();
+    b.emit(Op.Load, [p.tU32, ci, varIdx]);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, ci, dimU]);
+    b.emit(Op.LoopMerge, [merge, cont, 0]);
+    b.emit(Op.BranchConditional, [cmp, body, merge]);
+    b.emit(Op.Label, [body]);
+    const gi = b.id();
+    b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
+    const val = loadFn(gi);
+    const cur = b.id();
+    b.emit(Op.Load, [p.tF32, cur, varAcc]);
+    const nv = b.id();
+    b.emit(Op.FAdd, [p.tF32, nv, cur, val]);
+    b.emit(Op.Store, [varAcc, nv]);
+    b.emit(Op.Branch, [cont]);
+    b.emit(Op.Label, [cont]);
+    const ni = b.id();
+    b.emit(Op.Load, [p.tU32, ni, varIdx]);
+    const ii = b.id();
+    b.emit(Op.IAdd, [p.tU32, ii, ni, constWgSize]);
+    b.emit(Op.Store, [varIdx, ii]);
+    b.emit(Op.Branch, [head]);
+    b.emit(Op.Label, [merge]);
+  }
+
+  function emitTreeReduce() {
+    let s = wgSize >> 1;
+    while (s > 0) {
+      const sc = b.id();
+      b.constant(p.tU32, sc, s);
+      const cmp = b.id();
+      b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+      const lr = b.id();
+      const lar = b.id();
+      b.emit(Op.SelectionMerge, [lar, 0]);
+      b.emit(Op.BranchConditional, [cmp, lr, lar]);
+      b.emit(Op.Label, [lr]);
+      const oi = b.id();
+      b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+      const pm = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, pm, sharedMem, localIdx]);
+      const mv = b.id();
+      b.emit(Op.Load, [p.tF32, mv, pm]);
+      const po = b.id();
+      b.emit(Op.AccessChain, [tPtrSharedF32, po, sharedMem, oi]);
+      const ov = b.id();
+      b.emit(Op.Load, [p.tF32, ov, po]);
+      const r = b.id();
+      b.emit(Op.FAdd, [p.tF32, r, mv, ov]);
+      b.emit(Op.Store, [pm, r]);
+      b.emit(Op.Branch, [lar]);
+      b.emit(Op.Label, [lar]);
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+      s >>= 1;
+    }
+  }
+
+  emitAccLoop((gi) => {
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [bufX.tPtrF32, ptr, bufX.varId, p.const0u, gi]);
+    const v = b.id();
+    b.emit(Op.Load, [p.tF32, v, ptr]);
+    const sq = b.id();
+    b.emit(Op.FMul, [p.tF32, sq, v, v]);
+    return sq;
+  });
+
+  const ts1 = b.id();
+  b.emit(Op.Load, [p.tF32, ts1, varAcc]);
+  const ps1 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ps1, sharedMem, localIdx]);
+  b.emit(Op.Store, [ps1, ts1]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+  emitTreeReduce();
+
+  const ptrS0 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrS0, sharedMem, p.const0u]);
+  const sqSum = b.id();
+  b.emit(Op.Load, [p.tF32, sqSum, ptrS0]);
+  const ms = b.id();
+  b.emit(Op.FDiv, [p.tF32, ms, sqSum, dimF]);
+
+  // invRms = 1.0 / sqrt(ms + eps)
+  const msPlusEps = b.id();
+  b.emit(Op.FAdd, [p.tF32, msPlusEps, ms, epsF]);
+  const stdDev = b.id();
+  b.emit(Op.ExtInst, [p.tF32, stdDev, p.glslStd, GLSLstd450.Sqrt, msPlusEps]);
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
+  const invRms = b.id();
+  b.emit(Op.FDiv, [p.tF32, invRms, constOne, stdDev]);
+
+  // ── Phase 2: normalize ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  const labelNH = b.id();
+  const labelNB = b.id();
+  const labelNM = b.id();
+  const labelNC = b.id();
+  b.emit(Op.Branch, [labelNH]);
+  b.emit(Op.Label, [labelNH]);
+  const ci = b.id();
+  b.emit(Op.Load, [p.tU32, ci, varIdx]);
+  const cmpN = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpN, ci, dimU]);
+  b.emit(Op.LoopMerge, [labelNM, labelNC, 0]);
+  b.emit(Op.BranchConditional, [cmpN, labelNB, labelNM]);
+  b.emit(Op.Label, [labelNB]);
+  const gi = b.id();
+  b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
+  const ptrX = b.id();
+  b.emit(Op.AccessChain, [bufX.tPtrF32, ptrX, bufX.varId, p.const0u, gi]);
+  const xv = b.id();
+  b.emit(Op.Load, [p.tF32, xv, ptrX]);
+  const ptrW = b.id();
+  b.emit(Op.AccessChain, [bufW.tPtrF32, ptrW, bufW.varId, p.const0u, ci]);
+  const wv = b.id();
+  b.emit(Op.Load, [p.tF32, wv, ptrW]);
+  // out = x * invRms * w
+  const normalized = b.id();
+  b.emit(Op.FMul, [p.tF32, normalized, xv, invRms]);
+  const result = b.id();
+  b.emit(Op.FMul, [p.tF32, result, normalized, wv]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrOut, bufC.varId, p.const0u, gi]);
+  b.emit(Op.Store, [ptrOut, result]);
+  b.emit(Op.Branch, [labelNC]);
+  b.emit(Op.Label, [labelNC]);
+  const ni = b.id();
+  b.emit(Op.Load, [p.tU32, ni, varIdx]);
+  const ii = b.id();
+  b.emit(Op.IAdd, [p.tU32, ii, ni, constWgSize]);
+  b.emit(Op.Store, [varIdx, ii]);
+  b.emit(Op.Branch, [labelNH]);
+  b.emit(Op.Label, [labelNM]);
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+// ── Kernel: RMSNorm backward (one workgroup per row) ─────────────────────────
+
+/**
+ * RMSNorm backward — computes DX and DW_PARTIAL.
+ *   1. Recompute ms = mean(x^2), r = 1/sqrt(ms + eps)
+ *   2. S = sum(G*W*x) per row
+ *   3. DX[j]          = r*G[j]*W[j] - X[j]*r^3*S/dim
+ *   4. DW_PARTIAL[..] = G[j] * X[j] * r     (column-summed later → DW)
+ *
+ * Bindings: 0=X(in), 1=W(in), 2=G(in), 3=DX(out), 4=DW_PARTIAL(out)
+ * Push constants: { dim: f32, eps: f32 }
+ * Dispatch: (numRows, 1, 1)
+ */
+export function kernelRmsNormBackward(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufX   = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufW   = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufG   = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const bufDX  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+  const bufDWP = declareStorageBuffer(b, p.tF32, p.tU32, 0, 4, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constWgSize = b.id(); b.constant(p.tU32, constWgSize, wgSize);
+  const tArrayShared = b.id(); b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id(); b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id(); b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id(); b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  const tPtrInputVec3 = b.id(); b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id(); b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id(); b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id(); b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id(); b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id(); b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id(); b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varAcc = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const lidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id(); b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+  const wgIdVec = b.id(); b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id(); b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  const dimF = loadPushLen(b, p, pc);
+  const dimU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const epsF = loadPushScalar(b, p, pc);
+  const rowOffset = b.id(); b.emit(Op.IMul, [p.tU32, rowOffset, row, dimU]);
+
+  function emitAccLoop(loadFn: (gi: number, ci: number) => number): void {
+    const h = b.id(), bd = b.id(), m = b.id(), c = b.id();
+    b.emit(Op.Branch, [h]);
+    b.emit(Op.Label, [h]);
+    const ci = b.id(); b.emit(Op.Load, [p.tU32, ci, varIdx]);
+    const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, ci, dimU]);
+    b.emit(Op.LoopMerge, [m, c, 0]);
+    b.emit(Op.BranchConditional, [cmp, bd, m]);
+    b.emit(Op.Label, [bd]);
+    const gi = b.id(); b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
+    const val = loadFn(gi, ci);
+    const cur = b.id(); b.emit(Op.Load, [p.tF32, cur, varAcc]);
+    const nv = b.id(); b.emit(Op.FAdd, [p.tF32, nv, cur, val]);
+    b.emit(Op.Store, [varAcc, nv]);
+    b.emit(Op.Branch, [c]);
+    b.emit(Op.Label, [c]);
+    const ni = b.id(); b.emit(Op.Load, [p.tU32, ni, varIdx]);
+    const ii = b.id(); b.emit(Op.IAdd, [p.tU32, ii, ni, constWgSize]);
+    b.emit(Op.Store, [varIdx, ii]);
+    b.emit(Op.Branch, [h]);
+    b.emit(Op.Label, [m]);
+  }
+
+  function emitTreeReduce() {
+    let s = wgSize >> 1;
+    while (s > 0) {
+      const sc = b.id(); b.constant(p.tU32, sc, s);
+      const cmp = b.id(); b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+      const lr = b.id(), lar = b.id();
+      b.emit(Op.SelectionMerge, [lar, 0]);
+      b.emit(Op.BranchConditional, [cmp, lr, lar]);
+      b.emit(Op.Label, [lr]);
+      const oi = b.id(); b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+      const pm = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, pm, sharedMem, localIdx]);
+      const mv = b.id(); b.emit(Op.Load, [p.tF32, mv, pm]);
+      const po = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, po, sharedMem, oi]);
+      const ov = b.id(); b.emit(Op.Load, [p.tF32, ov, po]);
+      const r = b.id(); b.emit(Op.FAdd, [p.tF32, r, mv, ov]);
+      b.emit(Op.Store, [pm, r]);
+      b.emit(Op.Branch, [lar]);
+      b.emit(Op.Label, [lar]);
+      b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+      s >>= 1;
+    }
+  }
+
+  function storeReduceLoad(): number {
+    const ts = b.id(); b.emit(Op.Load, [p.tF32, ts, varAcc]);
+    const ps = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ps, sharedMem, localIdx]);
+    b.emit(Op.Store, [ps, ts]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    emitTreeReduce();
+    const ptr = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptr, sharedMem, p.const0u]);
+    const val = b.id(); b.emit(Op.Load, [p.tF32, val, ptr]);
+    // Trailing barrier: guarantee ALL threads have read sharedMem[0] before any
+    // thread reaches the NEXT reduction's store (otherwise a fast thread clobbers
+    // sharedMem[0] mid-read → corrupted second-phase reduction). This multi-
+    // reduction hazard is masked by NVIDIA warp lockstep but exposed on software/
+    // relaxed schedulers (proven: rmsNorm dx diverged ~4e3 without it).
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    return val;
+  }
+
+  function resetAccLoop(): void {
+    b.emit(Op.Store, [varIdx, localIdx]);
+    b.emit(Op.Store, [varAcc, p.const0f]);
+  }
+
+  // ── Phase 1: ms = mean(x^2) ──
+  resetAccLoop();
+  emitAccLoop((gi) => {
+    const ptr = b.id(); b.emit(Op.AccessChain, [bufX.tPtrF32, ptr, bufX.varId, p.const0u, gi]);
+    const v = b.id(); b.emit(Op.Load, [p.tF32, v, ptr]);
+    const sq = b.id(); b.emit(Op.FMul, [p.tF32, sq, v, v]);
+    return sq;
+  });
+  const sqSum = storeReduceLoad();
+  const ms = b.id(); b.emit(Op.FDiv, [p.tF32, ms, sqSum, dimF]);
+  const msPlusEps = b.id(); b.emit(Op.FAdd, [p.tF32, msPlusEps, ms, epsF]);
+  const stdDev = b.id(); b.emit(Op.ExtInst, [p.tF32, stdDev, p.glslStd, GLSLstd450.Sqrt, msPlusEps]);
+  const constOne = b.id(); b.constantF32(p.tF32, constOne, 1.0);
+  const invRms = b.id(); b.emit(Op.FDiv, [p.tF32, invRms, constOne, stdDev]);
+  // r^3
+  const r2 = b.id(); b.emit(Op.FMul, [p.tF32, r2, invRms, invRms]);
+  const r3 = b.id(); b.emit(Op.FMul, [p.tF32, r3, r2, invRms]);
+
+  // ── Phase 2: S = sum(G*W*x) ──
+  resetAccLoop();
+  emitAccLoop((gi, ci) => {
+    const pg = b.id(); b.emit(Op.AccessChain, [bufG.tPtrF32, pg, bufG.varId, p.const0u, gi]);
+    const gv = b.id(); b.emit(Op.Load, [p.tF32, gv, pg]);
+    const pw = b.id(); b.emit(Op.AccessChain, [bufW.tPtrF32, pw, bufW.varId, p.const0u, ci]);
+    const wv = b.id(); b.emit(Op.Load, [p.tF32, wv, pw]);
+    const px = b.id(); b.emit(Op.AccessChain, [bufX.tPtrF32, px, bufX.varId, p.const0u, gi]);
+    const xv = b.id(); b.emit(Op.Load, [p.tF32, xv, px]);
+    const gw = b.id(); b.emit(Op.FMul, [p.tF32, gw, gv, wv]);
+    const gwx = b.id(); b.emit(Op.FMul, [p.tF32, gwx, gw, xv]);
+    return gwx;
+  });
+  const S = storeReduceLoad();
+  const Sdiv = b.id(); b.emit(Op.FDiv, [p.tF32, Sdiv, S, dimF]);
+
+  // ── Phase 3: write DX, DW_PARTIAL ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  const lWH = b.id(), lWB = b.id(), lWM = b.id(), lWC = b.id();
+  b.emit(Op.Branch, [lWH]);
+  b.emit(Op.Label, [lWH]);
+  const wci = b.id(); b.emit(Op.Load, [p.tU32, wci, varIdx]);
+  const wcmp = b.id(); b.emit(Op.ULessThan, [p.tBool, wcmp, wci, dimU]);
+  b.emit(Op.LoopMerge, [lWM, lWC, 0]);
+  b.emit(Op.BranchConditional, [wcmp, lWB, lWM]);
+  b.emit(Op.Label, [lWB]);
+
+  const wgi = b.id(); b.emit(Op.IAdd, [p.tU32, wgi, rowOffset, wci]);
+  const wpx = b.id(); b.emit(Op.AccessChain, [bufX.tPtrF32, wpx, bufX.varId, p.const0u, wgi]);
+  const wxv = b.id(); b.emit(Op.Load, [p.tF32, wxv, wpx]);
+  const wpg = b.id(); b.emit(Op.AccessChain, [bufG.tPtrF32, wpg, bufG.varId, p.const0u, wgi]);
+  const wgv = b.id(); b.emit(Op.Load, [p.tF32, wgv, wpg]);
+  const wpw = b.id(); b.emit(Op.AccessChain, [bufW.tPtrF32, wpw, bufW.varId, p.const0u, wci]);
+  const wwv = b.id(); b.emit(Op.Load, [p.tF32, wwv, wpw]);
+
+  // DX = r*g*w - x*r^3*(S/dim)
+  const rgw0 = b.id(); b.emit(Op.FMul, [p.tF32, rgw0, invRms, wgv]);
+  const rgw = b.id(); b.emit(Op.FMul, [p.tF32, rgw, rgw0, wwv]);
+  const xr3 = b.id(); b.emit(Op.FMul, [p.tF32, xr3, wxv, r3]);
+  const term = b.id(); b.emit(Op.FMul, [p.tF32, term, xr3, Sdiv]);
+  const dxv = b.id(); b.emit(Op.FSub, [p.tF32, dxv, rgw, term]);
+
+  // DW_PARTIAL = g * x * r
+  const gx = b.id(); b.emit(Op.FMul, [p.tF32, gx, wgv, wxv]);
+  const dwpv = b.id(); b.emit(Op.FMul, [p.tF32, dwpv, gx, invRms]);
+
+  const pdx = b.id(); b.emit(Op.AccessChain, [bufDX.tPtrF32, pdx, bufDX.varId, p.const0u, wgi]);
+  b.emit(Op.Store, [pdx, dxv]);
+  const pdwp = b.id(); b.emit(Op.AccessChain, [bufDWP.tPtrF32, pdwp, bufDWP.varId, p.const0u, wgi]);
+  b.emit(Op.Store, [pdwp, dwpv]);
+
+  b.emit(Op.Branch, [lWC]);
+  b.emit(Op.Label, [lWC]);
+  const wni = b.id(); b.emit(Op.Load, [p.tU32, wni, varIdx]);
+  const wii = b.id(); b.emit(Op.IAdd, [p.tU32, wii, wni, constWgSize]);
+  b.emit(Op.Store, [varIdx, wii]);
+  b.emit(Op.Branch, [lWH]);
+  b.emit(Op.Label, [lWM]);
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+// ── Kernel: RoPE (rotary position embedding, HF rotate_half convention) ──────
+
+/**
+ * Rotary position embedding over x:[B*H, T, D]. One thread per (row, i) pair,
+ * where the "pair" (i, i+D/2) is rotated by the angle whose cos/sin are read
+ * from the precomputed tables cos/sin:[T, D/2].
+ *
+ *   flat pair index g in [0, B*H*T*(D/2))
+ *   i    = g % halfD
+ *   rowR = g / halfD           (= b*H*T + h*T + t ... i.e. runs (bh,t))
+ *   t    = rowR % T
+ *   out[rowR*D + i]       = a*cos - b*sin
+ *   out[rowR*D + i+halfD] = b*cos + a*sin,  (a,b)=(x[..i], x[..i+halfD]),
+ *                                           cos/sin = cos/sin[t*halfD + i]
+ *
+ * Bindings: 0=X(in), 1=cos(in), 2=sin(in), 3=OUT(out)
+ * Push constants (f32): [ totalPairs, halfD, D, T ]
+ * Dispatch: (ceil(totalPairs/wgSize), 1, 1)
+ */
+export function kernelRope(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufX   = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufCos = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufSin = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 4);
+
+  const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  // push[0] = totalPairs, push[1] = halfD, push[2] = D, push[3] = T
+  const totalF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, totalF, gidX, labelEnd);
+
+  const halfF = loadPushScalar(b, p, pc);
+  const halfU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, halfU, halfF]);
+  const ptrD = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrD, pc.varId, p.const2u]);
+  const dimF = b.id(); b.emit(Op.Load, [p.tF32, dimF, ptrD]);
+  const dimU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, dimU, dimF]);
+  const ptrT = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrT, pc.varId, const3u]);
+  const tF = b.id(); b.emit(Op.Load, [p.tF32, tF, ptrT]);
+  const tU = b.id(); b.emit(Op.ConvertFToU, [p.tU32, tU, tF]);
+
+  // i = gidX % halfD ; rowR = gidX / halfD ; t = rowR % T
+  const i = b.id(); b.emit(Op.UMod, [p.tU32, i, gidX, halfU]);
+  const rowR = b.id(); b.emit(Op.UDiv, [p.tU32, rowR, gidX, halfU]);
+  const t = b.id(); b.emit(Op.UMod, [p.tU32, t, rowR, tU]);
+
+  // xBase = rowR * D ; idxA = xBase + i ; idxB = xBase + i + halfD
+  const xBase = b.id(); b.emit(Op.IMul, [p.tU32, xBase, rowR, dimU]);
+  const idxA = b.id(); b.emit(Op.IAdd, [p.tU32, idxA, xBase, i]);
+  const idxB = b.id(); b.emit(Op.IAdd, [p.tU32, idxB, idxA, halfU]);
+
+  // csIdx = t * halfD + i
+  const tHalf = b.id(); b.emit(Op.IMul, [p.tU32, tHalf, t, halfU]);
+  const csIdx = b.id(); b.emit(Op.IAdd, [p.tU32, csIdx, tHalf, i]);
+
+  // load a, b, cos, sin
+  const pA = b.id(); b.emit(Op.AccessChain, [bufX.tPtrF32, pA, bufX.varId, p.const0u, idxA]);
+  const a = b.id(); b.emit(Op.Load, [p.tF32, a, pA]);
+  const pB = b.id(); b.emit(Op.AccessChain, [bufX.tPtrF32, pB, bufX.varId, p.const0u, idxB]);
+  const bb = b.id(); b.emit(Op.Load, [p.tF32, bb, pB]);
+  const pC = b.id(); b.emit(Op.AccessChain, [bufCos.tPtrF32, pC, bufCos.varId, p.const0u, csIdx]);
+  const cval = b.id(); b.emit(Op.Load, [p.tF32, cval, pC]);
+  const pS = b.id(); b.emit(Op.AccessChain, [bufSin.tPtrF32, pS, bufSin.varId, p.const0u, csIdx]);
+  const sval = b.id(); b.emit(Op.Load, [p.tF32, sval, pS]);
+
+  // outA = a*cos - b*sin ; outB = b*cos + a*sin
+  const ac = b.id(); b.emit(Op.FMul, [p.tF32, ac, a, cval]);
+  const bs = b.id(); b.emit(Op.FMul, [p.tF32, bs, bb, sval]);
+  const outA = b.id(); b.emit(Op.FSub, [p.tF32, outA, ac, bs]);
+  const bc = b.id(); b.emit(Op.FMul, [p.tF32, bc, bb, cval]);
+  const as = b.id(); b.emit(Op.FMul, [p.tF32, as, a, sval]);
+  const outB = b.id(); b.emit(Op.FAdd, [p.tF32, outB, bc, as]);
+
+  const pOutA = b.id(); b.emit(Op.AccessChain, [bufOut.tPtrF32, pOutA, bufOut.varId, p.const0u, idxA]);
+  b.emit(Op.Store, [pOutA, outA]);
+  const pOutB = b.id(); b.emit(Op.AccessChain, [bufOut.tPtrF32, pOutB, bufOut.varId, p.const0u, idxB]);
+  b.emit(Op.Store, [pOutB, outB]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
 // ── Kernel: Broadcast (tile input to fill output) ──────────────────────────
 
 /**
@@ -3852,6 +4406,13 @@ export function kernelCrossEntropyForwardFused(wgSize = 256): Uint32Array {
   b.emit(Op.AccessChain, [tPtrSharedF32, ptrShared0, sharedMem, p.const0u]);
   const rowMax = b.id();
   b.emit(Op.Load, [p.tF32, rowMax, ptrShared0]);
+  // Barrier: every thread must finish reading shared[0] (rowMax) BEFORE any
+  // thread overwrites shared memory in Phase 2. Without it a fast thread can
+  // store its threadSum into shared[localIdx] (thread 0 → shared[0]) while a
+  // slow thread has not yet loaded rowMax, corrupting the row max (proven to
+  // diverge on relaxed schedulers; NVIDIA lockstep masked it). Same fix as the
+  // layerNorm/rmsNorm backward reductions hardened this session.
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
   // ── Phase 2: sum(exp(x - max)) ──
   b.emit(Op.Store, [varIdx, localIdx]);
@@ -3983,6 +4544,352 @@ export function kernelCrossEntropyForwardFused(wgSize = 256): Uint32Array {
   b.emit(Op.FSub, [p.tF32, loss, logSumExp, logitTarget]);
 
   // Write to output[row]
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, row]);
+  b.emit(Op.Store, [ptrOut, loss]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+
+  return b.build();
+}
+
+// ── Kernel: Cross-Entropy Forward Fused MASKED (assistant-only SFT) ──────────
+
+/**
+ * Fused log-sum-exp cross-entropy, one workgroup per row, that also weights the
+ * per-row loss by a per-row mask before writing it out:
+ *   out[row] = (logSumExp(logits[row]) - logit[row, target[row]]) * mask[row]
+ *
+ * Identical to {@link kernelCrossEntropyForwardFused} except for the extra mask
+ * binding (2) and the final multiply. The scalar reduction to
+ *   sum_row(out) / max(sum(mask),1)
+ * is finished on the host side in backend.crossEntropyMasked (sum(mask) is a
+ * tiny per-row quantity computed there). We prefer this fused variant over
+ * "run ce_fwd then a separate elementwise mul" because it saves the extra N-wide
+ * output tensor + dispatch and keeps the masked path a drop-in of the hot kernel.
+ *
+ * Bindings: 0=Logits(in, N*C), 1=Targets(in, N raw i32 bits), 2=Mask(in, N f32),
+ *           3=Out(out, N)
+ * NOTE: Out is the LAST binding — this matches the host dispatch convention where
+ * `allBufs` ends with the output region and `writeMask` defaults to the last
+ * buffer. (Regression fixed: Out/Mask were previously swapped at bindings 2/3,
+ * so the kernel wrote results into the mask buffer and read the mask from the
+ * uninitialized output region — silent all-zero/garbage GPU SFT loss+grads.)
+ * Push constants: { N: u32, C: u32 }
+ * Dispatch: (N, 1, 1) workgroups
+ */
+export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufLogits = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufMask = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+
+  // Push constants: { N: u32, C: u32 }
+  const tPCStruct = b.id();
+  b.typeStruct(tPCStruct, [p.tU32, p.tU32]);
+  b.addDecorate(tPCStruct, Decoration.Block);
+  b.addMemberDecorate(tPCStruct, 0, Decoration.Offset, 0);
+  b.addMemberDecorate(tPCStruct, 1, Decoration.Offset, 4);
+  const tPtrPCStruct = b.id();
+  b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
+  const tPtrU32PC = b.id();
+  b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const pcVar = b.id();
+  b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
+
+  // Shared memory for reductions
+  const constWgSize = b.id();
+  b.constant(p.tU32, constWgSize, wgSize);
+  const tArrayShared = b.id();
+  b.typeArray(tArrayShared, p.tF32, constWgSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const sharedMem = b.id();
+  b.variable(tPtrShared, sharedMem, StorageClass.Workgroup);
+
+  const constNegInf = b.id();
+  b.constant(p.tF32, constNegInf, 0xFF800000); // -Infinity
+
+  // WorkgroupId and LocalInvocationId
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  // Barrier constants
+  const scopeWg = b.id();
+  b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id();
+  b.emit(Op.Label, [labelEntry]);
+
+  const varIdx = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varIdx, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const lidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, lidVec, vLocalId]);
+  const localIdx = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, localIdx, lidVec, 0]);
+
+  const wgIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, wgIdVec, vWorkgroupId]);
+  const row = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, row, wgIdVec, 0]);
+
+  const ptrPC0 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC0, pcVar, p.const0u]);
+  const totalN = b.id(); b.emit(Op.Load, [p.tU32, totalN, ptrPC0]);
+  const ptrPC1 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC1, pcVar, p.const1u]);
+  const vocabC = b.id(); b.emit(Op.Load, [p.tU32, vocabC, ptrPC1]);
+
+  const rowOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, rowOffset, row, vocabC]);
+
+  // ── Phase 1: Find max per thread ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varAcc, constNegInf]);
+
+  const labelMaxHead = b.id();
+  const labelMaxBody = b.id();
+  const labelMaxMerge = b.id();
+  const labelMaxCont = b.id();
+
+  b.emit(Op.Branch, [labelMaxHead]);
+  b.emit(Op.Label, [labelMaxHead]);
+  const curIdx1 = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx1, varIdx]);
+  const cmpMax = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpMax, curIdx1, vocabC]);
+  b.emit(Op.LoopMerge, [labelMaxMerge, labelMaxCont, 0]);
+  b.emit(Op.BranchConditional, [cmpMax, labelMaxBody, labelMaxMerge]);
+
+  b.emit(Op.Label, [labelMaxBody]);
+  const globalIdx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, globalIdx1, rowOffset, curIdx1]);
+  const ptrA1 = b.id();
+  b.emit(Op.AccessChain, [bufLogits.tPtrF32, ptrA1, bufLogits.varId, p.const0u, globalIdx1]);
+  const val1 = b.id();
+  b.emit(Op.Load, [p.tF32, val1, ptrA1]);
+  const curMax = b.id();
+  b.emit(Op.Load, [p.tF32, curMax, varAcc]);
+  const newMax = b.id();
+  b.emit(Op.ExtInst, [p.tF32, newMax, p.glslStd, GLSLstd450.FMax, curMax, val1]);
+  b.emit(Op.Store, [varAcc, newMax]);
+  b.emit(Op.Branch, [labelMaxCont]);
+
+  b.emit(Op.Label, [labelMaxCont]);
+  const nextIdx1 = b.id();
+  b.emit(Op.Load, [p.tU32, nextIdx1, varIdx]);
+  const incIdx1 = b.id();
+  b.emit(Op.IAdd, [p.tU32, incIdx1, nextIdx1, constWgSize]);
+  b.emit(Op.Store, [varIdx, incIdx1]);
+  b.emit(Op.Branch, [labelMaxHead]);
+
+  b.emit(Op.Label, [labelMaxMerge]);
+
+  const threadMax = b.id();
+  b.emit(Op.Load, [p.tF32, threadMax, varAcc]);
+  const ptrSharedMax = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSharedMax, sharedMem, localIdx]);
+  b.emit(Op.Store, [ptrSharedMax, threadMax]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  let stride = wgSize >> 1;
+  while (stride > 0) {
+    const sc = b.id();
+    b.constant(p.tU32, sc, stride);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+    const lbl = b.id();
+    const lar = b.id();
+    b.emit(Op.SelectionMerge, [lar, 0]);
+    b.emit(Op.BranchConditional, [cmp, lbl, lar]);
+    b.emit(Op.Label, [lbl]);
+    const oi = b.id();
+    b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+    const pm = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pm, sharedMem, localIdx]);
+    const mv = b.id();
+    b.emit(Op.Load, [p.tF32, mv, pm]);
+    const po = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, po, sharedMem, oi]);
+    const ov = b.id();
+    b.emit(Op.Load, [p.tF32, ov, po]);
+    const mx = b.id();
+    b.emit(Op.ExtInst, [p.tF32, mx, p.glslStd, GLSLstd450.FMax, mv, ov]);
+    b.emit(Op.Store, [pm, mx]);
+    b.emit(Op.Branch, [lar]);
+    b.emit(Op.Label, [lar]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    stride >>= 1;
+  }
+
+  const ptrShared0 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrShared0, sharedMem, p.const0u]);
+  const rowMax = b.id();
+  b.emit(Op.Load, [p.tF32, rowMax, ptrShared0]);
+  // Barrier: every thread must finish reading shared[0] (rowMax) BEFORE any
+  // thread overwrites shared memory in Phase 2. Without it a fast thread can
+  // store its threadSum into shared[localIdx] (thread 0 → shared[0]) while a
+  // slow thread has not yet loaded rowMax, corrupting the row max (proven to
+  // diverge on relaxed schedulers; NVIDIA lockstep masked it). Same fix as the
+  // layerNorm/rmsNorm backward reductions hardened this session.
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // ── Phase 2: sum(exp(x - max)) ──
+  b.emit(Op.Store, [varIdx, localIdx]);
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  const labelSumHead = b.id();
+  const labelSumBody = b.id();
+  const labelSumMerge = b.id();
+  const labelSumCont = b.id();
+
+  b.emit(Op.Branch, [labelSumHead]);
+  b.emit(Op.Label, [labelSumHead]);
+  const curIdx2 = b.id();
+  b.emit(Op.Load, [p.tU32, curIdx2, varIdx]);
+  const cmpSum = b.id();
+  b.emit(Op.ULessThan, [p.tBool, cmpSum, curIdx2, vocabC]);
+  b.emit(Op.LoopMerge, [labelSumMerge, labelSumCont, 0]);
+  b.emit(Op.BranchConditional, [cmpSum, labelSumBody, labelSumMerge]);
+
+  b.emit(Op.Label, [labelSumBody]);
+  const globalIdx2 = b.id();
+  b.emit(Op.IAdd, [p.tU32, globalIdx2, rowOffset, curIdx2]);
+  const ptrA2 = b.id();
+  b.emit(Op.AccessChain, [bufLogits.tPtrF32, ptrA2, bufLogits.varId, p.const0u, globalIdx2]);
+  const val2 = b.id();
+  b.emit(Op.Load, [p.tF32, val2, ptrA2]);
+  const shifted = b.id();
+  b.emit(Op.FSub, [p.tF32, shifted, val2, rowMax]);
+  const expVal = b.id();
+  b.emit(Op.ExtInst, [p.tF32, expVal, p.glslStd, GLSLstd450.Exp, shifted]);
+  const curSum = b.id();
+  b.emit(Op.Load, [p.tF32, curSum, varAcc]);
+  const newSum = b.id();
+  b.emit(Op.FAdd, [p.tF32, newSum, curSum, expVal]);
+  b.emit(Op.Store, [varAcc, newSum]);
+  b.emit(Op.Branch, [labelSumCont]);
+
+  b.emit(Op.Label, [labelSumCont]);
+  const nextIdx2 = b.id();
+  b.emit(Op.Load, [p.tU32, nextIdx2, varIdx]);
+  const incIdx2 = b.id();
+  b.emit(Op.IAdd, [p.tU32, incIdx2, nextIdx2, constWgSize]);
+  b.emit(Op.Store, [varIdx, incIdx2]);
+  b.emit(Op.Branch, [labelSumHead]);
+
+  b.emit(Op.Label, [labelSumMerge]);
+
+  const threadSum = b.id();
+  b.emit(Op.Load, [p.tF32, threadSum, varAcc]);
+  const ptrSharedSum = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSharedSum, sharedMem, localIdx]);
+  b.emit(Op.Store, [ptrSharedSum, threadSum]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  stride = wgSize >> 1;
+  while (stride > 0) {
+    const sc = b.id();
+    b.constant(p.tU32, sc, stride);
+    const cmp = b.id();
+    b.emit(Op.ULessThan, [p.tBool, cmp, localIdx, sc]);
+    const lbl = b.id();
+    const lar = b.id();
+    b.emit(Op.SelectionMerge, [lar, 0]);
+    b.emit(Op.BranchConditional, [cmp, lbl, lar]);
+    b.emit(Op.Label, [lbl]);
+    const oi = b.id();
+    b.emit(Op.IAdd, [p.tU32, oi, localIdx, sc]);
+    const pm = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, pm, sharedMem, localIdx]);
+    const mv = b.id();
+    b.emit(Op.Load, [p.tF32, mv, pm]);
+    const po = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, po, sharedMem, oi]);
+    const ov = b.id();
+    b.emit(Op.Load, [p.tF32, ov, po]);
+    const s = b.id();
+    b.emit(Op.FAdd, [p.tF32, s, mv, ov]);
+    b.emit(Op.Store, [pm, s]);
+    b.emit(Op.Branch, [lar]);
+    b.emit(Op.Label, [lar]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+    stride >>= 1;
+  }
+
+  const ptrSharedS0 = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrSharedS0, sharedMem, p.const0u]);
+  const rowSum = b.id();
+  b.emit(Op.Load, [p.tF32, rowSum, ptrSharedS0]);
+
+  // ── Phase 3: thread 0 computes masked loss and writes it ──
+  const cmpThread0 = b.id();
+  b.emit(Op.IEqual, [p.tBool, cmpThread0, localIdx, p.const0u]);
+  const labelWrite = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.SelectionMerge, [labelEnd, 0]);
+  b.emit(Op.BranchConditional, [cmpThread0, labelWrite, labelEnd]);
+
+  b.emit(Op.Label, [labelWrite]);
+
+  const logRowSum = b.id();
+  b.emit(Op.ExtInst, [p.tF32, logRowSum, p.glslStd, GLSLstd450.Log, rowSum]);
+  const logSumExp = b.id();
+  b.emit(Op.FAdd, [p.tF32, logSumExp, logRowSum, rowMax]);
+
+  const ptrTarget = b.id();
+  b.emit(Op.AccessChain, [bufTargets.tPtrF32, ptrTarget, bufTargets.varId, p.const0u, row]);
+  const targetF32 = b.id();
+  b.emit(Op.Load, [p.tF32, targetF32, ptrTarget]);
+  const targetU32 = b.id();
+  b.emit(Op.Bitcast, [p.tU32, targetU32, targetF32]);
+
+  const targetGlobalIdx = b.id();
+  b.emit(Op.IAdd, [p.tU32, targetGlobalIdx, rowOffset, targetU32]);
+  const ptrLogitTarget = b.id();
+  b.emit(Op.AccessChain, [bufLogits.tPtrF32, ptrLogitTarget, bufLogits.varId, p.const0u, targetGlobalIdx]);
+  const logitTarget = b.id();
+  b.emit(Op.Load, [p.tF32, logitTarget, ptrLogitTarget]);
+
+  const lossRaw = b.id();
+  b.emit(Op.FSub, [p.tF32, lossRaw, logSumExp, logitTarget]);
+
+  // masked loss = lossRaw * mask[row]
+  const ptrMask = b.id();
+  b.emit(Op.AccessChain, [bufMask.tPtrF32, ptrMask, bufMask.varId, p.const0u, row]);
+  const maskVal = b.id();
+  b.emit(Op.Load, [p.tF32, maskVal, ptrMask]);
+  const loss = b.id();
+  b.emit(Op.FMul, [p.tF32, loss, lossRaw, maskVal]);
+
   const ptrOut = b.id();
   b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, row]);
   b.emit(Op.Store, [ptrOut, loss]);
@@ -5285,6 +6192,114 @@ export function kernelCrossEntropyBackward(wgSize = 256): Uint32Array {
   b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
   const result = b.id();
   b.emit(Op.FMul, [p.tF32, result, diff, invN]);
+
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrOut, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+// ── Kernel: Cross-Entropy Backward MASKED (assistant-only SFT) ──────────────
+
+/**
+ * Masked cross-entropy backward. One thread per logit element:
+ *   dLogits[gid] = (probs[gid] - 1{col==target[row]}) * invDenom * mask[row]
+ * where invDenom = gradOutput / max(sum(mask),1) is precomputed on the host and
+ * passed in push[2]. mask[row] is the per-row weight; rows with mask 0 get an
+ * exactly-zero gradient (0 * anything = 0), which is the property the SFT
+ * loss-masking test verifies.
+ *
+ * Bindings: 0=probs(in), 1=targets(in, i32 bits), 2=mask(in, N f32), 3=out(out)
+ * NOTE: Out is the LAST binding — matches the host `allBufs` order (probs,
+ * targets, mask, region) and the default `writeMask` (last buffer). Previously
+ * Out/Mask were swapped at bindings 2/3, silently zeroing masked GPU SFT grads.
+ * Push: [totalElements (f32), C (u32 bits), invDenom (f32)]
+ */
+export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufProbs   = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufMask    = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const bufOut     = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const constOne  = b.id(); b.constantF32(p.tF32, constOne, 1.0);
+  const constZero = b.id(); b.constantF32(p.tF32, constZero, 0.0);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd   = b.id();
+
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const lenF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+
+  // C = push[1] (u32 bits)
+  const ptrPcC = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcC, pc.varId, p.const1u]);
+  const cF = b.id();
+  b.emit(Op.Load, [p.tF32, cF, ptrPcC]);
+  const cU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, cU, cF]);
+
+  // invDenom = push[2]
+  const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+  const ptrPcInvN = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcInvN, pc.varId, const2u]);
+  const invN = b.id();
+  b.emit(Op.Load, [p.tF32, invN, ptrPcInvN]);
+
+  const row = b.id();
+  b.emit(Op.UDiv, [p.tU32, row, gidX, cU]);
+  const col = b.id();
+  b.emit(Op.UMod, [p.tU32, col, gidX, cU]);
+
+  const ptrTarget = b.id();
+  b.emit(Op.AccessChain, [bufTargets.tPtrF32, ptrTarget, bufTargets.varId, p.const0u, row]);
+  const targetF = b.id();
+  b.emit(Op.Load, [p.tF32, targetF, ptrTarget]);
+  const targetU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, targetU, targetF]);
+
+  const cmpEq = b.id();
+  b.emit(Op.IEqual, [p.tBool, cmpEq, col, targetU]);
+  const isTarget = b.id();
+  b.emit(Op.Select, [p.tF32, isTarget, cmpEq, constOne, constZero]);
+
+  const ptrProb = b.id();
+  b.emit(Op.AccessChain, [bufProbs.tPtrF32, ptrProb, bufProbs.varId, p.const0u, gidX]);
+  const prob = b.id();
+  b.emit(Op.Load, [p.tF32, prob, ptrProb]);
+
+  const diff = b.id();
+  b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
+  const scaled = b.id();
+  b.emit(Op.FMul, [p.tF32, scaled, diff, invN]);
+
+  // multiply by mask[row]
+  const ptrMask = b.id();
+  b.emit(Op.AccessChain, [bufMask.tPtrF32, ptrMask, bufMask.varId, p.const0u, row]);
+  const maskVal = b.id();
+  b.emit(Op.Load, [p.tF32, maskVal, ptrMask]);
+  const result = b.id();
+  b.emit(Op.FMul, [p.tF32, result, scaled, maskVal]);
 
   const ptrOut = b.id();
   b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);

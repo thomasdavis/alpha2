@@ -13,9 +13,25 @@ export interface DataBatch {
   inputs: TensorData;
   /** Target token ids [B, T] */
   targets: TensorData;
+  /**
+   * Optional per-position loss weights [B, T] f32 (assistant-only SFT). Absent
+   * for pretraining (all-ones semantics, zero overhead). When present, a 0 marks
+   * a position that must not contribute loss/gradient (user tokens + padding).
+   */
+  lossMask?: TensorData;
 }
 
-export class DataLoader {
+/**
+ * Common shape of anything the trainer's step loop pulls batches from — the
+ * pretraining {@link DataLoader} and the {@link SftDataLoader} both satisfy it.
+ */
+export interface BatchSource {
+  nextBatch(): DataBatch;
+  readonly stepsPerEpoch: number;
+  readonly length: number;
+}
+
+export class DataLoader implements BatchSource {
   private tokens: Int32Array;
   private rng: Rng;
   private batchSize: number;
@@ -174,6 +190,220 @@ export class DataLoader {
   get length(): number {
     return this.tokens.length;
   }
+}
+
+// ── SFT (assistant-only) data pipeline ──────────────────────────────────────
+
+/** The three atomic chat role markers used to render conversations. */
+export const CHAT_USER_TOKEN = "<|user|>";
+export const CHAT_ASSISTANT_TOKEN = "<|assistant|>";
+export const CHAT_EOT_TOKEN = "<|end_of_text|>";
+
+/** Token ids of the chat role markers for a specific tokenizer. */
+export interface ChatSpecialIds {
+  userId: number;
+  assistantId: number;
+  eotId: number;
+}
+
+/** One tokenized conversation + its per-token assistant-content mask. */
+export interface SftExample {
+  /** Full conversation token ids. */
+  tokens: Int32Array;
+  /** roleMask[i] === 1 iff tokens[i] is assistant-generated content (the content
+   *  AFTER an <|assistant|> marker up to and including the terminating
+   *  <|end_of_text|>). Role markers and user tokens are 0. */
+  roleMask: Uint8Array;
+}
+
+/**
+ * Resolve the chat role-marker token ids for a tokenizer. Each marker MUST
+ * encode to exactly one atomic token (the byte-level / bpe-chat tokenizers
+ * reserve them as specials) — otherwise SFT masking is undefined, so we throw a
+ * clear error rather than silently mis-mask.
+ */
+export function resolveChatSpecialIds(tokenizer: Tokenizer): ChatSpecialIds {
+  const one = (marker: string): number => {
+    const ids = tokenizer.encode(marker);
+    if (ids.length !== 1) {
+      throw new Error(
+        `SFT requires a chat tokenizer whose "${marker}" marker is a single atomic token, ` +
+        `but ${tokenizer.name} encodes it to ${ids.length} tokens. Use a bpe-chat / byte-level tokenizer with reserved specials.`,
+      );
+    }
+    return ids[0];
+  };
+  return { userId: one(CHAT_USER_TOKEN), assistantId: one(CHAT_ASSISTANT_TOKEN), eotId: one(CHAT_EOT_TOKEN) };
+}
+
+/**
+ * Build an {@link SftExample} from a rendered conversation string.
+ *
+ * The mask marks ONLY assistant response spans: content after an `<|assistant|>`
+ * marker up to and including the next role boundary. The terminating
+ * `<|end_of_text|>` of an assistant turn is INCLUDED (mask 1) so the model learns
+ * to emit EOS; the `<|assistant|>`/`<|user|>` markers themselves are template
+ * scaffolding (mask 0). Because the tokenizer encodes the markers atomically,
+ * ordinary words like "assistant" appearing in content do NOT flip the state.
+ */
+export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: ChatSpecialIds): SftExample {
+  const tokens = tokenizer.encode(convText);
+  const roleMask = new Uint8Array(tokens.length);
+  let inAssistant = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const id = tokens[i];
+    if (id === ids.assistantId) {
+      roleMask[i] = 0;        // marker itself is prompt scaffolding
+      inAssistant = true;     // content that follows is assistant-generated
+    } else if (id === ids.userId) {
+      roleMask[i] = 0;
+      inAssistant = false;
+    } else if (id === ids.eotId) {
+      roleMask[i] = inAssistant ? 1 : 0; // include the EOS that ends the turn
+      inAssistant = false;
+    } else {
+      roleMask[i] = inAssistant ? 1 : 0;
+    }
+  }
+  return { tokens, roleMask };
+}
+
+/**
+ * SFT batch source: ONE conversation per row (no packing in v1). Each row is
+ * pad/truncated to blockSize. For a conversation with L tokens, positions
+ * i∈[0,L-2] map to input=tokens[i], target=tokens[i+1], lossMask=roleMask[i+1]
+ * (the mask of the PREDICTED token). Positions ≥ L-1 are padding: input/target
+ * id 0, lossMask 0 — padding never contributes to the loss. A row whose whole
+ * mask is zero (padding-only, or a turn with no assistant content) is legal and
+ * produces no NaN because the masked-CE denominator is floored at 1.
+ *
+ * Deterministic: a monotonically advancing cursor walks the conversation list in
+ * order and wraps at the end (no RNG), so runs are reproducible.
+ */
+export class SftDataLoader implements BatchSource {
+  private examples: SftExample[];
+  private batchSize: number;
+  private blockSize: number;
+  private cursor = 0;
+  private batchRing: DataBatch[] = [];
+  private batchRingIdx = 0;
+  private totalTokens: number;
+
+  constructor(examples: SftExample[], batchSize: number, blockSize: number) {
+    if (examples.length === 0) throw new RangeError("SftDataLoader needs at least one conversation");
+    this.examples = examples;
+    this.batchSize = batchSize;
+    this.blockSize = blockSize;
+    this.totalTokens = examples.reduce((acc, e) => acc + e.tokens.length, 0);
+
+    const elems = batchSize * blockSize;
+    for (let i = 0; i < 2; i++) {
+      this.batchRing.push({
+        inputs: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+        targets: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+        lossMask: { shape: [batchSize, blockSize], dtype: "f32", data: new Float32Array(elems) },
+      });
+    }
+  }
+
+  nextBatch(): DataBatch {
+    const B = this.batchSize;
+    const T = this.blockSize;
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
+    const mask = batch.lossMask!.data as Float32Array;
+    // Fresh zero-fill so short conversations leave clean padding (0 id, 0 mask).
+    inputs.fill(0);
+    targets.fill(0);
+    mask.fill(0);
+
+    for (let b = 0; b < B; b++) {
+      const ex = this.examples[(this.cursor + b) % this.examples.length];
+      const tok = ex.tokens;
+      const rm = ex.roleMask;
+      const L = tok.length;
+      const dst = b * T;
+      const pairs = Math.min(T, L - 1); // usable (input,target) positions
+      for (let i = 0; i < pairs; i++) {
+        inputs[dst + i] = tok[i];
+        targets[dst + i] = tok[i + 1];
+        mask[dst + i] = rm[i + 1]; // weight of the PREDICTED token
+      }
+    }
+    this.cursor = (this.cursor + B) % this.examples.length;
+
+    return {
+      inputs: { ...batch.inputs },
+      targets: { ...batch.targets },
+      lossMask: { ...batch.lossMask! },
+    };
+  }
+
+  get stepsPerEpoch(): number {
+    return Math.max(1, Math.ceil(this.examples.length / this.batchSize));
+  }
+
+  get length(): number {
+    return this.totalTokens;
+  }
+
+  get conversationCount(): number {
+    return this.examples.length;
+  }
+}
+
+/**
+ * Load conversations from a chat corpus file (one rendered conversation per
+ * line) and tokenize each into an {@link SftExample}. Streams line-by-line so
+ * arbitrarily large SFT files stay within the JS heap. Blank lines are skipped.
+ */
+export async function loadSftExamples(path: string, tokenizer: Tokenizer): Promise<SftExample[]> {
+  const fs = await import("node:fs");
+  const readline = await import("node:readline");
+  const ids = resolveChatSpecialIds(tokenizer);
+  const examples: SftExample[] = [];
+  const rl = readline.createInterface({
+    input: fs.createReadStream(path, { encoding: "utf-8" }),
+    crlfDelay: Infinity,
+  });
+  for await (const rawLine of rl) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const ex = buildSftExample(line, tokenizer, ids);
+    if (ex.tokens.length >= 2) examples.push(ex); // need at least one (input,target) pair
+  }
+  return examples;
+}
+
+/** FNV-1a 32-bit hash of a string (deterministic doc-aware split key). */
+function fnv1a32(input: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Deterministic doc-aware train/val split over conversations: each conversation
+ * is assigned to val iff hash(seed:index) < valFraction. Same conversation →
+ * same side across runs (reproducible, no cross-contamination of a doc).
+ */
+export function splitSftExamples(
+  examples: SftExample[],
+  valFraction: number,
+  seed: number,
+): { train: SftExample[]; val: SftExample[] } {
+  const train: SftExample[] = [];
+  const val: SftExample[] = [];
+  for (let i = 0; i < examples.length; i++) {
+    const takeVal = valFraction > 0 && (fnv1a32(`${seed}:${i}`) / 0x1_0000_0000) < valFraction;
+    (takeVal ? val : train).push(examples[i]);
+  }
+  return { train, val };
 }
 
 /** V8 max string length (~512MB for Latin-1, ~256MB for two-byte). Stay well below. */

@@ -10,34 +10,52 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, softmax, crossEntropy,
+  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
+
+// ── Config-derived architecture switches (all default to GPT-2-style) ────────
+type NormLayer = { weight: Variable; bias?: Variable };
+
+/** Apply the config's normalization: LayerNorm (weight+bias) or RMSNorm (weight only). */
+function applyNorm(
+  ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng },
+  x: Variable,
+  norm: NormLayer,
+  config: ModelConfig,
+  eps: number,
+): Variable {
+  if ((config.normType ?? "layernorm") === "rmsnorm") {
+    return rmsNorm(ctx, x, norm.weight, eps);
+  }
+  return layerNorm(ctx, x, norm.weight, norm.bias!, eps);
+}
 
 // ── Parameter initialization ───────────────────────────────────────────────
 
 export interface GPTParams {
   /** Token embeddings [vocabSize, nEmbd] */
   wte: Variable;
-  /** Position embeddings [blockSize, nEmbd] */
-  wpe: Variable;
+  /** Position embeddings [blockSize, nEmbd] — absent when posEnc==="rope". */
+  wpe?: Variable;
   /** Transformer layers */
   layers: LayerParams[];
-  /** Final layer norm */
-  lnF: { weight: Variable; bias: Variable };
-  /** Language model head [vocabSize, nEmbd] */
+  /** Final norm (bias absent when normType==="rmsnorm"). */
+  lnF: { weight: Variable; bias?: Variable };
+  /** Language model head [vocabSize, nEmbd]. When tieEmbeddings is set this IS
+   *  the `wte` Variable (same object) so grads accumulate into one param. */
   lmHead: Variable;
 }
 
 export interface LayerParams {
-  ln1: { weight: Variable; bias: Variable };
+  ln1: { weight: Variable; bias?: Variable };
   attn: {
     /** Grouped QKV weight [3*nEmbd, nEmbd] — single GEMM instead of three. */
     wqkv: Variable; wo: Variable;
   };
-  ln2: { weight: Variable; bias: Variable };
+  ln2: { weight: Variable; bias?: Variable };
   mlp: {
     /** Standard MLP: fc1 [ffnDim, nEmbd], fc2 [nEmbd, ffnDim] */
     fc1: Variable; fc2: Variable;
@@ -73,10 +91,21 @@ function initFull(backend: Backend, shape: number[], value: number): Variable {
 export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): GPTParams {
   const { vocabSize, blockSize, nLayer, nEmbd, nHead } = config;
   const activation = config.ffnActivation ?? "gelu";
+  const normType = config.normType ?? "layernorm";
+  const posEnc = config.posEnc ?? "learned";
+  const tie = config.tieEmbeddings ?? false;
+  const useBias = normType !== "rmsnorm"; // RMSNorm has weight only, no bias
   const std = 0.02;
 
+  // A norm layer: weight (ones) always; bias (zeros) only for LayerNorm.
+  const initNorm = (): NormLayer =>
+    useBias
+      ? { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) }
+      : { weight: initOnes(backend, [nEmbd]) };
+
   const wte = initWeight(backend, rng, [vocabSize, nEmbd], std);
-  const wpe = initWeight(backend, rng, [blockSize, nEmbd], std);
+  // Learned position embeddings only when posEnc==="learned"; RoPE has no wpe.
+  const wpe = posEnc === "rope" ? undefined : initWeight(backend, rng, [blockSize, nEmbd], std);
 
   // FFN hidden dim: SwiGLU uses (8/3)*nEmbd rounded to multiple of 64 for parameter parity,
   // standard activations use 4*nEmbd. Config override takes precedence.
@@ -134,18 +163,20 @@ export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): 
     }
 
     layers.push({
-      ln1: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
+      ln1: initNorm(),
       attn: {
         wqkv: initWeight(backend, rng, [3 * nEmbd, nEmbd], std),
         wo: initWeight(backend, rng, [nEmbd, nEmbd], std / Math.sqrt(2 * nLayer)),
       },
-      ln2: { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) },
+      ln2: initNorm(),
       mlp,
     });
   }
 
-  const lnF = { weight: initOnes(backend, [nEmbd]), bias: initZeros(backend, [nEmbd]) };
-  const lmHead = initWeight(backend, rng, [vocabSize, nEmbd], std);
+  const lnF = initNorm();
+  // Tied embeddings: the LM head IS the token-embedding table (same Variable),
+  // so its gradient accumulates into `wte` and it is stored/counted once.
+  const lmHead = tie ? wte : initWeight(backend, rng, [vocabSize, nEmbd], std);
 
   return { wte, wpe, layers, lnF, lmHead };
 }
@@ -229,9 +260,15 @@ function transformerBlock(
 ): Variable {
   const { nHead, nEmbd } = config;
   const headDim = nEmbd / nHead;
+  const ropeOn = (config.posEnc ?? "learned") === "rope";
+  const ropeTheta = config.ropeTheta ?? 10000;
+  // softCap defaults to 30 for GPT-2-style, but OFF for RoPE (no Llama equivalent)
+  // unless the config explicitly sets it.
+  const softCapVal = config.softCap ?? (ropeOn ? undefined : 30.0);
+  const useSoftCap = softCapVal !== undefined && softCapVal > 0;
 
-  // 1) LN → Attention → Residual
-  const ln1Out = layerNorm(ctx, x, layer.ln1.weight, layer.ln1.bias, 1e-5);
+  // 1) Norm → Attention → Residual
+  const ln1Out = applyNorm(ctx, x, layer.ln1, config, 1e-5);
 
   // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
@@ -241,26 +278,43 @@ function transformerBlock(
   const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
   const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
-  const softCapVal = config.softCap ?? 30.0;
-
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
   if (ctx.backend.flashAttention) {
     // Flash attention path: causal masking + softcap are handled inside the kernel.
-    const qFA = reshape(ctx, q, [Batch * nHead, T, headDim]);
-    const kFA = reshape(ctx, k, [Batch * nHead, T, headDim]);
-    const vFA = reshape(ctx, v, [Batch * nHead, T, headDim]);
-    const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), softCapVal);
+    // q/k/v are [B, T, nEmbd] with memory layout [B][T][nHead][headDim]. The flash
+    // kernel indexes contiguous [B*nHead, T, headDim] as head-major — a contiguous
+    // [T, headDim] block per (batch, head). A PLAIN reshape to [B*nHead, T, headDim]
+    // would reinterpret the [B][T][nHead][headDim] buffer without moving data, so
+    // for nHead>1 the (batch,head) rows and time positions are scrambled (and RoPE
+    // would then rotate by wrong positions). Reshape→transpose(1,2)→reshape lays
+    // the data out head-major, matching the standard path exactly. [defect P1]
+    let qFA = reshape(ctx, transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+    let kFA = reshape(ctx, transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+    const vFA = reshape(ctx, transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+    // RoPE rotates q/k (per-head, per-position) before attention; flash kernel unchanged.
+    if (ropeOn) {
+      qFA = rope(ctx, qFA, headDim, 0, ropeTheta);
+      kFA = rope(ctx, kFA, headDim, 0, ropeTheta);
+    }
+    const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
     attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
   } else {
     // Standard multi-dispatch attention (CPU fallback)
-    const qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
-    const kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
+    let qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
+    let kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
     const vH = transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
+
+    // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
+    // axis), then reshape back to [B, nHead, T, headDim] for attention.
+    if (ropeOn) {
+      qH = reshape(ctx, rope(ctx, reshape(ctx, qH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+      kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+    }
 
     const kT = transpose(ctx, kH, 2, 3);
     const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
-    const scores = softCap(ctx, rawScores, softCapVal);
+    const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
 
     const maskedScores = new Variable(
       ctx.backend.maskedFill(scores.data, mask, -1e9),
@@ -280,8 +334,8 @@ function transformerBlock(
   const projected = reshape(ctx, matmulTransposed(ctx, attnConcat, layer.attn.wo), [Batch, T, nEmbd]);
   x = residualDropoutAdd(ctx, x, projected, config.dropout, training);
 
-  // 2) LN → MLP → Residual
-  const ln2Out = layerNorm(ctx, x, layer.ln2.weight, layer.ln2.bias, 1e-5);
+  // 2) Norm → MLP → Residual
+  const ln2Out = applyNorm(ctx, x, layer.ln2, config, 1e-5);
   const flat = reshape(ctx, ln2Out, [Batch * T, nEmbd]);
   const activation = config.ffnActivation ?? "gelu";
 
@@ -340,6 +394,9 @@ function transformerBlock(
  * @param training - whether to apply dropout (default: false)
  * @param activationCheckpointing - recompute layer intermediates during backward to save memory
  * @param mixedPrecision - store inter-layer activations as f16 to halve VRAM usage
+ * @param lossMask - optional [B, T] f32 per-position loss weights (assistant-only
+ *   SFT). When present, the loss is the masked mean crossEntropyMasked instead of
+ *   the plain crossEntropy — no behavior change when absent (pretraining path).
  */
 export function gptForward(
   config: ModelConfig,
@@ -353,30 +410,38 @@ export function gptForward(
   mixedPrecision = false,
   dropoutRng?: DropoutRng,
   release?: (td: TensorData) => void,
+  lossMask?: TensorData,
 ): GPTForwardResult {
   const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void } = { tape, backend, dropoutRng, release };
   const { nEmbd } = config;
   const [B, T] = tokens.shape;
 
-  // Token + position embeddings
+  // Token embeddings
   const tokEmb = embedding(ctx, params.wte, tokens); // [B, T, nEmbd]
 
-  // Position indices [B, T] — cached per (B, T) since they're constant
-  const posKey = `${B},${T}`;
-  let posIndices = posIndicesCache.get(posKey);
-  if (!posIndices) {
-    const posData = new Int32Array(B * T);
-    for (let b = 0; b < B; b++) {
-      for (let t = 0; t < T; t++) {
-        posData[b * T + t] = t;
+  let x: Variable;
+  if (params.wpe) {
+    // Learned absolute position embeddings (GPT-2 style).
+    // Position indices [B, T] — cached per (B, T) since they're constant
+    const posKey = `${B},${T}`;
+    let posIndices = posIndicesCache.get(posKey);
+    if (!posIndices) {
+      const posData = new Int32Array(B * T);
+      for (let b = 0; b < B; b++) {
+        for (let t = 0; t < T; t++) {
+          posData[b * T + t] = t;
+        }
       }
+      posIndices = { shape: [B, T], dtype: "i32", data: posData };
+      posIndicesCache.set(posKey, posIndices);
     }
-    posIndices = { shape: [B, T], dtype: "i32", data: posData };
-    posIndicesCache.set(posKey, posIndices);
+    const posEmb = embedding(ctx, params.wpe, posIndices); // [B, T, nEmbd]
+    x = add(ctx, tokEmb, posEmb); // [B, T, nEmbd]
+  } else {
+    // RoPE: no positional embedding added here; rotation is applied to q/k
+    // inside each attention block.
+    x = tokEmb;
   }
-  const posEmb = embedding(ctx, params.wpe, posIndices); // [B, T, nEmbd]
-
-  let x = add(ctx, tokEmb, posEmb); // [B, T, nEmbd]
 
   // Causal mask [T, T] — cached per T since it's constant
   let mask = causalMaskCache.get(T);
@@ -408,8 +473,8 @@ export function gptForward(
     }
   }
 
-  // Final layer norm
-  x = layerNorm(ctx, x, params.lnF.weight, params.lnF.bias, 1e-5);
+  // Final norm (LayerNorm or RMSNorm per config)
+  x = applyNorm(ctx, x, params.lnF, config, 1e-5);
 
   // Language model head: [B, T, nEmbd] → [B, T, vocabSize]
   const flat = reshape(ctx, x, [B * T, nEmbd]);
@@ -420,7 +485,14 @@ export function gptForward(
   if (targets) {
     const targetsFlat: TensorData = { shape: [B * T], dtype: "i32", data: targets.data };
     const logitsVar = reshape(ctx, logits, [B * T, config.vocabSize]);
-    loss = crossEntropy(ctx, logitsVar, targetsFlat);
+    if (lossMask) {
+      // Assistant-only SFT: masked mean over positions (padding + user tokens
+      // carry weight 0, so they contribute neither loss nor gradient).
+      const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };
+      loss = crossEntropyMasked(ctx, logitsVar, targetsFlat, maskFlat);
+    } else {
+      loss = crossEntropy(ctx, logitsVar, targetsFlat);
+    }
   }
 
   return { logits, loss };
@@ -433,18 +505,20 @@ export type ParamEntry = readonly [string, Variable];
 export function collectParamEntries(params: GPTParams): ParamEntry[] {
   const entries: ParamEntry[] = [];
   entries.push(["wte", params.wte]);
-  entries.push(["wpe", params.wpe]);
-  entries.push(["lmHead", params.lmHead]);
+  // wpe absent under RoPE.
+  if (params.wpe) entries.push(["wpe", params.wpe]);
+  // Tied embeddings: lmHead IS wte (same Variable) → do NOT list it twice.
+  if (params.lmHead !== params.wte) entries.push(["lmHead", params.lmHead]);
   entries.push(["lnF.weight", params.lnF.weight]);
-  entries.push(["lnF.bias", params.lnF.bias]);
+  if (params.lnF.bias) entries.push(["lnF.bias", params.lnF.bias]);
   for (let i = 0; i < params.layers.length; i++) {
     const l = params.layers[i];
     entries.push([`layer.${i}.ln1.weight`, l.ln1.weight]);
-    entries.push([`layer.${i}.ln1.bias`, l.ln1.bias]);
+    if (l.ln1.bias) entries.push([`layer.${i}.ln1.bias`, l.ln1.bias]);
     entries.push([`layer.${i}.attn.wqkv`, l.attn.wqkv]);
     entries.push([`layer.${i}.attn.wo`, l.attn.wo]);
     entries.push([`layer.${i}.ln2.weight`, l.ln2.weight]);
-    entries.push([`layer.${i}.ln2.bias`, l.ln2.bias]);
+    if (l.ln2.bias) entries.push([`layer.${i}.ln2.bias`, l.ln2.bias]);
     if (l.mlp.fc_gate) {
       // SwiGLU: 3 separate weight matrices
       entries.push([`layer.${i}.mlp.fc_gate`, l.mlp.fc_gate]);

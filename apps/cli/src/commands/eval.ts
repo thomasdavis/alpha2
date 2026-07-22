@@ -9,19 +9,7 @@ import { parseKV, requireArg, intArg, strArg } from "../parse.js";
 import { resolveBackend, resolveRng } from "../resolve.js";
 import { FileCheckpoint, evaluate, restoreParams } from "@alpha/train";
 import { initGPT } from "@alpha/model";
-import { CharTokenizer, BpeTokenizer } from "@alpha/tokenizers";
-import type { Tokenizer } from "@alpha/core";
-
-function tokenizerFromArtifacts(artifacts: { type: string; vocab: readonly string[]; merges?: readonly [number, number][] }): Tokenizer {
-  if (artifacts.type === "bpe") {
-    const tok = new BpeTokenizer();
-    tok.loadArtifacts(artifacts as any);
-    return tok;
-  }
-  const tok = new CharTokenizer();
-  tok.loadArtifacts(artifacts as any);
-  return tok;
-}
+import { tokenizerFromArtifacts } from "@alpha/tokenizers";
 
 export async function evalCmd(args: string[]): Promise<void> {
   const kv = parseKV(args);

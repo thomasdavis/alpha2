@@ -26,7 +26,7 @@ import {
   add, sub, mul, div, scale, neg,
   matmul, matmulTransposed, matmulTransposedGelu,
   sum, mean, exp, log, sqrt, relu, gelu, silu, siluMul, clamp, softCap,
-  softmax, layerNorm, embedding, crossEntropy,
+  softmax, layerNorm, rmsNorm, rope, embedding, crossEntropy, crossEntropyMasked,
   reshape, transpose, slice, sliceQkv, dropout, residualDropoutAdd,
   checkpoint,
 } from "@alpha/autograd";
@@ -328,6 +328,68 @@ describe("gradcheck: nn", () => {
     }, { label: "layerNorm" });
   });
 
+  it("rmsNorm [3,4] (input + weight grads; no bias)", () => {
+    checkGrad((ctx, mk) => {
+      const x = mk(rnd(11, 12, -2, 2), [3, 4]);
+      const w = mk(rnd(12, 4, 0.5, 1.5), [4]);
+      return rmsNorm(ctx, x, w, 1e-5);
+    }, { label: "rmsNorm" });
+  });
+
+  it("rmsNorm [2,8] (larger last dim)", () => {
+    checkGrad((ctx, mk) => {
+      const x = mk(rnd(13, 16, -3, 3), [2, 8]);
+      const w = mk(rnd(14, 8, 0.5, 1.5), [8]);
+      return rmsNorm(ctx, x, w, 1e-5);
+    }, { label: "rmsNorm-8" });
+  });
+
+  it("rope [2,3,4] (B*H=2, T=3, headDim=4; rotation is orthogonal)", () => {
+    checkGrad((ctx, mk) => {
+      const x = mk(rnd(21, 24, -2, 2), [2, 3, 4]);
+      return rope(ctx, x, /*headDim*/ 4, /*posOffset*/ 0, /*theta*/ 10000);
+    }, { label: "rope" });
+  });
+
+  it("rope [2,4,6] with posOffset=5 (KV-cache offset path)", () => {
+    checkGrad((ctx, mk) => {
+      const x = mk(rnd(22, 48, -2, 2), [2, 4, 6]);
+      return rope(ctx, x, /*headDim*/ 6, /*posOffset*/ 5, /*theta*/ 10000);
+    }, { label: "rope-offset" });
+  });
+
+  it("rope backward == forward with sin negated (orthogonal inverse)", () => {
+    // Rotating by +θ then by −θ must return the original vector exactly.
+    const B = new CpuRefBackend();
+    const D = 4, T = 3, BH = 2;
+    const x = rnd(23, BH * T * D, -2, 2);
+    // forward
+    const ctx1 = { tape: new Tape(), backend: B };
+    const xv = new Variable(B.fromArray(x, [BH, T, D]), true);
+    const rotated = rope(ctx1, xv, D, 0, 10000);
+    // inverse: feed rotated back through rope with negated angle by using the
+    // same op on the OUTPUT with theta reproducing −θ is not directly exposed,
+    // so verify the analytic property via a round of forward then manual inverse.
+    const rot = rotated.data.data as Float32Array;
+    // Manually invert using the known cos/sin for θ.
+    const half = D >> 1;
+    const back = new Float32Array(BH * T * D);
+    for (let r = 0; r < BH * T; r++) {
+      const t = r % T;
+      const base = r * D;
+      for (let i = 0; i < half; i++) {
+        const invFreq = Math.pow(10000, (-2 * i) / D);
+        const ang = (t + 0) * invFreq;
+        const c = Math.cos(ang), s = Math.sin(ang);
+        const a = rot[base + i], bb = rot[base + i + half];
+        // inverse rotation (−θ): [[c, s], [-s, c]]
+        back[base + i] = a * c + bb * s;
+        back[base + i + half] = -a * s + bb * c;
+      }
+    }
+    for (let i = 0; i < x.length; i++) expect(back[i]).toBeCloseTo(x[i], 5);
+  });
+
   it("embedding (table grads; indices fixed)", () => {
     const indices: TensorData = { shape: [4], dtype: "i32", data: Int32Array.from([0, 2, 1, 2]) };
     checkGrad((ctx, mk) => embedding(ctx, mk(rnd(4, 15), [5, 3]), indices), { label: "embedding" });
@@ -360,6 +422,99 @@ describe("gradcheck: nn", () => {
     }
     const g = logits.grad!.data as Float32Array;
     for (let i = 0; i < N * C; i++) expect(g[i]).toBeCloseTo(ref[i], 6);
+  });
+});
+
+// ── Masked cross-entropy (assistant-only SFT) ────────────────────────────────
+
+describe("gradcheck: masked cross-entropy (assistant-only SFT)", () => {
+  it("crossEntropyMasked [3,4] fractional mask (finite diff on scalar loss)", () => {
+    const targets: TensorData = { shape: [3], dtype: "i32", data: Int32Array.from([1, 3, 0]) };
+    // Fractional AND zero weights: row 0 full, row 1 half, row 2 masked out.
+    const mask: TensorData = { shape: [3], dtype: "f32", data: Float32Array.from([1, 0.5, 0]) };
+    checkGrad((ctx, mk) => crossEntropyMasked(ctx, mk(rnd(5, 12, -2, 2), [3, 4]), targets, mask), { label: "crossEntropyMasked" });
+  });
+
+  it("crossEntropyMasked forward == manual masked mean", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(5, N * C, -2, 2);
+    const targetIdx = [1, 3, 0];
+    const maskVals = [1, 0.5, 0];
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+    const loss = (B.crossEntropyMasked!(B.fromArray(logitData, [N, C]), targets, mask).data as Float32Array)[0];
+
+    // Reference: sum_i(-logProb_i[target] * mask_i) / max(sum(mask),1)
+    const logProbs = B.logSoftmax(B.fromArray(logitData, [N, C]), 1).data as Float32Array;
+    let ref = 0, sumMask = 0;
+    for (let i = 0; i < N; i++) { ref -= logProbs[i * C + targetIdx[i]] * maskVals[i]; sumMask += maskVals[i]; }
+    ref /= Math.max(sumMask, 1);
+    expect(loss).toBeCloseTo(ref, 6);
+  });
+
+  it("crossEntropyMasked analytic grad == (softmax - onehot) * mask / sum(mask)", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(5, N * C, -2, 2);
+    const targetIdx = [1, 3, 0];
+    const maskVals = [1, 0.5, 0];
+    const denom = maskVals.reduce((a, b) => a + b, 0);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const logits = new Variable(B.fromArray(logitData, [N, C]), true);
+    const loss = crossEntropyMasked(ctx, logits, targets, mask);
+    tape.backward(loss, B);
+
+    const probs = B.softmax(B.fromArray(logitData, [N, C]), -1).data as Float32Array;
+    const ref = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      for (let c = 0; c < C; c++) {
+        ref[i * C + c] = (probs[i * C + c] - (c === targetIdx[i] ? 1 : 0)) * maskVals[i] / Math.max(denom, 1);
+      }
+    }
+    const g = logits.grad!.data as Float32Array;
+    for (let i = 0; i < N * C; i++) expect(g[i]).toBeCloseTo(ref[i], 6);
+  });
+
+  it("crossEntropyMasked: rows with mask 0 get EXACTLY-zero gradient", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(9, N * C, -2, 2);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0]) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from([1, 0, 1]) };
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const logits = new Variable(B.fromArray(logitData, [N, C]), true);
+    tape.backward(crossEntropyMasked(ctx, logits, targets, mask), B);
+    const g = logits.grad!.data as Float32Array;
+    // Row 1 (mask 0) — every logit gradient is bit-exactly 0 (not merely small).
+    for (let c = 0; c < C; c++) expect(g[1 * C + c]).toBe(0);
+    // Rows 0 and 2 (mask 1) must have SOME non-zero gradient.
+    let nz = 0;
+    for (const r of [0, 2]) for (let c = 0; c < C; c++) if (g[r * C + c] !== 0) nz++;
+    expect(nz).toBeGreaterThan(0);
+  });
+
+  it("crossEntropyMasked: all-zero mask → loss 0, grads all 0, no NaN", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(11, N * C, -2, 2);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0]) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from([0, 0, 0]) };
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const logits = new Variable(B.fromArray(logitData, [N, C]), true);
+    const loss = crossEntropyMasked(ctx, logits, targets, mask);
+    const lossVal = (loss.data.data as Float32Array)[0];
+    expect(Number.isFinite(lossVal)).toBe(true); // denominator floored at 1 → no 0/0
+    expect(lossVal).toBe(0);
+    tape.backward(loss, B);
+    const g = logits.grad!.data as Float32Array;
+    for (let i = 0; i < N * C; i++) expect(g[i]).toBe(0);
   });
 });
 

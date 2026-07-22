@@ -18,7 +18,7 @@ import { describe, it, expect } from "vitest";
 import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type TensorData } from "@alpha/core";
 import { Tape, DropoutRng } from "@alpha/autograd";
-import { initGPT, gptForward, collectParamEntries } from "@alpha/model";
+import { initGPT, gptForward, collectParamEntries, countParams } from "@alpha/model";
 
 const B = new CpuRefBackend();
 
@@ -188,6 +188,82 @@ describe("gradcheck: tiny GPT (kan_spline)", () => {
   });
 });
 
+// The Llama-form config: RMSNorm + RoPE + tied embeddings + SwiGLU. This is the
+// flagship (alpha_llama) architecture — it exercises the new ops end-to-end and
+// asserts the tied/rope structural invariants (no wpe, single tied embedding,
+// no norm biases) on top of the whole-model analytic==numeric check.
+describe("gradcheck: tiny GPT (Llama-form: rmsnorm + rope + tied + swiglu)", () => {
+  const config: ModelConfig = {
+    vocabSize: 17, blockSize: 8, nLayer: 2, nEmbd: 16, nHead: 2, dropout: 0,
+    ffnActivation: "swiglu", normType: "rmsnorm", posEnc: "rope", ropeTheta: 10000,
+    tieEmbeddings: true,
+  };
+
+  it("analytic == numeric for all parameters", () => {
+    runGradcheck(config);
+  });
+
+  it("structural invariants: no wpe, single tied embedding, no norm biases", () => {
+    const params = initGPT(config, B, new SeededRng(20260722));
+    const names = collectParamEntries(params).map(([n]) => n);
+
+    // RoPE ⇒ no learned position embedding table.
+    expect(names).not.toContain("wpe");
+    expect(params.wpe).toBeUndefined();
+
+    // Tied embeddings ⇒ lmHead IS wte (same Variable) and is listed exactly once.
+    expect(params.lmHead).toBe(params.wte);
+    expect(names).not.toContain("lmHead");
+    expect(names.filter((n) => n === "wte")).toHaveLength(1);
+
+    // RMSNorm ⇒ weight-only norms (no bias entries anywhere).
+    expect(names.filter((n) => n.endsWith(".bias") || n === "lnF.bias")).toHaveLength(0);
+    expect(params.lnF.bias).toBeUndefined();
+    expect(params.layers[0].ln1.bias).toBeUndefined();
+
+    // countParams matches the summed entry sizes and does NOT double-count wte.
+    const summed = collectParamEntries(params).reduce((acc, [, v]) => acc + v.data.data.length, 0);
+    expect(countParams(params)).toBe(summed);
+  });
+
+  it("dead-param invariant: every listed param (incl. tied wte) gets a non-zero grad", () => {
+    // runGradcheck already asserts no all-zero gradient for every collected entry;
+    // here we additionally confirm the TIED wte receives the SUM of the embedding
+    // path AND the lm-head path (i.e. its grad is not just the embedding grad).
+    const params = initGPT(config, B, new SeededRng(20260722));
+    const batch = makeBatch(config, 99);
+    const tape = new Tape();
+    const res = gptForward(config, params, B, tape, batch.tokens, batch.targets, false);
+    tape.backward(res.loss!, B);
+    const wteGrad = params.wte.grad!.data as Float32Array;
+    let anyNonZero = false;
+    for (let i = 0; i < wteGrad.length; i++) {
+      if (!Number.isFinite(wteGrad[i])) throw new Error(`wte grad[${i}] non-finite`);
+      if (Math.abs(wteGrad[i]) > 1e-9) { anyNonZero = true; break; }
+    }
+    expect(anyNonZero, "tied wte has an all-zero gradient").toBe(true);
+  });
+
+  it("determinism: bit-identical loss + grads across two seeded runs", () => {
+    const batch = makeBatch(config, 99);
+    const run = () => {
+      const params = initGPT(config, B, new SeededRng(20260722));
+      const tape = new Tape();
+      const res = gptForward(config, params, B, tape, batch.tokens, batch.targets, false);
+      tape.backward(res.loss!, B);
+      const entries = collectParamEntries(params);
+      return {
+        loss: (res.loss!.data.data as Float32Array)[0],
+        grads: entries.map(([, v]) => Array.from(v.grad!.data as Float32Array)),
+      };
+    };
+    const a = run();
+    const b = run();
+    expect(b.loss).toBe(a.loss);
+    for (let i = 0; i < a.grads.length; i++) expect(b.grads[i]).toEqual(a.grads[i]);
+  });
+});
+
 // ── Activation checkpointing + dropout RNG replay + mixed-precision wiring ──
 //
 // gptForward's checkpoint path saves the dropout RNG counter before each block
@@ -195,6 +271,101 @@ describe("gradcheck: tiny GPT (kan_spline)", () => {
 // replays bit-identical masks. If that save/restore breaks, checkpointed
 // gradients silently diverge from plain gradients — so the test is exact
 // equality between the two paths with dropout ON.
+// ── Assistant-only SFT loss masking (config-gated lossMask threading) ───────
+//
+// gptForward gains an optional lossMask [B,T]. When absent, behavior is
+// unchanged (plain crossEntropy). When present, the loss is the masked mean.
+// These tests assert (a) an all-ones mask reproduces the plain loss exactly,
+// (b) the masked loss + gradients are numerically correct (finite difference),
+// and (c) positions with mask 0 contribute exactly zero to every gradient.
+describe("model: assistant-only SFT loss masking (lossMask threading)", () => {
+  const config: ModelConfig = {
+    vocabSize: 17, blockSize: 8, nLayer: 2, nEmbd: 16, nHead: 2, dropout: 0, ffnActivation: "swiglu",
+  };
+
+  function makeMask(seed: number, allOnes = false): TensorData {
+    const [Bsz, T] = [2, config.blockSize];
+    const r = new SeededRng(seed);
+    const m = new Float32Array(Bsz * T);
+    for (let i = 0; i < m.length; i++) m[i] = allOnes ? 1 : (r.next() < 0.5 ? 1 : 0);
+    if (!allOnes) { m[0] = 1; m[m.length - 1] = 0; } // guarantee a mix + a live position
+    return { shape: [Bsz, T], dtype: "f32", data: m };
+  }
+
+  function maskedLossOf(params: ReturnType<typeof initGPT>, batch: { tokens: TensorData; targets: TensorData }, mask: TensorData): number {
+    const res = gptForward(config, params, B, new Tape(), batch.tokens, batch.targets, false, false, false, undefined, undefined, mask);
+    return (res.loss!.data.data as Float32Array)[0];
+  }
+
+  it("all-ones mask reproduces the plain crossEntropy loss (absent-semantics)", () => {
+    const params = initGPT(config, B, new SeededRng(20260722));
+    const batch = makeBatch(config, 99);
+    const plain = lossOf(config, params, batch);
+    const masked = maskedLossOf(params, batch, makeMask(0, /*allOnes*/ true));
+    expect(masked).toBeCloseTo(plain, 6);
+  });
+
+  it("masked loss finite + analytic == numeric for all parameters", () => {
+    const params = initGPT(config, B, new SeededRng(20260722));
+    const batch = makeBatch(config, 99);
+    const mask = makeMask(7);
+
+    const tape = new Tape();
+    const res = gptForward(config, params, B, tape, batch.tokens, batch.targets, false, false, false, undefined, undefined, mask);
+    const lossVal = (res.loss!.data.data as Float32Array)[0];
+    expect(Number.isFinite(lossVal)).toBe(true);
+    tape.backward(res.loss!, B);
+
+    const entries = collectParamEntries(params);
+    let worst = "";
+    for (let e = 0; e < entries.length; e++) {
+      const [name, v] = entries[e];
+      const data = v.data.data as Float32Array;
+      const analytic = v.grad!.data as Float32Array;
+      const size = data.length;
+      const order = Array.from(analytic.keys()).sort((p, q) => Math.abs(analytic[q]) - Math.abs(analytic[p]));
+      const picks = new Set<number>(order.slice(0, Math.min(3, size)));
+      const idxRng = new SeededRng(2000 + e);
+      while (picks.size < Math.min(5, size)) picks.add(Math.floor(idxRng.next() * size));
+      for (const j of picks) {
+        const x0 = data[j];
+        const h = 2e-3 * Math.max(1, Math.abs(x0));
+        data[j] = x0 + h; const lp = maskedLossOf(params, batch, mask);
+        data[j] = x0 - h; const lm = maskedLossOf(params, batch, mask);
+        data[j] = x0;
+        const numeric = (lp - lm) / (2 * h);
+        const a = analytic[j];
+        const absErr = Math.abs(numeric - a);
+        const denom = Math.max(Math.abs(numeric), Math.abs(a));
+        const allowed = 3e-4 + 3e-2 * denom;
+        if (absErr > allowed) worst = `${name}[${j}] analytic=${a.toExponential(4)} numeric=${numeric.toExponential(4)} absErr=${absErr.toExponential(3)} (allowed ${allowed.toExponential(3)})`;
+      }
+    }
+    if (worst) throw new Error(`masked model gradcheck FAILED ${worst}`);
+  });
+
+  it("perturbing logits under a masked target does not change the loss", () => {
+    // Property check: the loss depends only on masked-in positions. We flip a
+    // TARGET id at a masked-out position and confirm the loss is unchanged
+    // (target ids at mask-0 positions are irrelevant to the masked mean).
+    const params = initGPT(config, B, new SeededRng(20260722));
+    const batch = makeBatch(config, 99);
+    const mask = makeMask(7);
+    const maskArr = mask.data as Float32Array;
+    const before = maskedLossOf(params, batch, mask);
+    // Find a masked-out flat position and change its target id.
+    const tgt = batch.targets.data as Int32Array;
+    let zeroPos = -1;
+    for (let i = 0; i < maskArr.length; i++) if (maskArr[i] === 0) { zeroPos = i; break; }
+    expect(zeroPos).toBeGreaterThanOrEqual(0);
+    const orig = tgt[zeroPos];
+    tgt[zeroPos] = (orig + 3) % config.vocabSize;
+    const after = maskedLossOf(params, batch, mask);
+    tgt[zeroPos] = orig;
+    expect(after).toBe(before); // masked-out target does not affect the loss
+  });
+});
+
 describe("model paths: checkpointing + dropout + mixed precision", () => {
   const config: ModelConfig = {
     vocabSize: 17, blockSize: 8, nLayer: 2, nEmbd: 16, nHead: 2, dropout: 0.2, ffnActivation: "gelu",

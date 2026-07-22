@@ -252,6 +252,55 @@ export const domains: ReadonlyMap<string, DomainConfig> = new Map<string, Domain
     },
   ],
   [
+    "alpha_llama",
+    {
+      id: "alpha_llama",
+      displayName: "Alpha Llama",
+      tokenizer: "bpe-byte-12k",
+      samplePrompts: [
+        "<|user|> Hello! Who are you? <|assistant|>",
+        "<|user|> What is the meaning of life? <|assistant|>",
+        "<|user|> Tell me something interesting about science. <|assistant|>",
+        "<|user|> Can you help me understand how computers work? <|assistant|>",
+        "<|user|> What do you think about music? <|assistant|>",
+        "<|user|> I had a rough day today. <|assistant|>",
+      ],
+      modelDefaults: {
+        // Flagship Llama-form shape: 16L / 512d / 8 heads (headDim 64),
+        // SwiGLU ffn 1408, RMSNorm, RoPE (θ 10000), tied embeddings, no dropout.
+        vocabSize: 12288,
+        blockSize: 1024,
+        nLayer: 16,
+        nEmbd: 512,
+        nHead: 8,
+        dropout: 0,
+        ffnActivation: "swiglu",
+        ffnDim: 1408,
+        normType: "rmsnorm",
+        posEnc: "rope",
+        ropeTheta: 10000,
+        tieEmbeddings: true,
+        // softCap intentionally omitted → defaults OFF under posEnc="rope".
+      },
+      trainDefaults: {
+        tokenizer: "bpe-byte-12k",
+        lr: 3e-4, // placeholder — G5 re-sweeps post-bugfix
+        lrMin: 3e-5,
+        warmupIters: 500,
+        beta2: 0.95,
+        eps: 1e-8,
+        weightDecay: 0.1,
+        batchSize: 4,
+        gradAccumSteps: 4,
+        gradClip: 1.0,
+        spikeThreshold: 50,
+        packed: true,
+        sampleInterval: 500,
+        evalInterval: 250,
+      },
+    },
+  ],
+  [
     "fine_corpus",
     {
       id: "fine_corpus",

@@ -570,6 +570,163 @@ export function layerNorm(
   });
 }
 
+/**
+ * RMS normalization over the last dim (Llama variant): weight-only, no bias,
+ * no mean-subtraction. Mirrors layerNorm's autograd structure — uses the
+ * backend's fused rmsNormBackward when present, otherwise a CPU-loop fallback.
+ */
+export function rmsNorm(
+  ctx: Ctx,
+  x: Variable,
+  weight: Variable,
+  eps: number,
+): Variable {
+  const xData = x.data;
+  const wData = weight.data;
+  return record(ctx, ctx.backend.rmsNorm(xData, wData, eps), [x, weight], (g, B) => {
+    if (B.rmsNormBackward) {
+      const { dx, dw } = B.rmsNormBackward(xData, wData, g, eps);
+      return [dx, dw];
+    }
+    // CPU fallback.
+    //   out_j = x_j * r * w_j,   r = 1/sqrt(mean(x^2)+eps)
+    //   dw_j += g_j * x_j * r
+    //   S    = Σ_j g_j * w_j * x_j
+    //   dx_j = r*g_j*w_j - x_j * r^3 * S / dim
+    const shape = xData.shape;
+    const dim = shape[shape.length - 1];
+    const n = shapeSize(shape) / dim;
+    const xArr = xData.data as Float32Array;
+    const wArr = wData.data as Float32Array;
+    const gArr = g.data as Float32Array;
+
+    const dx = B.zeros(shape, xData.dtype);
+    const dw = B.zeros(wData.shape, wData.dtype);
+    const dxArr = dx.data as Float32Array;
+    const dwArr = dw.data as Float32Array;
+
+    for (let i = 0; i < n; i++) {
+      const off = i * dim;
+      let ms = 0;
+      for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
+      ms /= dim;
+      const r = 1 / Math.sqrt(ms + eps);
+      const r3 = r * r * r;
+      let S = 0;
+      for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
+      for (let j = 0; j < dim; j++) {
+        dwArr[j] += gArr[off + j] * xArr[off + j] * r;
+        dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
+      }
+    }
+    return [dx, dw];
+  });
+}
+
+// ── Rotary position embedding (RoPE) ─────────────────────────────────────────
+
+/** Cache of precomputed {cos, sin, negSin} keyed by (T, D, theta, posOffset).
+ *  Objects are held strongly here so Helios keeps their GPU uploads resident. */
+const ropeTablesCache = new Map<string, { cos: TensorData; sin: TensorData; negSin: TensorData }>();
+
+/**
+ * Build (or fetch cached) cos/sin tables of shape [T, D/2] for RoPE.
+ *
+ * Uses the HF-Llama frequency convention EXACTLY:
+ *   inv_freq_i = theta^(-2i/D)      for i in [0, D/2)
+ *   angle(t,i) = (t + posOffset) * inv_freq_i
+ * cos/sin are stored ONLY for the first half [T, D/2]; the rope op reuses each
+ * value for the paired element (HF duplicates the freqs across the two halves).
+ */
+function ropeTables(T: number, D: number, theta: number, posOffset: number) {
+  const key = `${T}:${D}:${theta}:${posOffset}`;
+  const cached = ropeTablesCache.get(key);
+  if (cached) return cached;
+  const half = D >> 1;
+  const cos = new Float32Array(T * half);
+  const sin = new Float32Array(T * half);
+  const negSin = new Float32Array(T * half);
+  for (let i = 0; i < half; i++) {
+    const invFreq = Math.pow(theta, (-2 * i) / D);
+    for (let t = 0; t < T; t++) {
+      const angle = (t + posOffset) * invFreq;
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      cos[t * half + i] = c;
+      sin[t * half + i] = s;
+      negSin[t * half + i] = -s;
+    }
+  }
+  const tables = {
+    cos: { shape: [T, half], dtype: "f32", data: cos } as TensorData,
+    sin: { shape: [T, half], dtype: "f32", data: sin } as TensorData,
+    negSin: { shape: [T, half], dtype: "f32", data: negSin } as TensorData,
+  };
+  ropeTablesCache.set(key, tables);
+  return tables;
+}
+
+/** Apply the rope rotation to x:[B*H,T,D] with the given cos/sin:[T,D/2].
+ *  Uses the backend's fused rope kernel when present, else a CPU loop. */
+function ropeApply(B: Backend, x: TensorData, cos: TensorData, sin: TensorData): TensorData {
+  if (B.rope) return B.rope(x, cos, sin);
+  // CPU fallback (defensive — cpu_ref/Helios both implement B.rope).
+  const shape = x.shape;
+  const D = shape[shape.length - 1];
+  const T = shape[shape.length - 2];
+  const half = D >> 1;
+  const rows = shapeSize(shape) / D;
+  const xArr = x.data as Float32Array;
+  const cArr = cos.data as Float32Array;
+  const sArr = sin.data as Float32Array;
+  const out = new Float32Array(xArr.length);
+  for (let r = 0; r < rows; r++) {
+    const t = r % T;
+    const xBase = r * D;
+    const csBase = t * half;
+    for (let i = 0; i < half; i++) {
+      const c = cArr[csBase + i];
+      const s = sArr[csBase + i];
+      const a = xArr[xBase + i];
+      const bb = xArr[xBase + i + half];
+      out[xBase + i] = a * c - bb * s;
+      out[xBase + i + half] = bb * c + a * s;
+    }
+  }
+  return { shape: [...shape], dtype: x.dtype, data: out };
+}
+
+/**
+ * Rotary position embedding applied to q or k of shape [B*H, T, D].
+ *
+ * Forward rotates each even/odd... NO — the HF-Llama `rotate_half` convention is
+ * used EXACTLY (this matters for safetensors export compatibility): the head dim
+ * is split in HALF (first half / second half), NOT even/odd interleave. For pair
+ * (a=x[i], b=x[i+D/2]) at position t with angle θ_{t,i}:
+ *     out[i]     = a*cos - b*sin
+ *     out[i+D/2] = b*cos + a*sin
+ * i.e. out = x*cos + rotate_half(x)*sin, rotate_half(x) = [-x[D/2:], x[:D/2]].
+ *
+ * Backward is rotation by -angle (the rotation is orthogonal): dX = ropeApply
+ * with sin negated. cos/sin are precomputed on CPU per (T, D, theta, posOffset).
+ *
+ * @param x         [B*H, T, D] head-major q or k tensor.
+ * @param headDim   D — the per-head dimension (must be even).
+ * @param posOffset absolute position of x[..,0,..] (0 for training; >0 for KV cache).
+ * @param theta     RoPE base frequency (default 10000).
+ */
+export function rope(ctx: Ctx, x: Variable, headDim: number, posOffset: number, theta: number): Variable {
+  const shape = x.data.shape;
+  const D = headDim;
+  const T = shape[shape.length - 2];
+  const { cos, sin, negSin } = ropeTables(T, D, theta, posOffset);
+  const out = ropeApply(ctx.backend, x.data, cos, sin);
+  return record(ctx, out, [x], (g, B) => {
+    // Rotate the incoming gradient by -angle (orthogonal transpose).
+    return [ropeApply(B, g, cos, negSin)];
+  });
+}
+
 export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Variable {
   if (!training || p === 0) return a;
   const aData = a.data;
@@ -724,6 +881,62 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
       release(probs);
       release(diff);
     }
+    return [result];
+  }, cleanup);
+}
+
+/**
+ * Masked (assistant-only SFT) cross-entropy.
+ *
+ * Forward:  loss = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1)
+ * Backward: dLogits[i,c] = (softmax(logits)[i,c] - 1{c==t_i}) * mask_i * g
+ *                          / max(sum_i mask_i, 1)
+ *
+ * `mask` is a fixed (non-differentiable) [N] f32 tensor; only `logits` gets a
+ * gradient (targets/mask are data, like `targets` in `crossEntropy`). Rows with
+ * mask 0 contribute nothing to the loss AND get an exactly-zero gradient — the
+ * property the SFT loss-masking test asserts.
+ */
+export function crossEntropyMasked(ctx: Ctx, logits: Variable, targets: TensorData, mask: TensorData): Variable {
+  const logitsData = logits.data;
+  const B = ctx.backend;
+  if (!B.crossEntropyMasked) throw new Error("crossEntropyMasked requires a backend with crossEntropyMasked");
+  let targetsLive: TensorData | null = targets;
+  let maskLive: TensorData | null = mask;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (targetsLive) release(targetsLive);
+      if (maskLive) release(maskLive);
+    }
+    targetsLive = null;
+    maskLive = null;
+  };
+  return record(ctx, B.crossEntropyMasked(logitsData, targets, mask), [logits], (g, Bk, release) => {
+    const tgt = targetsLive ?? targets;
+    const msk = maskLive ?? mask;
+    if (Bk.crossEntropyMaskedBackward) return [Bk.crossEntropyMaskedBackward(logitsData, tgt, msk, g)];
+    // CPU fallback: (softmax(logits) - one_hot(targets)) * mask[row] * g / max(sum(mask),1)
+    const probs = Bk.softmax(logitsData, -1);
+    const probsArr = probs.data as Float32Array;
+    const maskArr = msk.data as Float32Array;
+    const tgtArr = tgt.data;
+    const [N, C] = logitsData.shape;
+    const gScalar = (g.data as Float32Array)[0];
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const scaleVal = gScalar / Math.max(sumMask, 1);
+    const out = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue; // leave this row's grad exactly zero
+      const off = i * C;
+      const t = tgtArr[i];
+      for (let c = 0; c < C; c++) {
+        out[off + c] = (probsArr[off + c] - (c === t ? 1 : 0)) * m * scaleVal;
+      }
+    }
+    const result: TensorData = { shape: [...logitsData.shape], dtype: logitsData.dtype, data: out };
+    if (release) release(probs);
     return [result];
   }, cleanup);
 }

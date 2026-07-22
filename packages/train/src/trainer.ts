@@ -15,7 +15,10 @@ import {
   defaultSymbioConfig, ffnDimForActivation, type SymbioConfig, type TrainerStepInfo,
   serializeGraph, nameGraph, type ActivationNode,
 } from "@alpha/symbiogenesis";
-import { DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte } from "./data.js";
+import {
+  DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte,
+  SftDataLoader, loadSftExamples, splitSftExamples, type BatchSource,
+} from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
 import { sample as runSample } from "./sample.js";
 import {
@@ -558,6 +561,12 @@ export interface TrainerDeps {
   domain?: string;
   activationCheckpointing?: boolean;
   mixedPrecision?: boolean;
+  /**
+   * Assistant-only SFT mode. When true, the training corpus is read as one
+   * rendered conversation per line and each micro-batch carries a per-position
+   * lossMask (user tokens + padding weight 0) threaded into the masked-CE loss.
+   */
+  sft?: boolean;
 }
 
 export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; modelConfig: ModelConfig }> {
@@ -641,10 +650,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   }
 
   // Load data — use chunked tokenization for large files to avoid V8 string limit
+  const sftMode = !!deps.sft;
   const fileStat = await fs.stat(dataPath);
   const isLargeFile = fileStat.size > 50 * 1024 * 1024; // >50MB — chunked tokenization avoids V8 array size limits
-  let trainTokens: Int32Array;
-  let valTokens: Int32Array;
+  let trainTokens: Int32Array = new Int32Array(0);
+  let valTokens: Int32Array = new Int32Array(0);
+  let sftTrain: SftDataLoader | null = null;
+  let sftVal: SftDataLoader | null = null;
   let valBucketLoaders: ValBucketLoader[] = [];
   const valBucketEvalEnabledRaw = (process.env.ALPHA_VAL_BUCKET_EVAL ?? "0").trim().toLowerCase();
   const valBucketEvalEnabled = (
@@ -658,7 +670,27 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     ? valBucketEvalItersRaw
     : 2;
 
-  if (isLargeFile) {
+  if (sftMode) {
+    // Assistant-only SFT: one rendered conversation per line → per-example
+    // lossMask. Deterministic doc-aware train/val split when no valData given.
+    console.log(`SFT mode: loading conversations from ${dataPath.split("/").pop()} (assistant-only masked loss)...`);
+    if (valDataPath) {
+      const trainEx = await loadSftExamples(dataPath, tokenizer);
+      const valEx = await loadSftExamples(valDataPath, tokenizer);
+      sftTrain = new SftDataLoader(trainEx, trainConfig.batchSize, modelConfig.blockSize);
+      sftVal = valEx.length > 0 ? new SftDataLoader(valEx, trainConfig.batchSize, modelConfig.blockSize) : null;
+    } else {
+      const allEx = await loadSftExamples(dataPath, tokenizer);
+      const valFraction = clamp01(Number.parseFloat(process.env.ALPHA_SFT_VAL_FRACTION ?? "0.05"), 0, 0.5);
+      const { train, val } = splitSftExamples(allEx, valFraction, trainConfig.seed);
+      sftTrain = new SftDataLoader(train.length > 0 ? train : allEx, trainConfig.batchSize, modelConfig.blockSize);
+      sftVal = val.length > 0 ? new SftDataLoader(val, trainConfig.batchSize, modelConfig.blockSize) : null;
+    }
+    console.log(
+      `SFT conversations: train=${sftTrain.conversationCount} val=${sftVal?.conversationCount ?? 0} ` +
+      `(${sftTrain.length.toLocaleString()} train tokens)`,
+    );
+  } else if (isLargeFile) {
     console.log(`Large dataset (${(fileStat.size / 1024 / 1024).toFixed(0)}MB) — using chunked tokenization...`);
     if (valDataPath) {
       trainTokens = await loadOrCacheTokens(dataPath, tokenizer);
@@ -862,13 +894,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     },
   });
 
-  // Create data loaders from pre-tokenized arrays
+  // Create data loaders from pre-tokenized arrays (or SFT conversation loaders).
   const packed = trainConfig.packed;
-  const trainLoader = new DataLoader(trainTokens, rng, trainConfig.batchSize, modelConfig.blockSize, packed);
-  const valLoader = valTokens.length > 0
-    ? new DataLoader(valTokens, rng, trainConfig.batchSize, modelConfig.blockSize)
-    : undefined;
-  if (packed) {
+  const trainLoader: BatchSource = sftMode
+    ? sftTrain!
+    : new DataLoader(trainTokens, rng, trainConfig.batchSize, modelConfig.blockSize, packed);
+  const valLoader: BatchSource | undefined = sftMode
+    ? (sftVal ?? undefined)
+    : (valTokens.length > 0
+        ? new DataLoader(valTokens, rng, trainConfig.batchSize, modelConfig.blockSize)
+        : undefined);
+  if (packed && !sftMode) {
     console.log(`Sequence packing: ON (${trainLoader.stepsPerEpoch} steps/epoch)`);
   }
 
@@ -1200,7 +1236,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (tok > stepBatchTokMax) stepBatchTokMax = tok;
       }
       dropoutRng.reset(stepSeedBase + microStep, 0);
-      const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn);
+      const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn, batch.lossMask);
       const _fwd1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
 
@@ -1269,6 +1305,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       if (releaseFn) {
         releaseFn(batch.inputs);
         releaseFn(batch.targets);
+        if (batch.lossMask) releaseFn(batch.lossMask);
       }
       // Sync GPU after each micro-step to fully reclaim deferred buffer releases.
       // Without this, backward-pass intermediates pile up across accumulation steps,
@@ -2186,7 +2223,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       for (let ei = 0; ei < evalIters; ei++) {
         const valBatch = valLoader.nextBatch();
         const evalTape = new Tape();
-        const { loss: vl } = gptForward(activeModelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets);
+        const { loss: vl } = gptForward(activeModelConfig, params, backend, evalTape, valBatch.inputs, valBatch.targets, false, false, false, undefined, undefined, valBatch.lossMask);
         if (vl) {
           valLossSum += (vl.data.data as Float32Array)[0];
           if (releaseFn) releaseFn(vl.data);
@@ -2195,6 +2232,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (releaseFn) {
           releaseFn(valBatch.inputs);
           releaseFn(valBatch.targets);
+          if (valBatch.lossMask) releaseFn(valBatch.lossMask);
         }
         // Flush between eval iters to process deferred releases
         if (flushFn) flushFn();

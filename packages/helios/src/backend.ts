@@ -2401,6 +2401,66 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, x.shape, region);
   }
 
+  private gpuRmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
+    const vk = this.init();
+    const dim = x.shape[x.shape.length - 1];
+    const numRows = shapeSize(x.shape) / dim;
+    const byteSize = shapeSize(x.shape) * 4;
+
+    // Scalar one-workgroup-per-row kernel (correct for any dim; Stage 2 tunes).
+    const pipeline = getPipeline(vk, "rmsnorm", 3, PUSH_SIZE, WG_SIZE);
+    const bufX = ensureGpu(vk, x);
+    const bufW = ensureGpu(vk, weight);
+    const region = acquireOutputRegion(vk, byteSize);
+    const push = push2Memo(dim, eps);
+
+    graph.record({
+      kind: "layernorm",
+      kernel: "rmsnorm",
+      pipeline,
+      inputBufs: [bufX, bufW],
+      outputRegion: region,
+      groups: [numRows, 1, 1],
+      push,
+      pushSize: PUSH_SIZE,
+      shape: x.shape,
+    });
+
+    return graphLazyTensor(vk, x.shape, region);
+  }
+
+  private gpuRope(x: TensorData, cos: TensorData, sin: TensorData): TensorData {
+    const vk = this.init();
+    const D = x.shape[x.shape.length - 1];
+    const T = x.shape[x.shape.length - 2];
+    const half = D >> 1;
+    const rows = shapeSize(x.shape) / D;       // B*H*T
+    const totalPairs = rows * half;
+    const byteSize = shapeSize(x.shape) * 4;
+
+    const pipeline = getPipeline(vk, "rope", 4, 16, WG_SIZE);
+    const bufX = ensureGpu(vk, x);
+    const bufCos = ensureGpu(vk, cos);
+    const bufSin = ensureGpu(vk, sin);
+    const region = acquireOutputRegion(vk, byteSize);
+    const groups = Math.ceil(totalPairs / WG_SIZE);
+    const push = new Float32Array([totalPairs, half, D, T]);
+
+    graph.record({
+      kind: "unary",
+      kernel: "rope",
+      pipeline,
+      inputBufs: [bufX, bufCos, bufSin],
+      outputRegion: region,
+      groups: [groups, 1, 1],
+      push,
+      pushSize: 16,
+      shape: x.shape,
+    });
+
+    return graphLazyTensor(vk, x.shape, region);
+  }
+
   // ── GPU backward ops ──────────────────────────────────────────────────
 
   geluBackward(input: TensorData, gradOutput: TensorData): TensorData {
@@ -2756,6 +2816,71 @@ export class HeliosBackend implements Backend {
     return makeTensor(logits.shape, logits.dtype, out);
   }
 
+  crossEntropyMaskedBackward(logits: TensorData, targets: TensorData, mask: TensorData, gradOutput: TensorData): TensorData {
+    const vk = this.init();
+    const [N, C] = logits.shape;
+    const totalElements = N * C;
+    const gradScalar = (gradOutput.data as Float32Array)[0];
+
+    // sum(mask) — mask is CPU-origin (built by the SFT data loader); floor at 1
+    // so an all-zero-mask micro-batch produces exactly-zero grads (no div-by-0).
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const invDenom = gradScalar / Math.max(sumMask, 1);
+
+    // softmax on GPU (stays lazy — no flush)
+    const probs = this.softmax(logits, -1);
+
+    if (totalElements >= this._minGpuSize) {
+      const bufProbs = ensureGpu(vk, probs);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+
+      const pipeline = getPipeline(vk, "ce_masked_backward", 4, 3 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(3);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;  // f32 bounds-check value
+      pushU[1] = C;             // u32 bits
+      push[2] = invDenom;       // gradScalar / max(sum(mask),1)
+
+      graph.record({
+        kind: "backward",
+        kernel: "ce_masked_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufProbs, bufTargets, bufMask, region.handle],
+      });
+
+      releaseGpuBufferFor(probs);
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
+    // CPU fallback
+    this.checkFallback("crossEntropyMaskedBackward");
+    const probsArr = probs.data as Float32Array;
+    const out = new Float32Array(totalElements);
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue; // exactly-zero grad for masked-out rows
+      const off = i * C;
+      const target = targets.data[i];
+      const rowScale = invDenom * m;
+      for (let j = 0; j < C; j++) {
+        out[off + j] = (probsArr[off + j] - (j === target ? 1 : 0)) * rowScale;
+      }
+    }
+    return makeTensor(logits.shape, logits.dtype, out);
+  }
+
   embeddingBackward(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData {
     const vk = this.init();
     const nIdx = shapeSize(indices.shape);
@@ -2920,6 +3045,88 @@ export class HeliosBackend implements Backend {
       }
     }
     return { dx: dxOut, dw: dwOut, db: dbOut };
+  }
+
+  rmsNormBackward(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData } {
+    const vk = this.init();
+    const dim = x.shape[x.shape.length - 1];
+    const numRows = shapeSize(x.shape) / dim;
+    const xSize = shapeSize(x.shape);
+
+    // GPU path — main backward kernel (dx + dw_partial) then a column sum for dw.
+    if (xSize >= this._minGpuSize) {
+      const bufX = ensureGpu(vk, x);
+      const bufW = ensureGpu(vk, weight);
+      const bufG = ensureGpu(vk, gradOutput);
+
+      const dxRegion = acquireOutputRegion(vk, xSize * 4);
+      const dwPartialRegion = acquireOutputRegion(vk, xSize * 4);
+      const dwRegion = acquireOutputRegion(vk, dim * 4);
+
+      const pipeline1 = getPipeline(vk, "rmsnorm_backward", 5, PUSH_SIZE, WG_SIZE);
+      const push1 = push2Memo(dim, eps);
+      graph.record({
+        kind: "backward",
+        kernel: "rmsnorm_backward",
+        pipeline: pipeline1,
+        inputBufs: [],
+        outputRegion: dxRegion,
+        groups: [numRows, 1, 1],
+        push: push1,
+        pushSize: 2 * 4,
+        shape: x.shape,
+        allBufs: [bufX, bufW, bufG, dxRegion.handle, dwPartialRegion.handle],
+      });
+
+      const pipeline2 = getPipeline(vk, "column_sum", 2);
+      const push2 = push2Memo(dim, numRows);
+      const groups = Math.ceil(dim / WG_SIZE);
+      graph.record({
+        kind: "backward",
+        kernel: "column_sum",
+        pipeline: pipeline2,
+        inputBufs: [],
+        outputRegion: dwRegion,
+        groups: [groups, 1, 1],
+        push: push2,
+        pushSize: 2 * 4,
+        shape: weight.shape,
+        allBufs: [dwPartialRegion.handle, dwRegion.handle],
+      });
+
+      graph.deferRelease(dwPartialRegion);
+
+      return {
+        dx: graphLazyTensor(vk, x.shape, dxRegion),
+        dw: graphLazyTensor(vk, weight.shape, dwRegion),
+      };
+    }
+
+    // CPU fallback
+    this.checkFallback("rmsNormBackward");
+    const n = numRows;
+    const xArr = x.data as Float32Array;
+    const wArr = weight.data as Float32Array;
+    const gArr = gradOutput.data as Float32Array;
+    const dxOut = this.zeros(x.shape, x.dtype);
+    const dwOut = this.zeros(weight.shape, weight.dtype);
+    const dxArr = dxOut.data as Float32Array;
+    const dwArr = dwOut.data as Float32Array;
+    for (let i = 0; i < n; i++) {
+      const off = i * dim;
+      let ms = 0;
+      for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
+      ms /= dim;
+      const r = 1 / Math.sqrt(ms + eps);
+      const r3 = r * r * r;
+      let S = 0;
+      for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
+      for (let j = 0; j < dim; j++) {
+        dwArr[j] += gArr[off + j] * xArr[off + j] * r;
+        dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
+      }
+    }
+    return { dx: dxOut, dw: dwOut };
   }
 
   private gpuMatmul(a: TensorData, b: TensorData): TensorData {
@@ -4461,6 +4668,60 @@ export class HeliosBackend implements Backend {
     return this.cpuLayerNorm(x, weight, bias, eps);
   }
 
+  rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
+    if (shapeSize(x.shape) >= this._minGpuSize) {
+      return this.gpuRmsNorm(x, weight, eps);
+    }
+    // CPU fallback
+    this.checkFallback("rmsNorm");
+    const shape = x.shape;
+    const dim = shape[shape.length - 1];
+    const outer = shapeSize(shape) / dim;
+    const xd = x.data as Float32Array;
+    const wd = weight.data as Float32Array;
+    const out = new Float32Array(xd.length);
+    for (let i = 0; i < outer; i++) {
+      const off = i * dim;
+      let ms = 0;
+      for (let j = 0; j < dim; j++) ms += xd[off + j] * xd[off + j];
+      ms /= dim;
+      const invRms = 1 / Math.sqrt(ms + eps);
+      for (let j = 0; j < dim; j++) out[off + j] = xd[off + j] * invRms * wd[j];
+    }
+    return makeTensor(shape, x.dtype, out);
+  }
+
+  rope(x: TensorData, cos: TensorData, sin: TensorData): TensorData {
+    if (shapeSize(x.shape) >= this._minGpuSize) {
+      return this.gpuRope(x, cos, sin);
+    }
+    // CPU fallback (matches cpu_ref.rope)
+    this.checkFallback("rope");
+    const shape = x.shape;
+    const D = shape[shape.length - 1];
+    const T = shape[shape.length - 2];
+    const half = D >> 1;
+    const rows = shapeSize(shape) / D;
+    const xd = x.data as Float32Array;
+    const cd = cos.data as Float32Array;
+    const sd = sin.data as Float32Array;
+    const out = new Float32Array(xd.length);
+    for (let r = 0; r < rows; r++) {
+      const t = r % T;
+      const xBase = r * D;
+      const csBase = t * half;
+      for (let i = 0; i < half; i++) {
+        const c = cd[csBase + i];
+        const s = sd[csBase + i];
+        const a = xd[xBase + i];
+        const bb = xd[xBase + i + half];
+        out[xBase + i] = a * c - bb * s;
+        out[xBase + i + half] = bb * c + a * s;
+      }
+    }
+    return makeTensor(shape, x.dtype, out);
+  }
+
   softmax(a: TensorData, axis?: number): TensorData {
     const ndim = a.shape.length;
     const ax = axis !== undefined ? (axis < 0 ? axis + ndim : axis) : ndim - 1;
@@ -4520,6 +4781,59 @@ export class HeliosBackend implements Backend {
     let loss = 0;
     for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]];
     loss /= N;
+    return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
+  }
+
+  crossEntropyMasked(logits: TensorData, targets: TensorData, mask: TensorData): TensorData {
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+
+    // sum(mask) on the host — mask is CPU-origin (SFT loader) and small; floor
+    // at 1 so an all-zero mask row yields exactly 0 rather than 0/0 = NaN.
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const denom = Math.max(sumMask, 1);
+
+    if (N * C >= this._minGpuSize) {
+      const vk = this.init();
+      // Fused masked CE: one workgroup per row writes ce_row * mask[row]. Then
+      // reduce-sum on GPU and divide by denom on the host (single scalar readback).
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ce_fwd_masked", 4, 2 * 4);
+      const region = acquireOutputRegion(vk, N * 4);
+
+      const push = new Float32Array(2);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = N;
+      pushU[1] = C;
+
+      graph.record({
+        kind: "unary",
+        kernel: "ce_fwd_masked",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 2 * 4,
+        shape: [N],
+        allBufs: [bufLogits, bufTargets, bufMask, region.handle],
+      });
+
+      const perRowLosses = graphLazyTensor(vk, [N], region);
+      const totalLoss = this.gpuReduceSum(perRowLosses, false);
+      const total = (totalLoss.data as Float32Array)[0];
+      return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / denom]));
+    }
+
+    // CPU fallback — numerically stable log-softmax, masked mean.
+    const logProbs = this.cpuLogSoftmax(logits, 1);
+    let loss = 0;
+    for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]] * maskArr[i];
+    loss /= denom;
     return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
   }
 

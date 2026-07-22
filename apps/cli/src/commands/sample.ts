@@ -15,7 +15,7 @@ import { resolveBackend, resolveRng } from "../resolve.js";
 import { FileCheckpoint, restoreParams, sample as runSample } from "@alpha/train";
 import { initGPT } from "@alpha/model";
 import { defaultSampleConfig, SeededRng } from "@alpha/core";
-import { CharTokenizer, BpeTokenizer, WordTokenizer } from "@alpha/tokenizers";
+import { tokenizerFromArtifacts } from "@alpha/tokenizers";
 import {
   prepareInferenceModel,
   prepareInferenceWeights,
@@ -26,23 +26,7 @@ import {
   decodeStep,
   sampleFromLogits,
 } from "@alpha/inference";
-import type { SampleConfig, Tokenizer } from "@alpha/core";
-
-function tokenizerFromArtifacts(artifacts: { type: string; vocab: readonly string[]; merges?: readonly [number, number][] }): Tokenizer {
-  if (artifacts.type === "bpe") {
-    const tok = new BpeTokenizer();
-    tok.loadArtifacts(artifacts as any);
-    return tok;
-  }
-  if (artifacts.type === "word") {
-    const tok = new WordTokenizer();
-    tok.loadArtifacts(artifacts as any);
-    return tok;
-  }
-  const tok = new CharTokenizer();
-  tok.loadArtifacts(artifacts as any);
-  return tok;
-}
+import type { SampleConfig } from "@alpha/core";
 
 type BeamCandidate = { token: number; logProb: number };
 

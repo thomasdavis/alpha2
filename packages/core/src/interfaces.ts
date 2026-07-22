@@ -12,6 +12,12 @@ export interface TokenizerArtifacts {
   readonly vocab: readonly string[];
   readonly merges?: readonly [number, number][];
   readonly specialTokens?: readonly string[];
+  /**
+   * Byte-level BPE marker (schema v2). When true, `vocab` entries are
+   * GPT-2 surrogate-mapped byte strings and `decode()` maps them back through
+   * the byte↔unicode table for lossless UTF-8 reconstruction.
+   */
+  readonly byteVocab?: boolean;
 }
 
 export interface Tokenizer {
@@ -66,12 +72,22 @@ export interface Backend {
   // nn
   embedding(weight: TensorData, indices: TensorData): TensorData;
   layerNorm(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData;
+  /** RMS normalization over the last dim: (x / sqrt(mean(x^2) + eps)) * weight.
+   *  Mirrors layerNorm's signature style but has no mean-subtraction and no bias
+   *  (the Llama normalization variant). */
+  rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData;
   gelu(a: TensorData): TensorData;
   relu(a: TensorData): TensorData;
   silu(a: TensorData): TensorData;
   softmax(a: TensorData, axis?: number): TensorData;
   logSoftmax(a: TensorData, axis?: number): TensorData;
   crossEntropy(logits: TensorData, targets: TensorData): TensorData;
+  /** Masked (assistant-only SFT) cross-entropy. Optional — backends that don't
+   *  implement it are driven through the cpu_ref path in the autograd op.
+   *  logits [N,C], targets [N] class idx, mask [N] f32 per-row weights.
+   *  Returns scalar = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1). An all-zero
+   *  mask yields exactly 0 (denominator floored at 1, no NaN). */
+  crossEntropyMasked?(logits: TensorData, targets: TensorData, mask: TensorData): TensorData;
 
   // reshape / slice
   reshape(a: TensorData, shape: Shape): TensorData;
@@ -101,7 +117,16 @@ export interface Backend {
   siluMulBackward?(a: TensorData, b: TensorData, gradOutput: TensorData): TensorData[];
   clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
   layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
+  /** Optional fused RMSNorm backward hook (mirrors layerNormBackward but with no
+   *  bias gradient). Returns dx (input grad) and dw (weight grad). When absent,
+   *  the autograd op falls back to a CPU loop like layerNorm's. */
+  rmsNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData };
   crossEntropyBackward?(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData;
+  /** Optional fused masked-CE backward hook (mirrors crossEntropyBackward but
+   *  weights each row's grad by mask[row] and divides by max(sum(mask),1) rather
+   *  than N). dLogits[i,c] = (softmax(logits)[i,c] - 1{c==target_i}) * mask_i *
+   *  gradOutput / max(sum(mask),1). Rows with mask 0 get exactly-zero grad. */
+  crossEntropyMaskedBackward?(logits: TensorData, targets: TensorData, mask: TensorData, gradOutput: TensorData): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
   softCap?(input: TensorData, cap: number): TensorData;
   softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
@@ -133,6 +158,12 @@ export interface Backend {
   flashAttentionBackward?(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData };
+
+  // rotary position embedding (optional) — applies HF-Llama rotate_half rotation.
+  // x: [B*H, T, D] (head-major); cos/sin: [T, D/2] precomputed per position.
+  // Rotates the pair (x[..,i], x[..,i+D/2]) by the angle whose cos/sin are given.
+  // Backward is the same op with sin negated (rotation is orthogonal).
+  rope?(x: TensorData, cos: TensorData, sin: TensorData): TensorData;
 
   // broadcast (GPU-optimized, optional) — avoids CPU readback for tiling operations
   broadcast?(a: TensorData, targetShape: Shape): TensorData;
