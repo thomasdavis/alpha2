@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`58fc691`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`61c1edb`**. TypeScript clean; consolidated suite
   **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -45,8 +45,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   mirror. `867f016` also pins every paid pilot architecture argument explicitly and makes the analyzer
   reject model-config drift; its 6,104-row synthetic contract proof passed. `58fc691` makes the pilots
   safely resumable: exact original contract required, post-checkpoint metric tails preserved+hashed,
-  active metrics atomically realigned, and every attempt recorded in `resume-ledger.jsonl`. Do not start either pilot
-  until the G2 soak finishes and its artifacts are archived.
+  active metrics atomically realigned, and every attempt recorded in `resume-ledger.jsonl`. Do not start
+  either pilot until the G2 soak finishes and its artifacts are archived.
+- The LR sweep is now proof-gated too: `analyze_lr_sweep.ts` shares the strict pilot validator and selects
+  among exactly `{1e-3,2e-3,3e-3}` by the final-three aligned held-out-loss mean (final loss/lower LR are
+  deterministic tie-breaks). Its positive and contract-rejection synthetic tests passed in `61c1edb`.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master

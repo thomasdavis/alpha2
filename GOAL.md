@@ -211,7 +211,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   ≥5K tok/s). AdamW β(0.9, 0.95), wd 0.1, grad-clip 1.0, **lr swept at 100M-token pilot scale over
   {1e-3, 2e-3, 3e-3}** (SmolLM2-135M used 3e-3; Alpha's old 3e-4 lore was tuned around bugs we've now
   fixed — re-derive, don't inherit), warmup 1-2%, cosine (WSD optional later; cosine is what the trainer
-  has), batch ≈ 128-256K tokens/step via grad accum. Checkpoint every eval; **box-side puller** rsyncs
+  has). `analyze_lr_sweep.ts` (`61c1edb`) rejects mismatched contracts and selects the lowest final-three
+  aligned held-out-loss mean with deterministic tie-breaks. Batch ≈ 128-256K tokens/step via grad accum.
+  Checkpoint on its independent cadence; **box-side puller** rsyncs
   every checkpoint off-pod (community pods are disposable; 5s SIGTERM on spot).
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
