@@ -186,6 +186,14 @@ async function main(): Promise<void> {
 
   const checkpointPath = path.join(runDir, `checkpoint-${expectedSteps}.json`);
   const checkpointStat = await stat(checkpointPath);
+  const minimumCheckpointBytes = 650 * 1024 * 1024;
+  const maximumCheckpointBytes = 750 * 1024 * 1024;
+  if (checkpointStat.size < minimumCheckpointBytes || checkpointStat.size > maximumCheckpointBytes) {
+    throw new Error(
+      `checkpoint size ${checkpointStat.size} is outside full flagship+AdamW envelope ` +
+      `[${minimumCheckpointBytes}, ${maximumCheckpointBytes}]`,
+    );
+  }
   const pass = Object.values(checks).every(Boolean);
   const report = {
     schema: "alpha-g2-soak-analysis-v1",
