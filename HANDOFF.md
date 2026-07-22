@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~22:52 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~23:26 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -25,19 +25,23 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - **G3 Llama is live** as remote PID 463 at
   `/workspace/alpha2/runs/g3-llama-100m-lr3e4-c95f81b-20260722`, started 21:20:08 UTC. It is in the
   GPU phase after successfully caching 463,290,711 train tokens in 974.0s and 51,536,242 validation
-  tokens in 109.4s. **Step-1,000 durability gate passed:** 1,000/1,000 continuous finite rows; five-batch
-  validation improved 5.5984302→5.0261204; host RSS 2,872MB; 34 temporary slabs; zero allocator
+  tokens in 109.4s. **Step-1,500 validation gate passed:** 1,500/1,500 continuous finite rows; five-batch
+  validation improved 5.5984302→5.0261204→4.7217364; median post-warmup throughput 3,864 tok/s;
+  host RSS 3,390MB on the unchanged post-checkpoint plateau; 34 temporary slabs; zero allocator
   overflow. The 692,528,815-byte full ALPH checkpoint is identical on pod and mounted drive (SHA-256
   `af862a5db400be2d05927a08f7d04077552421d14e0e10289e7d681cabc19f2c`) and passed a native-format
-  header/payload/shape/finite audit over all 57,688,576 parameters. Training resumed through step 1,025
-  at loss 4.6268 and 3,850 tok/s. Inputs match sealed hashes. The CLI process is
+  header/payload/shape/finite audit over all 57,688,576 parameters. Training resumed beyond step 1,525.
+  Inputs match sealed hashes. The CLI process is
   explicitly `--fp16=false`; the log's `f16: true` line is device capability, not active precision.
   Persistent box guard: `alpha2-g3-llama-puller-c95f81b.service`, 60s interval / 1,800s stale threshold,
   matching remote+local checkpoint retention 3. Mounted run record:
   `/mnt/donto-data/alpha-runs/g3-llama-100m-lr3e4-c95f81b-20260722/RUN.md`.
 - Keep both G3 halves on exact commit `c95f81b`; **do not pull a later origin commit onto the pod until
   the Llama and GPT-2 pair is complete**. Launch GPT-2 only after Llama exits and the final mirror lands.
-- RunPod balance was **$66.0794582995** at ~22:52 UTC; total account burn was $0.301/hr including
+- The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
+  Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
+  manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
+- RunPod balance was **$66.0289150272** at ~23:02 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 

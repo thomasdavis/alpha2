@@ -181,7 +181,11 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   validation improved 5.5984302→5.0261204; host RSS 2,872MB; 34 temporary slabs; zero allocator
   overflow; explicit f32 posture. The full 692,528,815-byte ALPH checkpoint has identical remote/local
   SHA-256 `af862a5d…`, and its native-format header, tensor shapes, exact payload length, and all
-  57,688,576 finite/nonzero parameters passed audit. Training resumed beyond the checkpoint.
+  57,688,576 finite/nonzero parameters passed audit. The step-1,500 milestone is also proven:
+  1,500/1,500 consecutive finite rows, validation 5.5984302→5.0261204→4.7217364, 3,864 tok/s median
+  after warmup, 34 constant temporary slabs, and zero overflow. Remote/mounted metrics and the retained
+  checkpoint were hash-identical. The exact three-shard flagship corpus was staged concurrently at low
+  priority and all 5,976,889,749 remote bytes match the immutable manifest hashes.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
