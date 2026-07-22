@@ -44,6 +44,19 @@ rsync -az --partial --exclude=.git --exclude=.next --exclude=.turbo \
 The box-built `helios_vk.node` (Ubuntu 24.04 / glibc 2.39) loads on the ubuntu2404 image directly;
 if `ldd` complains, rebuild on-pod: `cd /workspace/alpha2 && node packages/helios/native/build.mjs`.
 
+For G3/flagship work, sync the bounded canonical shard and the already-proven tokenizer from their
+durable mounted-drive copies, then compare the pod hashes before launching:
+```bash
+rsync -az --partial -e "ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p <port>" \
+  /mnt/donto-data/alpha-corpora/pretrain-text/pretrain-000.txt root@<ip>:/workspace/data/
+rsync -az --partial -e "ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p <port>" \
+  /mnt/donto-data/alpha-runs/tokenizers-20260722/g2-bpe-byte-12k.json \
+  root@<ip>:/workspace/alpha2/artifacts/
+```
+Expected SHA-256 values: pretrain shard
+`d993342b0bb55198c520f1f761bb0aad2812b2d8fb9c6347b4e6f9d622794d9c`; tokenizer
+`c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24`.
+
 ## Train (node runtime, NOT the bun binary — bun binary has a known vkCreateInstance failure)
 ```bash
 cd /workspace/alpha2

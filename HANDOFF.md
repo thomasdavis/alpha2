@@ -142,13 +142,13 @@ Every check was proven load-bearing by temporary fault injection.
   1.86M docs, `<|end_of_text|>`-delimited. Source: 4 parquet shards of
   `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled` (kept in
   `premix-shuffled/`; 96 more shards available upstream if more tokens needed).
-- SFT: `/mnt/donto-data/alpha-corpora/sft-text/sft.txt` — 457,484 conversations, 1.6GB, alpha chat
-  format, `validate-chat-data.ts`-clean (100K-line samples). smol-smoltalk train (system prompts folded
-  into first user turn as `[Instructions: ...]`) + OASST2 English best-ranked paths. Raw sources kept
-  under `sft/`. smol-smoltalk **test split deliberately unused** (held out for eval).
-- Tokenizer artifacts: none built for 12k yet — the flagship needs `bpe-byte-12k` built from the
-  pretrain corpus (build happens automatically at train start from a 100MB sample, or pre-build with
-  `alpha tokenizer build`+export; note `ALPHA_BPE_MAX_TRAIN_CHARS` default for byte-BPE is 5M).
+- SFT: `/mnt/donto-data/alpha-corpora/sft-text-v2/sft-v2.txt` — 511,428 structurally clean,
+  tokenizer-bounded conversations; SHA-256 `ffad0a376c7eac2e0ec91f0901ec1ff87cba67cc298222828ce3df1a3e60b3fb`.
+  The previous unbounded version is preserved under that corpus directory's `history/`.
+- Tokenizer: durable canonical artifact
+  `/mnt/donto-data/alpha-runs/tokenizers-20260722/g2-bpe-byte-12k.json`; SHA-256
+  `c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24`. It was built on the pod from
+  the 128MB pretrain slice, used by G2, then mirrored and local/remote hash-verified. See its `RUN.md`.
 
 ## Infra / credentials (all verified working this session)
 
