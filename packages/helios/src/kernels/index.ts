@@ -300,6 +300,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "exp_f16":   spirv = kernelUnaryOpF16(GLSLstd450.Exp, wgSize); break;
     case "log_f16":   spirv = kernelUnaryOpF16(GLSLstd450.Log, wgSize); break;
     case "sqrt_f16":  spirv = kernelUnaryOpF16(GLSLstd450.Sqrt, wgSize); break;
+    case "copy_f16":  spirv = kernelUnaryOpF16(null, wgSize, true); break;
     // f16 ↔ f32 cast kernels
     case "cast_f32_to_f16": spirv = kernelCastF32ToF16(wgSize); break;
     case "cast_f16_to_f32": spirv = kernelCastF16ToF32(wgSize); break;

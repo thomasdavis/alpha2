@@ -205,6 +205,23 @@ function parseFlashCoop2DoubleBuf(): boolean {
   return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
 }
 
+/**
+ * Pick a power-of-two flash tile that divides the sequence length exactly.
+ *
+ * The scalar flash kernels contain workgroup barriers. Lanes may not branch
+ * around those barriers, so a partially populated final workgroup is invalid
+ * Vulkan synchronization (and corrupted T=16 parity on NVIDIA when Br=32).
+ * Training's usual power-of-two blocks retain their preferred tile; unusual
+ * lengths safely step down to the largest exact divisor.
+ */
+function safeFlashTile(sequenceLength: number, requested: number): number {
+  const capped = Math.max(1, Math.min(Math.floor(requested), sequenceLength));
+  let tile = 1;
+  while ((tile << 1) <= capped) tile <<= 1;
+  while (tile > 1 && sequenceLength % tile !== 0) tile >>= 1;
+  return tile;
+}
+
 
 let lastPush4A = NaN;
 let lastPush4B = NaN;
@@ -710,6 +727,7 @@ function invalidateCache(td: TensorData): void {
   const gpuInfo = gpuResidence.get(td);
   if (!gpuInfo) return;
   const handle = gpuInfo.handle;
+  const expected = shapeSize(td.shape);
   const vk = getNative();
   let cached: Float32Array | null = null;
   Object.defineProperty(td, "data", {
@@ -720,7 +738,8 @@ function invalidateCache(td: TensorData): void {
         // does not set per-buffer lastWriteTimeline, so readBuffer alone
         // won't wait for in-place ops like AdamW on mapped/coherent memory).
         waitTimelineTracked(vk, tv);
-        cached = vk.readBuffer(handle);
+        const raw = vk.readBuffer(handle);
+        cached = raw.length > expected ? raw.subarray(0, expected) : raw;
       }
       return cached;
     },
@@ -2975,6 +2994,7 @@ export class HeliosBackend implements Backend {
         pushSize: 2 * 4,
         shape: x.shape,
         allBufs: [bufX, bufW, bufG, dxRegion.handle, dwPartialRegion.handle, dbPartialRegion.handle],
+        writeMask: 0b111000, // dx, dw_partial, and db_partial are all written
       });
 
       // Fused dual column sum: reduce both partials in a single dispatch
@@ -2993,6 +3013,7 @@ export class HeliosBackend implements Backend {
         pushSize: 2 * 4,
         shape: weight.shape,
         allBufs: [dwPartialRegion.handle, dbPartialRegion.handle, dwRegion.handle, dbRegion.handle],
+        writeMask: 0b1100, // dw and db are both written
       });
 
       // Defer-release intermediate partial buffers (freed after graph flush)
@@ -3076,6 +3097,7 @@ export class HeliosBackend implements Backend {
         pushSize: 2 * 4,
         shape: x.shape,
         allBufs: [bufX, bufW, bufG, dxRegion.handle, dwPartialRegion.handle],
+        writeMask: 0b11000, // dx and dw_partial are both written
       });
 
       const pipeline2 = getPipeline(vk, "column_sum", 2);
@@ -4144,7 +4166,8 @@ export class HeliosBackend implements Backend {
     // Br=32, Bc=16: halved Bc reduces shared memory (sK+sV: 16KB→8KB), doubling
     // occupancy from 3 to 6 WGs/SM on L4. V1 (runtime loop) avoids the SPIR-V code
     // bloat that V2's compile-time j-unrolling causes (40% regression from icache pressure).
-    const Br = 32, Bc = 16;
+    const Br = safeFlashTile(T, 32);
+    const Bc = safeFlashTile(T, Math.min(16, Br));
     const scSuffix = softCap > 0 ? "_sc" : "";
     const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}`;
     const pipelineLookup = getPipelineLookup(vk, kernelName, 5, 16);
@@ -4175,6 +4198,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
@@ -4229,6 +4253,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      writeMask: 0b11000, // O and LSE are both written
     });
 
     const output = graphLazyTensor(vk, [BH, T, D], oRegion);
@@ -4320,6 +4345,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
@@ -4385,6 +4411,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
+      writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
@@ -4528,10 +4555,14 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
-    const Br = parseInt(process.env.HELIOS_FLASH_BWD_BR ?? "32", 10);
-    const BrDKV = parseInt(process.env.HELIOS_FLASH_BWD_BR_DKV ?? "32", 10);
-    const BcDQ = parseInt(process.env.HELIOS_FLASH_BWD_BC_DQ ?? "16", 10);
-    const BcDKV = parseInt(process.env.HELIOS_FLASH_BWD_BC_DKV ?? "32", 10);
+    const requestedBr = parseInt(process.env.HELIOS_FLASH_BWD_BR ?? "32", 10);
+    const requestedBrDKV = parseInt(process.env.HELIOS_FLASH_BWD_BR_DKV ?? "32", 10);
+    const requestedBcDQ = parseInt(process.env.HELIOS_FLASH_BWD_BC_DQ ?? "16", 10);
+    const requestedBcDKV = parseInt(process.env.HELIOS_FLASH_BWD_BC_DKV ?? "32", 10);
+    const Br = safeFlashTile(T, requestedBr);
+    const BrDKV = safeFlashTile(T, requestedBrDKV);
+    const BcDQ = safeFlashTile(T, Math.min(requestedBcDQ, Br));
+    const BcDKV = safeFlashTile(T, requestedBcDKV);
     const scSuffix = softCap > 0 ? "_sc" : "";
 
     const bufQ = ensureGpu(vk, Q);
@@ -4564,6 +4595,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
+      writeMask: 0b11000000, // Dpre and dQ are both written
     });
 
     // Step 2: dKV kernel reads D_precomp written by dQ kernel
@@ -4585,6 +4617,7 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
+      writeMask: 0b11000000, // dK and dV are both written
     });
 
     // Release intermediate D_precomp buffer — only needed between dQ and dKV kernels.
@@ -5395,6 +5428,25 @@ export class HeliosBackend implements Backend {
     // This is critical for backward pass performance — clone() is called for
     // every gradient, and GPU→CPU→GPU ping-pong was causing 30s backward times.
     if (gpuResidence.has(a) && shapeSize(a.shape) >= this._minGpuSize) {
+      if (a.dtype === "f16") {
+        const vk = this.init();
+        const size = shapeSize(a.shape);
+        const bufA = this.ensureGpuF16(vk, a);
+        const pipeline = getPipeline(vk, "copy_f16", 2);
+        const region = acquireOutputRegion(vk, size * 2);
+        graph.record({
+          kind: "unary",
+          kernel: "copy_f16",
+          pipeline,
+          inputBufs: [bufA],
+          outputRegion: region,
+          groups: [Math.ceil(size / WG_SIZE), 1, 1],
+          push: push2Memo(size, 0),
+          pushSize: PUSH_SIZE,
+          shape: a.shape,
+        });
+        return graphLazyTensorF16(vk, a.shape, region);
+      }
       return this.gpuUnaryOp(a, "scale", 1.0);
     }
     return makeTensor(a.shape, a.dtype, dtypeArray(a.dtype).from(a.data));
@@ -5736,6 +5788,7 @@ export class HeliosBackend implements Backend {
       pushSize: 9 * 4,
       shape: params.shape,
       allBufs: [bufP, bufG, bufM, bufV],
+      writeMask: 0b1101, // params, first moment, and second moment are written
     });
 
     // Invalidate CPU caches immediately — next .data access will flush graph + readback

@@ -1,6 +1,6 @@
 # GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
 
-**Set:** 2026-07-22 · **Owner:** ajax + Claude · **Status:** ACTIVE
+**Set:** 2026-07-22 · **Owner:** ajax + Codex (handoff from Claude) · **Status:** ACTIVE
 **Budget:** $70.21 RunPod prepaid credit (hard ceiling; no per-token API spend anywhere in this program)
 
 ---
@@ -77,8 +77,8 @@ the whole run reproducible from repo scripts. All flops through Helios (`--backe
       `packages/ apps/` first (small) if in a hurry; consider a pod-side tarball cache later.
 
 ### Stage 1 — Trustworthy engine (box-heavy, ≈$3 GPU for parity runs)
-**BOX-SIDE COMPLETE 2026-07-22** (remaining: run parity-helios + the G1 1K-step pilot on a pod, deferred
-until all box work is done per operator directive): deps modernized to latest (TS 7, vitest 4, Next 16,
+**ENGINE + NVIDIA PARITY COMPLETE 2026-07-22** (remaining: the G1 1K-step pilot): deps modernized to
+latest (TS 7, vitest 4, Next 16,
 effect 3.22; npm audit 5→1-low via overrides); gradcheck harness landed (9b63685) — 42 per-op central-
 difference checks + whole-model gradchecks (swiglu/gelu/universal/kan_spline) + AdamW-vs-reference +
 GPU-gated parity suite; **REAL BUG found+fixed: cpu_ref.sum(keepdims=true) corrupted broadcast backward
@@ -89,10 +89,16 @@ The recon found: documented **2-7% NaN-gradient steps** (Helios×SwiGLU, root ca
 diverges immediately, `lmHead` weight-decay exclusion bug (`"lmHead.weight"` vs actual name `"lmHead"`),
 wte/wpe missing from no-decay in older audits, spike-skip machinery papering over real numerical bugs,
 and **zero Helios test files**.
-- [ ] CPU↔Helios parity harness (extend `scripts/grad-compare.ts`): fixed weights + fixed batch →
+- [x] CPU↔Helios parity harness: fixed weights + fixed batch →
       compare logits, loss, every gradient, one full AdamW step, 100 deterministic steps; fail on first
       non-finite. Cover: matmul (all variants in use), softmax, layernorm/rmsnorm, silu/siluMul, CE
-      fwd/bwd, embedding bwd, flash-attention fwd/bwd vs standard path.
+      fwd/bwd, embedding bwd, flash-attention fwd/bwd vs standard path. **NVIDIA gate PASSED on RTX 3090
+      pod `d5m7h1v0kr0zd4`: 44/44 tests, 0 failures**; evidence:
+      `/mnt/donto-data/alpha-runs/gpu-gates-20260722/gpu-gates-pass-44-20260722.log`. The run exposed and
+      fixed real f16-clone corruption, missing multi-output write barriers, non-atomic repeated-token
+      embedding gradients, no-op vec4 in-place accumulation, masked negative zero, unsafe partial flash
+      tiles, and padded-buffer readback length leakage. Box regression remains 178 pass / 44 GPU-skipped;
+      `tsc -b` clean.
 - [ ] Root-cause the SwiGLU NaN rate at pilot scale with the harness (suspects: siluMul backward, CE
       fused kernel edge cases, flash bwd). Fix, don't mask. Spike-skip stays as a safety net, not a crutch.
 - [ ] Fix known bugs: lmHead no-decay name; audit no-decay set (norms + embeddings excluded from wd);

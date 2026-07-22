@@ -105,6 +105,7 @@ export const Op = {
   Extension:            10,
   ControlBarrier:       224,
   MemoryBarrier:        225,
+  AtomicCompareExchange: 230,
   IsNan:                156,
   IsInf:                157,
   // Subgroup non-uniform (core in SPIR-V 1.3)
@@ -259,7 +260,9 @@ export const Scope = {
 // Memory semantics (for barriers)
 export const MemorySemantics = {
   None: 0x0000,
+  Acquire: 0x0002,
   AcquireRelease: 0x0008,
+  UniformMemory: 0x0040,
   WorkgroupMemory: 0x0100,
 } as const;
 

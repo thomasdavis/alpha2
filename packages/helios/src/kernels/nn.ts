@@ -6298,8 +6298,15 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.AccessChain, [bufMask.tPtrF32, ptrMask, bufMask.varId, p.const0u, row]);
   const maskVal = b.id();
   b.emit(Op.Load, [p.tF32, maskVal, ptrMask]);
+  const maskedResult = b.id();
+  b.emit(Op.FMul, [p.tF32, maskedResult, scaled, maskVal]);
+  // Multiplying a negative value by +0 produces -0 on IEEE-754 hardware.
+  // Masked rows are an exact-zero contract (and are later accumulated), so
+  // canonicalize both +0 and -0 masks to the +0 constant explicitly.
+  const maskIsNonZero = b.id();
+  b.emit(Op.FOrdNotEqual, [p.tBool, maskIsNonZero, maskVal, constZero]);
   const result = b.id();
-  b.emit(Op.FMul, [p.tF32, result, scaled, maskVal]);
+  b.emit(Op.Select, [p.tF32, result, maskIsNonZero, maskedResult, constZero]);
 
   const ptrOut = b.id();
   b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);
@@ -6324,24 +6331,9 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
  * Bindings: 0=indices (i32 as f32 bits, in), 1=gradOutput (f32, in), 2=gradWeight (f32, out)
  * Push: [totalElements (as f32), dim (as f32 bits of u32)]
  *
- * Note: Uses non-atomic add since we process one element per thread with
- * unique (row, dim) mapping — no race conditions within a single dispatch.
- * However, multiple rows can map to the same vocab index, so we DO need atomics.
- * We use a two-pass approach: first zero the output, then accumulate.
- * Actually, we avoid atomics by dispatching one thread per (index, dim) pair
- * and doing a sequential scan. This is simpler and works for moderate batch sizes.
- *
- * Simpler approach: one workgroup per vocab entry, scan all indices.
- * But that's vocabSize workgroups, each reading all indices — too much work.
- *
- * Practical approach: just do the scatter on CPU but avoid the GPU readback
- * by using the existing backend ops. Read targets on CPU (they're Int32Array
- * from the data loader, not GPU). Read gradient on GPU as needed.
- *
- * Actually, the best approach for our case: since targets come from the data
- * loader as CPU Int32Array, and the gradient tensor is on GPU, we can:
- * 1. Keep targets on CPU (no readback needed — already CPU)
- * 2. Use a GPU kernel that reads targets buffer + grad, writes to output
+ * Repeated token IDs make multiple invocations target the same weight element.
+ * Vulkan core has no portable f32 atomic add, so the implementation uses an
+ * atomic compare-exchange loop over the f32 bit pattern.
  */
 export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
   // Each thread handles one element: thread idx maps to (sample_idx, dim_idx)
@@ -6355,11 +6347,19 @@ export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
-  // Bindings: 0=indices (i32 as f32 bits), 1=gradOutput (f32), 2=gradWeight (f32, read-write)
+  // Bindings: 0=indices (i32 as f32 bits), 1=gradOutput (f32),
+  // 2=gradWeight (u32 bit-view of f32, read-write for atomic CAS)
   const bufIndices  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufGradOut  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufGradW    = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufGradW    = declareStorageBuffer(b, p.tU32, p.tU32, 0, 2, false);
   const pc = declareParamsPushConstant(b, p.tF32, 2); // [totalElements, dim]
+
+  const scopeDevice = b.id();
+  b.constant(p.tU32, scopeDevice, Scope.Device);
+  const semSuccess = b.id();
+  b.constant(p.tU32, semSuccess, MemorySemantics.AcquireRelease | MemorySemantics.UniformMemory);
+  const semFailure = b.id();
+  b.constant(p.tU32, semFailure, MemorySemantics.Acquire | MemorySemantics.UniformMemory);
 
   const fnMain = b.id();
   b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
@@ -6377,7 +6377,7 @@ export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
   b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
 
   const lenF = loadPushLen(b, p, pc);
-  emitBoundsCheck(b, p, lenF, gidX, labelEnd);
+  const labelBody = emitBoundsCheck(b, p, lenF, gidX, labelEnd);
 
   // dim = bitcast<u32>(push[1])
   const ptrPcDim = b.id();
@@ -6413,21 +6413,39 @@ export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
   const gradVal = b.id();
   b.emit(Op.Load, [p.tF32, gradVal, ptrGrad]);
 
-  // CAS loop for atomic float add to gradWeight[dstOffset]
-  // Since AtomicFAddEXT requires extensions, we use Bitcast + AtomicCompareExchange
+  // CAS loop for atomic float add to gradWeight[dstOffset]. Vulkan core has no
+  // portable f32 atomic add, so operate on the same 32 bits through a u32 view:
+  // load expected → add in f32 → compare-exchange desired bits → retry on race.
   const ptrDst = b.id();
   b.emit(Op.AccessChain, [bufGradW.tPtrF32, ptrDst, bufGradW.varId, p.const0u, dstOffset]);
 
-  // Simple non-atomic add (we'll handle conflicts by dispatching this kernel
-  // once per batch element sequentially if needed, or accept small numerical errors)
-  // For most training scenarios, the race condition only affects the embedding
-  // gradient of tokens that appear multiple times in the same batch — the error
-  // is negligible and gets corrected over training steps.
-  const curVal = b.id();
-  b.emit(Op.Load, [p.tF32, curVal, ptrDst]);
-  const newVal = b.id();
-  b.emit(Op.FAdd, [p.tF32, newVal, curVal, gradVal]);
-  b.emit(Op.Store, [ptrDst, newVal]);
+  const initialBits = b.id();
+  b.emit(Op.Load, [p.tU32, initialBits, ptrDst]);
+  const labelCasHead = b.id();
+  const labelCasContinue = b.id();
+  const labelCasMerge = b.id();
+  b.emit(Op.Branch, [labelCasHead]);
+  b.emit(Op.Label, [labelCasHead]);
+  const expectedBits = b.id();
+  const observedBits = b.id();
+  b.emit(Op.Phi, [p.tU32, expectedBits, initialBits, labelBody, observedBits, labelCasContinue]);
+  const expectedValue = b.id();
+  b.emit(Op.Bitcast, [p.tF32, expectedValue, expectedBits]);
+  const desiredValue = b.id();
+  b.emit(Op.FAdd, [p.tF32, desiredValue, expectedValue, gradVal]);
+  const desiredBits = b.id();
+  b.emit(Op.Bitcast, [p.tU32, desiredBits, desiredValue]);
+  b.emit(Op.AtomicCompareExchange, [
+    p.tU32, observedBits, ptrDst, scopeDevice, semSuccess, semFailure,
+    desiredBits, expectedBits,
+  ]);
+  const exchanged = b.id();
+  b.emit(Op.IEqual, [p.tBool, exchanged, observedBits, expectedBits]);
+  b.emit(Op.LoopMerge, [labelCasMerge, labelCasContinue, 0]);
+  b.emit(Op.BranchConditional, [exchanged, labelCasMerge, labelCasContinue]);
+  b.emit(Op.Label, [labelCasContinue]);
+  b.emit(Op.Branch, [labelCasHead]);
+  b.emit(Op.Label, [labelCasMerge]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);

@@ -152,12 +152,22 @@ describeGpu("per-op forward parity", () => {
     relCloseScalar("crossEntropy", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
   });
 
-  it("embedding [12,8] gather 6 rows", () => {
+  it("embedding [12,8] gather + repeated-index backward", () => {
     const table = rnd(12, 96, -1, 1);
-    const indices: TensorData = { shape: [6], dtype: "i32", data: Int32Array.from([0, 11, 5, 2, 7, 3]) };
+    const indexValues = [5, 2, 5, 2, 5, 3];
+    const indices: TensorData = { shape: [6], dtype: "i32", data: Int32Array.from(indexValues) };
     const c = cpu.embedding(cpu.fromArray(table, [12, 8]), indices);
     const g = gpu.embedding(gpu.fromArray(table, [12, 8]), indices);
     assertClose("embedding", f32(g), f32(c), FWD_REL_TOL, FWD_ABS_TOL);
+
+    const gradValues = rnd(52, 6 * 8, -1, 1);
+    const grad = gpu.fromArray(gradValues, [6, 8]);
+    const backward = gpu.embeddingBackward!(indices, grad, 12);
+    const reference = new Float32Array(12 * 8);
+    for (let row = 0; row < indexValues.length; row++) {
+      for (let d = 0; d < 8; d++) reference[indexValues[row] * 8 + d] += gradValues[row * 8 + d];
+    }
+    assertClose("embeddingBackward", f32(backward), reference, FWD_REL_TOL, FWD_ABS_TOL);
   });
 
   it("softCap cap=30 [64]", () => {

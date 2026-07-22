@@ -7,7 +7,7 @@
 import {
   SpirVBuilder, Op, ExecutionModel, ExecutionMode, StorageClass, Decoration,
   BuiltIn, FunctionControl, Scope, MemorySemantics, GLSLstd450,
-  preamble, declareStorageBuffer, declareParamsPushConstant,
+  preamble, declareStorageBuffer, declareStorageBufferVec4, declareParamsPushConstant,
   loadPushLen, loadPushScalar, emitBoundsCheck,
 } from "./helpers.js";
 
@@ -561,15 +561,9 @@ export function kernelAddInplaceVec4(wgSize: number): Uint32Array {
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
 
-  const bufA = declareStorageBuffer(b, tVec4F32, p.tU32, 0, 0, false);
-  const bufB = declareStorageBuffer(b, tVec4F32, p.tU32, 0, 1, true);
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, false);
+  const bufB = declareStorageBufferVec4(b, tVec4F32, 0, 1, true);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
-
-  // Pointer types for vec4
-  const tPtrBufVec4A = b.id();
-  b.typePointer(tPtrBufVec4A, StorageClass.Uniform, tVec4F32);
-  const tPtrBufVec4B = b.id();
-  b.typePointer(tPtrBufVec4B, StorageClass.Uniform, tVec4F32);
 
   const fnMain = b.id();
   b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
@@ -596,11 +590,11 @@ export function kernelAddInplaceVec4(wgSize: number): Uint32Array {
 
   b.emit(Op.Label, [labelDo]);
   const ptrA = b.id();
-  b.emit(Op.AccessChain, [tPtrBufVec4A, ptrA, bufA.varId, p.const0u, gid]);
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gid]);
   const aVal = b.id();
   b.emit(Op.Load, [tVec4F32, aVal, ptrA]);
   const ptrB = b.id();
-  b.emit(Op.AccessChain, [tPtrBufVec4B, ptrB, bufB.varId, p.const0u, gid]);
+  b.emit(Op.AccessChain, [bufB.tPtrVec4, ptrB, bufB.varId, p.const0u, gid]);
   const bVal = b.id();
   b.emit(Op.Load, [tVec4F32, bVal, ptrB]);
   const sum = b.id();
@@ -684,11 +678,8 @@ export function kernelScaleInplaceVec4(wgSize: number): Uint32Array {
 
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
-  const bufA = declareStorageBuffer(b, tVec4F32, p.tU32, 0, 0, false);
+  const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, false);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
-
-  const tPtrBufVec4A = b.id();
-  b.typePointer(tPtrBufVec4A, StorageClass.Uniform, tVec4F32);
 
   const tVec4Scalar = b.id();
   b.typeVector(tVec4Scalar, p.tF32, 4);
@@ -720,7 +711,7 @@ export function kernelScaleInplaceVec4(wgSize: number): Uint32Array {
 
   b.emit(Op.Label, [labelDo]);
   const ptrA = b.id();
-  b.emit(Op.AccessChain, [tPtrBufVec4A, ptrA, bufA.varId, p.const0u, gid]);
+  b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrA, bufA.varId, p.const0u, gid]);
   const aVal = b.id();
   b.emit(Op.Load, [tVec4F32, aVal, ptrA]);
 

@@ -226,7 +226,7 @@ export function kernelCastF16ToF32(wgSize = 256): Uint32Array {
 /**
  * Generate element-wise unary op kernel with f16 storage.
  */
-export function kernelUnaryOpF16(glslOp: number | null, wgSize = 256): Uint32Array {
+export function kernelUnaryOpF16(glslOp: number | null, wgSize = 256, identity = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
@@ -269,7 +269,9 @@ export function kernelUnaryOpF16(glslOp: number | null, wgSize = 256): Uint32Arr
 
   // Apply operation (GLSL.std.450 or custom)
   let result: number;
-  if (glslOp !== null) {
+  if (identity) {
+    result = valA;
+  } else if (glslOp !== null) {
     result = b.id();
     b.emit(Op.ExtInst, [p.tF32, result, p.glslStd, glslOp, valA]);
   } else {
