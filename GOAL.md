@@ -134,7 +134,7 @@ turning every device tensor into an individual `vkAllocateMemory`. The current t
   **IN PROGRESS 2026-07-22:** exact commit `aca9f97`, 5,400 steps / 88.47M tokens / ≈6.3h on the $0.22/hr
   RTX 3090. At 3h09m (step 2,600): host RSS 756MB; tracked Vulkan allocations/live buffers remain
   bounded; zero allocator overflow; ~3.82K post-warmup median tok/s. The verified box-side guard mirrors
-  metrics every minute. `scripts/analyze_g2_soak.ts` (`1920d45`) codifies the final duration,
+  metrics every minute. `scripts/analyze_g2_soak.ts` (`1920d45`, sampled-schema fix `15e8f10`) codifies the final duration,
   throughput, boundedness, shape, cost, overflow, sequential-row, and checkpoint-hash proof. Do not call
   the gate until hour six and all 5,400 finite rows are archived.
 
