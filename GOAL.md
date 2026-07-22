@@ -77,6 +77,14 @@ the whole run reproducible from repo scripts. All flops through Helios (`--backe
       `packages/ apps/` first (small) if in a hurry; consider a pod-side tarball cache later.
 
 ### Stage 1 — Trustworthy engine (box-heavy, ≈$3 GPU for parity runs)
+**BOX-SIDE COMPLETE 2026-07-22** (remaining: run parity-helios + the G1 1K-step pilot on a pod, deferred
+until all box work is done per operator directive): deps modernized to latest (TS 7, vitest 4, Next 16,
+effect 3.22; npm audit 5→1-low via overrides); gradcheck harness landed (9b63685) — 42 per-op central-
+difference checks + whole-model gradchecks (swiglu/gelu/universal/kan_spline) + AdamW-vs-reference +
+GPU-gated parity suite; **REAL BUG found+fixed: cpu_ref.sum(keepdims=true) corrupted broadcast backward
+grads on non-last axes**; lmHead no-decay + tokenizer --vocabSize + fp16-auto-enable + train-nanochat lr
+bugs all fixed; secrets scrubbed (Discord webhook REVOKED, .env untracked; ElevenLabs key still needs
+dashboard rotation by user).
 The recon found: documented **2-7% NaN-gradient steps** (Helios×SwiGLU, root cause never fixed), fp16
 diverges immediately, `lmHead` weight-decay exclusion bug (`"lmHead.weight"` vs actual name `"lmHead"`),
 wte/wpe missing from no-decay in older audits, spike-skip machinery papering over real numerical bugs,
