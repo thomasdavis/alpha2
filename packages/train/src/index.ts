@@ -3,10 +3,11 @@ export {
   type AdamWConfig, type LionConfig, type AdafactorConfig,
 } from "./optimizers.js";
 export {
-  DataLoader, ShardedDataLoader, loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText,
+  DataLoader, ShardedDataLoader, loadPretrainShardManifest, verifyPretrainShardManifest,
+  loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText,
   SftDataLoader, loadSftExamples, buildSftExample, resolveChatSpecialIds, splitSftExamples,
   CHAT_USER_TOKEN, CHAT_ASSISTANT_TOKEN, CHAT_EOT_TOKEN,
-  type DataBatch, type BatchSource, type SftExample, type ChatSpecialIds,
+  type DataBatch, type BatchSource, type PretrainShardManifest, type SftExample, type ChatSpecialIds,
 } from "./data.js";
 export {
   FileCheckpoint, buildCheckpointState, restoreParams,

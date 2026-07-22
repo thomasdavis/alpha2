@@ -33,6 +33,60 @@ export interface BatchSource {
   readonly length: number;
 }
 
+export interface PretrainShardManifest {
+  schema: "alpha-pretrain-shards-v1";
+  shards: { path: string; sha256: string }[];
+}
+
+/** Load and structurally validate a multi-file pretraining manifest. */
+export async function loadPretrainShardManifest(
+  manifestPath: string,
+): Promise<{ manifest: PretrainShardManifest; paths: string[] }> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as Partial<PretrainShardManifest>;
+  if (parsed.schema !== "alpha-pretrain-shards-v1" || !Array.isArray(parsed.shards) || parsed.shards.length < 2) {
+    throw new Error(`${manifestPath}: expected alpha-pretrain-shards-v1 with at least two shards`);
+  }
+  const base = path.dirname(path.resolve(manifestPath));
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, shard] of parsed.shards.entries()) {
+    if (!shard || typeof shard.path !== "string" || shard.path.length === 0 ||
+        typeof shard.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(shard.sha256)) {
+      throw new Error(`${manifestPath}: invalid shard entry ${index}`);
+    }
+    const resolved = path.isAbsolute(shard.path) ? shard.path : path.resolve(base, shard.path);
+    if (seen.has(resolved)) throw new Error(`${manifestPath}: duplicate shard path ${resolved}`);
+    const fileStat = await fs.stat(resolved);
+    if (!fileStat.isFile() || fileStat.size === 0) throw new Error(`${manifestPath}: shard is not a non-empty file: ${resolved}`);
+    seen.add(resolved);
+    paths.push(resolved);
+  }
+  return { manifest: parsed as PretrainShardManifest, paths };
+}
+
+/** Stream-hash every shard before paid training; returns byte counts for provenance. */
+export async function verifyPretrainShardManifest(
+  manifest: PretrainShardManifest,
+  paths: readonly string[],
+): Promise<{ path: string; bytes: number; sha256: string }[]> {
+  if (manifest.shards.length !== paths.length) throw new Error("manifest/path count mismatch");
+  const { createHash } = await import("node:crypto");
+  const { createReadStream } = await import("node:fs");
+  const fs = await import("node:fs/promises");
+  const verified: { path: string; bytes: number; sha256: string }[] = [];
+  for (let index = 0; index < paths.length; index++) {
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(paths[index])) hash.update(chunk);
+    const actual = hash.digest("hex");
+    const expected = manifest.shards[index].sha256;
+    if (actual !== expected) throw new Error(`${paths[index]}: SHA-256 ${actual} != manifest ${expected}`);
+    verified.push({ path: paths[index], bytes: (await fs.stat(paths[index])).size, sha256: actual });
+  }
+  return verified;
+}
+
 export class DataLoader implements BatchSource {
   private tokens: Int32Array;
   private rng: Rng;

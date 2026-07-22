@@ -16,7 +16,7 @@ import {
   serializeGraph, nameGraph, type ActivationNode,
 } from "@alpha/symbiogenesis";
 import {
-  DataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte,
+  DataLoader, ShardedDataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte,
   SftDataLoader, loadSftExamples, splitSftExamples, type BatchSource,
 } from "./data.js";
 import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
@@ -554,6 +554,8 @@ export interface TrainerDeps {
   modelConfig: ModelConfig;
   trainConfig: TrainConfig;
   dataPath: string;
+  /** Independently cached pretraining shards, logically concatenated by the loader. */
+  dataPaths?: readonly string[];
   valDataPath?: string;
   runDir?: string;
   resumePath?: string;
@@ -585,6 +587,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     backend, tokenizer, optimizer, rng, modelConfig, trainConfig,
     dataPath, valDataPath, resumePath, onStep, onStart, onEvent,
   } = deps;
+  const dataPaths = deps.dataPaths?.length ? [...deps.dataPaths] : [dataPath];
+  if (deps.sft && dataPaths.length > 1) throw new Error("SFT does not support a pretraining shard manifest");
 
   const dataTag = dataPath.split("/").pop()?.replace(/\.[^.]+$/, "").replace(/-/g, "_");
   // When resuming into an existing runDir, reuse the directory name as run ID
@@ -616,6 +620,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const path = await import("node:path");
   await fs.mkdir(runDir, { recursive: true });
   const configObj: Record<string, unknown> = { modelConfig, trainConfig, configHash, runId: rid };
+  if (dataPaths.length > 1) configObj.dataPaths = dataPaths;
   if (deps.domain) configObj.domain = deps.domain;
   const configPath = path.join(runDir, "config.json");
   async function writeConfig(): Promise<void> {
@@ -669,6 +674,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const isLargeFile = fileStat.size > 50 * 1024 * 1024; // >50MB — chunked tokenization avoids V8 array size limits
   let trainTokens: Int32Array = new Int32Array(0);
   let valTokens: Int32Array = new Int32Array(0);
+  let trainTokenShards: Int32Array[] = [];
+  let valTokenShards: Int32Array[] = [];
   let sftTrain: SftDataLoader | null = null;
   let sftVal: SftDataLoader | null = null;
   let valBucketLoaders: ValBucketLoader[] = [];
@@ -704,6 +711,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       `SFT conversations: train=${sftTrain.conversationCount} val=${sftVal?.conversationCount ?? 0} ` +
       `(${sftTrain.length.toLocaleString()} train tokens)`,
     );
+  } else if (dataPaths.length > 1) {
+    if (valDataPath) throw new Error("valDataPath cannot be combined with pretraining dataPaths");
+    console.log(`Sharded dataset: ${dataPaths.length} files — tokenizing/caching each 90/10 split independently...`);
+    for (const [index, shardPath] of dataPaths.entries()) {
+      const shardStat = await fs.stat(shardPath);
+      const splitByte = await getSplitByte(shardPath, 0.9);
+      console.log(
+        `  shard ${index + 1}/${dataPaths.length}: ${shardPath.split("/").pop()} ` +
+        `(${(shardStat.size / 1024 / 1024).toFixed(0)}MB)`,
+      );
+      trainTokenShards.push(await loadOrCacheTokens(shardPath, tokenizer, { startByte: 0, endByte: splitByte }));
+      valTokenShards.push(await loadOrCacheTokens(shardPath, tokenizer, { startByte: splitByte, endByte: shardStat.size }));
+    }
   } else if (isLargeFile) {
     console.log(`Large dataset (${(fileStat.size / 1024 / 1024).toFixed(0)}MB) — using chunked tokenization...`);
     if (valDataPath) {
@@ -765,6 +785,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
   }
 
+  if (!sftMode && trainTokenShards.length === 0) {
+    trainTokenShards = [trainTokens];
+    if (valTokens.length > 0) valTokenShards = [valTokens];
+  }
+
   configObj.dataStats = sftMode
     ? {
         mode: "sft",
@@ -773,7 +798,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         trainConversations: sftTrain?.conversationCount ?? 0,
         valConversations: sftVal?.conversationCount ?? 0,
       }
-    : { mode: "pretrain", trainTokens: trainTokens.length, valTokens: valTokens.length };
+    : {
+        mode: "pretrain",
+        trainTokens: trainTokenShards.reduce((sum, shard) => sum + shard.length, 0),
+        valTokens: valTokenShards.reduce((sum, shard) => sum + shard.length, 0),
+        shards: trainTokenShards.map((shard, index) => ({
+          path: dataPaths[index],
+          trainTokens: shard.length,
+          valTokens: valTokenShards[index]?.length ?? 0,
+        })),
+      };
 
   // Initialize model
   rng.seed(trainConfig.seed);
@@ -930,11 +964,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const valDataRng = new SeededRng(trainConfig.seed ^ 0x7a2d91e3);
   const trainLoader: BatchSource = sftMode
     ? sftTrain!
-    : new DataLoader(trainTokens, trainDataRng, trainConfig.batchSize, modelConfig.blockSize, packed);
+    : (trainTokenShards.length > 1
+        ? new ShardedDataLoader(trainTokenShards, trainDataRng, trainConfig.batchSize, modelConfig.blockSize, packed)
+        : new DataLoader(trainTokenShards[0], trainDataRng, trainConfig.batchSize, modelConfig.blockSize, packed));
   const valLoader: BatchSource | undefined = sftMode
     ? (sftVal ?? undefined)
-    : (valTokens.length > 0
-        ? new DataLoader(valTokens, valDataRng, trainConfig.batchSize, modelConfig.blockSize)
+    : (valTokenShards.length > 0
+        ? (valTokenShards.length > 1
+            ? new ShardedDataLoader(valTokenShards, valDataRng, trainConfig.batchSize, modelConfig.blockSize)
+            : new DataLoader(valTokenShards[0], valDataRng, trainConfig.batchSize, modelConfig.blockSize))
         : undefined);
   if (startStep > 0) {
     const trainBatches = startStep * trainConfig.gradAccumSteps;

@@ -3,7 +3,10 @@
  */
 import { parseKV, requireArg, intArg, floatArg, strArg, boolArg, loadConfig } from "../parse.js";
 import { resolveBackend, resolveTokenizer, resolveOptimizer, resolveRng, listImplementations } from "../resolve.js";
-import { train as runTrain, createRemoteReporter, loadTextSample, sample as runSample } from "@alpha/train";
+import {
+  train as runTrain, createRemoteReporter, loadTextSample,
+  loadPretrainShardManifest, verifyPretrainShardManifest, sample as runSample,
+} from "@alpha/train";
 import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
@@ -78,13 +81,17 @@ function formatCount(n: number): string {
   return `${Math.round(n)}`;
 }
 
-async function estimateDatasetTokens(dataPath: string, tokenizerName: string): Promise<number | null> {
+async function estimateDatasetTokens(dataPaths: readonly string[], tokenizerName: string): Promise<number | null> {
   try {
     const fs = await import("node:fs/promises");
-    const meta = await fs.stat(dataPath);
-    if (!meta.isFile()) return null;
+    let totalBytes = 0;
+    for (const dataPath of dataPaths) {
+      const meta = await fs.stat(dataPath);
+      if (!meta.isFile()) return null;
+      totalBytes += meta.size;
+    }
     const charsPerToken = estimateCharsPerToken(tokenizerName);
-    return Math.max(1, Math.floor(meta.size / charsPerToken));
+    return Math.max(1, Math.floor(totalBytes / charsPerToken));
   } catch {
     return null;
   }
@@ -92,6 +99,7 @@ async function estimateDatasetTokens(dataPath: string, tokenizerName: string): P
 
 async function emitTrainingPlanningWarnings(args: {
   dataPath: string;
+  dataPaths?: readonly string[];
   valDataPath?: string;
   trainConfig: TrainConfig;
   modelConfig: ModelConfig;
@@ -99,12 +107,12 @@ async function emitTrainingPlanningWarnings(args: {
   tokenizerName: string;
   planning: TrainingPlanningOptions;
 }): Promise<void> {
-  const { dataPath, valDataPath, trainConfig, modelConfig, backendName, tokenizerName, planning } = args;
+  const { dataPath, dataPaths, valDataPath, trainConfig, modelConfig, backendName, tokenizerName, planning } = args;
   const accum = Math.max(1, trainConfig.gradAccumSteps);
   const plannedTokens = trainConfig.iters * trainConfig.batchSize * modelConfig.blockSize * accum;
   const params = Math.max(1, estimateModelParams(modelConfig));
   const tokensPerParam = plannedTokens / params;
-  const estDatasetTokens = await estimateDatasetTokens(dataPath, tokenizerName);
+  const estDatasetTokens = await estimateDatasetTokens(dataPaths ?? [dataPath], tokenizerName);
   const issues: PlanningIssue[] = [];
   const pushIssue = (level: PlanningIssueLevel, message: string) => issues.push({ level, message });
   const requireValDataViolation = !valDataPath && planning.requireValData;
@@ -182,8 +190,19 @@ export async function trainCmd(args: string[]): Promise<void> {
   let kv = parseKV(args);
   kv = await loadConfig(kv);
 
-  const dataPath = requireArg(kv, "data", "path to training text");
+  const dataManifestPath = kv["dataManifest"];
+  if (dataManifestPath && kv["data"]) throw new Error("pass either --data or --dataManifest, not both");
+  const loadedDataManifest = dataManifestPath ? await loadPretrainShardManifest(dataManifestPath) : null;
+  const dataPaths = loadedDataManifest?.paths;
+  if (loadedDataManifest && boolArg(kv, "verifyDataHashes", true)) {
+    console.log(`Verifying ${dataPaths!.length} pretraining shard hashes before GPU initialization...`);
+    const verified = await verifyPretrainShardManifest(loadedDataManifest.manifest, dataPaths!);
+    console.log(`Pretraining shard hashes: PASS (${verified.reduce((sum, shard) => sum + shard.bytes, 0).toLocaleString()} bytes)`);
+  }
+  const dataPath = dataPaths?.[0] ?? requireArg(kv, "data", "path to training text");
   const valDataPath = kv["valData"];
+  if (dataPaths && valDataPath) throw new Error("--valData cannot be combined with --dataManifest; every shard is split 90/10");
+  if (dataPaths && boolArg(kv, "sft", false)) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
 
   // Look up domain config for defaults
   const domainId = kv["domain"];
@@ -420,6 +439,7 @@ export async function trainCmd(args: string[]): Promise<void> {
 
   await emitTrainingPlanningWarnings({
     dataPath,
+    dataPaths,
     valDataPath,
     trainConfig,
     modelConfig: finalModelConfig,
@@ -454,6 +474,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     modelConfig: finalModelConfig,
     trainConfig,
     dataPath,
+    dataPaths,
     valDataPath,
     tokenizerArtifacts,
     runDir: kv["runDir"],
