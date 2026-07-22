@@ -49,6 +49,8 @@ export interface PilotRunSummary {
   final_train_loss: number;
   last_100_train_loss_mean: number;
   eval: { step: number; val_loss: number }[];
+  allocator_telemetry_samples: number;
+  allocator_telemetry_max_step_gap: number;
   allocator_overflow_max: number;
 }
 
@@ -120,6 +122,21 @@ export async function summarizePilot(
   }
   const evalRows = rows.filter((metric): metric is PilotMetric & { valLoss: number } => metric.valLoss !== undefined);
   if (evalRows.length < 3) throw new Error(`${dir}: only ${evalRows.length} validation points`);
+  const allocatorTelemetry = rows.filter((metric): metric is PilotMetric & { gpu_allocator_free_range_overflows: number } =>
+    Number.isFinite(metric.gpu_allocator_free_range_overflows));
+  const minimumAllocatorSamples = Math.floor(contract.expected_steps / 100);
+  if (allocatorTelemetry.length < minimumAllocatorSamples) {
+    throw new Error(`${dir}: allocator telemetry samples ${allocatorTelemetry.length} < ${minimumAllocatorSamples}`);
+  }
+  const allocatorTelemetryGaps = allocatorTelemetry.slice(1)
+    .map((metric, index) => metric.step - allocatorTelemetry[index].step);
+  const allocatorTelemetryMaxStepGap = Math.max(0, ...allocatorTelemetryGaps);
+  if (allocatorTelemetryMaxStepGap > 100) {
+    throw new Error(`${dir}: allocator telemetry gap ${allocatorTelemetryMaxStepGap} exceeds 100 steps`);
+  }
+  if (allocatorTelemetry.at(-1)?.step !== contract.expected_steps) {
+    throw new Error(`${dir}: final allocator telemetry step ${String(allocatorTelemetry.at(-1)?.step)} != ${contract.expected_steps}`);
+  }
   return {
     dir,
     contract,
@@ -131,6 +148,8 @@ export async function summarizePilot(
     final_train_loss: rows.at(-1)!.loss,
     last_100_train_loss_mean: mean(rows.slice(-100).map((metric) => metric.loss)),
     eval: evalRows.map((metric) => ({ step: metric.step, val_loss: metric.valLoss })),
-    allocator_overflow_max: Math.max(0, ...rows.map((metric) => metric.gpu_allocator_free_range_overflows ?? 0)),
+    allocator_telemetry_samples: allocatorTelemetry.length,
+    allocator_telemetry_max_step_gap: allocatorTelemetryMaxStepGap,
+    allocator_overflow_max: Math.max(0, ...allocatorTelemetry.map((metric) => metric.gpu_allocator_free_range_overflows)),
   };
 }
