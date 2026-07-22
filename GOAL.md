@@ -198,7 +198,10 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
       FineWiki questions; 500 held-out documents per premix source. The streaming Rust audit scanned
       1.918B pretrain + 205.0M final-SFT 13-grams and excluded 1,298/5,100 + 658/900
       contaminated candidates. Manifest hashes every source/output. `alpha eval-frozen` now scores greedy
-      EOS/role leak/repetition plus QA exact/containment/F1; end-to-end smoke passed.
+      EOS/role leak/repetition plus QA exact/containment/F1; end-to-end smoke passed. Its v2 output and
+      `analyze_frozen_eval_pair.ts` (`863427f`) hash/recompute both detailed suites, require exact
+      base/chat steps and identical inputs/case order, and enforce the machine-verifiable D3 threshold
+      while explicitly reserving open-ended coherence for a separate semantic review.
 - **Gate G4: PASS 2026-07-22.** Validation is decontaminated vs the exact final train text by 13-gram
   overlap; exact lengths are bounded; structural/mask checks are green; Alpha↔HF tokenizer parity is
   100/100 on frozen prompts and the 10K-document tokenizer export proof remains green.
