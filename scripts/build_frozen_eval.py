@@ -9,11 +9,11 @@ The builder deliberately separates candidate generation from finalization:
    are admitted to ``final/``.
 
 No benchmark dataset is used. Chat prompts come from the smol-smoltalk test
-split that Alpha's SFT builder deliberately excludes. Closed-book questions
-come from structured FineWiki infobox facts; the full source page is audited
-against Alpha's pretraining slice before the question is frozen. Per-source
-validation documents come from a premix parquet shard outside the four shards
-used to build the training slice.
+split and the OASST2 validation split that Alpha's SFT builder deliberately
+excludes. Closed-book questions come from structured FineWiki infobox facts;
+the full source page is audited against Alpha's pretraining slice before the
+question is frozen. Per-source validation documents come from a premix parquet
+shard outside the four shards used to build the training slice.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ SEED = "alpha2-frozen-eval-v1"
 END = "<|end_of_text|>\n"
 AUDIT_START = "@@ALPHA_EVAL_DOC\t"
 AUDIT_END = "@@END_ALPHA_EVAL_DOC"
+CHAT_MARKERS = ("<|user|>", "<|assistant|>", "<|end_of_text|>")
 
 
 def stable_hash(*parts: str) -> str:
@@ -95,7 +96,7 @@ def fold_and_validate_chat(messages: list[dict[str, Any]]) -> tuple[list[dict[st
     for message in messages:
         role = str(message.get("role", ""))
         content = str(message.get("content") or "").strip()
-        if not content:
+        if not content or any(marker in content for marker in CHAT_MARKERS):
             return None
         if role == "system" and not turns:
             system_parts.append(content)
@@ -190,6 +191,92 @@ def build_chat_candidates(
     selected = balanced_select(candidates, count, "source")
     if len(selected) < count:
         raise RuntimeError(f"only {len(selected)} eligible chat candidates; need {count}")
+    return selected
+
+
+def build_oasst2_chat_candidates(
+    path: Path,
+    count: int,
+    tokenizer: Tokenizer,
+    max_prompt_tokens: int,
+) -> list[dict[str, Any]]:
+    """Build best-ranked English root-to-leaf prompts from held-out OASST2 trees."""
+    columns = [
+        "message_id", "parent_id", "text", "role", "lang", "rank",
+        "review_result", "review_count", "deleted",
+    ]
+    rows = pq.read_table(path, columns=columns).to_pylist()
+    children: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row["parent_id"]:
+            children[str(row["parent_id"])].append(row)
+
+    def eligible(row: dict[str, Any], role: str) -> bool:
+        text = str(row["text"] or "").strip()
+        return (
+            row["role"] == role
+            and row["lang"] == "en"
+            and not row.get("deleted")
+            and row.get("review_result") is not False
+            and bool(text)
+            and not any(marker in text for marker in CHAT_MARKERS)
+        )
+
+    def best_child(parent_id: str, role: str) -> dict[str, Any] | None:
+        candidates = [row for row in children.get(parent_id, []) if eligible(row, role)]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda row: (
+                row["rank"] if row["rank"] is not None else 99,
+                -(row["review_count"] or 0),
+                stable_hash(SEED, "oasst2-child", str(row["message_id"])),
+            ),
+        )
+
+    candidates: list[dict[str, Any]] = []
+    for root in rows:
+        if root["parent_id"] is not None or not eligible(root, "prompter"):
+            continue
+        turns = [{"role": "user", "content": str(root["text"]).strip()}]
+        node = root
+        while True:
+            assistant = best_child(str(node["message_id"]), "assistant")
+            if assistant is None:
+                break
+            turns.append({"role": "assistant", "content": str(assistant["text"]).strip()})
+            prompter = best_child(str(assistant["message_id"]), "prompter")
+            if prompter is None:
+                break
+            turns.append({"role": "user", "content": str(prompter["text"]).strip()})
+            node = prompter
+
+        if len(turns) < 2 or turns[-1]["role"] != "assistant":
+            continue
+        prompt, reference = turns[:-1], turns[-1]["content"]
+        prompt_chars = sum(len(turn["content"]) for turn in prompt)
+        if not (20 <= prompt_chars <= 3_000) or not (1 <= len(reference) <= 1_200):
+            continue
+        prompt_tokens = len(tokenizer.encode(render_chat_prompt(prompt)).ids)
+        if prompt_tokens > max_prompt_tokens:
+            continue
+        root_id = str(root["message_id"])
+        content_key = json.dumps([prompt, reference], ensure_ascii=False, sort_keys=True)
+        digest = stable_hash(SEED, "oasst2-validation", root_id, content_key)
+        candidates.append({
+            "id": f"chat-{digest[:16]}",
+            "selection_hash": digest,
+            "source": "oasst2-validation",
+            "messages": prompt,
+            "reference": reference,
+            "prompt_tokens": prompt_tokens,
+            "audit_text": "\n".join(turn["content"] for turn in prompt) + "\n" + reference,
+        })
+
+    selected = sorted(candidates, key=lambda value: value["selection_hash"])[:count]
+    if len(selected) < count:
+        raise RuntimeError(f"only {len(selected)} eligible OASST2 validation candidates; need {count}")
     return selected
 
 
@@ -354,6 +441,8 @@ def output_record(path: Path) -> dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--smoltalk-test", type=Path, required=True)
+    ap.add_argument("--oasst2-validation", type=Path)
+    ap.add_argument("--oasst2-chat-candidates", type=int, default=100)
     ap.add_argument("--finewiki", type=Path, required=True)
     ap.add_argument("--premix-heldout", type=Path, required=True)
     ap.add_argument("--hf-tokenizer-json", type=Path, required=True)
@@ -372,7 +461,10 @@ def main() -> int:
         ap.error("--candidate-multiplier must be at least 2")
     if args.chat_candidate_multiplier < 2:
         ap.error("--chat-candidate-multiplier must be at least 2")
-    for path in (args.smoltalk_test, args.finewiki, args.premix_heldout, args.hf_tokenizer_json):
+    source_paths = [args.smoltalk_test, args.finewiki, args.premix_heldout, args.hf_tokenizer_json]
+    if args.oasst2_validation is not None:
+        source_paths.append(args.oasst2_validation)
+    for path in source_paths:
         if not path.is_file():
             ap.error(f"source does not exist: {path}")
     if (args.pretrain_overlap_report is None) != (args.sft_overlap_report is None):
@@ -385,6 +477,13 @@ def main() -> int:
         hf_tokenizer,
         args.max_chat_prompt_tokens,
     )
+    if args.oasst2_validation is not None:
+        chat_candidates.extend(build_oasst2_chat_candidates(
+            args.oasst2_validation,
+            args.oasst2_chat_candidates,
+            hf_tokenizer,
+            args.max_chat_prompt_tokens,
+        ))
     qa_candidates = build_qa_candidates(args.finewiki, args.qa_count * args.candidate_multiplier)
     val_candidates = build_val_candidates(args.premix_heldout, args.val_per_source * args.candidate_multiplier)
 
@@ -411,7 +510,7 @@ def main() -> int:
         "seed": SEED,
         "status": "candidates",
         "licenses": {
-            "chat": "Apache-2.0 (HuggingFaceTB/smol-smoltalk)",
+            "chat": "Apache-2.0 (HuggingFaceTB/smol-smoltalk + OpenAssistant/oasst2)",
             "closed_book_qa": "CC-BY-SA-4.0 (FineWiki sample)",
             "validation": "ODC-BY (HuggingFaceFW premix)",
         },
@@ -430,6 +529,8 @@ def main() -> int:
             "sft_audit_docs": sft_audit_count,
         },
     }
+    if args.oasst2_validation is not None:
+        manifest["sources"]["oasst2_validation"] = source_record(args.oasst2_validation)
 
     if args.pretrain_overlap_report is not None and args.sft_overlap_report is not None:
         pretrain_overlaps = read_overlap_ids(args.pretrain_overlap_report)

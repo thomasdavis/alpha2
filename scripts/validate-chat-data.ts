@@ -21,6 +21,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as readline from "node:readline";
+import { once } from "node:events";
 
 const USER = "<|user|>";
 const ASST = "<|assistant|>";
@@ -201,85 +203,101 @@ if (!inputFile) {
   process.exit(1);
 }
 
-const content = fs.readFileSync(inputFile, "utf-8");
-const lines = content.split("\n").filter((l) => l.length > 0);
-
-console.log(`Validating ${lines.length.toLocaleString()} conversations from ${path.basename(inputFile)}...\n`);
-
-const allIssues: Issue[] = [];
-const issueCounts: Record<string, number> = {};
-
-for (let i = 0; i < lines.length; i++) {
-  const issues = validateLine(lines[i], i + 1);
-  for (const issue of issues) {
-    allIssues.push(issue);
-    issueCounts[issue.type] = (issueCounts[issue.type] || 0) + 1;
+async function run(): Promise<void> {
+  if (!fs.existsSync(inputFile)) throw new Error(`input does not exist: ${inputFile}`);
+  const output = outFile || inputFile.replace(/\.txt$/, "_clean.txt");
+  if (doFix && path.resolve(output) === path.resolve(inputFile)) {
+    throw new Error("refusing to overwrite the input; choose a distinct --out path");
   }
-}
 
-// Summary
-const linesWithIssues = new Set(allIssues.map((i) => i.line)).size;
-const cleanLines = lines.length - linesWithIssues;
-
-console.log("=== Validation Summary ===\n");
-console.log(`Total conversations: ${lines.length.toLocaleString()}`);
-console.log(`Clean (no issues):   ${cleanLines.toLocaleString()} (${((cleanLines / lines.length) * 100).toFixed(1)}%)`);
-console.log(`With issues:         ${linesWithIssues.toLocaleString()} (${((linesWithIssues / lines.length) * 100).toFixed(1)}%)\n`);
-
-console.log("Issue breakdown:");
-const sortedIssues = Object.entries(issueCounts).sort((a, b) => b[1] - a[1]);
-for (const [type, count] of sortedIssues) {
-  const fixable = allIssues.find((i) => i.type === type)?.fixable ? "fixable" : "NOT fixable";
-  console.log(`  ${type.padEnd(25)} ${count.toLocaleString().padStart(8)}  (${fixable})`);
-}
-
-// Show samples
-console.log("\nSample issues (first 3 of each type):");
-const shown: Record<string, number> = {};
-for (const issue of allIssues) {
-  shown[issue.type] = (shown[issue.type] || 0) + 1;
-  if (shown[issue.type] <= 3) {
-    console.log(`  Line ${issue.line}: [${issue.type}] ${issue.detail}`);
-  }
-}
-
-if (doFix) {
-  console.log("\n=== Fixing... ===\n");
-  const fixed: string[] = [];
+  console.log(`Streaming validation from ${path.basename(inputFile)}...\n`);
+  const input = fs.createReadStream(inputFile, { encoding: "utf-8" });
+  const reader = readline.createInterface({ input, crlfDelay: Infinity });
+  const writer = doFix ? fs.createWriteStream(output, { encoding: "utf-8", flags: "wx" }) : null;
+  const issueCounts: Record<string, number> = {};
+  const issueFixable: Record<string, boolean> = {};
+  const issueSamples: Record<string, Issue[]> = {};
+  let conversations = 0;
+  let linesWithIssues = 0;
+  let fixedWritten = 0;
   let dropped = 0;
+  let fixedIssueCount = 0;
 
-  for (const line of lines) {
-    const result = fixLine(line);
-    if (result) {
-      fixed.push(result);
-    } else {
-      dropped++;
+  try {
+    for await (const line of reader) {
+      if (line.length === 0) continue;
+      conversations++;
+      const issues = validateLine(line, conversations);
+      if (issues.length > 0) linesWithIssues++;
+      for (const issue of issues) {
+        issueCounts[issue.type] = (issueCounts[issue.type] || 0) + 1;
+        issueFixable[issue.type] = issue.fixable;
+        const samples = issueSamples[issue.type] ?? [];
+        if (samples.length < 3) samples.push(issue);
+        issueSamples[issue.type] = samples;
+      }
+
+      if (writer) {
+        const fixed = fixLine(line);
+        if (fixed) {
+          fixedWritten++;
+          fixedIssueCount += validateLine(fixed, fixedWritten).length;
+          if (!writer.write(fixed + "\n")) await once(writer, "drain");
+        } else {
+          dropped++;
+        }
+      }
+      if (conversations % 100_000 === 0) {
+        console.log(`  checked ${conversations.toLocaleString()} conversations`);
+      }
+    }
+  } finally {
+    reader.close();
+    if (writer) {
+      writer.end();
+      await once(writer, "finish");
     }
   }
 
-  const output = outFile || inputFile.replace(/\.txt$/, "_clean.txt");
-  fs.writeFileSync(output, fixed.join("\n") + "\n");
+  const cleanLines = conversations - linesWithIssues;
+  const pct = (count: number) => conversations ? ((count / conversations) * 100).toFixed(1) : "0.0";
+  console.log("\n=== Validation Summary ===\n");
+  console.log(`Total conversations: ${conversations.toLocaleString()}`);
+  console.log(`Clean (no issues):   ${cleanLines.toLocaleString()} (${pct(cleanLines)}%)`);
+  console.log(`With issues:         ${linesWithIssues.toLocaleString()} (${pct(linesWithIssues)}%)\n`);
 
-  console.log(`Input:   ${lines.length.toLocaleString()} conversations`);
-  console.log(`Output:  ${fixed.length.toLocaleString()} conversations`);
-  console.log(`Dropped: ${dropped.toLocaleString()} (unfixable or too short after trimming)`);
-  console.log(`Written to: ${output}`);
+  console.log("Issue breakdown:");
+  const sortedIssues = Object.entries(issueCounts).sort((a, b) => b[1] - a[1]);
+  if (sortedIssues.length === 0) console.log("  none");
+  for (const [type, count] of sortedIssues) {
+    const fixable = issueFixable[type] ? "fixable" : "NOT fixable";
+    console.log(`  ${type.padEnd(25)} ${count.toLocaleString().padStart(8)}  (${fixable})`);
+  }
 
-  // Validate the output
-  console.log("\n=== Re-validating fixed output ===\n");
-  const fixedContent = fs.readFileSync(output, "utf-8");
-  const fixedLines = fixedContent.split("\n").filter((l) => l.length > 0);
-  let fixedIssueCount = 0;
-  for (let i = 0; i < fixedLines.length; i++) {
-    const issues = validateLine(fixedLines[i], i + 1);
-    fixedIssueCount += issues.length;
-    if (issues.length > 0 && fixedIssueCount <= 5) {
-      for (const issue of issues) {
+  if (sortedIssues.length > 0) {
+    console.log("\nSample issues (first 3 of each type):");
+    for (const [type] of sortedIssues) {
+      for (const issue of issueSamples[type] ?? []) {
         console.log(`  Line ${issue.line}: [${issue.type}] ${issue.detail}`);
       }
     }
   }
-  console.log(`Clean conversations: ${fixedLines.length.toLocaleString()} with ${fixedIssueCount} remaining issues`);
-} else {
-  console.log("\nRun with --fix to generate a cleaned version.");
+
+  if (writer) {
+    console.log("\n=== Fix output ===\n");
+    console.log(`Input:   ${conversations.toLocaleString()} conversations`);
+    console.log(`Output:  ${fixedWritten.toLocaleString()} conversations`);
+    console.log(`Dropped: ${dropped.toLocaleString()} (unfixable or too short after trimming)`);
+    console.log(`Remaining issues after in-stream revalidation: ${fixedIssueCount}`);
+    console.log(`Written to: ${output}`);
+  } else {
+    console.log("\nRun with --fix to generate a cleaned version.");
+  }
+
+  if (linesWithIssues > 0) process.exitCode = 1;
 }
+
+run().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

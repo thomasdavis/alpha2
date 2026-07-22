@@ -2,7 +2,8 @@
 
 Alpha freezes its evaluation data before flagship training. The suite contains no benchmark data:
 
-- 100 multi-turn prompts from the `HuggingFaceTB/smol-smoltalk` test split;
+- 100 prompts balanced across clean candidates from the `HuggingFaceTB/smol-smoltalk`
+  test split and `OpenAssistant/oasst2` validation split;
 - 200 closed-book questions derived from structured facts in FineWiki pages;
 - 500 held-out validation documents from each source in premix shard 4, outside training shards 0–3.
 
@@ -21,6 +22,7 @@ TOK=/mnt/donto-data/alpha-corpora/tokenizers/hf-bpe-byte-12k-20260722/tokenizer.
 
 nice -n19 ionice -c3 "$PY" scripts/build_frozen_eval.py \
   --smoltalk-test /mnt/donto-data/alpha-corpora/sft/smol-smoltalk/data/test-00000-of-00001.parquet \
+  --oasst2-validation /mnt/donto-data/alpha-corpora/sft/oasst2/data/validation-00000-of-00001-1deeef95c3248fe0.parquet \
   --finewiki /mnt/donto-data/alpha-corpora/eval-sources/finewiki-10M/data/train-00000-of-00001.parquet \
   --premix-heldout /mnt/donto-data/alpha-corpora/eval-sources/premix-heldout/data/train-00004-of-00100.parquet \
   --hf-tokenizer-json "$TOK" \
@@ -29,13 +31,14 @@ nice -n19 ionice -c3 "$PY" scripts/build_frozen_eval.py \
 rustc +1.88 -O scripts/audit_13gram.rs -o /tmp/alpha-audit-13gram
 nice -n19 ionice -c3 /tmp/alpha-audit-13gram \
   "$EVAL/audit/sft-eval-docs.txt" "$EVAL/audit/sft-overlap.tsv" \
-  /mnt/donto-data/alpha-corpora/sft-text/sft.txt
+  /mnt/donto-data/alpha-corpora/sft-text-v2/sft-v2.txt
 nice -n19 ionice -c3 /tmp/alpha-audit-13gram \
   "$EVAL/audit/pretrain-eval-docs.txt" "$EVAL/audit/pretrain-overlap.tsv" \
   /mnt/donto-data/alpha-corpora/pretrain-text/pretrain-{000,001,002,003,004,005}.txt
 
 nice -n19 ionice -c3 "$PY" scripts/build_frozen_eval.py \
   --smoltalk-test /mnt/donto-data/alpha-corpora/sft/smol-smoltalk/data/test-00000-of-00001.parquet \
+  --oasst2-validation /mnt/donto-data/alpha-corpora/sft/oasst2/data/validation-00000-of-00001-1deeef95c3248fe0.parquet \
   --finewiki /mnt/donto-data/alpha-corpora/eval-sources/finewiki-10M/data/train-00000-of-00001.parquet \
   --premix-heldout /mnt/donto-data/alpha-corpora/eval-sources/premix-heldout/data/train-00004-of-00100.parquet \
   --hf-tokenizer-json "$TOK" \

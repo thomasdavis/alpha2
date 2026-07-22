@@ -132,8 +132,8 @@ turning every device tensor into an individual `vkAllocateMemory`. The current t
   fails after honest effort: shrink flagship to ~35-40M (12L/448d) and/or cut token budget — decided
   then, in the ledger, not silently.
   **IN PROGRESS 2026-07-22:** exact commit `aca9f97`, 5,400 steps / 88.47M tokens / ≈6.3h on the $0.22/hr
-  RTX 3090. At one hour (step 850): RSS 785MB; tracked Vulkan allocations 656–657; live buffers
-  1,099–1,103; zero allocator overflow; 3.67–3.92K logged tok/s. Do not call the gate until hour six.
+  RTX 3090. At 2h27m (step 2,050): RSS 775MB; tracked Vulkan allocations 656; live buffers 1,099;
+  zero allocator overflow; 3.77–3.87K recent logged tok/s. Do not call the gate until hour six.
 
 ### Stage 3 — Modern architecture, Llama-shaped on purpose (box work + ≈$4 pilots)
 The Llama-form implementation is complete on the current tree; the remaining gate work is the equal-token
@@ -169,10 +169,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
       `<|end_of_text|>` separators on `/mnt/donto-data/alpha-corpora/` → rsync to pod. Slice size set by
       G2 throughput (1B tokens ≈ 4GB text at ~4 chars/token; loader RAM = 4 bytes/token — fine ≤3B).
       **Ready:** 1,857,705 documents, 11.7GB text, ≈3.0B tokens in six shards; source parquets retained.
-- [ ] **Chat corpus (SFT)**: `HuggingFaceTB/smol-smoltalk` (460K convs, built FOR sub-1B models) as the
+- [x] **Chat corpus (SFT)**: `HuggingFaceTB/smol-smoltalk` (460K convs, built FOR sub-1B models) as the
       backbone + `smoltalk2` `everyday-conversations_no_think` + `systemchats-30k_no_think` +
       OASST2 English best-ranked paths + ≤5% SODA seasoning → rendered to
-      `<|user|> … <|assistant|> … <|end_of_text|>`, validated by `scripts/validate-chat-data.ts`.
+      `<|user|> … <|assistant|> … <|end_of_text|>`. **Final:** 511,428/511,428 structurally clean,
+      SODA 4.828%, SHA-256 `ffad0a37…`; the exact tokenizer bounded every row at 1,024 without cutting a
+      response/EOS (whole trailing pairs only), and the all-row audit measured p50/p95/p99/max
+      657/978/1,014/1,024 with zero over-bound. The real training mask passed on 1,032 rows spanning every
+      source boundary. Reproduction and artifact paths: `docs/SFT_CORPUS.md`.
 - [x] **Loss masking (assistant-only SFT)** — net-new, the single most important training-code change:
       `DataBatch.lossMask [B,T]`, masked cross-entropy (`sum(ce*mask)/max(sum(mask),1)`) in cpu_ref +
       Helios CE kernels + autograd, document-aware SFT batching (no packing v1), mask verified by
@@ -181,12 +185,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
       200 closed-book sanity questions (from finewiki pages excluded from training); repetition/EOS/
       role-leak metrics; deterministic greedy sample suite at every checkpoint. No benchmark data in
       training mixes, ever. **Frozen at** `/mnt/donto-data/alpha-corpora/frozen-eval-v1`: 100 token-fit,
-      source-balanced chats; 200 structured FineWiki questions; 500 held-out documents per premix source.
-      The streaming Rust audit scanned 1.918B pretrain + 263.2M SFT 13-grams and excluded 1,298 + 578
+      source-balanced chats (49 held-out OASST2, 48 Magpie, 3 everyday; 84 multi-turn); 200 structured
+      FineWiki questions; 500 held-out documents per premix source. The streaming Rust audit scanned
+      1.918B pretrain + 205.0M final-SFT 13-grams and excluded 1,298/5,100 + 658/900
       contaminated candidates. Manifest hashes every source/output. `alpha eval-frozen` now scores greedy
       EOS/role leak/repetition plus QA exact/containment/F1; end-to-end smoke passed.
-- **Gate G4: data audits pass (val decontaminated vs train by 13-gram overlap; length stats sane; mask
-  spot-checks green) + tokenizer round-trip proof.**
+- **Gate G4: PASS 2026-07-22.** Validation is decontaminated vs the exact final train text by 13-gram
+  overlap; exact lengths are bounded; structural/mask checks are green; Alpha↔HF tokenizer parity is
+  100/100 on frozen prompts and the 10K-document tokenizer export proof remains green.
 
 ### Stage 5 — Flagship runs (the big spend: ≈$25-35)
 - **Shape (default)**: ~60M Llama-form — 16L / 512d / 8 heads (headDim 64) / SwiGLU ffn 1408 / RoPE /
@@ -276,7 +282,5 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
    hash every artifact, then record the gate decision.
 2. Run G3's equal-token old-vs-Llama 100M-token pilots (the golden export half is already 75/75 top-1,
    max logit delta 1.07e-06).
-3. Finish the requested final SFT source mix, then repeat its validation/mask and 13-gram audit if the text
-   changes. The 457,484-conversation current backbone remains staged and clean.
-4. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
+3. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
    with a verified box-side checkpoint puller.
