@@ -287,6 +287,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
    hash every artifact, then record the gate decision.
 2. Sync the canonical 1.99GB pretrain shard to the pod, then run G3's equal-token old-vs-Llama 100M-token
    pilots (the golden export half is already 75/75 top-1, max logit delta 1.07e-06). Use the independent
-   validation/checkpoint cadence and verified remote retention pushed in `da39e8a`.
+   validation/checkpoint cadence and verified remote retention pushed in `da39e8a`; `867f016` pins and
+   analyzer-verifies the full architecture contract instead of trusting mutable domain defaults.
 3. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
    with a verified box-side checkpoint puller.
