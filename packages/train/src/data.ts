@@ -736,35 +736,48 @@ export async function loadAndTokenize(
 
 /**
  * Load tokenized data from cache or tokenize and cache.
- * Cache key: `{dataPath}.{tokenizerName}-{vocabSize}.tokens` (binary Int32Array).
- * The cache file also stores a header with the source file mtime for invalidation.
+ * Cache key includes tokenizer identity when supplied. The 16-byte header stores
+ * source mtime + byte size so stale legacy/equally named inputs are invalidated.
  */
 export async function loadOrCacheTokens(
   dataPath: string,
   tokenizer: Tokenizer,
   range?: { startByte: number; endByte: number },
+  cacheIdentity?: string,
 ): Promise<Int32Array> {
   const fs = await import("node:fs/promises");
   const pathMod = await import("node:path");
 
   const suffix = range ? `.${range.startByte}-${range.endByte}` : "";
-  const cacheFile = `${dataPath}.${tokenizer.name}-${tokenizer.vocabSize}${suffix}.tokens`;
+  const identity = cacheIdentity
+    ? `-${cacheIdentity.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24)}`
+    : "";
+  const cacheFile = `${dataPath}.${tokenizer.name}-${tokenizer.vocabSize}${identity}${suffix}.tokens`;
   const srcStat = await fs.stat(dataPath);
 
   // Try loading cache
   try {
     const cacheStat = await fs.stat(cacheFile);
-    if (cacheStat.size > 8) {
+    if (cacheStat.size > 16) {
       const handle = await fs.open(cacheFile, "r");
       try {
-        // Header: 8 bytes (Float64 source mtime)
-        const headerBuf = Buffer.alloc(8);
-        await handle.read(headerBuf, 0, 8, 0);
+        // Header: source mtime + byte size as two Float64 values.
+        const headerBuf = Buffer.alloc(16);
+        const headerRead = await handle.read(headerBuf, 0, 16, 0);
+        if (headerRead.bytesRead !== 16) throw new Error("short token-cache header");
         const cachedMtime = headerBuf.readDoubleBE(0);
-        if (Math.abs(cachedMtime - srcStat.mtimeMs) < 1) {
-          const tokenBytes = cacheStat.size - 8;
+        const cachedSize = headerBuf.readDoubleBE(8);
+        if (Math.abs(cachedMtime - srcStat.mtimeMs) < 1 && cachedSize === srcStat.size) {
+          const tokenBytes = cacheStat.size - 16;
+          if (tokenBytes % 4 !== 0) throw new Error(`invalid token cache byte length: ${tokenBytes}`);
           const dataBuf = Buffer.alloc(tokenBytes);
-          await handle.read(dataBuf, 0, tokenBytes, 8);
+          const chunkBytes = 64 * 1024 * 1024;
+          for (let offset = 0; offset < tokenBytes;) {
+            const requested = Math.min(chunkBytes, tokenBytes - offset);
+            const { bytesRead } = await handle.read(dataBuf, offset, requested, 16 + offset);
+            if (bytesRead === 0) throw new Error(`unexpected EOF in token cache at byte ${offset}`);
+            offset += bytesRead;
+          }
           const tokens = new Int32Array(dataBuf.buffer, dataBuf.byteOffset, tokenBytes / 4);
           console.log(`  Loaded ${tokens.length.toLocaleString()} cached tokens from ${pathMod.basename(cacheFile)}`);
           return tokens;
@@ -783,19 +796,31 @@ export async function loadOrCacheTokens(
   console.log(`  Tokenized: ${tokens.length.toLocaleString()} tokens in ${elapsed}s`);
 
   // Write cache — stream header + token data to avoid doubling memory with Buffer.concat
+  const cacheTmp = `${cacheFile}.tmp-${process.pid}-${Date.now()}`;
   try {
-    const header = Buffer.alloc(8);
+    const header = Buffer.alloc(16);
     header.writeDoubleBE(srcStat.mtimeMs, 0);
+    header.writeDoubleBE(srcStat.size, 8);
     const tokenBuf = Buffer.from(tokens.buffer, tokens.byteOffset, tokens.byteLength);
-    const handle = await fs.open(cacheFile, "w");
+    const handle = await fs.open(cacheTmp, "wx");
     try {
-      await handle.write(header);
-      await handle.write(tokenBuf);
+      const headerWrite = await handle.write(header, 0, header.length, 0);
+      if (headerWrite.bytesWritten !== header.length) throw new Error("short token-cache header write");
+      const chunkBytes = 64 * 1024 * 1024;
+      for (let offset = 0; offset < tokenBuf.length;) {
+        const requested = Math.min(chunkBytes, tokenBuf.length - offset);
+        const { bytesWritten } = await handle.write(tokenBuf, offset, requested, header.length + offset);
+        if (bytesWritten === 0) throw new Error(`zero-byte token-cache write at byte ${offset}`);
+        offset += bytesWritten;
+      }
+      await handle.sync();
     } finally {
       await handle.close();
     }
+    await fs.rename(cacheTmp, cacheFile);
     console.log(`  Cached tokens to ${pathMod.basename(cacheFile)} (${(tokenBuf.byteLength / 1024 / 1024).toFixed(0)}MB)`);
   } catch (e) {
+    await fs.unlink(cacheTmp).catch(() => {});
     console.warn(`  Failed to cache tokens: ${(e as Error).message}`);
   }
 

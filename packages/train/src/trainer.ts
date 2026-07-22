@@ -674,6 +674,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
   // Load data — use chunked tokenization for large files to avoid V8 string limit
   const sftMode = !!deps.sft;
+  const tokenizerCacheIdentity = deps.tokenizerArtifacts
+    ? (await import("node:crypto")).createHash("sha256").update(JSON.stringify(deps.tokenizerArtifacts)).digest("hex")
+    : undefined;
   const fileStat = await fs.stat(dataPath);
   const isLargeFile = fileStat.size > 50 * 1024 * 1024; // >50MB — chunked tokenization avoids V8 array size limits
   let trainTokens: Int32Array = new Int32Array(0);
@@ -725,18 +728,26 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         `  shard ${index + 1}/${dataPaths.length}: ${shardPath.split("/").pop()} ` +
         `(${(shardStat.size / 1024 / 1024).toFixed(0)}MB)`,
       );
-      trainTokenShards.push(await loadOrCacheTokens(shardPath, tokenizer, { startByte: 0, endByte: splitByte }));
-      valTokenShards.push(await loadOrCacheTokens(shardPath, tokenizer, { startByte: splitByte, endByte: shardStat.size }));
+      trainTokenShards.push(await loadOrCacheTokens(
+        shardPath, tokenizer, { startByte: 0, endByte: splitByte }, tokenizerCacheIdentity,
+      ));
+      valTokenShards.push(await loadOrCacheTokens(
+        shardPath, tokenizer, { startByte: splitByte, endByte: shardStat.size }, tokenizerCacheIdentity,
+      ));
     }
   } else if (isLargeFile) {
     console.log(`Large dataset (${(fileStat.size / 1024 / 1024).toFixed(0)}MB) — using chunked tokenization...`);
     if (valDataPath) {
-      trainTokens = await loadOrCacheTokens(dataPath, tokenizer);
-      valTokens = await loadOrCacheTokens(valDataPath, tokenizer);
+      trainTokens = await loadOrCacheTokens(dataPath, tokenizer, undefined, tokenizerCacheIdentity);
+      valTokens = await loadOrCacheTokens(valDataPath, tokenizer, undefined, tokenizerCacheIdentity);
     } else {
       const splitByte = await getSplitByte(dataPath, 0.9);
-      trainTokens = await loadOrCacheTokens(dataPath, tokenizer, { startByte: 0, endByte: splitByte });
-      valTokens = await loadOrCacheTokens(dataPath, tokenizer, { startByte: splitByte, endByte: fileStat.size });
+      trainTokens = await loadOrCacheTokens(
+        dataPath, tokenizer, { startByte: 0, endByte: splitByte }, tokenizerCacheIdentity,
+      );
+      valTokens = await loadOrCacheTokens(
+        dataPath, tokenizer, { startByte: splitByte, endByte: fileStat.size }, tokenizerCacheIdentity,
+      );
     }
   } else {
     const rawText = await loadText(dataPath);

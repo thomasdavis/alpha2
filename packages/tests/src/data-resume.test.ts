@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -8,7 +8,7 @@ import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type Tokenizer } from "@alpha/core";
 import {
   DataLoader, ShardedDataLoader, SftDataLoader,
-  loadPretrainShardManifest, verifyPretrainShardManifest,
+  loadOrCacheTokens, loadPretrainShardManifest, verifyPretrainShardManifest,
   train, AdamW, FileCheckpoint, type BatchSource, type SftExample,
 } from "@alpha/train";
 
@@ -231,6 +231,42 @@ describe("data-loader resume positioning", () => {
         initCheckpointPath: string;
       };
       expect(initializedConfig.initCheckpointPath).toBe(sourceCheckpoint);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates token caches by exact tokenizer-artifact identity", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "alpha-token-cache-"));
+    try {
+      const dataPath = join(dir, "data.txt");
+      await writeFile(dataPath, "artifact-sensitive tokens\n");
+      const tokenizer = (offset: number, fail = false): Tokenizer => ({
+        name: "same-name",
+        vocabSize: 512,
+        encode: (text) => {
+          if (fail) throw new Error("encode should not run on a cache hit");
+          return Int32Array.from(Buffer.from(text, "utf8"), (value) => value + offset);
+        },
+        decode: () => "",
+        build: () => Effect.succeed({ type: "same-name", vocabSize: 512, vocab: [] }),
+      });
+      const firstIdentity = "a".repeat(64);
+      const secondIdentity = "b".repeat(64);
+      const first = await loadOrCacheTokens(dataPath, tokenizer(0), undefined, firstIdentity);
+      const second = await loadOrCacheTokens(dataPath, tokenizer(1), undefined, secondIdentity);
+      expect(Array.from(second)).not.toEqual(Array.from(first));
+      const cachedFirst = await loadOrCacheTokens(dataPath, tokenizer(0, true), undefined, firstIdentity);
+      expect(Array.from(cachedFirst)).toEqual(Array.from(first));
+      const cacheFiles = (await readdir(dir)).filter((name) => name.endsWith(".tokens"));
+      expect(cacheFiles).toHaveLength(2);
+      expect(cacheFiles.some((name) => name.includes("-" + "a".repeat(24)))).toBe(true);
+      expect(cacheFiles.some((name) => name.includes("-" + "b".repeat(24)))).toBe(true);
+      const firstCachePath = join(dir, cacheFiles.find((name) => name.includes("-" + "a".repeat(24)))!);
+      await writeFile(firstCachePath, Buffer.alloc(19));
+      const recovered = await loadOrCacheTokens(dataPath, tokenizer(0), undefined, firstIdentity);
+      expect(Array.from(recovered)).toEqual(Array.from(first));
+      expect((await readdir(dir)).some((name) => name.includes(".tokens.tmp-"))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
