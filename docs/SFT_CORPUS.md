@@ -57,3 +57,34 @@ lengths min/p50/p95/p99/max = 16/657/978/1,014/1,024; zero rows over the context
 checks every source boundary and each 500th row against the real training implementation: role markers are
 atomic, user/scaffolding targets are masked, assistant targets and final EOS are supervised, and no sampled
 row exceeds the block.
+
+## Flagship SFT run
+
+Do not choose the post-training LR by intuition. From the final 61,036-step base checkpoint, run three
+sequential, guarded pilots through the same verified inputs:
+
+```bash
+scripts/run_sft_lr_pilot.sh 0.0001 "$SFT" "$SFT.manifest.json" "$TOKENIZER" "$BASE" "$RUN/lr1e4"
+scripts/run_sft_lr_pilot.sh 0.0003 "$SFT" "$SFT.manifest.json" "$TOKENIZER" "$BASE" "$RUN/lr3e4"
+scripts/run_sft_lr_pilot.sh 0.0010 "$SFT" "$SFT.manifest.json" "$TOKENIZER" "$BASE" "$RUN/lr1e3"
+```
+
+Each pilot is exactly 2,000 steps × 16 × 1,024 = 32,768,000 padded tokens, with eight aligned held-out
+evaluations, complete allocator telemetry, a full terminal checkpoint, immutable corpus/audit/tokenizer/
+base hashes, and safe resume. Never run them concurrently on one inference/GPU path.
+
+```bash
+npx tsx scripts/analyze_sft_lr_sweep.ts \
+  --lr1e4 "$RUN/lr1e4" --lr3e4 "$RUN/lr3e4" --lr1e3 "$RUN/lr1e3" \
+  --out "$RUN/sft-lr-selection.json"
+
+ALPHA_SFT_SELECTION_REPORT="$RUN/sft-lr-selection.json" \
+  scripts/run_flagship_sft.sh <selected-lr> "$SFT" "$SFT.manifest.json" \
+  "$TOKENIZER" "$BASE" "$RUN/one-epoch"
+```
+
+The selector requires exact equal inputs/commit/architecture/split/cadence, 2,000 finite rows per run,
+zero allocator overflow, and 650–750 MiB terminal checkpoints. It ranks the final three aligned
+validation losses, then final validation loss and lower LR as deterministic tie-breaks. The one-epoch
+launcher will not accept a merely allowed numeric LR: it verifies the report's selected LR, source
+commit, and all six input hashes before launching 30,322 assistant-only steps.

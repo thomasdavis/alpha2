@@ -16,6 +16,34 @@ resume_checkpoint=${7:-}
 length_audit=$(dirname "$sft_manifest")/length-audit.json
 mask_audit=$(dirname "$sft_manifest")/mask-audit.json
 contract_only=${ALPHA_CONTRACT_ONLY:-0}
+job=${ALPHA_SFT_JOB:-flagship}
+case "$job" in
+  flagship)
+    contract_schema=alpha-flagship-sft-contract-v1
+    contract_filename=sft-contract.json
+    expected_steps=30322
+    padded_train_tokens=496795648
+    warmup_iters=303
+    eval_interval=500
+    ;;
+  lr-pilot)
+    contract_schema=alpha-sft-lr-pilot-contract-v1
+    contract_filename=sft-pilot-contract.json
+    expected_steps=2000
+    padded_train_tokens=32768000
+    warmup_iters=200
+    eval_interval=250
+    ;;
+  *)
+    echo "ALPHA_SFT_JOB must be flagship or lr-pilot" >&2
+    exit 2
+    ;;
+esac
+selection_report=${ALPHA_SFT_SELECTION_REPORT:-}
+if [[ $job == flagship && -z $selection_report ]]; then
+  echo "flagship SFT requires ALPHA_SFT_SELECTION_REPORT from analyze_sft_lr_sweep.ts" >&2
+  exit 2
+fi
 [[ $contract_only == 0 || $contract_only == 1 ]] || { echo "ALPHA_CONTRACT_ONLY must be 0 or 1" >&2; exit 2; }
 if [[ $contract_only == 1 && -n "$resume_checkpoint" ]]; then
   echo "ALPHA_CONTRACT_ONLY cannot be combined with resume" >&2
@@ -33,8 +61,12 @@ for required in "$sft_data" "$sft_manifest" "$length_audit" "$mask_audit" "$toke
   scripts/verify_flagship_sft_inputs.ts; do
   [[ -f "$required" ]] || { echo "required file missing: $required" >&2; exit 1; }
 done
+if [[ $job == flagship && ! -f $selection_report ]]; then
+  echo "required selection report missing: $selection_report" >&2
+  exit 1
+fi
 if [[ -n "$resume_checkpoint" ]]; then
-  if [[ ! -d "$run_dir" || ! -f "$resume_checkpoint" || ! -f "$run_dir/sft-contract.json" ]]; then
+  if [[ ! -d "$run_dir" || ! -f "$resume_checkpoint" || ! -f "$run_dir/$contract_filename" ]]; then
     echo "resume requires an existing run directory, checkpoint, and SFT contract" >&2
     exit 1
   fi
@@ -62,24 +94,33 @@ if [[ -n "$resume_checkpoint" ]]; then
   mask_audit_sha256=$(nice -n 10 ionice -c 2 -n 7 sha256sum "$mask_audit" | awk '{print $1}')
   tokenizer_sha256=$(nice -n 10 ionice -c 2 -n 7 sha256sum "$tokenizer" | awk '{print $1}')
   base_checkpoint_sha256=$(nice -n 10 ionice -c 2 -n 7 sha256sum "$base_checkpoint" | awk '{print $1}')
+  selection_report_sha256=""
+  if [[ $job == flagship ]]; then
+    selection_report_sha256=$(nice -n 10 ionice -c 2 -n 7 sha256sum "$selection_report" | awk '{print $1}')
+  fi
   SOURCE_COMMIT="$source_commit" SFT_DATA="$sft_data" SFT_DATA_SHA256="$sft_data_sha256" \
   SFT_MANIFEST="$sft_manifest" SFT_MANIFEST_SHA256="$sft_manifest_sha256" \
   LENGTH_AUDIT="$length_audit" LENGTH_AUDIT_SHA256="$length_audit_sha256" \
   MASK_AUDIT="$mask_audit" MASK_AUDIT_SHA256="$mask_audit_sha256" \
   TOKENIZER="$tokenizer" TOKENIZER_SHA256="$tokenizer_sha256" \
   BASE_CHECKPOINT="$base_checkpoint" BASE_CHECKPOINT_SHA256="$base_checkpoint_sha256" \
-  SFT_LR="$learning_rate" SFT_LR_MIN="$learning_rate_min" CONTRACT_PATH="$run_dir/sft-contract.json" node -e '
+  SFT_LR="$learning_rate" SFT_LR_MIN="$learning_rate_min" CONTRACT_PATH="$run_dir/$contract_filename" \
+  CONTRACT_SCHEMA="$contract_schema" SFT_JOB="$job" EXPECTED_STEPS="$expected_steps" \
+  PADDED_TRAIN_TOKENS="$padded_train_tokens" WARMUP_ITERS="$warmup_iters" \
+  SELECTION_REPORT="$selection_report" SELECTION_REPORT_SHA256="$selection_report_sha256" node -e '
     const fs = require("node:fs");
     const c = JSON.parse(fs.readFileSync(process.env.CONTRACT_PATH, "utf8"));
     const expected = {
-      schema: "alpha-flagship-sft-contract-v1",
+      schema: process.env.CONTRACT_SCHEMA,
+      job: process.env.SFT_JOB,
       expected_params: 57688576,
-      expected_steps: 30322,
-      padded_train_tokens: 496795648,
+      expected_steps: Number(process.env.EXPECTED_STEPS),
+      padded_train_tokens: Number(process.env.PADDED_TRAIN_TOKENS),
       train_conversations: 485150,
       validation_conversations: 26278,
       learning_rate: Number(process.env.SFT_LR),
       learning_rate_min: Number(process.env.SFT_LR_MIN),
+      warmup_iters: Number(process.env.WARMUP_ITERS),
       source_commit: process.env.SOURCE_COMMIT,
     };
     for (const [key, value] of Object.entries(expected)) {
@@ -93,6 +134,9 @@ if [[ -n "$resume_checkpoint" ]]; then
       tokenizer: [process.env.TOKENIZER, process.env.TOKENIZER_SHA256],
       base_checkpoint: [process.env.BASE_CHECKPOINT, process.env.BASE_CHECKPOINT_SHA256],
     };
+    if (process.env.SFT_JOB === "flagship") {
+      files.selection_report = [process.env.SELECTION_REPORT, process.env.SELECTION_REPORT_SHA256];
+    }
     for (const [key, [filePath, sha256]] of Object.entries(files)) {
       if (c.inputs?.[key]?.path !== filePath || c.inputs?.[key]?.sha256 !== sha256) {
         throw new Error(`resume ${key} contract mismatch`);
@@ -112,46 +156,77 @@ else
     --tokenizer "$tokenizer" \
     --baseCheckpoint "$base_checkpoint" \
     --expectedBaseStep 61036 > "$verification_tmp"
-  contract_tmp="$run_dir/sft-contract.json.tmp"
+  selection_report_sha256=""
+  if [[ $job == flagship ]]; then
+    selection_report_sha256=$(nice -n 10 ionice -c 2 -n 7 sha256sum "$selection_report" | awk '{print $1}')
+  fi
+  contract_tmp="$run_dir/$contract_filename.tmp"
   SOURCE_COMMIT="$source_commit" VERIFICATION_PATH="$verification_tmp" SFT_LR="$learning_rate" \
-  SFT_LR_MIN="$learning_rate_min" CONTRACT_TMP="$contract_tmp" node -e '
+  SFT_LR_MIN="$learning_rate_min" CONTRACT_TMP="$contract_tmp" CONTRACT_SCHEMA="$contract_schema" \
+  SFT_JOB="$job" EXPECTED_STEPS="$expected_steps" PADDED_TRAIN_TOKENS="$padded_train_tokens" \
+  WARMUP_ITERS="$warmup_iters" SELECTION_REPORT="$selection_report" \
+  SELECTION_REPORT_SHA256="$selection_report_sha256" node -e '
     const fs = require("node:fs");
     const verification = JSON.parse(fs.readFileSync(process.env.VERIFICATION_PATH, "utf8"));
     if (verification.result !== "PASS") throw new Error("SFT input verification did not pass");
+    const inputs = {
+      corpus: verification.corpus,
+      manifest: verification.manifest,
+      length_audit: verification.length_audit,
+      mask_audit: verification.mask_audit,
+      tokenizer: verification.tokenizer,
+      base_checkpoint: verification.base_checkpoint,
+    };
+    if (process.env.SFT_JOB === "flagship") {
+      const selection = JSON.parse(fs.readFileSync(process.env.SELECTION_REPORT, "utf8"));
+      if (selection.schema !== "alpha-sft-lr-sweep-analysis-v1" || selection.result !== "PASS") {
+        throw new Error("invalid SFT LR selection report");
+      }
+      if (selection.selected_learning_rate !== Number(process.env.SFT_LR)) {
+        throw new Error(`selected SFT LR ${selection.selected_learning_rate} != requested ${process.env.SFT_LR}`);
+      }
+      if (selection.source_commit !== process.env.SOURCE_COMMIT) {
+        throw new Error(`SFT LR selection source commit ${selection.source_commit} != ${process.env.SOURCE_COMMIT}`);
+      }
+      for (const [name, input] of Object.entries(inputs)) {
+        if (selection.input_sha256?.[name] !== input.sha256) {
+          throw new Error(`SFT LR selection ${name} hash mismatch`);
+        }
+      }
+      inputs.selection_report = {
+        path: process.env.SELECTION_REPORT,
+        sha256: process.env.SELECTION_REPORT_SHA256,
+        selected_learning_rate: selection.selected_learning_rate,
+      };
+    }
     const contract = {
-      schema: "alpha-flagship-sft-contract-v1",
+      schema: process.env.CONTRACT_SCHEMA,
+      job: process.env.SFT_JOB,
       expected_params: 57688576,
-      expected_steps: 30322,
+      expected_steps: Number(process.env.EXPECTED_STEPS),
       batch_size: 16,
       block_size: 1024,
       grad_accum_steps: 1,
-      padded_train_tokens: 496795648,
+      padded_train_tokens: Number(process.env.PADDED_TRAIN_TOKENS),
       train_conversations: 485150,
       validation_conversations: 26278,
       validation_fraction: 0.05,
       learning_rate: Number(process.env.SFT_LR),
       learning_rate_min: Number(process.env.SFT_LR_MIN),
-      warmup_iters: 303,
+      warmup_iters: Number(process.env.WARMUP_ITERS),
       source_commit: process.env.SOURCE_COMMIT,
-      inputs: {
-        corpus: verification.corpus,
-        manifest: verification.manifest,
-        length_audit: verification.length_audit,
-        mask_audit: verification.mask_audit,
-        tokenizer: verification.tokenizer,
-        base_checkpoint: verification.base_checkpoint,
-      },
+      inputs,
       started_utc: new Date().toISOString(),
     };
     fs.writeFileSync(process.env.CONTRACT_TMP, JSON.stringify(contract, null, 2) + "\n", { flag: "wx" });
   '
   mv "$verification_tmp" "$run_dir/sft-input-verification.json"
-  mv "$contract_tmp" "$run_dir/sft-contract.json"
+  mv "$contract_tmp" "$run_dir/$contract_filename"
   init_args=(--initCheckpoint="$base_checkpoint")
 fi
 
 if [[ $contract_only == 1 ]]; then
-  echo "SFT contract prepared without launching training: $run_dir/sft-contract.json"
+  echo "SFT $job contract prepared without launching training: $run_dir/$contract_filename"
   exit 0
 fi
 
@@ -174,10 +249,10 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --tieEmbeddings=true \
   --batch=16 \
   --accumSteps=1 \
-  --steps=30322 \
+  --steps="$expected_steps" \
   --lr="$learning_rate" \
   --lrMin="$learning_rate_min" \
-  --warmupIters=303 \
+  --warmupIters="$warmup_iters" \
   --beta1=0.9 \
   --beta2=0.95 \
   --eps=1e-8 \
@@ -191,7 +266,7 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --minGpuSize=1 \
   --no-fallback=true \
   --strictPlanning=false \
-  --evalInterval=500 \
+  --evalInterval="$eval_interval" \
   --checkpointInterval=1000 \
   --evalIters=5 \
   --logEvery=25 \
