@@ -112,6 +112,9 @@ and **zero Helios test files**.
   ZERO NaN/spike skips**, and all 1,000 metric rows finite. Loss 8.3506→5.2346; final val 5.3624;
   median 4,686 tok/s; 905.8s total. CPU↔NVIDIA parity is 44/44. Evidence and command:
   `/mnt/donto-data/alpha-runs/g1-pilot-1000-20260722/RUN.md`. The old "2-7% NaN is normal" era is over.
+  Later source trees are re-certified with `run_nvidia_gates.sh` (`1019b9b`), which rejects Vitest's
+  exit-zero all-skipped state and emits proof only for vendor `0x10de` with all 46 current Helios
+  assertions executed and passed.
 
 ### Stage 2 — Throughput: make 50-75M params affordable (≈$8 incl. one 6h soak)
 Measured L4 history: 65K tok/s @1.85M → 30K @6.84M → ~4.9K @17.4M → **~1K @56M** (allocator-pressure

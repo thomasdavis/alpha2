@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`863427f`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`1019b9b`**. TypeScript clean; consolidated suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -78,6 +78,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   flags/scores, requires exact 61,036/30,322-step checkpoints and identical frozen inputs/case order, and
   enforces the ≥95 structural / zero-loop machine bar. Its PASS explicitly leaves conversational
   coherence to separate semantic review. Full synthetic pair passed; altered output hash was rejected.
+- Post-G2 NVIDIA regression is fail-closed in `1019b9b`. Run
+  `scripts/run_nvidia_gates.sh /workspace/alpha2/runs/nvidia-gate-<commit>` after deploying current
+  master; it requires vendor `0x10de` and the exact two files / 46 unique assertions / 46 passed / zero
+  skipped-failed-todo, then hashes the Vitest JSON into `gate-summary.json`. The real local all-skipped
+  report was rejected, a synthetic 46/46 report passed, and non-NVIDIA preflight stopped before tests.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
