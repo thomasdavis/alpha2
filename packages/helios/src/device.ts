@@ -27,6 +27,7 @@ export interface NativeAddon {
     tempSlabCount: number;
     tempSlabCapacityBytes: number;
     tempSlabUsedBytes: number;
+    tempSlabLiveBytes: number;
     tempSlabLiveRefs: number;
     tempSlabResets: number;
     hostSlabCount: number;
@@ -34,6 +35,8 @@ export interface NativeAddon {
     trackedVkMemoryAllocations: number;
     temporaryBufferRequests: number;
     slabFallbacks: number;
+    slabFreeRangeReuses: number;
+    slabFreeRangeOverflows: number;
   };
   uploadBuffer(handle: number, data: Float32Array): void;
   fillBuffer(handle: number, byteSize: number, value: number): void;

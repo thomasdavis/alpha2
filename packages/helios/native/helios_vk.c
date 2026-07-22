@@ -820,15 +820,24 @@ static PFN_vkGetQueryPoolResults                  fp_vkGetQueryPoolResults;
 #define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)    // 64 MB per slab
 #define SLAB_MAX_SIZE       (256 * 1024 * 1024)   // 256 MB max per slab (limit fragmentation waste)
 #define MAX_SLABS           64
+#define MAX_SLAB_FREE_RANGES 4096
 #define SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)  // 8 GB max total per pool
+
+typedef struct {
+  VkDeviceSize offset;
+  VkDeviceSize size;
+} SlabFreeRange;
 
 typedef struct {
   VkDeviceMemory memory;
   VkDeviceSize   capacity;
   VkDeviceSize   head;          // bump pointer
+  VkDeviceSize   liveBytes;     // aligned bytes currently owned by live buffers
   void*          mapped;        // persistent mapping (NULL if not host-visible)
   uint32_t       memoryTypeIdx;
   uint32_t       refCount;      // number of live buffer allocations from this slab
+  uint32_t       freeCount;
+  SlabFreeRange  freeRanges[MAX_SLAB_FREE_RANGES];
 } Slab;
 
 typedef struct {
@@ -848,7 +857,86 @@ static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
 }
 
 // Allocate from a slab pool. Returns memory + offset, or fails.
-typedef struct { VkDeviceMemory memory; VkDeviceSize offset; void* mappedBase; } SlabAlloc;
+typedef struct {
+  VkDeviceMemory memory;
+  VkDeviceSize offset;
+  VkDeviceSize size;
+  void* mappedBase;
+} SlabAlloc;
+
+static uint64_t slabFreeRangeReuseCount = 0;
+static uint64_t slabFreeRangeOverflowCount = 0;
+
+static void removeSlabFreeRange(Slab* slab, uint32_t index) {
+  slab->freeCount--;
+  if (index != slab->freeCount) slab->freeRanges[index] = slab->freeRanges[slab->freeCount];
+}
+
+static int slabAllocFromFreeRange(
+  Slab* slab,
+  VkDeviceSize size,
+  VkDeviceSize alignment,
+  VkDeviceSize* outOffset
+) {
+  for (uint32_t i = 0; i < slab->freeCount; i++) {
+    SlabFreeRange range = slab->freeRanges[i];
+    VkDeviceSize offset = alignUp(range.offset, alignment);
+    VkDeviceSize end = offset + size;
+    VkDeviceSize rangeEnd = range.offset + range.size;
+    if (end > rangeEnd) continue;
+
+    VkDeviceSize prefix = offset - range.offset;
+    VkDeviceSize suffix = rangeEnd - end;
+    if (prefix > 0 && suffix > 0) {
+      if (slab->freeCount >= MAX_SLAB_FREE_RANGES) continue;
+      slab->freeRanges[i].size = prefix;
+      slab->freeRanges[slab->freeCount++] = (SlabFreeRange){ .offset = end, .size = suffix };
+    } else if (prefix > 0) {
+      slab->freeRanges[i].size = prefix;
+    } else if (suffix > 0) {
+      slab->freeRanges[i] = (SlabFreeRange){ .offset = end, .size = suffix };
+    } else {
+      removeSlabFreeRange(slab, i);
+    }
+
+    slab->refCount++;
+    slab->liveBytes += size;
+    slabFreeRangeReuseCount++;
+    *outOffset = offset;
+    return 1;
+  }
+  return 0;
+}
+
+static void slabFreeRange(Slab* slab, VkDeviceSize offset, VkDeviceSize size) {
+  VkDeviceSize mergedOffset = offset;
+  VkDeviceSize mergedEnd = offset + size;
+
+  // Merge every overlapping or adjacent free range. Removing by swap makes
+  // ordering irrelevant and keeps the hot allocation/free path compact.
+  for (uint32_t i = 0; i < slab->freeCount;) {
+    VkDeviceSize rangeOffset = slab->freeRanges[i].offset;
+    VkDeviceSize rangeEnd = rangeOffset + slab->freeRanges[i].size;
+    if (mergedEnd < rangeOffset || rangeEnd < mergedOffset) {
+      i++;
+      continue;
+    }
+    if (rangeOffset < mergedOffset) mergedOffset = rangeOffset;
+    if (rangeEnd > mergedEnd) mergedEnd = rangeEnd;
+    removeSlabFreeRange(slab, i);
+  }
+
+  if (slab->freeCount < MAX_SLAB_FREE_RANGES) {
+    slab->freeRanges[slab->freeCount++] = (SlabFreeRange){
+      .offset = mergedOffset,
+      .size = mergedEnd - mergedOffset,
+    };
+  } else {
+    // Safe degradation: the range becomes unavailable until the whole slab
+    // empties and resets. Never alias live memory merely to recover capacity.
+    slabFreeRangeOverflowCount++;
+  }
+}
 
 static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize requiredAlignment, SlabAlloc* out) {
   VkDeviceSize alignment = requiredAlignment > slabAlignment ? requiredAlignment : slabAlignment;
@@ -857,12 +945,22 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize require
   // Try existing slabs
   for (uint32_t i = 0; i < pool->slabCount; i++) {
     Slab* s = &pool->slabs[i];
+    VkDeviceSize reusedOffset;
+    if (slabAllocFromFreeRange(s, aligned_size, alignment, &reusedOffset)) {
+      out->memory = s->memory;
+      out->offset = reusedOffset;
+      out->size = aligned_size;
+      out->mappedBase = s->mapped;
+      return 1;
+    }
     VkDeviceSize offset = alignUp(s->head, alignment);
     if (offset + aligned_size <= s->capacity) {
       s->head = offset + aligned_size;
       s->refCount++;
+      s->liveBytes += aligned_size;
       out->memory = s->memory;
       out->offset = offset;
+      out->size = aligned_size;
       out->mappedBase = s->mapped;
       return 1;
     }
@@ -902,9 +1000,11 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize require
 
   s->capacity = slabSize;
   s->head = aligned_size;  // first alloc starts at 0
+  s->liveBytes = aligned_size;
   s->memoryTypeIdx = pool->memoryTypeIdx;
   s->mapped = NULL;
   s->refCount = 1;
+  s->freeCount = 0;
 
   if (pool->hostVisible) {
     fp_vkMapMemory(device, s->memory, 0, slabSize, 0, &s->mapped);
@@ -914,6 +1014,7 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize require
 
   out->memory = s->memory;
   out->offset = 0;
+  out->size = aligned_size;
   out->mappedBase = s->mapped;
   return 1;
 }
@@ -927,6 +1028,7 @@ typedef struct {
   VkBuffer       buffer;
   VkDeviceMemory memory;       // slab memory (shared, NOT owned by this slot)
   VkDeviceSize   memOffset;    // offset within slab
+  VkDeviceSize   allocationSize; // aligned suballocation size (for free-range reuse)
   VkDeviceSize   size;
   void*          mapped;       // persistent mapping (NULL if device-local only)
   int            hostVisible;  // 1 if host-visible
@@ -1930,6 +2032,8 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   temporaryBufferRequests = 0;
   slabFallbackCount = 0;
   tempSlabResetCount = 0;
+  slabFreeRangeReuseCount = 0;
+  slabFreeRangeOverflowCount = 0;
 
   // Probe alignment for slab allocator: create a test storage buffer
   {
@@ -2097,6 +2201,7 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
     }
     buffers[slot].memory = salloc.memory;
     buffers[slot].memOffset = salloc.offset;
+    buffers[slot].allocationSize = salloc.size;
     buffers[slot].size = byteLength;
     buffers[slot].hostVisible = useHostPool;
     buffers[slot].slabAllocated = 1;
@@ -2142,6 +2247,7 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
     fp_vkBindBufferMemory(device, buffers[slot].buffer, mem, 0);
     buffers[slot].memory = mem;
     buffers[slot].memOffset = 0;
+    buffers[slot].allocationSize = memReq.size;
     buffers[slot].size = byteLength;
     buffers[slot].hostVisible = hostVisible;
     buffers[slot].slabAllocated = 0;
@@ -2451,9 +2557,21 @@ static napi_value napi_destroyBuffer(napi_env env, napi_callback_info info) {
         for (uint32_t si = 0; si < pools[p]->slabCount; si++) {
           if (pools[p]->slabs[si].memory == slabMem) {
             if (pools[p]->slabs[si].refCount > 0) {
+              slabFreeRange(
+                &pools[p]->slabs[si],
+                buffers[slot].memOffset,
+                buffers[slot].allocationSize
+              );
               pools[p]->slabs[si].refCount--;
+              if (pools[p]->slabs[si].liveBytes >= buffers[slot].allocationSize) {
+                pools[p]->slabs[si].liveBytes -= buffers[slot].allocationSize;
+              } else {
+                pools[p]->slabs[si].liveBytes = 0;
+              }
               if (pools[p]->slabs[si].refCount == 0) {
                 pools[p]->slabs[si].head = 0;  // reset bump pointer — all space reclaimed
+                pools[p]->slabs[si].liveBytes = 0;
+                pools[p]->slabs[si].freeCount = 0;
                 if (p == 1) tempSlabResetCount++;
               }
             }
@@ -2480,14 +2598,17 @@ static void slabPoolStats(
   const SlabPool* pool,
   uint64_t* capacityBytes,
   uint64_t* usedBytes,
+  uint64_t* liveBytes,
   uint64_t* liveRefs
 ) {
   *capacityBytes = 0;
   *usedBytes = 0;
+  *liveBytes = 0;
   *liveRefs = 0;
   for (uint32_t i = 0; i < pool->slabCount; i++) {
     *capacityBytes += pool->slabs[i].capacity;
     *usedBytes += pool->slabs[i].head;
+    *liveBytes += pool->slabs[i].liveBytes;
     *liveRefs += pool->slabs[i].refCount;
   }
 }
@@ -2518,12 +2639,12 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
     }
   }
 
-  uint64_t deviceCapacity, deviceUsed, deviceRefs;
-  uint64_t tempCapacity, tempUsed, tempRefs;
-  uint64_t hostCapacity, hostUsed, hostRefs;
-  slabPoolStats(&devicePool, &deviceCapacity, &deviceUsed, &deviceRefs);
-  slabPoolStats(&deviceTempPool, &tempCapacity, &tempUsed, &tempRefs);
-  slabPoolStats(&hostPool, &hostCapacity, &hostUsed, &hostRefs);
+  uint64_t deviceCapacity, deviceUsed, deviceLive, deviceRefs;
+  uint64_t tempCapacity, tempUsed, tempLive, tempRefs;
+  uint64_t hostCapacity, hostUsed, hostLive, hostRefs;
+  slabPoolStats(&devicePool, &deviceCapacity, &deviceUsed, &deviceLive, &deviceRefs);
+  slabPoolStats(&deviceTempPool, &tempCapacity, &tempUsed, &tempLive, &tempRefs);
+  slabPoolStats(&hostPool, &hostCapacity, &hostUsed, &hostLive, &hostRefs);
 
   napi_value result;
   napi_create_object(env, &result);
@@ -2536,15 +2657,18 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
   setNumberProperty(env, result, "deviceSlabCount", (double)devicePool.slabCount);
   setNumberProperty(env, result, "deviceSlabCapacityBytes", (double)deviceCapacity);
   setNumberProperty(env, result, "deviceSlabUsedBytes", (double)deviceUsed);
+  setNumberProperty(env, result, "deviceSlabLiveBytes", (double)deviceLive);
   setNumberProperty(env, result, "deviceSlabLiveRefs", (double)deviceRefs);
   setNumberProperty(env, result, "tempSlabCount", (double)deviceTempPool.slabCount);
   setNumberProperty(env, result, "tempSlabCapacityBytes", (double)tempCapacity);
   setNumberProperty(env, result, "tempSlabUsedBytes", (double)tempUsed);
+  setNumberProperty(env, result, "tempSlabLiveBytes", (double)tempLive);
   setNumberProperty(env, result, "tempSlabLiveRefs", (double)tempRefs);
   setNumberProperty(env, result, "tempSlabResets", (double)tempSlabResetCount);
   setNumberProperty(env, result, "hostSlabCount", (double)hostPool.slabCount);
   setNumberProperty(env, result, "hostSlabCapacityBytes", (double)hostCapacity);
   setNumberProperty(env, result, "hostSlabUsedBytes", (double)hostUsed);
+  setNumberProperty(env, result, "hostSlabLiveBytes", (double)hostLive);
   setNumberProperty(env, result, "hostSlabLiveRefs", (double)hostRefs);
   setNumberProperty(
     env,
@@ -2554,6 +2678,8 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
   );
   setNumberProperty(env, result, "temporaryBufferRequests", (double)temporaryBufferRequests);
   setNumberProperty(env, result, "slabFallbacks", (double)slabFallbackCount);
+  setNumberProperty(env, result, "slabFreeRangeReuses", (double)slabFreeRangeReuseCount);
+  setNumberProperty(env, result, "slabFreeRangeOverflows", (double)slabFreeRangeOverflowCount);
   return result;
 }
 

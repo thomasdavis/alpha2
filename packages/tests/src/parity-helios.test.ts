@@ -20,7 +20,7 @@
  * All tolerances are constants below so a drift shows up as one edit.
  */
 import { describe, it, expect, afterAll } from "vitest";
-import { HeliosBackend, destroyDevice, getDeviceInfo } from "@alpha/helios";
+import { HeliosBackend, destroyDevice, getDeviceInfo, getNative } from "@alpha/helios";
 import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type TensorData, type Backend } from "@alpha/core";
 import { Tape, Variable, castToF16, castToF32, sum, rmsNorm, rope } from "@alpha/autograd";
@@ -121,6 +121,30 @@ describeGpu("native device-local slab allocator", () => {
 
     for (const out of outputs) gpu.releaseGpuTensor(out);
     gpu.flush();
+  });
+
+  it("reuses a freed subrange while sibling buffers keep the slab live", () => {
+    const vk = getNative();
+    const byteSize = 8 * 1024 * 1024;
+    const handles = [
+      vk.createBuffer(byteSize, 0, 1),
+      vk.createBuffer(byteSize, 0, 1),
+      vk.createBuffer(byteSize, 0, 1),
+    ];
+    vk.destroyBuffer(handles[1]);
+
+    const beforeReuse = vk.getAllocatorStats!();
+    const replacement = vk.createBuffer(byteSize, 0, 1);
+    const afterReuse = vk.getAllocatorStats!();
+
+    expect(afterReuse.slabFreeRangeReuses).toBe(beforeReuse.slabFreeRangeReuses + 1);
+    expect(afterReuse.tempSlabCount).toBe(beforeReuse.tempSlabCount);
+    expect(afterReuse.tempSlabCapacityBytes).toBe(beforeReuse.tempSlabCapacityBytes);
+    expect(afterReuse.slabFreeRangeOverflows).toBe(0);
+
+    vk.destroyBuffer(handles[0]);
+    vk.destroyBuffer(handles[2]);
+    vk.destroyBuffer(replacement);
   });
 });
 

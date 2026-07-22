@@ -209,7 +209,10 @@ export interface StepMetrics {
   gpu_slab_buffers?: number;
   gpu_temp_slab_count?: number;
   gpu_temp_slab_capacity_mb?: number;
+  gpu_temp_slab_live_mb?: number;
   gpu_allocator_slab_fallbacks?: number;
+  gpu_allocator_free_range_reuses?: number;
+  gpu_allocator_free_range_overflows?: number;
   // Phase 0 instrumentation: per-step timing breakdown
   timing_fwd_ms?: number;
   timing_bwd_ms?: number;
@@ -1971,7 +1974,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const breakdown = traceEnabled && poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
       const nativeAllocStr = stats.trackedVkMemoryAllocations != null
-        ? ` | vkMem: ${stats.trackedVkMemoryAllocations} tracked (${stats.individualBuffers} individual, ${stats.slabBuffers} slab buffers, temp=${stats.tempSlabCount} slabs/${(stats.tempSlabCapacityBytes/1024/1024).toFixed(0)}MB, fallback=${stats.slabFallbacks})`
+        ? ` | vkMem: ${stats.trackedVkMemoryAllocations} tracked (${stats.individualBuffers} individual, ${stats.slabBuffers} slab buffers, temp=${stats.tempSlabCount} slabs/${(stats.tempSlabLiveBytes/1024/1024).toFixed(0)}MB live/${(stats.tempSlabCapacityBytes/1024/1024).toFixed(0)}MB cap, reuse=${stats.slabFreeRangeReuses}, fallback=${stats.slabFallbacks}, freeOvf=${stats.slabFreeRangeOverflows})`
         : "";
       const diagStr = stats.diagAllocsThisStep != null ? ` | glt_allocs=${stats.diagAllocsThisStep} glt_rel=${stats.diagReleasesThisStep} fr=${stats.diagFrReleasesThisStep}` : "";
       let flowStr = "";
@@ -2223,7 +2226,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_temp_slab_capacity_mb = memStats.tempSlabCapacityBytes == null
         ? undefined
         : Math.round(memStats.tempSlabCapacityBytes / 1024 / 1024);
+      metrics.gpu_temp_slab_live_mb = memStats.tempSlabLiveBytes == null
+        ? undefined
+        : Math.round(memStats.tempSlabLiveBytes / 1024 / 1024);
       metrics.gpu_allocator_slab_fallbacks = memStats.slabFallbacks;
+      metrics.gpu_allocator_free_range_reuses = memStats.slabFreeRangeReuses;
+      metrics.gpu_allocator_free_range_overflows = memStats.slabFreeRangeOverflows;
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
@@ -2386,7 +2394,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         diagPayload.tempSlabCapacityMB = ms.tempSlabCapacityBytes == null
           ? null
           : Math.round(ms.tempSlabCapacityBytes / 1024 / 1024);
+        diagPayload.tempSlabLiveMB = ms.tempSlabLiveBytes == null
+          ? null
+          : Math.round(ms.tempSlabLiveBytes / 1024 / 1024);
         diagPayload.slabFallbacks = ms.slabFallbacks;
+        diagPayload.slabFreeRangeReuses = ms.slabFreeRangeReuses;
+        diagPayload.slabFreeRangeOverflows = ms.slabFreeRangeOverflows;
       }
       if (gpuStats) {
         diagPayload.gpuUtilPct = gpuStats.utilPct;
