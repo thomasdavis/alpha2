@@ -25,6 +25,7 @@ import { tokenizerExportHfCmd } from "./commands/tokenizer-export-hf.js";
 import { trainCmd } from "./commands/train.js";
 import { sampleCmd } from "./commands/sample.js";
 import { evalCmd } from "./commands/eval.js";
+import { evalFrozenCmd } from "./commands/eval-frozen.js";
 import { exportHfCmd } from "./commands/export-hf.js";
 import { logitsCmd } from "./commands/logits.js";
 import { benchCmd } from "./commands/bench.js";
@@ -41,6 +42,7 @@ Commands:
   train                Train a GPT model
   sample           Generate text from a checkpoint
   eval             Evaluate a checkpoint on validation data
+  eval-frozen      Greedy D3 chat/QA evaluation over frozen suites
   export-hf        Export an alpha_llama checkpoint to a HF LlamaForCausalLM repo
   logits           Dump cpu_ref forward logits for prompts (golden-token test)
   bench            Run benchmarks
@@ -58,6 +60,7 @@ Examples:
   alpha train --data=data/train.txt --iters=1000 --batch=64 --block=256
   alpha sample --checkpoint=runs/.../checkpoint-1000.json --prompt="ROMEO:" --steps=200
   alpha eval --checkpoint=runs/.../checkpoint-1000.json --data=data/val.txt
+  alpha eval-frozen --checkpoint=runs/.../checkpoint.json --chat=eval/chat-prompts.jsonl --qa=eval/closed-book-qa.jsonl --out=runs/eval
   alpha bench --suite=ops --backend=cpu_ref
   alpha events --run=super_chat_... --url=https://alpha.omegaai.dev --last=100 --poll=2
 `.trim();
@@ -82,6 +85,8 @@ async function main() {
     await sampleCmd(args.slice(1));
   } else if (command === "eval") {
     await evalCmd(args.slice(1));
+  } else if (command === "eval-frozen") {
+    await evalFrozenCmd(args.slice(1));
   } else if (command === "export-hf") {
     await exportHfCmd(args.slice(1));
   } else if (command === "logits") {

@@ -115,40 +115,46 @@ and **zero Helios test files**.
 
 ### Stage 2 — Throughput: make 50-75M params affordable (≈$8 incl. one 6h soak)
 Measured L4 history: 65K tok/s @1.85M → 30K @6.84M → ~4.9K @17.4M → **~1K @56M** (allocator-pressure
-collapse). Root cause documented and UNFIXED: the TS backend never passes `temporary=1`, so the native
-device-local slab pool in `helios_vk.c` is dead code and every device tensor is an individual
-`vkAllocateMemory` (driver cap ~4-8K live allocations → GC storms).
-- [ ] Wire device-local slab: pass temporary flags from the TS buffer pools / tape-released tensors into
-      the native slab path; verify live-alloc count stays bounded and flat over hours.
+collapse). The root cause was that TS never passed `temporary=1`, bypassing the native slab pool and
+turning every device tensor into an individual `vkAllocateMemory`. The current tree fixes that path:
+- [x] Wire device-local slab: temporary output/intermediate buffers now use aligned, coalescing slab
+      subranges with live-hole reuse and allocator telemetry (`f7730c6`, `32392a5`). NVIDIA reuse gates
+      pass; the 100-step flagship-shape comparison improved steady throughput 3,322→3,790 tok/s (+14.1%).
+      The six-hour boundedness proof is running below.
 - [ ] Re-profile dispatch on the 3090/4090 (the dispatch-overhaul ring + batched dispatch exist; measure
       where the time actually goes at 16L/512d — kernel time vs submit vs GC).
-- [ ] Sweep `HELIOS_WG_SIZE` / pool caps per GPU; record a per-GPU profile (only L4 has one today).
+- [x] Sweep `HELIOS_WG_SIZE` / pool caps per GPU. RTX 3090 profile is committed in `docs/RUNPOD.md`:
+      WG=64, output-pool cap=512, cooperative matrices disabled. The exact profile passes 46/46 NVIDIA
+      gates and sustains ~3.7–3.9K tok/s at the 57.69M flagship shape.
 - **Gate G2: ≥3,000 tok/s sustained (f32, flagship shape, block 1024) on a ≤$0.35/hr GPU, AND a 6-hour
   soak with zero allocator crashes and flat RSS/live-alloc curve.** Stretch: 8K tok/s.
   Budget math this gate protects: 1B tokens @3K tok/s ≈ 93 GPU-h ≈ **$20 on the 3090**. If the gate
   fails after honest effort: shrink flagship to ~35-40M (12L/448d) and/or cut token budget — decided
   then, in the ledger, not silently.
+  **IN PROGRESS 2026-07-22:** exact commit `aca9f97`, 5,400 steps / 88.47M tokens / ≈6.3h on the $0.22/hr
+  RTX 3090. At one hour (step 850): RSS 785MB; tracked Vulkan allocations 656–657; live buffers
+  1,099–1,103; zero allocator overflow; 3.67–3.92K logged tok/s. Do not call the gate until hour six.
 
 ### Stage 3 — Modern architecture, Llama-shaped on purpose (box work + ≈$4 pilots)
-Current arch is GPT-2-style (learned wpe, LayerNorm+bias, MHA, untied, softCap-30 attn, char-seeded BPE)
-— unpublishable as a standard HF model. Convert exactly the set needed for zero-code `LlamaForCausalLM`:
-- [ ] **RoPE** (new op: fwd rotation + bwd inverse; cpu_ref + Helios kernel; applied to q/k post-sliceQkv;
+The Llama-form implementation is complete on the current tree; the remaining gate work is the equal-token
+100M-token comparison. The conversion kept exactly the set needed for zero-code `LlamaForCausalLM`:
+- [x] **RoPE** (new op: fwd rotation + bwd inverse; cpu_ref + Helios kernel; applied to q/k post-sliceQkv;
       drop wpe). ~2-4 days per recon estimate.
-- [ ] **RMSNorm** (strict simplification of existing layerNorm kernels; `normType` config). ~1-2 days.
-- [ ] **Tied embeddings** (point lmHead at wte; tape already accumulates shared-Variable grads). Hours.
-- [ ] **Drop softCap** in the new arch (no Llama equivalent). If instability returns, the sanctioned
+- [x] **RMSNorm** (strict simplification of existing LayerNorm kernels; `normType` config).
+- [x] **Tied embeddings** (`lmHead === wte`; shared-variable gradient accumulation parity-tested).
+- [x] **Drop softCap** in the new arch (no Llama equivalent). If instability returns, the sanctioned
       fallback is **QK-RMSNorm + publish as Qwen3ForCausalLM** (also a stock zero-code arch) — decide by
       pilot, record in the ledger.
-- [ ] **Byte-level BPE** with the GPT-2 split regex (JS `/u` regex), 256-byte base + specials
+- [x] **Byte-level BPE** with the GPT-2 split regex (JS `/u` regex), 256-byte base + specials
       `<|user|>` `<|assistant|>` `<|end_of_text|>` atomic; byte-buffer decode; artifact schema v2;
       **tokenizer.json exporter** (ByteLevel pre-tokenizer + string-pair merges) proven equal on a 10K-doc
       round-trip vs `@huggingface/tokenizers`. Kills the OOV-silent-drop bug for real user input.
       Vocab: **12,288** (multiple of 256 for k-quants; tied, so embed cost is paid once).
-- [ ] Keep MHA (a valid Llama config: `num_key_value_heads == num_attention_heads`). **GQA: SKIP** —
+- [x] Keep MHA (a valid Llama config: `num_key_value_heads == num_attention_heads`). **GQA: SKIP** —
       flash fwd+bwd kernels assume equal head counts; 3-5 days of kernel work for negligible gain ≤100M.
-- [ ] Parity tests (Stage 1 harness) extended to every new op BEFORE any paid run uses it.
-- [ ] Update `packages/inference` (CPU engine) for RoPE/RMSNorm/SwiGLU/tied so serving matches training
-      (it currently hardcodes gelu-4x and would silently mis-infer everything else).
+- [x] Parity tests (Stage 1 harness) extended to every new op BEFORE any paid run uses it.
+- [x] Update `packages/inference` (CPU engine) for RoPE/RMSNorm/SwiGLU/tied so serving matches training
+      rather than silently applying the former GELU-4x assumptions.
 - **Gate G3: 100M-token pilot of the new arch ≥ matches the old arch's loss curve at equal tokens/params,
   0 NaN steps, and a golden-token test: Alpha forward == exported-safetensors-in-transformers forward
   (top-1 agreement on 512 positions, fixed prompt) BEFORE the flagship run.** That last check is the
@@ -158,22 +164,27 @@ Current arch is GPT-2-style (learned wpe, LayerNorm+bias, MHA, untied, softCap-3
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
 That, not the framework, is half of why every prior run produced gibberish. Fix the pipeline:
-- [ ] **Pretrain corpus**: stream `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled`
+- [x] **Pretrain corpus**: stream `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled`
       (verified: 100B tokens, ODC-BY, streaming-safe, pre-shuffled) → clean text shards with
       `<|end_of_text|>` separators on `/mnt/donto-data/alpha-corpora/` → rsync to pod. Slice size set by
       G2 throughput (1B tokens ≈ 4GB text at ~4 chars/token; loader RAM = 4 bytes/token — fine ≤3B).
+      **Ready:** 1,857,705 documents, 11.7GB text, ≈3.0B tokens in six shards; source parquets retained.
 - [ ] **Chat corpus (SFT)**: `HuggingFaceTB/smol-smoltalk` (460K convs, built FOR sub-1B models) as the
       backbone + `smoltalk2` `everyday-conversations_no_think` + `systemchats-30k_no_think` +
       OASST2 English best-ranked paths + ≤5% SODA seasoning → rendered to
       `<|user|> … <|assistant|> … <|end_of_text|>`, validated by `scripts/validate-chat-data.ts`.
-- [ ] **Loss masking (assistant-only SFT)** — net-new, the single most important training-code change:
+- [x] **Loss masking (assistant-only SFT)** — net-new, the single most important training-code change:
       `DataBatch.lossMask [B,T]`, masked cross-entropy (`sum(ce*mask)/max(sum(mask),1)`) in cpu_ref +
       Helios CE kernels + autograd, document-aware SFT batching (no packing v1), mask verified by
       decoding batches (user tokens 0, assistant tokens 1). Parity-tested (Stage 1 harness).
-- [ ] **Frozen eval set** (before flagship): per-corpus val shards; 100 fixed multi-turn chat prompts;
+- [x] **Frozen eval set** (before flagship): per-corpus val shards; 100 fixed multi-turn chat prompts;
       200 closed-book sanity questions (from finewiki pages excluded from training); repetition/EOS/
       role-leak metrics; deterministic greedy sample suite at every checkpoint. No benchmark data in
-      training mixes, ever.
+      training mixes, ever. **Frozen at** `/mnt/donto-data/alpha-corpora/frozen-eval-v1`: 100 token-fit,
+      source-balanced chats; 200 structured FineWiki questions; 500 held-out documents per premix source.
+      The streaming Rust audit scanned 1.918B pretrain + 263.2M SFT 13-grams and excluded 1,298 + 578
+      contaminated candidates. Manifest hashes every source/output. `alpha eval-frozen` now scores greedy
+      EOS/role leak/repetition plus QA exact/containment/F1; end-to-end smoke passed.
 - **Gate G4: data audits pass (val decontaminated vs train by 13-gram overlap; length stats sane; mask
   spot-checks green) + tokenizer round-trip proof.**
 
@@ -216,7 +227,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
 |---|---|---|
 | Beachhead probes (2026-07-22, 3090 ~1.5h) | $0.50 | ~$0.40 |
 | Stage 0-1 smoke + parity runs | $4 | ~$0.30 incremental through G1 (live pod; reconcile at termination) |
-| Stage 2 profiling + 6h soak | $8 | |
+| Stage 2 profiling + 6h soak | $8 | live; account balance $68.329, spend $0.301/hr at soak hour 1; reconcile at pod termination |
 | Stage 3 pilots (2× 100M-token) | $4 | |
 | Stage 5 lr sweeps (3× 100M-token) | $5 | |
 | Stage 5 pretrain 1B tok @ ≥3K tok/s | $20-25 | |
@@ -259,9 +270,13 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (Stage 0 completion)
+## 8. Immediate next actions (current 2026-07-22)
 
-1. Finish Helios smoke train on the live 3090 pod (repo already rsynced + built there); record tok/s;
-   terminate pod.
-2. Commit `scripts/runpod_bootstrap.sh` + `docs/RUNPOD.md` + this GOAL.md; push.
-3. Stage 1 begins: parity harness scaffold + secrets scrub.
+1. Let the live G2 run reach a literal six hours; verify flat post-warmup RSS/live allocations, archive and
+   hash every artifact, then record the gate decision.
+2. Run G3's equal-token old-vs-Llama 100M-token pilots (the golden export half is already 75/75 top-1,
+   max logit delta 1.07e-06).
+3. Finish the requested final SFT source mix, then repeat its validation/mask and 13-gram audit if the text
+   changes. The 457,484-conversation current backbone remains staged and clean.
+4. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
+   with a verified box-side checkpoint puller.

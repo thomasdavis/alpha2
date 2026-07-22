@@ -28,17 +28,32 @@ export interface HfTokenizerBundle {
   chatTemplate: string;
 }
 
-/** Default chat template (flat role markers, `{% generation %}` on assistant). */
+/**
+ * Chat template that exactly matches scripts/build_sft_corpus.py:
+ *
+ *   <|user|> ... <|assistant|> ... <|user|> ... <|assistant|> ... <|end_of_text|>
+ *
+ * EOS terminates the conversation, not each historical assistant turn. A
+ * leading system message is folded into the first user turn the same way as
+ * the SFT builder. `{% generation %}` marks assistant content for HF clients.
+ */
 export function buildChatTemplate(): string {
   return (
     "{% for message in messages %}" +
-    "{% if message['role'] == 'user' %}" +
+    "{% if message['role'] == 'system' %}" +
+    "{{ '<|user|> [Instructions: ' + message['content'] + ']\\n\\n' }}" +
+    "{% elif message['role'] == 'user' %}" +
+    "{% if loop.index0 > 0 and messages[loop.index0 - 1]['role'] == 'system' %}" +
+    "{{ message['content'] + ' ' }}" +
+    "{% else %}" +
     "{{ '<|user|> ' + message['content'] + ' ' }}" +
+    "{% endif %}" +
     "{% elif message['role'] == 'assistant' %}" +
     "{{ '<|assistant|> ' }}" +
     "{% generation %}" +
-    "{{ message['content'] + ' <|end_of_text|>' }}" +
+    "{{ message['content'] }}" +
     "{% endgeneration %}" +
+    "{% if loop.last %}{{ ' <|end_of_text|>' }}{% else %}{{ ' ' }}{% endif %}" +
     "{% endif %}" +
     "{% endfor %}" +
     "{% if add_generation_prompt %}{{ '<|assistant|> ' }}{% endif %}"

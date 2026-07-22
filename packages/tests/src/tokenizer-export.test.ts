@@ -185,6 +185,8 @@ describe("HF tokenizer.json exporter", () => {
     expect(tokenizerConfig.chat_template).toContain("{% generation %}");
     expect(tokenizerConfig.chat_template).toContain("<|user|>");
     expect(tokenizerConfig.chat_template).toContain("<|assistant|>");
+    expect(tokenizerConfig.chat_template).toContain("{% if loop.last %}");
+    expect(tokenizerConfig.chat_template).toContain("[Instructions: ");
   });
 
   it("exported spec reproduces ByteBpeTokenizer.encode() on tricky strings", async () => {

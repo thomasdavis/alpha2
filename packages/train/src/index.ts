@@ -19,4 +19,8 @@ export {
 export { sample } from "./sample.js";
 export { train, type TrainerDeps, type StepMetrics } from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";
+export {
+  formatFrozenChatPrompt, fourGramRepeatRate, normalizedAnswerTokens, normalizedAnswer,
+  answerTokenF1, answerIsContained, type FrozenChatMessage,
+} from "./frozen_eval.js";
 export { createRemoteReporter, type RemoteReporter, type RemoteReporterConfig, type SampleGeneration } from "./remote-reporter.js";
