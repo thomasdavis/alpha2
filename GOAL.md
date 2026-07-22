@@ -240,6 +240,10 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   independently hashes and line-counts the corpus, requires the length/mask audits, reconciles the binary
   checkpoint tensor table and byte length, scans all 57,688,576 base parameters for finiteness, and binds
   corpus/audits/tokenizer/base checkpoint/current commit into the resumable run contract.
+  The choice itself is contracted in `b24c18a`: three 2,000-step / 32,768,000-token pilots over
+  `{1e-4,3e-4,1e-3}` share exact inputs and eight aligned validations; `analyze_sft_lr_sweep.ts` chooses
+  the lowest final-three held-out mean. The one-epoch launcher now requires and verifies that selector
+  report, including its commit and all six input hashes, rather than accepting any allowed number.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

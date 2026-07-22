@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`1019b9b`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`b24c18a`**. TypeScript clean; consolidated suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -83,6 +83,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   master; it requires vendor `0x10de` and the exact two files / 46 unique assertions / 46 passed / zero
   skipped-failed-todo, then hashes the Vitest JSON into `gate-summary.json`. The real local all-skipped
   report was rejected, a synthetic 46/46 report passed, and non-NVIDIA preflight stopped before tests.
+- SFT LR selection is executable rather than aspirational in `b24c18a`: three sequential
+  `run_sft_lr_pilot.sh` runs each consume exactly 2,000 steps / 32,768,000 padded tokens with eight
+  aligned validations and the identical verified corpus/audits/tokenizer/base. The selector requires
+  complete finite runs, zero allocator overflow, full checkpoints, identical inputs+commit, and ranks
+  final-three held-out loss. `run_flagship_sft.sh` now refuses to start without the matching report and
+  verifies its selected LR plus every input hash. Positive and mismatch synthetic proofs passed.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
