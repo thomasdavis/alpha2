@@ -144,7 +144,8 @@ Every check was proven load-bearing by temporary fault injection.
 - Pretrain: `/mnt/donto-data/alpha-corpora/pretrain-text/` — 6 shards ≤2GB, 11.7GB, ~3.0B est tokens,
   1.86M docs, `<|end_of_text|>`-delimited. Source: 4 parquet shards of
   `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled` (kept in
-  `premix-shuffled/`; 96 more shards available upstream if more tokens needed).
+  `premix-shuffled/`; 96 more shards available upstream if more tokens needed). All six outputs are
+  sealed and re-verified by `pretrain-text/MANIFEST.sha256`; see the adjacent `RUN.md`.
 - SFT: `/mnt/donto-data/alpha-corpora/sft-text-v2/sft-v2.txt` — 511,428 structurally clean,
   tokenizer-bounded conversations; SHA-256 `ffad0a376c7eac2e0ec91f0901ec1ff87cba67cc298222828ce3df1a3e60b3fb`.
   The previous unbounded version is preserved under that corpus directory's `history/`.
