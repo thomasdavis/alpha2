@@ -110,6 +110,11 @@ pruned by the guard. `RUNPOD_GUARD_ONCE=1` performs one pull, verification/prune
 without entering the monitoring loop; it is useful for an operator check but not as the paid-run watchdog.
 Egress is free. `runpodctl send/receive` (croc) also works for one-offs.
 
+G3 pilot recovery uses the same `run_g3_pilot.sh` invocation plus the selected checkpoint as argument
+five. The launcher requires the original commit/data/tokenizer/LR contract, and
+`prepare_resume_metrics.ts` preserves and hashes any metric tail beyond that checkpoint before atomically
+aligning the active stream. Never invoke `alpha train --resume` by hand against an unaligned metrics file.
+
 ## Terminate
 ```bash
 runpodctl remove pod <podId>   # stopped pods still bill volume storage — terminate, don't stop

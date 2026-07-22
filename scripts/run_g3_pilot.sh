@@ -5,6 +5,9 @@
 #   scripts/run_g3_pilot.sh llama /workspace/data/pretrain-000.txt \
 #     /workspace/alpha2/artifacts/g2-bpe-byte-12k.json /workspace/alpha2/runs/g3-llama-100m
 #   scripts/run_g3_pilot.sh gpt2  ... /workspace/alpha2/runs/g3-gpt2-100m
+# Resume after preemption with the exact same command plus the checkpoint as argument 5:
+#   scripts/run_g3_pilot.sh llama ... /workspace/alpha2/runs/g3-llama-100m \
+#     /workspace/alpha2/runs/g3-llama-100m/checkpoint-3000.json
 #
 # Both controls see 6,104 * 16 * 1,024 = 100,007,936 tokens with identical
 # tokenizer, batches, optimizer, seed, and schedule. Exact initialized sizes:
@@ -18,6 +21,7 @@ variant=${1:?variant required: llama or gpt2}
 data=${2:?training text path required}
 tokenizer=${3:?tokenizer artifact path required}
 run_dir=${4:?run directory required}
+resume_checkpoint=${5:-}
 pilot_lr=${ALPHA_PILOT_LR:-3e-4}
 pilot_lr_min=$(PILOT_LR="$pilot_lr" node -e '
   const lr = Number(process.env.PILOT_LR);
@@ -57,8 +61,13 @@ for required in "$data" "$tokenizer" apps/cli/dist/main.js; do
     exit 1
   fi
 done
-if [[ -e "$run_dir" ]]; then
-  echo "run directory already exists; refusing to mix pilot artifacts: $run_dir" >&2
+if [[ -n "$resume_checkpoint" ]]; then
+  if [[ ! -d "$run_dir" || ! -f "$resume_checkpoint" || ! -f "$run_dir/pilot-contract.json" ]]; then
+    echo "resume requires an existing run directory, checkpoint, and pilot contract" >&2
+    exit 1
+  fi
+elif [[ -e "$run_dir" ]]; then
+  echo "run directory already exists; pass its checkpoint as argument 5 to resume: $run_dir" >&2
   exit 1
 fi
 
@@ -73,10 +82,38 @@ source_commit=$(git rev-parse HEAD)
 data_sha256=$(sha256sum "$data" | awk '{print $1}')
 tokenizer_sha256=$(sha256sum "$tokenizer" | awk '{print $1}')
 contract_tmp="$run_dir/pilot-contract.json.tmp"
-VARIANT="$variant" EXPECTED_PARAMS="$expected_params" SOURCE_COMMIT="$source_commit" \
-DATA_PATH="$data" DATA_SHA256="$data_sha256" TOKENIZER_PATH="$tokenizer" \
-TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" PILOT_LR="$pilot_lr" \
-PILOT_LR_MIN="$pilot_lr_min" node -e '
+resume_args=()
+if [[ -n "$resume_checkpoint" ]]; then
+  VARIANT="$variant" EXPECTED_PARAMS="$expected_params" SOURCE_COMMIT="$source_commit" \
+  DATA_PATH="$data" DATA_SHA256="$data_sha256" TOKENIZER_PATH="$tokenizer" \
+  TOKENIZER_SHA256="$tokenizer_sha256" PILOT_LR="$pilot_lr" PILOT_LR_MIN="$pilot_lr_min" \
+  CONTRACT_PATH="$run_dir/pilot-contract.json" node -e '
+    const fs = require("node:fs");
+    const c = JSON.parse(fs.readFileSync(process.env.CONTRACT_PATH, "utf8"));
+    const expected = {
+      variant: process.env.VARIANT,
+      expected_params: Number(process.env.EXPECTED_PARAMS),
+      expected_steps: 6104,
+      expected_tokens: 100007936,
+      minimum_train_tokens: 100007936,
+      learning_rate: Number(process.env.PILOT_LR),
+      learning_rate_min: Number(process.env.PILOT_LR_MIN),
+      source_commit: process.env.SOURCE_COMMIT,
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      if (c[key] !== value) throw new Error(`resume contract ${key}: ${c[key]} != ${value}`);
+    }
+    if (c.data?.path !== process.env.DATA_PATH || c.data?.sha256 !== process.env.DATA_SHA256) throw new Error("resume data contract mismatch");
+    if (c.tokenizer?.path !== process.env.TOKENIZER_PATH || c.tokenizer?.sha256 !== process.env.TOKENIZER_SHA256) throw new Error("resume tokenizer contract mismatch");
+  '
+  npx tsx scripts/prepare_resume_metrics.ts \
+    --run "$run_dir" --checkpoint "$resume_checkpoint" --sourceCommit "$source_commit"
+  resume_args=(--resume="$resume_checkpoint")
+else
+  VARIANT="$variant" EXPECTED_PARAMS="$expected_params" SOURCE_COMMIT="$source_commit" \
+  DATA_PATH="$data" DATA_SHA256="$data_sha256" TOKENIZER_PATH="$tokenizer" \
+  TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" PILOT_LR="$pilot_lr" \
+  PILOT_LR_MIN="$pilot_lr_min" node -e '
   const fs = require("node:fs");
   const contract = {
     schema: "alpha-g3-pilot-contract-v1",
@@ -97,7 +134,8 @@ PILOT_LR_MIN="$pilot_lr_min" node -e '
   };
   fs.writeFileSync(process.env.CONTRACT_TMP, JSON.stringify(contract, null, 2) + "\n", { flag: "wx" });
 '
-mv "$contract_tmp" "$run_dir/pilot-contract.json"
+  mv "$contract_tmp" "$run_dir/pilot-contract.json"
+fi
 exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --data="$data" \
   --domain=alpha_llama \
@@ -136,4 +174,5 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --remote=false \
   --packed=true \
   --runDir="$run_dir" \
+  "${resume_args[@]}" \
   "${architecture_args[@]}"
