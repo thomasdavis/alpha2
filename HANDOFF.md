@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~21:42 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~22:15 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -25,15 +25,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - **G3 Llama is live** as remote PID 463 at
   `/workspace/alpha2/runs/g3-llama-100m-lr3e4-c95f81b-20260722`, started 21:20:08 UTC. It is in the
   GPU phase after successfully caching 463,290,711 train tokens in 974.0s and 51,536,242 validation
-  tokens in 109.4s. First flush: 50/6,104 finite rows; loss 9.5262→7.8293, step-50 throughput 3,941
-  tok/s, finite gradient norm 0.7016, ~24.1GB VRAM. Inputs match sealed hashes. The CLI process is
+  tokens in 109.4s. **First validation passed at step 500:** 500/500 continuous finite rows, train loss
+  5.4846935, five-batch validation loss 5.5984302, step throughput 3,878 tok/s, host RSS 2,882MB,
+  34 temporary slabs, and zero allocator overflow. Inputs match sealed hashes. The CLI process is
   explicitly `--fp16=false`; the log's `f16: true` line is device capability, not active precision.
   Persistent box guard: `alpha2-g3-llama-puller-c95f81b.service`, 60s interval / 1,800s stale threshold,
   matching remote+local checkpoint retention 3. Mounted run record:
   `/mnt/donto-data/alpha-runs/g3-llama-100m-lr3e4-c95f81b-20260722/RUN.md`.
 - Keep both G3 halves on exact commit `c95f81b`; **do not pull a later origin commit onto the pod until
   the Llama and GPT-2 pair is complete**. Launch GPT-2 only after Llama exits and the final mirror lands.
-- RunPod balance was **$66.5346286162** at 21:24 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$66.307082294** at ~22:10 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 

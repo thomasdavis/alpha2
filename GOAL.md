@@ -177,8 +177,9 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   as `g3-llama-100m-lr3e4-c95f81b-20260722`. Both 1.992GB data and tokenizer hashes match the sealed
   mounted inputs. A persistent 60-second guard mirrors metrics/logs/checkpoints and retains the latest
   three on each side. The one-time cache build produced 463,290,711 train + 51,536,242 validation tokens
-  in 1,083.4s. GPU training is healthy through the first 50-row flush: loss 9.5262→7.8293, step-50
-  throughput 3,941 tok/s, finite gradient norm 0.7016, ~24.1GB VRAM, explicit f32 posture.
+  in 1,083.4s. The first evaluation milestone is durable at step 500: 500/500 continuous finite rows,
+  train/validation loss 5.4846935/5.5984302, 3,878 tok/s, host RSS 2,882MB, 34 temporary slabs, zero
+  allocator overflow, and explicit f32 posture.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
