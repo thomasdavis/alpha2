@@ -14,7 +14,9 @@ ssh_key=${RUNPOD_SSH_KEY:-/home/ajax/.runpod/ssh/runpodctl-ssh-key}
 pod_id=${RUNPOD_POD_ID:-}
 terminate_on_stall=${TERMINATE_ON_STALL:-0}
 remote_keep_checkpoints=${REMOTE_KEEP_CHECKPOINTS:-0}
+local_keep_checkpoints=${LOCAL_KEEP_CHECKPOINTS:-0}
 guard_once=${RUNPOD_GUARD_ONCE:-0}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 [[ $host =~ ^[A-Za-z0-9.-]+$ ]] || { echo "invalid host: $host" >&2; exit 2; }
 [[ $port =~ ^[0-9]+$ ]] || { echo "invalid port: $port" >&2; exit 2; }
@@ -29,6 +31,15 @@ guard_once=${RUNPOD_GUARD_ONCE:-0}
 [[ $remote_keep_checkpoints =~ ^[0-9]+$ ]] || { echo "REMOTE_KEEP_CHECKPOINTS must be an integer" >&2; exit 2; }
 if (( remote_keep_checkpoints == 1 )); then
   echo "REMOTE_KEEP_CHECKPOINTS must be 0 (disabled) or at least 2" >&2
+  exit 2
+fi
+[[ $local_keep_checkpoints =~ ^[0-9]+$ ]] || { echo "LOCAL_KEEP_CHECKPOINTS must be an integer" >&2; exit 2; }
+if (( local_keep_checkpoints > 0 && local_keep_checkpoints < 3 )); then
+  echo "LOCAL_KEEP_CHECKPOINTS must be 0 (disabled) or at least 3" >&2
+  exit 2
+fi
+if (( local_keep_checkpoints > 0 && local_keep_checkpoints != remote_keep_checkpoints )); then
+  echo "LOCAL_KEEP_CHECKPOINTS requires the same nonzero REMOTE_KEEP_CHECKPOINTS" >&2
   exit 2
 fi
 [[ $guard_once == 0 || $guard_once == 1 ]] || { echo "RUNPOD_GUARD_ONCE must be 0 or 1" >&2; exit 2; }
@@ -94,9 +105,22 @@ prune_remote_checkpoints() {
   done
 }
 
+prune_local_checkpoints() {
+  (( local_keep_checkpoints >= 3 )) || return 0
+  local result
+  if ! result=$(nice -n 10 ionice -c2 -n7 npx tsx "$script_dir/prune_local_checkpoints.ts" \
+    --run "$local_run" --keep "$local_keep_checkpoints"); then
+    log "WARNING local checkpoint retention failed; local copies retained"
+    return 1
+  fi
+  log "local checkpoint retention $result"
+}
+
 final_pull() {
   if pull_once; then
-    prune_remote_checkpoints || true
+    if prune_remote_checkpoints; then
+      prune_local_checkpoints || true
+    fi
     log "final pull complete"
   else
     log "WARNING final pull failed"
@@ -113,7 +137,9 @@ while true; do
     sleep "$interval"
     continue
   fi
-  prune_remote_checkpoints || true
+  if prune_remote_checkpoints; then
+    prune_local_checkpoints || true
+  fi
 
   if ! status=$(ssh "${ssh_opts[@]}" "root@$host" "
     metrics='$remote_run/metrics.jsonl'

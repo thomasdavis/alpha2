@@ -103,11 +103,15 @@ systemctl --user status alpha2-run-puller.service
 For flagship runs, opt into termination after a verified 30-minute metric stall with
 `RUNPOD_POD_ID=<id> TERMINATE_ON_STALL=1`. Without both values the guard exits nonzero and deliberately
 leaves the pod running for inspection. The local `puller.log` is part of the run evidence.
-Full flagship checkpoints are about 693MB each. Set `REMOTE_KEEP_CHECKPOINTS=3` on the guard to retain
-only the newest three on the small pod volume. An older remote checkpoint is removed only after rsync
-succeeds and its local mirror matches the remote byte size and SHA-256; local checkpoints are never
-pruned by the guard. `RUNPOD_GUARD_ONCE=1` performs one pull, verification/prune pass, and status check
-without entering the monitoring loop; it is useful for an operator check but not as the paid-run watchdog.
+Full flagship checkpoints are about 693MB each. Set both `REMOTE_KEEP_CHECKPOINTS=3` and
+`LOCAL_KEEP_CHECKPOINTS=3` on long-run guards to retain the newest three on each side. An older remote
+checkpoint is removed only after rsync succeeds and its local mirror matches the remote byte size and
+SHA-256. Only then may `prune_local_checkpoints.ts` remove the corresponding old local copy: it verifies
+the newest three are nonempty, hashes each exact candidate, fsyncs a commit record to
+`checkpoint-prune-ledger.jsonl`, deletes it, and fsyncs a completion record. Local pruning is opt-in,
+requires the same remote keep count, and rejects counts below three. Omit `LOCAL_KEEP_CHECKPOINTS` to
+retain every local checkpoint. `RUNPOD_GUARD_ONCE=1` performs one pull, verification/prune pass, and
+status check without entering the monitoring loop; it is useful for an operator check but not as the paid-run watchdog.
 Egress is free. `runpodctl send/receive` (croc) also works for one-offs.
 
 G3 pilot recovery uses the same `run_g3_pilot.sh` invocation plus the selected checkpoint as argument
@@ -122,7 +126,8 @@ scripts/run_flagship_pretrain.sh <selected-lr> /runpod/data/flagship-1b-manifest
 ```
 The launcher admits only `{1e-3,2e-3,3e-3}`, verifies all shard hashes before GPU initialization, and
 contracts 61,036 × 16 × 1,024 = 1,000,013,824 tokens. Resume with the same command plus the checkpoint
-as argument five. Pair it with the box-side guard using `REMOTE_KEEP_CHECKPOINTS=3`.
+as argument five. Pair it with the box-side guard using matching
+`REMOTE_KEEP_CHECKPOINTS=3 LOCAL_KEEP_CHECKPOINTS=3` retention.
 
 ## Terminate
 ```bash
