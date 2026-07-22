@@ -125,4 +125,34 @@ describe("CpuRefBackend", () => {
     expect(s.shape).toEqual([2]);
     expect(Array.from(s.data).map(v => Math.round(v))).toEqual([4, 6]);
   });
+
+  it("sum axis=0 keepdims (regression: keepdims on a non-last axis)", () => {
+    // Pre-fix, the reduced axis's size-1 slot in outCoords was not skipped,
+    // so every output column replicated the column-0 sum.
+    const a = B.fromArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4]);
+    const s = B.sum(a, 0, true);
+    expect(s.shape).toEqual([1, 4]);
+    expect(Array.from(s.data)).toEqual([15, 18, 21, 24]);
+  });
+
+  it("sum axis=1 keepdims", () => {
+    const a = B.fromArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4]);
+    const s = B.sum(a, 1, true);
+    expect(s.shape).toEqual([3, 1]);
+    expect(Array.from(s.data)).toEqual([10, 26, 42]);
+  });
+
+  it("sum middle axis keepdims [2,3,2]", () => {
+    const a = B.fromArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 3, 2]);
+    const s = B.sum(a, 1, true);
+    expect(s.shape).toEqual([2, 1, 2]);
+    expect(Array.from(s.data)).toEqual([9, 12, 27, 30]);
+  });
+
+  it("mean axis=0 keepdims", () => {
+    const a = B.fromArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4]);
+    const m = B.mean(a, 0, true);
+    expect(m.shape).toEqual([1, 4]);
+    expect(Array.from(m.data)).toEqual([5, 6, 7, 8]);
+  });
 });

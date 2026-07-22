@@ -295,6 +295,10 @@ export class CpuRefBackend implements Backend {
       for (let d = 0; d < a.shape.length; d++) {
         if (d === ax) {
           inCoords.push(0); // placeholder
+          // With keepdims the reduced axis is still present in outShape (size 1),
+          // so outCoords has a slot for it that must be skipped. Without keepdims
+          // it was dropped, so there is no slot to skip.
+          if (keepdims) oi++;
         } else {
           inCoords.push(outCoords[oi++]);
         }
