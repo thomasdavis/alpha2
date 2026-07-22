@@ -95,6 +95,35 @@ function relCloseScalar(name: string, a: number, b: number, relTol: number): voi
 
 const f32 = (t: TensorData): Float32Array => t.data as Float32Array;
 
+// ── 0. Native allocator wiring ──────────────────────────────────────────────
+
+describeGpu("native device-local slab allocator", () => {
+  it("places temporary outputs in shared VkDeviceMemory slabs", () => {
+    const before = gpu.gpuMemStats();
+    const a = gpu.fromArray([1, 2, 3, 4], [4]);
+    const b = gpu.fromArray([10, 20, 30, 40], [4]);
+    const outputs: TensorData[] = [];
+
+    for (let i = 0; i < 8; i++) {
+      const out = gpu.add(a, b);
+      expect(Array.from(f32(out))).toEqual([11, 22, 33, 44]);
+      outputs.push(out);
+    }
+
+    const after = gpu.gpuMemStats();
+    expect(after.temporaryBufferRequests - (before.temporaryBufferRequests ?? 0)).toBeGreaterThanOrEqual(8);
+    expect(after.tempSlabCount).toBeGreaterThan(0);
+    expect(after.slabBuffers - (before.slabBuffers ?? 0)).toBeGreaterThanOrEqual(8);
+    // Eight output VkBuffers share a slab allocation, so the count of tracked
+    // VkDeviceMemory objects must be smaller than the active VkBuffer count.
+    expect(after.trackedVkMemoryAllocations).toBeLessThan(after.activeBuffers);
+    expect(after.slabFallbacks).toBe(before.slabFallbacks ?? 0);
+
+    for (const out of outputs) gpu.releaseGpuTensor(out);
+    gpu.flush();
+  });
+});
+
 // ── 1. Per-op forward parity ─────────────────────────────────────────────────
 
 describeGpu("per-op forward parity", () => {

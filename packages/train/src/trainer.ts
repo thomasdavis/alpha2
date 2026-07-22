@@ -204,6 +204,12 @@ export interface StepMetrics {
   gpu_vram_used_mb?: number;
   gpu_vram_total_mb?: number;
   gpu_mem_pool_mb?: number;
+  gpu_live_allocs?: number;
+  gpu_vk_memory_allocations?: number;
+  gpu_slab_buffers?: number;
+  gpu_temp_slab_count?: number;
+  gpu_temp_slab_capacity_mb?: number;
+  gpu_allocator_slab_fallbacks?: number;
   // Phase 0 instrumentation: per-step timing breakdown
   timing_fwd_ms?: number;
   timing_bwd_ms?: number;
@@ -1964,6 +1970,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       const stats = memStatsStep ?? gpuMemStatsFn!();
       const breakdown = traceEnabled && poolBreakdownFn ? ` | ${poolBreakdownFn(8)}` : "";
       const allocStr = stats.liveAllocs != null ? ` | allocs: ${stats.liveAllocs} live (${stats.totalAllocs} total, ${stats.totalAllocMB}MB)` : "";
+      const nativeAllocStr = stats.trackedVkMemoryAllocations != null
+        ? ` | vkMem: ${stats.trackedVkMemoryAllocations} tracked (${stats.individualBuffers} individual, ${stats.slabBuffers} slab buffers, temp=${stats.tempSlabCount} slabs/${(stats.tempSlabCapacityBytes/1024/1024).toFixed(0)}MB, fallback=${stats.slabFallbacks})`
+        : "";
       const diagStr = stats.diagAllocsThisStep != null ? ` | glt_allocs=${stats.diagAllocsThisStep} glt_rel=${stats.diagReleasesThisStep} fr=${stats.diagFrReleasesThisStep}` : "";
       let flowStr = "";
       if (stats.flowNewCreates != null) {
@@ -1971,7 +1980,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         flowStr = ` | Δflow: new=${d("flowNewCreates")} dest=${d("flowDestroys")} oHit=${d("flowOutputPoolHits")} oMiss=${d("flowOutputPoolMisses")} oRet=${d("flowOutputPoolReturns")} oOvf=${d("flowOutputPoolOverflows")} bHit=${d("flowBufferPoolHits")} gHit=${d("flowEnsureGpuHits")} gUp=${d("flowEnsureGpuUploads")}`;
         lastFlowStats = { ...stats };
       }
-      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${diagStr}${flowStr}${breakdown}`);
+      console.log(`  [gpu_mem] bufPool: ${stats.bufferPoolEntries} (${(stats.bufferPoolBytes/1024/1024).toFixed(1)}MB) | outPool: ${stats.outputPoolEntries}/${stats.outputPoolSizeClasses ?? "?"}cls (${(stats.outputPoolBytes/1024/1024).toFixed(1)}MB) | deferred: ${stats.deferredReleases} | pending: ${stats.pendingDestroys ?? 0}${allocStr}${nativeAllocStr}${diagStr}${flowStr}${breakdown}`);
     }
 
     // Metrics
@@ -2207,6 +2216,14 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (gpuMemStatsFn && shouldSampleGpuMetrics) {
       const memStats = memStatsStep ?? gpuMemStatsFn();
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
+      metrics.gpu_live_allocs = memStats.liveAllocs;
+      metrics.gpu_vk_memory_allocations = memStats.trackedVkMemoryAllocations;
+      metrics.gpu_slab_buffers = memStats.slabBuffers;
+      metrics.gpu_temp_slab_count = memStats.tempSlabCount;
+      metrics.gpu_temp_slab_capacity_mb = memStats.tempSlabCapacityBytes == null
+        ? undefined
+        : Math.round(memStats.tempSlabCapacityBytes / 1024 / 1024);
+      metrics.gpu_allocator_slab_fallbacks = memStats.slabFallbacks;
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
@@ -2363,6 +2380,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         diagPayload.outputPoolMB = Math.round(ms.outputPoolBytes / 1024 / 1024);
         diagPayload.liveAllocs = ms.liveAllocs;
         diagPayload.totalAllocs = ms.totalAllocs;
+        diagPayload.trackedVkMemoryAllocations = ms.trackedVkMemoryAllocations;
+        diagPayload.slabBuffers = ms.slabBuffers;
+        diagPayload.tempSlabCount = ms.tempSlabCount;
+        diagPayload.tempSlabCapacityMB = ms.tempSlabCapacityBytes == null
+          ? null
+          : Math.round(ms.tempSlabCapacityBytes / 1024 / 1024);
+        diagPayload.slabFallbacks = ms.slabFallbacks;
       }
       if (gpuStats) {
         diagPayload.gpuUtilPct = gpuStats.utilPct;

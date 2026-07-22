@@ -850,13 +850,14 @@ static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
 // Allocate from a slab pool. Returns memory + offset, or fails.
 typedef struct { VkDeviceMemory memory; VkDeviceSize offset; void* mappedBase; } SlabAlloc;
 
-static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
-  VkDeviceSize aligned_size = alignUp(size, slabAlignment);
+static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize requiredAlignment, SlabAlloc* out) {
+  VkDeviceSize alignment = requiredAlignment > slabAlignment ? requiredAlignment : slabAlignment;
+  VkDeviceSize aligned_size = alignUp(size, alignment);
 
   // Try existing slabs
   for (uint32_t i = 0; i < pool->slabCount; i++) {
     Slab* s = &pool->slabs[i];
-    VkDeviceSize offset = alignUp(s->head, slabAlignment);
+    VkDeviceSize offset = alignUp(s->head, alignment);
     if (offset + aligned_size <= s->capacity) {
       s->head = offset + aligned_size;
       s->refCount++;
@@ -883,8 +884,15 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, SlabAlloc* out) {
   if (slabSize > SLAB_MAX_SIZE) slabSize = SLAB_MAX_SIZE;
   if (slabSize < aligned_size) slabSize = aligned_size;
 
+  // All buffers carry SHADER_DEVICE_ADDRESS usage when BDA is enabled. Their
+  // slab backing memory must carry the matching allocation flag as well.
+  VkMemoryAllocateFlagsInfo allocFlags = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+    .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+  };
   VkMemoryAllocateInfo allocInfo = {
     .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    .pNext = hasBDA ? &allocFlags : NULL,
     .allocationSize = slabSize,
     .memoryTypeIndex = pool->memoryTypeIdx,
   };
@@ -939,6 +947,9 @@ typedef struct {
 
 static BufferSlot   buffers[MAX_BUFFERS];
 static PipelineSlot pipelines[MAX_PIPELINES];
+static uint64_t temporaryBufferRequests = 0;
+static uint64_t slabFallbackCount = 0;
+static uint64_t tempSlabResetCount = 0;
 
 // Per-buffer write tracking for fine-grained barriers within a batch (O(1) lookup)
 static uint32_t bufWriteDispatch[MAX_BUFFERS]; // dispatch index of last write per buffer slot
@@ -1916,6 +1927,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   // Init resource slots
   memset(buffers, 0, sizeof(buffers));
   memset(pipelines, 0, sizeof(pipelines));
+  temporaryBufferRequests = 0;
+  slabFallbackCount = 0;
+  tempSlabResetCount = 0;
 
   // Probe alignment for slab allocator: create a test storage buffer
   {
@@ -2071,7 +2085,10 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
   int slabCompatible = (useHostPool || temporary)
     ? (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0
     : 0;
-  if (slabCompatible && slabPoolAlloc(pool, memReq.size, &salloc)) {
+  int usedSlab = slabCompatible && slabPoolAlloc(pool, memReq.size, memReq.alignment, &salloc);
+  if (!useHostPool && temporary) temporaryBufferRequests++;
+  if (slabCompatible && !usedSlab) slabFallbackCount++;
+  if (usedSlab) {
     // Slab allocation succeeded
     res = fp_vkBindBufferMemory(device, buffers[slot].buffer, salloc.memory, salloc.offset);
     if (res != VK_SUCCESS) {
@@ -2437,6 +2454,7 @@ static napi_value napi_destroyBuffer(napi_env env, napi_callback_info info) {
               pools[p]->slabs[si].refCount--;
               if (pools[p]->slabs[si].refCount == 0) {
                 pools[p]->slabs[si].head = 0;  // reset bump pointer — all space reclaimed
+                if (p == 1) tempSlabResetCount++;
               }
             }
             goto slab_found;
@@ -2450,6 +2468,93 @@ static napi_value napi_destroyBuffer(napi_env env, napi_callback_info info) {
   }
 
   return NULL;
+}
+
+static void setNumberProperty(napi_env env, napi_value object, const char* name, double value) {
+  napi_value number;
+  napi_create_double(env, value, &number);
+  napi_set_named_property(env, object, name, number);
+}
+
+static void slabPoolStats(
+  const SlabPool* pool,
+  uint64_t* capacityBytes,
+  uint64_t* usedBytes,
+  uint64_t* liveRefs
+) {
+  *capacityBytes = 0;
+  *usedBytes = 0;
+  *liveRefs = 0;
+  for (uint32_t i = 0; i < pool->slabCount; i++) {
+    *capacityBytes += pool->slabs[i].capacity;
+    *usedBytes += pool->slabs[i].head;
+    *liveRefs += pool->slabs[i].refCount;
+  }
+}
+
+// ── N-API: getAllocatorStats() ─────────────────────────────────────────────
+// Native accounting distinguishes VkBuffer objects from VkDeviceMemory
+// allocations. The latter is the driver resource that the slab allocator is
+// intended to bound, and cannot be inferred from the TypeScript-side pools.
+static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) {
+  (void)info;
+  uint64_t activeBuffers = 0;
+  uint64_t activeBufferBytes = 0;
+  uint64_t slabBuffers = 0;
+  uint64_t slabBufferBytes = 0;
+  uint64_t individualBuffers = 0;
+  uint64_t individualBufferBytes = 0;
+
+  for (int i = 0; i < MAX_BUFFERS; i++) {
+    if (!buffers[i].active) continue;
+    activeBuffers++;
+    activeBufferBytes += buffers[i].size;
+    if (buffers[i].slabAllocated) {
+      slabBuffers++;
+      slabBufferBytes += buffers[i].size;
+    } else {
+      individualBuffers++;
+      individualBufferBytes += buffers[i].size;
+    }
+  }
+
+  uint64_t deviceCapacity, deviceUsed, deviceRefs;
+  uint64_t tempCapacity, tempUsed, tempRefs;
+  uint64_t hostCapacity, hostUsed, hostRefs;
+  slabPoolStats(&devicePool, &deviceCapacity, &deviceUsed, &deviceRefs);
+  slabPoolStats(&deviceTempPool, &tempCapacity, &tempUsed, &tempRefs);
+  slabPoolStats(&hostPool, &hostCapacity, &hostUsed, &hostRefs);
+
+  napi_value result;
+  napi_create_object(env, &result);
+  setNumberProperty(env, result, "activeBuffers", (double)activeBuffers);
+  setNumberProperty(env, result, "activeBufferBytes", (double)activeBufferBytes);
+  setNumberProperty(env, result, "slabBuffers", (double)slabBuffers);
+  setNumberProperty(env, result, "slabBufferBytes", (double)slabBufferBytes);
+  setNumberProperty(env, result, "individualBuffers", (double)individualBuffers);
+  setNumberProperty(env, result, "individualBufferBytes", (double)individualBufferBytes);
+  setNumberProperty(env, result, "deviceSlabCount", (double)devicePool.slabCount);
+  setNumberProperty(env, result, "deviceSlabCapacityBytes", (double)deviceCapacity);
+  setNumberProperty(env, result, "deviceSlabUsedBytes", (double)deviceUsed);
+  setNumberProperty(env, result, "deviceSlabLiveRefs", (double)deviceRefs);
+  setNumberProperty(env, result, "tempSlabCount", (double)deviceTempPool.slabCount);
+  setNumberProperty(env, result, "tempSlabCapacityBytes", (double)tempCapacity);
+  setNumberProperty(env, result, "tempSlabUsedBytes", (double)tempUsed);
+  setNumberProperty(env, result, "tempSlabLiveRefs", (double)tempRefs);
+  setNumberProperty(env, result, "tempSlabResets", (double)tempSlabResetCount);
+  setNumberProperty(env, result, "hostSlabCount", (double)hostPool.slabCount);
+  setNumberProperty(env, result, "hostSlabCapacityBytes", (double)hostCapacity);
+  setNumberProperty(env, result, "hostSlabUsedBytes", (double)hostUsed);
+  setNumberProperty(env, result, "hostSlabLiveRefs", (double)hostRefs);
+  setNumberProperty(
+    env,
+    result,
+    "trackedVkMemoryAllocations",
+    (double)(individualBuffers + devicePool.slabCount + deviceTempPool.slabCount + hostPool.slabCount)
+  );
+  setNumberProperty(env, result, "temporaryBufferRequests", (double)temporaryBufferRequests);
+  setNumberProperty(env, result, "slabFallbacks", (double)slabFallbackCount);
+  return result;
 }
 
 // ── N-API: createPipeline(spirvUint32Array, numBindings) → handle ───────────
@@ -4418,6 +4523,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor props[] = {
     { "initDevice",      NULL, napi_initDevice,      NULL, NULL, NULL, napi_default, NULL },
     { "createBuffer",    NULL, napi_createBuffer,    NULL, NULL, NULL, napi_default, NULL },
+    { "getAllocatorStats", NULL, napi_getAllocatorStats, NULL, NULL, NULL, napi_default, NULL },
     { "uploadBuffer",    NULL, napi_uploadBuffer,    NULL, NULL, NULL, napi_default, NULL },
     { "fillBuffer",      NULL, napi_fillBuffer,      NULL, NULL, NULL, napi_default, NULL },
     { "readBuffer",      NULL, napi_readBuffer,      NULL, NULL, NULL, napi_default, NULL },

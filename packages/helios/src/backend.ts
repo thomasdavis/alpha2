@@ -538,7 +538,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
   }
 }
 
-function acquireBuffer(vk: NativeAddon, byteSize: number): number {
+function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): number {
   // Round to 4MB bins above 1MB. NVIDIA Vulkan driver has 4× bandwidth degradation
   // for device-local buffers whose size is not 4MB-aligned (observed on L4 driver 570.x).
   const rounded = roundPoolSize(byteSize);
@@ -556,7 +556,10 @@ function acquireBuffer(vk: NativeAddon, byteSize: number): number {
     _liveAllocCount++;
     _flowNewCreates++;
     try {
-      return vk.createBuffer(rounded, 0); // device-local (staging handled in C)
+      // Output/intermediate tensors are short-lived and belong in the native
+      // device-local slab pool. Uploaded inputs, parameters, and optimizer
+      // state remain individual allocations so they cannot pin temp slabs.
+      return vk.createBuffer(rounded, 0, temporary ? 1 : 0);
     } catch (err) {
       if (_liveAllocCount > 0) _liveAllocCount--;
       throw err;
@@ -801,7 +804,7 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
     }
   }
   _flowOutputPoolMisses++;
-  return { handle: acquireBuffer(vk, rounded), byteSize: rounded, readyValue: 0 };
+  return { handle: acquireBuffer(vk, rounded, true), byteSize: rounded, readyValue: 0 };
 }
 
 /**
@@ -1434,6 +1437,7 @@ export class HeliosBackend implements Backend {
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
   gpuMemStats(): Record<string, number> {
+    const nativeAllocatorStats = getNative().getAllocatorStats?.() ?? {};
     const stats = {
       bufferPoolEntries, bufferPoolBytes,
       outputPoolEntries, outputPoolBytes,
@@ -1456,6 +1460,7 @@ export class HeliosBackend implements Backend {
       flowBufferPoolHits: _flowBufferPoolHits,
       flowEnsureGpuHits: _flowEnsureGpuHits,
       flowEnsureGpuUploads: _flowEnsureGpuUploads,
+      ...nativeAllocatorStats,
     };
     // Only reset per-step diag counters (not flow totals)
     _diagAllocsThisStep = 0;

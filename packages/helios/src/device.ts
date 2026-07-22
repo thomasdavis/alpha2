@@ -17,6 +17,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export interface NativeAddon {
   initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean };
   createBuffer(byteLength: number, hostVisible?: number, temporary?: number): number;
+  getAllocatorStats?(): {
+    activeBuffers: number;
+    activeBufferBytes: number;
+    slabBuffers: number;
+    slabBufferBytes: number;
+    individualBuffers: number;
+    individualBufferBytes: number;
+    tempSlabCount: number;
+    tempSlabCapacityBytes: number;
+    tempSlabUsedBytes: number;
+    tempSlabLiveRefs: number;
+    tempSlabResets: number;
+    hostSlabCount: number;
+    hostSlabCapacityBytes: number;
+    trackedVkMemoryAllocations: number;
+    temporaryBufferRequests: number;
+    slabFallbacks: number;
+  };
   uploadBuffer(handle: number, data: Float32Array): void;
   fillBuffer(handle: number, byteSize: number, value: number): void;
   readBuffer(handle: number): Float32Array;
