@@ -64,12 +64,17 @@ the whole run reproducible from repo scripts. All flops through Helios (`--backe
 
 ## 4. Stages and GATES (sequential; a stage's gate must pass before spending on the next)
 
-### Stage 0 — Finish the beachhead (≈$1)
+### Stage 0 — Finish the beachhead ✅ COMPLETE 2026-07-22 (actual: $0.36)
 - [x] Vulkan proof on RunPod (2026-07-22).
-- [ ] Helios smoke train on a pod: 50 steps of a tiny config on the 3090, loss decreasing, GPU-resident
-      (nvidia-smi shows the node process; tok/s recorded). **Gate G0: a real Alpha training step on RunPod.**
-- [ ] `scripts/runpod_bootstrap.sh` committed; pod create→bootstrap→train→pull→terminate documented in
-      `docs/RUNPOD.md`.
+- [x] **Gate G0 PASSED (2026-07-22)**: Helios smoke train on community RTX 3090 — 60/60 steps, 1.33M
+      params, loss 7.28→7.05, grad norms ~0.4, **zero non-finite events**, **~40-42K tok/s**, 415 gpu
+      ops/step, log header `gpu: NVIDIA GeForce RTX 3090 (NVIDIA)` (not llvmpipe), **DGC enabled**
+      (VK_EXT_device_generated_commands works on driver 580) + BDA + coop-matmul active, checkpoint
+      saved + pulled to `/mnt/donto-data/alpha-runs/g0-smoke-20260722/`. Notable: 3090 gave ~40K tok/s
+      at a shape that did 65K on L4 — untuned (default WG_SIZE 128, no per-GPU profile); Stage 2 tunes.
+- [x] `scripts/runpod_bootstrap.sh` committed; pod create→bootstrap→train→pull→terminate documented in
+      `docs/RUNPOD.md`. Full-repo rsync from box takes ~30-45 min under box I/O load — sync
+      `packages/ apps/` first (small) if in a hurry; consider a pod-side tarball cache later.
 
 ### Stage 1 — Trustworthy engine (box-heavy, ≈$3 GPU for parity runs)
 The recon found: documented **2-7% NaN-gradient steps** (Helios×SwiGLU, root cause never fixed), fp16
