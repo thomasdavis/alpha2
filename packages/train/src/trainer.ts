@@ -213,6 +213,8 @@ export interface StepMetrics {
   gpu_allocator_slab_fallbacks?: number;
   gpu_allocator_free_range_reuses?: number;
   gpu_allocator_free_range_overflows?: number;
+  host_rss_mb?: number;
+  host_heap_used_mb?: number;
   // Phase 0 instrumentation: per-step timing breakdown
   timing_fwd_ms?: number;
   timing_bwd_ms?: number;
@@ -2000,6 +2002,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / stepNum) * 100,
     };
+    const hostMemory = process.memoryUsage();
+    metrics.host_rss_mb = Math.round(hostMemory.rss / 1024 / 1024);
+    metrics.host_heap_used_mb = Math.round(hostMemory.heapUsed / 1024 / 1024);
     if (capturePhaseTimings) {
       metrics.timing_fwd_ms = fwdMs;
       metrics.timing_bwd_ms = bwdMs;
