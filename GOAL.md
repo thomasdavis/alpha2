@@ -177,9 +177,11 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   as `g3-llama-100m-lr3e4-c95f81b-20260722`. Both 1.992GB data and tokenizer hashes match the sealed
   mounted inputs. A persistent 60-second guard mirrors metrics/logs/checkpoints and retains the latest
   three on each side. The one-time cache build produced 463,290,711 train + 51,536,242 validation tokens
-  in 1,083.4s. The first evaluation milestone is durable at step 500: 500/500 continuous finite rows,
-  train/validation loss 5.4846935/5.5984302, 3,878 tok/s, host RSS 2,882MB, 34 temporary slabs, zero
-  allocator overflow, and explicit f32 posture.
+  in 1,083.4s. The step-1,000 durability milestone is proven: 1,000/1,000 continuous finite rows;
+  validation improved 5.5984302→5.0261204; host RSS 2,872MB; 34 temporary slabs; zero allocator
+  overflow; explicit f32 posture. The full 692,528,815-byte ALPH checkpoint has identical remote/local
+  SHA-256 `af862a5d…`, and its native-format header, tensor shapes, exact payload length, and all
+  57,688,576 finite/nonzero parameters passed audit. Training resumed beyond the checkpoint.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
