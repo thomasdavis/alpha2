@@ -24,8 +24,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`ddd9bd3`**. TypeScript clean; consolidated suite
-  **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
+- Current functional tree is pushed through **`28c6506`**. TypeScript clean; consolidated suite
+  **194 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
   G1 1,000 steps with zero NaN; slab profile WG64/pool512; 57.69M-param baseline improved 3,322→3,790
@@ -151,7 +151,9 @@ Every check was proven load-bearing by temporary fault injection.
   1.86M docs, `<|end_of_text|>`-delimited. Source: 4 parquet shards of
   `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled` (kept in
   `premix-shuffled/`; 96 more shards available upstream if more tokens needed). All six outputs are
-  sealed and re-verified by `pretrain-text/MANIFEST.sha256`; see the adjacent `RUN.md`.
+  sealed and re-verified by `pretrain-text/MANIFEST.sha256`; see the adjacent `RUN.md`. The minimum
+  flagship uses `flagship-1b-manifest.json` (first three shards, 5,976,889,749 verified bytes) through
+  the deterministic sharded loader in `28c6506`, avoiding both data repetition and giant-buffer limits.
 - SFT: `/mnt/donto-data/alpha-corpora/sft-text-v2/sft-v2.txt` — 511,428 structurally clean,
   tokenizer-bounded conversations; SHA-256 `ffad0a376c7eac2e0ec91f0901ec1ff87cba67cc298222828ce3df1a3e60b3fb`.
   The previous unbounded version is preserved under that corpus directory's `history/`.
