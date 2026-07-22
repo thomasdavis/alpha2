@@ -12,10 +12,10 @@ interface Metric {
   gradNorm: number;
   tokens_per_sec: number;
   host_rss_mb: number;
-  gpu_live_allocs: number;
-  gpu_vk_memory_allocations: number;
-  gpu_temp_slab_count: number;
-  gpu_allocator_free_range_overflows: number;
+  gpu_live_allocs?: number;
+  gpu_vk_memory_allocations?: number;
+  gpu_temp_slab_count?: number;
+  gpu_allocator_free_range_overflows?: number;
 }
 
 interface Config {
@@ -132,13 +132,27 @@ async function main(): Promise<void> {
       "gradNorm",
       "tokens_per_sec",
       "host_rss_mb",
-      "gpu_live_allocs",
-      "gpu_vk_memory_allocations",
-      "gpu_temp_slab_count",
-      "gpu_allocator_free_range_overflows",
     ] as const) {
       if (!Number.isFinite(metric[field])) throw new Error(`non-finite ${field} at step ${metric.step}`);
     }
+  }
+
+  const telemetry = metrics.filter((metric): metric is Metric & Required<Pick<Metric,
+    "gpu_live_allocs" | "gpu_vk_memory_allocations" | "gpu_temp_slab_count" | "gpu_allocator_free_range_overflows"
+  >> =>
+    Number.isFinite(metric.gpu_live_allocs) &&
+    Number.isFinite(metric.gpu_vk_memory_allocations) &&
+    Number.isFinite(metric.gpu_temp_slab_count) &&
+    Number.isFinite(metric.gpu_allocator_free_range_overflows));
+  const minimumTelemetrySamples = Math.floor(expectedSteps / 50);
+  if (telemetry.length < minimumTelemetrySamples) {
+    throw new Error(`allocator telemetry samples ${telemetry.length} < ${minimumTelemetrySamples}`);
+  }
+  const telemetryGaps = telemetry.slice(1).map((metric, index) => metric.step - telemetry[index].step);
+  const telemetryMaxGap = Math.max(0, ...telemetryGaps);
+  if (telemetryMaxGap > 50) throw new Error(`allocator telemetry gap ${telemetryMaxGap} steps exceeds 50`);
+  if (telemetry.at(-1)?.step !== expectedSteps) {
+    throw new Error(`final allocator telemetry step ${String(telemetry.at(-1)?.step)} != ${expectedSteps}`);
   }
 
   const timestamps = monitorText.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/gm) ?? [];
@@ -153,10 +167,11 @@ async function main(): Promise<void> {
   const steady = metrics.slice(100);
   const throughput = steady.map((metric) => metric.tokens_per_sec);
   const rss = steady.map((metric) => metric.host_rss_mb);
-  const liveAllocations = steady.map((metric) => metric.gpu_live_allocs);
-  const vkAllocations = steady.map((metric) => metric.gpu_vk_memory_allocations);
-  const tempSlabs = steady.map((metric) => metric.gpu_temp_slab_count);
-  const overflowMax = Math.max(...metrics.map((metric) => metric.gpu_allocator_free_range_overflows));
+  const steadyTelemetry = telemetry.filter((metric) => metric.step > 100);
+  const liveAllocations = steadyTelemetry.map((metric) => metric.gpu_live_allocs);
+  const vkAllocations = steadyTelemetry.map((metric) => metric.gpu_vk_memory_allocations);
+  const tempSlabs = steadyTelemetry.map((metric) => metric.gpu_temp_slab_count);
+  const overflowMax = Math.max(...telemetry.map((metric) => metric.gpu_allocator_free_range_overflows));
   const checks = {
     throughput_median_at_least_3000: percentile(throughput, 0.5) >= 3000,
     throughput_p10_at_least_3000: percentile(throughput, 0.1) >= 3000,
@@ -187,6 +202,8 @@ async function main(): Promise<void> {
       monitor_first_utc: timestamps[0],
       monitor_last_utc: timestamps.at(-1),
       monitored_duration_seconds: monitoredDurationSeconds,
+      allocator_telemetry_samples: telemetry.length,
+      allocator_telemetry_max_step_gap: telemetryMaxGap,
       checkpoint: {
         path: checkpointPath,
         bytes: checkpointStat.size,
