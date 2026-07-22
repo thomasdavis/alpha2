@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~17:30 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~18:02 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -13,18 +13,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
 - The pod is bootstrapped and deployed at commit `aca9f97`; do **not** modify its tree during the soak.
   Node PID 8790 is running the 5,400-step flagship-shape G2 gate in
-  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 3h09m / step 2,600:
+  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 3h44m / step 3,100:
   ~3.82K post-warmup median tok/s, 756MB host RSS, bounded Vulkan allocations/buffers, zero overflow.
   It must reach a literal six hours and all 5,400 finite metric rows before G2 can pass.
 - Log: `/workspace/alpha2/g2-soak-wg64-b16-5400-20260722.log`; monitor:
   `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722/system-monitor.log`.
-- RunPod balance was **$67.72** at 17:28 UTC; total account burn $0.301/hr including unrelated stopped
+- RunPod balance was **$67.55** at 18:02 UTC; total account burn $0.301/hr including unrelated stopped
   volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`61c1edb`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`59c62dd`**. TypeScript clean; consolidated suite
   **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -49,7 +49,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   either pilot until the G2 soak finishes and its artifacts are archived.
 - The LR sweep is now proof-gated too: `analyze_lr_sweep.ts` shares the strict pilot validator and selects
   among exactly `{1e-3,2e-3,3e-3}` by the final-three aligned held-out-loss mean (final loss/lower LR are
-  deterministic tie-breaks). Its positive and contract-rejection synthetic tests passed in `61c1edb`.
+  deterministic tie-breaks). Its positive and contract-rejection synthetic tests passed in `61c1edb`;
+  `59c62dd` additionally requires complete 100-step allocator telemetry through the final pilot row.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
