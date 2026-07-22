@@ -99,14 +99,19 @@ and **zero Helios test files**.
       embedding gradients, no-op vec4 in-place accumulation, masked negative zero, unsafe partial flash
       tiles, and padded-buffer readback length leakage. Box regression remains 178 pass / 44 GPU-skipped;
       `tsc -b` clean.
-- [ ] Root-cause the SwiGLU NaN rate at pilot scale with the harness (suspects: siluMul backward, CE
-      fused kernel edge cases, flash bwd). Fix, don't mask. Spike-skip stays as a safety net, not a crutch.
+- [x] Root-cause the historical SwiGLU NaN rate with the harness and NVIDIA pilot. The parity run found
+      concrete gradient corruption in multi-output dispatch barriers, repeated-token embedding scatter,
+      vec4 in-place accumulation, and f16 cloning; all were fixed rather than masked. The G1 pilot then
+      crossed the full warmup/peak-LR region and all 1,000 steps with no numerical skip.
 - [ ] Fix known bugs: lmHead no-decay name; audit no-decay set (norms + embeddings excluded from wd);
       delete/ignore doc-only env vars that do nothing (HELIOS_MAX_PENDING_OPS etc.) so ops docs match code.
 - [ ] **Secrets scrub (public repo!)**: rotate + purge the committed Discord webhook + ALPHA_REMOTE_SECRET
       (`scripts/nanochat-loop.sh`), ELEVENLABS key (`movies/`), dead GCP IPs. Add gitleaks-style check.
-- **Gate G1: 1,000-step pilot (≈10M params, f32, helios) with ZERO non-finite gradient steps and
-  CPU-parity within tolerance.** The old "2-7% NaN is normal" era ends here.
+- **Gate G1 PASSED 2026-07-22:** 1,000-step, 6-layer Llama-form pilot (5.87M params, f32 Helios,
+  no fallback, cooperative matrices disabled) completed with **ZERO non-finite loss/gradient events,
+  ZERO NaN/spike skips**, and all 1,000 metric rows finite. Loss 8.3506→5.2346; final val 5.3624;
+  median 4,686 tok/s; 905.8s total. CPU↔NVIDIA parity is 44/44. Evidence and command:
+  `/mnt/donto-data/alpha-runs/g1-pilot-1000-20260722/RUN.md`. The old "2-7% NaN is normal" era is over.
 
 ### Stage 2 — Throughput: make 50-75M params affordable (≈$8 incl. one 6h soak)
 Measured L4 history: 65K tok/s @1.85M → 30K @6.84M → ~4.9K @17.4M → **~1K @56M** (allocator-pressure
@@ -210,7 +215,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
 | Item | Est. | Actual |
 |---|---|---|
 | Beachhead probes (2026-07-22, 3090 ~1.5h) | $0.50 | ~$0.40 |
-| Stage 0-1 smoke + parity runs | $4 | |
+| Stage 0-1 smoke + parity runs | $4 | ~$0.30 incremental through G1 (live pod; reconcile at termination) |
 | Stage 2 profiling + 6h soak | $8 | |
 | Stage 3 pilots (2× 100M-token) | $4 | |
 | Stage 5 lr sweeps (3× 100M-token) | $5 | |
