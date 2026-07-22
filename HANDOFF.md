@@ -24,8 +24,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`45bfe60`**. TypeScript clean; consolidated suite
-  **195 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
+- Current functional tree is pushed through **`6b460e4`**. TypeScript clean; consolidated suite
+  **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
   G1 1,000 steps with zero NaN; slab profile WG64/pool512; 57.69M-param baseline improved 3,322→3,790
@@ -60,6 +60,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   it is mutually exclusive with continuation `--resume` and has bit-identical parameter proof at LR zero.
 - Token caches are artifact-bound and crash-safe in `45bfe60`: exact tokenizer SHA in the key, checked
   chunked I/O, source mtime+size header, fsync+atomic rename, and automatic truncated-cache recovery.
+- Checkpoint compatibility in `6b460e4` covers semantic architecture, not just dimensions: norm type,
+  positional encoding, RoPE theta, embedding tying, and soft-cap mismatches all fail closed.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master

@@ -227,7 +227,8 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
   with model-compatibility validation while resetting step/RNG/optimizer/schedule; continuation resume
-  remains a distinct, mutually exclusive path.
+  remains a distinct, mutually exclusive path. Compatibility now fails closed on RMSNorm/LayerNorm,
+  RoPE/learned positions, RoPE theta, tying, and soft-cap as well as every dimension (`6b460e4`).
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget.
