@@ -71,11 +71,25 @@ VkDeviceMemory count enough to replace the 512 default. Canonical evidence is un
 `/mnt/donto-data/alpha-runs/g2-wg-sweep-20260722/`.
 
 ## Get checkpoints OFF the pod continuously (community pods are disposable)
-Run a puller loop on the box; never trust the pod to survive:
+Run the guarded puller on the box; never trust the pod to survive. It logs real remote metric-row
+advancement and RSS on every cycle, performs a final sync when training exits, and does not confuse an
+SSH outage with a training stall:
 ```bash
-while :; do rsync -az -e "ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p <port>" \
-  root@<ip>:/workspace/alpha2/runs/ /mnt/donto-data/alpha-runs/<podname>/ ; sleep 300; done
+scripts/runpod_run_guard.sh <ip> <port> \
+  /workspace/alpha2/runs/<run-name> \
+  /mnt/donto-data/alpha-runs/<run-name> 300 1800
 ```
+For a guard that survives the launching shell, run it as a transient user service and verify the first
+metric row appears locally:
+```bash
+systemd-run --user --unit=alpha2-run-puller \
+  scripts/runpod_run_guard.sh <ip> <port> \
+  /workspace/alpha2/runs/<run-name> /mnt/donto-data/alpha-runs/<run-name> 300 1800
+systemctl --user status alpha2-run-puller.service
+```
+For flagship runs, opt into termination after a verified 30-minute metric stall with
+`RUNPOD_POD_ID=<id> TERMINATE_ON_STALL=1`. Without both values the guard exits nonzero and deliberately
+leaves the pod running for inspection. The local `puller.log` is part of the run evidence.
 Egress is free. `runpodctl send/receive` (croc) also works for one-offs.
 
 ## Terminate
