@@ -67,5 +67,22 @@ decoding. It records per-case output plus:
 - token 4-gram repeat rate and the number of samples at or above the 0.20 loop threshold;
 - normalized exact match, answer containment, and token F1 for the 200 closed-book questions.
 
-The full D3 structural pass is non-empty + EOS-terminated + no user-role leak. `summary.json` hashes the
-checkpoint and both frozen inputs so results cannot silently drift between checkpoints.
+The full D3 structural pass is non-empty + EOS-terminated + no user-role leak. The v2 `summary.json`
+hashes the checkpoint, both frozen inputs, and both detailed output JSONL files; it also records the
+atomic EOS/user control IDs so every structural flag can be recomputed from generated token IDs.
+
+After evaluating the final base and chat checkpoints against the exact same frozen files, recompute the
+machine-verifiable gate and the base-vs-chat deltas:
+
+```bash
+nice -n10 ionice -c2 -n7 npx tsx scripts/analyze_frozen_eval_pair.ts \
+  --base /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-base \
+  --chat /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-chat \
+  --out /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-pair.json
+```
+
+The analyzer requires all 100 chat and 200 QA cases, exact base step 61,036 and chat step 30,322,
+identical architecture/input hashes/case order, untampered detailed outputs, at least 95 structural
+passes, zero samples at or above 0.20 4-gram repetition, and finite recomputed QA scores. Its PASS is
+explicitly scoped to this machine-verifiable portion of D3. Conversational coherence remains a separate
+review of the generated text; token statistics are never mislabeled as a semantic-quality judgment.

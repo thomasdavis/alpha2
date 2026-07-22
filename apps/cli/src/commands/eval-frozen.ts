@@ -70,6 +70,10 @@ function mean(values: readonly number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export async function evalFrozenCmd(args: string[]): Promise<void> {
   const kv = parseKV(args);
   const checkpointPath = requireArg(kv, "checkpoint", "path to checkpoint");
@@ -191,8 +195,10 @@ export async function evalFrozenCmd(args: string[]): Promise<void> {
 
   const chatRepeatRates = chatResults.map((row) => row.fourGramRepeatRate as number);
   const qaF1 = qaResults.map((row) => row.tokenF1 as number);
+  const chatResultsText = `${chatResults.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  const qaResultsText = `${qaResults.map((row) => JSON.stringify(row)).join("\n")}\n`;
   const summary = {
-    schema: "alpha-frozen-eval-results-v1",
+    schema: "alpha-frozen-eval-results-v2",
     startedAt,
     completedAt: new Date().toISOString(),
     wallSeconds: (performance.now() - wallStart) / 1000,
@@ -207,7 +213,11 @@ export async function evalFrozenCmd(args: string[]): Promise<void> {
       chat: { path: chatPath, sha256: await sha256File(chatPath), rows: chatCases.length },
       qa: { path: qaPath, sha256: await sha256File(qaPath), rows: qaCases.length },
     },
-    generation: { chatMaxTokens, qaMaxTokens },
+    outputs: {
+      chat: { filename: "chat-results.jsonl", sha256: sha256Text(chatResultsText), rows: chatResults.length },
+      qa: { filename: "qa-results.jsonl", sha256: sha256Text(qaResultsText), rows: qaResults.length },
+    },
+    generation: { chatMaxTokens, qaMaxTokens, eosId, userId },
     chat: {
       total: chatResults.length,
       structuralPass: chatResults.filter((row) => row.structuralPass).length,
@@ -229,8 +239,8 @@ export async function evalFrozenCmd(args: string[]): Promise<void> {
   await mkdir(outDir, { recursive: true });
   await Promise.all([
     atomicWrite(join(outDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`),
-    atomicWrite(join(outDir, "chat-results.jsonl"), `${chatResults.map((row) => JSON.stringify(row)).join("\n")}\n`),
-    atomicWrite(join(outDir, "qa-results.jsonl"), `${qaResults.map((row) => JSON.stringify(row)).join("\n")}\n`),
+    atomicWrite(join(outDir, "chat-results.jsonl"), chatResultsText),
+    atomicWrite(join(outDir, "qa-results.jsonl"), qaResultsText),
   ]);
   console.log(JSON.stringify(summary, null, 2));
 }
