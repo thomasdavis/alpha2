@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`59c62dd`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`ddd9bd3`**. TypeScript clean; consolidated suite
   **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -57,6 +57,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   to the pod; (4) run/compare the two G3 pilots; (5) run the three-way LR sweep; (6) resumable flagship,
   SFT, frozen eval, HF upload. Host disks are unexpectedly full (root 91%, data 87% at 16:24); avoid
   unbounded artifacts and do not destructively clean without resolving exact targets.
+  The analyzer also requires the final full model+AdamW checkpoint to be 650–750 MiB (`ddd9bd3`), so a
+  nonempty/truncated placeholder cannot satisfy G2.
 
 ## Mission in one line
 
