@@ -191,6 +191,7 @@ export async function trainCmd(args: string[]): Promise<void> {
   kv = await loadConfig(kv);
 
   const dataManifestPath = kv["dataManifest"];
+  if (kv["resume"] && kv["initCheckpoint"]) throw new Error("--resume and --initCheckpoint are mutually exclusive");
   if (dataManifestPath && kv["data"]) throw new Error("pass either --data or --dataManifest, not both");
   const loadedDataManifest = dataManifestPath ? await loadPretrainShardManifest(dataManifestPath) : null;
   const dataPaths = loadedDataManifest?.paths;
@@ -479,6 +480,7 @@ export async function trainCmd(args: string[]): Promise<void> {
     tokenizerArtifacts,
     runDir: kv["runDir"],
     resumePath: kv["resume"],
+    initCheckpointPath: kv["initCheckpoint"],
     resumeActivationGraph: kv["symbio-resume-graph"]
       ? JSON.parse(kv["symbio-resume-graph"])
       : undefined,

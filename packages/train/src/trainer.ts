@@ -559,6 +559,8 @@ export interface TrainerDeps {
   valDataPath?: string;
   runDir?: string;
   resumePath?: string;
+  /** Restore model weights only, while starting a fresh optimizer/schedule at step zero (e.g. SFT). */
+  initCheckpointPath?: string;
   /** Override activation graph for symbio resume (when checkpoint doesn't contain it). */
   resumeActivationGraph?: ActivationNode;
   tokenizerArtifacts?: import("@alpha/core").TokenizerArtifacts;
@@ -585,8 +587,9 @@ export interface TrainerDeps {
 export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; modelConfig: ModelConfig }> {
   const {
     backend, tokenizer, optimizer, rng, modelConfig, trainConfig,
-    dataPath, valDataPath, resumePath, onStep, onStart, onEvent,
+    dataPath, valDataPath, resumePath, initCheckpointPath, onStep, onStart, onEvent,
   } = deps;
+  if (resumePath && initCheckpointPath) throw new Error("resumePath and initCheckpointPath are mutually exclusive");
   const dataPaths = deps.dataPaths?.length ? [...deps.dataPaths] : [dataPath];
   if (deps.sft && dataPaths.length > 1) throw new Error("SFT does not support a pretraining shard manifest");
 
@@ -621,6 +624,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   await fs.mkdir(runDir, { recursive: true });
   const configObj: Record<string, unknown> = { modelConfig, trainConfig, configHash, runId: rid };
   if (dataPaths.length > 1) configObj.dataPaths = dataPaths;
+  if (initCheckpointPath) configObj.initCheckpointPath = initCheckpointPath;
   if (deps.domain) configObj.domain = deps.domain;
   const configPath = path.join(runDir, "config.json");
   async function writeConfig(): Promise<void> {
@@ -819,7 +823,23 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   // Resume from checkpoint
   let startStep = 0;
   let resumedActivationGraph: ActivationNode | undefined = deps.resumeActivationGraph;
-  if (resumePath) {
+  if (initCheckpointPath) {
+    const checkpoint = new FileCheckpoint();
+    const state = await Effect.runPromise(checkpoint.load(initCheckpointPath));
+    validateResumeModelCompatibility(initCheckpointPath, state.modelConfig as ModelConfig | undefined, modelConfig);
+    restoreParams(params, state.params);
+    // Weight initialization consumed model-shape-dependent draws. A fresh
+    // fine-tune must begin from its declared seed, not that incidental offset.
+    rng.seed(trainConfig.seed);
+    console.log(`Initialized model weights from ${initCheckpointPath}; optimizer/schedule start fresh at step 0`);
+    emitEvent({
+      step: 0,
+      level: "info",
+      kind: "run_initialized_from_checkpoint",
+      message: "initialized model weights from checkpoint with fresh optimizer",
+      payload: { initCheckpointPath, sourceStep: state.step },
+    });
+  } else if (resumePath) {
     const checkpoint = new FileCheckpoint();
     const state = await Effect.runPromise(checkpoint.load(resumePath));
     validateResumeModelCompatibility(resumePath, state.modelConfig as ModelConfig | undefined, modelConfig);

@@ -9,7 +9,7 @@ import { SeededRng, type ModelConfig, type Tokenizer } from "@alpha/core";
 import {
   DataLoader, ShardedDataLoader, SftDataLoader,
   loadPretrainShardManifest, verifyPretrainShardManifest,
-  train, AdamW, type BatchSource, type SftExample,
+  train, AdamW, FileCheckpoint, type BatchSource, type SftExample,
 } from "@alpha/train";
 
 function tokenArray(size: number): Int32Array {
@@ -194,6 +194,43 @@ describe("data-loader resume positioning", () => {
       expect(config.dataStats.shards).toHaveLength(2);
       expect(config.dataStats.trainTokens).toBeGreaterThan(0);
       expect(config.dataStats.valTokens).toBeGreaterThan(0);
+
+      const sourceCheckpoint = join(runDir, "checkpoint-1.json");
+      const initializedRunDir = join(dir, "initialized-run");
+      const initializedBackend = new CpuRefBackend();
+      const events: string[] = [];
+      await train({
+        backend: initializedBackend,
+        tokenizer,
+        optimizer: new AdamW(initializedBackend, { lr: 0, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 }),
+        rng: new SeededRng(99),
+        modelConfig,
+        trainConfig: {
+          iters: 1, batchSize: 2, lr: 0, lrMin: 0, warmupIters: 0,
+          beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0, gradClip: 1,
+          evalInterval: 10, checkpointInterval: 10, evalIters: 1, seed: 99, backend: "cpu_ref",
+          tokenizer: "test-byte", optimizer: "adamw", logLevel: "info", logEvery: 1,
+          trace: false, gradAccumSteps: 1, sampleInterval: 0, spikeThreshold: 0,
+          embGradScale: 1, syncEvery: 0, gcEvery: 0, packed: true, symbio: false, symbioConfig: null,
+        },
+        dataPath: first,
+        dataPaths: [first, second],
+        initCheckpointPath: sourceCheckpoint,
+        runDir: initializedRunDir,
+        onEvent: (event) => { events.push(event.kind); },
+      });
+      expect(events).toContain("run_initialized_from_checkpoint");
+      const checkpoint = new FileCheckpoint();
+      const sourceState = await Effect.runPromise(checkpoint.load(sourceCheckpoint));
+      const initializedState = await Effect.runPromise(checkpoint.load(join(initializedRunDir, "checkpoint-1.json")));
+      expect(Object.keys(initializedState.params)).toEqual(Object.keys(sourceState.params));
+      for (const name of Object.keys(sourceState.params)) {
+        expect(Array.from(initializedState.params[name].data)).toEqual(Array.from(sourceState.params[name].data));
+      }
+      const initializedConfig = JSON.parse(await readFile(join(initializedRunDir, "config.json"), "utf8")) as {
+        initCheckpointPath: string;
+      };
+      expect(initializedConfig.initCheckpointPath).toBe(sourceCheckpoint);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
