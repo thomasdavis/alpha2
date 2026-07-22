@@ -761,6 +761,7 @@ async function fleetResume(config: FleetConfig, name: string, kv: Record<string,
         if (tc.warmupIters) flagMap["warmupIters"] = tc.warmupIters;
         if (tc.gradClip) flagMap["gradClip"] = tc.gradClip;
         if (tc.evalInterval) flagMap["evalInterval"] = tc.evalInterval;
+        if (tc.checkpointInterval) flagMap["checkpointInterval"] = tc.checkpointInterval;
         if (tc.seed) flagMap["seed"] = tc.seed;
         if (tc.weightDecay) flagMap["weightDecay"] = tc.weightDecay;
         if (tc.optimizer) flagMap["optim"] = tc.optimizer;

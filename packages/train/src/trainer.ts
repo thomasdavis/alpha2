@@ -915,6 +915,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       learningRate: trainConfig.lr,
       warmupIters: trainConfig.warmupIters,
       evalInterval: trainConfig.evalInterval,
+      checkpointInterval: trainConfig.checkpointInterval ?? trainConfig.evalInterval,
       sampleInterval: trainConfig.sampleInterval,
       totalParams,
     },
@@ -1159,6 +1160,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const spikeThreshold = trainConfig.spikeThreshold;
   const evalIters = trainConfig.evalIters;
   const evalInterval = trainConfig.evalInterval;
+  const checkpointInterval = Math.max(1, trainConfig.checkpointInterval ?? evalInterval);
   const sampleInterval = trainConfig.sampleInterval;
   let latestCheckpointPath: string | null = null;
   const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * gradAccumSteps;
@@ -2391,8 +2393,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       await new Promise<void>(resolve => setImmediate(resolve));
     }
 
-    // Checkpoint (save at every eval interval and at the end)
-    if (stepNum % evalInterval === 0 || stepNum === totalIters) {
+    // Checkpoint cadence is independent from validation: full AdamW state is
+    // hundreds of MB at flagship scale, so saving on every frequent eval can
+    // exhaust an ephemeral pod volume.
+    if (stepNum % checkpointInterval === 0 || stepNum === totalIters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${stepNum}.json`);
       const state = buildCheckpointState(params, optimizer, rng.state(), configHash, stepNum, activeModelConfig, deps.tokenizerArtifacts);

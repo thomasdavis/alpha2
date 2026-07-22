@@ -90,6 +90,11 @@ systemctl --user status alpha2-run-puller.service
 For flagship runs, opt into termination after a verified 30-minute metric stall with
 `RUNPOD_POD_ID=<id> TERMINATE_ON_STALL=1`. Without both values the guard exits nonzero and deliberately
 leaves the pod running for inspection. The local `puller.log` is part of the run evidence.
+Full flagship checkpoints are about 693MB each. Set `REMOTE_KEEP_CHECKPOINTS=3` on the guard to retain
+only the newest three on the small pod volume. An older remote checkpoint is removed only after rsync
+succeeds and its local mirror matches the remote byte size and SHA-256; local checkpoints are never
+pruned by the guard. `RUNPOD_GUARD_ONCE=1` performs one pull, verification/prune pass, and status check
+without entering the monitoring loop; it is useful for an operator check but not as the paid-run watchdog.
 Egress is free. `runpodctl send/receive` (croc) also works for one-offs.
 
 ## Terminate

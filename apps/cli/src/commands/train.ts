@@ -239,6 +239,11 @@ export async function trainCmd(args: string[]): Promise<void> {
     weightDecay: floatArg(kv, "weightDecay", tDefaults.weightDecay ?? defaultTrainConfig.weightDecay),
     gradClip: floatArg(kv, "gradClip", tDefaults.gradClip ?? defaultTrainConfig.gradClip),
     evalInterval: intArg(kv, "evalInterval", tDefaults.evalInterval ?? defaultTrainConfig.evalInterval),
+    checkpointInterval: intArg(
+      kv,
+      "checkpointInterval",
+      tDefaults.checkpointInterval ?? intArg(kv, "evalInterval", tDefaults.evalInterval ?? defaultTrainConfig.evalInterval),
+    ),
     evalIters: intArg(kv, "evalIters", tDefaults.evalIters ?? defaultTrainConfig.evalIters),
     seed: intArg(kv, "seed", tDefaults.seed ?? defaultTrainConfig.seed),
     backend: strArg(kv, "backend", tDefaults.backend ?? defaultTrainConfig.backend),

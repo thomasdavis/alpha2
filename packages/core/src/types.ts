@@ -98,6 +98,8 @@ export interface TrainConfig {
   readonly weightDecay: number;
   readonly gradClip: number;
   readonly evalInterval: number;
+  /** Full optimizer checkpoint cadence; defaults to evalInterval for backward compatibility. */
+  readonly checkpointInterval?: number;
   readonly evalIters: number;
   readonly seed: number;
   readonly backend: string;

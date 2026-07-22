@@ -115,6 +115,7 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --minGpuSize=1 \
   --no-fallback=true \
   --evalInterval=500 \
+  --checkpointInterval=1000 \
   --evalIters=5 \
   --logEvery=25 \
   --sampleInterval=0 \
