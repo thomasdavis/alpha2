@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~13:00 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~16:55 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,16 +7,42 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — a GPU pod is RUNNING and BILLING
+## ⚠️ LIVE RIGHT NOW — G2 soak running and billing
 
-- **Pod `d5m7h1v0kr0zd4`** ("alpha2-g1-gates"), RTX 3090 community, **$0.22/hr**, created ~12:55 UTC.
-- SSH: `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`
-- It is FRESH — nothing installed yet. It was created to run the GPU gates (§ Next steps).
-- If you are not going to use it within the hour: `runpodctl remove pod d5m7h1v0kr0zd4`
-  (terminate, don't stop — stopped pods still bill volume storage).
-- RunPod balance ≈ **$69.8** of the original $70.21. Hard ceiling. Per-second billing.
-- Background burn: 4 stopped mobtranslate/migmaq pods bill ~$0.075/hr (~$54/mo) volume storage —
-  **NOT ours to delete** (another project's checkpoints; user decision — already flagged to them).
+- **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
+  `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
+- The pod is bootstrapped and deployed at commit `aca9f97`; do **not** modify its tree during the soak.
+  Node PID 8790 is running the 5,400-step flagship-shape G2 gate in
+  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 2h27m / step 2,050:
+  3.77–3.87K tok/s, 775MB host RSS, 656 tracked Vulkan allocations, 1,099 live buffers, zero overflow.
+  It must reach a literal six hours and all 5,400 finite metric rows before G2 can pass.
+- Log: `/workspace/alpha2/g2-soak-wg64-b16-5400-20260722.log`; monitor:
+  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722/system-monitor.log`.
+- RunPod balance was **$68.05** at 16:24 UTC; total account burn $0.301/hr including unrelated stopped
+  volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
+  `runpodctl remove pod d5m7h1v0kr0zd4`.
+
+## Takeover progress (supersedes stale state later in this file)
+
+- Current pushed box tree: **`2bc9f63`** (`feat(data): seal bounded SFT v2 corpus`). TypeScript clean;
+  consolidated suite **182 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
+  because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
+- NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
+  G1 1,000 steps with zero NaN; slab profile WG64/pool512; 57.69M-param baseline improved 3,322→3,790
+  tok/s (+14.1%). Relevant commits: `e60391e`, `f595708`, `f7730c6`, `32392a5`, `9d7fbc9`, `aca9f97`.
+- G4 data gate **passed**. Canonical SFT v2:
+  `/mnt/donto-data/alpha-corpora/sft-text-v2/sft-v2.txt`, 511,428/511,428 clean, SHA `ffad0a37…`, exact
+  p50/p95/p99/max 657/978/1,014/1,024 tokens, zero over-bound, SODA 4.828%, real assistant mask green.
+  Frozen eval: 49 OASST2 validation + 48 Magpie + 3 everyday prompts, 200 QA, 1,500 validation docs;
+  exact SFT audit scanned 205,027,527 13-grams and rejected 658/900; final overlap zero. See
+  `docs/SFT_CORPUS.md`, `docs/FROZEN_EVAL.md`, and mounted `RUN.md`/manifests.
+- G3 pilot launcher is pushed in `scripts/run_g3_pilot.sh`: equal 100,007,936 tokens, 57.69M Llama vs
+  58.09M GPT-2 control. Do not start either until the G2 soak finishes and its artifacts are archived.
+- Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
+  RSS/allocator state, then pull/hash/document under `/mnt/donto-data/alpha-runs/`; (3) sync current master
+  to the pod; (4) run/compare the two G3 pilots; (5) run the three-way LR sweep; (6) resumable flagship,
+  SFT, frozen eval, HF upload. Host disks are unexpectedly full (root 91%, data 87% at 16:24); avoid
+  unbounded artifacts and do not destructively clean without resolving exact targets.
 
 ## Mission in one line
 
