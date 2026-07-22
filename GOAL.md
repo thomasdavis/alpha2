@@ -132,8 +132,9 @@ turning every device tensor into an individual `vkAllocateMemory`. The current t
   fails after honest effort: shrink flagship to ~35-40M (12L/448d) and/or cut token budget — decided
   then, in the ledger, not silently.
   **IN PROGRESS 2026-07-22:** exact commit `aca9f97`, 5,400 steps / 88.47M tokens / ≈6.3h on the $0.22/hr
-  RTX 3090. At 2h27m (step 2,050): RSS 775MB; tracked Vulkan allocations 656; live buffers 1,099;
-  zero allocator overflow; 3.77–3.87K recent logged tok/s. Do not call the gate until hour six.
+  RTX 3090. At 3h09m (step 2,600): host RSS 756MB; tracked Vulkan allocations/live buffers remain
+  bounded; zero allocator overflow; ~3.82K post-warmup median tok/s. The verified box-side guard mirrors
+  metrics every minute. Do not call the gate until hour six and all 5,400 finite rows are archived.
 
 ### Stage 3 — Modern architecture, Llama-shaped on purpose (box work + ≈$4 pilots)
 The Llama-form implementation is complete on the current tree; the remaining gate work is the equal-token
@@ -284,7 +285,8 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 1. Let the live G2 run reach a literal six hours; verify flat post-warmup RSS/live allocations, archive and
    hash every artifact, then record the gate decision.
-2. Run G3's equal-token old-vs-Llama 100M-token pilots (the golden export half is already 75/75 top-1,
-   max logit delta 1.07e-06).
+2. Sync the canonical 1.99GB pretrain shard to the pod, then run G3's equal-token old-vs-Llama 100M-token
+   pilots (the golden export half is already 75/75 top-1, max logit delta 1.07e-06). Use the independent
+   validation/checkpoint cadence and verified remote retention pushed in `da39e8a`.
 3. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
    with a verified box-side checkpoint puller.

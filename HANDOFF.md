@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~16:55 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~17:30 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -13,18 +13,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
 - The pod is bootstrapped and deployed at commit `aca9f97`; do **not** modify its tree during the soak.
   Node PID 8790 is running the 5,400-step flagship-shape G2 gate in
-  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 2h27m / step 2,050:
-  3.77–3.87K tok/s, 775MB host RSS, 656 tracked Vulkan allocations, 1,099 live buffers, zero overflow.
+  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 3h09m / step 2,600:
+  ~3.82K post-warmup median tok/s, 756MB host RSS, bounded Vulkan allocations/buffers, zero overflow.
   It must reach a literal six hours and all 5,400 finite metric rows before G2 can pass.
 - Log: `/workspace/alpha2/g2-soak-wg64-b16-5400-20260722.log`; monitor:
   `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722/system-monitor.log`.
-- RunPod balance was **$68.05** at 16:24 UTC; total account burn $0.301/hr including unrelated stopped
+- RunPod balance was **$67.72** at 17:28 UTC; total account burn $0.301/hr including unrelated stopped
   volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`cc7f450`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`da39e8a`**. TypeScript clean; consolidated suite
   **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -38,8 +38,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `docs/SFT_CORPUS.md`, `docs/FROZEN_EVAL.md`, and mounted `RUN.md`/manifests.
 - G3 pilot launcher is pushed in `scripts/run_g3_pilot.sh`: equal 100,007,936 tokens, 57.69M Llama vs
   58.09M GPT-2 control. Commit `cc7f450` isolates train/validation RNGs across architectures, seeks all
-  loader types on resume, writes an immutable pilot contract, and adds `analyze_g3_pair.ts`. Do not start
-  either pilot until the G2 soak finishes and its artifacts are archived.
+  loader types on resume, writes an immutable pilot contract, and adds `analyze_g3_pair.ts`; `b97a810`
+  enforces full-token corpus coverage, and `5e5b913` parameterizes the contracted LR sweep. `da39e8a`
+  decouples frequent validation from full optimizer checkpoint cadence and proves the remote-retention
+  guard: old remote copies are pruned only after byte-size + SHA-256 agreement with the mounted-drive
+  mirror. Do not start either pilot until the G2 soak finishes and its artifacts are archived.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state, then pull/hash/document under `/mnt/donto-data/alpha-runs/`; (3) sync current master
   to the pod; (4) run/compare the two G3 pilots; (5) run the three-way LR sweep; (6) resumable flagship,
