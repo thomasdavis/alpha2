@@ -176,8 +176,9 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   **IN PROGRESS 2026-07-22:** exact certified source `c95f81b`; the Llama half started at 21:20:08 UTC
   as `g3-llama-100m-lr3e4-c95f81b-20260722`. Both 1.992GB data and tokenizer hashes match the sealed
   mounted inputs. A persistent 60-second guard mirrors metrics/logs/checkpoints and retains the latest
-  three on each side. The initial ~18–20m token-cache build is a one-time cost shared by the GPT-2
-  control and subsequent LR pilots; require actual metric rows before calling the launch healthy.
+  three on each side. The one-time cache build produced 463,290,711 train + 51,536,242 validation tokens
+  in 1,083.4s. GPU training is healthy through the first 50-row flush: loss 9.5262→7.8293, step-50
+  throughput 3,941 tok/s, finite gradient norm 0.7016, ~24.1GB VRAM, explicit f32 posture.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
@@ -324,8 +325,8 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-22)
 
-1. Verify the live G3 Llama pilot crosses one-time tokenization into real metric/GPU progression, then let
-   its persistent guard carry all 6,104 steps and final checkpoint onto the mounted drive.
+1. Let the healthy G3 Llama pilot and its persistent guard carry all 6,104 finite rows and the final
+   checkpoint onto the mounted drive.
 2. Run GPT-2 sequentially on exact commit `c95f81b` with the same input/tokenizer/LR, then evaluate the
    100,007,936-token pair with `analyze_g3_pair.ts`. The golden export half is already 75/75 top-1 with
    max logit delta 1.07e-06. Do not pull a newer source commit between the two architecture runs.

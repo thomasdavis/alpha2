@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~21:24 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~21:42 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,7 +7,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — G3 Llama pilot tokenizing on the paid 3090
+## ⚠️ LIVE RIGHT NOW — G3 Llama pilot training healthily on the paid 3090
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
@@ -24,8 +24,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `/mnt/donto-data/alpha-runs/nvidia-gate-c95f81b-attempt3/`.
 - **G3 Llama is live** as remote PID 463 at
   `/workspace/alpha2/runs/g3-llama-100m-lr3e4-c95f81b-20260722`, started 21:20:08 UTC. It is in the
-  expected one-time tokenization pass over the 1.992GB shard (the 128MB ancestor took ~73s, so expect
-  ~18–20m here); CPU time and RSS are advancing while GPU memory remains idle. Inputs match sealed hashes.
+  GPU phase after successfully caching 463,290,711 train tokens in 974.0s and 51,536,242 validation
+  tokens in 109.4s. First flush: 50/6,104 finite rows; loss 9.5262→7.8293, step-50 throughput 3,941
+  tok/s, finite gradient norm 0.7016, ~24.1GB VRAM. Inputs match sealed hashes. The CLI process is
+  explicitly `--fp16=false`; the log's `f16: true` line is device capability, not active precision.
   Persistent box guard: `alpha2-g3-llama-puller-c95f81b.service`, 60s interval / 1,800s stale threshold,
   matching remote+local checkpoint retention 3. Mounted run record:
   `/mnt/donto-data/alpha-runs/g3-llama-100m-lr3e4-c95f81b-20260722/RUN.md`.
@@ -102,8 +104,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   complete finite runs, zero allocator overflow, full checkpoints, identical inputs+commit, and ranks
   final-three held-out loss. `run_flagship_sft.sh` now refuses to start without the matching report and
   verifies its selected LR plus every input hash. Positive and mismatch synthetic proofs passed.
-- Immediate order: (1) watch the Llama token cache complete and prove real metric/GPU progression; (2)
-  let the guarded 6,104-step run finish; (3) launch the GPT-2 half on the same exact commit/input/LR, then
+- Immediate order: (1) let the healthy guarded Llama run finish all 6,104 rows; (2) verify its final
+  checkpoint/mirror and launch the GPT-2 half on the same exact commit/input/LR; (3)
   compare with `analyze_g3_pair.ts`; (4) run the three-way LR sweep; (5) resumable flagship, SFT, frozen
   eval, HF upload. Host disks are unexpectedly full (root 97%, data 87% at 21:10); avoid
   unbounded artifacts and do not destructively clean without resolving exact targets.
