@@ -229,6 +229,11 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   with model-compatibility validation while resetting step/RNG/optimizer/schedule; continuation resume
   remains a distinct, mutually exclusive path. Compatibility now fails closed on RMSNorm/LayerNorm,
   RoPE/learned positions, RoPE theta, tying, and soft-cap as well as every dimension (`6b460e4`).
+  `run_flagship_sft.sh` (`7636ad2`) contracts the selected sweep LR and exact one-epoch shape: 485,150
+  train + 26,278 validation conversations, 30,322 batches / 496,795,648 padded tokens. Its input verifier
+  independently hashes and line-counts the corpus, requires the length/mask audits, reconciles the binary
+  checkpoint tensor table and byte length, scans all 57,688,576 base parameters for finiteness, and binds
+  corpus/audits/tokenizer/base checkpoint/current commit into the resumable run contract.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget.

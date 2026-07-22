@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~18:02 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~18:40 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -13,18 +13,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
 - The pod is bootstrapped and deployed at commit `aca9f97`; do **not** modify its tree during the soak.
   Node PID 8790 is running the 5,400-step flagship-shape G2 gate in
-  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At 3h44m / step 3,100:
-  ~3.82K post-warmup median tok/s, 756MB host RSS, bounded Vulkan allocations/buffers, zero overflow.
+  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At step 3,650:
+  ~3.82K post-warmup median tok/s, 754MB host RSS, bounded Vulkan allocations/buffers, zero overflow.
   It must reach a literal six hours and all 5,400 finite metric rows before G2 can pass.
 - Log: `/workspace/alpha2/g2-soak-wg64-b16-5400-20260722.log`; monitor:
   `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722/system-monitor.log`.
-- RunPod balance was **$67.55** at 18:02 UTC; total account burn $0.301/hr including unrelated stopped
+- RunPod balance was **$67.37** at 18:39 UTC; total account burn $0.301/hr including unrelated stopped
   volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`6b460e4`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`7636ad2`**. TypeScript clean; consolidated suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -62,6 +62,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   chunked I/O, source mtime+size header, fsync+atomic rename, and automatic truncated-cache recovery.
 - Checkpoint compatibility in `6b460e4` covers semantic architecture, not just dimensions: norm type,
   positional encoding, RoPE theta, embedding tying, and soft-cap mismatches all fail closed.
+- Flagship SFT is contracted in `7636ad2`: `verify_flagship_sft_inputs.ts` independently streams the
+  511,428-row corpus, reconciles both passed audits, derives the exact 485,150/26,278 split, and verifies
+  every base-checkpoint parameter byte is present and finite. `run_flagship_sft.sh` admits only the
+  `{1e-4,3e-4,1e-3}` sweep, launches exactly one 30,322-step assistant-only epoch, separates weight-only
+  initialization from continuation resume, and records immutable hashes. Real corpus + step-100 fixture
+  proof passed; wrong-base-step rejection passed; TypeScript and 200/46 consolidated gates stayed green.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
