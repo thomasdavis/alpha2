@@ -218,6 +218,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   The minimum-run input is the SHA-verified first-three-shard `flagship-1b-manifest.json` (~6GB/~1.5B
   estimated tokens): `28c6506` caches shards independently and reads them as one deterministic logical
   corpus, so 1B training tokens neither repeat one ~450M split nor exceed Node's giant-buffer limits.
+  `run_flagship_pretrain.sh` (`f6c590e`) admits only an LR from the contracted sweep and fixes the exact
+  61,036-step / 1,000,013,824-token architecture, optimizer, eval, checkpoint, manifest, tokenizer,
+  commit, and resume contract.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report).

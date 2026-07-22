@@ -115,6 +115,15 @@ five. The launcher requires the original commit/data/tokenizer/LR contract, and
 `prepare_resume_metrics.ts` preserves and hashes any metric tail beyond that checkpoint before atomically
 aligning the active stream. Never invoke `alpha train --resume` by hand against an unaligned metrics file.
 
+After G3 and the LR selector pass, launch the minimum flagship only through:
+```bash
+scripts/run_flagship_pretrain.sh <selected-lr> /runpod/data/flagship-1b-manifest.json \
+  /workspace/alpha2/artifacts/g2-bpe-byte-12k.json /workspace/alpha2/runs/flagship-1b
+```
+The launcher admits only `{1e-3,2e-3,3e-3}`, verifies all shard hashes before GPU initialization, and
+contracts 61,036 × 16 × 1,024 = 1,000,013,824 tokens. Resume with the same command plus the checkpoint
+as argument five. Pair it with the box-side guard using `REMOTE_KEEP_CHECKPOINTS=3`.
+
 ## Terminate
 ```bash
 runpodctl remove pod <podId>   # stopped pods still bill volume storage — terminate, don't stop

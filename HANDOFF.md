@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`28c6506`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`f6c590e`**. TypeScript clean; consolidated suite
   **194 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -51,6 +51,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   among exactly `{1e-3,2e-3,3e-3}` by the final-three aligned held-out-loss mean (final loss/lower LR are
   deterministic tie-breaks). Its positive and contract-rejection synthetic tests passed in `61c1edb`;
   `59c62dd` additionally requires complete 100-step allocator telemetry through the final pilot row.
+- `run_flagship_pretrain.sh` (`f6c590e`) consumes only a selected contracted LR and launches exactly
+  1,000,013,824 tokens over the verified three-shard manifest, with the explicit Llama/AdamW profile,
+  independent eval/checkpoint cadence, immutable contract, and safe resume ledger. Contract-only positive
+  and wrong-LR rejection proofs passed without launching training.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
