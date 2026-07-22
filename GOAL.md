@@ -123,23 +123,24 @@ turning every device tensor into an individual `vkAllocateMemory`. The current t
 - [x] Wire device-local slab: temporary output/intermediate buffers now use aligned, coalescing slab
       subranges with live-hole reuse and allocator telemetry (`f7730c6`, `32392a5`). NVIDIA reuse gates
       pass; the 100-step flagship-shape comparison improved steady throughput 3,322→3,790 tok/s (+14.1%).
-      The six-hour boundedness proof is running below.
+      The six-hour boundedness proof passed below.
 - [ ] Re-profile dispatch on the 3090/4090 (the dispatch-overhaul ring + batched dispatch exist; measure
       where the time actually goes at 16L/512d — kernel time vs submit vs GC).
 - [x] Sweep `HELIOS_WG_SIZE` / pool caps per GPU. RTX 3090 profile is committed in `docs/RUNPOD.md`:
       WG=64, output-pool cap=512, cooperative matrices disabled. The exact profile passes 46/46 NVIDIA
       gates and sustains ~3.7–3.9K tok/s at the 57.69M flagship shape.
-- **Gate G2: ≥3,000 tok/s sustained (f32, flagship shape, block 1024) on a ≤$0.35/hr GPU, AND a 6-hour
+- **Gate G2 PASSED 2026-07-22:** ≥3,000 tok/s sustained (f32, flagship shape, block 1024) on a ≤$0.35/hr GPU, AND a 6-hour
   soak with zero allocator crashes and flat RSS/live-alloc curve.** Stretch: 8K tok/s.
   Budget math this gate protects: 1B tokens @3K tok/s ≈ 93 GPU-h ≈ **$20 on the 3090**. If the gate
   fails after honest effort: shrink flagship to ~35-40M (12L/448d) and/or cut token budget — decided
   then, in the ledger, not silently.
-  **IN PROGRESS 2026-07-22:** exact commit `aca9f97`, 5,400 steps / 88.47M tokens / ≈6.3h on the $0.22/hr
-  RTX 3090. At 3h44m (step 3,100): host RSS 757MB; tracked Vulkan allocations/live buffers remain
-  bounded; zero allocator overflow; ~3.82K post-warmup median tok/s. The verified box-side guard mirrors
-  metrics every minute. `scripts/analyze_g2_soak.ts` (`1920d45`, sampled-schema fix `15e8f10`) codifies the final duration,
-  throughput, boundedness, shape, cost, overflow, sequential-row, and checkpoint-hash proof. Do not call
-  the gate until hour six and all 5,400 finite rows are archived.
+  Exact commit `aca9f97`, RTX 3090 at $0.22/hr: 5,400/5,400 finite rows, 88,473,600 tokens, 23,122
+  monitored seconds (6h25m), throughput p10/median 3,721/3,832 tok/s, RSS 681–767MB with -4.73MB/1K
+  slope, live allocations 1,073–1,157, Vulkan allocations 654–658, 34 constant temporary slabs, and
+  zero free-range overflow. Loss mean fell 7.482→3.732; terminal train/val loss was 3.726/3.702. The
+  full 692,528,815-byte checkpoint and every log are hash-sealed. Machine record:
+  `/mnt/donto-data/alpha-runs/g2-soak-wg64-b16-5400-20260722/g2-analysis.json`; human record: adjacent
+  `RUN.md`. The default ~60M architecture remains the flagship; no G2 shrink is warranted.
 
 ### Stage 3 — Modern architecture, Llama-shaped on purpose (box work + ≈$4 pilots)
 The Llama-form implementation is complete on the current tree; the remaining gate work is the equal-token
@@ -273,7 +274,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
 |---|---|---|
 | Beachhead probes (2026-07-22, 3090 ~1.5h) | $0.50 | ~$0.40 |
 | Stage 0-1 smoke + parity runs | $4 | ~$0.30 incremental through G1 (live pod; reconcile at termination) |
-| Stage 2 profiling + 6h soak | $8 | live; account balance $68.329, spend $0.301/hr at soak hour 1; reconcile at pod termination |
+| Stage 2 profiling + 6h soak | $8 | PASS; final soak GPU time ≈6.44h / ≈$1.42; account balance $66.736685594 at 20:45 UTC while pod remained live for G3; account burn also includes unrelated stopped volumes |
 | Stage 3 pilots (2× 100M-token) | $4 | |
 | Stage 5 lr sweeps (3× 100M-token) | $5 | |
 | Stage 5 pretrain 1B tok @ ≥3K tok/s | $20-25 | |
@@ -318,9 +319,9 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-22)
 
-1. Let the live G2 run reach a literal six hours; verify flat post-warmup RSS/live allocations, archive and
-   hash every artifact, then record the gate decision.
-2. Sync the canonical 1.99GB pretrain shard to the pod, then run G3's equal-token old-vs-Llama 100M-token
+1. Deploy current master to the still-live pod and run the fail-closed NVIDIA regression wrapper; it must
+   certify vendor `0x10de`, 46/46 passed, and zero skipped/failed/todo on the exact deployed tree.
+2. Sync and SHA-verify the canonical 1.99GB pretrain shard, then run G3's equal-token old-vs-Llama 100M-token
    pilots (the golden export half is already 75/75 top-1, max logit delta 1.07e-06). Use the independent
    validation/checkpoint cadence and verified remote retention pushed in `da39e8a`; `867f016` pins and
    analyzer-verifies the full architecture contract instead of trusting mutable domain defaults.

@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~18:40 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~20:49 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,24 +7,24 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — G2 soak running and billing
+## ⚠️ LIVE RIGHT NOW — G2 passed; pod is idle, bootstrapped, and billing
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
-- The pod is bootstrapped and deployed at commit `aca9f97`; do **not** modify its tree during the soak.
-  Node PID 8790 is running the 5,400-step flagship-shape G2 gate in
-  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722` (started 14:17:03 UTC). At step 3,650:
-  ~3.82K post-warmup median tok/s, 754MB host RSS, bounded Vulkan allocations/buffers, zero overflow.
-  It must reach a literal six hours and all 5,400 finite metric rows before G2 can pass.
-- Log: `/workspace/alpha2/g2-soak-wg64-b16-5400-20260722.log`; monitor:
-  `/workspace/alpha2/runs/g2-soak-wg64-b16-5400-20260722/system-monitor.log`.
-- RunPod balance was **$67.37** at 18:39 UTC; total account burn $0.301/hr including unrelated stopped
-  volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
+- **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
+  5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
+  RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
+  checkpoint. Every analyzer check is true. Evidence:
+  `/mnt/donto-data/alpha-runs/g2-soak-wg64-b16-5400-20260722/{RUN.md,g2-analysis.json}`.
+- The pod tree is still at `aca9f97` and is now safe to update. Deploy current master, run the fail-closed
+  NVIDIA regression wrapper, then start the contracted G3 Llama pilot; do not leave the paid GPU idle.
+- RunPod balance was **$66.736685594** immediately after G2; total account burn was $0.301/hr including
+  unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`b24c18a`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`7171f6d`** before this G2 record update. TypeScript clean; consolidated suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -89,10 +89,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   complete finite runs, zero allocator overflow, full checkpoints, identical inputs+commit, and ranks
   final-three held-out loss. `run_flagship_sft.sh` now refuses to start without the matching report and
   verifies its selected LR plus every input hash. Positive and mismatch synthetic proofs passed.
-- Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
-  RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
-  `/mnt/donto-data/alpha-runs/`; (3) sync current master
-  to the pod; (4) run/compare the two G3 pilots; (5) run the three-way LR sweep; (6) resumable flagship,
+- Immediate order: (1) commit/push this G2 PASS record; (2) fast-forward the idle pod to current master,
+  build, and certify the exact tree with `run_nvidia_gates.sh`; (3) sync+hash the canonical G3 corpus and
+  launch the Llama half with the verified mirror/retention guard; (4) run the GPT-2 half sequentially and
+  compare with `analyze_g3_pair.ts`; (5) run the three-way LR sweep; (6) resumable flagship,
   SFT, frozen eval, HF upload. Host disks are unexpectedly full (root 91%, data 87% at 16:24); avoid
   unbounded artifacts and do not destructively clean without resolving exact targets.
   The analyzer also requires the final full model+AdamW checkpoint to be 650–750 MiB (`ddd9bd3`), so a
