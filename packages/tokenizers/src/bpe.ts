@@ -70,7 +70,7 @@ export class BpeTokenizer implements Tokenizer {
   readonly name = "bpe";
 
   /** Target vocabulary size (base chars + merges). */
-  private readonly _targetVocabSize: number;
+  private _targetVocabSize: number;
 
   /** id -> string token */
   private _vocab: string[] = [];
@@ -94,6 +94,11 @@ export class BpeTokenizer implements Tokenizer {
     this._targetVocabSize = vocabSize;
     const envTokens = options.enableEnvReservedTokens === false ? [] : readReservedTokensFromEnv();
     this._reservedTokens = normalizeTokenList([...(options.reservedTokens ?? []), ...envTokens]);
+  }
+
+  /** Override the target vocab size before build() (used by `alpha tokenizer build --vocabSize`). */
+  setTargetVocabSize(vocabSize: number): void {
+    this._targetVocabSize = vocabSize;
   }
 
   // ── Public interface ─────────────────────────────────────────────────────

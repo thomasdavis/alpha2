@@ -8,18 +8,33 @@
  */
 
 import { describe, it, expect, afterAll } from "vitest";
-import { HeliosBackend, destroyDevice } from "@alpha/helios";
+import { HeliosBackend, destroyDevice, getDeviceInfo } from "@alpha/helios";
 import { CpuRefBackend } from "@alpha/tensor";
 
-const gpu = new HeliosBackend();
+// Skip the whole suite unless a real NVIDIA GPU is present (vendorId 0x10de).
+// Software Vulkan (llvmpipe) initializes but rejects the coop-matmul pipelines
+// these tests exercise, so anything else — including no Vulkan at all — skips.
+let hasNvidiaGpu = false;
+try {
+  hasNvidiaGpu = getDeviceInfo().vendorId === 0x10de;
+} catch {
+  hasNvidiaGpu = false;
+}
+if (!hasNvidiaGpu) {
+  console.log("[gpu-perf] no NVIDIA GPU detected — suite skipped");
+}
+
+const gpu = hasNvidiaGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
 const cpu = new CpuRefBackend();
 
 // Force GPU dispatch for small tensors in tests
-gpu.setMinGpuSize(1);
+if (hasNvidiaGpu) gpu.setMinGpuSize(1);
 
 afterAll(() => {
-  destroyDevice();
+  if (hasNvidiaGpu) destroyDevice();
 });
+
+const describeGpu = describe.skipIf(!hasNvidiaGpu);
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
@@ -41,7 +56,7 @@ function maxDiff(a: Float32Array, b: Float32Array): number {
 
 // ── Barrier correctness tests ────────────────────────────────────────────────
 
-describe("Barrier correctness", () => {
+describeGpu("Barrier correctness", () => {
   it("RAW dependency chain: add → scale → sub", () => {
     const a = gpu.fromArray([1, 2, 3, 4], [2, 2]);
     const b = gpu.fromArray([5, 6, 7, 8], [2, 2]);
@@ -103,7 +118,7 @@ describe("Barrier correctness", () => {
 
 // ── checkFinite tests ────────────────────────────────────────────────────────
 
-describe("checkFinite GPU kernel", () => {
+describeGpu("checkFinite GPU kernel", () => {
   it("returns 0 for all-finite tensor", () => {
     const t = gpu.fromArray([1.0, 2.0, 3.0, -4.0, 0.0, 100.0, -0.5, 0.001], [8]);
     const result = gpu.checkFinite(t);
@@ -150,7 +165,7 @@ describe("checkFinite GPU kernel", () => {
 
 // ── Matmul correctness tests (GPU vs CPU reference) ──────────────────────────
 
-describe("Matmul correctness", () => {
+describeGpu("Matmul correctness", () => {
   it("basic matmul matches CPU reference", () => {
     const M = 64, K = 64, N = 64;
     const aData = Array.from({ length: M * K }, () => Math.random() - 0.5);
@@ -300,7 +315,7 @@ describe("Matmul correctness", () => {
 
 // ── GPU loss accumulation tests ──────────────────────────────────────────────
 
-describe("GPU loss accumulation", () => {
+describeGpu("GPU loss accumulation", () => {
   it("GPU accumulation matches CPU microstep sum", () => {
     const accumSteps = 4;
     const losses = [0.5, 0.3, 0.7, 0.2];
@@ -343,7 +358,7 @@ describe("GPU loss accumulation", () => {
 
 // ── Spot check batching tests ────────────────────────────────────────────────
 
-describe("Batched spot checks", () => {
+describeGpu("Batched spot checks", () => {
   it("combined spot-check matches individual spot-checks", () => {
     // Simulate the batched gradient inf check pattern
     const grads = [
@@ -380,7 +395,7 @@ describe("Batched spot checks", () => {
 
 // ── Performance benchmark ────────────────────────────────────────────────────
 
-describe("Matmul performance", () => {
+describeGpu("Matmul performance", () => {
   it("GPU matmul is faster than trivial and produces correct results", () => {
     // Warm up
     const warmA = gpu.fromArray(Array.from({ length: 512 * 768 }, () => Math.random()), [512, 768]);

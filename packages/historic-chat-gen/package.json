@@ -19,6 +19,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@libsql/client": "^0.14.0"
+    "@libsql/client": "^0.17.4"
   }
 }

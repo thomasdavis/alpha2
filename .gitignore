@@ -26,3 +26,7 @@ result
 fleet.json
 .histchat/
 third_party/
+
+# secrets — never commit real env files
+**/.env
+!**/.env.example

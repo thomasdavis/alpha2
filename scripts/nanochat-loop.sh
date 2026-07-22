@@ -100,11 +100,13 @@ if [ -n "$RESUME" ]; then
   RESUME_FLAG="--resume=$RESUME"
 fi
 
-# Create .env.local on remote for reporting
-$SSH_CMD "cat > $REMOTE_DIR/.env.local << 'ENVEOF'
-ALPHA_REMOTE_URL=https://alpha.omegaai.dev
-ALPHA_REMOTE_SECRET=74c80a29940afdda7ceba133a650eb17f11d4960adde
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1475248227711324210/XcCPGSSnzF8zbKlINWR1pO6UnmGd1NIG3FlUBmcDvjQMVwEp8oTBSRIDxouG9ieNq6Vo
+# Create .env.local on remote for reporting.
+# Secrets come from the LOCAL environment — never hardcode them here (this file is public).
+# The previously committed webhook/secret were revoked 2026-07-22.
+$SSH_CMD "cat > $REMOTE_DIR/.env.local << ENVEOF
+ALPHA_REMOTE_URL=${ALPHA_REMOTE_URL:-}
+ALPHA_REMOTE_SECRET=${ALPHA_REMOTE_SECRET:-}
+DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
 VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json
 ENVEOF"
 

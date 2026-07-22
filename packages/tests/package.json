@@ -14,9 +14,9 @@
     "@alpha/train": "*",
     "@alpha/inference": "*",
     "@alpha/helios": "*",
-    "effect": "^3.12.0"
+    "effect": "^3.22.0"
   },
   "devDependencies": {
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.10"
   }
 }

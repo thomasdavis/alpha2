@@ -20,9 +20,13 @@ export async function tokenizerBuildCmd(args: string[]): Promise<void> {
 
   const tokenizer = resolveTokenizer(type);
 
-  // For BPE, set vocab size if supported
-  if ("targetVocabSize" in tokenizer) {
-    (tokenizer as any).targetVocabSize = vocabSize;
+  // For BPE, set vocab size if supported.
+  // (The old `"targetVocabSize" in tokenizer` guard never matched the private field,
+  // so --vocabSize was silently ignored and every `--type=bpe` build produced vocab 2000.)
+  if (typeof (tokenizer as any).setTargetVocabSize === "function") {
+    (tokenizer as any).setTargetVocabSize(vocabSize);
+  } else if (vocabSize) {
+    console.warn(`--vocabSize=${vocabSize} ignored: tokenizer "${type}" has no target vocab size`);
   }
 
   const artifacts = await Effect.runPromise(tokenizer.build(text));

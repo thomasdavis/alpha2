@@ -295,7 +295,11 @@ export async function trainCmd(args: string[]): Promise<void> {
   const isL4Gpu = !!(deviceInfo && deviceInfo.vendorId === 0x10de && /\bL4\b/i.test(deviceInfo.deviceName));
   const useL4Profile = gpuProfile === "l4" || (gpuProfile === "auto" && isL4Gpu);
   if (useL4Profile) {
-    if (kv["fp16"] === undefined && !!deviceInfo?.f16Supported) mixedPrecisionEnabled = true;
+    // fp16 is opt-in ONLY: auto-enabling it on f16-capable GPUs caused immediate-NaN runs
+    // (docs/F16_TRAINING_PROBLEM.md, super-chat logs). Pass --fp16 explicitly to enable.
+    if (kv["fp16"] === undefined && !!deviceInfo?.f16Supported) {
+      console.log("  fp16 supported by device but OFF (opt-in via --fp16; historical NaN trap)");
+    }
     if (!kv["batch"]) trainConfig = { ...trainConfig, batchSize: Math.max(trainConfig.batchSize, 8) };
     if (!kv["packed"]) trainConfig = { ...trainConfig, packed: true };
     if (!kv["logEvery"]) trainConfig = { ...trainConfig, logEvery: Math.max(trainConfig.logEvery ?? 1, 25) };
@@ -322,7 +326,7 @@ export async function trainCmd(args: string[]): Promise<void> {
   noDecayNames.add("wpe");
   noDecayNames.add("lnF.weight");
   noDecayNames.add("lnF.bias");
-  noDecayNames.add("lmHead.weight");
+  noDecayNames.add("lmHead"); // actual param name in collectParamEntries (was "lmHead.weight", which never matched — lmHead silently got weight decay)
   for (let i = 0; i < modelConfig.nLayer; i++) {
     noDecayNames.add(`layer.${i}.ln1.weight`);
     noDecayNames.add(`layer.${i}.ln1.bias`);
