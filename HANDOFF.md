@@ -1,0 +1,207 @@
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~13:00 UTC
+
+For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
+stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
+the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2 memory in
+`~/.claude/projects/-home-ajax/memory/project_alpha2_revival.md`; roadmap block in `/home/ajax/TODO.md`.
+
+---
+
+## ⚠️ LIVE RIGHT NOW — a GPU pod is RUNNING and BILLING
+
+- **Pod `d5m7h1v0kr0zd4`** ("alpha2-g1-gates"), RTX 3090 community, **$0.22/hr**, created ~12:55 UTC.
+- SSH: `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`
+- It is FRESH — nothing installed yet. It was created to run the GPU gates (§ Next steps).
+- If you are not going to use it within the hour: `runpodctl remove pod d5m7h1v0kr0zd4`
+  (terminate, don't stop — stopped pods still bill volume storage).
+- RunPod balance ≈ **$69.8** of the original $70.21. Hard ceiling. Per-second billing.
+- Background burn: 4 stopped mobtranslate/migmaq pods bill ~$0.075/hr (~$54/mo) volume storage —
+  **NOT ours to delete** (another project's checkpoints; user decision — already flagged to them).
+
+## Mission in one line
+
+Train a small chatty model **entirely with Alpha's own from-scratch stack** (TS tensor lib, tape
+autograd, hand-generated SPIR-V, Helios Vulkan backend — GPU-resident, no PyTorch/CUDA training) on
+RunPod, publish to Hugging Face as a **standard zero-custom-code `LlamaForCausalLM`** repo
+(`ajaxdavis`, HF auth on box verified WRITE-capable). Operator soul constraint (2026-07-22): every
+training FLOP through Alpha's own code. User also directed: **all box-side code work before GPU spend**
+— that is now DONE; user has explicitly said to move to GPU ("this box can't handle it" — do NOT run
+more CPU training on the box).
+
+## State of the repo (github.com/thomasdavis/alpha2, master, all pushed)
+
+Working tree CLEAN at `84c110c`. Key commits this program (chronological):
+- `9524598` GOAL.md + proven RunPod/Vulkan bootstrap (`scripts/runpod_bootstrap.sh`, `docs/RUNPOD.md`)
+- `59d79da` **G0 PASSED**: Helios trained on a RunPod 3090 (60 steps, loss 7.28→7.05, 0 NaN, ~40K tok/s
+  at 1.33M params, DGC+BDA+coop active). Artifacts: `/mnt/donto-data/alpha-runs/g0-smoke-20260722/`
+- `aea174c` deps → latest (TS 7.0.2, vitest 4, Next 16, ai v7, effect 3.22) + 4 known-bug fixes
+  (lmHead no-decay name, `--vocabSize` silently ignored, fp16 auto-enable trap, train-nanochat lr
+  6e-4→3e-4) + secrets scrub (Discord webhook REVOKED via DELETE 204; `movies/symbio-film/.env`
+  untracked — **ElevenLabs key still needs USER dashboard rotation**, it's in public git history)
+- `0222fb3` npm audit 5→1-low (overrides sharp/postcss/esbuild; remaining 1 is Windows-only dev-server)
+- `9b63685` **Stage-1 gradcheck harness** (see below) + REAL bug fix: `cpu_ref.sum(axis, keepdims=true)`
+  was wrong on non-last axes → corrupted broadcast backward grads. Found by the harness day one.
+- `fcfa83a` corpus builders (`scripts/build_pretrain_corpus.py`, `scripts/build_sft_corpus.py`)
+- `b3ffe90` **Stages 3–4 box-side** (the big one, ~3,200 lines — see below)
+- `84c110c` e2e script self-containment fix + final-tree golden numbers
+
+### Test/verification state (all on the FINAL committed tree)
+- `nice -n19 npx tsc -b` from root: clean. Full turbo build: 19/19.
+- `packages/tests`: **178 passed / 44 GPU-gated skips / 0 failed** (~80–150s wall on the loaded box).
+  The 44 skips are `parity-helios.test.ts` (36) + `gpu-perf.test.ts` — they gate on NVIDIA vendorId
+  0x10de and have **NEVER run on real NVIDIA hardware**. Running them is the top next step.
+- **Golden-token gate (G3 export half) PASSED on final tree**: tiny Llama-form model trained on
+  cpu_ref → `alpha export-hf` → loaded by `transformers` (fp32, no trust_remote_code):
+  **75/75 top-1 = 100%, max |Δlogit| 1.07e-06** (threshold 1e-3), tokenizer parity 4/4 prompts exact.
+  Reproduce: `bash scripts/e2e_hf_export.sh` (self-contained; caches its checkpoint under
+  `/mnt/donto-data/alpha-runs/g3-e2e/`). **But do NOT re-run CPU training on the box — user said stop.**
+- Byte-BPE exporter cross-verified vs Python `tokenizers` on 9,822 real corpus docs: 100% id agreement.
+
+### What Stages 3–4 added (commit `b3ffe90`)
+All config-gated; legacy GPT-2-style configs bit-for-bit unchanged.
+- **Arch**: `rmsNorm` (+fused backward) and `rope` ops — cpu_ref + autograd + Helios SPIR-V kernels.
+  RoPE is EXACTLY HF `rotate_half` (half-split, `inv_freq=θ^(-2i/D)`) so export needs no permutation;
+  backward = rotation by −angle (reuses forward kernel with negated sin). Tied embeddings via
+  `lmHead === wte` object identity. `ModelConfig`: `normType`/`posEnc`/`ropeTheta`/`tieEmbeddings`.
+  softCap defaults OFF under rope. New domain **`alpha_llama`** = 16L/512d/8H swiglu(1408) rmsnorm rope
+  tied, block 1024, tokenizer `bpe-byte-12k` (~60M params — the flagship shape).
+- **Tokenizer**: `ByteBpeTokenizer` (`packages/tokenizers/src/byte_bpe.ts`) — 256-byte base (exact GPT-2
+  bytes_to_unicode), GPT-2 split regex, lossless decode on anything, atomic chat specials
+  `<|user|>` `<|assistant|>` `<|end_of_text|>` (ids 256/257/258). Registry: `bpe-byte-12k`, `bpe-byte-4k`.
+  HF exporter (`export_hf.ts` + `alpha tokenizer export-hf`) emits tokenizer.json/tokenizer_config.json/
+  chat_template.jinja.
+- **SFT loss masking**: `DataBatch.lossMask` + `crossEntropyMasked` (cpu_ref + fused Helios masked-CE
+  kernels), SFT loader mode (one conversation per row, assistant-span-only mask, `--sft` on train cmd),
+  trainer threads mask through grad-accum + eval.
+- **HF export**: `packages/train/src/hf_export.ts` (spec-exact TS safetensors writer; ALPH→Llama state
+  dict: wqkv split to q/k/v, fc_gate/up/proj→gate/up/down, NO transposes — `[out,in]` matches nn.Linear;
+  omits lm_head when tied) + `alpha export-hf` + `alpha logits` CLI + `scripts/verify_hf_export.py`
+  (golden verifier; py deps live in the uv venv at `/mnt/donto-data/alpha-corpora/.venv`: torch-cpu,
+  transformers, safetensors, tokenizers, pyarrow).
+- **Inference engine** (`packages/inference`): now supports rope/rmsnorm/tied (crash on Llama-form
+  checkpoints fixed) + inference-parity tests. This unblocks the HF Space / `alpha sample` fast path.
+- **Adversarial-review fixes (measured, not guessed)**:
+  - P0: Helios masked-CE kernels had Out/Mask bindings swapped → GPU SFT would have trained on
+    garbage SILENTLY (loss exactly 0). Fixed kernel-side (Out = last binding); documented in
+    `kernels/nn.ts` next to `ce_fwd_masked`.
+  - P1: flash-attention q/k/v used a PLAIN reshape `[B,T,nH*hd]→[B*nH,T,hd]` that scrambles
+    (batch,head) rows for nHead>1 — PRE-EXISTING bug affecting all prior multi-head flash training;
+    now reshape→transpose(1,2)→reshape head-major (see `gpt.ts` "[defect P1]" comment). RoPE positions
+    on the flash path are now correct.
+  - P2: shared-memory reduction races in CE/layerNorm/rmsNorm kernels — trailing ControlBarriers added
+    (12 sites). Masked by NVIDIA warp lockstep; exposed on relaxed schedulers (rmsNorm dx diverged ~4e3
+    on llvmpipe without it).
+  - P3 (= the inference-engine fix above).
+
+### Stage-1 harness (commit `9b63685`) — how correctness is enforced
+`packages/tests/src/`: `gradcheck-ops.test.ts` (central-difference FD checks for EVERY op the model
+uses; reusable `checkGrad`), `gradcheck-model.test.ts` (whole tiny-GPT gradchecks across
+swiglu/gelu/universal/kan_spline AND the Llama-form config; top-|grad| element sampling; dead-param +
+determinism + checkpoint-bitwise invariants), `optimizer-reference.test.ts` (AdamW vs independent
+reference <1e-6), `parity-helios.test.ts` (GPU-gated CPU↔Helios parity: per-op fwd/bwd, tiny-GPT logits/
+grads/AdamW-step, 100-step zero-NaN loop, f16 casts, rmsNorm/rope parity, tied-model loop, masked-CE).
+**Any new op MUST get: cpu_ref impl + autograd backward + Helios kernel + FD gradcheck + parity test.**
+Every check was proven load-bearing by temporary fault injection.
+
+## Training data (READY, on the data disk)
+
+- Pretrain: `/mnt/donto-data/alpha-corpora/pretrain-text/` — 6 shards ≤2GB, 11.7GB, ~3.0B est tokens,
+  1.86M docs, `<|end_of_text|>`-delimited. Source: 4 parquet shards of
+  `HuggingFaceFW/finepdfs_edu_50BT-dclm_30BT-fineweb_edu_20BT-shuffled` (kept in
+  `premix-shuffled/`; 96 more shards available upstream if more tokens needed).
+- SFT: `/mnt/donto-data/alpha-corpora/sft-text/sft.txt` — 457,484 conversations, 1.6GB, alpha chat
+  format, `validate-chat-data.ts`-clean (100K-line samples). smol-smoltalk train (system prompts folded
+  into first user turn as `[Instructions: ...]`) + OASST2 English best-ranked paths. Raw sources kept
+  under `sft/`. smol-smoltalk **test split deliberately unused** (held out for eval).
+- Tokenizer artifacts: none built for 12k yet — the flagship needs `bpe-byte-12k` built from the
+  pretrain corpus (build happens automatically at train start from a 100MB sample, or pre-build with
+  `alpha tokenizer build`+export; note `ALPHA_BPE_MAX_TRAIN_CHARS` default for byte-BPE is 5M).
+
+## Infra / credentials (all verified working this session)
+
+- **RunPod**: `runpodctl` 2.6.1 configured (`~/.runpod/config.toml`); GraphQL with the same key.
+  SSH key `~/.runpod/ssh/runpodctl-ssh-key`. Community RTX 3090 = proven Vulkan host class.
+  Prices (community): A5000 $0.16 · 3090 $0.22 · A40 $0.30-0.35 · 4090 $0.34.
+- **Vulkan-on-RunPod recipe (PROVEN)**: `scripts/runpod_bootstrap.sh` — driver-matched NVIDIA `.run`
+  userspace install (`--no-kernel-modules`, kmod stubs) + **EGL headless ICD** + `VK_ICD_FILENAMES` +
+  ctypes probe. Full runbook `docs/RUNPOD.md`. If the probe fails on a host: TERMINATE AND REDEPLOY,
+  never debug a bad host. Community-host egress is a lottery: apt (port 80) and github may be dead;
+  nodejs.org + download.nvidia.com (443) worked everywhere so far. Deploy code via **rsync from the
+  box** if git clone fails (`--exclude=.git --exclude=.next --exclude=.turbo`; sync `packages apps`
+  first if in a hurry — node_modules is 1GB and rsyncs alphabetically; full sync ~30-45 min under box
+  I/O load).
+- **Hugging Face**: `hf` CLI authed as `ajaxdavis` (write verified by probe create+delete).
+- **Box rules**: shared multi-tenant box — EVERYTHING niced (`nice -n19`, `ionice -c3` for I/O);
+  temp files under `$CLAUDE_JOB_DIR/tmp`, NOT bare /tmp; research artifacts under /mnt/donto-data;
+  **no more CPU training on the box (user directive)**. lint-staged pre-commit runs a full turbo build
+  and TIMES OUT under load — if you've manually verified build+tests, `git commit --no-verify` and say
+  so in the message. Commit + push often (user directive; memory `feedback_commit_push_often`).
+- Node runtime ONLY for Helios (`node --expose-gc apps/cli/dist/main.js`); the bun compiled binary has
+  a known vkCreateInstance failure. Always `--fp16=false` posture (fp16 auto-enable removed, but be
+  explicit); `HELIOS_DISABLE_COOP_MAT=1` for training stability per docs.
+
+## NEXT STEPS (in order — the pod is waiting)
+
+1. **Bootstrap the live pod** (`d5m7h1v0kr0zd4`, 64.119.209.250:8865):
+   `scp scripts/runpod_bootstrap.sh` → run it → expect `vkCreateInstance OK, 1 device(s)`.
+2. **Deploy code**: try `git clone https://github.com/thomasdavis/alpha2 && npm install` on the pod
+   (repo is public + fully pushed); if egress is broken, rsync from
+   `/mnt/donto-data/workspace/alpha2/` incl. node_modules. Then `nice npm run build` (or
+   `npx turbo build --filter=@alpha/cli --filter=@alpha/tests` — much faster, skips the web app)
+   and `node packages/helios/native/build.mjs` if the box-built addon doesn't load (`ldd` it).
+3. **Run the GPU gates** (never executed on NVIDIA — this is the payoff of all the box work):
+   - `cd packages/tests && npx vitest run parity-helios gpu-perf` → **all 44 must pass.**
+     Watch specifically: masked-CE parity (P0 fix), rmsNorm/rope parity, the f16 cast tests,
+     the tied-model 20-step loop, flash-vs-standard after the P1 relayout.
+   - **G1 pilot**: 1,000 steps, ~10M params (e.g. 6L/256d/4H alpha_llama-style, bpe-byte-4k) on a
+     pretrain shard slice, f32, helios — **gate: ZERO non-finite gradient steps** (the old 2-7% NaN
+     era must be provably over; the SwiGLU/Helios interaction root-cause may surface here — if NaNs
+     appear, bisect with the parity suite, do NOT mask with spike-skip).
+   - **G2 baseline measurement**: 100-200 steps at the flagship `alpha_llama` shape (16L/512d, block
+     1024, batch to fit 24GB) — record tok/s + live-alloc telemetry. Expect ~1K tok/s (allocator-bound).
+     This anchors Stage 2.
+   - Pull all runs/logs to `/mnt/donto-data/alpha-runs/` (box-side puller loop in docs/RUNPOD.md),
+     then TERMINATE the pod. Update GOAL.md gates + ledger + commit.
+4. **Stage 2 (the throughput unlock — biggest remaining engineering)**: wire device-local slab
+   (TS never passes `temporary=1`; native slab code exists in `helios_vk.c` but is bypassed →
+   every device tensor is an individual vkAllocateMemory → GC storms ≥192d). Gate G2:
+   **≥3,000 tok/s sustained at flagship shape + 6h soak, zero allocator crashes**. Budget math:
+   1B tokens @3K tok/s ≈ 93 GPU-h ≈ $20 on the 3090.
+5. **Stage 5 flagship** per GOAL.md: lr sweep {1e-3, 2e-3, 3e-3} at 100M-token pilot scale (the old
+   3e-4 lore predates the bug fixes — re-derive), then ~60M pretrain on 1-3B tokens (budget-gated by
+   measured tok/s), then masked SFT on the built corpus, frozen evals (GOAL D3 chat bar).
+6. **Stage 6 ship**: `alpha export-hf` the flagship → `hf upload ajaxdavis/alpha-60m-base` +
+   `-chat` → `pipeline()` cold-load verify → model cards with honest evals + data licenses
+   (ODC-BY/Apache-2.0/CC-BY-4.0 attribution). GGUF is a stretch (needs the `get_vocab_base_pre`
+   patch, pre name "gpt-2").
+
+## Known gaps / watch-outs
+
+- **flash-attention on GPU**: P1 relayout is committed but flash parity has never run on NVIDIA.
+  The parity suite covers it; if flash still diverges from standard on the 3090, train with the
+  standard path (flash is a perf optimization) and file it for Stage 2.
+- The trainer's in-loop sample subprocess uses cpu_ref — fine (tiny), but `--sampleInterval` large
+  keeps pod CPU free.
+- `alpha_llama` lr 3e-4 in domains.ts is a PLACEHOLDER — Stage 5 sweeps it.
+- Data loader holds the whole tokenized corpus in RAM (Int32 = 4 bytes/token): 1B tokens = 4GB,
+  3B = 12GB — check pod RAM at create (3090 hosts vary; ask for ≥32GB vCPU RAM if running 3B).
+- `MAX_STRING_BYTES` 30MB / 10MB-chunk tokenization is handled by `loadAndTokenize` — corpus shards
+  are already ≤2GB each, fine.
+- Eval set (GOAL Stage-4 item) is NOT yet frozen: before the flagship run, build the fixed
+  100-chat-prompt + 200-question + repetition/EOS suites (smol-smoltalk test split is reserved for
+  this). Don't let benchmark data into training mixes.
+- The box `.venv` for python verify work: `/mnt/donto-data/alpha-corpora/.venv` (activate then run
+  `scripts/verify_hf_export.py` / `verify_tokenizer_export.py`).
+- OUTSTANDING USER ACTIONS (already flagged, don't nag): rotate ElevenLabs key; decide fate of the
+  4 stopped migmaq pods.
+
+## The one-paragraph story so far
+
+In one day the project went from a 4-month-dormant repo to: proven Vulkan-on-RunPod (G0: Helios trained
+on a $0.22/hr 3090, zero NaN), a fully modernized toolchain (TS7/vitest4/Next16), a fault-injection-
+proven gradient-checking harness that immediately caught a real broadcast-gradient bug plus a GPU-SFT-
+would-have-been-garbage kernel-binding bug and a scrambled-flash-attention layout bug, a Llama-form
+architecture (RoPE/RMSNorm/tied/byte-BPE) whose exports load in stock `transformers` at 100% top-1
+agreement, assistant-only loss masking, 3B tokens of pretrain text + 457K SFT conversations staged,
+and ~$0.4 of the $70 GPU budget spent. The remaining path to a shipped model is: GPU gates → slab
+allocator throughput work → flagship pretrain+SFT → `hf upload`.
