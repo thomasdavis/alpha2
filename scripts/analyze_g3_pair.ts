@@ -10,6 +10,7 @@ interface Contract {
   expected_params: number;
   expected_steps: number;
   expected_tokens: number;
+  minimum_train_tokens: number;
   source_commit: string;
   data: { path: string; sha256: string };
   tokenizer: { path: string; sha256: string };
@@ -72,7 +73,12 @@ async function summarize(dir: string, expectedVariant: Contract["variant"]): Pro
     readFile(path.join(dir, "metrics.jsonl"), "utf8"),
   ]);
   const contract = JSON.parse(contractText) as Contract;
-  const config = JSON.parse(configText) as { totalParams?: number; trainConfig: { batchSize: number; gradAccumSteps: number; iters: number }; modelConfig: { blockSize: number } };
+  const config = JSON.parse(configText) as {
+    totalParams?: number;
+    dataStats?: { trainTokens?: number; valTokens?: number };
+    trainConfig: { batchSize: number; gradAccumSteps: number; iters: number };
+    modelConfig: { blockSize: number };
+  };
   if (contract.variant !== expectedVariant) throw new Error(`${dir}: contract variant ${contract.variant} != ${expectedVariant}`);
   const rows = metricsText.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Metric);
   if (rows.length !== contract.expected_steps) throw new Error(`${dir}: metric rows ${rows.length} != ${contract.expected_steps}`);
@@ -92,6 +98,9 @@ async function summarize(dir: string, expectedVariant: Contract["variant"]): Pro
   }
   const tokens = config.trainConfig.iters * config.trainConfig.batchSize * config.trainConfig.gradAccumSteps * config.modelConfig.blockSize;
   if (tokens !== contract.expected_tokens) throw new Error(`${dir}: tokens ${tokens} != contract ${contract.expected_tokens}`);
+  if ((config.dataStats?.trainTokens ?? 0) < contract.minimum_train_tokens) {
+    throw new Error(`${dir}: only ${String(config.dataStats?.trainTokens)} train tokens; contract requires ${contract.minimum_train_tokens}`);
+  }
   const evalRows = rows.filter((metric): metric is Metric & { valLoss: number } => metric.valLoss !== undefined);
   if (evalRows.length < 3) throw new Error(`${dir}: only ${evalRows.length} validation points`);
   return {

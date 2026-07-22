@@ -765,6 +765,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
   }
 
+  configObj.dataStats = sftMode
+    ? {
+        mode: "sft",
+        trainTokens: sftTrain?.length ?? 0,
+        valTokens: sftVal?.length ?? 0,
+        trainConversations: sftTrain?.conversationCount ?? 0,
+        valConversations: sftVal?.conversationCount ?? 0,
+      }
+    : { mode: "pretrain", trainTokens: trainTokens.length, valTokens: valTokens.length };
+
   // Initialize model
   rng.seed(trainConfig.seed);
   let params = initGPT(modelConfig, backend, rng as any);

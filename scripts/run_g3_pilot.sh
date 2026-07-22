@@ -2,7 +2,7 @@
 # Equal-token Stage-3 architecture pilot on the proven RTX 3090 Vulkan profile.
 #
 # Usage (on the bootstrapped pod):
-#   scripts/run_g3_pilot.sh llama /workspace/data/g1-pretrain-128m.txt \
+#   scripts/run_g3_pilot.sh llama /workspace/data/pretrain-000.txt \
 #     /workspace/alpha2/artifacts/g2-bpe-byte-12k.json /workspace/alpha2/runs/g3-llama-100m
 #   scripts/run_g3_pilot.sh gpt2  ... /workspace/alpha2/runs/g3-gpt2-100m
 #
@@ -74,6 +74,7 @@ TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" node -e '
     block_size: 1024,
     grad_accum_steps: 1,
     expected_tokens: 100007936,
+    minimum_train_tokens: 100007936,
     source_commit: process.env.SOURCE_COMMIT,
     data: { path: process.env.DATA_PATH, sha256: process.env.DATA_SHA256 },
     tokenizer: { path: process.env.TOKENIZER_PATH, sha256: process.env.TOKENIZER_SHA256 },
