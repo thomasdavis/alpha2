@@ -18,6 +18,12 @@ variant=${1:?variant required: llama or gpt2}
 data=${2:?training text path required}
 tokenizer=${3:?tokenizer artifact path required}
 run_dir=${4:?run directory required}
+pilot_lr=${ALPHA_PILOT_LR:-3e-4}
+pilot_lr_min=$(PILOT_LR="$pilot_lr" node -e '
+  const lr = Number(process.env.PILOT_LR);
+  if (!Number.isFinite(lr) || lr <= 0) throw new Error(`invalid ALPHA_PILOT_LR: ${process.env.PILOT_LR}`);
+  process.stdout.write(String(lr / 10));
+')
 
 case "$variant" in
   llama)
@@ -63,7 +69,8 @@ tokenizer_sha256=$(sha256sum "$tokenizer" | awk '{print $1}')
 contract_tmp="$run_dir/pilot-contract.json.tmp"
 VARIANT="$variant" EXPECTED_PARAMS="$expected_params" SOURCE_COMMIT="$source_commit" \
 DATA_PATH="$data" DATA_SHA256="$data_sha256" TOKENIZER_PATH="$tokenizer" \
-TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" node -e '
+TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" PILOT_LR="$pilot_lr" \
+PILOT_LR_MIN="$pilot_lr_min" node -e '
   const fs = require("node:fs");
   const contract = {
     schema: "alpha-g3-pilot-contract-v1",
@@ -75,6 +82,8 @@ TOKENIZER_SHA256="$tokenizer_sha256" CONTRACT_TMP="$contract_tmp" node -e '
     grad_accum_steps: 1,
     expected_tokens: 100007936,
     minimum_train_tokens: 100007936,
+    learning_rate: Number(process.env.PILOT_LR),
+    learning_rate_min: Number(process.env.PILOT_LR_MIN),
     source_commit: process.env.SOURCE_COMMIT,
     data: { path: process.env.DATA_PATH, sha256: process.env.DATA_SHA256 },
     tokenizer: { path: process.env.TOKENIZER_PATH, sha256: process.env.TOKENIZER_SHA256 },
@@ -90,8 +99,8 @@ exec nice -n 5 ionice -c 2 -n 7 node --expose-gc apps/cli/dist/main.js train \
   --batch=16 \
   --accumSteps=1 \
   --steps=6104 \
-  --lr=3e-4 \
-  --lrMin=3e-5 \
+  --lr="$pilot_lr" \
+  --lrMin="$pilot_lr_min" \
   --warmupIters=500 \
   --beta1=0.9 \
   --beta2=0.95 \

@@ -11,6 +11,8 @@ interface Contract {
   expected_steps: number;
   expected_tokens: number;
   minimum_train_tokens: number;
+  learning_rate: number;
+  learning_rate_min: number;
   source_commit: string;
   data: { path: string; sha256: string };
   tokenizer: { path: string; sha256: string };
@@ -122,7 +124,7 @@ async function main(): Promise<void> {
   const cli = args();
   if (!cli.llama || !cli.gpt2 || !cli.out) throw new Error("required: --llama, --gpt2, and --out");
   const [llama, gpt2] = await Promise.all([summarize(cli.llama, "llama"), summarize(cli.gpt2, "gpt2")]);
-  for (const key of ["source_commit"] as const) {
+  for (const key of ["source_commit", "learning_rate", "learning_rate_min"] as const) {
     if (llama.contract[key] !== gpt2.contract[key]) throw new Error(`contract ${key} differs between pilots`);
   }
   if (llama.contract.data.sha256 !== gpt2.contract.data.sha256) throw new Error("pilot data hashes differ");
