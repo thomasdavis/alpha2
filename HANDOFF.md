@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`15e8f10`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`58fc691`**. TypeScript clean; consolidated suite
   **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -43,7 +43,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   decouples frequent validation from full optimizer checkpoint cadence and proves the remote-retention
   guard: old remote copies are pruned only after byte-size + SHA-256 agreement with the mounted-drive
   mirror. `867f016` also pins every paid pilot architecture argument explicitly and makes the analyzer
-  reject model-config drift; its 6,104-row synthetic contract proof passed. Do not start either pilot
+  reject model-config drift; its 6,104-row synthetic contract proof passed. `58fc691` makes the pilots
+  safely resumable: exact original contract required, post-checkpoint metric tails preserved+hashed,
+  active metrics atomically realigned, and every attempt recorded in `resume-ledger.jsonl`. Do not start either pilot
   until the G2 soak finishes and its artifacts are archived.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under

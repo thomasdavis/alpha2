@@ -162,6 +162,8 @@ The Llama-form implementation is complete on the current tree; the remaining gat
       parameter-count differences cannot perturb validation windows); packed/random/SFT loaders seek to
       checkpoint-consistent batch positions on resume. `run_g3_pilot.sh` records commit/data/tokenizer/
       parameter/token contracts; `analyze_g3_pair.ts` rejects non-finite, mismatched, or unaligned runs.
+      Paid-pilot resume (`58fc691`) requires that exact contract, preserves+hashes any post-checkpoint
+      metric tail, atomically realigns the append stream, and records a resume ledger.
 - **Gate G3: 100M-token pilot of the new arch ≥ matches the old arch's loss curve at equal tokens/params,
   0 NaN steps, and a golden-token test: Alpha forward == exported-safetensors-in-transformers forward
   (top-1 agreement on 512 positions, fixed prompt) BEFORE the flagship run.** That last check is the
