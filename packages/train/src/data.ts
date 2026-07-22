@@ -211,6 +211,142 @@ export class DataLoader implements BatchSource {
   }
 }
 
+/**
+ * A logical concatenation of independently cached token shards. It preserves
+ * DataLoader's packed/random ordering without allocating one giant Int32Array,
+ * which would exceed Node's Buffer/TypedArray practical limits for a multi-
+ * billion-token corpus.
+ */
+export class ShardedDataLoader implements BatchSource {
+  private readonly shards: readonly Int32Array[];
+  /** Cumulative starts plus a final total-length sentinel. */
+  private readonly offsets: number[];
+  private readonly rng: Rng;
+  private readonly batchSize: number;
+  private readonly blockSize: number;
+  private readonly packed: boolean;
+  private readonly totalLength: number;
+  private cursors?: number[];
+  private readonly batchRing: DataBatch[] = [];
+  private batchRingIdx = 0;
+
+  constructor(shards: readonly Int32Array[], rng: Rng, batchSize: number, blockSize: number, packed = false) {
+    if (shards.length === 0 || shards.some((shard) => shard.length === 0)) {
+      throw new RangeError("ShardedDataLoader needs at least one non-empty token shard");
+    }
+    this.shards = shards;
+    this.rng = rng;
+    this.batchSize = batchSize;
+    this.blockSize = blockSize;
+    this.packed = packed;
+    this.offsets = [0];
+    for (const shard of shards) this.offsets.push(this.offsets.at(-1)! + shard.length);
+    this.totalLength = this.offsets.at(-1)!;
+    if (this.totalLength <= blockSize) {
+      throw new RangeError(
+        `Token count (${this.totalLength}) must exceed block size (${blockSize}) — need at least ${blockSize + 1} tokens`,
+      );
+    }
+    if (packed) {
+      const stride = Math.floor(this.totalLength / batchSize);
+      this.cursors = Array.from({ length: batchSize }, (_, index) => index * stride);
+    }
+    const elems = batchSize * blockSize;
+    for (let index = 0; index < 2; index++) {
+      this.batchRing.push({
+        inputs: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+        targets: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+      });
+    }
+  }
+
+  nextBatch(): DataBatch {
+    return this.packed ? this.nextBatchPacked() : this.nextBatchRandom();
+  }
+
+  seekBatches(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`batch count must be a non-negative integer: ${count}`);
+    this.batchRingIdx = count % this.batchRing.length;
+    if (this.packed) {
+      const stride = Math.floor(this.totalLength / this.batchSize);
+      const offset = (count * this.blockSize) % this.totalLength;
+      for (let batch = 0; batch < this.batchSize; batch++) {
+        this.cursors![batch] = (batch * stride + offset) % this.totalLength;
+      }
+      return;
+    }
+    for (let index = 0; index < count * this.batchSize; index++) this.rng.next();
+  }
+
+  private locateShard(position: number): number {
+    let low = 0;
+    let high = this.shards.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >>> 1;
+      if (position < this.offsets[middle]) high = middle - 1;
+      else if (position >= this.offsets[middle + 1]) low = middle + 1;
+      else return middle;
+    }
+    throw new RangeError(`logical token position out of range: ${position}`);
+  }
+
+  /** Copy a logical range, wrapping from the final shard to the first. */
+  private copyRange(destination: Int32Array, destinationOffset: number, start: number, length: number): void {
+    let position = start;
+    let remaining = length;
+    let outputOffset = destinationOffset;
+    while (remaining > 0) {
+      const shardIndex = this.locateShard(position);
+      const shard = this.shards[shardIndex];
+      const localPosition = position - this.offsets[shardIndex];
+      const span = Math.min(remaining, shard.length - localPosition);
+      destination.set(shard.subarray(localPosition, localPosition + span), outputOffset);
+      outputOffset += span;
+      remaining -= span;
+      position += span;
+      if (position === this.totalLength) position = 0;
+    }
+  }
+
+  private nextBatchRandom(): DataBatch {
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
+    const maxStart = this.totalLength - this.blockSize;
+    for (let item = 0; item < this.batchSize; item++) {
+      const start = Math.floor(this.rng.next() * maxStart);
+      const destination = item * this.blockSize;
+      this.copyRange(inputs, destination, start, this.blockSize);
+      this.copyRange(targets, destination, start + 1, this.blockSize);
+    }
+    return { inputs: { ...batch.inputs }, targets: { ...batch.targets } };
+  }
+
+  private nextBatchPacked(): DataBatch {
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
+    for (let item = 0; item < this.batchSize; item++) {
+      const start = this.cursors![item];
+      const destination = item * this.blockSize;
+      this.copyRange(inputs, destination, start, this.blockSize);
+      this.copyRange(targets, destination, (start + 1) % this.totalLength, this.blockSize);
+      this.cursors![item] = (start + this.blockSize) % this.totalLength;
+    }
+    return { inputs: { ...batch.inputs }, targets: { ...batch.targets } };
+  }
+
+  get stepsPerEpoch(): number {
+    return Math.floor(this.totalLength / (this.batchSize * this.blockSize));
+  }
+
+  get length(): number {
+    return this.totalLength;
+  }
+}
+
 // ── SFT (assistant-only) data pipeline ──────────────────────────────────────
 
 /** The three atomic chat role markers used to render conversations. */
