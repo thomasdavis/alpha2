@@ -24,8 +24,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current pushed box tree: **`2bc9f63`** (`feat(data): seal bounded SFT v2 corpus`). TypeScript clean;
-  consolidated suite **182 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
+- Current functional tree is pushed through **`cc7f450`**. TypeScript clean; consolidated suite
+  **186 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
   G1 1,000 steps with zero NaN; slab profile WG64/pool512; 57.69M-param baseline improved 3,322→3,790
@@ -37,7 +37,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   exact SFT audit scanned 205,027,527 13-grams and rejected 658/900; final overlap zero. See
   `docs/SFT_CORPUS.md`, `docs/FROZEN_EVAL.md`, and mounted `RUN.md`/manifests.
 - G3 pilot launcher is pushed in `scripts/run_g3_pilot.sh`: equal 100,007,936 tokens, 57.69M Llama vs
-  58.09M GPT-2 control. Do not start either until the G2 soak finishes and its artifacts are archived.
+  58.09M GPT-2 control. Commit `cc7f450` isolates train/validation RNGs across architectures, seeks all
+  loader types on resume, writes an immutable pilot contract, and adds `analyze_g3_pair.ts`. Do not start
+  either pilot until the G2 soak finishes and its artifacts are archived.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state, then pull/hash/document under `/mnt/donto-data/alpha-runs/`; (3) sync current master
   to the pod; (4) run/compare the two G3 pilots; (5) run the three-way LR sweep; (6) resumable flagship,
