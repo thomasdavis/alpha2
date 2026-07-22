@@ -509,7 +509,7 @@ function computeTensorNormSqCpu(data: TensorData): number {
   return sumSq;
 }
 
-function validateResumeModelCompatibility(
+export function validateCheckpointModelCompatibility(
   resumePath: string,
   checkpointModel: ModelConfig | undefined,
   activeModel: ModelConfig,
@@ -530,12 +530,17 @@ function validateResumeModelCompatibility(
   check("ffnActivation");
   check("ffnDim");
   check("dropout");
+  check("softCap");
+  check("normType");
+  check("posEnc");
+  check("ropeTheta");
+  check("tieEmbeddings");
 
   if (diffs.length === 0) return;
 
   const allow = (process.env.ALPHA_ALLOW_RESUME_MISMATCH ?? "0").trim() === "1";
   const msg =
-    `Resume checkpoint/model mismatch for ${resumePath}:\n` +
+    `Checkpoint/model mismatch for ${resumePath}:\n` +
     diffs.map((d) => `  - ${d}`).join("\n") +
     `\nRefusing to resume to prevent silent divergence. ` +
     `Use ALPHA_ALLOW_RESUME_MISMATCH=1 only for intentional migration experiments.`;
@@ -837,7 +842,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   if (initCheckpointPath) {
     const checkpoint = new FileCheckpoint();
     const state = await Effect.runPromise(checkpoint.load(initCheckpointPath));
-    validateResumeModelCompatibility(initCheckpointPath, state.modelConfig as ModelConfig | undefined, modelConfig);
+    validateCheckpointModelCompatibility(initCheckpointPath, state.modelConfig as ModelConfig | undefined, modelConfig);
     restoreParams(params, state.params);
     // Weight initialization consumed model-shape-dependent draws. A fresh
     // fine-tune must begin from its declared seed, not that incidental offset.
@@ -853,7 +858,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   } else if (resumePath) {
     const checkpoint = new FileCheckpoint();
     const state = await Effect.runPromise(checkpoint.load(resumePath));
-    validateResumeModelCompatibility(resumePath, state.modelConfig as ModelConfig | undefined, modelConfig);
+    validateCheckpointModelCompatibility(resumePath, state.modelConfig as ModelConfig | undefined, modelConfig);
     restoreParams(params, state.params);
     optimizer.loadStateDict(state.optimizerState);
     rng.setState(state.rngState);

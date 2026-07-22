@@ -9,7 +9,7 @@ import { SeededRng, type ModelConfig, type Tokenizer } from "@alpha/core";
 import {
   DataLoader, ShardedDataLoader, SftDataLoader,
   loadOrCacheTokens, loadPretrainShardManifest, verifyPretrainShardManifest,
-  train, AdamW, FileCheckpoint, type BatchSource, type SftExample,
+  train, validateCheckpointModelCompatibility, AdamW, FileCheckpoint, type BatchSource, type SftExample,
 } from "@alpha/train";
 
 function tokenArray(size: number): Int32Array {
@@ -270,5 +270,21 @@ describe("data-loader resume positioning", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["normType", "rmsnorm"],
+    ["posEnc", "rope"],
+    ["ropeTheta", 500000],
+    ["tieEmbeddings", true],
+    ["softCap", 0],
+  ] as const)("rejects checkpoint architecture mismatch in %s", (key, value) => {
+    const checkpoint: ModelConfig = {
+      vocabSize: 256, blockSize: 8, nLayer: 2, nEmbd: 16, nHead: 2, dropout: 0,
+      ffnActivation: "gelu", ffnDim: 64, normType: "layernorm", posEnc: "learned",
+      ropeTheta: 10000, tieEmbeddings: false, softCap: 30,
+    };
+    const active = { ...checkpoint, [key]: value } as ModelConfig;
+    expect(() => validateCheckpointModelCompatibility("fixture.ckpt", checkpoint, active)).toThrow(new RegExp(key));
   });
 });
