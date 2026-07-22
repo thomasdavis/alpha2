@@ -83,6 +83,17 @@ complete NVIDIA gate 46/46. Output-pool caps 256/384 did not improve throughput 
 VkDeviceMemory count enough to replace the 512 default. Canonical evidence is under
 `/mnt/donto-data/alpha-runs/g2-wg-sweep-20260722/`.
 
+After deploying a new source commit, rerun the exact GPU regression through the fail-closed wrapper:
+
+```bash
+scripts/run_nvidia_gates.sh /workspace/alpha2/runs/nvidia-gate-<commit>
+```
+
+Do not use a bare successful Vitest exit as proof: Vitest exits zero when all GPU cases skip. The wrapper
+first requires Vulkan vendor `0x10de`, runs exactly `parity-helios.test.ts` + `gpu-perf.test.ts`, writes
+the JSON reporter output, and accepts only 46 unique assertion rows with 46 passed / 0 skipped / 0 failed.
+`gate-summary.json` binds the full git SHA, device record, exact filenames/counts, and report SHA-256.
+
 ## Get checkpoints OFF the pod continuously (community pods are disposable)
 Run the guarded puller on the box; never trust the pod to survive. It logs real remote metric-row
 advancement and RSS on every cycle, performs a final sync when training exits, and does not confuse an
