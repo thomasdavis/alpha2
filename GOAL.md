@@ -236,7 +236,10 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   corpus/audits/tokenizer/base checkpoint/current commit into the resumable run contract.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
-  run resumable (`--resume`); no fire-and-forget.
+  run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
+  three-copy remote/local retention: remote pruning requires a byte+SHA mirror proof, and each subsequent
+  local deletion is itself hash-ledgered before and after unlink. The policy is opt-in and rejects fewer
+  than three recovery points.
 - **Gate G5 = D3 chat bar.** If quality is word-salad at the bar, we do NOT ship a chat model; we ship
   the base model with an honest card and the ledger records what a bigger budget would change.
 

@@ -24,7 +24,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`7636ad2`**. TypeScript clean; consolidated suite
+- Current functional tree is pushed through **`99a9116`**. TypeScript clean; consolidated suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -68,6 +68,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `{1e-4,3e-4,1e-3}` sweep, launches exactly one 30,322-step assistant-only epoch, separates weight-only
   initialization from continuation resume, and records immutable hashes. Real corpus + step-100 fixture
   proof passed; wrong-base-step rejection passed; TypeScript and 200/46 consolidated gates stayed green.
+- Long-run checkpoint growth is bounded in `99a9116`. Use matching
+  `REMOTE_KEEP_CHECKPOINTS=3 LOCAL_KEEP_CHECKPOINTS=3`: remote deletion still requires local byte+SHA
+  proof, then local pruning keeps the newest three and fsyncs before/after deletion records (including
+  the removed hash) to `checkpoint-prune-ledger.jsonl`. Counts below three or mismatched policies fail
+  before SSH. The isolated six-checkpoint fixture retained 4–6, ledgered+removed 1–3, and was idempotent.
 - Immediate order: (1) monitor soak to completion; (2) verify 5,400 finite rows, duration ≥6h, flat
   RSS/allocator state with `scripts/analyze_g2_soak.ts`, then pull/hash/document under
   `/mnt/donto-data/alpha-runs/`; (3) sync current master
