@@ -24,6 +24,7 @@ mkdir -p "$RUN"
 [ -f "$RUN/corpus.txt" ] || nice -n19 head -c 5000000 "$CORPUS_SRC" > "$RUN/corpus.txt"
 
 echo "== 1/4 train tiny alpha_llama (4L/128d/4H rmsnorm+rope+tied+swiglu, bpe-byte-4k) =="
+[ -f "$RUN/run/checkpoint-30.json" ] && echo "  (checkpoint-30 exists — skipping train; rm -rf $RUN/run to retrain)" || \
 nice -n19 $CLI train \
   --data="$RUN/corpus.txt" --tokenizer=bpe-byte-4k \
   --layers=4 --dim=128 --heads=4 --block=128 \
@@ -36,6 +37,17 @@ CKPT="$RUN/run/checkpoint-30.json"
 
 echo "== 2/4 export to HF LlamaForCausalLM =="
 nice -n19 $CLI export-hf --checkpoint="$CKPT" --out="$RUN/hf"
+
+# Fixed golden prompts (the script must be self-contained — this file was
+# previously created by hand, which broke fresh runs).
+if [ ! -f "$RUN/prompts.txt" ]; then
+  cat > "$RUN/prompts.txt" <<'PROMPTS'
+The quick brown fox jumps over the lazy dog.
+In 1969, humans first landed on the Moon, and the mission was called Apollo 11.
+def add(a, b):
+    return a + b  # simple python function with an emoji comment 🚀
+PROMPTS
+fi
 
 echo "== 3/4 dump Alpha cpu_ref logits for the golden-token test =="
 nice -n19 $CLI logits --checkpoint="$CKPT" --prompt-file="$RUN/prompts.txt" --json --out="$RUN/alpha_logits.json"
