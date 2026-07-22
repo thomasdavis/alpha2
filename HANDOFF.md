@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-22 ~20:49 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-22 ~21:24 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,7 +7,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — G2 passed; pod is idle, bootstrapped, and billing
+## ⚠️ LIVE RIGHT NOW — G3 Llama pilot tokenizing on the paid 3090
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
@@ -16,15 +16,28 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
   checkpoint. Every analyzer check is true. Evidence:
   `/mnt/donto-data/alpha-runs/g2-soak-wg64-b16-5400-20260722/{RUN.md,g2-analysis.json}`.
-- The pod tree is still at `aca9f97` and is now safe to update. Deploy current master, run the fail-closed
-  NVIDIA regression wrapper, then start the contracted G3 Llama pilot; do not leave the paid GPU idle.
-- RunPod balance was **$66.736685594** immediately after G2; total account burn was $0.301/hr including
+- At the end of G2 the host GPU attachment failed (`nvidia-smi` unknown + `vkCreateInstance` failure).
+  Before touching the pod, 6.996GB of previously unmirrored runs plus every root log were copied to the
+  mounted drive; two checksum-mode rsync dry runs were exactly empty. A RunPod container restart restored
+  NVML and Vulkan. Exact tree `c95f81b` then passed the fail-closed NVIDIA gate: vendor `0x10de`, 46/46
+  executed and passed, zero skipped/failed/todo. Evidence:
+  `/mnt/donto-data/alpha-runs/nvidia-gate-c95f81b-attempt3/`.
+- **G3 Llama is live** as remote PID 463 at
+  `/workspace/alpha2/runs/g3-llama-100m-lr3e4-c95f81b-20260722`, started 21:20:08 UTC. It is in the
+  expected one-time tokenization pass over the 1.992GB shard (the 128MB ancestor took ~73s, so expect
+  ~18–20m here); CPU time and RSS are advancing while GPU memory remains idle. Inputs match sealed hashes.
+  Persistent box guard: `alpha2-g3-llama-puller-c95f81b.service`, 60s interval / 1,800s stale threshold,
+  matching remote+local checkpoint retention 3. Mounted run record:
+  `/mnt/donto-data/alpha-runs/g3-llama-100m-lr3e4-c95f81b-20260722/RUN.md`.
+- Keep both G3 halves on exact commit `c95f81b`; **do not pull a later origin commit onto the pod until
+  the Llama and GPT-2 pair is complete**. Launch GPT-2 only after Llama exits and the final mirror lands.
+- RunPod balance was **$66.5346286162** at 21:24 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current functional tree is pushed through **`7171f6d`** before this G2 record update. TypeScript clean; consolidated suite
+- Current certified functional tree is **`c95f81b`**. TypeScript clean; consolidated box suite
   **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
@@ -89,11 +102,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   complete finite runs, zero allocator overflow, full checkpoints, identical inputs+commit, and ranks
   final-three held-out loss. `run_flagship_sft.sh` now refuses to start without the matching report and
   verifies its selected LR plus every input hash. Positive and mismatch synthetic proofs passed.
-- Immediate order: (1) commit/push this G2 PASS record; (2) fast-forward the idle pod to current master,
-  build, and certify the exact tree with `run_nvidia_gates.sh`; (3) sync+hash the canonical G3 corpus and
-  launch the Llama half with the verified mirror/retention guard; (4) run the GPT-2 half sequentially and
-  compare with `analyze_g3_pair.ts`; (5) run the three-way LR sweep; (6) resumable flagship,
-  SFT, frozen eval, HF upload. Host disks are unexpectedly full (root 91%, data 87% at 16:24); avoid
+- Immediate order: (1) watch the Llama token cache complete and prove real metric/GPU progression; (2)
+  let the guarded 6,104-step run finish; (3) launch the GPT-2 half on the same exact commit/input/LR, then
+  compare with `analyze_g3_pair.ts`; (4) run the three-way LR sweep; (5) resumable flagship, SFT, frozen
+  eval, HF upload. Host disks are unexpectedly full (root 97%, data 87% at 21:10); avoid
   unbounded artifacts and do not destructively clean without resolving exact targets.
   The analyzer also requires the final full model+AdamW checkpoint to be 650–750 MiB (`ddd9bd3`), so a
   nonempty/truncated placeholder cannot satisfy G2.

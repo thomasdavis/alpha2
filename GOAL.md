@@ -173,6 +173,11 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   (top-1 agreement on 512 positions, fixed prompt) BEFORE the flagship run.** That last check is the
   from-scratch equivalent of "reproduce a pretrained checkpoint's logits" — it validates RoPE/RMSNorm/
   SwiGLU/export in one shot, without importing anyone's weights.
+  **IN PROGRESS 2026-07-22:** exact certified source `c95f81b`; the Llama half started at 21:20:08 UTC
+  as `g3-llama-100m-lr3e4-c95f81b-20260722`. Both 1.992GB data and tokenizer hashes match the sealed
+  mounted inputs. A persistent 60-second guard mirrors metrics/logs/checkpoints and retains the latest
+  three on each side. The initial ~18–20m token-cache build is a one-time cost shared by the GPT-2
+  control and subsequent LR pilots; require actual metric rows before calling the launch healthy.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
@@ -275,7 +280,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
 | Beachhead probes (2026-07-22, 3090 ~1.5h) | $0.50 | ~$0.40 |
 | Stage 0-1 smoke + parity runs | $4 | ~$0.30 incremental through G1 (live pod; reconcile at termination) |
 | Stage 2 profiling + 6h soak | $8 | PASS; final soak GPU time ≈6.44h / ≈$1.42; account balance $66.736685594 at 20:45 UTC while pod remained live for G3; account burn also includes unrelated stopped volumes |
-| Stage 3 pilots (2× 100M-token) | $4 | |
+| Stage 3 pilots (2× 100M-token) | $4 | Llama half launched on certified `c95f81b`; balance $66.5346286162 at 21:24 UTC, account burn $0.301/hr incl. unrelated volumes |
 | Stage 5 lr sweeps (3× 100M-token) | $5 | |
 | Stage 5 pretrain 1B tok @ ≥3K tok/s | $20-25 | |
 | Stage 5 SFT + evals | $3 | |
@@ -319,11 +324,10 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-22)
 
-1. Deploy current master to the still-live pod and run the fail-closed NVIDIA regression wrapper; it must
-   certify vendor `0x10de`, 46/46 passed, and zero skipped/failed/todo on the exact deployed tree.
-2. Sync and SHA-verify the canonical 1.99GB pretrain shard, then run G3's equal-token old-vs-Llama 100M-token
-   pilots (the golden export half is already 75/75 top-1, max logit delta 1.07e-06). Use the independent
-   validation/checkpoint cadence and verified remote retention pushed in `da39e8a`; `867f016` pins and
-   analyzer-verifies the full architecture contract instead of trusting mutable domain defaults.
+1. Verify the live G3 Llama pilot crosses one-time tokenization into real metric/GPU progression, then let
+   its persistent guard carry all 6,104 steps and final checkpoint onto the mounted drive.
+2. Run GPT-2 sequentially on exact commit `c95f81b` with the same input/tokenizer/LR, then evaluate the
+   100,007,936-token pair with `analyze_g3_pair.ts`. The golden export half is already 75/75 top-1 with
+   max logit delta 1.07e-06. Do not pull a newer source commit between the two architecture runs.
 3. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
    with a verified box-side checkpoint puller.
