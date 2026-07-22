@@ -55,6 +55,21 @@ nohup node --expose-gc apps/cli/dist/main.js train \
 Always `--fp16=false` explicitly (the L4 auto-profile force-enables fp16, which NaNs). Stability env
 of record: `HELIOS_DISABLE_COOP_MAT=1`.
 
+### RTX 3090 profile (measured 2026-07-22)
+
+The Stage-2 flagship sweep (57.7M params, f32, block 1024, batch 16) selected:
+
+```bash
+export HELIOS_WG_SIZE=64
+export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512  # current default; keep explicit in proof runs
+export HELIOS_DISABLE_COOP_MAT=1
+```
+
+WG64 averaged 3,894 tok/s over the controlled sweep window versus 3,869 at WG128, and passed the
+complete NVIDIA gate 46/46. Output-pool caps 256/384 did not improve throughput or the native
+VkDeviceMemory count enough to replace the 512 default. Canonical evidence is under
+`/mnt/donto-data/alpha-runs/g2-wg-sweep-20260722/`.
+
 ## Get checkpoints OFF the pod continuously (community pods are disposable)
 Run a puller loop on the box; never trust the pod to survive:
 ```bash
