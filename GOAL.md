@@ -259,7 +259,8 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   corpus, so 1B training tokens neither repeat one ~450M split nor exceed Node's giant-buffer limits.
   Cache files are keyed by exact tokenizer-artifact SHA and written by checked chunked I/O to an fsynced
   temporary followed by atomic rename (`45bfe60`); legacy/truncated/source-size-mismatched caches rebuild.
-  `run_flagship_pretrain.sh` (`f6c590e`) admits only an LR from the contracted sweep and fixes the exact
+  `run_flagship_pretrain.sh` consumes the analyzer's hash-bound LR-selection report (not a hand-entered
+  member of the sweep) and fixes the exact
   61,036-step / 1,000,013,824-token architecture, optimizer, eval, checkpoint, manifest, tokenizer,
   commit, and resume contract.
   **LR SWEEP LIVE 2026-07-23:** functional/source commit `e6d9430` rebuilt 19/19 on the RTX 3090 pod

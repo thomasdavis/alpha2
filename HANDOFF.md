@@ -115,10 +115,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   among exactly `{1e-3,2e-3,3e-3}` by the final-three aligned held-out-loss mean (final loss/lower LR are
   deterministic tie-breaks). Its positive and contract-rejection synthetic tests passed in `61c1edb`;
   `59c62dd` additionally requires complete 100-step allocator telemetry through the final pilot row.
-- `run_flagship_pretrain.sh` (`f6c590e`) consumes only a selected contracted LR and launches exactly
+- `run_flagship_pretrain.sh` consumes the analyzer's hash-bound LR-selection report and launches exactly
   1,000,013,824 tokens over the verified three-shard manifest, with the explicit Llama/AdamW profile,
   independent eval/checkpoint cadence, immutable contract, and safe resume ledger. Contract-only positive
-  and wrong-LR rejection proofs passed without launching training.
+  and wrong-tokenizer/report-mutation rejection proofs passed without launching training.
 - Base→SFT initialization is no longer conflated with resume: `--initCheckpoint` (`55c86db`) validates
   and restores weights only, resets the declared RNG, and starts a fresh optimizer/schedule at step zero;
   it is mutually exclusive with continuation `--resume` and has bit-identical parameter proof at LR zero.

@@ -132,12 +132,13 @@ aligning the active stream. Never invoke `alpha train --resume` by hand against 
 
 After G3 and the LR selector pass, launch the minimum flagship only through:
 ```bash
-scripts/run_flagship_pretrain.sh <selected-lr> /runpod/data/flagship-1b-manifest.json \
+scripts/run_flagship_pretrain.sh <lr-selection-report> /runpod/data/flagship-1b-manifest.json \
   /workspace/alpha2/artifacts/g2-bpe-byte-12k.json /workspace/alpha2/runs/flagship-1b
 ```
-The launcher admits only `{1e-3,2e-3,3e-3}`, verifies all shard hashes before GPU initialization, and
-contracts 61,036 × 16 × 1,024 = 1,000,013,824 tokens. Resume with the same command plus the checkpoint
-as argument five. Pair it with the box-side guard using matching
+The launcher derives the LR from the selector's PASS report, verifies its exact three-candidate ranking
+and tokenizer hash, binds the report bytes into the run/resume contract, verifies all shard hashes before
+GPU initialization, and contracts 61,036 × 16 × 1,024 = 1,000,013,824 tokens. Resume with the same
+command plus the checkpoint as argument five. Pair it with the box-side guard using matching
 `REMOTE_KEEP_CHECKPOINTS=3 LOCAL_KEEP_CHECKPOINTS=3` retention.
 
 ## Terminate
