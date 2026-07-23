@@ -272,6 +272,58 @@ describe("data-loader resume positioning", () => {
         initCheckpointPath: string;
       };
       expect(initializedConfig.initCheckpointPath).toBe(sourceCheckpoint);
+
+      const initializedCheckpoint = join(initializedRunDir, "checkpoint-1.json");
+      const resumedBackend = new CpuRefBackend();
+      await train({
+        backend: resumedBackend,
+        tokenizer,
+        optimizer: new AdamW(resumedBackend, { lr: 0, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 }),
+        rng: new SeededRng(123),
+        modelConfig,
+        trainConfig: {
+          iters: 2, batchSize: 2, lr: 0, lrMin: 0, warmupIters: 0,
+          beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0, gradClip: 1,
+          evalInterval: 10, checkpointInterval: 10, evalIters: 1, seed: 99, backend: "cpu_ref",
+          tokenizer: "test-byte", optimizer: "adamw", logLevel: "info", logEvery: 1,
+          trace: false, gradAccumSteps: 1, sampleInterval: 0, spikeThreshold: 0,
+          embGradScale: 1, syncEvery: 0, gcEvery: 0, packed: true, symbio: false, symbioConfig: null,
+        },
+        dataPath: first,
+        dataPaths: [first, second],
+        resumePath: initializedCheckpoint,
+        runDir: initializedRunDir,
+      });
+      const resumedConfig = JSON.parse(await readFile(join(initializedRunDir, "config.json"), "utf8")) as {
+        initCheckpointPath: string;
+        resumePath: string;
+      };
+      expect(resumedConfig.initCheckpointPath).toBe(sourceCheckpoint);
+      expect(resumedConfig.resumePath).toBe(initializedCheckpoint);
+
+      const configWithoutOrigin = { ...resumedConfig } as Partial<typeof resumedConfig>;
+      delete configWithoutOrigin.initCheckpointPath;
+      await writeFile(join(initializedRunDir, "config.json"), JSON.stringify(configWithoutOrigin), "utf8");
+      const missingOriginBackend = new CpuRefBackend();
+      await expect(train({
+        backend: missingOriginBackend,
+        tokenizer,
+        optimizer: new AdamW(missingOriginBackend, { lr: 0, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 }),
+        rng: new SeededRng(456),
+        modelConfig,
+        trainConfig: {
+          iters: 3, batchSize: 2, lr: 0, lrMin: 0, warmupIters: 0,
+          beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0, gradClip: 1,
+          evalInterval: 10, checkpointInterval: 10, evalIters: 1, seed: 99, backend: "cpu_ref",
+          tokenizer: "test-byte", optimizer: "adamw", logLevel: "info", logEvery: 1,
+          trace: false, gradAccumSteps: 1, sampleInterval: 0, spikeThreshold: 0,
+          embGradScale: 1, syncEvery: 0, gcEvery: 0, packed: false, symbio: false, symbioConfig: null,
+        },
+        dataPath: first,
+        resumePath: join(initializedRunDir, "checkpoint-2.json"),
+        runDir: initializedRunDir,
+        sft: true,
+      })).rejects.toThrow("SFT resume requires the existing run config to preserve initCheckpointPath provenance");
     } finally {
       if (previousGc === undefined) delete (globalThis as any).gc;
       else (globalThis as any).gc = previousGc;

@@ -634,11 +634,32 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   await fs.mkdir(runDir, { recursive: true });
+  const configPath = path.join(runDir, "config.json");
+  let inheritedInitCheckpointPath: string | undefined;
+  if (resumePath) {
+    try {
+      const existingConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+        initCheckpointPath?: unknown;
+      };
+      if (existingConfig.initCheckpointPath !== undefined) {
+        if (typeof existingConfig.initCheckpointPath !== "string" || existingConfig.initCheckpointPath.length === 0) {
+          throw new Error("existing run config has an invalid initCheckpointPath");
+        }
+        inheritedInitCheckpointPath = existingConfig.initCheckpointPath;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (deps.sft && !inheritedInitCheckpointPath) {
+      throw new Error("SFT resume requires the existing run config to preserve initCheckpointPath provenance");
+    }
+  }
   const configObj: Record<string, unknown> = { modelConfig, trainConfig, configHash, runId: rid };
   if (dataPaths.length > 1) configObj.dataPaths = dataPaths;
   if (initCheckpointPath) configObj.initCheckpointPath = initCheckpointPath;
+  else if (inheritedInitCheckpointPath) configObj.initCheckpointPath = inheritedInitCheckpointPath;
+  if (resumePath) configObj.resumePath = resumePath;
   if (deps.domain) configObj.domain = deps.domain;
-  const configPath = path.join(runDir, "config.json");
   async function writeConfig(): Promise<void> {
     const tmp = configPath + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(configObj, null, 2));

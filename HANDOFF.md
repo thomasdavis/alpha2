@@ -125,6 +125,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - `analyze_flagship_sft.ts` is the matching terminal chat-run gate: exact SFT selector/input/commit,
   30,322 finite rows, 61 aligned validations, complete zero-overflow allocator telemetry, and a
   hash-bound reuse of `verify_flagship_sft_inputs.ts` to scan every terminal chat parameter.
+- SFT resume now preserves the fresh run's base `initCheckpointPath` when `config.json` is rewritten,
+  records the active `resumePath`, and refuses SFT resume if the existing origin provenance is absent.
 - Base→SFT initialization is no longer conflated with resume: `--initCheckpoint` (`55c86db`) validates
   and restores weights only, resets the declared RNG, and starts a fresh optimizer/schedule at step zero;
   it is mutually exclusive with continuation `--resume` and has bit-identical parameter proof at LR zero.
