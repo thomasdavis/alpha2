@@ -190,7 +190,10 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   hash parity plus a full native-format/finite-parameter audit. Its unchanged 5,284,184kB HWM proved
   checkpoint allocation reuse, while elevated post-save RSS exposed delayed collection of cloned AdamW
   buffers. A local post-save-GC + external-memory telemetry hardening passes TypeScript and 200/46 tests;
-  deployment waits until the exact `c95f81b` architecture pair is complete.
+  deployment waits until the exact `c95f81b` architecture pair is complete. The step-3,000 gate has now
+  proven 3,000/3,000 finite consecutive rows, six monotonically improving validations through 4.0920273,
+  3,863 tok/s median after warmup, and a third complete hash-mirrored/native-audited checkpoint. HWM
+  remained exactly 5,284,184kB across the third save, confirming bounded checkpoint-memory reuse.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
