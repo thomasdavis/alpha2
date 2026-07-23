@@ -197,11 +197,11 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   Terminal checkpoint 6,104 is a hash-mirrored/native-audited 692,528,815-byte ALPH file with every
   parameter finite/nonzero; the final guard safely retained exactly 5,000/6,000/6,104 and exited.
   The sequential GPT-2 control then launched on the unchanged tree and exact same inputs/LR/schedule at
-  04:55 UTC. Its contract is 58,094,592 params (+0.704%). The step-2,000 durability gate has
-  2,000/2,000 finite/consecutive rows; held-out loss improved through four points to 4.7796219 and
-  remains worse than Llama by 0.3190–0.3741 at every aligned point. Median throughput is 4,708 tok/s,
-  allocator overflow is zero, and the second 697,403,761-byte checkpoint is hash-mirrored/native-audited
-  with all parameters finite/nonzero. Post-save RSS/HWM is 3,969,136kB with zero swap, preserving the
+  04:55 UTC. Its contract is 58,094,592 params (+0.704%). The step-3,000 durability gate has
+  3,000/3,000 finite/consecutive rows; held-out loss improved through six points to 4.4349152 and
+  remains worse than Llama by 0.3190–0.3741 at every aligned point. Median throughput is 4,703 tok/s,
+  allocator overflow is zero, and the third 697,403,761-byte checkpoint is hash-mirrored/native-audited
+  with all parameters finite/nonzero. Post-save RSS/HWM is 3,994,224kB with zero swap, preserving the
   known delayed-GC evidence. G3 remains open until GPT-2 completes and `analyze_g3_pair.ts` compares
   the pair.
 
