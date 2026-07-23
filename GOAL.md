@@ -196,14 +196,15 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   loss 3.7274671, last-three validation mean 3.7829017, 63 complete allocator samples, zero overflow.
   Terminal checkpoint 6,104 is a hash-mirrored/native-audited 692,528,815-byte ALPH file with every
   parameter finite/nonzero; the final guard safely retained exactly 5,000/6,000/6,104 and exited.
-  The sequential GPT-2 control then launched on the unchanged tree and exact same inputs/LR/schedule at
-  04:55 UTC. Its contract is 58,094,592 params (+0.704%). The step-5,000 durability gate has
-  5,000/5,000 finite/consecutive rows; held-out loss improved through ten points to 4.0388060 and
-  remains worse than Llama by 0.2381–0.3741 at every aligned point. Median throughput is 4,703 tok/s,
-  allocator overflow is zero, and the fifth 697,403,761-byte checkpoint is hash-mirrored/native-audited
-  with all parameters finite/nonzero. Post-save RSS/HWM is 4,000,496kB with zero swap. Matched retention
-  safely left exactly checkpoints 3,000/4,000/5,000 on both sides after recording checkpoint 2,000's
-  deletion ledger. G3 remains open until GPT-2 completes and `analyze_g3_pair.ts` compares the pair.
+  The sequential GPT-2 control completed on the unchanged tree and exact same inputs/LR/schedule:
+  6,104/6,104 finite/consecutive rows, exactly 100,007,936 tokens, 58,094,592 params (+0.704%),
+  4,704 tok/s median, final/last-100 train loss 4.0688343/3.9916938, final held-out loss 3.9457434,
+  63 complete allocator samples, and zero overflow. Its terminal 697,403,761-byte checkpoint is
+  hash-mirrored/native-audited with every parameter finite/nonzero; the guard safely retained exactly
+  5,000/6,000/6,104 and exited. **G3 PASS:** canonical pair analysis confirms matching contracts,
+  Llama wins all 12 aligned validations, final advantage 0.2182763 and last-three mean advantage
+  0.2302373, with zero overflow in both runs. Immutable report:
+  `/mnt/donto-data/alpha-runs/g3-pair-analysis-c95f81b-20260723.json`.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
@@ -348,12 +349,12 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (current 2026-07-22)
+## 8. Immediate next actions (current 2026-07-23)
 
-1. Let the healthy G3 Llama pilot and its persistent guard carry all 6,104 finite rows and the final
-   checkpoint onto the mounted drive.
-2. Run GPT-2 sequentially on exact commit `c95f81b` with the same input/tokenizer/LR, then evaluate the
-   100,007,936-token pair with `analyze_g3_pair.ts`. The golden export half is already 75/75 top-1 with
-   max logit delta 1.07e-06. Do not pull a newer source commit between the two architecture runs.
-3. Run the three-way 100M-token LR sweep, choose in the ledger, then begin the resumable flagship pretrain
-   with a verified box-side checkpoint puller.
+1. Deploy current master to the now-idle paid pod, rebuild, and pass `run_nvidia_gates.sh` 46/46 on the
+   RTX 3090. This activates the tested post-checkpoint-GC and external/ArrayBuffer telemetry hardening
+   only after the exact `c95f81b` G3 pair has closed.
+2. Run the contracted Llama pretraining LR pilots at `{1e-3,2e-3,3e-3}` sequentially with verified
+   box-side guards, then select only through `analyze_lr_sweep.ts`.
+3. Launch the selected-LR 1,000,013,824-token flagship pretrain with the verified three-shard manifest
+   and matched three-copy checkpoint retention.
