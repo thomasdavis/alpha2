@@ -270,11 +270,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   terminal checkpoint 6,104 is a 692,528,815-byte, hash-mirrored/native-audited ALPH file at
   `e43ce5a9…` with every parameter finite/nonzero. Its guard retained exactly 5,000/6,000/6,104,
   logged `final pull complete`, and exited. The second `2e-3` candidate started on the identical
-  pinned source/data/tokenizer contract. Through its step-500 held-out gate all rows are consecutive
-  and finite, train/held-out loss is 5.4389/5.6156, median post-step-100 throughput is 3,858 tok/s,
-  and six allocator samples report 34 slabs with zero overflow. The remote/mounted 500-row prefix is
-  byte-identical at `93f2cf5e…`, RSS/HWM is 2,835,620kB with zero swap, and training resumed through
-  step 525. Its first held-out result is 0.1779 worse than aligned `1e-3`, an interim signal only.
+  pinned source/data/tokenizer contract. Through its step-1,000 checkpoint gate all rows are
+  consecutive and finite, train/held-out loss is 4.9911/5.0448, median post-step-100 throughput is
+  3,853 tok/s, and 11 allocator samples report 34 slabs with zero overflow. The remote/mounted
+  1,000-row prefix is byte-identical at `4b94b6ef…`; checkpoint 1,000 is a hash-mirrored,
+  native-audited 692,528,815-byte ALPH file at `1b9d4eae…`, with every parameter finite/nonzero.
+  Training resumed through step 1,050 at 100% GPU utilization. Post-save memory plateaued at
+  3,278MB RSS and 3,148MB external with zero process swap, the known pinned-tree retention behavior
+  fixed on current origin. Its aligned held-out result is 0.1270 worse than `1e-3`, an interim signal.
   Its 60-second/1,800-second matched-retention guard is active. Selection
   waits for all three final-three means. Keep every sweep candidate on `e6d9430`; then deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
