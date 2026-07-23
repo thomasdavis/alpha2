@@ -190,15 +190,16 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   hash parity plus a full native-format/finite-parameter audit. Its unchanged 5,284,184kB HWM proved
   checkpoint allocation reuse, while elevated post-save RSS exposed delayed collection of cloned AdamW
   buffers. A local post-save-GC + external-memory telemetry hardening passes TypeScript and 200/46 tests;
-  deployment waits until the exact `c95f81b` architecture pair is complete. The step-3,000 gate has now
-  proven 3,000/3,000 finite consecutive rows, six monotonically improving validations through 4.0920273,
-  3,863 tok/s median after warmup, and a third complete hash-mirrored/native-audited checkpoint. HWM
-  remained exactly 5,284,184kB across the third save, confirming bounded checkpoint-memory reuse. The
-  step-5,000 gate now proves 5,000/5,000 finite rows, ten monotonically improving validations through
-  3.7956590, 3,868 tok/s median, and a fifth audited checkpoint. The first two live three-copy retention
-  transactions passed end to end: local size/SHA proof preceded each remote deletion; fsynced
-  `delete_committed` preceded each local deletion and fsynced `deleted`; both sides retain
-  3,000/4,000/5,000. Checkpoint RSS/HWM remained bounded at 4,259,548/5,284,184kB with zero swap.
+  deployment waits until the exact `c95f81b` architecture pair is complete. The Llama half completed
+  normally at 6,104/6,104 rows and exactly 100,007,936 tokens. Canonical `summarizePilot` passed:
+  57,688,576 params, 3,876 tok/s median, final/last-100 train loss 3.8499150/3.7737795, final held-out
+  loss 3.7274671, last-three validation mean 3.7829017, 63 complete allocator samples, zero overflow.
+  Terminal checkpoint 6,104 is a hash-mirrored/native-audited 692,528,815-byte ALPH file with every
+  parameter finite/nonzero; the final guard safely retained exactly 5,000/6,000/6,104 and exited.
+  The sequential GPT-2 control then launched on the unchanged tree and exact same inputs/LR/schedule at
+  04:55 UTC. Its contract is 58,094,592 params (+0.704%); rows 1–50 are finite/consecutive, loss fell
+  9.5209293→7.8736362, step 50 ran at 4,382 tok/s, and the persistent guard is active with zero
+  allocator overflow. G3 remains open until GPT-2 completes and `analyze_g3_pair.ts` compares the pair.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
