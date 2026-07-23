@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~18:36 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~20:00 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,35 +7,31 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — G3 PASSED; `1e-3` Llama LR pilot is training on the paid 3090
+## ⚠️ LIVE RIGHT NOW — `1e-3` COMPLETE; `2e-3` Llama LR pilot is training on the paid 3090
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
-- **First contracted LR pilot is LIVE** at
-  `/workspace/alpha2/runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723`, started 12:41 UTC on current
-  master `e6d9430` after a clean 19/19 build and a real fail-closed RTX 3090 gate PASS (46/46,
-  zero skipped/failed/todo; mounted proof `/mnt/donto-data/alpha-runs/nvidia-gate-e6d9430-20260723/`).
-  Its immutable contract fixes 57,688,576 Llama params, LR/min `1e-3/1e-4`, and exactly 100,007,936
-  tokens on the same data/tokenizer hashes as G3. The step-500 full-rate gate passed: all rows are
-  consecutive/finite, train/held-out loss is 5.3289/5.4377 at LR `1e-3`, median post-step-100
-  throughput is 3,899 tok/s, external/ArrayBuffer telemetry is stable, and allocator telemetry reports
-  34 slabs with zero overflow. Remote/mounted rows 1–500 are byte-identical at SHA-256 `4f266a96…`.
-  Guard: `alpha2-lr1e3-puller-e6d9430.service`,
-  60s/1,800s, matched retention 3. Mounted evidence:
-  `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
-  Checkpoints through 5,000 are verified 692,528,815-byte ALPH files with all 57,688,576 parameters
-  finite/nonzero. Checkpoint 5,000 SHA-256 is `3b1374b4…`; step-5,000 train/held-out loss is
-  3.8921/3.6270, the 5,000-row prefix is finite, consecutive, and byte-identical on both sides
-  (`b92acb2e…`), and training resumed through step 5,025 at 100% GPU. It beats the aligned historical
-  `3e-4` held-out loss by 0.1687, an interim signal only. Retention correctly verified and pruned
-  checkpoint 2,000 and now keeps exactly 3,000/4,000/5,000 on both sides. The pinned tree's RSS grew
-  from 3,211MB to 3,951MB after the second save, then stayed bounded through saves 3,000–5,000.
-  This is safe for the pilot on a 251GB host but blocks the flagship until fixed. `3a7ff9d` +
-  `13ec17b` explicitly release
-  cloned AdamW buffers, serializer slots, and Buffer views, and always log checkpoint memory. A
-  four-cycle nonzero/committed-page proof stayed bounded by one snapshot (post-GC RSS 180–184MB and
-  ArrayBuffers 64MB); targeted 19/19, box 201 pass + 46 NVIDIA-gated skip, and train build are green.
-  Do not deploy it between sweep candidates: all three must remain on `e6d9430`.
+- **First contracted LR pilot (`1e-3`) is COMPLETE.** Its strict summary passed 6,104/6,104
+  consecutive finite rows and exactly 100,007,936 tokens: final train loss 3.6922, last-100 train mean
+  3.5989, median post-warmup throughput 3,892 tok/s, and final-three held-out-loss mean 3.6045400
+  (3.6270/3.6437/3.5430). All 63 allocator samples are complete with zero overflow. Terminal
+  `checkpoint-6104.json` is a hash-mirrored/native-audited 692,528,815-byte ALPH file with all
+  57,688,576 parameters finite/nonzero at SHA-256 `e43ce5a9…`; final metrics SHA-256 is
+  `8f84060a…`. The guard retained exactly 5,000/6,000/6,104, logged `final pull complete`, and exited.
+  Evidence: `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
+- **Second contracted LR pilot (`2e-3`) is LIVE** at
+  `/workspace/alpha2/runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723`, started 19:55 UTC on the same
+  deliberately pinned `e6d9430` source/data/tokenizer contract. The first durable 50-row block is
+  consecutive, finite, and byte-identical on pod/mounted drive at SHA-256 `26877319…`; loss fell
+  9.5262→7.0806, median throughput was 3,907 tok/s, and step-1 allocator telemetry reported 34 slabs
+  with zero overflow. Process RSS/HWM was 2,830,244kB with zero swap and the RTX 3090 was at 100%
+  utilization. Guard: `alpha2-lr2e3-puller-e6d9430.service`, 60s/1,800s, matched retention 3.
+  Mounted evidence:
+  `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723/RUN.md`.
+- Keep all three sweep candidates on `e6d9430`. Current origin has `3a7ff9d` + `13ec17b`, which
+  release cloned AdamW buffers, serializer slots, and Buffer views and passed a four-cycle committed
+  page proof plus targeted 19/19 and consolidated 201-pass tests. Deploy and NVIDIA-prove those fixes
+  only after the three-candidate source-pinned sweep, before flagship.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -80,7 +76,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$60.1660751159** at 18:36 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$59.7560387194** at about 19:58 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
