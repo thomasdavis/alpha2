@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~14:12 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~15:15 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -23,13 +23,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Guard: `alpha2-lr1e3-puller-e6d9430.service`,
   60s/1,800s, matched retention 3. Mounted evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
-  Step 1,000 also produced a fully verified 692,528,815-byte checkpoint: remote/mounted SHA-256
-  `094acae0…`, valid ALPH payload, and all 57,688,576 parameters finite/nonzero. Training resumed at
-  100% GPU. The new telemetry then caught external/ArrayBuffer memory retained at 3,148/3,146MB versus
-  2,412/2,410MB before save. This is bounded for a six-checkpoint pilot but blocks the flagship.
-  `3a7ff9d` explicitly releases the two cloned AdamW moment-buffer sets, clears serializer references,
-  and always logs checkpoint memory; targeted 19/19, box 201 pass + 46 NVIDIA-gated skip, and build
-  19/19 are green. Do not deploy it between sweep candidates: all three must remain on `e6d9430`.
+  Checkpoints 1,000 and 2,000 are both fully verified 692,528,815-byte ALPH files with all 57,688,576
+  parameters finite/nonzero. SHA-256 is `094acae0…` and `72376351…`; step-2,000 train/held-out loss is
+  4.2134/4.1369 and training resumed normally. The pinned tree's RSS grew from 3,211MB to 3,951MB after
+  the second save, while ArrayBuffers stayed at their first-checkpoint high water. This is safe for the
+  pilot on a 251GB host but blocks the flagship until fixed. `3a7ff9d` + `13ec17b` explicitly release
+  cloned AdamW buffers, serializer slots, and Buffer views, and always log checkpoint memory. A
+  four-cycle nonzero/committed-page proof stayed bounded by one snapshot (post-GC RSS 180–184MB and
+  ArrayBuffers 64MB); targeted 19/19, box 201 pass + 46 NVIDIA-gated skip, and train build are green.
+  Do not deploy it between sweep candidates: all three must remain on `e6d9430`.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -74,7 +76,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$61.4537263497** at 14:12 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$61.1309531811** at 15:15 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
