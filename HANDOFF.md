@@ -119,6 +119,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   1,000,013,824 tokens over the verified three-shard manifest, with the explicit Llama/AdamW profile,
   independent eval/checkpoint cadence, immutable contract, and safe resume ledger. Contract-only positive
   and wrong-tokenizer/report-mutation rejection proofs passed without launching training.
+- `analyze_flagship_pretrain.ts` is the terminal 1B-run gate: exact report/manifest/tokenizer/commit,
+  architecture, optimizer, data coverage, 61,036 finite rows, 123 aligned validations, complete
+  zero-overflow allocator telemetry, ≥3K tok/s p10/median, and a streaming native finite/nonzero audit of
+  all 57,688,576 terminal parameters.
 - Base→SFT initialization is no longer conflated with resume: `--initCheckpoint` (`55c86db`) validates
   and restores weights only, resets the declared RNG, and starts a fresh optimizer/schedule at step zero;
   it is mutually exclusive with continuation `--resume` and has bit-identical parameter proof at LR zero.

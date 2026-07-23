@@ -262,7 +262,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `run_flagship_pretrain.sh` consumes the analyzer's hash-bound LR-selection report (not a hand-entered
   member of the sweep) and fixes the exact
   61,036-step / 1,000,013,824-token architecture, optimizer, eval, checkpoint, manifest, tokenizer,
-  commit, and resume contract.
+  commit, and resume contract. `analyze_flagship_pretrain.ts` is the terminal fail-closed gate: it
+  recomputes those bindings, requires every finite/consecutive metric and aligned validation, complete
+  zero-overflow allocator telemetry, ≥3K tok/s p10/median, and native-audits every terminal parameter.
   **LR SWEEP LIVE 2026-07-23:** functional/source commit `e6d9430` rebuilt 19/19 on the RTX 3090 pod
   and passed the fail-closed NVIDIA gate 46/46 with zero skipped/failed/todo. The `1e-3` Llama
   candidate is complete: strict summary passed 6,104/6,104 consecutive finite rows and exactly
