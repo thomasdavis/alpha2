@@ -267,7 +267,10 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   running under a 60-second mirror/stall guard. Its step-500 full-rate gate is verified: 500/500 rows
   consecutive/finite, train/held-out loss 5.3289/5.4377 at LR `1e-3`, median post-step-100 throughput
   3,899 tok/s, stable host memory, 34 slabs, and zero overflow. Remote and mounted prefixes are
-  byte-identical at SHA-256 `4f266a96…`.
+  byte-identical at SHA-256 `4f266a96…`. Its first 692,528,815-byte checkpoint is hash-mirrored and
+  native-audited, but the new telemetry showed one checkpoint-sized external buffer retained afterward.
+  Fix `3a7ff9d` explicitly releases the cloned AdamW snapshot and is box-green; keep all sweep candidates
+  on `e6d9430`, then deploy/prove the fix before the 1B-token flagship.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights

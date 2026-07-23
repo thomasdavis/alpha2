@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~13:18 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~14:12 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -23,6 +23,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Guard: `alpha2-lr1e3-puller-e6d9430.service`,
   60s/1,800s, matched retention 3. Mounted evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
+  Step 1,000 also produced a fully verified 692,528,815-byte checkpoint: remote/mounted SHA-256
+  `094acae0…`, valid ALPH payload, and all 57,688,576 parameters finite/nonzero. Training resumed at
+  100% GPU. The new telemetry then caught external/ArrayBuffer memory retained at 3,148/3,146MB versus
+  2,412/2,410MB before save. This is bounded for a six-checkpoint pilot but blocks the flagship.
+  `3a7ff9d` explicitly releases the two cloned AdamW moment-buffer sets, clears serializer references,
+  and always logs checkpoint memory; targeted 19/19, box 201 pass + 46 NVIDIA-gated skip, and build
+  19/19 are green. Do not deploy it between sweep candidates: all three must remain on `e6d9430`.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -60,14 +67,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The exact-pair pin is satisfied. The pod is now on `e6d9430`, its rebuild and 46/46 NVIDIA gate are
   proven, and the contracted `{1e-3,2e-3,3e-3}` Llama sweep is under way. Run the three candidates
   sequentially and select only through `analyze_lr_sweep.ts`.
-- Checkpoint 2,000 left CPU RSS at 4,236,328kB versus 3,478,312kB immediately before save, but HWM
-  remained exactly 5,284,184kB: buffers reused the prior peak but awaited a later GC. The local tree now
-  scopes checkpoint state before explicit post-save GC and records external/ArrayBuffer telemetry; TS
-  and 200/46 tests are green. The pair is complete, so this hardening is now the next deployment.
+- Checkpoint 2,000 in G3 first exposed delayed snapshot reclamation. The `e6d9430` scoping/GC telemetry
+  deployment proved the remaining issue precisely at this LR pilot's step 1,000: one full checkpoint
+  stayed reachable after GC. `3a7ff9d` now explicitly clears the cloned optimizer snapshot and serializer
+  reference list in `finally`; deploy and re-prove it after the source-pinned LR sweep, before flagship.
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$61.7065570496** at 13:18 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$61.4537263497** at 14:12 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
