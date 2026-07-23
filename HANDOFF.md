@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~08:53 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~09:52 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -38,14 +38,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   identical to Llama on source/input/tokenizer/seed/optimizer/schedule/LR/token count; only the intended
   architecture differs (14L, LayerNorm, learned positions, untied embeddings), at 58,094,592 params
   versus Llama's 57,688,576 (+0.704%). Cached 463,290,711 train + 51,536,242 validation tokens loaded
-  directly. **Step-4,000 durability gate passed:** 4,000/4,000 rows are consecutive/finite; held-out
-  loss improved through eight aligned points to 4.2369467 and remains worse than Llama by 0.2627–0.3741
-  at every point. Median throughput is 4,703 tok/s; 34 slabs and zero overflow. Checkpoint 4,000 is
+  directly. **Step-5,000 durability gate passed:** 5,000/5,000 rows are consecutive/finite; held-out
+  loss improved through ten aligned points to 4.0388060 and remains worse than Llama by 0.2381–0.3741
+  at every point. Median throughput is 4,703 tok/s; 34 slabs and zero overflow. Checkpoint 5,000 is
   exactly 697,403,761 bytes and hash-identical at SHA-256
-  `67113a9303babd222746cbf1434b16d94da261fbbc847683d809f7870f594db2`; native audit proved all
-  58,094,592 parameters finite/nonzero. Training resumed beyond step 4,025. Post-save RSS/HWM was
-  3,996,016kB with zero swap. Matched retention safely pruned checkpoint 1,000 only after mirror proof;
-  remote and mounted directories both retain exactly checkpoints 2,000/3,000/4,000.
+  `b98a12bd9542d00ab19f261316078ad8376db5c25d31d0ca51ea28a770a7de22`; native audit proved all
+  58,094,592 parameters finite/nonzero. Training resumed beyond step 5,050. Post-save RSS/HWM was
+  4,000,496kB with zero swap. Matched retention safely pruned checkpoint 2,000 only after mirror proof;
+  remote and mounted directories both retain exactly checkpoints 3,000/4,000/5,000.
   Persistent guard: `alpha2-g3-gpt2-puller-c95f81b.service`, 60s / 1,800s, matched retention 3.
   Evidence: `/mnt/donto-data/alpha-runs/g3-gpt2-100m-lr3e4-c95f81b-20260723/RUN.md`.
 - Keep both G3 halves on exact commit `c95f81b`; **do not pull a later origin commit onto the pod until
@@ -57,7 +57,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$63.0462349662** at 08:53 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$62.7428284217** at 09:52 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
