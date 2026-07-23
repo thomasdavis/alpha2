@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~12:35 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~12:49 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,10 +7,20 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — G3 PASSED; paid 3090 is idle and ready for the LR sweep
+## ⚠️ LIVE RIGHT NOW — G3 PASSED; `1e-3` Llama LR pilot is training on the paid 3090
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
+- **First contracted LR pilot is LIVE** at
+  `/workspace/alpha2/runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723`, started 12:41 UTC on current
+  master `e6d9430` after a clean 19/19 build and a real fail-closed RTX 3090 gate PASS (46/46,
+  zero skipped/failed/todo; mounted proof `/mnt/donto-data/alpha-runs/nvidia-gate-e6d9430-20260723/`).
+  Its immutable contract fixes 57,688,576 Llama params, LR/min `1e-3/1e-4`, and exactly 100,007,936
+  tokens on the same data/tokenizer hashes as G3. Rows 1–100 are consecutive and finite; loss fell
+  9.5262→6.5962, step 100 ran at 3,904 tok/s, external/ArrayBuffer telemetry is live, and allocator
+  telemetry reports 34 slabs with zero overflow. Guard: `alpha2-lr1e3-puller-e6d9430.service`,
+  60s/1,800s, matched retention 3. Mounted evidence:
+  `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -45,9 +55,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   advantage 0.2182763, last-three mean advantage 0.2302373, zero overflow in both runs. Report:
   `/mnt/donto-data/alpha-runs/g3-pair-analysis-c95f81b-20260723.json` (SHA-256 `1c6d26a0…`).
   Full evidence: `/mnt/donto-data/alpha-runs/g3-gpt2-100m-lr3e4-c95f81b-20260723/RUN.md`.
-- The exact-pair pin is now satisfied. It is safe to update the pod from `c95f81b` to current master,
-  rebuild, run the fail-closed 46/46 NVIDIA gate, and begin the contracted `{1e-3,2e-3,3e-3}` Llama LR
-  sweep. Do not start a paid pilot until the new tree and gate are proven on NVIDIA.
+- The exact-pair pin is satisfied. The pod is now on `e6d9430`, its rebuild and 46/46 NVIDIA gate are
+  proven, and the contracted `{1e-3,2e-3,3e-3}` Llama sweep is under way. Run the three candidates
+  sequentially and select only through `analyze_lr_sweep.ts`.
 - Checkpoint 2,000 left CPU RSS at 4,236,328kB versus 3,478,312kB immediately before save, but HWM
   remained exactly 5,284,184kB: buffers reused the prior peak but awaited a later GC. The local tree now
   scopes checkpoint state before explicit post-save GC and records external/ArrayBuffer telemetry; TS
@@ -55,14 +65,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$61.9340484941** at 12:35 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$61.8582095385** at 12:49 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current certified functional tree is **`c95f81b`**. TypeScript clean; consolidated box suite
-  **200 pass / 46 GPU-gated skip / 0 fail**. Root `npm test` is pre-existingly broken
+- Current deployed/certified functional tree is **`e6d9430`**. TypeScript clean; consolidated box suite
+  **200 pass / 46 GPU-gated skip / 0 fail**, plus real RTX 3090 gate **46/46 executed and passed**.
+  Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - NVIDIA gate work, G1, allocator wiring, and post-slab baseline are done and pushed: 46/46 NVIDIA tests;
   G1 1,000 steps with zero NaN; slab profile WG64/pool512; 57.69M-param baseline improved 3,322→3,790
