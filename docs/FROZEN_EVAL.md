@@ -78,11 +78,13 @@ machine-verifiable gate and the base-vs-chat deltas:
 nice -n10 ionice -c2 -n7 npx tsx scripts/analyze_frozen_eval_pair.ts \
   --base /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-base \
   --chat /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-chat \
+  --manifest /mnt/donto-data/alpha-corpora/frozen-eval-v1/MANIFEST.json \
   --out /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-pair.json
 ```
 
-The analyzer requires all 100 chat and 200 QA cases, exact base step 61,036 and chat step 30,322,
-identical architecture/input hashes/case order, untampered detailed outputs, at least 95 structural
+The analyzer requires all 100 chat and 200 QA cases, binds both runs to the final frozen-manifest
+chat/QA hashes, exact base step 61,036 and chat step 30,322, identical architecture/input hashes/case
+order, untampered detailed outputs, at least 95 structural
 passes, zero samples at or above 0.20 4-gram repetition, and finite recomputed QA scores. Its PASS is
 explicitly scoped to this machine-verifiable portion of D3. Conversational coherence remains a separate
 review of the generated text; token statistics are never mislabeled as a semantic-quality judgment.

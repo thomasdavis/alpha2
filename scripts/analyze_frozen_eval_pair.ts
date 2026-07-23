@@ -218,8 +218,28 @@ async function verifyRun(dir: string): Promise<VerifiedRun> {
 
 async function main(): Promise<void> {
   const cli = parseArgs();
-  if (!cli.base || !cli.chat || !cli.out) throw new Error("required: --base, --chat, and --out");
-  const [base, chat] = await Promise.all([verifyRun(cli.base), verifyRun(cli.chat)]);
+  if (!cli.base || !cli.chat || !cli.manifest || !cli.out) {
+    throw new Error("required: --base, --chat, --manifest, and --out");
+  }
+  const [base, chat, manifestText] = await Promise.all([
+    verifyRun(cli.base),
+    verifyRun(cli.chat),
+    readFile(cli.manifest, "utf8"),
+  ]);
+  const manifest = JSON.parse(manifestText) as {
+    schema?: string;
+    status?: string;
+    final?: {
+      chat?: { rows?: number; sha256?: string };
+      closed_book_qa?: { rows?: number; sha256?: string };
+    };
+  };
+  assertEqual(manifest.schema, "alpha-frozen-eval-v1", "frozen manifest schema");
+  assertEqual(manifest.status, "final", "frozen manifest status");
+  assertEqual(manifest.final?.chat?.rows, 100, "frozen manifest chat rows");
+  assertEqual(manifest.final?.closed_book_qa?.rows, 200, "frozen manifest QA rows");
+  assertSha256(manifest.final?.chat?.sha256, "frozen manifest chat SHA-256");
+  assertSha256(manifest.final?.closed_book_qa?.sha256, "frozen manifest QA SHA-256");
   assertEqual(base.summary.checkpoint.step, 61_036, "base checkpoint step");
   assertEqual(chat.summary.checkpoint.step, 30_322, "chat checkpoint step");
   if (!isDeepStrictEqual(base.summary.checkpoint.modelConfig, chat.summary.checkpoint.modelConfig)) {
@@ -229,6 +249,8 @@ async function main(): Promise<void> {
     assertEqual(base.summary.inputs[suite].sha256, chat.summary.inputs[suite].sha256, `${suite} input SHA-256`);
     assertEqual(base.summary.inputs[suite].rows, chat.summary.inputs[suite].rows, `${suite} input rows`);
   }
+  assertEqual(base.summary.inputs.chat.sha256, manifest.final.chat.sha256, "chat input frozen-manifest SHA-256");
+  assertEqual(base.summary.inputs.qa.sha256, manifest.final.closed_book_qa.sha256, "QA input frozen-manifest SHA-256");
   assertEqual(base.chat.map((row) => row.id).join("\n"), chat.chat.map((row) => row.id).join("\n"), "chat case order");
   assertEqual(base.qa.map((row) => row.id).join("\n"), chat.qa.map((row) => row.id).join("\n"), "QA case order");
 
@@ -241,6 +263,7 @@ async function main(): Promise<void> {
     result: machineGatePass ? "PASS" : "FAIL",
     scope: "machine-verifiable D3 structural/repetition gate only",
     semantic_coherence: "REQUIRES_SEPARATE_REVIEW; this analyzer does not classify open-ended language quality",
+    frozen_manifest: { path: cli.manifest, sha256: sha256(manifestText), schema: manifest.schema, status: manifest.status },
     gate: {
       structural_pass_minimum: 95,
       degenerate_loops_maximum: 0,

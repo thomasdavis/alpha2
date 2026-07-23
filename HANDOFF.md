@@ -147,8 +147,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   before SSH. The isolated six-checkpoint fixture retained 4–6, ledgered+removed 1–3, and was idempotent.
 - Frozen base-vs-chat evaluation is tamper-evident in `863427f`: v2 summaries hash both detailed JSONL
   outputs and bind EOS/user control IDs; `analyze_frozen_eval_pair.ts` recomputes all 100 chat + 200 QA
-  flags/scores, requires exact 61,036/30,322-step checkpoints and identical frozen inputs/case order, and
-  enforces the ≥95 structural / zero-loop machine bar. Its PASS explicitly leaves conversational
+  flags/scores, requires exact 61,036/30,322-step checkpoints and identical frozen inputs/case order,
+  binds both runs to the canonical final `MANIFEST.json` chat/QA hashes, and enforces the ≥95 structural /
+  zero-loop machine bar. Its PASS explicitly leaves conversational
   coherence to separate semantic review. Full synthetic pair passed; altered output hash was rejected.
 - Post-G2 NVIDIA regression is fail-closed in `1019b9b`. Run
   `scripts/run_nvidia_gates.sh /workspace/alpha2/runs/nvidia-gate-<commit>` after deploying current
