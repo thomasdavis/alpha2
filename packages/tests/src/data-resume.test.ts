@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
 import { CpuRefBackend } from "@alpha/tensor";
-import { SeededRng, type ModelConfig, type Tokenizer } from "@alpha/core";
+import { SeededRng, type CheckpointState, type ModelConfig, type Tokenizer } from "@alpha/core";
 import {
   DataLoader, ShardedDataLoader, SftDataLoader,
   loadOrCacheTokens, loadPretrainShardManifest, verifyPretrainShardManifest,
-  train, validateCheckpointModelCompatibility, AdamW, FileCheckpoint, type BatchSource, type SftExample,
+  train, validateCheckpointModelCompatibility, AdamW, FileCheckpoint, releaseCheckpointSnapshotBuffers,
+  type BatchSource, type SftExample,
 } from "@alpha/train";
 
 function tokenArray(size: number): Int32Array {
@@ -27,6 +28,27 @@ function batchIds(loader: BatchSource): { inputs: number[]; targets: number[] } 
     targets: Array.from(batch.targets.data as Int32Array),
   };
 }
+
+describe("checkpoint snapshot lifecycle", () => {
+  it("releases cloned optimizer buffers without clearing live parameters", () => {
+    const parameterData = Float32Array.of(1, 2);
+    const optimizerBuffers = new Map([
+      ["weight.m", { shape: [2], dtype: "f32" as const, data: Float32Array.of(3, 4) }],
+      ["weight.v", { shape: [2], dtype: "f32" as const, data: Float32Array.of(5, 6) }],
+    ]);
+    const state = {
+      params: { weight: { shape: [2], data: parameterData as any } },
+      optimizerState: { step: 1, buffers: optimizerBuffers },
+      rngState: 1,
+      configHash: "test",
+      step: 1,
+    } as CheckpointState;
+
+    expect(releaseCheckpointSnapshotBuffers(state)).toBe(2);
+    expect(optimizerBuffers.size).toBe(0);
+    expect(state.params.weight.data).toBe(parameterData);
+  });
+});
 
 describe("data-loader resume positioning", () => {
   it.each([false, true])("seekBatches reproduces uninterrupted DataLoader batches (packed=%s)", (packed) => {
@@ -236,7 +258,9 @@ describe("data-loader resume positioning", () => {
         hostExternalAfterGcMB: expect.any(Number),
         hostArrayBuffersBeforeGcMB: expect.any(Number),
         hostArrayBuffersAfterGcMB: expect.any(Number),
+        optimizerBuffersReleased: expect.any(Number),
       });
+      expect(Number(checkpointPayload?.optimizerBuffersReleased)).toBeGreaterThan(0);
       const checkpoint = new FileCheckpoint();
       const sourceState = await Effect.runPromise(checkpoint.load(sourceCheckpoint));
       const initializedState = await Effect.runPromise(checkpoint.load(join(initializedRunDir, "checkpoint-1.json")));

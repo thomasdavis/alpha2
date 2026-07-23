@@ -19,7 +19,12 @@ import {
   DataLoader, ShardedDataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte,
   SftDataLoader, loadSftExamples, splitSftExamples, type BatchSource,
 } from "./data.js";
-import { FileCheckpoint, buildCheckpointState, restoreParams } from "./checkpoint.js";
+import {
+  FileCheckpoint,
+  buildCheckpointState,
+  releaseCheckpointSnapshotBuffers,
+  restoreParams,
+} from "./checkpoint.js";
 import { sample as runSample } from "./sample.js";
 import {
   ConsensusFusionShadow,
@@ -2481,13 +2486,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // before the explicit collection below. A flagship AdamW snapshot is hundreds
       // of MB; leaving it for a later adaptive GC keeps that host memory live between
       // the checkpoint and the next collection boundary.
+      let releasedOptimizerBuffers = 0;
       {
         const state = buildCheckpointState(params, optimizer, rng.state(), configHash, stepNum, activeModelConfig, deps.tokenizerArtifacts);
-        // Save current symbio activation graph so resume can seed the search correctly
-        if (searchOrchestrator?.currentCandidate?.activationGraph) {
-          (state as any).symbioActivationGraph = searchOrchestrator.currentCandidate.activationGraph;
+        try {
+          // Save current symbio activation graph so resume can seed the search correctly
+          if (searchOrchestrator?.currentCandidate?.activationGraph) {
+            (state as any).symbioActivationGraph = searchOrchestrator.currentCandidate.activationGraph;
+          }
+          await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
+        } finally {
+          // AdamW.stateDict() clones both full-size moment buffers. Explicitly
+          // sever those references even if save fails; block scope alone does
+          // not guarantee an async function frame releases them before return.
+          releasedOptimizerBuffers = releaseCheckpointSnapshotBuffers(state);
         }
-        await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       }
 
       const checkpointMemoryBeforeGc = process.memoryUsage();
@@ -2498,6 +2511,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
       const checkpointMemoryAfterGc = process.memoryUsage();
       console.log(`  checkpoint saved: ${ckptPath}`);
+      console.log(
+        `  [checkpoint_mem] optimizer_buffers_released=${releasedOptimizerBuffers}` +
+        ` gc=${checkpointGcRan ? "yes" : "no"}` +
+        ` rss_mb=${Math.round(checkpointMemoryBeforeGc.rss / 1024 / 1024)}->${Math.round(checkpointMemoryAfterGc.rss / 1024 / 1024)}` +
+        ` external_mb=${Math.round(checkpointMemoryBeforeGc.external / 1024 / 1024)}->${Math.round(checkpointMemoryAfterGc.external / 1024 / 1024)}` +
+        ` array_buffers_mb=${Math.round(checkpointMemoryBeforeGc.arrayBuffers / 1024 / 1024)}->${Math.round(checkpointMemoryAfterGc.arrayBuffers / 1024 / 1024)}`
+      );
       emitEvent({
         step: stepNum,
         level: "info",
@@ -2512,6 +2532,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           hostExternalAfterGcMB: Math.round(checkpointMemoryAfterGc.external / 1024 / 1024),
           hostArrayBuffersBeforeGcMB: Math.round(checkpointMemoryBeforeGc.arrayBuffers / 1024 / 1024),
           hostArrayBuffersAfterGcMB: Math.round(checkpointMemoryAfterGc.arrayBuffers / 1024 / 1024),
+          optimizerBuffersReleased: releasedOptimizerBuffers,
         },
       });
       latestCheckpointPath = ckptPath;

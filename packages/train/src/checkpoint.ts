@@ -86,6 +86,10 @@ function saveBinary(
       }
     } finally {
       await handle.close();
+      // The optimizer snapshot owns full-size cloned moment buffers. Do not let
+      // this completed async save frame retain references to them while the
+      // trainer continues toward the next checkpoint.
+      f32Arrays.length = 0;
     }
   });
 }
@@ -214,6 +218,16 @@ export function buildCheckpointState(
     configHash,
     step,
   };
+}
+
+/**
+ * Release the large cloned optimizer buffers owned by a completed checkpoint
+ * snapshot. Parameter arrays are live training state and must not be cleared.
+ */
+export function releaseCheckpointSnapshotBuffers(state: CheckpointState): number {
+  const released = state.optimizerState?.buffers.size ?? 0;
+  state.optimizerState?.buffers.clear();
+  return released;
 }
 
 /** Restore parameters from checkpoint state into existing Variables. */

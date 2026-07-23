@@ -10,7 +10,7 @@ export {
   type DataBatch, type BatchSource, type PretrainShardManifest, type SftExample, type ChatSpecialIds,
 } from "./data.js";
 export {
-  FileCheckpoint, buildCheckpointState, restoreParams,
+  FileCheckpoint, buildCheckpointState, releaseCheckpointSnapshotBuffers, restoreParams,
 } from "./checkpoint.js";
 export {
   writeSafetensors, checkpointToLlamaStateDict, buildLlamaConfig, buildGenerationConfig,
