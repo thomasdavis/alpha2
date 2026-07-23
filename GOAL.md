@@ -274,13 +274,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   terminal checkpoint 6,104 is a 692,528,815-byte, hash-mirrored/native-audited ALPH file at
   `e43ce5a9…` with every parameter finite/nonzero. Its guard retained exactly 5,000/6,000/6,104,
   logged `final pull complete`, and exited. The second `2e-3` candidate started on the identical
-  pinned source/data/tokenizer contract. Through its step-1,500 held-out gate all rows are consecutive
-  and finite, train/held-out loss is 4.5503/4.6636, median post-step-100 throughput is 3,848 tok/s,
-  and all 16 allocator samples report exactly 34 slabs with zero overflow. The remote/mounted
-  1,500-row prefix is byte-identical at `2d88c3bb…`; checkpoint 1,000 remains a hash-mirrored,
-  native-audited 692,528,815-byte ALPH file at `1b9d4eae…`, with every parameter finite/nonzero.
-  Post-save memory remains on the 3,272MB RSS / 3,148MB external pinned-tree plateau fixed on current
-  origin. Its aligned held-out result is 0.1954 worse than `1e-3`, an interim signal.
+  pinned source/data/tokenizer contract. Through its step-2,000 checkpoint gate all rows are consecutive
+  and finite, train/held-out loss is 4.3567/4.2803, median post-step-100 throughput is 3,844 tok/s,
+  and all 21 allocator samples report exactly 34 slabs with zero overflow. The remote/mounted
+  2,000-row prefix is byte-identical at `f69d61cb…`; checkpoint 2,000 is a hash-mirrored,
+  native-audited 692,528,815-byte ALPH file at `e24e515d…`, with every parameter finite/nonzero.
+  Training resumed through step 2,050. A second retained checkpoint-sized snapshot raised the pinned
+  process to 3,998MB RSS/HWM while external stayed flat at 3,148MB; current origin fixes this and will
+  be NVIDIA-proven before flagship. Its aligned held-out result is 0.1434 worse than `1e-3`, an interim signal.
   Its 60-second/1,800-second matched-retention guard is active. Selection
   waits for all three final-three means. Keep every sweep candidate on `e6d9430`; then deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
