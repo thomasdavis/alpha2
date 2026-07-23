@@ -264,12 +264,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   commit, and resume contract.
   **LR SWEEP LIVE 2026-07-23:** current master `e6d9430` rebuilt 19/19 on the RTX 3090 pod and passed
   the fail-closed NVIDIA gate 46/46 with zero skipped/failed/todo. The first `1e-3` Llama candidate is
-  running under a 60-second mirror/stall guard. Its step-500 full-rate gate is verified: 500/500 rows
-  consecutive/finite, train/held-out loss 5.3289/5.4377 at LR `1e-3`, median post-step-100 throughput
-  3,899 tok/s, stable host memory, 34 slabs, and zero overflow. Remote and mounted prefixes are
-  byte-identical at SHA-256 `4f266a96…`. Checkpoints 1,000 and 2,000 are both 692,528,815-byte,
-  hash-mirrored, and native-audited; step-2,000 held-out loss is 4.1369. The pinned tree's RSS grew by
-  another snapshot after the second save. Fixes `3a7ff9d` + `13ec17b` explicitly release cloned AdamW
+  running under a 60-second mirror/stall guard. Through step 3,000 all rows are consecutive/finite,
+  train/held-out loss is 3.8693/3.8803, median post-step-100 throughput is 3,902 tok/s, and 31 allocator
+  samples report zero overflow. The exact 3,000-row remote/mounted prefix SHA-256 is `f1587282…`.
+  Checkpoints 1,000, 2,000, and 3,000 are all 692,528,815-byte, hash-mirrored, and native-audited;
+  checkpoint 3,000 SHA-256 is `f3417d21…`, and training resumed through 3,050. The current held-out
+  loss beats the aligned historical `3e-4` run by 0.2118, but selection still waits for all final-three
+  means. The pinned tree's RSS grew by another snapshot after the second save, while the third save
+  added only 6MB. Fixes `3a7ff9d` + `13ec17b` explicitly release cloned AdamW
   buffers and serializer views; a four-cycle committed-page proof is bounded by one snapshot, and
   19/19 targeted + 201/46 consolidated tests are green. Keep all sweep candidates on `e6d9430`, then
   deploy/prove the fix before the 1B-token flagship.
