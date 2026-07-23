@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -151,6 +151,9 @@ describe("data-loader resume positioning", () => {
 
   it("trainer records and consumes multiple pretraining shards", async () => {
     const dir = await mkdtemp(join(tmpdir(), "alpha-sharded-trainer-"));
+    const previousGc = (globalThis as any).gc;
+    const checkpointGc = vi.fn();
+    (globalThis as any).gc = checkpointGc;
     try {
       const first = join(dir, "first.txt");
       const second = join(dir, "second.txt");
@@ -199,6 +202,7 @@ describe("data-loader resume positioning", () => {
       const initializedRunDir = join(dir, "initialized-run");
       const initializedBackend = new CpuRefBackend();
       const events: string[] = [];
+      let checkpointPayload: Record<string, unknown> | undefined;
       await train({
         backend: initializedBackend,
         tokenizer,
@@ -217,9 +221,22 @@ describe("data-loader resume positioning", () => {
         dataPaths: [first, second],
         initCheckpointPath: sourceCheckpoint,
         runDir: initializedRunDir,
-        onEvent: (event) => { events.push(event.kind); },
+        onEvent: (event) => {
+          events.push(event.kind);
+          if (event.kind === "checkpoint_saved" && event.payload) checkpointPayload = event.payload;
+        },
       });
       expect(events).toContain("run_initialized_from_checkpoint");
+      expect(checkpointGc).toHaveBeenCalledTimes(2);
+      expect(checkpointPayload).toMatchObject({
+        hostGcRan: true,
+        hostRssBeforeGcMB: expect.any(Number),
+        hostRssAfterGcMB: expect.any(Number),
+        hostExternalBeforeGcMB: expect.any(Number),
+        hostExternalAfterGcMB: expect.any(Number),
+        hostArrayBuffersBeforeGcMB: expect.any(Number),
+        hostArrayBuffersAfterGcMB: expect.any(Number),
+      });
       const checkpoint = new FileCheckpoint();
       const sourceState = await Effect.runPromise(checkpoint.load(sourceCheckpoint));
       const initializedState = await Effect.runPromise(checkpoint.load(join(initializedRunDir, "checkpoint-1.json")));
@@ -232,6 +249,8 @@ describe("data-loader resume positioning", () => {
       };
       expect(initializedConfig.initCheckpointPath).toBe(sourceCheckpoint);
     } finally {
+      if (previousGc === undefined) delete (globalThis as any).gc;
+      else (globalThis as any).gc = previousGc;
       await rm(dir, { recursive: true, force: true });
     }
   });

@@ -185,7 +185,12 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   1,500/1,500 consecutive finite rows, validation 5.5984302→5.0261204→4.7217364, 3,864 tok/s median
   after warmup, 34 constant temporary slabs, and zero overflow. Remote/mounted metrics and the retained
   checkpoint were hash-identical. The exact three-shard flagship corpus was staged concurrently at low
-  priority and all 5,976,889,749 remote bytes match the immutable manifest hashes.
+  priority and all 5,976,889,749 remote bytes match the immutable manifest hashes. At step 2,000,
+  validation improved again to 4.4397746 and the second 692,528,815-byte checkpoint passed remote/local
+  hash parity plus a full native-format/finite-parameter audit. Its unchanged 5,284,184kB HWM proved
+  checkpoint allocation reuse, while elevated post-save RSS exposed delayed collection of cloned AdamW
+  buffers. A local post-save-GC + external-memory telemetry hardening passes TypeScript and 200/46 tests;
+  deployment waits until the exact `c95f81b` architecture pair is complete.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).

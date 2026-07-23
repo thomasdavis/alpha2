@@ -215,6 +215,8 @@ export interface StepMetrics {
   gpu_allocator_free_range_overflows?: number;
   host_rss_mb?: number;
   host_heap_used_mb?: number;
+  host_external_mb?: number;
+  host_array_buffers_mb?: number;
   // Phase 0 instrumentation: per-step timing breakdown
   timing_fwd_ms?: number;
   timing_bwd_ms?: number;
@@ -2111,6 +2113,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const hostMemory = process.memoryUsage();
     metrics.host_rss_mb = Math.round(hostMemory.rss / 1024 / 1024);
     metrics.host_heap_used_mb = Math.round(hostMemory.heapUsed / 1024 / 1024);
+    metrics.host_external_mb = Math.round(hostMemory.external / 1024 / 1024);
+    metrics.host_array_buffers_mb = Math.round(hostMemory.arrayBuffers / 1024 / 1024);
     if (capturePhaseTimings) {
       metrics.timing_fwd_ms = fwdMs;
       metrics.timing_bwd_ms = bwdMs;
@@ -2473,19 +2477,42 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (stepNum % checkpointInterval === 0 || stepNum === totalIters) {
       await flushMetrics(); // Ensure metrics are on disk before checkpoint
       const ckptPath = path.join(runDir, `checkpoint-${stepNum}.json`);
-      const state = buildCheckpointState(params, optimizer, rng.state(), configHash, stepNum, activeModelConfig, deps.tokenizerArtifacts);
-      // Save current symbio activation graph so resume can seed the search correctly
-      if (searchOrchestrator?.currentCandidate?.activationGraph) {
-        (state as any).symbioActivationGraph = searchOrchestrator.currentCandidate.activationGraph;
+      // Keep the cloned optimizer buffers in a nested scope so they are unreachable
+      // before the explicit collection below. A flagship AdamW snapshot is hundreds
+      // of MB; leaving it for a later adaptive GC keeps that host memory live between
+      // the checkpoint and the next collection boundary.
+      {
+        const state = buildCheckpointState(params, optimizer, rng.state(), configHash, stepNum, activeModelConfig, deps.tokenizerArtifacts);
+        // Save current symbio activation graph so resume can seed the search correctly
+        if (searchOrchestrator?.currentCandidate?.activationGraph) {
+          (state as any).symbioActivationGraph = searchOrchestrator.currentCandidate.activationGraph;
+        }
+        await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
       }
-      await Effect.runPromise(new FileCheckpoint().save(ckptPath, state));
+
+      const checkpointMemoryBeforeGc = process.memoryUsage();
+      const checkpointGcRan = typeof globalThis.gc === "function";
+      if (checkpointGcRan) {
+        (globalThis as any).gc();
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      const checkpointMemoryAfterGc = process.memoryUsage();
       console.log(`  checkpoint saved: ${ckptPath}`);
       emitEvent({
         step: stepNum,
         level: "info",
         kind: "checkpoint_saved",
         message: `checkpoint saved at step ${stepNum}`,
-        payload: { path: ckptPath },
+        payload: {
+          path: ckptPath,
+          hostGcRan: checkpointGcRan,
+          hostRssBeforeGcMB: Math.round(checkpointMemoryBeforeGc.rss / 1024 / 1024),
+          hostRssAfterGcMB: Math.round(checkpointMemoryAfterGc.rss / 1024 / 1024),
+          hostExternalBeforeGcMB: Math.round(checkpointMemoryBeforeGc.external / 1024 / 1024),
+          hostExternalAfterGcMB: Math.round(checkpointMemoryAfterGc.external / 1024 / 1024),
+          hostArrayBuffersBeforeGcMB: Math.round(checkpointMemoryBeforeGc.arrayBuffers / 1024 / 1024),
+          hostArrayBuffersAfterGcMB: Math.round(checkpointMemoryAfterGc.arrayBuffers / 1024 / 1024),
+        },
       });
       latestCheckpointPath = ckptPath;
       if (deps.onCheckpoint) deps.onCheckpoint({ step: stepNum, path: ckptPath, runId: rid });
