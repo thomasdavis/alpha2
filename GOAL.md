@@ -297,6 +297,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   independently hashes and line-counts the corpus, requires the length/mask audits, reconciles the binary
   checkpoint tensor table and byte length, scans all 57,688,576 base parameters for finiteness, and binds
   corpus/audits/tokenizer/base checkpoint/current commit into the resumable run contract.
+  `analyze_flagship_sft.ts` closes the other end: it binds the three-way SFT selector, all 30,322 finite
+  rows and 61 aligned validations, full allocator cadence/zero overflow, and the existing streaming
+  finite/nonzero verifier's audit of the terminal chat checkpoint.
   The choice itself is contracted in `b24c18a`: three 2,000-step / 32,768,000-token pilots over
   `{1e-4,3e-4,1e-3}` share exact inputs and eight aligned validations; `analyze_sft_lr_sweep.ts` chooses
   the lowest final-three held-out mean. The one-epoch launcher now requires and verifies that selector
