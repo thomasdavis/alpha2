@@ -270,9 +270,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   terminal checkpoint 6,104 is a 692,528,815-byte, hash-mirrored/native-audited ALPH file at
   `e43ce5a9…` with every parameter finite/nonzero. Its guard retained exactly 5,000/6,000/6,104,
   logged `final pull complete`, and exited. The second `2e-3` candidate started on the identical
-  pinned source/data/tokenizer contract. Its first 50 rows are consecutive, finite, byte-identical
-  remote/mounted at `26877319…`, and have median throughput 3,907 tok/s; step-1 telemetry reports 34
-  slabs and zero overflow. Its 60-second/1,800-second matched-retention guard is active. Selection
+  pinned source/data/tokenizer contract. Through its step-500 held-out gate all rows are consecutive
+  and finite, train/held-out loss is 5.4389/5.6156, median post-step-100 throughput is 3,858 tok/s,
+  and six allocator samples report 34 slabs with zero overflow. The remote/mounted 500-row prefix is
+  byte-identical at `93f2cf5e…`, RSS/HWM is 2,835,620kB with zero swap, and training resumed through
+  step 525. Its first held-out result is 0.1779 worse than aligned `1e-3`, an interim signal only.
+  Its 60-second/1,800-second matched-retention guard is active. Selection
   waits for all three final-three means. Keep every sweep candidate on `e6d9430`; then deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
   buffers and serializer views and already passed a bounded four-cycle committed-page proof,

@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~20:00 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~20:33 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -21,11 +21,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Evidence: `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
 - **Second contracted LR pilot (`2e-3`) is LIVE** at
   `/workspace/alpha2/runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723`, started 19:55 UTC on the same
-  deliberately pinned `e6d9430` source/data/tokenizer contract. The first durable 50-row block is
-  consecutive, finite, and byte-identical on pod/mounted drive at SHA-256 `26877319…`; loss fell
-  9.5262→7.0806, median throughput was 3,907 tok/s, and step-1 allocator telemetry reported 34 slabs
-  with zero overflow. Process RSS/HWM was 2,830,244kB with zero swap and the RTX 3090 was at 100%
-  utilization. Guard: `alpha2-lr2e3-puller-e6d9430.service`, 60s/1,800s, matched retention 3.
+  deliberately pinned `e6d9430` source/data/tokenizer contract. The step-500 held-out gate passed
+  operationally: all rows are consecutive/finite, LR reached `2e-3`, train/held-out loss is
+  5.4389/5.6156, median post-step-100 throughput is 3,858 tok/s, and six allocator samples report 34
+  slabs with zero overflow. Remote/mounted rows 1-500 are byte-identical at SHA-256 `93f2cf5e…`;
+  RSS/HWM is 2,835,620kB with zero swap, and training resumed through step 525. The first held-out
+  result is 0.1779 worse than aligned `1e-3`, an interim signal only; selection still uses the final
+  three aligned held-out losses. Guard: `alpha2-lr2e3-puller-e6d9430.service`, 60s/1,800s, matched
+  retention 3.
   Mounted evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723/RUN.md`.
 - Keep all three sweep candidates on `e6d9430`. Current origin has `3a7ff9d` + `13ec17b`, which
@@ -76,7 +79,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$59.7560387194** at about 19:58 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$59.5872822323** at about 20:33 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
