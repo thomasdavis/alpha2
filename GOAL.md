@@ -264,14 +264,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   commit, and resume contract.
   **LR SWEEP LIVE 2026-07-23:** current master `e6d9430` rebuilt 19/19 on the RTX 3090 pod and passed
   the fail-closed NVIDIA gate 46/46 with zero skipped/failed/todo. The first `1e-3` Llama candidate is
-  running under a 60-second mirror/stall guard. Through step 4,000 all rows are consecutive/finite,
-  train/held-out loss is 3.7954/3.7939, median post-step-100 throughput is 3,899 tok/s, and 41 allocator
-  samples report zero overflow. The exact 4,000-row remote/mounted prefix SHA-256 is `4d42560f…`.
-  Checkpoint 4,000 is a 692,528,815-byte, hash-mirrored, native-audited ALPH file at `a88315f0…`, and
-  training resumed through 4,025 at 100% GPU. The current held-out loss beats the aligned historical
-  `3e-4` run by 0.1803, but selection still waits for all final-three means. Matched retention safely
-  pruned checkpoint 1,000 after proof and now keeps exactly 2,000/3,000/4,000. The pinned tree's RSS
-  grew by another snapshot after the second save, then stayed bounded through saves 3,000 and 4,000.
+  running under a 60-second mirror/stall guard. Through step 5,000 all rows are consecutive/finite,
+  train/held-out loss is 3.8921/3.6270, median post-step-100 throughput is 3,894 tok/s, and 51 allocator
+  samples report zero overflow. The exact 5,000-row remote/mounted prefix SHA-256 is `b92acb2e…`.
+  Checkpoint 5,000 is a 692,528,815-byte, hash-mirrored, native-audited ALPH file at `3b1374b4…`, and
+  training resumed through 5,025 at 100% GPU. The current held-out loss beats the aligned historical
+  `3e-4` run by 0.1687, but selection still waits for all final-three means. Matched retention safely
+  pruned checkpoint 2,000 after proof and now keeps exactly 3,000/4,000/5,000. The pinned tree's RSS
+  grew by another snapshot after the second save, then stayed bounded through saves 3,000–5,000.
   Fixes `3a7ff9d` + `13ec17b` explicitly release cloned AdamW
   buffers and serializer views; a four-cycle committed-page proof is bounded by one snapshot, and
   19/19 targeted + 201/46 consolidated tests are green. Keep all sweep candidates on `e6d9430`, then

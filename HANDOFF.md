@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~17:26 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~18:36 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -23,13 +23,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Guard: `alpha2-lr1e3-puller-e6d9430.service`,
   60s/1,800s, matched retention 3. Mounted evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
-  Checkpoints through 4,000 are verified 692,528,815-byte ALPH files with all 57,688,576 parameters
-  finite/nonzero. Checkpoint 4,000 SHA-256 is `a88315f0…`; step-4,000 train/held-out loss is
-  3.7954/3.7939, the 4,000-row prefix is finite, consecutive, and byte-identical on both sides
-  (`4d42560f…`), and training resumed through step 4,025 at 100% GPU. It beats the aligned historical
-  `3e-4` held-out loss by 0.1803, an interim signal only. Retention correctly verified and pruned
-  checkpoint 1,000 and now keeps exactly 2,000/3,000/4,000 on both sides. The pinned tree's RSS grew
-  from 3,211MB to 3,951MB after the second save, then stayed bounded through saves 3,000 and 4,000.
+  Checkpoints through 5,000 are verified 692,528,815-byte ALPH files with all 57,688,576 parameters
+  finite/nonzero. Checkpoint 5,000 SHA-256 is `3b1374b4…`; step-5,000 train/held-out loss is
+  3.8921/3.6270, the 5,000-row prefix is finite, consecutive, and byte-identical on both sides
+  (`b92acb2e…`), and training resumed through step 5,025 at 100% GPU. It beats the aligned historical
+  `3e-4` held-out loss by 0.1687, an interim signal only. Retention correctly verified and pruned
+  checkpoint 2,000 and now keeps exactly 3,000/4,000/5,000 on both sides. The pinned tree's RSS grew
+  from 3,211MB to 3,951MB after the second save, then stayed bounded through saves 3,000–5,000.
   This is safe for the pilot on a 251GB host but blocks the flagship until fixed. `3a7ff9d` +
   `13ec17b` explicitly release
   cloned AdamW buffers, serializer slots, and Buffer views, and always log checkpoint memory. A
@@ -80,7 +80,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$60.5037924456** at 17:26 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$60.1660751159** at 18:36 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
