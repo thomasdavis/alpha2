@@ -197,9 +197,12 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   Terminal checkpoint 6,104 is a hash-mirrored/native-audited 692,528,815-byte ALPH file with every
   parameter finite/nonzero; the final guard safely retained exactly 5,000/6,000/6,104 and exited.
   The sequential GPT-2 control then launched on the unchanged tree and exact same inputs/LR/schedule at
-  04:55 UTC. Its contract is 58,094,592 params (+0.704%); rows 1–50 are finite/consecutive, loss fell
-  9.5209293→7.8736362, step 50 ran at 4,382 tok/s, and the persistent guard is active with zero
-  allocator overflow. G3 remains open until GPT-2 completes and `analyze_g3_pair.ts` compares the pair.
+  04:55 UTC. Its contract is 58,094,592 params (+0.704%). The step-1,000 durability gate has
+  1,000/1,000 finite/consecutive rows; held-out loss improved 5.9174351→5.4002357 but remains worse
+  than Llama by 0.3190049/0.3741154 at the aligned points. Median throughput is 4,706 tok/s, allocator
+  overflow is zero, and the first 697,403,761-byte checkpoint is hash-mirrored/native-audited with all
+  parameters finite/nonzero. G3 remains open until GPT-2 completes and `analyze_g3_pair.ts` compares
+  the pair.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).

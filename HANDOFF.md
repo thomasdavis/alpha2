@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~05:00 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~05:57 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -38,8 +38,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   identical to Llama on source/input/tokenizer/seed/optimizer/schedule/LR/token count; only the intended
   architecture differs (14L, LayerNorm, learned positions, untied embeddings), at 58,094,592 params
   versus Llama's 57,688,576 (+0.704%). Cached 463,290,711 train + 51,536,242 validation tokens loaded
-  directly. Rows 1–50 are consecutive/finite, loss fell 9.5209293→7.8736362, step 50 ran at
-  4,382 tok/s, metrics matched by SHA, allocator overflow was zero, and the GPU was verified at 100%.
+  directly. **Step-1,000 durability gate passed:** 1,000/1,000 rows are consecutive/finite; held-out
+  loss improved 5.9174351→5.4002357 but remains worse than Llama by 0.3190049/0.3741154 at the two
+  aligned points. Median throughput is 4,706 tok/s; 34 slabs and zero overflow. Checkpoint 1,000 is
+  exactly 697,403,761 bytes and hash-identical at SHA-256 `05b924964b86b14655db6ebaaf3b1348912e5507935244c35b712c7fa362512e`;
+  its native audit proved all 58,094,592 parameters finite/nonzero. Training resumed beyond step 1,025.
   Persistent guard: `alpha2-g3-gpt2-puller-c95f81b.service`, 60s / 1,800s, matched retention 3.
   Evidence: `/mnt/donto-data/alpha-runs/g3-gpt2-100m-lr3e4-c95f81b-20260723/RUN.md`.
 - Keep both G3 halves on exact commit `c95f81b`; **do not pull a later origin commit onto the pod until
