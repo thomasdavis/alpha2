@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~12:49 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~13:18 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -16,9 +16,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   master `e6d9430` after a clean 19/19 build and a real fail-closed RTX 3090 gate PASS (46/46,
   zero skipped/failed/todo; mounted proof `/mnt/donto-data/alpha-runs/nvidia-gate-e6d9430-20260723/`).
   Its immutable contract fixes 57,688,576 Llama params, LR/min `1e-3/1e-4`, and exactly 100,007,936
-  tokens on the same data/tokenizer hashes as G3. Rows 1–100 are consecutive and finite; loss fell
-  9.5262→6.5962, step 100 ran at 3,904 tok/s, external/ArrayBuffer telemetry is live, and allocator
-  telemetry reports 34 slabs with zero overflow. Guard: `alpha2-lr1e3-puller-e6d9430.service`,
+  tokens on the same data/tokenizer hashes as G3. The step-500 full-rate gate passed: all rows are
+  consecutive/finite, train/held-out loss is 5.3289/5.4377 at LR `1e-3`, median post-step-100
+  throughput is 3,899 tok/s, external/ArrayBuffer telemetry is stable, and allocator telemetry reports
+  34 slabs with zero overflow. Remote/mounted rows 1–500 are byte-identical at SHA-256 `4f266a96…`.
+  Guard: `alpha2-lr1e3-puller-e6d9430.service`,
   60s/1,800s, matched retention 3. Mounted evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr1e3-e6d9430-20260723/RUN.md`.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
@@ -65,7 +67,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$61.8582095385** at 12:49 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$61.7065570496** at 13:18 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
