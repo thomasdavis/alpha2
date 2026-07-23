@@ -34,6 +34,7 @@ function saveBinary(
   // Collect all tensors in order: params first, then optimizer buffers
   const tensors: TensorEntry[] = [];
   const f32Arrays: Float32Array[] = [];
+  const emptyF32 = new Float32Array(0);
 
   for (const [name, p] of Object.entries(state.params)) {
     const data = p.data;
@@ -71,6 +72,7 @@ function saveBinary(
     await fs.mkdir(fspath.dirname(path), { recursive: true });
 
     const handle = await fs.open(path, "w");
+    let writeView: Buffer | undefined;
     try {
       // Write magic
       await handle.write(MAGIC);
@@ -81,10 +83,20 @@ function saveBinary(
       // Write header JSON
       await handle.write(headerBuf);
       // Write each tensor chunk sequentially
-      for (const f32 of f32Arrays) {
-        await handle.write(Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength));
+      for (let index = 0; index < f32Arrays.length; index++) {
+        // Do not bind the tensor to a `for (const f32 of ...)` loop variable:
+        // V8 may retain that final binding in this async frame after the loop.
+        writeView = Buffer.from(
+          f32Arrays[index].buffer,
+          f32Arrays[index].byteOffset,
+          f32Arrays[index].byteLength,
+        );
+        f32Arrays[index] = emptyF32;
+        await handle.write(writeView);
+        writeView = undefined;
       }
     } finally {
+      writeView = undefined;
       await handle.close();
       // The optimizer snapshot owns full-size cloned moment buffers. Do not let
       // this completed async save frame retain references to them while the
