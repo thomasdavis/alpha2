@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-23 ~01:14 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-23 ~02:26 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -25,13 +25,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - **G3 Llama is live** as remote PID 463 at
   `/workspace/alpha2/runs/g3-llama-100m-lr3e4-c95f81b-20260722`, started 21:20:08 UTC. It is in the
   GPU phase after successfully caching 463,290,711 train tokens in 974.0s and 51,536,242 validation
-  tokens in 109.4s. **Step-3,000 durability gate passed:** 3,000/3,000 continuous finite rows; five-batch
-  validation improved monotonically through six aligned points to 4.0920273; median post-warmup
-  throughput is 3,863 tok/s; 34 temporary slabs; zero allocator overflow. Checkpoint 3,000 is exactly
+  tokens in 109.4s. **Step-4,000 durability gate passed:** 4,000/4,000 continuous finite rows; five-batch
+  validation improved monotonically through eight aligned points to 3.9742372; median post-warmup
+  throughput is 3,866 tok/s; 34 temporary slabs; zero allocator overflow. Checkpoint 4,000 is exactly
   692,528,815 bytes and hash-identical between pod and mounted drive at SHA-256
-  `dc0d764f31e89525eaa3778c557fceb91f0f1f41178b655ccf25f8843267889f`. Its streaming native-format
-  audit proved exact header/payload/model and all 57,688,576 parameters finite/nonzero. The guard retains
-  exactly checkpoints 1,000/2,000/3,000 on both sides. Training resumed beyond step 3,025.
+  `1793b5564d30efd329fe2d61be50cdbf0e173773e7feea9571fede3806833795`. Its streaming native-format
+  audit proved exact header/payload/model and all 57,688,576 parameters finite/nonzero. The first real
+  retention transaction passed: only after local byte/SHA proof, the guard removed checkpoint 1,000
+  remotely, fsynced `delete_committed`, removed it locally, and fsynced `deleted`; both sides now retain
+  exactly 2,000/3,000/4,000. Training resumed beyond step 4,025.
   Inputs match sealed hashes. The CLI process is
   explicitly `--fp16=false`; the log's `f16: true` line is device capability, not active precision.
   Persistent box guard: `alpha2-g3-llama-puller-c95f81b.service`, 60s interval / 1,800s stale threshold,
@@ -46,7 +48,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$65.3718202829** at ~01:14 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$65.0178972941** at ~02:26 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 

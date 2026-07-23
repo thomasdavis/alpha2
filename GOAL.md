@@ -193,7 +193,11 @@ The Llama-form implementation is complete on the current tree; the remaining gat
   deployment waits until the exact `c95f81b` architecture pair is complete. The step-3,000 gate has now
   proven 3,000/3,000 finite consecutive rows, six monotonically improving validations through 4.0920273,
   3,863 tok/s median after warmup, and a third complete hash-mirrored/native-audited checkpoint. HWM
-  remained exactly 5,284,184kB across the third save, confirming bounded checkpoint-memory reuse.
+  remained exactly 5,284,184kB across the third save, confirming bounded checkpoint-memory reuse. The
+  step-4,000 gate then proved 4,000/4,000 finite rows, eight monotonically improving validations through
+  3.9742372, 3,866 tok/s median, and a fourth audited checkpoint. The first live three-copy retention
+  transaction also passed end to end: local size/SHA proof preceded remote deletion; fsynced
+  `delete_committed` preceded local deletion and fsynced `deleted`; both sides retain 2,000/3,000/4,000.
 
 ### Stage 4 — Data (box only, $0 GPU)
 Alpha has never pretrained on broad text — it went straight to chat data (SODA at 0.45 tokens/param).
