@@ -273,19 +273,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   final-three held-out-loss mean 3.6045400. All 63 allocator samples are complete with zero overflow;
   terminal checkpoint 6,104 is a 692,528,815-byte, hash-mirrored/native-audited ALPH file at
   `e43ce5a9…` with every parameter finite/nonzero. Its guard retained exactly 5,000/6,000/6,104,
-  logged `final pull complete`, and exited. The second `2e-3` candidate started on the identical
-  pinned source/data/tokenizer contract. Through its step-5,500 held-out gate all rows are consecutive
-  and finite, train/held-out loss is 3.8180/3.7361, median post-step-100 throughput is 3,843 tok/s,
-  and all 56 allocator samples report exactly 34 slabs with zero overflow. The remote/mounted
-  5,500-row prefix is byte-identical at `6a2a3cf5…`; checkpoint 5,000 remains a hash-mirrored,
-  native-audited 692,528,815-byte ALPH file at `79690f9e…`, with every parameter finite/nonzero.
-  The guard safely retains exactly 3,000/4,000/5,000 after verified pruning. Training resumed through
-  step 5,550 at 3,743 tok/s. Post-save telemetry stayed bounded at 4,042MB
-  RSS / 3,148MB external with zero swap, so the latest save added no further RSS step. Current origin
-  still fixes the retained snapshot and will be NVIDIA-proven before flagship. Its aligned held-out
-  result is 0.0924 worse than `1e-3`, an interim signal.
-  Its 60-second/1,800-second matched-retention guard is active. Selection
-  waits for all three final-three means. Keep every sweep candidate on `e6d9430`; then deploy and
+  logged `final pull complete`, and exited. The second `2e-3` candidate is also complete: 6,104
+  consecutive finite rows, exactly 100,007,936 tokens, median post-warmup throughput 3,843 tok/s,
+  final train loss 3.7847, and final-three held-out-loss mean 3.6954683. All 63 allocator samples are
+  complete with zero overflow. Its terminal checkpoint is a hash-mirrored/native-audited
+  692,528,815-byte ALPH file at `ecb79332…`, with every parameter finite/nonzero; its guard retained
+  exactly 5,000/6,000/6,104, completed the final pull, and exited. The third and final `3e-3`
+  candidate is live on the identical pinned contract. Its first 50 rows are consecutive/finite,
+  loss fell 9.5262→7.1821, median throughput is 3,878 tok/s, and step-1 telemetry reports 34 slabs
+  with zero overflow. Remote/mounted metrics and contract are byte-identical at `c5bc5173…` and
+  `0a993e94…`; the trainer was verified alive with zero swap under its 60-second/1,800-second
+  matched-retention guard. Selection waits for all three final-three means. Keep every sweep candidate
+  on `e6d9430`; then deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
   buffers and serializer views and already passed a bounded four-cycle committed-page proof,
   targeted 19/19, and consolidated 201-pass tests.
