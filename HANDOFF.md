@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~16:16 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~16:52 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -52,8 +52,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   all 57,688,576 parameters finite/nonzero; metrics match at `79c4a1b9…`. Its save again released 228
   buffers and returned ArrayBuffers 7,072→6,631MB. The first live prune passed: only after size/SHA
   verification of the mounted mirror, the guard removed remote checkpoint 1,000, then ledgered and
-  removed the identical local `93ddc593…` artifact. Both sides retain exactly 2,000/3,000/4,000.
-  Training resumed through step 4,025 with the RTX 3090 at 100% utilization.
+  removed the identical local `93ddc593…` artifact. The step-4,500 held-out gate then passed 4,500
+  finite rows/73,728,000 tokens: train/held-out loss 3.8755/3.8603, another 0.0373 validation
+  improvement, p10/median 3,724/3,850 tok/s, 46 allocator samples, 34 slabs, and zero overflow.
+  Remote/mounted metrics match at `654595d1…`; all 500 rows after checkpoint 4,000 held ArrayBuffers
+  within 6,631–6,632MB and RSS within 7,868–7,933MB. Training resumed through step 4,525; both sides
+  retain exactly 2,000/3,000/4,000.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
@@ -141,7 +145,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$53.8947260789** at about 16:16 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$53.7258900253** at about 16:50 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
