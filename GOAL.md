@@ -344,8 +344,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   held-out loss 3.8107 was a small +0.0146 wobble from step 5,000, while remaining 1.6119 below step
   500. P10/median throughput was 3,723/3,850 tok/s; all 56 allocator samples report 34 slabs and zero
   overflow. Metrics are hash-identical remote/mounted at `bbc5e153…`; every post-checkpoint row held
-  ArrayBuffers exactly at 6,632MB and RSS within 7,860–7,931MB. Training resumed through step 5,525;
-  both sides retain exactly 3,000/4,000/5,000.
+  ArrayBuffers exactly at 6,632MB and RSS within 7,860–7,931MB. The checkpoint-6,000 gate then
+  passed 6,000 finite rows/98,304,000 tokens: train/held-out loss 3.5498/3.7055, recovering the
+  step-5,500 wobble with a new-best 0.1051 validation improvement, p10/median 3,721/3,849 tok/s,
+  61 allocator samples, 34 slabs, and zero overflow. Checkpoint `6b171970…` and metrics `616f5385…`
+  are hash-identical remote/mounted; the native audit passed all 57,688,576 parameters
+  finite/nonzero. The sixth save again released all 228 buffers and returned ArrayBuffers
+  7,072→6,631MB. The third live prune safely removed checkpoint 3,000 remotely only after mounted
+  size/SHA proof, followed by ledgered local removal of the same `a2a56b81…` artifact. Training
+  resumed through step 6,050; both sides retain exactly 4,000/5,000/6,000.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
