@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~10:54 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~11:33 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -16,9 +16,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `e561f66c7a88a5294e9cb74a4fc3afd6be167d4f`. Its immutable contract binds selector-report SHA
   `10d39e47…`, selected LR `1e-3`, corpus-manifest SHA `c7ecaf7d…`, tokenizer SHA `c310343a…`,
   57,688,576 parameters, 61,036 steps, and exactly 1,000,013,824 tokens. All three source shards
-  passed the launcher's fresh 5,976,889,749-byte hash verification. Startup is currently tokenizing
-  the two missing shard caches before GPU training; PID 101700 is alive at nice 5 with bounded memory
-  and advancing file reads. The cache-aware matched-retention guard
+  passed the launcher's fresh 5,976,889,749-byte hash verification. The two missing shard caches were
+  atomically built (exactly 1,029,128,000 new train/validation tokens), and GPU training is now live.
+  The first durable gate passed 50/50 finite/consecutive rows and 819,200 tokens: loss 9.4982→7.1621
+  during warmup, median throughput 3,814.6 tok/s, 34 temporary slabs, and zero allocator overflow.
+  Mounted and remote 50-row metric prefixes are byte-identical at SHA-256 `66c1c966…`; the RTX 3090
+  was observed at 24,097/24,576MB and 100% utilization. PID 101700 remains alive at nice 5. The
+  cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
   and retains three size/SHA-verified checkpoints on each side. Local mirror:
   `/mnt/donto-data/alpha-runs/flagship-1b-e561f66-20260724/`; external remote log:
@@ -104,7 +108,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$55.4385107555** at about 10:54 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$55.2455382591** at about 11:32 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
