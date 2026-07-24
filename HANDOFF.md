@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~09:52 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~10:35 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,7 +7,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — `1e-3` + `2e-3` COMPLETE; `3e-3` Llama LR pilot is training on the paid 3090
+## ⚠️ LIVE RIGHT NOW — LR sweep COMPLETE; `1e-3` selected; deploy current origin before flagship
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
@@ -30,23 +30,23 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   The guard retained exactly 5,000/6,000/6,104, logged `final pull complete`, and exited successfully.
   Its final-three mean is 0.0909283 worse than `1e-3`. Evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723/RUN.md`.
-- **Third contracted LR pilot (`3e-3`) is LIVE** at
-  `/workspace/alpha2/runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724`, started 03:15 UTC on the
-  identical pinned source/data/tokenizer contract. Through step 5,500 all rows are consecutive/finite;
-  train/held-out loss is 4.2197/4.1783, median post-step-100 throughput is 3,859 tok/s, and all 56
-  allocator samples report 34 slabs with zero overflow. Remote/mounted metrics are byte-identical at
-  SHA-256 `6925905a…`; checkpoint 5,000 remains a hash-mirrored/native-audited 692,528,815-byte ALPH file
-  at `b16c102a…`, with all parameters finite/nonzero. The guard safely pruned checkpoint 2,000 and
-  now retains exactly 3,000/4,000/5,000 on both sides; training resumed through step 5,550 at
-  3,877 tok/s with host RSS/external memory 3,896/3,148MB. At the aligned gate it is 0.4422 held-out
-  loss worse than `2e-3` and 0.5346 worse
-  than `1e-3`, still interim. Guard:
-  `alpha2-lr3e3-puller-e6d9430.service`, 60s/1,800s, matched retention 3. Evidence:
-  `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724/RUN.md`.
-- Keep all three sweep candidates on `e6d9430`. Current origin has `3a7ff9d` + `13ec17b`, which
+- **Third contracted LR pilot (`3e-3`) is COMPLETE** on the identical pinned contract: 6,104/6,104
+  consecutive finite rows, exactly 100,007,936 tokens, median post-warmup throughput 3,862 tok/s,
+  final train loss 4.1647, last-100 train mean 4.0918, and final-three held-out-loss mean 4.1337789
+  (4.1705/4.1783/4.0526). All 63 allocator samples are complete with zero overflow. Terminal
+  `checkpoint-6104.json` is a hash-mirrored/native-audited 692,528,815-byte ALPH file at SHA-256
+  `18cdcec8…`, with all 57,688,576 parameters finite/nonzero; final metrics SHA-256 is `abb47676…`.
+  The guard retained exactly 5,000/6,000/6,104, completed its final pull, and exited with status 0.
+  Evidence: `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724/RUN.md`.
+- **Contracted LR selection PASS: `1e-3` selected.** All candidates match source `e6d9430`, data,
+  tokenizer, model shape, steps, tokens, and allocator contracts. Final-three held-out-loss means rank
+  `1e-3` 3.6045400, `2e-3` 3.6954683, `3e-3` 4.1337789. Canonical report:
+  `/mnt/donto-data/alpha-runs/lr-sweep-analysis-e6d9430-20260724.json`, SHA-256
+  `10d39e4791454ce2a88ee1273b6c6ecdc4d372577b11007e518ad62734b205a9`.
+- All three sweep candidates stayed on `e6d9430`. Current origin has `3a7ff9d` + `13ec17b`, which
   release cloned AdamW buffers, serializer slots, and Buffer views and passed a four-cycle committed
   page proof plus targeted 19/19 and consolidated 201-pass tests. Deploy and NVIDIA-prove those fixes
-  only after the three-candidate source-pinned sweep, before flagship.
+  must now be deployed and NVIDIA-proven before flagship.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -81,9 +81,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   advantage 0.2182763, last-three mean advantage 0.2302373, zero overflow in both runs. Report:
   `/mnt/donto-data/alpha-runs/g3-pair-analysis-c95f81b-20260723.json` (SHA-256 `1c6d26a0…`).
   Full evidence: `/mnt/donto-data/alpha-runs/g3-gpt2-100m-lr3e4-c95f81b-20260723/RUN.md`.
-- The exact-pair pin is satisfied. The pod is now on `e6d9430`, its rebuild and 46/46 NVIDIA gate are
-  proven, and the contracted `{1e-3,2e-3,3e-3}` Llama sweep is under way. Run the three candidates
-  sequentially and select only through `analyze_lr_sweep.ts`.
+- The exact-pair pin and LR sweep are satisfied. The pod remains on `e6d9430`; the contracted selector
+  chose `1e-3`. Deploy current origin, rebuild, run the 46/46 NVIDIA gate, and prove four consecutive
+  full-size checkpoint writes reclaim snapshot buffers before starting flagship.
 - Checkpoint 2,000 in G3 first exposed delayed snapshot reclamation. The `e6d9430` scoping/GC telemetry
   deployment proved the remaining issue precisely at this LR pilot's step 1,000: one full checkpoint
   stayed reachable after GC. `3a7ff9d` now explicitly clears the cloned optimizer snapshot and serializer
@@ -91,7 +91,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$55.8967925981** at about 09:18 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$55.5349992647** at about 10:34 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 

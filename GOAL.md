@@ -266,7 +266,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   commit, and resume contract. `analyze_flagship_pretrain.ts` is the terminal fail-closed gate: it
   recomputes those bindings, requires every finite/consecutive metric and aligned validation, complete
   zero-overflow allocator telemetry, ≥3K tok/s p10/median, and native-audits every terminal parameter.
-  **LR SWEEP LIVE 2026-07-23:** functional/source commit `e6d9430` rebuilt 19/19 on the RTX 3090 pod
+  **LR SWEEP PASSED 2026-07-24:** functional/source commit `e6d9430` rebuilt 19/19 on the RTX 3090 pod
   and passed the fail-closed NVIDIA gate 46/46 with zero skipped/failed/todo. The `1e-3` Llama
   candidate is complete: strict summary passed 6,104/6,104 consecutive finite rows and exactly
   100,007,936 tokens, median post-warmup throughput 3,892 tok/s, final train loss 3.6922, and
@@ -278,15 +278,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   final train loss 3.7847, and final-three held-out-loss mean 3.6954683. All 63 allocator samples are
   complete with zero overflow. Its terminal checkpoint is a hash-mirrored/native-audited
   692,528,815-byte ALPH file at `ecb79332…`, with every parameter finite/nonzero; its guard retained
-  exactly 5,000/6,000/6,104, completed the final pull, and exited. The third and final `3e-3`
-  candidate is live on the identical pinned contract. Through step 5,500 all rows are consecutive/finite;
-  train/held-out loss is 4.2197/4.1783, median post-step-100 throughput is 3,859 tok/s, and all 56
-  allocator samples report 34 slabs with zero overflow. Remote/mounted metrics are byte-identical at
-  `6925905a…`; checkpoint 5,000 remains hash-mirrored/native-audited at `b16c102a…`, and matched retention
-  safely pruned checkpoint 2,000. At the aligned gate it trails `2e-3` by 0.4422 and `1e-3` by 0.5346
-  held-out loss; training resumed through step 5,550 at 3,877 tok/s. It remains under its
-  60-second/1,800-second matched-retention guard. Selection waits for all three final-three means. Keep every sweep candidate
-  on `e6d9430`; then deploy and
+  exactly 5,000/6,000/6,104, completed the final pull, and exited. The third `3e-3` candidate also
+  completed the identical contract: 6,104 finite/consecutive rows, exactly 100,007,936 tokens,
+  3,862 tok/s median, final train loss 4.1647, final-three held-out-loss mean 4.1337789, 63 complete
+  allocator samples/zero overflow, and a hash-mirrored/native-audited terminal checkpoint at
+  `18cdcec8…`; its guard retained 5,000/6,000/6,104 and exited after final pull. The strict analyzer
+  selected `1e-3`, ranking final-three means 3.6045400, 3.6954683, 4.1337789. Report:
+  `/mnt/donto-data/alpha-runs/lr-sweep-analysis-e6d9430-20260724.json`, SHA-256 `10d39e47…`.
+  Every sweep candidate stayed on `e6d9430`; now deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
   buffers and serializer views and already passed a bounded four-cycle committed-page proof,
   targeted 19/19, and consolidated 201-pass tests.
@@ -382,11 +381,12 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (current 2026-07-23)
+## 8. Immediate next actions (current 2026-07-24)
 
-1. Finish the live `2e-3` candidate, run `3e-3` on the same pinned `e6d9430` source/data/tokenizer
-   contract, and select only through `analyze_lr_sweep.ts`.
-2. Deploy current origin with the checkpoint-buffer release fixes, rebuild, and pass
-   `run_nvidia_gates.sh` 46/46 on the RTX 3090 before flagship.
-3. Launch the selected-LR 1,000,013,824-token flagship pretrain with the verified three-shard manifest
-   and matched three-copy checkpoint retention.
+1. Deploy current origin with the checkpoint-buffer release fixes, rebuild, pass
+   `run_nvidia_gates.sh` 46/46, and prove four consecutive full-size checkpoint writes reclaim snapshot
+   buffers on the RTX 3090 before flagship.
+2. Stage the SHA-bound `1e-3` selector report on the pod and launch the selected-LR
+   1,000,013,824-token flagship pretrain with the verified three-shard manifest and matched three-copy
+   checkpoint retention.
+3. Audit the terminal flagship checkpoint, then run the contracted SFT LR pilots and full masked SFT.
