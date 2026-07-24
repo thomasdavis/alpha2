@@ -36,13 +36,17 @@ describe("checkpoint snapshot lifecycle", () => {
       ["weight.m", { shape: [2], dtype: "f32" as const, data: Float32Array.of(3, 4) }],
       ["weight.v", { shape: [2], dtype: "f32" as const, data: Float32Array.of(5, 6) }],
     ]);
-    const state = {
-      params: { weight: { shape: [2], data: parameterData as any } },
+    const state: CheckpointState = {
+      modelConfig: {
+        vocabSize: 2, blockSize: 1, nLayer: 1, nEmbd: 2, nHead: 1,
+        dropout: 0, ffnActivation: "gelu",
+      },
+      params: { weight: { shape: [2], data: parameterData as unknown as number[] } },
       optimizerState: { step: 1, buffers: optimizerBuffers },
       rngState: 1,
       configHash: "test",
       step: 1,
-    } as CheckpointState;
+    };
 
     expect(releaseCheckpointSnapshotBuffers(state)).toBe(2);
     expect(optimizerBuffers.size).toBe(0);
