@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~16:52 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~17:28 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -56,8 +56,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   finite rows/73,728,000 tokens: train/held-out loss 3.8755/3.8603, another 0.0373 validation
   improvement, p10/median 3,724/3,850 tok/s, 46 allocator samples, 34 slabs, and zero overflow.
   Remote/mounted metrics match at `654595d1…`; all 500 rows after checkpoint 4,000 held ArrayBuffers
-  within 6,631–6,632MB and RSS within 7,868–7,933MB. Training resumed through step 4,525; both sides
-  retain exactly 2,000/3,000/4,000.
+  within 6,631–6,632MB and RSS within 7,868–7,933MB. The checkpoint-5,000 gate then passed 5,000
+  finite rows/81,920,000 tokens: train/held-out loss 3.8075/3.7961, another 0.0642 validation
+  improvement, p10/median 3,723/3,850 tok/s, 51 allocator samples, 34 slabs, and zero overflow.
+  Checkpoint 5,000 is a hash-mirrored/native-audited 692,528,815-byte ALPH file at `b9851894…` with
+  all 57,688,576 parameters finite/nonzero; metrics match at `34a5e893…`. Its save again released 228
+  buffers and returned ArrayBuffers 7,072→6,631MB. The second live prune safely removed remote
+  checkpoint 2,000 only after mounted size/SHA proof, followed by ledgered local removal of the same
+  `7f54b34a…` artifact. Training resumed through step 5,025; both sides retain exactly
+  3,000/4,000/5,000.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
@@ -145,7 +152,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$53.7258900253** at about 16:50 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$53.5329878067** at about 17:27 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
