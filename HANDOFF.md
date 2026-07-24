@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~20:25 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~21:03 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -93,8 +93,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   3.6169/3.6547, a new best by 0.0610 from step 7,000 and 0.0509 below the prior best at step 6,000.
   P10/median throughput was 3,723/3,850 tok/s; all 76 allocator samples report 34 slabs and zero
   overflow. Remote/mounted metrics match at `0dc719fc…`; every post-checkpoint row held ArrayBuffers
-  exactly at 6,632MB and RSS within 7,854–7,936MB. Training resumed through step 7,525. Account
-  balance was `$52.6887673265` at approximately 20:25 UTC.
+  exactly at 6,632MB and RSS within 7,854–7,936MB. The checkpoint-8,000 gate then passed 8,000
+  finite rows/131,072,000 tokens: train/held-out loss 3.5756/3.6440, another new best by 0.0106 from
+  step 7,500 and 0.0615 below step 6,000. P10/median throughput was 3,724/3,850 tok/s; all 81
+  allocator samples report 34 slabs and zero overflow. Checkpoint 8,000 is a
+  hash-mirrored/native-audited 692,528,815-byte ALPH file at `e7658b21…` with all 57,688,576
+  parameters finite/nonzero; metrics match at `8b1679e0…`. The save again released 228 buffers and
+  returned ArrayBuffers 7,072→6,631MB. The fifth live prune safely removed remote checkpoint 5,000
+  only after mounted size/SHA proof, followed by ledgered local removal of the same `b9851894…`
+  artifact. Training resumed through step 8,050; both sides retain exactly 6,000/7,000/8,000.
+  Account balance was `$52.4958009413` at approximately 21:03 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,

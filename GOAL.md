@@ -370,7 +370,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   0.0610 from step 7,000 and 0.0509 below the prior best at step 6,000. P10/median throughput was
   3,723/3,850 tok/s; all 76 allocator samples report 34 slabs and zero overflow. Metrics are
   hash-identical remote/mounted at `0dc719fc…`; every post-checkpoint row held ArrayBuffers exactly
-  at 6,632MB and RSS within 7,854–7,936MB. Training resumed through step 7,525.
+  at 6,632MB and RSS within 7,854–7,936MB. The checkpoint-8,000 gate then passed 8,000 finite rows/
+  131,072,000 tokens: train/held-out loss 3.5756/3.6440, another new best by 0.0106 from step 7,500
+  and 0.0615 below step 6,000. P10/median throughput was 3,724/3,850 tok/s; all 81 allocator samples
+  report 34 slabs and zero overflow. Checkpoint `e7658b21…` and metrics `8b1679e0…` are hash-identical
+  remote/mounted; the native audit passed all 57,688,576 parameters finite/nonzero. The eighth save
+  again released all 228 buffers and returned ArrayBuffers 7,072→6,631MB. The fifth live prune
+  safely removed checkpoint 5,000 remotely only after mounted size/SHA proof, followed by ledgered
+  local removal of the same `b9851894…` artifact. Training resumed through step 8,050; both sides
+  retain exactly 6,000/7,000/8,000.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
