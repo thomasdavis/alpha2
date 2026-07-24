@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~07:30 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~08:05 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -32,13 +32,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723/RUN.md`.
 - **Third contracted LR pilot (`3e-3`) is LIVE** at
   `/workspace/alpha2/runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724`, started 03:15 UTC on the
-  identical pinned source/data/tokenizer contract. Through step 3,500 all rows are consecutive/finite;
-  train/held-out loss is 4.1738/4.5064, median post-step-100 throughput is 3,863 tok/s, and all 36
+  identical pinned source/data/tokenizer contract. Through step 4,000 all rows are consecutive/finite;
+  train/held-out loss is 4.3930/4.4007, median post-step-100 throughput is 3,862 tok/s, and all 41
   allocator samples report 34 slabs with zero overflow. Remote/mounted metrics are byte-identical at
-  SHA-256 `41492278…`; checkpoint 3,000 remains a hash-mirrored/native-audited 692,528,815-byte ALPH file
-  at `b7ca76f0…`, with all parameters finite/nonzero. The guard retains exactly checkpoints
-  1,000/2,000/3,000; training resumed through step 3,550 at 3,895 tok/s with host RSS/external memory
-  3,870/3,148MB. At the aligned gate it is 0.5335 held-out loss worse than `2e-3` and 0.6478 worse
+  SHA-256 `436978b3…`; checkpoint 4,000 is a hash-mirrored/native-audited 692,528,815-byte ALPH file
+  at `4421dd4f…`, with all parameters finite/nonzero. The guard verified and safely pruned checkpoint
+  1,000 and now retains exactly 2,000/3,000/4,000 on both sides; training resumed through step 4,050
+  at 3,697 tok/s with host RSS/external memory 3,876/3,148MB. At the aligned gate it is 0.4972
+  held-out loss worse than `2e-3` and 0.6068 worse
   than `1e-3`, still interim. Guard:
   `alpha2-lr3e3-puller-e6d9430.service`, 60s/1,800s, matched retention 3. Evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724/RUN.md`.
@@ -90,7 +91,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$56.4998391965** at about 07:12 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$56.2586095814** at about 08:05 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
