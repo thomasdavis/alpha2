@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~13:16 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~13:53 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -27,8 +27,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   byte-identical at `bc616a21…`. The next held-out gate also passed: 1,500 finite/consecutive rows and
   24,576,000 tokens, train/held-out loss 4.4025/4.4596, validation improvement 0.4102, p10/median
   throughput 3,725/3,856 tok/s, 16 allocator samples, 34 slabs, and zero overflow. Remote/mounted
-  metrics match at `a3860b8b…`. Across all 500 post-checkpoint rows, ArrayBuffers stayed exactly
-  6,632MB and RSS 7,793–7,869MB, confirming a bounded first-save plateau.
+  metrics match at `a3860b8b…`. The second checkpoint gate then passed 2,000 finite rows/32,768,000
+  tokens, train/held-out loss 4.2562/4.2743, another 0.1853 validation improvement, p10/median
+  3,723/3,849 tok/s, 21 allocator samples, 34 slabs, and zero overflow. Checkpoint 2,000 is a
+  hash-mirrored/native-audited 692,528,815-byte ALPH file at `7f54b34a…`; metrics match at `01a31962…`.
+  Its save released 228 buffers with GC and returned ArrayBuffers 7,072→6,631MB, one MB below the
+  first-save plateau, proving no per-checkpoint accumulation. Training resumed through step 2,025 at
+  3,856 tok/s with the RTX 3090 at 100% utilization; the guard retains 1,000/2,000 on both sides.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
@@ -116,7 +121,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$54.7631358627** at about 13:16 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$54.5701006662** at about 13:53 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
