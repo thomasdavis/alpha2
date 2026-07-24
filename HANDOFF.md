@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~08:05 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~08:41 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -32,14 +32,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr2e3-e6d9430-20260723/RUN.md`.
 - **Third contracted LR pilot (`3e-3`) is LIVE** at
   `/workspace/alpha2/runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724`, started 03:15 UTC on the
-  identical pinned source/data/tokenizer contract. Through step 4,000 all rows are consecutive/finite;
-  train/held-out loss is 4.3930/4.4007, median post-step-100 throughput is 3,862 tok/s, and all 41
+  identical pinned source/data/tokenizer contract. Through step 4,500 all rows are consecutive/finite;
+  train/held-out loss is 4.1098/4.2753, median post-step-100 throughput is 3,861 tok/s, and all 46
   allocator samples report 34 slabs with zero overflow. Remote/mounted metrics are byte-identical at
-  SHA-256 `436978b3…`; checkpoint 4,000 is a hash-mirrored/native-audited 692,528,815-byte ALPH file
+  SHA-256 `9068ef0e…`; checkpoint 4,000 remains a hash-mirrored/native-audited 692,528,815-byte ALPH file
   at `4421dd4f…`, with all parameters finite/nonzero. The guard verified and safely pruned checkpoint
-  1,000 and now retains exactly 2,000/3,000/4,000 on both sides; training resumed through step 4,050
-  at 3,697 tok/s with host RSS/external memory 3,876/3,148MB. At the aligned gate it is 0.4972
-  held-out loss worse than `2e-3` and 0.6068 worse
+  1,000 and now retains exactly 2,000/3,000/4,000 on both sides; training resumed through step 4,550
+  at 3,907 tok/s with host RSS/external memory 3,878/3,148MB. At the aligned gate it is 0.4653
+  held-out loss worse than `2e-3` and 0.5736 worse
   than `1e-3`, still interim. Guard:
   `alpha2-lr3e3-puller-e6d9430.service`, 60s/1,800s, matched retention 3. Evidence:
   `/mnt/donto-data/alpha-runs/lr-sweep-llama-100m-lr3e3-e6d9430-20260724/RUN.md`.
