@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~11:33 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~12:04 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -18,10 +18,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   57,688,576 parameters, 61,036 steps, and exactly 1,000,013,824 tokens. All three source shards
   passed the launcher's fresh 5,976,889,749-byte hash verification. The two missing shard caches were
   atomically built (exactly 1,029,128,000 new train/validation tokens), and GPU training is now live.
-  The first durable gate passed 50/50 finite/consecutive rows and 819,200 tokens: loss 9.4982→7.1621
-  during warmup, median throughput 3,814.6 tok/s, 34 temporary slabs, and zero allocator overflow.
-  Mounted and remote 50-row metric prefixes are byte-identical at SHA-256 `66c1c966…`; the RTX 3090
-  was observed at 24,097/24,576MB and 100% utilization. PID 101700 remains alive at nice 5. The
+  The first aligned held-out gate passed 500/500 finite/consecutive rows and exactly 8,192,000 tokens:
+  train loss 9.4982→5.2023, five-iteration held-out loss 5.4226, p10/median throughput after step 50
+  3,724/3,857 tok/s, final gradient norm 0.2538, and cumulative clipping 4.2%. All six required
+  allocator samples through step 500 report exactly 34 temporary slabs and zero overflow; RSS stayed
+  within 7,813–8,960MB. Mounted and remote 500-row metrics are byte-identical at SHA-256 `d26f70cc…`;
+  training resumed beyond the validation barrier and the RTX 3090 was observed at 100% utilization.
+  PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
   and retains three size/SHA-verified checkpoints on each side. Local mirror:
@@ -108,7 +111,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$55.2455382591** at about 11:32 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$55.1007573091** at about 12:04 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 

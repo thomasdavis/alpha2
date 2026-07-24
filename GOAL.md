@@ -293,11 +293,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   launched at 10:51 UTC on exact source `e561f66`; its immutable contract binds 61,036 steps,
   1,000,013,824 tokens, selector `10d39e47…`, manifest `c7ecaf7d…`, and tokenizer `c310343a…`.
   All 5,976,889,749 source bytes hash-verified before startup; the two missing shard caches were built
-  atomically, adding exactly 1,029,128,000 cached train/validation tokens. The first durable GPU gate
-  passed 50/50 finite/consecutive rows and 819,200 tokens: loss 9.4982→7.1621 during warmup, median
-  throughput 3,814.6 tok/s, 34 temporary slabs, zero overflow, and byte-identical mounted/remote metrics
-  at `66c1c966…`. The RTX 3090 was observed at 24,097/24,576MB and 100% utilization; the cache-aware
-  matched three-copy guard remains active.
+  atomically, adding exactly 1,029,128,000 cached train/validation tokens. The first aligned held-out
+  gate passed 500/500 finite/consecutive rows and 8,192,000 tokens: train loss 9.4982→5.2023,
+  five-iteration held-out loss 5.4226, p10/median throughput after step 50 3,724/3,857 tok/s, six
+  complete allocator samples, 34 slabs, zero overflow, and bounded 7,813–8,960MB RSS. Mounted and
+  remote metrics are byte-identical at `d26f70cc…`; training resumed beyond validation and the
+  cache-aware matched three-copy guard remains active.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
