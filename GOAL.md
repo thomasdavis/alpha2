@@ -299,8 +299,11 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   50 3,730/3,862 tok/s, 11 complete allocator samples, 34 slabs, zero overflow, and bounded
   7,804–8,960MB RSS. The save released all 228 cloned optimizer buffers with GC. Remote/mounted
   checkpoint 1,000 is a hash-identical/native-audited 692,528,815-byte ALPH file at `93ddc593…` with
-  all parameters finite/nonzero; metrics match at `bc616a21…`. Training resumed through step 1,025
-  and the cache-aware matched three-copy guard remains active.
+  all parameters finite/nonzero; checkpoint-1,000 metrics match at `bc616a21…`. The step-1,500
+  held-out gate then passed 1,500 finite rows/24,576,000 tokens, train/held-out loss 4.4025/4.4596,
+  validation improvement 0.4102, p10/median 3,725/3,856 tok/s, 16 allocator samples, 34 slabs, and
+  zero overflow. Remote/mounted metrics match at `a3860b8b…`; all 500 post-checkpoint rows held
+  ArrayBuffers exactly at 6,632MB and RSS within 7,793–7,869MB. The cache-aware matched guard remains active.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
