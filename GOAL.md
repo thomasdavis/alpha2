@@ -285,10 +285,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `18cdcec8…`; its guard retained 5,000/6,000/6,104 and exited after final pull. The strict analyzer
   selected `1e-3`, ranking final-three means 3.6045400, 3.6954683, 4.1337789. Report:
   `/mnt/donto-data/alpha-runs/lr-sweep-analysis-e6d9430-20260724.json`, SHA-256 `10d39e47…`.
-  Every sweep candidate stayed on `e6d9430`; now deploy and
-  NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
-  buffers and serializer views and already passed a bounded four-cycle committed-page proof,
-  targeted 19/19, and consolidated 201-pass tests.
+  Every sweep candidate stayed on `e6d9430`. Current-origin `e561f66` subsequently built 19/19 and
+  passed the real RTX 3090 gate 46/46 with zero failed/skipped/todo. A four-cycle live-GPU proof then
+  wrote four consecutive 692,528,809-byte checkpoints: each released 228 cloned AdamW buffers, ran GC,
+  returned ArrayBuffers to the identical 2,705MB post-GC baseline, and independently passed an exact
+  ALPH header/payload plus all-57,688,576-parameter finite/nonzero audit. The selected `1e-3` flagship
+  launched at 10:51 UTC on exact source `e561f66`; its immutable contract binds 61,036 steps,
+  1,000,013,824 tokens, selector `10d39e47…`, manifest `c7ecaf7d…`, and tokenizer `c310343a…`.
+  All 5,976,889,749 source bytes hash-verified before startup; the two missing shard caches are being
+  built under a cache-aware matched-retention guard before GPU steps begin.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
@@ -383,10 +388,8 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-24)
 
-1. Deploy current origin with the checkpoint-buffer release fixes, rebuild, pass
-   `run_nvidia_gates.sh` 46/46, and prove four consecutive full-size checkpoint writes reclaim snapshot
-   buffers on the RTX 3090 before flagship.
-2. Stage the SHA-bound `1e-3` selector report on the pod and launch the selected-LR
-   1,000,013,824-token flagship pretrain with the verified three-shard manifest and matched three-copy
-   checkpoint retention.
-3. Audit the terminal flagship checkpoint, then run the contracted SFT LR pilots and full masked SFT.
+1. Monitor the live `e561f66` flagship through token-cache completion, first finite GPU metrics, aligned
+   validation, and the first hash-mirrored/native-audited checkpoint; keep the three-copy guard live.
+2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
+   manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
+3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.

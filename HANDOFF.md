@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~10:35 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-24 ~10:54 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,10 +7,22 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — LR sweep COMPLETE; `1e-3` selected; deploy current origin before flagship
+## ⚠️ LIVE RIGHT NOW — contracted 1B flagship launched on current-origin `e561f66`
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.
+- **Flagship pretrain is LIVE** at
+  `/workspace/alpha2/runs/flagship-1b-e561f66-20260724`, launched at 10:51 UTC on exact source
+  `e561f66c7a88a5294e9cb74a4fc3afd6be167d4f`. Its immutable contract binds selector-report SHA
+  `10d39e47…`, selected LR `1e-3`, corpus-manifest SHA `c7ecaf7d…`, tokenizer SHA `c310343a…`,
+  57,688,576 parameters, 61,036 steps, and exactly 1,000,013,824 tokens. All three source shards
+  passed the launcher's fresh 5,976,889,749-byte hash verification. Startup is currently tokenizing
+  the two missing shard caches before GPU training; PID 101700 is alive at nice 5 with bounded memory
+  and advancing file reads. The cache-aware matched-retention guard
+  `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
+  and retains three size/SHA-verified checkpoints on each side. Local mirror:
+  `/mnt/donto-data/alpha-runs/flagship-1b-e561f66-20260724/`; external remote log:
+  `/workspace/alpha2-run-logs/flagship-1b-e561f66-20260724.train.log`.
 - **First contracted LR pilot (`1e-3`) is COMPLETE.** Its strict summary passed 6,104/6,104
   consecutive finite rows and exactly 100,007,936 tokens: final train loss 3.6922, last-100 train mean
   3.5989, median post-warmup throughput 3,892 tok/s, and final-three held-out-loss mean 3.6045400
@@ -43,10 +55,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `1e-3` 3.6045400, `2e-3` 3.6954683, `3e-3` 4.1337789. Canonical report:
   `/mnt/donto-data/alpha-runs/lr-sweep-analysis-e6d9430-20260724.json`, SHA-256
   `10d39e4791454ce2a88ee1273b6c6ecdc4d372577b11007e518ad62734b205a9`.
-- All three sweep candidates stayed on `e6d9430`. Current origin has `3a7ff9d` + `13ec17b`, which
-  release cloned AdamW buffers, serializer slots, and Buffer views and passed a four-cycle committed
-  page proof plus targeted 19/19 and consolidated 201-pass tests. Deploy and NVIDIA-prove those fixes
-  must now be deployed and NVIDIA-proven before flagship.
+- All three sweep candidates stayed on `e6d9430`. Current-origin `e561f66` then built 19/19 and passed
+  the real NVIDIA gate 46/46 with zero failed/skipped/todo. Four consecutive full flagship-size saves
+  each released all 228 cloned optimizer buffers, ran host GC, and returned ArrayBuffers to the same
+  2,705MB baseline. Every 692,528,809-byte checkpoint independently passed exact-header/payload and
+  all-57,688,576-parameter finite/nonzero audits. Evidence:
+  `/mnt/donto-data/alpha-runs/{nvidia-gate-e561f66-20260724,checkpoint-reclaim-4cycle-e561f66-20260724}/`.
 - **G2 PASSED.** The 5,400-step flagship-shape soak completed cleanly at 20:44 UTC on commit `aca9f97`:
   5,400/5,400 finite rows, 88.47M tokens, literal 6h25m monitoring, p10/median 3,721/3,832 tok/s,
   RSS 681–767MB with negative slope, 34 constant temporary slabs, zero allocator overflow, full 692.5MB
@@ -81,24 +95,23 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   advantage 0.2182763, last-three mean advantage 0.2302373, zero overflow in both runs. Report:
   `/mnt/donto-data/alpha-runs/g3-pair-analysis-c95f81b-20260723.json` (SHA-256 `1c6d26a0…`).
   Full evidence: `/mnt/donto-data/alpha-runs/g3-gpt2-100m-lr3e4-c95f81b-20260723/RUN.md`.
-- The exact-pair pin and LR sweep are satisfied. The pod remains on `e6d9430`; the contracted selector
-  chose `1e-3`. Deploy current origin, rebuild, run the 46/46 NVIDIA gate, and prove four consecutive
-  full-size checkpoint writes reclaim snapshot buffers before starting flagship.
+- The exact-pair pin, LR sweep, current-origin NVIDIA gate, and four-cycle checkpoint-reclamation proof
+  are all satisfied. The selected `1e-3` flagship is now live on exact source `e561f66`.
 - Checkpoint 2,000 in G3 first exposed delayed snapshot reclamation. The `e6d9430` scoping/GC telemetry
   deployment proved the remaining issue precisely at this LR pilot's step 1,000: one full checkpoint
   stayed reachable after GC. `3a7ff9d` now explicitly clears the cloned optimizer snapshot and serializer
-  reference list in `finally`; deploy and re-prove it after the source-pinned LR sweep, before flagship.
+  reference list in `finally`; the four-cycle RTX 3090 proof above confirms reclamation before flagship.
 - The contracted flagship manifest and all three source shards are now staged under `/runpod/data`.
   Their exact aggregate size is 5,976,889,749 bytes and all remote SHA-256 values match the immutable
   manifest; 13GB remained free afterward. This was a low-priority transfer while the GPU stayed at 100%.
-- RunPod balance was **$55.5349992647** at about 10:34 UTC; total account burn was $0.301/hr including
+- RunPod balance was **$55.4385107555** at about 10:54 UTC; total account burn was $0.301/hr including
   unrelated stopped volumes. Never delete those unrelated pods. If abandoning this work, terminate this pod with
   `runpodctl remove pod d5m7h1v0kr0zd4`.
 
 ## Takeover progress (supersedes stale state later in this file)
 
-- Current deployed/certified functional tree is **`e6d9430`**. TypeScript clean; consolidated box suite
-  **200 pass / 46 GPU-gated skip / 0 fail**, plus real RTX 3090 gate **46/46 executed and passed**.
+- Current deployed/certified functional tree and live flagship source is **`e561f66`**. Its production
+  build is 19/19 and the real RTX 3090 gate is **46/46 executed and passed**, zero skipped/failed/todo.
   Root `npm test` is pre-existingly broken
   because Turbo runs Vitest in empty packages; use `npm test -w @alpha/tests`.
 - Current origin's latest non-documentation commit is **`08bec45`**. Its production build is green across all 19 buildable packages,
