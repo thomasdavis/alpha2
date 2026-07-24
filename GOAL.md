@@ -279,12 +279,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   complete with zero overflow. Its terminal checkpoint is a hash-mirrored/native-audited
   692,528,815-byte ALPH file at `ecb79332…`, with every parameter finite/nonzero; its guard retained
   exactly 5,000/6,000/6,104, completed the final pull, and exited. The third and final `3e-3`
-  candidate is live on the identical pinned contract. Through step 5,000 all rows are consecutive/finite;
-  train/held-out loss is 4.4134/4.1705, median post-step-100 throughput is 3,859 tok/s, and all 51
+  candidate is live on the identical pinned contract. Through step 5,500 all rows are consecutive/finite;
+  train/held-out loss is 4.2197/4.1783, median post-step-100 throughput is 3,859 tok/s, and all 56
   allocator samples report 34 slabs with zero overflow. Remote/mounted metrics are byte-identical at
-  `d313019c…`; checkpoint 5,000 is hash-mirrored/native-audited at `b16c102a…`, and matched retention
-  safely pruned checkpoint 2,000. At the aligned gate it trails `2e-3` by 0.4464 and `1e-3` by 0.5436
-  held-out loss; training resumed through step 5,050 at 3,891 tok/s. It remains under its
+  `6925905a…`; checkpoint 5,000 remains hash-mirrored/native-audited at `b16c102a…`, and matched retention
+  safely pruned checkpoint 2,000. At the aligned gate it trails `2e-3` by 0.4422 and `1e-3` by 0.5346
+  held-out loss; training resumed through step 5,550 at 3,877 tok/s. It remains under its
   60-second/1,800-second matched-retention guard. Selection waits for all three final-three means. Keep every sweep candidate
   on `e6d9430`; then deploy and
   NVIDIA-prove `3a7ff9d` + `13ec17b` before the 1B-token flagship. Those fixes release cloned AdamW
