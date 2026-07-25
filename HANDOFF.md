@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-25 ~23:22 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-25 ~23:50 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -26,20 +26,24 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   passed the current NVIDIA gate **46/46**, hash-verified all 5,976,889,749 source bytes, rebuilt all
   six train/validation token caches, and recorded the truncation in `resume-ledger.jsonl` before
   resuming at step 28,000.
-- The first canonical recovery window, steps 28,001–28,050, is consecutive and finite with mean
-  loss 3.3464976, mean grad norm 0.2271370, and median 4,000 tok/s. Step 28,100 supplied a fresh
-  allocator sample: exactly 34 temporary slabs and zero free-range overflow. Remote/mounted metrics
-  matched through step 28,150 at 10,143,882 bytes / SHA-256 `5ff278ff…`; GPU utilization was 100%,
-  RSS about 7.9GB, `/runpod` had 8.7GB free, and the account balance was `$44.9006019622`.
+- The canonical recovery replay has re-passed the full step-28,500 gate: 28,500 consecutive finite
+  rows / 466,944,000 tokens (46.6938%), p10/median 3,728.9936/3,858.6430 tok/s, all 286 allocator
+  samples present, exactly 34 temporary slabs, and zero free-range overflow. Train/held-out loss is
+  3.2907429/3.3982231; held-out differs from the abandoned trajectory's corresponding gate by only
+  +0.0035649. Remote/mounted metrics match at 10,264,519 bytes / SHA-256 `9a9edd57…`. Steady-state
+  recovery steps 28,101–28,500 held RSS at 7,936–7,948MB and ArrayBuffers at 6,995–6,996MB. GPU
+  utilization was 100%, `/runpod` had 8.7GB free, and account balance was `$44.7557173066`.
 - Active mirror/retention guard:
-  `alpha2-flagship-puller-e561f66-recovery2.service` (60-second pull, 7,200-second stale window,
-  matched keep-three checkpoints). It is active with zero restarts. The checkpoint filename filter
-  was tightened so native-audit sidecars cannot interrupt retention.
+  `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
+  metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
+  active with zero restarts. Connectivity failures do not count as training stalls. The checkpoint
+  filename filter was tightened so native-audit sidecars cannot interrupt retention.
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** continue aligned 500/1,000-step audits through terminal step 61,036, then run the
-  contracted SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
+- **Next gate:** audit checkpoint 29,000, then continue aligned 500/1,000-step gates through terminal
+  step 61,036 before the contracted SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation,
+  and HF publication.
 
 ## Historical pre-interruption flagship record
 

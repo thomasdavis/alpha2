@@ -487,7 +487,8 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   returned to the 6,632MB ArrayBuffers baseline at step 28,001. Safe retention removed checkpoint
   25,000 only after proof and now holds exactly 26,000/27,000/28,000. Training resumed through
   28,050; balance was `$45.6456990488`.
-  Step 28,500 then passed with 28,500 finite/consecutive rows and 466,944,000 tokens (46.6938%);
+  Before the interruption, step 28,500 had passed with 28,500 finite/consecutive rows and
+  466,944,000 tokens (46.6938%);
   p10/median is 3,728/3,857 tok/s; all 286 allocator samples report 34 slabs/zero overflow. Held-out
   loss improved 0.0300772 from checkpoint 28,000 to 3.3946582 and is only +0.0266157 from the
   step-27,000 run best. Exact remote/mounted metrics match at `d4764198…`; post-28k ArrayBuffers
@@ -501,10 +502,16 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   28,000 checkpoint `b9f80989…`, verified all 5,976,889,749 corpus bytes, rebuilt all six token
   caches, ledgered the metrics truncation, and resumed on exact source `e561f66`. Canonical steps
   28,001–28,050 are consecutive/finite with mean loss 3.3464976, mean grad norm 0.2271370, and median
-  4,000 tok/s; step 28,100 reports 34 slabs/zero overflow. Remote/mounted metrics matched through
-  28,150 at SHA-256 `5ff278ff…`; the replacement GPU was at 100%, RSS returned to about 7.9GB, and
-  `/runpod` had 8.7GB free. Only after that proof, the stopped original pod was deleted and the
-  hash-verified redundant transfer archives were removed. Balance was `$44.9006019622`.
+  4,000 tok/s; step 28,100 reports 34 slabs/zero overflow. The canonical replay then re-passed the
+  full step-28,500 gate: 28,500 finite/consecutive rows, 466,944,000 tokens (46.6938%), p10/median
+  3,728.9936/3,858.6430 tok/s, all 286 allocator samples present, 34 slabs, and zero overflow.
+  Train/held-out loss was 3.2907429/3.3982231; held-out is only 0.0035649 above the abandoned
+  trajectory's corresponding gate. Exact remote/mounted metrics match at SHA-256 `9a9edd57…`.
+  After the one-time post-tokenization residue, steps 28,101–28,500 held RSS within 7,936–7,948MB
+  and ArrayBuffers within 6,995–6,996MB. The replacement GPU remained at 100% and `/runpod` had
+  8.7GB free. Only after the step-28,100 proof, the stopped original pod was deleted and the
+  hash-verified redundant transfer archives were removed. The live guard now has a 1,800-second
+  verified-metric stall limit and pod-scoped auto-termination. Balance was `$44.7557173066`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
