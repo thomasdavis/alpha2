@@ -439,7 +439,13 @@ Every check was proven load-bearing by temporary fault injection.
   box** if git clone fails (`--exclude=.git --exclude=.next --exclude=.turbo`; sync `packages apps`
   first if in a hurry — node_modules is 1GB and rsyncs alphabetically; full sync ~30-45 min under box
   I/O load).
-- **Hugging Face**: `hf` CLI authed as `ajaxdavis` (write verified by probe create+delete).
+- **Hugging Face**: `hf` CLI is currently authenticated as `ajaxdavis` (write verified by probe
+  create+delete). The canonical mounted verification environment is
+  `/mnt/donto-data/alpha-corpora/.venv` with Python 3.11.15, Transformers 5.14.1, CPU Torch 2.13.0,
+  Safetensors 0.8.0, and Hugging Face Hub 1.24.0. A fresh
+  `pipeline("text-generation", model="/mnt/donto-data/alpha-runs/g3-e2e/hf")` cold-load succeeded
+  with zero custom code and generated output. The system Python lacks Transformers; use this venv for
+  final Hub cold-load verification rather than installing onto the root disk.
 - **Box rules**: shared multi-tenant box — EVERYTHING niced (`nice -n19`, `ionice -c3` for I/O);
   temp files under `$CLAUDE_JOB_DIR/tmp`, NOT bare /tmp; research artifacts under /mnt/donto-data;
   **no more CPU training on the box (user directive)**. lint-staged pre-commit runs a full turbo build
