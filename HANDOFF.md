@@ -141,7 +141,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Held-out loss 3.5532966 is a +0.1202539 single-gate wobble from step 22,000, but every
   numeric/memory/allocator invariant remains green; like the comparable step-8,500 wobble, it needs
   the next aligned checkpoint rather than an intervention. Checkpoint 23,000 is the discriminator.
-  Balance was `$47.5512524306` at approximately 14:09 UTC.
+  Balance was `$47.5512524306` at approximately 14:09 UTC. Checkpoint 23,000 subsequently resolved
+  the wobble: held-out loss recovered to 3.4372567, only 0.0042140 above step 22,000. All 23,000
+  rows are finite/consecutive and cover 376,832,000 tokens (37.6827%); p10/median is 3,734/3,864
+  tok/s; all 231 allocator samples report 34 slabs/zero overflow. Exact metrics `32da13ab…` and
+  checkpoint `746e14f4…` match remote/mounted; the checkpoint's native scan passed all 57,688,576
+  parameters finite/nonzero, and the save released 228 buffers to 6,631MB. The guard safely pruned
+  checkpoint 20,000 only after proof and now retains exactly 21,000/22,000/23,000 on both sides.
+  Training resumed through 23,025; balance was `$47.3824188825` at approximately 14:46 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,

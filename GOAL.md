@@ -416,7 +416,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `d25d85ff…`. Held-out loss 3.5532966 is a +0.1202539 one-gate wobble from step 22,000; it is on
   watch rather than prompting intervention because all numeric/memory/allocator invariants remain
   green and the earlier comparable step-8,500 wobble recovered. Checkpoint 23,000 is the next
-  discriminator. Balance was `$47.5512524306` at approximately 14:09 UTC.
+  discriminator. Balance was `$47.5512524306` at approximately 14:09 UTC. Checkpoint 23,000 then
+  resolved the wobble: held-out loss recovered to 3.4372567, only 0.0042140 above step 22,000.
+  All 23,000 rows are finite/consecutive and cover 376,832,000 tokens (37.6827%); p10/median is
+  3,734/3,864 tok/s; all 231 allocator samples report 34 slabs/zero overflow. Exact metrics
+  `32da13ab…` and checkpoint `746e14f4…` match remote/mounted; the native audit passed all
+  57,688,576 parameters finite/nonzero, and the save released 228 buffers to 6,631MB. Safe retention
+  removed checkpoint 20,000 only after proof and now holds exactly 21,000/22,000/23,000 on both
+  sides. Training resumed through 23,025; balance was `$47.3824188825` at approximately 14:46 UTC.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
