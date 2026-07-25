@@ -179,6 +179,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Held-out loss was effectively flat at 3.4464590, slightly better by 0.0007231 from 25,000. Exact
   remote/mounted metrics match at `b8dcc21a…`; post-25k ArrayBuffers stayed exactly 6,632MB and RSS
   within 7,857–7,937MB. Balance was `$46.5140116656` at approximately 17:45 UTC.
+  Checkpoint 26,000 then passed with 26,000 finite/consecutive rows and 425,984,000 tokens (42.5978%),
+  p10/median 3,728/3,858 tok/s, all 261 allocator samples present, 34 slabs, and zero overflow.
+  Held-out loss improved to 3.4225069, only +0.0217091 from the run best. Exact metrics `c4222263…`
+  and checkpoint `28b0050b…` match remote/mounted; the native scan passed all 57,688,576 parameters
+  finite/nonzero, and the save released 228 buffers to 6,631MB. The guard safely pruned checkpoint
+  23,000 only after mirror proof and now retains exactly 24,000/25,000/26,000 on both sides. Training
+  resumed through 26,025; balance was `$46.3211066359` at approximately 18:23 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
