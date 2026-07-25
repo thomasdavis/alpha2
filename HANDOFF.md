@@ -186,6 +186,11 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   finite/nonzero, and the save released 228 buffers to 6,631MB. The guard safely pruned checkpoint
   23,000 only after mirror proof and now retains exactly 24,000/25,000/26,000 on both sides. Training
   resumed through 26,025; balance was `$46.3211066359` at approximately 18:23 UTC.
+  Step 26,500 then established a new run-best held-out loss of 3.3790116, improving 0.0217862 from
+  the prior step-20,000 best. All 26,500 rows are finite/consecutive and cover 434,176,000 tokens
+  (43.4170%); p10/median is 3,728/3,858 tok/s; all 266 allocator samples report 34 slabs/zero
+  overflow. Exact remote/mounted metrics match at `822c37d3…`; post-26k ArrayBuffers stayed exactly
+  6,632MB and RSS within 7,854–7,930MB. Balance was `$46.1522706432` at approximately 18:57 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
