@@ -212,6 +212,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   returned to the 6,632MB ArrayBuffers baseline at step 28,001. Safe retention removed checkpoint
   25,000 only after proof and now holds exactly 26,000/27,000/28,000. Training resumed through
   28,050; balance was `$45.6456990488`.
+  Step 28,500 then passed with 28,500 finite/consecutive rows and 466,944,000 tokens (46.6938%);
+  p10/median is 3,728/3,857 tok/s; all 286 allocator samples report 34 slabs/zero overflow. Held-out
+  loss improved 0.0300772 from checkpoint 28,000 to 3.3946582 and is only +0.0266157 from the
+  step-27,000 run best. Exact remote/mounted metrics match at `d4764198…`; post-28k ArrayBuffers
+  stayed exactly 6,632MB and RSS within 7,856–7,935MB. Training resumed through 28,525; balance was
+  `$45.476881634`.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
