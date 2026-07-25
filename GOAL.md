@@ -473,6 +473,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   mounted; the native audit passed all 57,688,576 parameters finite/nonzero, and the save released
   228 buffers to 6,631MB. Safe retention removed checkpoint 24,000 only after proof and now holds
   exactly 25,000/26,000/27,000. Training resumed through 27,050; balance was `$45.983374884`.
+  Step 27,500 then passed with 27,500 finite/consecutive rows and 450,560,000 tokens (45.0554%);
+  p10/median is 3,728/3,858 tok/s; all 276 allocator samples report 34 slabs/zero overflow. Held-out
+  loss 3.3710784 is only +0.0030359 from the step-27,000 run best and remains better than every
+  earlier gate. Exact remote/mounted metrics match at `4ca7f954…`; post-27k ArrayBuffers stayed
+  exactly 6,632MB and RSS within 7,861–7,931MB. Training resumed through 27,550; balance was
+  `$45.8145234914`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
