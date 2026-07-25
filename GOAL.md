@@ -410,7 +410,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `$47.7200922733` at approximately 13:36 UTC. The complete SFT input contract and canonical frozen
   eval set were then staged under `/runpod/data/alpha-sft-v2` and `/runpod/data/frozen-eval-v1` at
   low I/O priority; all eight remote SHA-256 values match the mounted corpus/audit/tokenizer/manifest/
-  chat/QA artifacts exactly, and the trainer continued advancing during verification.
+  chat/QA artifacts exactly, and the trainer continued advancing during verification. Step 22,500
+  then passed 22,500 finite/consecutive rows and 368,640,000 tokens (36.8635%), with p10/median
+  3,735/3,865 tok/s, 226 complete allocator samples, 34 slabs, zero overflow, and exact metrics hash
+  `d25d85ff…`. Held-out loss 3.5532966 is a +0.1202539 one-gate wobble from step 22,000; it is on
+  watch rather than prompting intervention because all numeric/memory/allocator invariants remain
+  green and the earlier comparable step-8,500 wobble recovered. Checkpoint 23,000 is the next
+  discriminator. Balance was `$47.5512524306` at approximately 14:09 UTC.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights

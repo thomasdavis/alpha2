@@ -135,7 +135,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   step 12,000 hold ArrayBuffers within 6,631–6,632MB and RSS within 7,851–7,944MB; every subsequent
   save released 228 buffers directly to 6,631MB. Training resumed beyond 22,000 with the RTX 3090 at
   100% utilization, 24,112/24,576MiB, 67C, and about 7.9GB process RSS. Balance was
-  `$47.7200922733` at approximately 13:36 UTC.
+  `$47.7200922733` at approximately 13:36 UTC. Step 22,500 subsequently passed 22,500
+  finite/consecutive rows and 368,640,000 tokens (36.8635%), p10/median 3,735/3,865 tok/s, all 226
+  allocator samples, 34 slabs, zero overflow, and exact remote/mounted metrics hash `d25d85ff…`.
+  Held-out loss 3.5532966 is a +0.1202539 single-gate wobble from step 22,000, but every
+  numeric/memory/allocator invariant remains green; like the comparable step-8,500 wobble, it needs
+  the next aligned checkpoint rather than an intervention. Checkpoint 23,000 is the discriminator.
+  Balance was `$47.5512524306` at approximately 14:09 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
