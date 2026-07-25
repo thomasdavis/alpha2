@@ -155,6 +155,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   +0.0759491 from step 23,000 but 0.0400908 better than step 22,500; advancing five-batch windows
   plus green numeric/memory/allocator invariants make this normal variance pending checkpoint
   24,000. Balance was `$47.2135497066` at approximately 15:21 UTC.
+  Checkpoint 24,000 then passed with 24,000 finite/consecutive rows and 393,216,000 tokens
+  (39.3211%), p10/median 3,731/3,861 tok/s, all 241 allocator samples present, 34 slabs, and zero
+  overflow. Held-out loss improved to 3.4923591. Exact metrics `66e75c19…` and checkpoint
+  `1c80ee85…` match remote/mounted; the native scan passed all 57,688,576 parameters finite/nonzero,
+  and the save released 228 buffers to 6,631MB. The guard safely pruned checkpoint 21,000 only after
+  mirror proof and now retains exactly 22,000/23,000/24,000 on both sides. The RTX 3090 returned to
+  100% utilization; balance was `$47.0205838101` at approximately 16:00 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
