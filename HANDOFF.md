@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-24 ~21:38 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-25 ~01:49 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -106,8 +106,19 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   loss 3.7603 was a 0.1163 wobble from the step-8,000 best while remaining 0.0504 below step 5,500
   and 1.6623 below step 500. P10/median throughput was 3,725/3,849 tok/s; all 86 allocator samples
   report 34 slabs and zero overflow. Remote/mounted metrics match at `c301b0b5…`; every
-  post-checkpoint row held ArrayBuffers exactly at 6,632MB and RSS within 7,871–7,937MB. Training
-  resumed through step 8,525. Account balance was `$52.3511417857` at approximately 21:38 UTC.
+  post-checkpoint row held ArrayBuffers exactly at 6,632MB and RSS within 7,871–7,937MB. Overnight,
+  every gate through checkpoint 12,000 passed: held-out loss at steps 9,000/9,500/10,000/10,500/
+  11,000/11,500/12,000 was 3.6261/3.6613/3.6328/3.6641/3.6619/3.5723/3.4737, decisively resolving
+  the step-8,500 wobble and ending at a new best. All 12,000 rows are finite/consecutive and cover
+  196,608,000 tokens; p10/median throughput is 3,721/3,848 tok/s, and all 121 allocator samples
+  report 34 slabs and zero overflow. Checkpoints 9,000/10,000/11,000/12,000 at `7ce876e5…`/
+  `9352634d…`/`ada7bf46…`/`61eccbe3…` were each hash-mirrored and native-audited with all
+  57,688,576 parameters finite/nonzero; the exact 12,000-row metrics prefix matches at `5998c8cf…`.
+  The guard safely pruned checkpoints 6,000/7,000/8,000/9,000 only after mounted proof and ledgered
+  local deletion, leaving exactly 10,000/11,000/12,000 on both sides. All four saves released 228
+  buffers; the step-12,000 immediate 6,694MB ArrayBuffers reading settled to the usual 6,632MB by
+  step 12,050. Training is live through step 12,050. Account balance was `$51.1209876189` at
+  approximately 01:49 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
