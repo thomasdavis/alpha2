@@ -437,6 +437,11 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   finite/nonzero, and the save released 228 buffers to 6,631MB. Safe retention removed checkpoint
   21,000 only after mirror proof and now holds exactly 22,000/23,000/24,000 on both sides. The RTX
   3090 returned to 100% utilization; balance was `$47.0205838101` at approximately 16:00 UTC.
+  Step 24,500 also passed with 24,500 finite/consecutive rows and 401,408,000 tokens (40.1402%),
+  p10/median 3,730/3,860 tok/s, 246 complete allocator samples, 34 slabs, and zero overflow. Held-out
+  loss was effectively flat at 3.4938740 (+0.0015149 from 24,000), while the exact remote/mounted
+  metrics prefix matches at `f7c2f6a6…`. Post-24k ArrayBuffers remained exactly 6,632MB and RSS
+  7,878–7,937MB. Balance was `$46.8517209286` at approximately 16:34 UTC.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
