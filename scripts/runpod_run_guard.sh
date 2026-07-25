@@ -67,7 +67,7 @@ prune_remote_checkpoints() {
   (( remote_keep_checkpoints >= 2 )) || return 0
   local remote_listing
   if ! remote_listing=$(ssh "${ssh_opts[@]}" "root@$host" \
-    "find '$remote_run' -maxdepth 1 -type f -name 'checkpoint-[0-9]*.json' -printf '%f\\n' | sort -V"); then
+    "find '$remote_run' -maxdepth 1 -type f -name 'checkpoint-[0-9]*.json' -printf '%f\\n' | awk '/^checkpoint-[0-9]+\\.json$/' | sort -V"); then
     log "WARNING could not list remote checkpoints; nothing pruned"
     return 1
   fi

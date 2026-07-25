@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-25 ~13:36 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-25 ~23:22 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -7,7 +7,43 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 
 ---
 
-## ⚠️ LIVE RIGHT NOW — contracted 1B flagship launched on current-origin `e561f66`
+## ⚠️ CURRENT LIVE OVERRIDE — recovery2 is training; old endpoint is dead
+
+- **Active pod `gp4m6s8m06bhen`**, RTX 3090 community, **$0.22/hr**. SSH:
+  `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 10784 root@99.69.17.69`.
+- The same immutable flagship run is live at
+  `/workspace/alpha2/runs/flagship-1b-e561f66-20260724` on exact detached source
+  `e561f66c7a88a5294e9cb74a4fc3afd6be167d4f`. Trainer PID 2173 is nice 10; launch log is
+  `/workspace/alpha2-run-logs/flagship-1b-e561f66-20260724.recovery2.log`.
+- The original host was unexpectedly marked `Exited by user` by RunPod at 21:49:25 UTC after step
+  28,900 but before checkpoint 29,000. No stop was issued by this session and the guard did not have
+  auto-termination enabled. Its exact 28,900-row prefix is preserved locally as
+  `metrics.pre-recovery-28900.jsonl` and
+  `metrics.pre-resume-checkpoint-28000-through-28900.jsonl` at SHA-256 `bec96f18…`; those abandoned
+  900 rows are evidence only and are not part of the canonical continuation.
+- Recovery fell back to the last fully audited checkpoint 28,000: 692,528,817 bytes, SHA-256
+  `b9f80989…`, all 114 tensors / 57,688,576 parameters finite and nonzero. Recovery2 independently
+  passed the current NVIDIA gate **46/46**, hash-verified all 5,976,889,749 source bytes, rebuilt all
+  six train/validation token caches, and recorded the truncation in `resume-ledger.jsonl` before
+  resuming at step 28,000.
+- The first canonical recovery window, steps 28,001–28,050, is consecutive and finite with mean
+  loss 3.3464976, mean grad norm 0.2271370, and median 4,000 tok/s. Step 28,100 supplied a fresh
+  allocator sample: exactly 34 temporary slabs and zero free-range overflow. Remote/mounted metrics
+  matched through step 28,150 at 10,143,882 bytes / SHA-256 `5ff278ff…`; GPU utilization was 100%,
+  RSS about 7.9GB, `/runpod` had 8.7GB free, and the account balance was `$44.9006019622`.
+- Active mirror/retention guard:
+  `alpha2-flagship-puller-e561f66-recovery2.service` (60-second pull, 7,200-second stale window,
+  matched keep-three checkpoints). It is active with zero restarts. The checkpoint filename filter
+  was tightened so native-audit sidecars cannot interrupt retention.
+- The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
+  metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
+  copies were also removed after the canonical mounted corpus hashes were reverified.
+- **Next gate:** continue aligned 500/1,000-step audits through terminal step 61,036, then run the
+  contracted SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
+
+## Historical pre-interruption flagship record
+
+The chronology below is retained as evidence; its original pod ID and SSH endpoint are no longer usable.
 
 - **Pod `d5m7h1v0kr0zd4`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 8865 root@64.119.209.250`.

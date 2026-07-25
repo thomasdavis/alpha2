@@ -493,6 +493,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   step-27,000 run best. Exact remote/mounted metrics match at `d4764198…`; post-28k ArrayBuffers
   stayed exactly 6,632MB and RSS within 7,856–7,935MB. Training resumed through 28,525; balance was
   `$45.476881634`.
+  RunPod then unexpectedly marked the original pod `Exited by user` at 21:49:25 UTC after its exact
+  28,900-row metrics prefix had reached the mounted mirror but before checkpoint 29,000. No stop was
+  issued by this session and guard auto-termination was disabled. The abandoned 28,001–28,900 tail
+  remains preserved at SHA-256 `bec96f18…`; it is not counted in the canonical continuation.
+  Recovery2 pod `gp4m6s8m06bhen` independently passed 46/46 NVIDIA gates, restored the exact audited
+  28,000 checkpoint `b9f80989…`, verified all 5,976,889,749 corpus bytes, rebuilt all six token
+  caches, ledgered the metrics truncation, and resumed on exact source `e561f66`. Canonical steps
+  28,001–28,050 are consecutive/finite with mean loss 3.3464976, mean grad norm 0.2271370, and median
+  4,000 tok/s; step 28,100 reports 34 slabs/zero overflow. Remote/mounted metrics matched through
+  28,150 at SHA-256 `5ff278ff…`; the replacement GPU was at 100%, RSS returned to about 7.9GB, and
+  `/runpod` had 8.7GB free. Only after that proof, the stopped original pod was deleted and the
+  hash-verified redundant transfer archives were removed. Balance was `$44.9006019622`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
@@ -587,8 +599,9 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-25)
 
-1. Continue monitoring the live `e561f66` flagship from its verified checkpoint-22,000 gate while
-   keeping the matched three-copy guard live and closing aligned validation/checkpoint gates.
+1. Continue monitoring the recovered live `e561f66` flagship from its audited checkpoint-28,000 /
+   post-recovery step-28,100 gate while keeping the matched three-copy recovery2 guard live and
+   closing aligned validation/checkpoint gates.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
    manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
 3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.
