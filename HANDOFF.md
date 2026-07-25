@@ -142,6 +142,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   and retains three size/SHA-verified checkpoints on each side. Local mirror:
   `/mnt/donto-data/alpha-runs/flagship-1b-e561f66-20260724/`; external remote log:
   `/workspace/alpha2-run-logs/flagship-1b-e561f66-20260724.train.log`.
+- **Downstream SFT/eval inputs are now staged and hash-verified on the pod.** Under
+  `/runpod/data/alpha-sft-v2/`, the 1,262,158,944-byte `sft-v2.txt`, manifest, length audit, mask
+  audit, and 12,288-tokenizer match the canonical mounted artifacts at `ffad0a37…`/`e5d034ac…`/
+  `1dc89d0f…`/`20c7a45f…`/`c310343a…`. Under `/runpod/data/frozen-eval-v1/`, `MANIFEST.json` and
+  final chat/QA inputs match at `bf6e6ea4…`/`6c463deb…`/`bbbeec57…`. Transfer ran under
+  nice/ionice with a 20MB/s ceiling while the trainer continued advancing; the pod retained 7.6GB
+  free afterward. Do not re-transfer these unless a fresh SHA comparison finds drift.
 - **First contracted LR pilot (`1e-3`) is COMPLETE.** Its strict summary passed 6,104/6,104
   consecutive finite rows and exactly 100,007,936 tokens: final train loss 3.6922, last-100 train mean
   3.5989, median post-warmup throughput 3,892 tok/s, and final-three held-out-loss mean 3.6045400

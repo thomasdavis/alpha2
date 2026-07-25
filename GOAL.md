@@ -407,7 +407,10 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   exactly 20,000/21,000/22,000. Every post-12,000 metric row holds ArrayBuffers within
   6,631–6,632MB and RSS within 7,851–7,944MB; all subsequent saves released 228 buffers directly to
   6,631MB. Training resumed beyond 22,000 with the RTX 3090 at 100% utilization. Balance was
-  `$47.7200922733` at approximately 13:36 UTC.
+  `$47.7200922733` at approximately 13:36 UTC. The complete SFT input contract and canonical frozen
+  eval set were then staged under `/runpod/data/alpha-sft-v2` and `/runpod/data/frozen-eval-v1` at
+  low I/O priority; all eight remote SHA-256 values match the mounted corpus/audit/tokenizer/manifest/
+  chat/QA artifacts exactly, and the trainer continued advancing during verification.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
