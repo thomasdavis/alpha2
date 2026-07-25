@@ -394,7 +394,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   7,000/8,000/9,000 only after mounted proof and ledgered local deletion, leaving exactly
   10,000/11,000/12,000 on both sides. All four saves released 228 buffers; the step-12,000 immediate
   6,694MB ArrayBuffers reading settled to the usual 6,632MB by step 12,050. Training is live through
-  step 12,050.
+  step 12,050. The next unattended interval also passed through checkpoint 22,000: all 22,000 rows
+  are finite/consecutive and cover 360,448,000 tokens (36.0443%); p10/median throughput is
+  3,734/3,865 tok/s; all 221 allocator samples have the required cadence, exactly 34 slabs, and zero
+  overflow. Held-out loss across 12,500–22,000 remained bounded and reached a new best 3.4007978 at
+  step 20,000; step 22,000 closed at 3.4330427. The exact 22,000-row prefix matches at `d3dc3886…`.
+  Checkpoints 19,000/20,000/21,000/22,000 were hash-mirrored and independently native-audited at
+  `c70d86af…`/`bc64cec9…`/`dafaddf7…`/`2b4d4df5…`, with all 57,688,576 parameters finite/nonzero.
+  The audit report for 19,000 was preserved before bounded retention removed its checkpoint. The
+  guard's mirror+ledger proof covers the earlier unattended checkpoints; 13,000–18,000 were already
+  pruned before a retrospective native scan and are not claimed as native-audited. Both sides retain
+  exactly 20,000/21,000/22,000. Every post-12,000 metric row holds ArrayBuffers within
+  6,631–6,632MB and RSS within 7,851–7,944MB; all subsequent saves released 228 buffers directly to
+  6,631MB. Training resumed beyond 22,000 with the RTX 3090 at 100% utilization. Balance was
+  `$47.7200922733` at approximately 13:36 UTC.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
@@ -487,10 +500,10 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (current 2026-07-24)
+## 8. Immediate next actions (current 2026-07-25)
 
-1. Monitor the live `e561f66` flagship through token-cache completion, first finite GPU metrics, aligned
-   validation, and the first hash-mirrored/native-audited checkpoint; keep the three-copy guard live.
+1. Continue monitoring the live `e561f66` flagship from its verified checkpoint-22,000 gate while
+   keeping the matched three-copy guard live and closing aligned validation/checkpoint gates.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
    manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
 3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.

@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-25 ~01:49 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-25 ~13:36 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -118,7 +118,24 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   local deletion, leaving exactly 10,000/11,000/12,000 on both sides. All four saves released 228
   buffers; the step-12,000 immediate 6,694MB ArrayBuffers reading settled to the usual 6,632MB by
   step 12,050. Training is live through step 12,050. Account balance was `$51.1209876189` at
-  approximately 01:49 UTC.
+  approximately 01:49 UTC. The next unattended interval also passed cleanly through checkpoint
+  22,000. All 22,000 rows are finite/consecutive and cover 360,448,000 tokens (36.0443% of contract);
+  p10/median throughput is 3,734/3,865 tok/s, and all 221 allocator samples have the required
+  maximum-100-step cadence, exactly 34 slabs, and zero overflow. Held-out loss at steps
+  12,500/13,000/13,500/14,000/14,500/15,000/15,500/16,000/16,500/17,000/17,500/18,000/18,500/
+  19,000/19,500/20,000/20,500/21,000/21,500/22,000 was 3.5704/3.5529/3.4786/3.5452/3.4795/
+  3.5852/3.5613/3.5143/3.5247/3.5558/3.4463/3.4473/3.5148/3.4973/3.4778/**3.4008**/3.4168/
+  3.4337/3.4184/3.4330; checkpoint 20,000 is the current best. Exact 22,000-row metrics match at
+  `d3dc3886…`. Checkpoints 19,000/20,000/21,000/22,000 are exact remote/mounted matches at
+  `c70d86af…`/`bc64cec9…`/`dafaddf7…`/`2b4d4df5…` and each passed the native all-57,688,576-parameter
+  finite/nonzero scan. The 19,000 audit JSON was deliberately preserved before retention deleted the
+  checkpoint. Earlier 13,000–18,000 checkpoints passed the guard's size/SHA mirror and append-only
+  deletion ledger but had already been pruned before a retrospective native scan, so they are not
+  overstated as native-audited. Both sides now retain exactly 20,000/21,000/22,000. All rows after
+  step 12,000 hold ArrayBuffers within 6,631–6,632MB and RSS within 7,851–7,944MB; every subsequent
+  save released 228 buffers directly to 6,631MB. Training resumed beyond 22,000 with the RTX 3090 at
+  100% utilization, 24,112/24,576MiB, 67C, and about 7.9GB process RSS. Balance was
+  `$47.7200922733` at approximately 13:36 UTC.
   PID 101700 remains alive at nice 5. The
   cache-aware matched-retention guard
   `alpha2-flagship-puller-e561f66-cacheaware.service` polls every 60s, permits a 7,200s startup window,
