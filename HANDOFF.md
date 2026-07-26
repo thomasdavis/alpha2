@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~21:56 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~22:36 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -409,6 +409,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   remote/mounted metrics match at `af2c0a38…`; the trainer and guard remain healthy with zero guard
   restarts. Balance is `$36.7923223344`; only Alpha is running, total burn is `$0.303/hr`, and
   mounted disk has 69GB free.
+- **Checkpoint 48,000 PASSED; sharp one-window validation spike is explicitly on watch:** 48,000
+  finite/consecutive rows cover 786,432,000 tokens (78.6421%); p10/median is
+  3,748.7797/3,881.9792 tok/s; all 481 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.1739363/0.3014846 and held ArrayBuffers/external
+  exactly 7,292/7,294MB, with RSS 8,471–8,544MB. Train/held-out loss is 3.1994004/3.3201346,
+  +0.1389387 from step 47,500 and +0.1871673 above the sharp step-45,500 best. This is a serious
+  one-window quality wobble, but not yet a corruption stop: train loss, gradients, weights, allocator,
+  and memory all remain clean; step 48,500 is the discriminator. Exact metrics `356609b5…` and
+  692,528,817-byte checkpoint `bf298cd4…` match remote/mounted; native audit `9cf6692b…` passed all
+  114 tensors / 57,688,576 elements finite/nonzero. Steps 48,001–48,050 returned exactly to
+  7,292/7,294MB buffers and 8,544MB RSS. Retention is 46k/47k/48k both sides. Balance is
+  `$36.599386077`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 69GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -417,7 +429,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 48,000; continue aligned gates through terminal step 61,036
+- **Next gate:** step 48,500 held-out validation as the discriminator for the checkpoint-48,000 spike;
+  continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
