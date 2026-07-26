@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~00:27 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~01:00 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -44,6 +44,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   checkpoint 29,000 released all 228 cloned optimizer buffers, steps 29,001–29,050 settled at
   7,292MB ArrayBuffers (+296MB). The 64GB host is safe and this is not a stepwise leak, but checkpoint
   30,000 must determine whether the retained increment was one-time resume/save residue or repeats.
+- Step 29,500 also passed: 29,500 finite/consecutive rows, 483,328,000 tokens (48.3321%), p10/median
+  3,730.4182/3,859.8298 tok/s, 296 complete allocator samples, 34 slabs, and zero overflow.
+  Train/held-out loss is 3.2149160/3.4070656, only +0.0053210 from checkpoint 29,000. Exact metrics
+  match remote/mounted at `07b03e0c…`. Across the entire post-checkpoint 500-row window,
+  ArrayBuffers stayed exactly 7,292MB and RSS stayed within 8,179–8,258MB, ruling out per-step
+  growth. Balance was `$44.4181244601`.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is

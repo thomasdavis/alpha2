@@ -524,6 +524,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   settled at 7,292MB ArrayBuffers, +296MB over the recovery plateau; RAM remains safe, but checkpoint
   30,000 must distinguish a one-time resume/save residue from per-save accumulation. Training resumed
   through 29,050 at 100% GPU; balance was `$44.5628176547`.
+  Step 29,500 then passed with 29,500 finite/consecutive rows and 483,328,000 tokens (48.3321%);
+  p10/median was 3,730.4182/3,859.8298 tok/s and all 296 allocator samples reported 34 slabs/zero
+  overflow. Train/held-out loss was 3.2149160/3.4070656, only +0.0053210 from checkpoint 29,000.
+  Exact remote/mounted metrics match at SHA-256 `07b03e0c…`. Across steps 29,001–29,500,
+  ArrayBuffers stayed exactly 7,292MB and RSS stayed within 8,179–8,258MB, proving the retained
+  checkpoint block is not a per-training-step leak. Checkpoint 30,000 remains the per-save
+  accumulation discriminator. Balance was `$44.4181244601`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
