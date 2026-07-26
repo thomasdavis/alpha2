@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~06:49 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~07:26 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -147,6 +147,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `9eb80597…`; guard remains active/zero-restart. Balance `$41.8946601577`; total burn is `$0.75/hr`
   because unrelated Wajarri pod `2q7ky3hpzbsw17` is running at `$0.44/hr`. Alpha remains `$0.22/hr`
   and the unrelated pod was not touched.
+- **Checkpoint 35,000 PASSED; wobble resolved to a new run best:** 35,000 finite/consecutive rows
+  cover 573,440,000 tokens (57.3432%); p10/median is 3,739.8840/3,870.6404 tok/s; all 351
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.3145007/0.2491159 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,467–8,539MB. Train/held-out loss is 3.3514276/3.2819459, improving 0.1175943 from step 34,500
+  and setting a new run best by 0.0073411 over step 31,500. Exact metrics `c4144895…` and the
+  692,528,817-byte checkpoint `df9dc23a…` match remote/mounted; native audit `ce6e46a3…` passed all
+  114 tensors / 57,688,576 elements finite/nonzero. Steps 35,001–35,050 returned to exactly
+  7,292/7,294MB buffers and RSS 8,539MB. Retention is 33k/34k/35k both sides. Balance
+  `$41.6485739058`, only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 78GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -155,7 +165,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** checkpoint 35,000 is the held-out-wobble discriminator plus hash/native-audit save;
+- **Next gate:** step 35,500 held-out, then checkpoint 36,000 with continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
