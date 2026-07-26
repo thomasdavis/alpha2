@@ -206,6 +206,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   restarts. Balance is `$40.2212785873`; total burn is `$0.75/hr` because unrelated Wajarri pod
   `2d55zbgwjg13ta` remains running at `$0.44/hr`. Alpha remains `$0.22/hr`, and mounted disk has
   73GB free.
+- **Checkpoint 38,000 PASSED; validation improved and save/memory gate clean:** 38,000
+  finite/consecutive rows cover 622,592,000 tokens (62.2583%); p10/median is
+  3,744.5871/3,877.7341 tok/s; all 381 allocator samples report exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.2679434/0.2623056 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,540–8,541MB. Train/held-out loss is
+  3.3129361/3.2791747, improving 0.0014569 from step 37,500 and remaining only 0.0147727 above the
+  run best. Exact metrics `fc9dfc4d…` and 692,528,817-byte checkpoint `e792bb50…` match
+  remote/mounted; native audit `0dc9b5e7…` passed all 114 tensors / 57,688,576 elements
+  finite/nonzero. Steps 38,001–38,050 returned exactly to 7,292/7,294MB buffers and 8,541MB RSS.
+  Retention is 36k/37k/38k both sides. Balance `$40.0002825224`; only Alpha is running, total burn
+  is `$0.303/hr`, and mounted disk has 73GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -214,7 +225,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** checkpoint 38,000 with native audit and continued RSS observation;
+- **Next gate:** step 38,500 held-out, then checkpoint 39,000 with continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
