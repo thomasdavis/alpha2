@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~02:10 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~02:48 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -71,6 +71,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Balance is `$43.9518146859`. Total account burn rose to `$0.75/hr` because the unrelated
   `mobtranslate-wajarri-v1-gpu-preflight-a3-20260726` A40 pod is now running; Alpha itself remains
   the scoped RTX 3090 at `$0.22/hr`, and the unrelated pod was not touched.
+- **Checkpoint 31,000 PASSED; new held-out run best and over halfway:** 31,000 finite/consecutive rows
+  cover 507,904,000 tokens (50.7897%); p10/median is 3,732.8800/3,862.6160 tok/s; all 311
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.3137590/0.2355993 and held RSS/ArrayBuffers/external exactly 8,490/7,292/7,294MB.
+  Train/held-out loss is 3.3144221/3.3412647, improving 0.0183384 from step 30,500. Exact metrics
+  `f6092046…` and the 692,528,817-byte checkpoint `8372b814…` match remote/mounted; native audit
+  `948de04f…` passed all 114 tensors / 57,688,576 elements finite and nonzero. The save released all
+  228 clones; steps 31,001–31,050 returned to exactly 7,292/7,294MB ArrayBuffers/external while RSS
+  settled only 48MB higher at 8,538MB. Safe retention is exactly 29k/30k/31k on both sides. Balance
+  `$43.5891647432`; only the Alpha pod is running and total account burn returned to `$0.303/hr`.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -79,7 +89,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** checkpoint 31,000 including continued RSS observation and full native audit;
+- **Next gate:** step 31,500 held-out, then checkpoint 32,000 with continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 

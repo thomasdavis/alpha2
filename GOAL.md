@@ -551,6 +551,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Balance was `$43.9518146859`. Total account burn rose to `$0.75/hr` because an unrelated Wajarri
   A40 pod was running; Alpha remained scoped to its `$0.22/hr` RTX 3090 and no unrelated pod was
   touched.
+  Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
+  31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
+  3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.3137590/0.2355993 and held
+  RSS/ArrayBuffers/external exactly 8,490/7,292/7,294MB. Train/held-out loss was
+  3.3144221/3.3412647, improving 0.0183384 from step 30,500. Exact metrics `f6092046…` and the
+  692,528,817-byte checkpoint `8372b814…` match remote/mounted; native audit `948de04f…` passed all
+  114 tensors / 57,688,576 elements finite and nonzero. The save released all 228 clones; steps
+  31,001–31,050 returned to exactly 7,292/7,294MB ArrayBuffers/external while RSS settled only 48MB
+  higher at 8,538MB. Safe retention is exactly 29k/30k/31k on both sides. Balance was
+  `$43.5891647432`; only Alpha was running and total account burn returned to `$0.303/hr`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
