@@ -217,6 +217,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   finite/nonzero. Steps 38,001–38,050 returned exactly to 7,292/7,294MB buffers and 8,541MB RSS.
   Retention is 36k/37k/38k both sides. Balance `$40.0002825224`; only Alpha is running, total burn
   is `$0.303/hr`, and mounted disk has 73GB free.
+- **Step 38,500 PASSED; validation remains tightly clustered near best:** 38,500 finite/consecutive
+  rows cover 630,784,000 tokens (63.0775%); p10/median is 3,745.4257/3,879.0059 tok/s; all 386
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.2529682/0.2654853 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,466–8,544MB. Train/held-out loss is 3.2997167/3.2809323, a negligible +0.0017577 wobble from
+  checkpoint 38,000 and only 0.0165303 above the run best. Exact remote/mounted metrics match at
+  `bfc478d3…`; the guard remains active with zero restarts. Balance is `$39.831379613`; only Alpha is
+  running, total burn is `$0.303/hr`, and mounted disk has 72GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -225,7 +233,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 38,500 held-out, then checkpoint 39,000 with continued RSS observation;
+- **Next gate:** checkpoint 39,000 with native audit and continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
