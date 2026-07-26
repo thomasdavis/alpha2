@@ -551,6 +551,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Balance was `$43.9518146859`. Total account burn rose to `$0.75/hr` because an unrelated Wajarri
   A40 pod was running; Alpha remained scoped to its `$0.22/hr` RTX 3090 and no unrelated pod was
   touched.
+  Checkpoint 33,000 then passed and the held-out wobble recovered: 33,000 finite/consecutive rows
+  cover 540,672,000 tokens (54.0665%); p10/median was 3,736.2691/3,866.5968 tok/s and all 331
+  allocator samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.2952673/0.2418966 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,465–8,538MB. Train/held-out loss was 3.2223387/3.3299192, improving 0.0209901 from step 32,500
+  and 0.0051561 from checkpoint 32,000; it remained 0.0406322 above the sharp step-31,500 best.
+  Exact metrics `addc830f…` and the 692,528,817-byte checkpoint `000d1d09…` match remote/mounted;
+  native audit `9893f0c0…` passed all 114 tensors / 57,688,576 elements finite and nonzero. Post-save
+  steps 33,001–33,050 held the exact 7,292/7,294MB live-buffer baseline and the 8,528MB pre-save RSS,
+  adding no new plateau. Retention was 31k/32k/33k both sides. Balance was `$42.523076967`, total
+  burn `$0.303/hr`, mounted disk 82GB free.
   Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
   31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
   3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
