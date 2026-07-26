@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~17:49 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~18:21 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -337,6 +337,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   all 114 tensors / 57,688,576 elements finite/nonzero. Steps 44,001–44,050 returned exactly to
   7,292/7,294MB buffers and 8,543MB RSS. Retention is 42k/43k/44k both sides. Balance
   `$37.9742922272`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 69GB free.
+- **Step 44,500 PASSED; elevated validation persists but hard gates remain green:** 44,500
+  finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median is
+  3,752.2116/3,886.4798 tok/s; all 446 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.2248817/0.2865226 and held ArrayBuffers/external
+  exactly 7,292/7,294MB, with RSS 8,469–8,545MB. Train/held-out loss is 3.2194901/3.2662046,
+  +0.0129471 from checkpoint 44,000 and +0.0971561 from the checkpoint-40,000 best. Two elevated
+  windows are explicit, but this pattern has recovered before and no hard stop fired; checkpoint
+  45,000 is the discriminator. Exact remote/mounted metrics match at `56436775…`; the trainer and
+  guard remain healthy with zero guard restarts. Balance is `$37.8295331549`; only Alpha is running,
+  total burn is `$0.303/hr`, and mounted disk has 69GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -345,8 +355,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 44,500 held-out validation/RSS discriminator, then native-audited checkpoint
-  45,000; continue aligned gates through terminal step 61,036 before the contracted
+- **Next gate:** native-audited checkpoint 45,000 with validation trend, retention, and post-save RSS
+  proof; continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record
