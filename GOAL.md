@@ -580,6 +580,16 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   7,292/7,294MB ArrayBuffers/external and RSS only 1MB higher at 8,539MB. Retention is exactly
   30k/31k/32k on both sides. Balance was `$42.9987368539`, total burn `$0.303/hr`, mounted disk 84GB
   free.
+  Step 32,500 then passed: 32,500 finite/consecutive rows cover 532,480,000 tokens (53.2473%);
+  p10/median was 3,735.5363/3,865.5490 tok/s and all 326 allocator samples reported exactly 34
+  slabs/zero overflow. The last 500 rows averaged loss/gradient norm 3.3296892/0.2432705 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,466–8,539MB. Train/held-out loss was
+  3.1392970/3.3509093, +0.0158340 from checkpoint 32,000 and +0.0616222 from the sharp step-31,500
+  best; all invariants remained green, making this normal five-batch variance pending checkpoint
+  33,000. Exact remote/mounted metrics matched at `441c237d…`; guard remained active/zero-restart.
+  Balance was `$42.8003199855`; total burn was `$0.75/hr` because unrelated Wajarri pod
+  `b21dbqjy0t3gir` was running at `$0.44/hr`. Alpha remained `$0.22/hr`; the unrelated pod was not
+  touched.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
