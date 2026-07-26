@@ -580,6 +580,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   nonzero. Post-save steps 34,001–34,050 returned to exactly 7,292/7,294MB buffers and RSS 8,538MB.
   Retention was 32k/33k/34k both sides. Balance was `$42.185329143`, only Alpha was running, total
   burn was `$0.303/hr`, and mounted disk had 82GB free.
+  Step 34,500 then passed all hard invariants with a held-out wobble on watch: 34,500
+  finite/consecutive rows cover 565,248,000 tokens (56.5240%); p10/median was
+  3,739.0630/3,869.5629 tok/s and all 346 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.2622366/0.2468041 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,467–8,540MB. Train/held-out loss was
+  3.3501410/3.3995402, a +0.0530016 wobble from checkpoint 34,000 and +0.1102532 above the sharp
+  step-31,500 best. This is comparable to earlier recovered five-batch variance, so checkpoint
+  35,000 is the discriminator and no intervention is justified from one read. Exact remote/mounted
+  metrics matched at `9eb80597…`; guard remained active/zero-restart. Balance was `$41.8946601577`;
+  total burn was `$0.75/hr` because unrelated Wajarri pod `2q7ky3hpzbsw17` was running at
+  `$0.44/hr`. Alpha remained `$0.22/hr` and the unrelated pod was not touched.
   Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
   31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
   3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
