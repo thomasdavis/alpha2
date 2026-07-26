@@ -531,6 +531,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   ArrayBuffers stayed exactly 7,292MB and RSS stayed within 8,179–8,258MB, proving the retained
   checkpoint block is not a per-training-step leak. Checkpoint 30,000 remains the per-save
   accumulation discriminator. Balance was `$44.4181244601`.
+  Checkpoint 30,000 then passed and resolved the live-buffer discriminator: 30,000 finite/consecutive
+  rows cover 491,520,000 tokens (49.1513%); p10/median was 3,731.2399/3,860.6254 tok/s and all 301
+  allocator samples reported 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.3288895/0.2294206. Train/held-out loss was 3.1875825/3.3639263, a new run best by 0.0041162 over
+  step 27,000. Exact 30,000-row metrics `f4a39944…` and the 692,528,817-byte checkpoint
+  `1625c7d6…` match remote/mounted; native audit `6ec3b0ff…` passed all 114 tensors / 57,688,576
+  elements finite and nonzero. After the save released all 228 clones, steps 30,001–30,050 returned
+  to exactly 7,292MB ArrayBuffers, proving the +296MB recovery increment did not repeat per save.
+  RSS settled 8,471–8,472MB (+~220MB from immediately pre-save) without live external-buffer growth,
+  so it remains under observation at checkpoint 31,000. Safe retention is exactly 28k/29k/30k on
+  both sides. Balance was `$44.2492298008`; mounted disk had 85GB free.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights

@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~01:00 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~01:40 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -40,16 +40,28 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `2e66f8d3…` match remote/mounted; native audit `a977b8aa…` passed all 114 parameter tensors /
   57,688,576 elements finite and nonzero. Safe retention leaves 27k/28k/29k locally and 28k/29k
   remotely. Training resumed through 29,050 at 100% GPU; balance was `$44.5628176547`.
-- **Memory watch:** pre-save steps 28,501–29,000 held ArrayBuffers/RSS exactly 6,996/7,948MB. After
-  checkpoint 29,000 released all 228 cloned optimizer buffers, steps 29,001–29,050 settled at
-  7,292MB ArrayBuffers (+296MB). The 64GB host is safe and this is not a stepwise leak, but checkpoint
-  30,000 must determine whether the retained increment was one-time resume/save residue or repeats.
+- **Memory discriminator RESOLVED for live optimizer buffers:** pre-save steps 28,501–29,000 held
+  ArrayBuffers/RSS exactly 6,996/7,948MB. After checkpoint 29,000 released all 228 cloned optimizer
+  buffers, steps 29,001–30,000 held ArrayBuffers exactly 7,292MB. Checkpoint 30,000 again released all
+  228 clones; steps 30,001–30,050 returned to exactly 7,292MB, so the +296MB recovery increment did
+  not repeat per save. RSS established a higher 8,471–8,472MB plateau (+~220MB from immediately
+  pre-save) without live ArrayBuffer/external growth; keep watching it at checkpoint 31,000, but the
+  64GB host has ample headroom and there is no reason to disturb the immutable run.
 - Step 29,500 also passed: 29,500 finite/consecutive rows, 483,328,000 tokens (48.3321%), p10/median
   3,730.4182/3,859.8298 tok/s, 296 complete allocator samples, 34 slabs, and zero overflow.
   Train/held-out loss is 3.2149160/3.4070656, only +0.0053210 from checkpoint 29,000. Exact metrics
   match remote/mounted at `07b03e0c…`. Across the entire post-checkpoint 500-row window,
   ArrayBuffers stayed exactly 7,292MB and RSS stayed within 8,179–8,258MB, ruling out per-step
   growth. Balance was `$44.4181244601`.
+- **Checkpoint 30,000 PASSED; new held-out run best:** 30,000 finite/consecutive rows cover
+  491,520,000 tokens (49.1513%); p10/median is 3,731.2399/3,860.6254 tok/s; all 301 allocator samples
+  report 34 slabs and zero overflow. The last 500 rows averaged loss/gradient norm
+  3.3288895/0.2294206. Train/held-out loss is 3.1875825/3.3639263, improving 0.0431393 from step
+  29,500 and 0.0041162 from the former step-27,000 best. Exact 30,000-row metrics `f4a39944…` and the
+  692,528,817-byte checkpoint `1625c7d6…` match remote/mounted. Independent native audit
+  `6ec3b0ff…` passed all 114 parameter tensors / 57,688,576 elements finite and nonzero. Safe
+  retention is exactly 28k/29k/30k on both sides. Training resumed through 30,050; balance
+  `$44.2492298008`, total account burn `$0.303/hr`, and mounted disk has 85GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -58,8 +70,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 29,500 held-out, then checkpoint 30,000 including the explicit host-memory
-  retention discriminator; continue aligned gates through terminal step 61,036 before the contracted
+- **Next gate:** step 30,500 held-out, then checkpoint 31,000 including continued RSS observation;
+  continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record
