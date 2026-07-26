@@ -512,6 +512,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   8.7GB free. Only after the step-28,100 proof, the stopped original pod was deleted and the
   hash-verified redundant transfer archives were removed. The live guard now has a 1,800-second
   verified-metric stall limit and pod-scoped auto-termination. Balance was `$44.7557173066`.
+  Checkpoint 29,000 then established the first new durable point beyond the failed host: 29,000
+  finite/consecutive rows, 475,136,000 tokens (47.5129%), p10/median 3,729.7739/3,859.2590 tok/s,
+  all 291 allocator samples, 34 slabs, and zero overflow. Train/held-out loss was
+  3.2767162/3.4017447, only +0.0035215 from the canonical recovery step-28,500 gate. Exact metrics
+  `5a1e0af4…` and the 692,528,817-byte checkpoint `2e66f8d3…` match remote/mounted; the independent
+  native audit `a977b8aa…` passed all 114 parameter tensors / 57,688,576 elements finite and
+  nonzero. Safe retention ledgered and removed local checkpoint 26,000, leaving 27,000/28,000/29,000
+  locally and 28,000/29,000 remotely. The last pre-save 500 rows held ArrayBuffers exactly 6,996MB
+  and RSS exactly 7,948MB. After the save released 228 optimizer buffers, steps 29,001–29,050
+  settled at 7,292MB ArrayBuffers, +296MB over the recovery plateau; RAM remains safe, but checkpoint
+  30,000 must distinguish a one-time resume/save residue from per-save accumulation. Training resumed
+  through 29,050 at 100% GPU; balance was `$44.5628176547`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
@@ -604,11 +616,11 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (current 2026-07-25)
+## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship from its audited checkpoint-28,000 /
-   post-recovery step-28,100 gate while keeping the matched three-copy recovery2 guard live and
-   closing aligned validation/checkpoint gates.
+1. Continue monitoring the recovered live `e561f66` flagship from its native-audited checkpoint
+   29,000 while keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
+   discriminating the checkpoint-29,000 host-memory increment at checkpoint 30,000.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
    manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
 3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.
