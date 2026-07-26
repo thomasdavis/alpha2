@@ -569,6 +569,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   8,467–8,538MB. Train/held-out loss was 3.4092531/3.2892870, improving 0.0519777 from checkpoint
   31,000. Exact remote/mounted metrics matched at `c63ee5b8…`; guard remained active/zero-restart.
   Balance was `$43.3246554467`, only Alpha was running, and total account burn remained `$0.303/hr`.
+  Checkpoint 32,000 then passed: 32,000 finite/consecutive rows cover 524,288,000 tokens (52.4281%);
+  p10/median was 3,734.6678/3,864.4482 tok/s and all 321 allocator samples reported exactly 34
+  slabs/zero overflow. The last 500 rows averaged loss/gradient norm 3.3093260/0.2391542 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,537–8,538MB. Train/held-out loss was
+  3.3595934/3.3350753, +0.0457882 from the unusually strong 31,500 window but 0.0061894 better than
+  checkpoint 31,000. Exact metrics `08eb6938…` and the 692,528,817-byte checkpoint `e82ac311…`
+  match remote/mounted; native audit `79ba1fa4…` passed all 114 tensors / 57,688,576 elements finite
+  and nonzero. The save returned ArrayBuffers directly to baseline; steps 32,001–32,050 held
+  7,292/7,294MB ArrayBuffers/external and RSS only 1MB higher at 8,539MB. Retention is exactly
+  30k/31k/32k on both sides. Balance was `$42.9987368539`, total burn `$0.303/hr`, mounted disk 84GB
+  free.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
