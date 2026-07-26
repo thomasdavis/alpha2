@@ -562,6 +562,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   31,001–31,050 returned to exactly 7,292/7,294MB ArrayBuffers/external while RSS settled only 48MB
   higher at 8,538MB. Safe retention is exactly 29k/30k/31k on both sides. Balance was
   `$43.5891647432`; only Alpha was running and total account burn returned to `$0.303/hr`.
+  Step 31,500 then passed with a substantial new held-out run best: 31,500 finite/consecutive rows
+  cover 516,096,000 tokens (51.6089%); p10/median was 3,733.7679/3,863.6001 tok/s and all 316
+  allocator samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.3260559/0.2355921 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,467–8,538MB. Train/held-out loss was 3.4092531/3.2892870, improving 0.0519777 from checkpoint
+  31,000. Exact remote/mounted metrics matched at `c63ee5b8…`; guard remained active/zero-restart.
+  Balance was `$43.3246554467`, only Alpha was running, and total account burn remained `$0.303/hr`.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
