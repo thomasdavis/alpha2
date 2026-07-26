@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~20:13 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~20:45 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -380,6 +380,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   returned exactly to 7,292/7,294MB buffers and 8,544MB RSS. Retention is 44k/45k/46k both sides.
   Balance `$37.2747729474`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has
   69GB free.
+- **Step 46,500 PASSED; post-best validation wobble recovered materially:** 46,500
+  finite/consecutive rows cover 761,856,000 tokens (76.1845%); p10/median is
+  3,750.0489/3,883.8174 tok/s; all 466 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.2058733/0.2950835 and held ArrayBuffers/external
+  exactly 7,292/7,294MB, with RSS 8,472–8,545MB. Train/held-out loss is 3.1847329/3.1806306,
+  improving 0.0463842 from checkpoint 46,000 and remaining only 0.0476633 above the sharp step-45,500
+  best. Exact remote/mounted metrics match at `5ddd24a5…`; the trainer and guard remain healthy with
+  zero guard restarts. Balance is `$37.1299918752`; only Alpha is running, total burn is `$0.303/hr`,
+  and mounted disk has 69GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -388,8 +397,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 46,500 held-out validation/RSS discriminator, then native-audited checkpoint
-  47,000; continue aligned gates through terminal step 61,036 before the contracted
+- **Next gate:** native-audited checkpoint 47,000 with validation, retention, and post-save RSS
+  proof; continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record

@@ -790,6 +790,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Post-save steps 44,001–44,050 returned exactly to 7,292/7,294MB buffers and 8,543MB RSS. Retention
   was 42k/43k/44k both sides. Balance was `$37.9742922272`; only Alpha was running, total burn was
   `$0.303/hr`, and mounted disk had 69GB free.
+  Step 46,500 then passed with a material recovery from the post-best validation wobble: 46,500
+  finite/consecutive rows cover 761,856,000 tokens (76.1845%); p10/median was
+  3,750.0489/3,883.8174 tok/s and all 466 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.2058733/0.2950835 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,472–8,545MB. Train/held-out loss was
+  3.1847329/3.1806306, improving 0.0463842 from checkpoint 46,000 and remaining only 0.0476633 above
+  the sharp step-45,500 best. Exact remote/mounted metrics matched at `5ddd24a5…`; the trainer and
+  guard remained healthy with zero restarts. Balance was `$37.1299918752`; only Alpha was running,
+  total burn was `$0.303/hr`, and mounted disk had 69GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -965,7 +974,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after audited checkpoint 46,000 while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-46,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
