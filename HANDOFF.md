@@ -197,6 +197,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   7,292/7,294MB buffers and RSS 8,540MB. Retention is 35k/36k/37k both sides. Balance
   `$40.5897592151`; total burn is `$0.75/hr` because unrelated Wajarri pod `2d55zbgwjg13ta` is
   running at `$0.44/hr`. Alpha remains `$0.22/hr`, and mounted disk has 74GB free.
+- **Step 37,500 PASSED; validation remains near the new best:** 37,500 finite/consecutive rows cover
+  614,400,000 tokens (61.4392%); p10/median is 3,743.6359/3,876.5917 tok/s; all 376 allocator
+  samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.2731337/0.2579882 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,465–8,542MB. Train/held-out loss is 3.2774620/3.2806316, only 0.0162296 above the step-37,000
+  run best. Exact remote/mounted metrics match at `4182bd2a…`; the guard remains active with zero
+  restarts. Balance is `$40.2212785873`; total burn is `$0.75/hr` because unrelated Wajarri pod
+  `2d55zbgwjg13ta` remains running at `$0.44/hr`. Alpha remains `$0.22/hr`, and mounted disk has
+  73GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -205,7 +214,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 37,500 held-out, then checkpoint 38,000 with continued RSS observation;
+- **Next gate:** checkpoint 38,000 with native audit and continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 

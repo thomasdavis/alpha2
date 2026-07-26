@@ -644,6 +644,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   to exactly 7,292/7,294MB buffers and RSS 8,540MB. Retention was 35k/36k/37k both sides. Balance
   was `$40.5897592151`; total burn was `$0.75/hr` because unrelated Wajarri pod `2d55zbgwjg13ta`
   was running at `$0.44/hr`. Alpha remained `$0.22/hr`, and mounted disk had 74GB free.
+  Step 37,500 then passed while remaining near that new best: 37,500 finite/consecutive rows cover
+  614,400,000 tokens (61.4392%); p10/median was 3,743.6359/3,876.5917 tok/s and all 376 allocator
+  samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.2731337/0.2579882 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,465–8,542MB. Train/held-out loss was 3.2774620/3.2806316, only 0.0162296 above the step-37,000
+  run best. Exact remote/mounted metrics matched at `4182bd2a…`; the guard remained active with
+  zero restarts. Balance was `$40.2212785873`; total burn was `$0.75/hr` because unrelated Wajarri
+  pod `2d55zbgwjg13ta` remained running at `$0.44/hr`. Alpha remained `$0.22/hr`, and mounted disk
+  had 73GB free.
   Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
   31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
   3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
