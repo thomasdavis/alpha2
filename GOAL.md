@@ -715,6 +715,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   justified. Exact remote/mounted metrics matched at `94f2cd00…`; the guard remained active with
   zero restarts. Balance was `$39.1802612462`; only Alpha was running, total burn was `$0.303/hr`,
   and mounted disk had 70GB free.
+  Checkpoint 41,000 then passed while elevated validation persisted but every hard gate stayed green:
+  41,000 finite/consecutive rows cover 671,744,000 tokens (67.1735%); p10/median was
+  3,749.5583/3,884.2409 tok/s and all 411 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.2326558/0.2729599 and held ArrayBuffers at
+  7,292–7,293MB, external at 7,294MB, and RSS 8,466–8,542MB. Train/held-out loss was
+  3.0748420/3.3072725, +0.0082532 from step 40,500 and +0.1382240 from the sharp checkpoint-40,000
+  best. Two elevated windows are explicit, but remain within earlier recovered oscillation and no
+  hard stop fired. Exact metrics `7510063a…` and the 692,528,817-byte checkpoint `1e560e77…`
+  matched remote/mounted; native audit `a13ffedc…` passed all 114 tensors / 57,688,576 elements
+  finite and nonzero. Post-save steps 41,001–41,050 returned exactly to 7,292/7,294MB buffers and
+  8,531MB RSS. Retention was 39k/40k/41k both sides. Balance was `$38.9872020943`; only Alpha was
+  running, total burn was `$0.303/hr`, and mounted disk had 70GB free.
   Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
   31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
   3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
