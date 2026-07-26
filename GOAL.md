@@ -542,6 +542,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   RSS settled 8,471–8,472MB (+~220MB from immediately pre-save) without live external-buffer growth,
   so it remains under observation at checkpoint 31,000. Safe retention is exactly 28k/29k/30k on
   both sides. Balance was `$44.2492298008`; mounted disk had 85GB free.
+  Step 30,500 then passed with another held-out run best: 30,500 finite/consecutive rows cover
+  499,712,000 tokens (49.9705%); p10/median was 3,731.9190/3,861.3858 tok/s and all 306 allocator
+  samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.3303287/0.2359238 and held ArrayBuffers/external memory exactly 7,292/7,294MB, with RSS
+  8,417–8,490MB. Train/held-out loss was 3.2476387/3.3596032, improving 0.0043231 from checkpoint
+  30,000. Exact remote/mounted metrics matched at `c9efd9ed…`; guard remained active/zero-restart.
+  Balance was `$43.9518146859`. Total account burn rose to `$0.75/hr` because an unrelated Wajarri
+  A40 pod was running; Alpha remained scoped to its `$0.22/hr` RTX 3090 and no unrelated pod was
+  touched.
 - **SFT**: assistant-only masked loss on the Stage-4 chat mix, 1-2 epochs, lr swept {1e-4, 3e-4, 1e-3}
   (SmolLM2-360M SFT reference = 1e-3 × 2 epochs cosine), then re-run the FULL frozen eval + base-vs-chat
   regression (does SFT destroy LM quality? report). `--initCheckpoint` (`55c86db`) loads base weights
@@ -637,8 +646,8 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 ## 8. Immediate next actions (current 2026-07-26)
 
 1. Continue monitoring the recovered live `e561f66` flagship from its native-audited checkpoint
-   29,000 while keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
-   discriminating the checkpoint-29,000 host-memory increment at checkpoint 30,000.
+   30,000 while keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
+   retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
    manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
 3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.
