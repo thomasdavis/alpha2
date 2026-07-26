@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-26 ~05:10 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-26 ~05:38 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -119,6 +119,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   33,001–33,050 held the exact 7,292/7,294MB live-buffer baseline and the 8,528MB pre-save RSS,
   adding no new plateau. Retention is 31k/32k/33k both sides. Balance `$42.523076967`, total burn
   `$0.303/hr`, mounted disk 82GB free.
+- **Step 33,500 PASSED; held-out improved again:** 33,500 finite/consecutive rows cover 548,864,000
+  tokens (54.8856%); p10/median is 3,737.3560/3,867.5338 tok/s; all 336 allocator samples report
+  exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.2911672/0.2427404 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,469–8,541MB. Train/held-out loss is 3.1827683/3.3272114, improving 0.0027078 from checkpoint
+  33,000; it remains 0.0379244 above the sharp step-31,500 best. Exact remote/mounted metrics match
+  at `20feca37…`; the guard remains active/zero-restart. Balance `$42.35422643`, only Alpha is
+  running, total burn is `$0.303/hr`, and mounted disk has 83GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -127,7 +135,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 33,500 held-out, then checkpoint 34,000 with continued RSS observation;
+- **Next gate:** checkpoint 34,000 with a hash-mirrored/native-audited save and continued RSS observation;
   continue aligned gates through terminal step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 

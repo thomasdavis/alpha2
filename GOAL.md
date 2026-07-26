@@ -562,6 +562,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   steps 33,001–33,050 held the exact 7,292/7,294MB live-buffer baseline and the 8,528MB pre-save RSS,
   adding no new plateau. Retention was 31k/32k/33k both sides. Balance was `$42.523076967`, total
   burn `$0.303/hr`, mounted disk 82GB free.
+  Step 33,500 then passed: 33,500 finite/consecutive rows cover 548,864,000 tokens (54.8856%);
+  p10/median was 3,737.3560/3,867.5338 tok/s and all 336 allocator samples reported exactly 34
+  slabs/zero overflow. The last 500 rows averaged loss/gradient norm 3.2911672/0.2427404 and held
+  ArrayBuffers/external exactly 7,292/7,294MB, with RSS 8,469–8,541MB. Train/held-out loss was
+  3.1827683/3.3272114, improving 0.0027078 from checkpoint 33,000 and remaining 0.0379244 above the
+  sharp step-31,500 best. Exact remote/mounted metrics matched at `20feca37…`; the guard remained
+  active/zero-restart. Balance was `$42.35422643`, only Alpha was running, total burn was
+  `$0.303/hr`, and mounted disk had 83GB free.
   Checkpoint 31,000 then passed with a third consecutive held-out run best and crossed halfway:
   31,000 finite/consecutive rows cover 507,904,000 tokens (50.7897%); p10/median was
   3,732.8800/3,862.6160 tok/s and all 311 allocator samples reported exactly 34 slabs/zero overflow.
