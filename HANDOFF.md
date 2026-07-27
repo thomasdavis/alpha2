@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-27 ~02:11 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-27 ~02:42 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -482,6 +482,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   returned exactly to 7,292/7,294MB buffers and 8,542MB RSS. Retention is 49k/50k/51k both sides.
   Balance is `$35.5621934067`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk
   has 67GB free.
+- **Step 51,500 PASSED; validation recovered to near-run-best:** 51,500 finite/consecutive rows
+  cover 843,776,000 tokens (84.3764%); p10/median is 3,747.4460/3,879.6410 tok/s; all 516
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.1485280/0.3142221 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,471–8,546MB. Train/held-out loss is 3.1850824/3.1555889; held-out improved 0.0957304 from
+  checkpoint 51,000 and is only +0.0226216 above the sharp step-45,500 best. Exact remote/mounted
+  metrics match at `e841965c…`; the trainer and guard remain healthy with zero guard restarts.
+  Balance is `$35.3933533196`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk
+  has 67GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -490,7 +499,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 51,500 held-out validation; continue aligned gates through terminal step 61,036
+- **Next gate:** native-audited checkpoint 52,000; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 

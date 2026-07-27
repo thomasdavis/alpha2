@@ -893,6 +893,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   finite/nonzero. Post-save rows returned exactly to 7,292/7,294MB buffers and 8,542MB RSS;
   retention was 49k/50k/51k both sides. Balance was `$35.5621934067`; only Alpha was running, total
   burn was `$0.303/hr`, and mounted disk had 67GB free.
+  Step 51,500 then recovered validation to near-run-best: 51,500 finite/consecutive rows cover
+  843,776,000 tokens (84.3764%); p10/median was 3,747.4460/3,879.6410 tok/s and all 516 allocator
+  samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.1485280/0.3142221 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,471–8,546MB. Train/held-out loss was 3.1850824/3.1555889; held-out improved 0.0957304 from
+  checkpoint 51,000 and is only +0.0226216 above the sharp step-45,500 best. Exact remote/mounted
+  metrics matched at `e841965c…`; the trainer and guard remained healthy with zero restarts.
+  Balance was `$35.3933533196`; only Alpha was running, total burn was `$0.303/hr`, and mounted disk
+  had 67GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1068,7 +1077,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-51,000 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-51,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
