@@ -269,6 +269,11 @@ export interface StepMetrics {
   per_layer_grad_norms?: string;
 }
 
+/** Validation is cadence-based, but the terminal model must always be evaluated. */
+export function shouldEvaluateStep(step: number, evalInterval: number, totalIters: number): boolean {
+  return evalInterval > 0 && (step % evalInterval === 0 || step === totalIters);
+}
+
 export type TrainingEventLevel = "debug" | "info" | "warn" | "error";
 
 export interface TrainingEvent {
@@ -2376,7 +2381,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
-    if (valLoader && stepNum % evalInterval === 0) {
+    if (valLoader && shouldEvaluateStep(stepNum, evalInterval, totalIters)) {
       if (flushFn) flushFn();
       if (typeof globalThis.gc === "function") {
         (globalThis as any).gc();

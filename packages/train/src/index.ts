@@ -18,7 +18,10 @@ export {
   type SafeTensor,
 } from "./hf_export.js";
 export { sample } from "./sample.js";
-export { train, validateCheckpointModelCompatibility, type TrainerDeps, type StepMetrics } from "./trainer.js";
+export {
+  train, shouldEvaluateStep, validateCheckpointModelCompatibility,
+  type TrainerDeps, type StepMetrics,
+} from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";
 export {
   formatFrozenChatPrompt, fourGramRepeatRate, normalizedAnswerTokens, normalizedAnswer,
