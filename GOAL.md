@@ -873,6 +873,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   57,688,576 elements finite/nonzero. Post-save rows returned exactly to 7,292/7,294MB buffers and
   8,553MB RSS; retention was 48k/49k/50k both sides. Balance was `$35.8998268919`; only Alpha was
   running, total burn was `$0.303/hr`, and mounted disk had 68GB free.
+  Step 50,500 then passed with post-recovery validation stabilized: 50,500 finite/consecutive rows
+  cover 827,392,000 tokens (82.7381%); p10/median was 3,746.7541/3,879.4267 tok/s and all 506
+  allocator samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged
+  loss/gradient norm 3.1534839/0.3119011 and held ArrayBuffers/external exactly 7,292/7,294MB,
+  with RSS 8,473–8,553MB. Train/held-out loss was 3.1614351/3.2016599; held-out improved 0.0018748
+  from checkpoint 50,000, sits only +0.0011623 above step 48,500, and +0.0686926 above the sharp
+  step-45,500 best. Exact remote/mounted metrics matched at `1327de1f…`; the trainer and guard
+  remained healthy with zero restarts. Balance was `$35.7310038549`; only Alpha was running, total
+  burn was `$0.303/hr`, and mounted disk had 68GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1048,7 +1057,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-50,000 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-50,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
