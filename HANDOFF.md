@@ -570,6 +570,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   53,000, while remaining +0.0568644 above the sharp step-52,500 best. Exact remote/mounted metrics
   match at `f8a382d0…`; the trainer and guard remain healthy with zero guard restarts. Balance is
   `$34.0426110506`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 64GB free.
+- **Checkpoint 56,000 PASSED; validation recovery continued near run best:** 56,000
+  finite/consecutive rows cover 917,504,000 tokens (91.7491%); p10/median is
+  3,749.1632/3,879.2154 tok/s; all 561 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.1271782/0.3319130 and held ArrayBuffers/external
+  exactly 7,292/7,294MB, with RSS 8,471–8,547MB. Train/held-out loss is
+  3.2305961/3.1364248; held-out improved 0.0213418 from step 55,500 and 0.0303592 from checkpoint
+  55,000, leaving only +0.0355226 above the sharp step-52,500 best. Exact metrics `15b11de0…` and
+  692,528,817-byte checkpoint `41923a11…` match remote/mounted; native audit `b4b174ba…` passed all
+  114 tensors / 57,688,576 elements finite/nonzero. Steps 56,001–56,050 returned exactly to
+  7,292/7,294MB buffers and held RSS at 8,547MB. Retention is 54k/55k/56k on both sides. Balance
+  is `$33.8496793765`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 64GB
+  free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -578,7 +590,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 56,000; continue aligned gates through terminal step 61,036
+- **Next gate:** step 56,500 held-out validation; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
