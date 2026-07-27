@@ -1086,6 +1086,27 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   to coefficient 0.782; the aligned mean and every finite/system gate remained healthy. Exact
   remote/mounted metrics matched at `c9179f8f…`. Balance was `$32.3541754074`; only Alpha was
   running, total burn was `$0.303/hr`, and mounted disk had 62GB free.
+  Checkpoint 61,000 then passed: 61,000 finite/consecutive rows cover 999,424,000 tokens (99.9410%);
+  p10/median was 3,752.9627/3,882.1910 tok/s and all 611 allocator samples reported exactly 34
+  slabs/zero overflow. The last 500 rows averaged loss/gradient norm 3.1076607/0.3496741 and held
+  RSS/ArrayBuffers/external exactly at 8,547/7,292/7,294MB. Train/held-out loss was
+  3.2091236/3.1908423, a rebound from the exceptional step-60,500 best but still 0.0574567 better
+  than checkpoint 60,000. Exact metrics `cf2a2e4c…` and checkpoint `8b2872ab…` matched
+  remote/mounted; native audit `c1171427…` passed all 57,688,576 parameters finite/nonzero.
+  The `e561f66` flagship then completed all 61,036 rows and exactly 1,000,013,824 tokens. Terminal
+  analyzer `5d65e518…` passed exact selector/manifest/tokenizer/contract binding, p10/median
+  3,753.1721/3,882.3479 tok/s after warmup, 612 complete allocator samples with zero overflow,
+  final/last-100 train loss 2.9974854/3.1011362, final-three validation mean 3.1367731, and all
+  57,688,576 terminal parameters finite/nonzero. Terminal checkpoint is 692,528,817 bytes at
+  `08e14fa9…`; canonical metrics are `7ff9feec…`.
+  Terminal analysis exposed a real contract bug: the `e561f66` trainer evaluated cadence multiples
+  only while the analyzer correctly required off-cadence terminal step 61,036. `4c5d1aa` fixes all
+  future terminal cadence. A 36-step replay exercised the fix but produced a different checkpoint
+  (`039a260d…`) because Vulkan reductions are not bit-deterministic, so it was rejected as canonical
+  and preserved as named evidence. `c333bf2` adds a fail-closed eval-only repair: it loaded the sealed
+  original `08e14fa9…` checkpoint, ran exactly five validation batches and zero training steps,
+  measured terminal val loss 3.1702865, and changed only `valLoss` on row 61,036. Repair evidence is
+  `56e77083…`; original metrics remain preserved at `c383d24b…`.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1261,9 +1282,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed step-60,500 gate while
-   keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
-   retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
-2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
-   manifest, tokenizer, source commit, metrics, allocator telemetry, and terminal checkpoint.
-3. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.
+1. Certify `c333bf2` on the live RTX 3090 as the SFT source; this advances the stage-boundary source
+   only for the terminal-cadence fix and preserves `e561f66` as the exact base-pretrain source.
+2. Run the contracted SFT LR pilots, select, and complete the full assistant-only masked SFT.
+3. Run the frozen base-vs-chat machine gate and separate human semantic review, then export/publish.

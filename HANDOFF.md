@@ -669,6 +669,28 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   every finite/system gate remain healthy. Exact remote/mounted metrics match at `c9179f8f…`.
   Balance is `$32.3541754074`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has
   62GB free.
+- **Checkpoint 61,000 PASSED:** 61,000 finite/consecutive rows cover 999,424,000 tokens (99.9410%);
+  p10/median is 3,752.9627/3,882.1910 tok/s; all 611 allocator samples report exactly 34 slabs/zero
+  overflow. The last 500 rows averaged loss/gradient norm 3.1076607/0.3496741 and held
+  RSS/ArrayBuffers/external exactly at 8,547/7,292/7,294MB. Train/held-out loss is
+  3.2091236/3.1908423: validation rebounded from the exceptional 60,500 best but remained 0.0574567
+  better than checkpoint 60,000. Exact metrics `cf2a2e4c…` and 692,528,817-byte checkpoint
+  `8b2872ab…` match remote/mounted; native audit `c1171427…` passed all 114 tensors / 57,688,576
+  elements finite/nonzero.
+- **FLAGSHIP PRETRAIN TERMINAL PASS:** the immutable `e561f66` run completed all 61,036 rows and
+  exactly 1,000,013,824 tokens. Fail-closed analyzer `5d65e518…` passed exact selector/manifest/
+  tokenizer/contract binding, p10/median 3,753.1721/3,882.3479 tok/s after warmup, 612 complete
+  allocator samples with zero overflow, final/last-100 train loss 2.9974854/3.1011362, final-three
+  validation mean 3.1367731, and native scan of all 57,688,576 terminal parameters finite/nonzero.
+  Terminal checkpoint is 692,528,817 bytes at `08e14fa9…`; canonical metrics are `7ff9feec…`.
+- **Terminal-validation contract bug found and repaired without changing weights:** `e561f66`
+  evaluated only cadence multiples while its analyzer correctly required off-cadence terminal 61,036.
+  `4c5d1aa` fixes future terminal cadence. A 36-step replay proved that path but produced a different
+  checkpoint (`039a260d…`) because Vulkan reductions are not bit-deterministic; it was rejected as
+  canonical and preserved as named evidence. `c333bf2` adds a fail-closed eval-only mode; it loaded
+  the sealed original `08e14fa9…` checkpoint, executed five validation batches and **zero training
+  steps**, measured terminal val loss 3.1702865, and changed only `valLoss` on metric row 61,036.
+  Repair evidence is `56e77083…`; original metrics remain preserved at `c383d24b…`.
 - **Recovery2 downstream staging is complete and hash-verified:** `/runpod/data/alpha-sft-v2`
   contains the exact SFT corpus/manifest/length-audit/mask-audit at `ffad0a37…`/`e5d034ac…`/
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
@@ -682,8 +704,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 61,000, then terminal step 61,036 before the contracted
-  SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
+- **Next gate:** certify `c333bf2` for SFT, run the contracted `{1e-4,3e-4,1e-3}` 2,000-step
+  assistant-only pilots, then full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record
 
