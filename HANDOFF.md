@@ -647,6 +647,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   checkpoint 59,000 and is only +0.0131415 above the checkpoint-57,000 run best. Exact
   remote/mounted metrics match at `3cccaf99…`. Balance is `$32.6918561928`; only Alpha is running,
   total burn is `$0.303/hr`, and mounted disk has 62GB free.
+- **Checkpoint 60,000 PASSED; late validation wobble recorded, every hard gate clean:** 60,000
+  finite/consecutive rows cover 983,040,000 tokens (98.3026%); p10/median is
+  3,752.6690/3,882.1724 tok/s; all 601 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.1206065/0.3466359; RSS stayed within 8,527–8,556MB
+  while ArrayBuffers/external held exactly at 7,292/7,294MB. Train/held-out loss is
+  3.1976528/3.2482990, +0.1691316 from step 59,500 and +0.1822731 above the checkpoint-57,000 run
+  best. This is an explicit late validation wobble, but the exact metrics `d15f007c…` and
+  692,528,817-byte checkpoint `cd124a9c…` match remote/mounted; native audit `b66644dc…` passed all
+  114 tensors / 57,688,576 elements finite/nonzero. Steps 60,001–60,050 returned to
+  8,534–8,535/7,292/7,294MB RSS/ArrayBuffers/external memory. Retention is 58k/59k/60k both sides.
+  Balance is `$32.4748066537`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has
+  62GB free.
 - **Recovery2 downstream staging is complete and hash-verified:** `/runpod/data/alpha-sft-v2`
   contains the exact SFT corpus/manifest/length-audit/mask-audit at `ffad0a37…`/`e5d034ac…`/
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
@@ -660,8 +672,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 60,000; continue aligned gates through terminal step 61,036
-  before the contracted
+- **Next gate:** step 60,500 held-out discriminator, then native-audited checkpoint 61,000 and terminal
+  step 61,036 before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record
