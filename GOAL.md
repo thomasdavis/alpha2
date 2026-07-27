@@ -913,6 +913,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   exactly to 7,292/7,294MB buffers and 8,545MB RSS; retention was 50k/51k/52k both sides. Balance
   was `$35.2244717991`; only Alpha was running, total burn was `$0.303/hr`, and mounted disk had
   66GB free.
+  Step 52,500 then set another run best: 52,500 finite/consecutive rows cover 860,160,000 tokens
+  (86.0148%); p10/median was 3,748.1008/3,879.6693 tok/s and all 526 allocator samples reported
+  exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.1478990/0.3178515 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,470–8,547MB. Train/held-out loss was 3.1507206/3.1009022; held-out improved 0.0248931 from
+  checkpoint 52,000 and became the new run best. Exact remote/mounted metrics matched at
+  `8972c1b3…`; the trainer and guard remained healthy with zero restarts. Balance was
+  `$35.0556843897`; only Alpha was running, total burn was `$0.303/hr`, and mounted disk had 66GB
+  free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1088,7 +1097,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-52,000 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-52,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
