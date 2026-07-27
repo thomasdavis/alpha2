@@ -600,6 +600,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   57,688,576 elements finite/nonzero. Steps 57,001–57,050 remained exactly at the same memory
   baseline. Retention is 55k/56k/57k on both sides. Balance is `$33.5119787299`; only Alpha is
   running, total burn is `$0.303/hr`, and mounted disk has 63GB free.
+- **Step 57,500 PASSED; moderate one-window rebound after new best:** 57,500 finite/consecutive rows
+  cover 942,080,000 tokens (94.2067%); p10/median is 3,750.7619/3,880.2897 tok/s; all 576
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.0976251/0.3547236; ArrayBuffers/external held exactly at 7,292/7,294MB and RSS stayed
+  within 8,474–8,547MB. Train/held-out loss is 3.2421117/3.1012069, +0.0351810 from the new
+  checkpoint-57,000 best and only +0.0003047 above the former step-52,500 best. Exact
+  remote/mounted metrics match at `b5120435…`. Balance is `$33.3672945799`; only Alpha is running,
+  total burn is `$0.303/hr`, and mounted disk has 62GB free.
 - **Recovery2 downstream staging is complete and hash-verified:** `/runpod/data/alpha-sft-v2`
   contains the exact SFT corpus/manifest/length-audit/mask-audit at `ffad0a37…`/`e5d034ac…`/
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
@@ -613,7 +621,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 57,500 held-out validation; continue aligned gates through terminal step 61,036
+- **Next gate:** native-audited checkpoint 58,000; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
