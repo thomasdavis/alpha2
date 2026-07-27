@@ -520,6 +520,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   returned exactly to 7,292/7,294MB buffers and held RSS at 8,546MB. Retention is 51k/52k/53k on
   both sides. Balance is `$34.8867962693`; only Alpha is running, total burn is `$0.303/hr`, and
   mounted disk has 66GB free.
+- **Step 53,500 PASSED; two-window elevated validation phase on watch:** 53,500 finite/consecutive
+  rows cover 876,544,000 tokens (87.6532%); p10/median is 3,748.5257/3,879.8256 tok/s; all 536
+  allocator samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient
+  norm 3.1241615/0.3207876 and held ArrayBuffers/external exactly 7,292/7,294MB, with RSS
+  8,474–8,548MB. Train/held-out loss is 3.2312453/3.2067587; held-out is +0.0422610 from checkpoint
+  53,000 and +0.1058565 from the sharp step-52,500 best, while remaining 0.1133759 below the earlier
+  checkpoint-48,000 spike. Exact remote/mounted metrics match at `41f392fa…`; the trainer and guard
+  remain healthy with zero guard restarts. Balance is `$34.7179635157`; only Alpha is running, total
+  burn is `$0.303/hr`, and mounted disk has 65GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -528,7 +537,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 53,500 held-out validation; continue aligned gates through terminal step 61,036
+- **Next gate:** native-audited checkpoint 54,000 is the validation discriminator; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
