@@ -608,6 +608,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   checkpoint-57,000 best and only +0.0003047 above the former step-52,500 best. Exact
   remote/mounted metrics match at `b5120435…`. Balance is `$33.3672945799`; only Alpha is running,
   total burn is `$0.303/hr`, and mounted disk has 62GB free.
+- **Checkpoint 58,000 PASSED; two-window elevated validation phase on watch:** 58,000
+  finite/consecutive rows cover 950,272,000 tokens (95.0259%); p10/median is
+  3,751.1933/3,880.8205 tok/s; all 581 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.0931357/0.3387721; ArrayBuffers/external held exactly
+  at 7,292/7,294MB and RSS stayed within 8,535–8,546MB. Train/held-out loss is
+  3.1479688/3.1600277, +0.0588208 from step 57,500 and +0.0940019 from the checkpoint-57,000
+  best. Exact metrics `5f6bdb84…` and 692,528,817-byte checkpoint `85b949ff…` match
+  remote/mounted; native audit `97580626…` passed all 114 tensors / 57,688,576 elements
+  finite/nonzero. Steps 58,001–58,050 returned exactly to the 8,547/7,292/7,294MB
+  RSS/ArrayBuffers/external baseline. Retention is 56k/57k/58k on both sides. Balance is
+  `$33.1743314336`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has 62GB free.
 - **Recovery2 downstream staging is complete and hash-verified:** `/runpod/data/alpha-sft-v2`
   contains the exact SFT corpus/manifest/length-audit/mask-audit at `ffad0a37…`/`e5d034ac…`/
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
@@ -621,7 +632,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 58,000; continue aligned gates through terminal step 61,036
+- **Next gate:** step 58,500 held-out discriminator; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 

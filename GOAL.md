@@ -1026,6 +1026,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   only +0.0003047 above the former step-52,500 best. Exact remote/mounted metrics matched at
   `b5120435…`. Balance was `$33.3672945799`; only Alpha was running, total burn was `$0.303/hr`,
   and mounted disk had 62GB free.
+  Checkpoint 58,000 then passed while a two-window elevated validation phase returned to watch:
+  58,000 finite/consecutive rows cover 950,272,000 tokens (95.0259%); p10/median was
+  3,751.1933/3,880.8205 tok/s and all 581 allocator samples reported exactly 34 slabs/zero
+  overflow. The last 500 rows averaged loss/gradient norm 3.0931357/0.3387721;
+  ArrayBuffers/external held exactly at 7,292/7,294MB and RSS stayed within 8,535–8,546MB.
+  Train/held-out loss was 3.1479688/3.1600277, +0.0588208 from step 57,500 and +0.0940019 from
+  the checkpoint-57,000 best. Exact remote/mounted metrics matched at `5f6bdb84…`; the
+  692,528,817-byte checkpoint matched at `85b949ff…`, and native audit `97580626…` passed all 114
+  tensors / 57,688,576 elements finite/nonzero. Post-save rows returned exactly to the memory
+  baseline; retention was 56k/57k/58k both sides. Balance was `$33.1743314336`; only Alpha was
+  running, total burn was `$0.303/hr`, and mounted disk had 62GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1201,7 +1212,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed step-57,500 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-58,000 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
