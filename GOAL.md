@@ -1056,6 +1056,14 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `4104dcc1…` passed all 114 tensors / 57,688,576 elements finite/nonzero. Post-save rows held the
   exact memory baseline; retention was 57k/58k/59k both sides. Balance was `$32.8366250428`; only
   Alpha was running, total burn was `$0.303/hr`, and mounted disk had 62GB free.
+  Step 59,500 then returned validation near the run best: 59,500 finite/consecutive rows cover
+  974,848,000 tokens (97.4835%); p10/median was 3,752.3330/3,882.0040 tok/s and all 596 allocator
+  samples reported exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.0926898/0.3416984; ArrayBuffers/external held exactly at 7,292/7,294MB and RSS stayed within
+  8,485–8,557MB. Train/held-out loss was 2.9711595/3.0791674; held-out improved 0.0160223 from
+  checkpoint 59,000 and is only +0.0131415 above the checkpoint-57,000 run best. Exact
+  remote/mounted metrics matched at `3cccaf99…`. Balance was `$32.6918561928`; only Alpha was
+  running, total burn was `$0.303/hr`, and mounted disk had 62GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1231,7 +1239,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-59,000 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-59,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,

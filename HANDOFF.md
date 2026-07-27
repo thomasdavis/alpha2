@@ -639,6 +639,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   8,557/7,292/7,294MB RSS/ArrayBuffers/external baseline. Retention is 57k/58k/59k on both sides.
   Balance is `$32.8366250428`; only Alpha is running, total burn is `$0.303/hr`, and mounted disk has
   62GB free.
+- **Step 59,500 PASSED; validation returned near run best:** 59,500 finite/consecutive rows cover
+  974,848,000 tokens (97.4835%); p10/median is 3,752.3330/3,882.0040 tok/s; all 596 allocator
+  samples report exactly 34 slabs/zero overflow. The last 500 rows averaged loss/gradient norm
+  3.0926898/0.3416984; ArrayBuffers/external held exactly at 7,292/7,294MB and RSS stayed within
+  8,485–8,557MB. Train/held-out loss is 2.9711595/3.0791674; held-out improved 0.0160223 from
+  checkpoint 59,000 and is only +0.0131415 above the checkpoint-57,000 run best. Exact
+  remote/mounted metrics match at `3cccaf99…`. Balance is `$32.6918561928`; only Alpha is running,
+  total burn is `$0.303/hr`, and mounted disk has 62GB free.
 - **Recovery2 downstream staging is complete and hash-verified:** `/runpod/data/alpha-sft-v2`
   contains the exact SFT corpus/manifest/length-audit/mask-audit at `ffad0a37…`/`e5d034ac…`/
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
@@ -652,7 +660,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** step 59,500 held-out validation; continue aligned gates through terminal step 61,036
+- **Next gate:** native-audited checkpoint 60,000; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
