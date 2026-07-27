@@ -1,4 +1,4 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-27 ~00:20 UTC
+# HANDOFF — alpha2 revival, state as of 2026-07-27 ~01:00 UTC
 
 For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
 stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
@@ -451,6 +451,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   remote/mounted metrics match at `d212e295…`; the trainer and guard remain healthy with zero guard
   restarts. Balance is `$36.0929247881`; only Alpha is running, total burn is `$0.303/hr`, and
   mounted disk has 68GB free. Checkpoint 50,000 is the discriminator.
+- **Checkpoint 50,000 PASSED; renewed elevated validation phase resolved:** 50,000
+  finite/consecutive rows cover 819,200,000 tokens (81.9189%); p10/median is
+  3,746.7980/3,879.7418 tok/s; all 501 allocator samples report exactly 34 slabs/zero overflow. The
+  last 500 rows averaged loss/gradient norm 3.1791822/0.3079951 and held ArrayBuffers/external
+  exactly 7,292/7,294MB, with RSS exactly 8,552MB. Train/held-out loss is 3.1976542/3.2035347;
+  held-out recovered 0.0781792 from step 49,500, sits only +0.0030372 above step 48,500, and
+  +0.0705675 above the sharp step-45,500 best. Exact metrics `e5238d36…` and 692,528,817-byte
+  checkpoint `4bdefac1…` match remote/mounted; native audit `9d6bf76b…` passed all 114 tensors /
+  57,688,576 elements finite/nonzero. Steps 50,001–50,050 returned exactly to 7,292/7,294MB
+  buffers and 8,553MB RSS. Retention is 48k/49k/50k both sides. Balance is `$35.8998268919`; only
+  Alpha is running, total burn is `$0.303/hr`, and mounted disk has 68GB free.
 - Active mirror/retention guard:
   `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
   metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
@@ -459,8 +470,7 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** native-audited checkpoint 50,000 as the discriminator for the renewed elevated phase;
-  continue aligned gates through terminal step 61,036
+- **Next gate:** step 50,500 held-out validation; continue aligned gates through terminal step 61,036
   before the contracted
   SFT LR pilots, full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
