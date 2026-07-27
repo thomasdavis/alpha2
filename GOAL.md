@@ -965,6 +965,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   metrics matched at `500ec2ef…`; the trainer and guard remained healthy with zero restarts.
   Balance was `$34.3803019805`; only Alpha was running, total burn was `$0.303/hr`, and mounted disk
   had 65GB free.
+  Checkpoint 55,000 then materially resolved the elevated validation plateau toward baseline: 55,000
+  finite/consecutive rows cover 901,120,000 tokens (90.1108%); p10/median was
+  3,748.6685/3,879.1190 tok/s and all 551 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.1226775/0.3276708, held
+  ArrayBuffers/external exactly 7,292/7,294MB, and held RSS within 8,540–8,547MB. Train/held-out
+  loss was 3.1819386/3.1667840; held-out improved 0.0244951 from step 54,500 and was only
+  +0.0022863 above checkpoint 53,000, while remaining +0.0658818 above the sharp step-52,500 best.
+  Exact remote/mounted metrics matched at `092e479f…`; the 692,528,817-byte checkpoint matched at
+  `95e8cd31…`, and native audit `26888e73…` passed all 114 tensors / 57,688,576 elements
+  finite/nonzero. Post-save rows returned exactly to 7,292/7,294MB buffers and held RSS at 8,547MB;
+  retention was 53k/54k/55k both sides. Balance was `$34.1873456174`; only Alpha was running, total
+  burn was `$0.303/hr`, and mounted disk had 64GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1140,7 +1152,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed step-54,500 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-55,000 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
