@@ -274,6 +274,31 @@ export function shouldEvaluateStep(step: number, evalInterval: number, totalIter
   return evalInterval > 0 && (step % evalInterval === 0 || step === totalIters);
 }
 
+/** Add a separately computed terminal validation loss without changing prior metric bytes. */
+export function repairTerminalValidationMetric(
+  metricsText: string,
+  totalIters: number,
+  valLoss: number,
+): string {
+  if (!Number.isFinite(valLoss)) throw new Error("terminal validation loss is not finite");
+  if (!metricsText.endsWith("\n")) throw new Error("metrics JSONL must end with a newline");
+  const lines = metricsText.slice(0, -1).split("\n");
+  if (lines.length !== totalIters) {
+    throw new Error(`terminal metric repair expected ${totalIters} rows, found ${lines.length}`);
+  }
+  const rows = lines.map((line, index) => {
+    const row = JSON.parse(line) as { step?: number; valLoss?: number };
+    if (row.step !== index + 1) {
+      throw new Error(`terminal metric repair expected step ${index + 1}, found ${String(row.step)}`);
+    }
+    return row;
+  });
+  const last = rows.at(-1)!;
+  if (last.valLoss !== undefined) throw new Error("terminal metric row already has validation loss");
+  lines[lines.length - 1] = JSON.stringify({ ...last, valLoss });
+  return `${lines.join("\n")}\n`;
+}
+
 export type TrainingEventLevel = "debug" | "info" | "warn" | "error";
 
 export interface TrainingEvent {
@@ -1328,6 +1353,86 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let runtimeLrScale = 1.0;
   let useCpuGradNorm = forceCpuGradNormDefault;
   let gradNormMismatchStreak = 0;
+
+  const terminalEvalOnly = (process.env.ALPHA_TERMINAL_EVAL_ONLY ?? "").trim() === "1";
+  if (terminalEvalOnly) {
+    const repairCommit = (process.env.ALPHA_TERMINAL_EVAL_REPAIR_COMMIT ?? "").trim();
+    if (!/^[0-9a-f]{40}$/.test(repairCommit)) {
+      throw new Error("ALPHA_TERMINAL_EVAL_REPAIR_COMMIT must be a full commit SHA");
+    }
+    if (!resumePath || startStep !== totalIters || path.basename(resumePath) !== `checkpoint-${totalIters}.json`) {
+      throw new Error("terminal eval-only repair requires resuming the exact terminal checkpoint");
+    }
+    if (!valLoader) throw new Error("terminal eval-only repair requires a validation loader");
+
+    if (flushFn) flushFn();
+    if (typeof globalThis.gc === "function") {
+      (globalThis as any).gc();
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    if (flushFn) flushFn();
+
+    const repairLoader: BatchSource = valLoader;
+    let valLossSum = 0;
+    for (let evalIndex = 0; evalIndex < evalIters; evalIndex++) {
+      const valBatch = repairLoader.nextBatch();
+      const evalTape = new Tape();
+      const { loss } = gptForward(
+        activeModelConfig,
+        params,
+        backend,
+        evalTape,
+        valBatch.inputs,
+        valBatch.targets,
+        false,
+        false,
+        false,
+        undefined,
+        undefined,
+        valBatch.lossMask,
+      );
+      if (!loss) throw new Error(`terminal eval-only repair produced no loss at batch ${evalIndex + 1}`);
+      valLossSum += (loss.data.data as Float32Array)[0];
+      if (releaseFn) releaseFn(loss.data);
+      evalTape.clear(releaseFn);
+      if (releaseFn) {
+        releaseFn(valBatch.inputs);
+        releaseFn(valBatch.targets);
+        if (valBatch.lossMask) releaseFn(valBatch.lossMask);
+      }
+      if (flushFn) flushFn();
+    }
+    const valLoss = valLossSum / evalIters;
+    const originalMetrics = await fs.readFile(metricsPath, "utf8");
+    const repairedMetrics = repairTerminalValidationMetric(originalMetrics, totalIters, valLoss);
+    const { createHash } = await import("node:crypto");
+    const metricsSha256Before = createHash("sha256").update(originalMetrics).digest("hex");
+    const metricsSha256After = createHash("sha256").update(repairedMetrics).digest("hex");
+    await metricsHandle.close();
+    const metricsTmp = `${metricsPath}.terminal-eval-repair.tmp`;
+    await fs.writeFile(metricsTmp, repairedMetrics, { encoding: "utf8", flag: "wx" });
+    await fs.rename(metricsTmp, metricsPath);
+    const evidence = {
+      schema: "alpha-terminal-eval-repair-v1",
+      result: "PASS",
+      repaired_utc: new Date().toISOString(),
+      repair_commit: repairCommit,
+      checkpoint: resumePath,
+      step: totalIters,
+      eval_iters: evalIters,
+      val_loss: valLoss,
+      metrics_sha256_before: metricsSha256Before,
+      metrics_sha256_after: metricsSha256After,
+      training_steps_executed: 0,
+    };
+    await fs.writeFile(
+      path.join(runDir, "terminal-eval-repair.json"),
+      `${JSON.stringify(evidence, null, 2)}\n`,
+      { encoding: "utf8", flag: "wx" },
+    );
+    console.log(`terminal eval-only repair: val_loss=${valLoss.toFixed(6)} (0 training steps)`);
+    return { params, modelConfig: activeModelConfig };
+  }
 
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
