@@ -1076,6 +1076,16 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   RSS/ArrayBuffers/external baseline. Retention was 58k/59k/60k both sides. Balance was
   `$32.4748066537`; only Alpha was running, total burn was `$0.303/hr`, and mounted disk had 62GB
   free.
+  Step 60,500 then decisively resolved the late wobble and set a new run best: 60,500
+  finite/consecutive rows cover 991,232,000 tokens (99.1218%); p10/median was
+  3,752.8326/3,882.1851 tok/s and all 606 allocator samples reported exactly 34 slabs/zero overflow.
+  The last 500 rows averaged loss/gradient norm 3.1226713/0.3479907; ArrayBuffers/external held
+  exactly at 7,292/7,294MB and RSS stayed within 8,475–8,549MB. Train/held-out loss was
+  3.1089549/3.0491906; held-out recovered 0.1991084 from checkpoint 60,000 and set a new run best by
+  0.0168353 over checkpoint 57,000. The final batch's pre-clip grad norm 1.278 was correctly clipped
+  to coefficient 0.782; the aligned mean and every finite/system gate remained healthy. Exact
+  remote/mounted metrics matched at `c9179f8f…`. Balance was `$32.3541754074`; only Alpha was
+  running, total burn was `$0.303/hr`, and mounted disk had 62GB free.
   Step 44,500 then passed while elevated validation persisted but every hard gate remained green:
   44,500 finite/consecutive rows cover 729,088,000 tokens (72.9078%); p10/median was
   3,752.2116/3,886.4798 tok/s and all 446 allocator samples reported exactly 34 slabs/zero overflow.
@@ -1251,7 +1261,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 
 ## 8. Immediate next actions (current 2026-07-26)
 
-1. Continue monitoring the recovered live `e561f66` flagship after the passed checkpoint-60,000 gate while
+1. Continue monitoring the recovered live `e561f66` flagship after the passed step-60,500 gate while
    keeping the recovery2 guard live, closing aligned validation/checkpoint gates, and
    retaining the checkpoint-to-checkpoint RSS watch now that repeated live-buffer growth is ruled out.
 2. Complete all 61,036 steps and pass `analyze_flagship_pretrain.ts` against the exact selector,
