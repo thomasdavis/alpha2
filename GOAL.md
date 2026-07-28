@@ -1262,6 +1262,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   The third keep-three transition removed checkpoint 3,000 remotely only after mirror proof, then
   ledgered and removed exact local SHA `5ad80097...`; both sides retain 4,000/5,000/6,000. Rows
   6,001–6,050 returned to 4,396/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers.
+  Step 6,500 then made the largest recent held-out improvement and set a fourth consecutive best:
+  train/held-out loss is 1.5530798/1.6268690, with held-out improving 0.0834470 from checkpoint 6,000.
+  All 6,500 finite/consecutive rows cover 106,496,000 padded tokens; p10/median is
+  3,728.22/3,874.93 tok/s; last-500 loss/gradient norm is 1.7142389/0.4935493; all 66 allocator
+  samples report zero overflow. Rows 6,001–6,500 held RSS exactly 4,396MB and external/ArrayBuffers
+  within 2,841–2,842/2,839–2,840MB. Exact remote/mounted metrics match at `5f3bfa80...`; training
+  resumed through 6,525.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

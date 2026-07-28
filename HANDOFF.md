@@ -800,6 +800,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   4,000/5,000/6,000. Rows 6,001–6,050 returned to the stable
   4,396/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffer baseline. Training resumed through 6,050;
   both guards remain active/zero-restart. Balance was `$23.9362119787`; burn remained `$0.303/hr`.
+- **Step 6,500 PASSED with the largest recent held-out improvement:** all 6,500 rows are
+  finite/consecutive and cover 106,496,000 padded tokens. Train/held-out loss is
+  1.5530798/1.6268690; held-out improved 0.0834470 from checkpoint 6,000 and set a fourth consecutive
+  new run best. P10/median post-warmup throughput is 3,728.22/3,874.93 tok/s; last-500 loss/gradient
+  norm is 1.7142389/0.4935493; all 66 allocator samples report zero overflow. Rows 6,001–6,500 held
+  RSS exactly 4,396MB and external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. Exact
+  remote/mounted metrics match at SHA-256 `5f3bfa80...`; training resumed through 6,525 with both
+  guards active/zero-restart. Balance was `$23.7673140194`; burn remained `$0.303/hr`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
