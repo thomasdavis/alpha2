@@ -88,3 +88,26 @@ order, untampered detailed outputs, at least 95 structural
 passes, zero samples at or above 0.20 4-gram repetition, and finite recomputed QA scores. Its PASS is
 explicitly scoped to this machine-verifiable portion of D3. Conversational coherence remains a separate
 review of the generated text; token statistics are never mislabeled as a semantic-quality judgment.
+
+## Prepare the blinded semantic review
+
+Only after terminal SFT and frozen generation are complete, create the review packet from the exact
+manifest-bound inputs and outputs:
+
+```bash
+nice -n19 ionice -c3 npx tsx scripts/prepare_frozen_chat_semantic_review.ts \
+  --prompts /mnt/donto-data/alpha-corpora/frozen-eval-v1/final/chat-prompts.jsonl \
+  --results /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-chat/chat-results.jsonl \
+  --summary /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-chat/summary.json \
+  --manifest /mnt/donto-data/alpha-corpora/frozen-eval-v1/MANIFEST.json \
+  --out /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-chat-semantic-review.json
+```
+
+The preparer rejects the wrong checkpoint step, manifest/input/output hash drift, missing or duplicate
+cases, changed case order, and malformed prompt/result rows. The packet contains all 100 prompts and
+model responses but deliberately excludes the held-out reference answers. Review each case as `PASS`
+(intelligible and relevant; simplistic or factually weak is allowed), `BORDERLINE` (understandable but
+substantially irrelevant, contradictory, or fragmented), or `FAIL` (gibberish, word salad, role
+confusion, empty output, or degenerate repetition). Preserve the per-case verdicts and rationales plus
+an explicit overall D3 decision. Machine structure and closed-book factual accuracy remain separately
+reported gates.
