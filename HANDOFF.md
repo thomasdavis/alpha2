@@ -707,22 +707,35 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   are complete through step 2,000 with zero overflow. Terminal checkpoint is 692,528,815 bytes at
   `4f573f39…`; metrics are `11482619…`. The exact remote run is mirrored and hash-verified at
   `/mnt/donto-data/alpha-runs/sft-lr-pilot-1e4-c333bf2-20260727/`.
-- **SFT LR pilot 2 (`3e-4`) is LIVE** at
-  `/workspace/alpha2/runs/sft-lr-pilot-3e4-c333bf2-20260727`. Its fail-closed input verification and
-  immutable contract passed; the first aligned step-250 validation is 2.1092895 versus pilot 1's
-  2.1317361. The durable guard is
-  `alpha2-sft-pilot-3e4-guard-20260728.service` (60-second pulls, 1,800-second verified-metric stale
-  window, matched keep-three checkpoints, auto-termination scoped to pod `gp4m6s8m06bhen`) and was
-  verified active with zero restarts. The first rejected launch named the manifest incorrectly,
-  failed before creating a run directory or touching the GPU, and is preserved as a `.failed-*` log.
+- **SFT LR sweep COMPLETE; strict selector chose `3e-4`:** all three assistant-only pilots completed
+  2,000 consecutive finite rows, eight aligned validations, 21 allocator samples through terminal,
+  and zero free-range overflow. Final-three validation means rank `3e-4` 1.7839965, `1e-3`
+  1.8391179, `1e-4` 1.8586174. The canonical PASS report is
+  `/mnt/donto-data/alpha-runs/sft-lr-sweep-analysis-c333bf2-20260728.json` (SHA-256 `06243d36...`)
+  and binds source `c333bf2` plus the exact corpus/manifest/audits/tokenizer/base checkpoint. The
+  `1e-3` terminal checkpoint is 692,528,815 bytes at `0fdb23db...`; metrics are `bd98562f...`, and
+  both hashes match the sealed mounted mirror. All three pilot guards exited cleanly with no restarts.
+- **Full flagship SFT is LIVE** at
+  `/workspace/alpha2/runs/flagship-sft-c333bf2-20260728` on pod `gp4m6s8m06bhen`; mounted mirror is
+  `/mnt/donto-data/alpha-runs/flagship-sft-c333bf2-20260728`. Its immutable contract passed and binds
+  30,322 steps / 496,795,648 padded tokens, one assistant-only epoch, selected `3e-4` to `3e-5`,
+  selector SHA `06243d36...`, exact `c333bf2`, and all input hashes. Step 25 was finite at about
+  4,097 tok/s with 100% GPU utilization. Guard `alpha2-flagship-sft-guard-20260728.service` uses
+  60-second verified pulls, a 1,800-second metric-stall limit, matched keep-three retention, and
+  pod-scoped auto-termination; it was verified active with zero restarts.
+- **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
+  canonical 100-chat/200-QA suite; remote/local hashes match under
+  `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
+  0/100 structural chat passes, 99 degenerate loops, 0 QA exact, and 1 QA answer-contained. This is
+  the before-side of the required base-vs-chat gate, not a passing chat result.
 - The flagship pretrain guard exited cleanly after its final pull; its retention/provenance artifacts
   remain in the canonical mounted run. Connectivity failures never counted as training stalls. The
   checkpoint filename filter was tightened so native-audit sidecars cannot interrupt retention.
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** finish the live `3e-4` pilot, run the contracted `1e-3` pilot, execute the strict
-  three-way selector, then full masked SFT, frozen base-vs-chat evaluation, and HF publication.
+- **Next gate:** finish/analyze the live full masked SFT, run the frozen chat-side evaluation plus
+  base-vs-chat analyzer and human semantic review, then export/verify/publish both HF repos.
 
 ## Historical pre-interruption flagship record
 

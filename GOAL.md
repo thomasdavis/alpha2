@@ -1285,8 +1285,10 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 1. [x] Certify `c333bf2` on the live RTX 3090 as the SFT source: 46/46 GPU-gated tests passed with
    zero skips/failures/todos. This advances only the SFT stage boundary and preserves `e561f66` as
    the exact base-pretrain source.
-2. [▶] Complete the contracted SFT LR sweep. The `1e-4` pilot has 2,000/2,000 finite rows and a
-   1.8586174 final-three validation mean; the `3e-4` pilot is live under a verified guard; `1e-3`
-   remains. Run the strict selector and keep the pod detached at `c333bf2` for provenance.
-3. Complete the full assistant-only masked SFT with the selected LR.
-4. Run the frozen base-vs-chat machine gate and separate human semantic review, then export/publish.
+2. [x] Complete the contracted SFT LR sweep. All three pilots completed 2,000/2,000 finite rows with
+   complete allocator cadence and zero overflow. Strict PASS report `06243d36...` selects `3e-4`:
+   final-three means 1.7839965 (`3e-4`), 1.8391179 (`1e-3`), 1.8586174 (`1e-4`).
+3. [▶] Complete the live 30,322-step / 496,795,648-token assistant-only masked SFT at selected
+   `3e-4`, under `alpha2-flagship-sft-guard-20260728.service`, preserving `c333bf2` provenance.
+4. Run the frozen chat-side eval and pair analyzer against the completed/mirrored base baseline, do
+   the separate human semantic review, then export/verify/publish both HF repos.
