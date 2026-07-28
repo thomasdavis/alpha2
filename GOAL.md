@@ -1281,6 +1281,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   ledgered and removed exact local SHA `da7e18b2...`; both sides retain 5,000/6,000/7,000. Rows
   7,001–7,050 returned to 4,398/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers. Both guards
   remain active with zero restarts; balance was `$23.5742744231` and total burn `$0.303/hr`.
+  Step 7,500 passed all hard gates but confirmed that the elevated held-out trend now spans two gates.
+  All 7,500 rows are finite/consecutive and cover 122,880,000 padded tokens (24.7345%);
+  train/held-out loss is 1.7767525/1.7546257. Held-out is +0.0285507 from checkpoint 7,000,
+  +0.0443097 from checkpoint 6,000, and +0.1277568 from the unusually sharp step-6,500 best. The
+  absolute result remains materially below early-SFT gates and stability is clean, so checkpoint 8,000
+  is the next discriminator rather than an intervention. P10/median throughput is
+  3,713.89/3,866.68 tok/s; last-500 loss/gradient norm is 1.7073891/0.4980304; all 76 allocator
+  samples report exactly 34 temporary slabs/zero overflow. Rows 7,001–7,500 held RSS at
+  4,398–4,399MB and external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. Exact remote/mounted
+  metrics match at `2a607fff...`; training resumed through 7,525 and both guards remain
+  active/zero-restart. Balance was
+  `$23.4296932453`; only Alpha is running and total burn remains `$0.303/hr`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
