@@ -1212,8 +1212,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   complete zero-overflow allocator telemetry, and exact remote/mounted checkpoint SHA `1878ed9e...`.
   Independent audit `477cde8f...` scanned all 57,688,576 parameters finite/nonzero. Post-save live
   buffers returned to baseline through step 2,100; RSS retained a stable ~314MB allocator-page plateau,
-  so checkpoint 3,000 remains the next memory discriminator. A separate three-prompt non-frozen preview
-  at 6.6% of the epoch was mixed (one recognizable answer, two loops) and did not alter the run.
+  and checkpoint 3,000 resolved the memory discriminator: pre/post-save live buffers were unchanged and
+  RSS rose only 1–4MB, not another checkpoint-sized plateau. Checkpoint 3,000 is exact remote/mounted at
+  `5ad80097...`; audit `7af019aa...` passed all parameters; exact metrics prefix `286052e7...` proves
+  3,000 finite/consecutive rows, 31 allocator samples/zero overflow, p10/median
+  3,801.65/3,927.61 tok/s, and held-out loss 1.7948370. Separate three-prompt non-frozen previews at
+  6.6% and 9.9% of the epoch remained mixed/repetitive and did not alter the run or expose frozen data.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

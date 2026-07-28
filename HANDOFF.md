@@ -733,12 +733,24 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   and nonzero and re-bound every SFT input hash. Training resumed through step 2,125. External/
   ArrayBuffer memory returned to the 2,841/2,839MB live baseline at step 2,100, proving that the second
   save did not add another live-buffer plateau. RSS retained allocator pages at 4,373MB (+~314MB from
-  pre-save) but moved only 9MB between steps 2,050 and 2,100; checkpoint 3,000 remains the next
-  discriminator for repeated RSS retention.
+  pre-save) but moved only 9MB between steps 2,050 and 2,100.
+- **Checkpoint 3,000 PASSED and resolved the memory discriminator:** all 3,000 rows are consecutive and
+  finite; train/held-out loss is 1.9239737/1.7948370, only +0.0051663 from checkpoint 2,000 after the
+  step-2,500 window at 1.8771862. P10/median post-warmup throughput is 3,801.65/3,927.61 tok/s; the
+  last 500 rows average loss/gradient norm 1.8181615/0.4922099; all 31 allocator samples are complete
+  with zero overflow. The checkpoint, native audit, and exact 3,000-row metrics prefix match
+  remote/mounted at SHA-256 `5ad80097...`, `7af019aa...`, and `286052e7...`. The audit passed all
+  114 tensors / 57,688,576 parameters finite/nonzero. Pre-save rows 2,501–2,999 held RSS at
+  4,389–4,392MB and live external/ArrayBuffer memory at 2,841–2,843/2,839–2,841MB; post-save rows
+  through 3,050 held 4,393/2,841–2,842/2,839–2,840MB. There is no repeated checkpoint-sized RSS or
+  live-buffer growth. Training resumed through step 3,050 with guard active/zero-restart.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
-  and the one-epoch run remains the planned discriminator. Mirrored sample log SHA-256 is `d1542164...`.
+  and the one-epoch run remains the planned discriminator. The same three prompts at checkpoint 3,000
+  remained below bar: an emoji loop, one grammatical but semantically odd visual-art answer, and a
+  repetitive rain answer. Mirrored sample log hashes are `d1542164...` (2,000) and `cc0a1b28...`
+  (3,000). No frozen prompt was exposed.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
