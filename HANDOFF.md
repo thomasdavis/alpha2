@@ -772,8 +772,10 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `prepare_frozen_chat_semantic_review.ts`, which will bind the terminal chat checkpoint, canonical
   manifest, exact 100 prompts, summary, and detailed outputs before producing the manual review packet.
   It excludes held-out reference answers, rejects reordered/substituted cases, and predeclares the
-  `PASS`/`BORDERLINE`/`FAIL` rubric. Its focused 2/2 tests and package typecheck pass. Do not run it on
-  the sealed prompts until terminal generation is complete.
+  `PASS`/`BORDERLINE`/`FAIL` rubric. `db3d7e2` adds the matching finalizer: all 100 verdicts and rationales
+  are mandatory; every sealed input and packet case is re-hashed/reconciled; and semantic PASS requires
+  at least 80 `PASS` and zero `FAIL`. Positive and one-gibberish negative proofs pass 2/2 with clean
+  package typecheck. Do not run the packet preparer on sealed prompts until terminal generation completes.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is

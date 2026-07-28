@@ -1234,9 +1234,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   PID. After a clean 30,322-step exit it automates terminal audit/analysis, frozen eval, pair analysis,
   HF export/parity, full remote-manifest/local-hash verification, and only then scoped pod removal.
   Machine D3 failure is preserved rather than published; semantic review and chat upload remain manual.
-  `e1df144` makes that manual boundary reproducible: its 2/2-tested semantic-review preparer binds the
+  `e1df144` makes that manual boundary reproducible: its semantic-review preparer binds the
   terminal checkpoint/manifest/prompts/summary/results, rejects case drift, blinds held-out references,
   and emits all 100 cases under the predeclared conversational rubric only after terminal generation.
+  `db3d7e2` closes the other end: its verifier requires a verdict/rationale for every case, re-hashes and
+  reconciles all sealed inputs, and emits PASS only with at least 80 conversational `PASS` and zero gibberish-
+  class `FAIL`; positive and one-failure negative proofs pass 2/2 and package typecheck is clean.
 - **Gate G5 = D3 chat bar.** If quality is word-salad at the bar, we do NOT ship a chat model; we ship
   the base model with an honest card and the ledger records what a bigger budget would change.
 
