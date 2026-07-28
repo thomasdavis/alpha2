@@ -1222,7 +1222,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   held-out loss 1.8006272 was only +0.0057902 from checkpoint 3,000; p10/median was
   3,793.52/3,920.77 tok/s; all 36 allocator samples reported zero overflow; and live memory stayed at
   4,393–4,394/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers. Exact remote/mounted metrics matched
-  at `0dd1d198...`.
+  at `0dd1d198...`. Checkpoint 4,000 then set a narrow new held-out best at 1.7894577, with 4,000
+  finite/consecutive rows, p10/median 3,783.81/3,911.46 tok/s, 41 allocator samples/zero overflow, and
+  exact checkpoint/audit/metrics hashes `da7e18b2...` / `c0cc3dd2...` / `cd337b07...`. Its all-parameter
+  audit passed. The first keep-three transition safely pruned checkpoint 1,000 remote only after mirror
+  proof, then ledgered and removed the exact local `9149bc73...`; both sides retain 2,000/3,000/4,000.
+  Post-save buffers returned to baseline through 4,050. The same non-frozen preview still failed the chat
+  bar (`df2d1e9e...`): one wrong-but-EOS answer, one word loop, and one grammatical but false rain answer.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

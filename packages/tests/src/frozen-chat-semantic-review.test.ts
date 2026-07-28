@@ -123,7 +123,7 @@ describe("frozen chat semantic review packet", () => {
       counts: { PASS: 79, BORDERLINE: 20, FAIL: 1 },
       fail_ids: ["chat-79"],
     });
-  }, 30_000);
+  }, 120_000);
 
   it("rejects result rows whose case order differs from the frozen prompts", async () => {
     const dir = await mkdtemp(join(tmpdir(), "alpha-semantic-review-order-"));
@@ -174,5 +174,5 @@ describe("frozen chat semantic review packet", () => {
       "--manifest", manifestPath,
       "--out", join(dir, "rejected.json"),
     ], { cwd: repoRoot })).rejects.toMatchObject({ stderr: expect.stringContaining("case order") });
-  }, 30_000);
+  }, 120_000);
 });

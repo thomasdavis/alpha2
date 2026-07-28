@@ -751,13 +751,27 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   allocator samples are present with zero overflow, and rows 3,001–3,500 hold RSS at 4,393–4,394MB,
   external at 2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. The exact 3,500-row remote/mounted
   metrics prefix matches at SHA-256 `0dd1d198...`.
+- **Checkpoint 4,000 PASSED, including the first live keep-three prune:** all 4,000 rows are consecutive
+  and finite, covering 65,536,000 padded tokens. Train/held-out loss is 1.8461738/1.7894577; held-out
+  improved 0.0111696 from step 3,500 and set a narrow new run best by 0.0002130 over step 2,000.
+  P10/median post-warmup throughput is 3,783.81/3,911.46 tok/s; the last 500 rows average loss/gradient
+  norm 1.7611660/0.4883318. All 41 allocator samples are present with zero overflow. Checkpoint, native
+  audit, and exact metrics prefix match remote/mounted at `da7e18b2...`, `c0cc3dd2...`, and
+  `cd337b07...`; the audit passed all 114 tensors / 57,688,576 parameters finite/nonzero. Only after
+  the 4,000 checkpoint's size+SHA mirror proof, the guard pruned checkpoint 1,000 remotely, then wrote
+  `delete_committed`/`deleted` records for local SHA `9149bc73...`. Both sides retain 2,000/3,000/4,000.
+  Rows 4,001–4,050 returned to 4,395/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers, and training
+  resumed through step 4,050.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
   and the one-epoch run remains the planned discriminator. The same three prompts at checkpoint 3,000
   remained below bar: an emoji loop, one grammatical but semantically odd visual-art answer, and a
   repetitive rain answer. Mirrored sample log hashes are `d1542164...` (2,000) and `cc0a1b28...`
-  (3,000). No frozen prompt was exposed.
+  (3,000). At checkpoint 4,000, the greeting terminated with EOS but answered `#### 1 The answer is: 1`,
+  the fun prompt collapsed into a `fun` loop, and the rain response was grammatical but falsely described
+  rain as energy. Its sample log is `df2d1e9e...`. No frozen prompt was exposed, and quality remains below
+  the chat bar at 13.2% of the epoch.
 - **Fail-closed terminal finalizer is LIVE:** `6d92470` added
   `runpod_sft_terminal_{watch,finalize_remote}.sh`; real-pod one-shot preflight passed exact source,
   frozen/base inputs, analyzers, and isolated Transformers dependencies. Negative tests rejected a
