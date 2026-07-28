@@ -162,6 +162,7 @@ async function main(): Promise<void> {
       FAIL: "Gibberish, word salad, role confusion, an empty answer, or degenerate repetition.",
       decision: "Review every case without the held-out reference, record a verdict and rationale, then judge whether the suite is clearly conversational rather than gibberish. Machine structure and factual QA remain separate gates.",
     },
+    semantic_gate: { pass_minimum: 80, fail_maximum: 0 },
     provenance: {
       manifest: { path: cli.manifest, sha256: sha256(manifestText) },
       prompts: { path: cli.prompts, sha256: sha256(promptText), rows: prompts.length },
@@ -170,6 +171,9 @@ async function main(): Promise<void> {
       checkpoint: summary.checkpoint,
     },
     reference_blinded: true,
+    reviewer: "PENDING",
+    reviewed_utc: "PENDING",
+    overall_rationale: "",
     cases: prompts.map((prompt, index) => ({
       index: index + 1,
       id: prompt.id,

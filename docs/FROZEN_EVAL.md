@@ -109,5 +109,16 @@ model responses but deliberately excludes the held-out reference answers. Review
 (intelligible and relevant; simplistic or factually weak is allowed), `BORDERLINE` (understandable but
 substantially irrelevant, contradictory, or fragmented), or `FAIL` (gibberish, word salad, role
 confusion, empty output, or degenerate repetition). Preserve the per-case verdicts and rationales plus
-an explicit overall D3 decision. Machine structure and closed-book factual accuracy remain separately
-reported gates.
+the reviewer, UTC timestamp, and overall rationale; then change the packet status to `COMPLETE` and run:
+
+```bash
+nice -n19 ionice -c3 npx tsx scripts/finalize_frozen_chat_semantic_review.ts \
+  --review /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-chat-semantic-review.json \
+  --out /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-chat-semantic-review-report.json
+```
+
+The semantic gate is predeclared as at least 80 `PASS` cases and zero `FAIL` cases; `BORDERLINE` is
+reserved for comprehensible but substantially flawed answers. The finalizer re-reads and hashes every
+sealed input, proves the packet still contains the exact prompts/outputs/machine flags in exact order,
+requires a verdict and rationale for all 100 cases, and preserves a machine-readable PASS or FAIL report.
+Machine structure and closed-book factual accuracy remain separately reported gates.

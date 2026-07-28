@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const preparer = join(repoRoot, "scripts/prepare_frozen_chat_semantic_review.ts");
+const finalizer = join(repoRoot, "scripts/finalize_frozen_chat_semantic_review.ts");
 const temporaryDirectories: string[] = [];
 
 function sha256(value: string): string {
@@ -88,6 +89,40 @@ describe("frozen chat semantic review packet", () => {
       human_verdict: "PENDING",
     });
     expect(packetText).not.toContain("SECRET_REFERENCE_");
+
+    packet.status = "COMPLETE";
+    packet.reviewer = "Synthetic human reviewer";
+    packet.reviewed_utc = "2026-07-28T00:00:00Z";
+    packet.overall_rationale = "The synthetic suite is intelligible and relevant under the predeclared rubric.";
+    packet.cases.forEach((row: Record<string, unknown>, index: number) => {
+      row.human_verdict = index < 80 ? "PASS" : "BORDERLINE";
+      row.human_rationale = index < 80 ? "Direct and intelligible." : "Understandable but substantially incomplete.";
+    });
+    await writeFile(outPath, JSON.stringify(packet, null, 2) + "\n");
+    const reportPath = join(dir, "semantic-report.json");
+    await execFileAsync("npx", ["tsx", finalizer, "--review", outPath, "--out", reportPath], { cwd: repoRoot });
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    expect(report).toMatchObject({
+      schema: "alpha-frozen-chat-semantic-review-v1",
+      result: "PASS",
+      reference_blinded: true,
+      counts: { total: 100, PASS: 80, BORDERLINE: 20, FAIL: 0 },
+    });
+
+    const failedReview = structuredClone(packet);
+    failedReview.cases[79].human_verdict = "FAIL";
+    failedReview.cases[79].human_rationale = "Synthetic gibberish failure.";
+    const failedReviewPath = join(dir, "failed-review.json");
+    const failedReportPath = join(dir, "failed-report.json");
+    await writeFile(failedReviewPath, JSON.stringify(failedReview, null, 2) + "\n");
+    await expect(execFileAsync("npx", ["tsx", finalizer,
+      "--review", failedReviewPath, "--out", failedReportPath,
+    ], { cwd: repoRoot })).rejects.toBeDefined();
+    expect(JSON.parse(await readFile(failedReportPath, "utf8"))).toMatchObject({
+      result: "FAIL",
+      counts: { PASS: 79, BORDERLINE: 20, FAIL: 1 },
+      fail_ids: ["chat-79"],
+    });
   }, 30_000);
 
   it("rejects result rows whose case order differs from the frozen prompts", async () => {
