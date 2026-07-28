@@ -1229,6 +1229,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   proof, then ledgered and removed the exact local `9149bc73...`; both sides retain 2,000/3,000/4,000.
   Post-save buffers returned to baseline through 4,050. The same non-frozen preview still failed the chat
   bar (`df2d1e9e...`): one wrong-but-EOS answer, one word loop, and one grammatical but false rain answer.
+  The aligned step-4,500 gate then passed all hard invariants: 4,500 finite/consecutive rows cover
+  73,728,000 padded tokens; p10/median post-warmup throughput is 3,771.38/3,901.98 tok/s; the last 500
+  rows average loss/gradient norm 1.7536257/0.4881017; and all 46 allocator samples report zero overflow.
+  Train/held-out loss is 1.7010769/1.8321369. Held-out rose 0.0426792 from the narrow step-4,000 best,
+  which is one five-batch validation wobble with every stability gate clean; checkpoint 5,000 is the
+  discriminator. Rows 4,001–4,500 held RSS exactly 4,395MB and external/ArrayBuffers within
+  2,841–2,842/2,839–2,840MB. Exact remote/mounted metrics match at `4dcd2175...`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
@@ -1246,6 +1253,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `db3d7e2` closes the other end: its verifier requires a verdict/rationale for every case, re-hashes and
   reconciles all sealed inputs, and emits PASS only with at least 80 conversational `PASS` and zero gibberish-
   class `FAIL`; positive and one-failure negative proofs pass 2/2 and package typecheck is clean.
+  `1c9d218` closes the publication boundary: `publish_hf_chat.py` is read-only unless `--publish` is
+  explicit, accepts only the exact six-file zero-custom-code export and `ajaxdavis/alpha-60m-chat`, and
+  re-binds the terminal checkpoint across the terminal analyzer, machine D3, blinded semantic review,
+  model card, export weights, and Alpha/Transformers parity evidence. Its preflight and isolated mocked
+  publication path pass, including the installed Hub client's real `update_repo_settings` API. The
+  persistent mounted-drive Python environment contains the required Hub/Transformers packages, the saved
+  credential was independently confirmed as `ajaxdavis`, and the chat target does not exist yet.
 - **Gate G5 = D3 chat bar.** If quality is word-salad at the bar, we do NOT ship a chat model; we ship
   the base model with an honest card and the ledger records what a bigger budget would change.
 

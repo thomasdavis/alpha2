@@ -762,6 +762,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `delete_committed`/`deleted` records for local SHA `9149bc73...`. Both sides retain 2,000/3,000/4,000.
   Rows 4,001–4,050 returned to 4,395/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers, and training
   resumed through step 4,050.
+- **Step 4,500 PASSED with one held-out wobble on watch:** 4,500 finite/consecutive rows cover
+  73,728,000 padded tokens. P10/median post-warmup throughput is 3,771.38/3,901.98 tok/s; the last 500
+  rows average loss/gradient norm 1.7536257/0.4881017; all 46 allocator samples have zero overflow.
+  Train/held-out loss is 1.7010769/1.8321369, with held-out +0.0426792 from the narrow checkpoint-4,000
+  best. This is one five-batch validation wobble, not a stop signal: steps are finite, gradients and
+  throughput are stable, and rows 4,001–4,500 hold RSS exactly 4,395MB with external/ArrayBuffers within
+  2,841–2,842/2,839–2,840MB. Exact remote/mounted metrics match at SHA-256 `4dcd2175...`; checkpoint
+  5,000 is the discriminator. Balance was `$24.4667641212`; total account burn remained `$0.303/hr`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
@@ -790,6 +798,14 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   are mandatory; every sealed input and packet case is re-hashed/reconciled; and semantic PASS requires
   at least 80 `PASS` and zero `FAIL`. Positive and one-gibberish negative proofs pass 2/2 with clean
   package typecheck. Do not run the packet preparer on sealed prompts until terminal generation completes.
+- **Chat publication is now explicit and fail-closed:** `1c9d218` adds `publish_hf_chat.py` and its
+  release-path test. Read-only preflight is the default; `--publish` requires exact terminal/SFT/D3/
+  semantic/parity evidence, one hash-consistent terminal checkpoint, the completed model card, the exact
+  six-file zero-custom-code export, and the sole target `ajaxdavis/alpha-60m-chat`. The test exercises
+  both preflight and an isolated full publication simulation against the installed Hub API surface. Use
+  `/mnt/donto-data/alpha-corpora/.venv/bin/python` after pod teardown; the environment persists and has
+  `huggingface_hub`, Transformers, safetensors, and CPU torch. The saved identity is `ajaxdavis`, and an
+  authenticated check confirmed the chat repository is not yet present.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
