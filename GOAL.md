@@ -1349,6 +1349,15 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Rows 10,001–10,050 are finite and returned to 4,410/2,841–2,842/2,839–2,840MB
   RSS/external/ArrayBuffer baseline. Both guards remain active/zero-restart; balance was
   `$22.5130707707` and total burn `$0.303/hr`.
+  Step 10,500 then set a substantial new validation best. All 10,500 rows are finite/consecutive
+  and cover 172,032,000 padded tokens (34.6283%); train/held-out loss is 1.5839281/1.5531592.
+  Held-out improved 0.0722730 from checkpoint 10,000, 0.0502439 from the prior checkpoint-9,000
+  best, and 0.0651656 from step 8,500. P10/median throughput is 3,664.88/3,832.67 tok/s;
+  last-500 loss/gradient norm is 1.6468749/0.5014553; all 106 allocator samples report exactly 34
+  temporary slabs/zero overflow. Rows 10,001–10,500 held RSS exactly at 4,410MB and
+  external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. The exact metrics prefix matches
+  remote/mounted at `8a68ff76...`; both guards remain active/zero-restart. Balance was
+  `$22.3684070318`; only Alpha is running and total burn remains `$0.303/hr`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
