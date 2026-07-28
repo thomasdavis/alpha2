@@ -719,15 +719,26 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `/workspace/alpha2/runs/flagship-sft-c333bf2-20260728` on pod `gp4m6s8m06bhen`; mounted mirror is
   `/mnt/donto-data/alpha-runs/flagship-sft-c333bf2-20260728`. Its immutable contract passed and binds
   30,322 steps / 496,795,648 padded tokens, one assistant-only epoch, selected `3e-4` to `3e-5`,
-  selector SHA `06243d36...`, exact `c333bf2`, and all input hashes. Step 25 was finite at about
-  4,097 tok/s with 100% GPU utilization. Guard `alpha2-flagship-sft-guard-20260728.service` uses
-  60-second verified pulls, a 1,800-second metric-stall limit, matched keep-three retention, and
-  pod-scoped auto-termination; it was verified active with zero restarts.
+  selector SHA `06243d36...`, exact `c333bf2`, and all input hashes. The first recovery gate passed:
+  step 1,000 was finite at 3,963 tok/s with held-out loss 1.9429283 (improved from 2.0446098 at step
+  500), all allocator telemetry still reported zero overflow, and the 692,528,815-byte checkpoint
+  matched remote/mounted at SHA-256 `9149bc73...`. Training resumed cleanly through step 1,050 at
+  4,005 tok/s. Guard `alpha2-flagship-sft-guard-20260728.service` uses 60-second verified pulls, a
+  1,800-second metric-stall limit, matched keep-three retention, and pod-scoped auto-termination; it
+  remains active with zero restarts. Post-save external memory had already released 439MB but remained
+  about 297MB over the pre-save baseline at step 1,050, so checkpoint-memory settling remains on watch.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
   0/100 structural chat passes, 99 degenerate loops, 0 QA exact, and 1 QA answer-contained. This is
   the before-side of the required base-vs-chat gate, not a passing chat result.
+- **Exact base HF export VERIFIED and mirrored:** the six-file zero-custom-code export under
+  `/mnt/donto-data/alpha-runs/hf-alpha-60m-base-c333bf2-20260728` loaded as stock
+  `LlamaForCausalLM` with all 57,688,576 parameters. Alpha `cpu_ref` versus Transformers passed 2/2
+  top-1 positions, exact tokenizer parity, and max logit delta `6.771e-05`; stock CPU
+  `pipeline("text-generation")` cold-loaded and generated `Hello, I'm a little bit of a`. The sealed
+  evidence is hash-mirrored under `hf-base-verification-c333bf2-20260728`; the future upload directory
+  contains only the intended six model/tokenizer/config files.
 - The flagship pretrain guard exited cleanly after its final pull; its retention/provenance artifacts
   remain in the canonical mounted run. Connectivity failures never counted as training stalls. The
   checkpoint filename filter was tightened so native-audit sidecars cannot interrupt retention.

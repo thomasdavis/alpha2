@@ -1289,6 +1289,11 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
    complete allocator cadence and zero overflow. Strict PASS report `06243d36...` selects `3e-4`:
    final-three means 1.7839965 (`3e-4`), 1.8391179 (`1e-3`), 1.8586174 (`1e-4`).
 3. [▶] Complete the live 30,322-step / 496,795,648-token assistant-only masked SFT at selected
-   `3e-4`, under `alpha2-flagship-sft-guard-20260728.service`, preserving `c333bf2` provenance.
+   `3e-4`, under `alpha2-flagship-sft-guard-20260728.service`, preserving `c333bf2` provenance. Its
+   first recovery gate passed at step 1,000: held-out loss 1.9429283, zero allocator overflow, exact
+   692,528,815-byte remote/mounted checkpoint SHA `9149bc73...`, clean resume through step 1,050, and
+   zero guard restarts.
 4. Run the frozen chat-side eval and pair analyzer against the completed/mirrored base baseline, do
-   the separate human semantic review, then export/verify/publish both HF repos.
+   the separate human semantic review, then export/verify/publish both HF repos. The exact base export
+   already passes stock `LlamaForCausalLM` load, Alpha-vs-Transformers parity (2/2 top-1,
+   `6.771e-05` max logit delta), tokenizer parity, and a zero-custom-code CPU `pipeline()` cold load.
