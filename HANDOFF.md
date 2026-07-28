@@ -835,6 +835,21 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   and ArrayBuffers at 2,839–2,840MB. The exact 7,500-row metrics prefix matches remote/mounted at
   SHA-256 `2a607fff...`; training resumed through 7,525 and both guards remain active/zero-restart.
   Balance was `$23.4296932453`; only Alpha is running and total burn remains `$0.303/hr`.
+- **Checkpoint 8,000 PASSED and resolved the elevated validation trend positively:** 8,000
+  finite/consecutive rows cover 131,072,000 padded tokens (26.3835% of the one-epoch run).
+  Train/held-out loss is 1.8891588/1.6951937. Held-out improved 0.0594321 from step 7,500,
+  0.0308814 from checkpoint 7,000, and 0.0151223 from checkpoint 6,000; it is the run's second-best
+  validation, remaining 0.0683247 above the unusually sharp step-6,500 best. P10/median throughput
+  is 3,692.59/3,858.35 tok/s; last-500 loss/gradient norm is 1.6788371/0.4984117; all 81 allocator
+  samples report exactly 34 temporary slabs and zero free-range overflow. Exact checkpoint/native-
+  audit/metrics-prefix hashes match remote/mounted at `b4dfd9bd...` / `703625e2...` /
+  `d4981b63...`; the independent audit passed all 114 tensors and all 57,688,576 parameters
+  finite/nonzero. The guard pruned remote checkpoint 5,000 only after size+SHA mirror proof, then
+  wrote `delete_committed`/`deleted` records and removed exact local SHA `776b111d...`; both sides
+  retain 6,000/7,000/8,000. Rows 8,001–8,050 are finite and held RSS exactly 4,405MB, external at
+  2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB, proving a clean post-save return to baseline.
+  Training resumed through 8,050 with both guards active/zero-restart. Balance was
+  `$23.2366289601`; only Alpha is running and total burn remains `$0.303/hr`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

@@ -1293,6 +1293,19 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   metrics match at `2a607fff...`; training resumed through 7,525 and both guards remain
   active/zero-restart. Balance was
   `$23.4296932453`; only Alpha is running and total burn remains `$0.303/hr`.
+  Checkpoint 8,000 then resolved the elevated validation trend positively. All 8,000 rows are
+  finite/consecutive and cover 131,072,000 padded tokens (26.3835%); train/held-out loss is
+  1.8891588/1.6951937. Held-out improved 0.0594321 from step 7,500, 0.0308814 from checkpoint 7,000,
+  and 0.0151223 from checkpoint 6,000; it is the run's second-best validation, 0.0683247 above the
+  unusually sharp step-6,500 best. P10/median throughput is 3,692.59/3,858.35 tok/s; last-500
+  loss/gradient norm is 1.6788371/0.4984117; all 81 allocator samples report exactly 34 temporary
+  slabs/zero overflow. Exact checkpoint/audit/metrics-prefix hashes match remote/mounted at
+  `b4dfd9bd...` / `703625e2...` / `d4981b63...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero inspection. The fifth keep-three transition removed checkpoint 5,000 remotely only
+  after mirror proof, then ledgered and removed exact local SHA `776b111d...`; both sides retain
+  6,000/7,000/8,000. Rows 8,001–8,050 returned to a stable
+  4,405/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffer baseline. Both guards remain
+  active/zero-restart; balance was `$23.2366289601` and total burn `$0.303/hr`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
