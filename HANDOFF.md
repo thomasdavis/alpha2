@@ -808,6 +808,21 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   RSS exactly 4,396MB and external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. Exact
   remote/mounted metrics match at SHA-256 `5f3bfa80...`; training resumed through 6,525 with both
   guards active/zero-restart. Balance was `$23.7673140194`; burn remained `$0.303/hr`.
+- **Checkpoint 7,000 PASSED; one five-batch held-out wobble is on watch:** all 7,000 rows are
+  finite/consecutive and cover 114,688,000 padded tokens (23.0855% of the one-epoch run).
+  Train/held-out loss is 1.8896970/1.7260751. Held-out is +0.0992061 from the unusually sharp
+  step-6,500 best but only +0.0157591 from checkpoint 6,000; every hard gate remains clean and step
+  7,500 is the discriminator. P10/median throughput is 3,723.66/3,872.87 tok/s; last-500
+  loss/gradient norm is 1.7021976/0.4947595; all 71 allocator samples report exactly 34 temporary
+  slabs and zero free-range overflow. Exact checkpoint/native-audit/metrics-prefix hashes match
+  remote/mounted at `a60b94c5...` / `3355ab03...` / `b4e7c2c8...`; the independent audit passed all
+  114 tensors and all 57,688,576 parameters finite/nonzero. The guard pruned remote checkpoint 4,000
+  only after size+SHA mirror proof, then wrote `delete_committed`/`deleted` records and removed the
+  exact local `da7e18b2...`; both sides retain 5,000/6,000/7,000. Rows 7,001–7,050 are finite and
+  held RSS exactly 4,398MB, external at 2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB, proving a
+  clean post-save return to baseline. Training resumed through 7,050 with both guards
+  active/zero-restart. Balance was `$23.5742744231`; only Alpha is running and total burn remains
+  `$0.303/hr`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
