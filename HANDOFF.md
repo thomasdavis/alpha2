@@ -696,16 +696,33 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `1dc89d0f…`/`20c7a45f…`; the deployed tokenizer is `c310343a…`. Frozen manifest/chat/QA are
   `bf6e6ea4…`/`6c463deb…`/`bbbeec57…` under `/runpod/data/frozen-eval-v1`. The pod retained
   7.6GB free after staging.
-- Active mirror/retention guard:
-  `alpha2-flagship-puller-e561f66-recovery2-live.service` (60-second pull, 1,800-second verified-
-  metric stale window, matched keep-three checkpoints, auto-termination scoped to this pod). It is
-  active with zero restarts. Connectivity failures do not count as training stalls. The checkpoint
-  filename filter was tightened so native-audit sidecars cannot interrupt retention.
+- **SFT source certified on NVIDIA:** exact `c333bf2` passed all 46/46 GPU-gated tests on the live
+  RTX 3090 with zero skipped/failed/todo tests. The complete report is mirrored at
+  `/mnt/donto-data/alpha-runs/nvidia-gate-c333bf2-sft-20260727/` (`vitest-report.json` SHA-256
+  `6143c60d…`). The pod intentionally remains clean and detached at `c333bf2`; documentation-only
+  commits must not advance the SFT source because the LR selector and full-SFT contract bind it.
+- **SFT LR pilot 1 (`1e-4`) COMPLETE:** all 2,000 rows are consecutive and finite; the eight aligned
+  validations end at 1.8512929 and the final-three mean is 1.8586174. Final/last-100 train loss is
+  1.9064003/1.8535267; median post-warmup throughput is 3,804.2311 tok/s; all 21 allocator samples
+  are complete through step 2,000 with zero overflow. Terminal checkpoint is 692,528,815 bytes at
+  `4f573f39…`; metrics are `11482619…`. The exact remote run is mirrored and hash-verified at
+  `/mnt/donto-data/alpha-runs/sft-lr-pilot-1e4-c333bf2-20260727/`.
+- **SFT LR pilot 2 (`3e-4`) is LIVE** at
+  `/workspace/alpha2/runs/sft-lr-pilot-3e4-c333bf2-20260727`. Its fail-closed input verification and
+  immutable contract passed; the first aligned step-250 validation is 2.1092895 versus pilot 1's
+  2.1317361. The durable guard is
+  `alpha2-sft-pilot-3e4-guard-20260728.service` (60-second pulls, 1,800-second verified-metric stale
+  window, matched keep-three checkpoints, auto-termination scoped to pod `gp4m6s8m06bhen`) and was
+  verified active with zero restarts. The first rejected launch named the manifest incorrectly,
+  failed before creating a run directory or touching the GPU, and is preserved as a `.failed-*` log.
+- The flagship pretrain guard exited cleanly after its final pull; its retention/provenance artifacts
+  remain in the canonical mounted run. Connectivity failures never counted as training stalls. The
+  checkpoint filename filter was tightened so native-audit sidecars cannot interrupt retention.
 - The stopped original pod `d5m7h1v0kr0zd4` was deleted only after recovery2 caches and fresh GPU
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
-- **Next gate:** certify `c333bf2` for SFT, run the contracted `{1e-4,3e-4,1e-3}` 2,000-step
-  assistant-only pilots, then full masked SFT, frozen base-vs-chat evaluation, and HF publication.
+- **Next gate:** finish the live `3e-4` pilot, run the contracted `1e-3` pilot, execute the strict
+  three-way selector, then full masked SFT, frozen base-vs-chat evaluation, and HF publication.
 
 ## Historical pre-interruption flagship record
 
