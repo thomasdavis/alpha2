@@ -151,6 +151,34 @@ turned into a publication. The watcher seals every remote artifact in a SHA-256 
 verifies every local copy, and only then removes the named pod. Any operational failure exits with the pod
 untouched. Semantic review and Hugging Face chat publication remain manual gates.
 
+After terminal artifacts are mirrored, machine D3 passes, and the sealed semantic-review report passes,
+finish `docs/MODEL_CARD_CHAT.md` and run the release preflight. Publication is read-only by default and
+requires an explicit `--publish`:
+
+```bash
+nice -n19 ionice -c3 /mnt/donto-data/alpha-corpora/.venv/bin/python scripts/publish_hf_chat.py \
+  --export-dir /mnt/donto-data/alpha-runs/FLAGSHIP/hf-alpha-60m-chat \
+  --model-card docs/MODEL_CARD_CHAT.md \
+  --terminal-status /mnt/donto-data/alpha-runs/FLAGSHIP/terminal-finalizer-status.json \
+  --sft-analysis /mnt/donto-data/alpha-runs/FLAGSHIP/flagship-sft-analysis.json \
+  --pair-analysis /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-eval-pair-analysis.json \
+  --semantic-review /mnt/donto-data/alpha-runs/FLAGSHIP/frozen-chat-semantic-review-report.json \
+  --parity-log /mnt/donto-data/alpha-runs/FLAGSHIP/hf-export-parity.log \
+  --repo ajaxdavis/alpha-60m-chat \
+  --out /mnt/donto-data/alpha-runs/FLAGSHIP/hf-chat-publication-preflight.json
+```
+
+The preflight rejects incomplete model-card placeholders, any failed or mismatched terminal/D3 report,
+checkpoint-hash disagreement, failed Alpha/Transformers parity, unexpected/custom-code export files,
+or the wrong Hub target. Repeat with a fresh `--out` and `--publish` only after inspecting the PASS
+report. Then run `scripts/verify_hf_hub.py` against the returned immutable Hub revision from an empty
+cache; publication is not complete until that anonymous CPU cold-load proof passes.
+
+The mounted-drive Python environment above is persistent after RunPod teardown and contains the pinned
+`huggingface_hub`, Transformers, safetensors, and CPU torch dependencies used for the already-proven base
+model publication. Host `python3` is sufficient for read-only preflight, but not for `--publish` or the
+anonymous cold-load proof.
+
 G3 pilot recovery uses the same `run_g3_pilot.sh` invocation plus the selected checkpoint as argument
 five. The launcher requires the original commit/data/tokenizer/LR contract, and
 `prepare_resume_metrics.ts` preserves and hashes any metric tail beyond that checkpoint before atomically
