@@ -1246,6 +1246,13 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   after mirror proof, then ledgered and removed the identical local `1878ed9e...`; both sides retain
   3,000/4,000/5,000. Rows 5,001–5,050 returned to the same 4,395/2,841–2,842/2,839–2,840MB
   RSS/external/ArrayBuffer baseline.
+  Step 5,500 then improved held-out loss again to a new best: train/held-out is
+  1.8147178/1.7393485, with held-out improving 0.0332258 from checkpoint 5,000 and 0.0501091 from the
+  prior checkpoint-4,000 best. All 5,500 finite/consecutive rows cover 90,112,000 padded tokens;
+  p10/median is 3,743.68/3,886.21 tok/s; last-500 loss/gradient norm is
+  1.7280470/0.4932815; all 56 allocator samples report zero overflow. Rows 5,001–5,500 held
+  4,395–4,396/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers. Exact remote/mounted metrics
+  match at `b9221eef...`; training resumed through 5,525.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
