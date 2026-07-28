@@ -1236,6 +1236,16 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   which is one five-batch validation wobble with every stability gate clean; checkpoint 5,000 is the
   discriminator. Rows 4,001–4,500 held RSS exactly 4,395MB and external/ArrayBuffers within
   2,841–2,842/2,839–2,840MB. Exact remote/mounted metrics match at `4dcd2175...`.
+  Checkpoint 5,000 then resolved that wobble positively and set a new run best: train/held-out loss is
+  1.7386191/1.7725743, with held-out recovering 0.0595626 from step 4,500 and improving 0.0168833 over
+  the prior step-4,000 best. All 5,000 rows are finite/consecutive and cover 81,920,000 padded tokens;
+  p10/median is 3,766.05/3,896.00 tok/s; last-500 loss/gradient norm is 1.7463370/0.4936785; all 51
+  allocator samples report zero overflow. Exact checkpoint/audit/metrics-prefix hashes are
+  `776b111d...` / `e0087402...` / `ee2f1db1...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero inspection. The second keep-three transition removed checkpoint 2,000 remotely only
+  after mirror proof, then ledgered and removed the identical local `1878ed9e...`; both sides retain
+  3,000/4,000/5,000. Rows 5,001–5,050 returned to the same 4,395/2,841–2,842/2,839–2,840MB
+  RSS/external/ArrayBuffer baseline.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

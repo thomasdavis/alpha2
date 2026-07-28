@@ -770,6 +770,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   throughput are stable, and rows 4,001–4,500 hold RSS exactly 4,395MB with external/ArrayBuffers within
   2,841–2,842/2,839–2,840MB. Exact remote/mounted metrics match at SHA-256 `4dcd2175...`; checkpoint
   5,000 is the discriminator. Balance was `$24.4667641212`; total account burn remained `$0.303/hr`.
+- **Checkpoint 5,000 PASSED and resolved the held-out wobble positively:** 5,000 finite/consecutive
+  rows cover 81,920,000 padded tokens. Train/held-out loss is 1.7386191/1.7725743; held-out recovered
+  0.0595626 from step 4,500 and set a new run best by 0.0168833 over checkpoint 4,000. P10/median
+  post-warmup throughput is 3,766.05/3,896.00 tok/s; last-500 loss/gradient norm is
+  1.7463370/0.4936785; all 51 allocator samples report zero overflow. Exact checkpoint/native-audit/
+  metrics-prefix hashes are `776b111d...` / `e0087402...` / `ee2f1db1...`; the audit passed all 114
+  tensors and all 57,688,576 parameters finite/nonzero. The second live keep-three transition pruned
+  remote checkpoint 2,000 only after mirror proof, then wrote `delete_committed`/`deleted` records and
+  removed the matching local `1878ed9e...`; both sides retain 3,000/4,000/5,000. Rows 5,001–5,050
+  returned to 4,395/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers. Training resumed through
+  5,075; both guards remain active/zero-restart. Balance was `$24.2738337305`; total burn `$0.303/hr`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
