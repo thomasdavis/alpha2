@@ -751,6 +751,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   remained below bar: an emoji loop, one grammatical but semantically odd visual-art answer, and a
   repetitive rain answer. Mirrored sample log hashes are `d1542164...` (2,000) and `cc0a1b28...`
   (3,000). No frozen prompt was exposed.
+- **Fail-closed terminal finalizer is LIVE:** `6d92470` added
+  `runpod_sft_terminal_{watch,finalize_remote}.sh`; real-pod one-shot preflight passed exact source,
+  frozen/base inputs, analyzers, and isolated Transformers dependencies. Negative tests rejected a
+  wrong source at exit 2 and premature finalization at exit 3 without creating artifacts. User service
+  `alpha2-flagship-sft-finalizer-20260728.service` is active with zero restarts and proved real progress
+  from 3,250 to 3,300 rows while retaining the exact trainer PID. At clean step 30,322 it will run the
+  terminal audit/analyzer, sealed 100-chat/200-QA eval, pair gate, HF export, and logit parity; preserve
+  machine PASS or FAIL with semantic review still pending; hash-mirror every remote artifact; and only
+  then remove scoped pod `gp4m6s8m06bhen`. Any operational failure leaves the pod untouched. It never
+  publishes the chat model automatically.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
