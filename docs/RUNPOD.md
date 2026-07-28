@@ -125,6 +125,32 @@ retain every local checkpoint. `RUNPOD_GUARD_ONCE=1` performs one pull, verifica
 status check without entering the monitoring loop; it is useful for an operator check but not as the paid-run watchdog.
 Egress is free. `runpodctl send/receive` (croc) also works for one-offs.
 
+For the contracted 30,322-step flagship SFT, pair the live guard with the terminal watcher so a run that
+finishes unattended does not leave a GPU billing idle:
+
+```bash
+RUNPOD_FINALIZER_ONCE=1 scripts/runpod_sft_terminal_watch.sh \
+  <ip> <port> <pod-id> \
+  /workspace/alpha2/runs/<sft-run> \
+  /mnt/donto-data/alpha-runs/<sft-run> \
+  <contracted-source-commit> 60
+
+systemd-run --user --unit=alpha2-sft-terminal-finalizer --collect \
+  scripts/runpod_sft_terminal_watch.sh \
+  <ip> <port> <pod-id> \
+  /workspace/alpha2/runs/<sft-run> \
+  /mnt/donto-data/alpha-runs/<sft-run> \
+  <contracted-source-commit> 60
+```
+
+Always run the one-shot preflight first. The watcher requires the exact terminal row count and checkpoint
+with no trainer process before it acts. It then runs the streaming terminal parameter/input audit, strict
+SFT analyzer, sealed 100-chat/200-QA evaluation, recomputed base/chat machine gate, standard HF export,
+and Alpha-vs-Transformers logit parity. A machine D3 failure is preserved as valid evidence; it is not
+turned into a publication. The watcher seals every remote artifact in a SHA-256 manifest, rsyncs the run,
+verifies every local copy, and only then removes the named pod. Any operational failure exits with the pod
+untouched. Semantic review and Hugging Face chat publication remain manual gates.
+
 G3 pilot recovery uses the same `run_g3_pilot.sh` invocation plus the selected checkpoint as argument
 five. The launcher requires the original commit/data/tokenizer/LR contract, and
 `prepare_resume_metrics.ts` preserves and hashes any metric tail beyond that checkpoint before atomically
