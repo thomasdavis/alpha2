@@ -744,6 +744,13 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   4,389–4,392MB and live external/ArrayBuffer memory at 2,841–2,843/2,839–2,841MB; post-save rows
   through 3,050 held 4,393/2,841–2,842/2,839–2,840MB. There is no repeated checkpoint-sized RSS or
   live-buffer growth. Training resumed through step 3,050 with guard active/zero-restart.
+- **Step 3,500 held-out gate PASSED:** all 3,500 rows are consecutive and finite, covering 57,344,000
+  padded tokens. Train/held-out loss is 1.6857041/1.8006272; held-out is only +0.0057902 from checkpoint
+  3,000 and remains 0.0765590 better than step 2,500. P10/median post-warmup throughput is
+  3,793.52/3,920.77 tok/s; the last 500 rows average loss/gradient norm 1.7803503/0.4910335. All 36
+  allocator samples are present with zero overflow, and rows 3,001–3,500 hold RSS at 4,393–4,394MB,
+  external at 2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. The exact 3,500-row remote/mounted
+  metrics prefix matches at SHA-256 `0dd1d198...`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
@@ -761,6 +768,12 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   machine PASS or FAIL with semantic review still pending; hash-mirror every remote artifact; and only
   then remove scoped pod `gp4m6s8m06bhen`. Any operational failure leaves the pod untouched. It never
   publishes the chat model automatically.
+- **Semantic-review handoff is fail-closed and reference-blinded:** `e1df144` adds
+  `prepare_frozen_chat_semantic_review.ts`, which will bind the terminal chat checkpoint, canonical
+  manifest, exact 100 prompts, summary, and detailed outputs before producing the manual review packet.
+  It excludes held-out reference answers, rejects reordered/substituted cases, and predeclares the
+  `PASS`/`BORDERLINE`/`FAIL` rubric. Its focused 2/2 tests and package typecheck pass. Do not run it on
+  the sealed prompts until terminal generation is complete.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is

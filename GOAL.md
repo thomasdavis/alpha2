@@ -1218,6 +1218,11 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   3,000 finite/consecutive rows, 31 allocator samples/zero overflow, p10/median
   3,801.65/3,927.61 tok/s, and held-out loss 1.7948370. Separate three-prompt non-frozen previews at
   6.6% and 9.9% of the epoch remained mixed/repetitive and did not alter the run or expose frozen data.
+  The aligned step-3,500 gate then passed 3,500 finite/consecutive rows and 57,344,000 padded tokens:
+  held-out loss 1.8006272 was only +0.0057902 from checkpoint 3,000; p10/median was
+  3,793.52/3,920.77 tok/s; all 36 allocator samples reported zero overflow; and live memory stayed at
+  4,393–4,394/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffers. Exact remote/mounted metrics matched
+  at `0dd1d198...`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
@@ -1229,6 +1234,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   PID. After a clean 30,322-step exit it automates terminal audit/analysis, frozen eval, pair analysis,
   HF export/parity, full remote-manifest/local-hash verification, and only then scoped pod removal.
   Machine D3 failure is preserved rather than published; semantic review and chat upload remain manual.
+  `e1df144` makes that manual boundary reproducible: its 2/2-tested semantic-review preparer binds the
+  terminal checkpoint/manifest/prompts/summary/results, rejects case drift, blinds held-out references,
+  and emits all 100 cases under the predeclared conversational rubric only after terminal generation.
 - **Gate G5 = D3 chat bar.** If quality is word-salad at the bar, we do NOT ship a chat model; we ship
   the base model with an honest card and the ledger records what a bigger budget would change.
 
