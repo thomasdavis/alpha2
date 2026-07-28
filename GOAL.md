@@ -1218,14 +1218,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   the base model with an honest card and the ledger records what a bigger budget would change.
 
 ### Stage 6 — Ship (box only, $0 GPU)
-- [ ] TS **safetensors writer** (~25 lines, spec is trivial: u64 header-len + JSON + raw LE f32) with
+- [x] TS **safetensors writer** (~25 lines, spec is trivial: u64 header-len + JSON + raw LE f32) with
       `__metadata__ {"format":"pt"}`; round-trip verified against Python `safetensors` on the box.
-- [ ] `config.json` (llama; explicit `num_key_value_heads`, `head_dim`, `rms_norm_eps=1e-5`, flat
+- [x] `config.json` (llama; explicit `num_key_value_heads`, `head_dim`, `rms_norm_eps=1e-5`, flat
       `rope_theta`, `tie_word_embeddings: true` + **omit lm_head from the file** — the #1 silent-garbage
       pitfall), `generation_config.json`, `chat_template.jinja` with `{% generation %}` markers.
-- [ ] Model cards: from-scratch story, stack description, data mix + licenses (ODC-BY / Apache-2.0 /
-      CC-BY-4.0 attribution), full eval table incl. failures, energy/cost actuals from the ledger.
-- [ ] `hf upload` both repos; cold-load verify via `pipeline()` on the box; tag `alpha2` release commit.
+- [▶] Model cards: base card is public with the from-scratch story, exact architecture/training/cost,
+      ODC-By pretraining provenance, full failed base eval, and limitations. Chat card remains pending
+      the terminal frozen evaluation and semantic review; it must include Apache-2.0 / CC-BY-4.0 SFT
+      attribution and the true base-vs-chat table.
+- [▶] HF publication: `ajaxdavis/alpha-60m-base` is public at Hub commit `8693cb4c...`; anonymous
+      empty-cache stock-Transformers CPU cold load passed both plain-text and message-list pipelines,
+      exact 57,688,576 parameters, and safetensors SHA `d0aa2ccd...`. Publication proof is sealed under
+      `/mnt/donto-data/alpha-runs/hf-base-publication-c333bf2-20260728/`. Chat upload/cold-load and the
+      final `alpha2` release tag remain pending G5/D3.
 - [ ] Stretch (post-D2): GGUF via `convert_hf_to_gguf.py` (needs the `get_vocab_base_pre` patch for a
       custom vocab — patch to `"gpt-2"` pre since we adopt the GPT-2 split regex); refresh the HF Space
       (apps/hf) to serve the new model with proper chat template + EOS stop; update apps/web `/v1` route

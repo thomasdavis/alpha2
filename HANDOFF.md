@@ -725,20 +725,28 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   matched remote/mounted at SHA-256 `9149bc73...`. Training resumed cleanly through step 1,050 at
   4,005 tok/s. Guard `alpha2-flagship-sft-guard-20260728.service` uses 60-second verified pulls, a
   1,800-second metric-stall limit, matched keep-three retention, and pod-scoped auto-termination; it
-  remains active with zero restarts. Post-save external memory had already released 439MB but remained
-  about 297MB over the pre-save baseline at step 1,050, so checkpoint-memory settling remains on watch.
+  remains active with zero restarts. The run advanced through step 1,700 at 3,939 tok/s, 100% GPU,
+  with all rows finite and allocator overflow still zero. Post-save external/ArrayBuffer memory settled
+  at 2,841/2,839MB through step 1,700: a one-time ~297MB working-set increase after checkpoint 1,000,
+  not per-step growth. Checkpoint 2,000 remains the next discriminator for per-save accumulation.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
   0/100 structural chat passes, 99 degenerate loops, 0 QA exact, and 1 QA answer-contained. This is
   the before-side of the required base-vs-chat gate, not a passing chat result.
-- **Exact base HF export VERIFIED and mirrored:** the six-file zero-custom-code export under
+- **Exact base HF export VERIFIED, mirrored, and PUBLIC:** the six-file zero-custom-code export under
   `/mnt/donto-data/alpha-runs/hf-alpha-60m-base-c333bf2-20260728` loaded as stock
   `LlamaForCausalLM` with all 57,688,576 parameters. Alpha `cpu_ref` versus Transformers passed 2/2
   top-1 positions, exact tokenizer parity, and max logit delta `6.771e-05`; stock CPU
-  `pipeline("text-generation")` cold-loaded and generated `Hello, I'm a little bit of a`. The sealed
-  evidence is hash-mirrored under `hf-base-verification-c333bf2-20260728`; the future upload directory
-  contains only the intended six model/tokenizer/config files.
+  `pipeline("text-generation")` cold-loaded and generated `Hello, I'm a little bit of a`. Public repo
+  `https://huggingface.co/ajaxdavis/alpha-60m-base` is live at commit `8693cb4c...`, with the tracked
+  Apache-2.0 model card byte-identical on Hub. A second anonymous empty-cache Hub download then loaded
+  stock `LlamaForCausalLM` on CPU, re-proved 57,688,576 parameters and exact safetensors SHA
+  `d0aa2ccd...`, and completed both plain-text and message-list pipelines without custom code. The first
+  Hub verifier attempt is retained because its pipeline auto-selected the training GPU and hit CUDA OOM;
+  the corrected verifier hid CUDA and explicitly selected CPU. Sealed publication evidence is at
+  `/mnt/donto-data/alpha-runs/hf-base-publication-c333bf2-20260728/` (`hub-cold-load-cpu.log`
+  SHA-256 `99736b97...`).
 - The flagship pretrain guard exited cleanly after its final pull; its retention/provenance artifacts
   remain in the canonical mounted run. Connectivity failures never counted as training stalls. The
   checkpoint filename filter was tightened so native-audit sidecars cannot interrupt retention.
@@ -746,7 +754,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   metrics were proven; it is irrecoverable and no unique data remained on it. Temporary gzip transfer
   copies were also removed after the canonical mounted corpus hashes were reverified.
 - **Next gate:** finish/analyze the live full masked SFT, run the frozen chat-side evaluation plus
-  base-vs-chat analyzer and human semantic review, then export/verify/publish both HF repos.
+  base-vs-chat analyzer and human semantic review, then export/verify/publish the chat repo. The base
+  repo is already public and cold-load verified.
 
 ## Historical pre-interruption flagship record
 
