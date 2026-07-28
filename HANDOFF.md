@@ -872,6 +872,18 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. Training resumed through 9,050 with both guards
   active/zero-restart. Balance was `$22.8748735153`; only Alpha is running and total burn remains
   `$0.303/hr`.
+- **Step 9,500 PASSED hard gates with a sharp one-window validation wobble:** 9,500
+  finite/consecutive rows cover 155,648,000 padded tokens (31.3304% of the one-epoch run).
+  Train/held-out loss is 1.6326890/1.8127774; held-out is +0.2093743 from checkpoint 9,000 and
+  +0.1944526 from step 8,500, while only +0.0581516 above the earlier step-7,500 window.
+  P10/median throughput is 3,665.59/3,837.17 tok/s; last-500 loss/gradient norm is
+  1.6553709/0.5062537. All 96 allocator samples report exactly 34 temporary slabs and zero
+  free-range overflow. Rows 9,001–9,500 held RSS exactly at 4,410MB, external at
+  2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. The exact metrics prefix matches
+  remote/mounted at SHA-256 `ed96427a...`. Both guards remain active/zero-restart; balance was
+  `$22.7060368504`, only Alpha is running, and total burn remains `$0.303/hr`. All hard numeric,
+  memory, and allocator gates are clean, so native-audited checkpoint 10,000 is the discriminator;
+  do not intervene from this single five-batch read alone.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

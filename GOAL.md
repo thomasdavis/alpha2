@@ -1326,6 +1326,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   removed exact local SHA `e06801e3...`; both sides retain 7,000/8,000/9,000. Rows 9,001–9,050 are
   finite and returned to 4,410/2,841–2,842/2,839–2,840MB RSS/external/ArrayBuffer baseline. Both
   guards remain active/zero-restart; balance was `$22.8748735153` and total burn `$0.303/hr`.
+  Step 9,500 passed every hard invariant but produced a sharp one-window validation wobble. All
+  9,500 rows are finite/consecutive and cover 155,648,000 padded tokens (31.3304%); train/held-out
+  loss is 1.6326890/1.8127774. Held-out is +0.2093743 from checkpoint 9,000 and +0.1944526 from
+  step 8,500, while only +0.0581516 above the earlier step-7,500 window. P10/median throughput is
+  3,665.59/3,837.17 tok/s; last-500 loss/gradient norm is 1.6553709/0.5062537; all 96 allocator
+  samples report exactly 34 temporary slabs/zero overflow. Rows 9,001–9,500 held RSS exactly at
+  4,410MB and external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. The exact metrics prefix
+  matches remote/mounted at `ed96427a...`; both guards remain active/zero-restart. Balance was
+  `$22.7060368504`; only Alpha is running and total burn remains `$0.303/hr`. With all numeric,
+  memory, and allocator gates clean, checkpoint 10,000 is the discriminator rather than an
+  intervention from a single five-batch validation read.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
