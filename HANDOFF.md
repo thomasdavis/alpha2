@@ -725,10 +725,20 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   matched remote/mounted at SHA-256 `9149bc73...`. Training resumed cleanly through step 1,050 at
   4,005 tok/s. Guard `alpha2-flagship-sft-guard-20260728.service` uses 60-second verified pulls, a
   1,800-second metric-stall limit, matched keep-three retention, and pod-scoped auto-termination; it
-  remains active with zero restarts. The run advanced through step 1,700 at 3,939 tok/s, 100% GPU,
-  with all rows finite and allocator overflow still zero. Post-save external/ArrayBuffer memory settled
-  at 2,841/2,839MB through step 1,700: a one-time ~297MB working-set increase after checkpoint 1,000,
-  not per-step growth. Checkpoint 2,000 remains the next discriminator for per-save accumulation.
+  remains active with zero restarts. **Checkpoint 2,000 PASSED:** all 2,000 rows are consecutive and
+  finite; train/held-out loss is 1.8980973/1.7896707, improving held-out by 0.1648041 from step 1,500,
+  and throughput is 3,945 tok/s. All 21 allocator samples are complete with zero overflow. The
+  692,528,815-byte checkpoint and 2,000-row metrics match remote/mounted at SHA-256 `1878ed9e...` /
+  `ace1231c...`; independent audit `477cde8f...` passed all 114 tensors / 57,688,576 parameters finite
+  and nonzero and re-bound every SFT input hash. Training resumed through step 2,125. External/
+  ArrayBuffer memory returned to the 2,841/2,839MB live baseline at step 2,100, proving that the second
+  save did not add another live-buffer plateau. RSS retained allocator pages at 4,373MB (+~314MB from
+  pre-save) but moved only 9MB between steps 2,050 and 2,100; checkpoint 3,000 remains the next
+  discriminator for repeated RSS retention.
+- **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
+  full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
+  This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
+  and the one-epoch run remains the planned discriminator. Mirrored sample log SHA-256 is `d1542164...`.
 - **Frozen base eval COMPLETE and mirrored:** exact terminal base checkpoint `08e14fa9...` ran the
   canonical 100-chat/200-QA suite; remote/local hashes match under
   `/mnt/donto-data/alpha-runs/frozen-eval-base-flagship-20260728`. The honest pre-SFT baseline is
@@ -746,7 +756,9 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Hub verifier attempt is retained because its pipeline auto-selected the training GPU and hit CUDA OOM;
   the corrected verifier hid CUDA and explicitly selected CPU. Sealed publication evidence is at
   `/mnt/donto-data/alpha-runs/hf-base-publication-c333bf2-20260728/` (`hub-cold-load-cpu.log`
-  SHA-256 `99736b97...`).
+  SHA-256 `99736b97...`). Reusable fail-closed `scripts/verify_hf_hub.py` landed in `679ce83`; a second
+  anonymous empty-cache run pinned exact Hub revision `8693cb4c...` and passed (`scripted-hub-cold-load.json`
+  SHA-256 `1f7fd4c7...`), while an intentional warm-cache rerun was rejected before loading.
 - The flagship pretrain guard exited cleanly after its final pull; its retention/provenance artifacts
   remain in the canonical mounted run. Connectivity failures never counted as training stalls. The
   checkpoint filename filter was tightened so native-audit sidecars cannot interrupt retention.

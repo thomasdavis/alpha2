@@ -1208,6 +1208,12 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `{1e-4,3e-4,1e-3}` share exact inputs and eight aligned validations; `analyze_sft_lr_sweep.ts` chooses
   the lowest final-three held-out mean. The one-epoch launcher now requires and verifies that selector
   report, including its commit and all six input hashes, rather than accepting any allowed number.
+  The selected full run's checkpoint-2,000 recovery gate passed at held-out loss 1.7896707, 3,945 tok/s,
+  complete zero-overflow allocator telemetry, and exact remote/mounted checkpoint SHA `1878ed9e...`.
+  Independent audit `477cde8f...` scanned all 57,688,576 parameters finite/nonzero. Post-save live
+  buffers returned to baseline through step 2,100; RSS retained a stable ~314MB allocator-page plateau,
+  so checkpoint 3,000 remains the next memory discriminator. A separate three-prompt non-frozen preview
+  at 6.6% of the epoch was mixed (one recognizable answer, two loops) and did not alter the run.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
