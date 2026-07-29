@@ -1778,6 +1778,27 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   balance was `$16.994817734`; only Alpha runs at `$0.303/hr` account burn. No model output was
   generated at this half-checkpoint, so Discord correctly remained silent. Native checkpoint 25,000
   plus controlled 24k→25k output comparison is next.
+  Checkpoint 25,000 then passed every mechanical/native/mirror/retention gate, with a validation and
+  aggregate-output wobble. The exact 25,000-row prefix is finite/consecutive and covers 409,600,000
+  padded tokens (82.4484%); train/held-out loss is 1.5305007/1.4674260. Held-out is +0.0756220 from
+  checkpoint 24,000's best, ranking seventh among 50 reads. P10/median throughput is
+  3,698.41/3,857.69 tok/s; last-500 loss/gradient norm is 1.4502269/0.5585494. Four finite batches
+  clipped at steps 24,585/24,656/24,893/24,913 (norm 1.1732–1.8130, coefficient 0.5516–0.8523),
+  each recovering on the next step. All 251 allocator samples remain exactly 34 slabs/zero overflow.
+  Rows 24,501–25,000 held RSS exactly at 4,418MB and external/ArrayBuffers at
+  2,841–2,843/2,839–2,841MB. Checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `cee2ec1...` / `f2427f8...` / `935841a...`; all 114 tensors and 57,688,576 parameters are finite/
+  nonzero. Mirror proof preceded remote checkpoint 22,000 pruning and two-state local deletion of
+  SHA `e163732...`; both sides retain 23k/24k/25k. The original trainer resumed through 25,150 at
+  3,688 tok/s and 100% GPU; both services remain active/zero-restart. Balance was `$16.6972858915`;
+  only Alpha runs at `$0.303/hr` account burn. The identical 24k→25k suite regressed structural 2→1,
+  EOS 7→4, loops 0→2, and mean repetition 0.0328→0.2258, while nonempty rose 3→5 only because
+  the newly nonempty joke and basil answers are severe loops. Encouragement alone clearly improved:
+  it became more directly grounded in being new at the job, removed the inaccurate `after a long
+  day` framing, and reduced repetition 0.183→0.022. It still begins with stray punctuation, becomes
+  generic, and truncates without EOS. Only that exact input/before/after pair plus rationale and
+  aggregate boundary was posted to Discord in a 1,700-byte message. Exact output/summary/post hashes
+  are `8277ae1...` / `dd15406...` / `493531d...`. Step 25,500 is next; text next at 26k.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
