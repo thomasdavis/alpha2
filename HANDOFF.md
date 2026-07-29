@@ -1259,6 +1259,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   loop. Only those two exact pairs/rationales plus the aggregate boundary went to Discord in one
   1,598-byte message. Exact output/summary/post hashes `6beebe1...` / `0683252...` / `b281d9e...`.
   Next: step 23.5k; next controlled text at 24k.
+- **Step 23,500 PASSED mechanically; validation wobble persists, no output/no Discord post:** 23,500
+  finite/consecutive rows cover 385,024,000 padded tokens (77.5015%). Train/held-out loss is
+  1.7112802/1.5379508; held-out is +0.0049453 from checkpoint 23k and +0.1008749 from the step-21.5k
+  best (twelfth among 47 reads). P10/median is 3,696.22/3,857.50 tok/s; last-500 loss/gradient norm
+  is 1.4797348/0.5436850 with no clipped batch. All 236 allocator samples remain exactly 34 slabs/
+  zero overflow. Rows 23,001–23,500 held RSS exactly at 4,418MB and external/ArrayBuffers at
+  2,841–2,842/2,839–2,840MB. Mounted metrics-prefix SHA is `9ec4e58...`; original PID resumed through
+  23,550 at 3,755 tok/s. Both services active/zero-restart; balance `$17.7712682989`; only Alpha runs
+  at `$0.303/hr` account burn. No text was generated, so Discord remained silent. Next: native
+  checkpoint 24k and controlled 23k→24k outputs.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
