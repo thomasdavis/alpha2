@@ -1434,6 +1434,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   matches remote/mounted at `90c810a0...`. Training resumed through 13,550 at 3,909 tok/s; both
   guards remain active/zero-restart. Balance was `$21.3312723556`; only Alpha is running and total
   burn remains `$0.303/hr`. Native-audited checkpoint 14,000 is next.
+  Checkpoint 14,000 passed with a small validation wobble while remaining the run's third-best read.
+  All 14,000 rows are finite/consecutive and cover 229,376,000 padded tokens (46.1711%);
+  train/held-out loss is 1.5563986/1.5784316. Held-out is +0.0112483 from step 13,500, remains
+  0.0341894 better than checkpoint 13,000, and is +0.0252724 from the step-10,500 run best.
+  P10/median throughput is 3,669.26/3,828.89 tok/s; last-500 loss/gradient norm is
+  1.5880093/0.5121112; all 141 allocator samples report exactly 34 temporary slabs/zero overflow.
+  Rows 13,501–14,000 held RSS at 4,415–4,416MB, external at 2,841–2,843MB, and ArrayBuffers at
+  2,839–2,841MB. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `ad42beef...` / `1141da8f...` / `b59e4113...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero. The guard pruned remote checkpoint 11,000 only after mirror proof, then ledgered
+  and removed exact local SHA `442504c5...`; both sides retain 12,000/13,000/14,000. The save
+  released all 228 optimizer buffers and training resumed through 14,050 at 3,947 tok/s. Both
+  guards remain active/zero-restart; balance was `$21.138261176`, only Alpha is running, and total
+  burn remains `$0.303/hr`. Step 14,500 held-out validation is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
