@@ -1087,6 +1087,15 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Both services are active with zero automatic restarts; balance `$20.0264510034`; only Alpha is
   running at `$0.303/hr` total account burn. Discord accepted the 1,093-byte report and 628-byte
   mirror-recovery correction. Next: step 17,500 validation.
+- **Discord now receives qualitative improvements only (user directive 2026-07-29):** no routine
+  checkpoint/loss/health posts and no regression posts. Every qualifying message must contain the
+  controlled input, actual before/after outputs, and why the later response is better; preserve the
+  complete result set locally. The same eight non-frozen prompts, greedy decoder, and 96-token cap at
+  checkpoint 15,000 vs 17,000 improved structural pass 0/8→3/8, loops 3→1, and mean four-gram repeat
+  0.3629→0.0444, while four replies stayed empty and encouragement became repetitive. Only casual chat
+  was a clear semantic improvement: the 15k star-emoji loop became a relevant greeting and follow-up
+  question with clean EOS. That single 988-byte paired example was accepted by Discord. Exact 15k/17k
+  outputs are `e1ca5e2b...` / `832722ff...`; summaries are `d8cc6914...` / `f082d290...`.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

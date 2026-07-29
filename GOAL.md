@@ -1539,6 +1539,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   control-flow test passed. Both services are active with zero automatic restarts; balance was
   `$20.0264510034`, only Alpha is running, and total burn remains `$0.303/hr`. Discord accepted the
   1,093-byte checkpoint report and its 628-byte mirror-recovery correction. Step 17,500 validation is next.
+  **Discord sharing contract (user, 2026-07-29): post only demonstrated qualitative improvements.**
+  Do not send routine checkpoint/loss/health reports or regressions. A qualifying post must show the
+  actual controlled input, before/after model outputs, and a plain-language explanation of why the
+  later output is better; keep the full unselected result set locally so the example is auditable.
+  The first qualifying comparison reused the exact eight non-frozen checkpoint-15,000 prompts at
+  checkpoint 17,000 with identical deterministic-greedy/96-token settings. Structural passes improved
+  0/8→3/8, loops fell 3→1, and mean four-gram repetition fell 0.3629→0.0444, but four replies remain
+  empty and the encouragement reply worsened into repetition. The one clearly semantic improvement was
+  casual chat: a non-terminating star-emoji loop became a relevant greeting/follow-up question with EOS.
+  Discord accepted only that 988-byte before/after example plus its honest boundary. Exact 15k/17k
+  result hashes are `e1ca5e2b...` / `832722ff...`; summary hashes are `d8cc6914...` / `f082d290...`.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
