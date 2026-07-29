@@ -1496,6 +1496,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   resumed through 15,525 at 3,879 tok/s. Both guards remain active/zero-restart; balance was
   `$20.6294777408`, only Alpha is running, and total burn remains `$0.303/hr`. The saved Discord
   webhook accepted the 884-byte step-15,500 progress report. Native-audited checkpoint 16,000 is next.
+  Checkpoint 16,000 passed every hard gate and produced the run's second-best validation read. The
+  exact 16,000-row prefix is finite/consecutive and covers 262,144,000 padded tokens (52.7670%);
+  train/held-out loss is 1.5142699/1.4864452. Held-out improved 0.0932872 from step 15,500 and
+  0.0667140 from the pre-15k best at step 10,500; it is only +0.0081342 from checkpoint 15,000's
+  best. P10/median throughput is 3,676.60/3,836.08 tok/s; last-500 loss/gradient norm is
+  1.5701724/0.5196544; all 161 allocator samples report exactly 34 temporary slabs/zero overflow.
+  Rows 15,501–16,000 held RSS exactly at 4,417MB, external at 2,841–2,843MB, and ArrayBuffers at
+  2,839–2,841MB. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `df81015b...` / `9e1c748c...` / `c18fef4c...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero. The guard mirror-proved checkpoint 16,000, then pruned remote checkpoint 13,000
+  and two-state ledgered/deleted exact local SHA `5c0c404f...`; both sides retain 14,000/15,000/
+  16,000. Training resumed through 16,050 at 3,927 tok/s. Both guards remain active/zero-restart;
+  balance was `$20.4606995593`, only Alpha is running, and total burn remains `$0.303/hr`. The saved
+  Discord webhook accepted the 904-byte checkpoint-16,000 report. Step 16,500 validation is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
