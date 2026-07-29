@@ -1485,6 +1485,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `scripts/post_discord_progress.sh` reads it, JSON-encodes via `jq`, and rejects messages above its
   1,900-byte safety limit. A temporary sampler pod was deleted immediately after confirming the sampler
   is the optimized CPU inference path; RunPod then showed only the flagship pod running.
+  Step 15,500 passed all hard execution gates with a validation rebound that remains in the run's healthy
+  band. All 15,500 rows are finite/consecutive and cover 253,952,000 padded tokens (51.1180%);
+  train/held-out loss is 1.3062316/1.5797324. Held-out is +0.1014213 from checkpoint 15,000's unusually
+  strong new best, but only +0.0013008 from checkpoint 14,000, 0.0149217 better than step 14,500, and
+  remains the run's fifth-best read. P10/median throughput is 3,675.60/3,835.96 tok/s; last-500
+  loss/gradient norm is 1.5694094/0.5207373; all 156 allocator samples report exactly 34 temporary
+  slabs/zero overflow. Rows 15,001–15,500 held RSS at 4,416–4,417MB, external at 2,841–2,842MB,
+  and ArrayBuffers at 2,839–2,840MB. Exact remote/mounted metrics match at `1be61a49...` and training
+  resumed through 15,525 at 3,879 tok/s. Both guards remain active/zero-restart; balance was
+  `$20.6294777408`, only Alpha is running, and total burn remains `$0.303/hr`. The saved Discord
+  webhook accepted the 884-byte step-15,500 progress report. Native-audited checkpoint 16,000 is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

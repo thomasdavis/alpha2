@@ -1034,6 +1034,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   `scripts/post_discord_progress.sh` reads it and enforces JSON encoding plus a 1,900-byte cap. A
   temporary second 3090 was deleted immediately after source inspection showed the sampler is CPU
   inference; RunPod confirmed only the flagship pod remains running.
+- **Step 15,500 PASSED; validation rebounded but remains in the healthy band:** 15,500
+  finite/consecutive rows cover 253,952,000 padded tokens (51.1180%). Train/held-out loss is
+  1.3062316/1.5797324. Held-out is +0.1014213 from checkpoint 15,000's unusually strong best, but
+  only +0.0013008 from checkpoint 14,000, is 0.0149217 better than step 14,500, and remains the
+  run's fifth-best read. P10/median is 3,675.60/3,835.96 tok/s; last-500 loss/gradient norm is
+  1.5694094/0.5207373. All 156 allocator samples report exactly 34 temporary slabs/zero overflow.
+  Rows 15,001–15,500 held RSS at 4,416–4,417MB, external at 2,841–2,842MB, and ArrayBuffers at
+  2,839–2,840MB. Exact remote/mounted metrics match at `1be61a49...`; training resumed through
+  15,525 at 3,879 tok/s with both guards active and zero restarts. Balance was `$20.6294777408`;
+  only Alpha is running and total burn remains `$0.303/hr`. The saved Discord webhook accepted the
+  884-byte progress report. Next: native-audited checkpoint 16,000.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
