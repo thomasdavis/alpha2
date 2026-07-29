@@ -1510,6 +1510,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   16,000. Training resumed through 16,050 at 3,927 tok/s. Both guards remain active/zero-restart;
   balance was `$20.4606995593`, only Alpha is running, and total burn remains `$0.303/hr`. The saved
   Discord webhook accepted the 904-byte checkpoint-16,000 report. Step 16,500 validation is next.
+  Step 16,500 passed all hard gates with the run's third-best validation result. The exact 16,500-row
+  prefix is finite/consecutive and covers 270,336,000 padded tokens (54.4159%); train/held-out loss is
+  1.6954148/1.5252913. Held-out is +0.0388461 from checkpoint 16,000 and +0.0469802 from checkpoint
+  15,000's best, while remaining 0.0278679 better than the former step-10,500 best. P10/median
+  throughput is 3,676.81/3,835.96 tok/s; last-500 loss/gradient norm is 1.5615495/0.5289970;
+  all 166 allocator samples report exactly 34 temporary slabs/zero overflow. Rows 16,001–16,500 held
+  RSS exactly at 4,417MB, external at 2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. Exact
+  remote/mounted metrics match at `6635c36c...`; training resumed through 16,525 at 3,846 tok/s with
+  the original PID and 100% GPU utilization. Both guards remain active/zero-restart; balance was
+  `$20.2917975666`, only Alpha is running, and total burn remains `$0.303/hr`. The saved Discord
+  webhook accepted the 865-byte step-16,500 report. Native-audited checkpoint 17,000 is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

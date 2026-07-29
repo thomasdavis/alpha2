@@ -1059,6 +1059,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   with both guards active/zero-restart. Balance was `$20.4606995593`; only Alpha is running and total
   burn remains `$0.303/hr`. The saved Discord webhook accepted the 904-byte report. Next: step
   16,500 held-out validation.
+- **Step 16,500 PASSED; third-best validation result of the run:** the exact 16,500-row prefix is
+  finite/consecutive and covers 270,336,000 padded tokens (54.4159%). Train/held-out loss is
+  1.6954148/1.5252913. Held-out is +0.0388461 from checkpoint 16,000 and +0.0469802 from the
+  checkpoint-15,000 best, while remaining 0.0278679 better than the former step-10,500 best.
+  P10/median is 3,676.81/3,835.96 tok/s; last-500 loss/gradient norm is 1.5615495/0.5289970.
+  All 166 allocator samples report exactly 34 temporary slabs/zero overflow. Rows 16,001–16,500
+  held RSS exactly at 4,417MB, external at 2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB.
+  Exact remote/mounted metrics match at `6635c36c...`; training resumed through 16,525 at 3,846
+  tok/s with the original PID and 100% GPU utilization. Both guards remain active/zero-restart;
+  balance was `$20.2917975666`, only Alpha is running, and total burn remains `$0.303/hr`. The saved
+  Discord webhook accepted the 865-byte report. Next: native-audited checkpoint 17,000.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
