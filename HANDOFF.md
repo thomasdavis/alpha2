@@ -1106,6 +1106,20 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Mounted metrics-prefix SHA is `e7aae708...`; the original trainer resumed through 17,550 at
   3,541 tok/s. Balance `$19.9540516978`; only Alpha runs at `$0.303/hr`. Next: checkpoint 18,000
   native audit and same-prompt comparison against 17,000; post only if outputs genuinely improve.
+- **Checkpoint 18,000 PASSED mechanical gates but regressed quality; Discord correctly stayed silent:**
+  18,000 finite/consecutive rows cover 294,912,000 padded tokens (59.3628%). Train/held-out loss is
+  1.7388102/1.6347323, +0.0304235 from step 17,500 and +0.1564213 from the checkpoint-15,000 best
+  (16th-best run read). P10/median is 3,677.83/3,836.69 tok/s; last-500 loss/gradient norm is
+  1.5350078/0.5284160; all 181 allocator samples remain exactly 34 slabs/zero overflow. Rows
+  17,501–18,000 held RSS exactly at 4,417MB and external/ArrayBuffers at 2,841–2,843/2,839–2,841MB.
+  Checkpoint/audit/metrics-prefix match remote/mounted at `9ef764b9...` / `17b3d413...` /
+  `2f3fbac6...`; all 114 tensors / 57,688,576 parameters are finite/nonzero. Byte+SHA mirror proof
+  preceded remote checkpoint-15,000 prune and two-state local deletion of exact SHA `32962998...`;
+  both sides retain 16k/17k/18k. Original PID resumed through 18,075 at 3,884 tok/s. Identical
+  17k→18k eight-prompt generation regressed structural 3→1, EOS 7→6, nonempty 4→3, and mean repeat
+  0.0444→0.1129; encouragement became a stronger loop. Exact 18k output/summary hashes are
+  `ed0eb1f3...` / `13ea8bad...`. Balance `$19.7611629236`; only Alpha at `$0.303/hr`. Next:
+  step 18,500; compare text again at native checkpoint 19,000 and post only a real improvement.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

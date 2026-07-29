@@ -1560,7 +1560,22 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   ArrayBuffers at 2,839–2,840MB. Mounted metrics-prefix SHA is `e7aae708...`; the original trainer
   resumed through 17,550 at 3,541 tok/s. Balance was `$19.9540516978`, only Alpha is running, and
   total burn remains `$0.303/hr`. Per the qualitative-only contract, nothing was posted to Discord.
-  Native-audited checkpoint 18,000 is next; compare its same-prompt outputs against 17,000 before any post.
+  Checkpoint 18,000 passed every execution/native/mirror gate but regressed on both held-out and the
+  controlled chat probe. The exact 18,000-row prefix is finite/consecutive and covers 294,912,000
+  padded tokens (59.3628%); train/held-out loss is 1.7388102/1.6347323. Held-out is +0.0304235 from
+  step 17,500 and +0.1564213 from the 15,000 best, ranking 16th. P10/median throughput is
+  3,677.83/3,836.69 tok/s; last-500 loss/gradient norm is 1.5350078/0.5284160; all 181 allocator
+  samples remain exactly 34 slabs/zero overflow. Rows 17,501–18,000 held RSS exactly at 4,417MB,
+  external at 2,841–2,843MB, and ArrayBuffers at 2,839–2,841MB. Exact checkpoint/native-audit/
+  metrics-prefix hashes match remote/mounted at `9ef764b9...` / `17b3d413...` / `2f3fbac6...`; all
+  114 tensors and 57,688,576 parameters are finite/nonzero. Only after byte+SHA proof did the guard
+  prune remote checkpoint 15,000 and two-state ledger/delete exact local SHA `32962998...`; both sides
+  retain 16,000/17,000/18,000. The original trainer resumed through 18,075 at 3,884 tok/s.
+  Identical eight-prompt 17k→18k generation regressed structural pass 3→1, EOS 7→6, nonempty 4→3,
+  and mean four-gram repetition 0.0444→0.1129; encouragement became a stronger loop. Full 18k output/
+  summary hashes are `ed0eb1f3...` / `13ea8bad...`. Balance was `$19.7611629236`; only Alpha runs
+  at `$0.303/hr`. Discord received nothing. Step 18,500 is next; native checkpoint 19,000 gets the
+  next controlled output comparison.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
