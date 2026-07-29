@@ -1746,6 +1746,27 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `$0.303/hr` account burn. No model output was generated at this half-checkpoint, so Discord
   correctly remained silent. Native checkpoint 24,000 plus controlled 23k→24k output comparison
   is next.
+  Checkpoint 24,000 then passed every mechanical/native/mirror/retention gate and set a decisive new
+  held-out-loss best. The exact 24,000-row prefix is finite/consecutive and covers 393,216,000 padded
+  tokens (79.1505%); train/held-out loss is 1.3105124/1.3918040. Held-out improved 0.1461468 from
+  step 23,500 and 0.0452719 from the former step-21,500 best, ranking first among 48 reads.
+  P10/median throughput is 3,696.69/3,857.58 tok/s; last-500 loss/gradient norm is
+  1.4622064/0.5481906, with no clipped batch. All 241 allocator samples remain exactly 34 slabs/zero
+  overflow. Rows 23,501–24,000 held RSS exactly at 4,418MB and external/ArrayBuffers at
+  2,841–2,843/2,839–2,841MB. Checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `5dd9ff2...` / `0d1f790...` / `04fcb77...`; all 114 tensors and 57,688,576 parameters are finite/
+  nonzero. Mirror proof preceded remote checkpoint 21,000 pruning and two-state local deletion of
+  SHA `e32b77b...`; both sides retain 22k/23k/24k. The original trainer resumed through 24,100 at
+  3,777 tok/s and 100% GPU; both services remain active/zero-restart. Balance was `$17.3491166155`;
+  Alpha remains scoped at `$0.22/hr`, while the separate Wajarri pod raised total account burn to
+  `$0.75/hr` and was left untouched. The identical 23k→24k suite improved structural 1→2, EOS 5→7,
+  loops 2→0, and mean repetition 0.1909→0.0328, while nonempty fell 4→3. Cooking was the sole
+  clear response-level gain: a truncated generic-vegetable loop became a finite EOS-terminated
+  response, its loop flag cleared, and repetition fell 0.516→0.080. It still ignores the supplied
+  ingredients, invents others, and repeats `vegetables`; five answers remain blank. Only that exact
+  input/before/after pair plus rationale and boundary was posted to Discord in a 1,562-byte message.
+  Exact output/summary/post hashes are `76b12df...` / `ae1e54b...` / `f32a72a...`. Step 24,500 is
+  next; text next at 25k.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
