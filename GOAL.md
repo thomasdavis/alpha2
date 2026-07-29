@@ -1619,6 +1619,24 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `$19.2546072789`; only Alpha runs and total account burn remains `$0.303/hr`. No output was generated
   at this half-checkpoint, so Discord correctly remained silent. Native checkpoint 20,000 plus the next
   controlled 19k→20k output comparison is next.
+  Checkpoint 20,000 then passed every mechanical/native/mirror/retention gate and set a new validation
+  best. The exact 20,000-row prefix is finite/consecutive and covers 327,680,000 padded tokens
+  (65.9587%); train/held-out loss is 1.5330499/1.4432350. Held-out improved 0.1185193 from step 19,500
+  and 0.0350760 from the checkpoint-15,000 prior best, ranking first among 40 reads. P10/median
+  throughput is 3,685.18/3,845.95 tok/s; last-500 loss/gradient norm is 1.5040567/0.5367312; all
+  201 allocator samples remain exactly 34 slabs/zero overflow. Rows 19,501–20,000 held RSS exactly at
+  4,418MB and external/ArrayBuffers at 2,841–2,842/2,839–2,840MB. Exact checkpoint/native-audit/
+  metrics-prefix hashes match remote/mounted at `eb23e88...` / `43e14dc...` / `84cc0f5...`; all
+  114 tensors and 57,688,576 parameters are finite/nonzero. Mirror proof preceded remote checkpoint
+  17,000 pruning and two-state local deletion of SHA `67d6fb8...`; both sides retain 18k/19k/20k.
+  The original trainer resumed through 20,075 at 100% GPU utilization; both services remain active/
+  zero-restart. Balance was `$19.0857863807`; only Alpha runs at `$0.303/hr`. The identical eight-prompt
+  19k→20k suite improved structural 0→2, EOS 5→7, loops 2→0, and mean repetition 0.1546→0.0208,
+  while nonempty stayed only 3/8. The casual answer became only `🌟🌟` and cooking remained wrong, so
+  neither was shared. The sole clear semantic gain was encouragement becoming more coherent,
+  repetition-free, and EOS-terminated; only its 1,618-byte exact input/before/after/explanation was
+  posted, explicitly noting five empty answers and remaining awkwardness. Exact 20k output/summary/
+  post hashes are `0f6ad68...` / `196844f...` / `e504f6d...`. Step 20,500 is next; text next at 21k.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

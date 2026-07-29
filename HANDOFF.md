@@ -1158,6 +1158,23 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   automatic restarts; balance `$19.2546072789`; only Alpha runs at `$0.303/hr`. No model text was
   generated at this half-checkpoint, so Discord remained silent. Next: native checkpoint 20k and the
   controlled 19k→20k output comparison.
+- **Checkpoint 20,000 PASSED and set a new validation best; one bounded improvement went to Discord:**
+  20,000 finite/consecutive rows cover 327,680,000 padded tokens (65.9587%). Train/held-out loss is
+  1.5330499/1.4432350, improving 0.1185193 from step 19.5k and 0.0350760 from the prior 15k best
+  (first among 40 reads). P10/median is 3,685.18/3,845.95 tok/s; last-500 loss/gradient norm is
+  1.5040567/0.5367312; all 201 allocator samples remain exactly 34 slabs/zero overflow. Rows
+  19,501–20,000 held RSS exactly at 4,418MB and external/ArrayBuffers at 2,841–2,842/2,839–2,840MB.
+  Checkpoint/audit/metrics-prefix match remote/mounted at `eb23e88...` / `43e14dc...` /
+  `84cc0f5...`; all 114 tensors / 57,688,576 parameters are finite/nonzero. Byte+SHA mirror proof
+  preceded remote checkpoint-17,000 pruning and two-state local deletion of SHA `67d6fb8...`; both
+  sides retain 18k/19k/20k. Original PID resumed through 20,075 at 100% GPU utilization; both host
+  services remain active/zero-restart. Balance `$19.0857863807`; only Alpha at `$0.303/hr`. The same
+  eight prompts improved structural 0→2, EOS 5→7, loops 2→0, and mean repeat 0.1546→0.0208, but
+  nonempty remains only 3/8. Casual degraded to `🌟🌟` and cooking remained incorrect, so neither was
+  shared. Encouragement was the only clear semantic gain—more coherent, zero repetition, clean EOS—so
+  its 1,618-byte exact pair was the only Discord post, with five empty answers and remaining awkwardness
+  disclosed. Exact 20k output/summary/post hashes `0f6ad68...` / `196844f...` / `e504f6d...`. Next:
+  step 20.5k; next controlled text comparison at 21k.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
