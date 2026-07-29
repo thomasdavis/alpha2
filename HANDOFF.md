@@ -1090,7 +1090,8 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
 - **Discord now receives qualitative improvements only (user directive 2026-07-29):** no routine
   checkpoint/loss/health posts and no regression posts. Every qualifying message must contain the
   controlled input, actual before/after outputs, and why the later response is better; preserve the
-  complete result set locally. The same eight non-frozen prompts, greedy decoder, and 96-token cap at
+  complete result set locally. The saved poster requires the explicit `--qualitative-improvement`
+  attestation or exits before reading the webhook. The same eight non-frozen prompts, greedy decoder, and 96-token cap at
   checkpoint 15,000 vs 17,000 improved structural pass 0/8→3/8, loops 3→1, and mean four-gram repeat
   0.3629→0.0444, while four replies stayed empty and encouragement became repetitive. Only casual chat
   was a clear semantic improvement: the 15k star-emoji loop became a relevant greeting and follow-up

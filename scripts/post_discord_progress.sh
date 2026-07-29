@@ -4,7 +4,14 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/.." && pwd)
 env_file=${ALPHA2_DISCORD_ENV_FILE:-$repo_root/.env.discord.local}
-message_file=${1:?usage: scripts/post_discord_progress.sh MESSAGE_FILE}
+attestation=${1:-}
+message_file=${2:-}
+
+if [[ $attestation != --qualitative-improvement || -z $message_file ]]; then
+  echo "usage: scripts/post_discord_progress.sh --qualitative-improvement MESSAGE_FILE" >&2
+  echo "Discord is reserved for controlled before/after output improvements, not routine status." >&2
+  exit 2
+fi
 
 [[ -f $env_file ]] || { echo "Discord environment file not found: $env_file" >&2; exit 2; }
 [[ -f $message_file ]] || { echo "message file not found: $message_file" >&2; exit 2; }

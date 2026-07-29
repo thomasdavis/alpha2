@@ -1543,6 +1543,7 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Do not send routine checkpoint/loss/health reports or regressions. A qualifying post must show the
   actual controlled input, before/after model outputs, and a plain-language explanation of why the
   later output is better; keep the full unselected result set locally so the example is auditable.
+  The saved poster fails closed unless invoked with an explicit `--qualitative-improvement` attestation.
   The first qualifying comparison reused the exact eight non-frozen checkpoint-15,000 prompts at
   checkpoint 17,000 with identical deterministic-greedy/96-token settings. Structural passes improved
   0/8→3/8, loops fell 3→1, and mean four-gram repetition fell 0.3629→0.0444, but four replies remain
