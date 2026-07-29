@@ -960,6 +960,21 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   was `$21.6689838187`; only Alpha is running and total burn remains `$0.303/hr`. With execution
   gates clean, native-audited checkpoint 13,000 is the next discriminator rather than intervention
   from one five-batch read.
+- **Checkpoint 13,000 PASSED; step-12,500 validation wobble decisively resolved:** 13,000
+  finite/consecutive rows cover 212,992,000 padded tokens (42.8732% of the one-epoch run).
+  Train/held-out loss is 1.5390872/1.6126210; held-out improved 0.1826242 from step 12,500 and
+  0.0369474 from checkpoint 12,000. It is the third-best read of the run and the best since
+  step 10,500, only +0.0092179 from checkpoint 9,000 and +0.0594618 from the run best.
+  P10/median is 3,664.80/3,825.28 tok/s; last-500 loss/gradient norm is 1.6111589/0.5159380. All
+  131 allocator samples report exactly 34 temporary slabs and zero free-range overflow. Rows
+  12,501–13,000 held RSS at 4,414–4,415MB, external at 2,841–2,843MB, and ArrayBuffers at
+  2,839–2,841MB. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `5c0c404f...` / `c4382db0...` / `d9064535...`; all 114 tensors and all 57,688,576 parameters
+  passed finite/nonzero. The guard pruned remote checkpoint 10,000 only after size+SHA mirror proof,
+  then ledgered and removed exact local SHA `dbc111d0...`; both sides retain exactly
+  11,000/12,000/13,000. The save released all 228 optimizer buffers and training resumed through
+  13,050 at 3,797 tok/s. Both guards remain active/zero-restart; balance was `$21.5000564649`, only
+  Alpha is running, and total burn remains `$0.303/hr`. Next: step 13,500 held-out validation.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
