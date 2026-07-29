@@ -1431,6 +1431,19 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   lacks EOS. Casual regressed, cooking became blank, joke/dragon looped, and four answers were blank.
   Only that exact pair/rationale/boundary went to Discord in a 1,236-byte message. Exact output/
   summary/post hashes `ef6c14d...` / `f66ad62...` / `318a7b8...`. Next: step 29.5k; text next at 30k.
+- **Step 29,500 remained finite/bounded but confirmed the persistent clipped-gradient and validation
+  wobble; no output/no Discord post:** 29,500 finite/consecutive rows cover 483,328,000 padded tokens
+  (97.2891%). Train/held-out loss is 1.9044154/1.6889295; held-out is +0.0477045 from checkpoint 29k
+  and +0.3554769 from step 28.5k's best (forty-first among 59 reads). P10/median is
+  3,687.71/3,848.15 tok/s; last-500 loss/gradient norm is 2.0148914/1.4205415. Every step from
+  29,001–29,500 clipped with finite norms 1.1267–2.3803 and coefficients 0.4201–0.8875. This is a
+  real persistent regime, but all metrics stayed finite, memory remained bounded, and clipping
+  contained it. All 296 allocator samples remain exactly 34 slabs/zero overflow. Rows 29,001–29,500
+  held RSS at 4,418–4,419MB and external/ArrayBuffers at 2,841–2,842/2,839–2,840MB. Mounted metrics-
+  prefix SHA is `455e631...`; original PID resumed through 29,550 at 3,909 tok/s. Both watcher
+  processes remain live. Balance `$13.9783174857`; Alpha remains `$0.22/hr`, while a newly recreated
+  Wajarri pod raised total burn to `$0.752/hr` and was left untouched. No text was generated, so
+  Discord remained silent. Next: native checkpoint 30k and controlled 29k→30k outputs.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

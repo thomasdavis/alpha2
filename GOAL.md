@@ -1935,6 +1935,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   cooking became blank, joke/dragon looped, and four answers were blank. Only that exact pair/rationale
   plus the aggregate boundary went to Discord in a 1,236-byte message. Exact output/summary/post hashes
   are `ef6c14d...` / `f66ad62...` / `318a7b8...`. Step 29,500 is next; text next at 30k.
+  Step 29,500 then passed the finite/consecutive/memory/allocator execution gates while confirming the
+  late clipped-gradient regime and validation wobble. The exact 29,500-row prefix covers 483,328,000
+  padded tokens (97.2891%); train/held-out loss is 1.9044154/1.6889295. Held-out is +0.0477045 from
+  checkpoint 29,000 and +0.3554769 from step 28,500's best, ranking forty-first among 59 reads.
+  P10/median throughput is 3,687.71/3,848.15 tok/s; last-500 loss/gradient norm is
+  2.0148914/1.4205415. Every one of steps 29,001–29,500 clipped, with finite norms 1.1267–2.3803 and
+  coefficients 0.4201–0.8875. This is explicitly a persistent late-run regime, but no value was
+  non-finite, memory remained bounded, and clipping did its contracted job. All 296 allocator samples
+  remain exactly 34 slabs/zero overflow. Rows 29,001–29,500 held RSS at 4,418–4,419MB and external/
+  ArrayBuffers at 2,841–2,842/2,839–2,840MB. Exact mounted metrics-prefix SHA is `455e631...`; the
+  original trainer resumed through 29,550 at 3,909 tok/s. Both watcher processes remain live. Balance
+  was `$13.9783174857`; Alpha remains `$0.22/hr`, while a newly recreated Wajarri pod raised total
+  account burn to `$0.752/hr` and was left untouched. No model output was generated, so Discord
+  correctly remained silent. Native checkpoint 30,000 plus controlled 29k→30k outputs is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
