@@ -1444,6 +1444,22 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   processes remain live. Balance `$13.9783174857`; Alpha remains `$0.22/hr`, while a newly recreated
   Wajarri pod raised total burn to `$0.752/hr` and was left untouched. No text was generated, so
   Discord remained silent. Next: native checkpoint 30k and controlled 29k→30k outputs.
+- **Checkpoint 30,000 PASSED mechanically; late validation/output wobble, no Discord post:** 30,000
+  finite/consecutive rows cover 491,520,000 padded tokens (98.9381%). Train/held-out loss is
+  1.9388337/1.7891528; held-out is +0.1002233 from step 29.5k and +0.4557002 from step 28.5k's best
+  (forty-ninth among 60 reads). P10/median is 3,684.66/3,848.57 tok/s; last-500 loss/gradient norm
+  is 1.9019102/1.4219356. Every step from 29,501–30,000 clipped with finite norms 1.1840–3.0431
+  and coefficients 0.3286–0.8446; all metrics stayed finite and bounded. All 301 allocator samples
+  remain exactly 34 slabs/zero overflow. Rows 29,501–30,000 held RSS exactly at 4,419MB and
+  external/ArrayBuffers at 2,841–2,843/2,839–2,841MB. Remote/mounted checkpoint/audit/metrics hashes
+  are `73db03c...` / `63204e8...` / `dfa9f84...`; all 57,688,576 parameters are finite/nonzero.
+  Mirror proof preceded remote 27k pruning and ledgered local deletion SHA `570dd33...`; both sides
+  retain 28k/29k/30k. Original PID resumed through 30,050; both watcher processes remain live.
+  Balance `$13.4864416169`; Alpha remains `$0.22/hr`, while the separate Wajarri pod keeps total
+  burn at `$0.752/hr` and was left untouched. Aggregate mechanics improved, but semantic output did
+  not: six immediate-EOS blanks, a code-fence-only joke, and irrelevant looping Python encouragement.
+  Nothing genuinely improved, so Discord remained silent. Exact output/summary hashes `1e98c4f...` /
+  `540f391...`. Only 322 terminal steps remain before automated finalization.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
