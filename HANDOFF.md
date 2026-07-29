@@ -908,6 +908,21 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   metrics prefix matches remote/mounted at SHA-256 `8a68ff76...`. Both guards remain
   active/zero-restart; balance was `$22.3684070318`, only Alpha is running, and total burn remains
   `$0.303/hr`.
+- **Checkpoint 11,000 PASSED hard gates with a one-window validation wobble:** 11,000
+  finite/consecutive rows cover 180,224,000 padded tokens (36.2773% of the one-epoch run).
+  Train/held-out loss is 1.5290310/1.7124914; held-out is +0.1593322 from the unusually strong
+  step-10,500 read and +0.0870592 from checkpoint 10,000, while remaining 0.1002860 below the prior
+  step-9,500 spike. P10/median throughput is 3,664.16/3,830.42 tok/s; last-500 loss/gradient norm
+  is 1.6328440/0.5097909. All 111 allocator samples report exactly 34 temporary slabs and zero
+  free-range overflow. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `442504c5...` / `0151ca1d...` / `3826f693...`; the independent audit passed all 114 tensors and
+  all 57,688,576 parameters finite/nonzero. The guard pruned remote checkpoint 8,000 only after
+  size+SHA mirror proof, then ledgered and removed exact local SHA `b4dfd9bd...`; both sides retain
+  9,000/10,000/11,000. Rows 11,001–11,050 are finite and held RSS exactly at 4,411MB, external at
+  2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. Training resumed through 11,050 with both guards
+  active/zero-restart. Balance was `$22.1754871521`; only Alpha is running and total burn remains
+  `$0.303/hr`. All hard gates are clean, so step 11,500 is the discriminator rather than
+  intervention from one five-batch read.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

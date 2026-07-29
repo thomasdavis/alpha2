@@ -1358,6 +1358,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. The exact metrics prefix matches
   remote/mounted at `8a68ff76...`; both guards remain active/zero-restart. Balance was
   `$22.3684070318`; only Alpha is running and total burn remains `$0.303/hr`.
+  Checkpoint 11,000 passed every hard invariant but produced a one-window validation wobble after
+  the unusually strong step-10,500 read. All 11,000 rows are finite/consecutive and cover
+  180,224,000 padded tokens (36.2773%); train/held-out loss is 1.5290310/1.7124914. Held-out is
+  +0.1593322 from step 10,500 and +0.0870592 from checkpoint 10,000, while remaining 0.1002860
+  below the prior step-9,500 spike. P10/median throughput is 3,664.16/3,830.42 tok/s; last-500
+  loss/gradient norm is 1.6328440/0.5097909; all 111 allocator samples report exactly 34 temporary
+  slabs/zero overflow. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `442504c5...` / `0151ca1d...` / `3826f693...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero inspection. The guard pruned checkpoint 8,000 remotely only after mirror proof,
+  then ledgered and removed exact local SHA `b4dfd9bd...`; both sides retain 9,000/10,000/11,000.
+  Rows 11,001–11,050 are finite and held 4,411/2,841–2,842/2,839–2,840MB
+  RSS/external/ArrayBuffers. Both guards remain active/zero-restart; balance was `$22.1754871521`
+  and total burn `$0.303/hr`. With every hard gate clean, step 11,500 is the discriminator rather
+  than intervention from a single five-batch read.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
