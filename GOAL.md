@@ -1448,6 +1448,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   released all 228 optimizer buffers and training resumed through 14,050 at 3,947 tok/s. Both
   guards remain active/zero-restart; balance was `$21.138261176`, only Alpha is running, and total
   burn remains `$0.303/hr`. Step 14,500 held-out validation is next.
+  Step 14,500 passed with another modest validation wobble while remaining the run's fourth-best
+  read. All 14,500 rows are finite/consecutive and cover 237,568,000 padded tokens (47.8201%);
+  train/held-out loss is 1.8460128/1.5946541. Held-out is +0.0162225 from checkpoint 14,000 and
+  +0.0274707 from step 13,500, but remains 0.0179669 better than checkpoint 13,000 and 0.0087490
+  better than checkpoint 9,000; it is +0.0414949 from the run best. P10/median throughput is
+  3,671.46/3,831.03 tok/s; last-500 loss/gradient norm is 1.5891173/0.5191094; all 146 allocator
+  samples report exactly 34 temporary slabs/zero overflow. Rows 14,001–14,500 held RSS exactly at
+  4,416MB and external/ArrayBuffers within 2,841–2,842/2,839–2,840MB. The exact metrics prefix
+  matches remote/mounted at `dad538dc...`. A transient SSH route loss at 04:27 UTC produced one
+  fail-closed watcher/rsync warning; connectivity returned by 04:28, both guards then observed the
+  original PID at row 14,450 with unchanged RSS, and no training restart or data loss occurred.
+  Training resumed through 14,550 at 3,952 tok/s; both guards remain active/zero-restart. Balance
+  was `$20.9935850316`; only Alpha is running and total burn remains `$0.303/hr`. Native-audited
+  checkpoint 15,000 is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

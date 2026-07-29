@@ -999,6 +999,19 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   12,000/13,000/14,000. The save released all 228 optimizer buffers and training resumed through
   14,050 at 3,947 tok/s. Both guards remain active/zero-restart; balance was `$21.138261176`, only
   Alpha is running, and total burn remains `$0.303/hr`. Next: step 14,500 held-out validation.
+- **Step 14,500 PASSED; modest wobble, still fourth-best validation:** 14,500 finite/consecutive
+  rows cover 237,568,000 padded tokens (47.8201% of the one-epoch run). Train/held-out loss is
+  1.8460128/1.5946541; held-out is +0.0162225 from checkpoint 14,000 and +0.0274707 from step
+  13,500, but remains 0.0179669 better than checkpoint 13,000 and 0.0087490 better than checkpoint
+  9,000; it is +0.0414949 from the run best. P10/median is 3,671.46/3,831.03 tok/s; last-500
+  loss/gradient norm is 1.5891173/0.5191094. All 146 allocator samples report exactly 34 temporary
+  slabs and zero free-range overflow. Rows 14,001–14,500 held RSS exactly at 4,416MB, external at
+  2,841–2,842MB, and ArrayBuffers at 2,839–2,840MB. Exact remote/mounted metrics match at
+  `dad538dc...`. A transient SSH route loss at 04:27 UTC produced one fail-closed watcher/rsync
+  warning; connectivity returned by 04:28, both guards observed the original PID at row 14,450 with
+  unchanged RSS, and no restart or data loss occurred. Training resumed through 14,550 at
+  3,952 tok/s with both guards active and zero restarts. Balance was `$20.9935850316`; only Alpha
+  is running and total burn remains `$0.303/hr`. Next: native-audited checkpoint 15,000.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
