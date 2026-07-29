@@ -1202,6 +1202,17 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   to a relevant greeting/follow-up with EOS; its 862-byte exact pair was the only Discord post, with
   the aggregate regression disclosed. Exact 21k output/summary/post hashes `972068f...` /
   `a39c33a...` / `e9dba56...`. Next: step 21.5k; next text at 22k.
+- **Step 21,500 PASSED and set another held-out-loss best; no output/no Discord post:** 21,500
+  finite/consecutive rows cover 352,256,000 padded tokens (70.9056%). Train/held-out loss is
+  1.6939037/1.4370759, improving 0.0014405 from checkpoint 21k and 0.0412352 from the former 15k
+  best (first among 43 reads). P10/median is 3,690.65/3,852.92 tok/s; last-500 loss/gradient norm is
+  1.4939640/0.5455652. One finite step-21,494 batch clipped at norm 1.4637/coefficient 0.6832 and
+  immediately recovered at step 21,495; no non-finite value followed. All 216 allocator samples
+  remain exactly 34 slabs/zero overflow. Rows 21,001–21,500 held RSS exactly at 4,418MB and external/
+  ArrayBuffers at 2,841–2,842/2,839–2,840MB. Mounted metrics-prefix SHA is `9a47709...`; original PID
+  resumed through 21,550 at 3,970 tok/s. Both host services are active/zero-restart; balance
+  `$18.6033369899`; the sole running pod is Alpha at `$0.303/hr` account burn. No text was generated,
+  so Discord remained silent. Next: native checkpoint 22k and controlled 21k→22k outputs.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
