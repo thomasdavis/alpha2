@@ -1637,6 +1637,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   repetition-free, and EOS-terminated; only its 1,618-byte exact input/before/after/explanation was
   posted, explicitly noting five empty answers and remaining awkwardness. Exact 20k output/summary/
   post hashes are `0f6ad68...` / `196844f...` / `e504f6d...`. Step 20,500 is next; text next at 21k.
+  Step 20,500 then passed every aligned execution gate and remained in the run's top validation band.
+  The exact 20,500-row prefix is finite/consecutive and covers 335,872,000 padded tokens (67.6077%);
+  train/held-out loss is 1.4755288/1.4993019. Held-out is +0.0560668 from checkpoint 20,000's new
+  best and only +0.0209908 from the former checkpoint-15,000 best, ranking fourth among 41 reads.
+  P10/median throughput is 3,687.17/3,848.49 tok/s; last-500 loss/gradient norm is
+  1.4918094/0.5368801; all 206 allocator samples remain exactly 34 slabs/zero overflow. Rows
+  20,001–20,500 held RSS exactly at 4,418MB and external/ArrayBuffers at
+  2,841–2,842/2,839–2,840MB. Exact mounted metrics-prefix SHA is `1faa919...`; the original trainer
+  resumed through 20,525 at 4,014 tok/s. Both services remain active/zero-restart; balance was
+  `$18.9410557252`; only Alpha runs at `$0.303/hr`. No model output was generated at this half-
+  checkpoint, so Discord correctly remained silent. Native checkpoint 21,000 plus controlled
+  20k→21k output comparison is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
