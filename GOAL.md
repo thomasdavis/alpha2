@@ -1767,6 +1767,17 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   input/before/after pair plus rationale and boundary was posted to Discord in a 1,562-byte message.
   Exact output/summary/post hashes are `76b12df...` / `ae1e54b...` / `f32a72a...`. Step 24,500 is
   next; text next at 25k.
+  Step 24,500 then passed every aligned execution gate and remained in the top validation band. The
+  exact 24,500-row prefix is finite/consecutive and covers 401,408,000 padded tokens (80.7994%);
+  train/held-out loss is 1.2920806/1.4415536. Held-out is +0.0497496 from checkpoint 24,000's best,
+  ranking fifth among 49 reads. P10/median throughput is 3,697.59/3,857.57 tok/s; last-500 loss/
+  gradient norm is 1.4617461/0.5496144, with no clipped batch. All 246 allocator samples remain
+  exactly 34 slabs/zero overflow. Rows 24,001–24,500 held RSS exactly at 4,418MB and external/
+  ArrayBuffers at 2,841–2,842/2,839–2,840MB. Exact mounted metrics-prefix SHA is `2061947...`; the
+  original trainer resumed through 24,550 at 3,822 tok/s. Both services remain active/zero-restart;
+  balance was `$16.994817734`; only Alpha runs at `$0.303/hr` account burn. No model output was
+  generated at this half-checkpoint, so Discord correctly remained silent. Native checkpoint 25,000
+  plus controlled 24k→25k output comparison is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
