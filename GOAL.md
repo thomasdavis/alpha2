@@ -1383,6 +1383,20 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Training resumed through 11,550 at 3,850 tok/s; both guards remain active/zero-restart. Balance
   was `$22.0066488983`; only Alpha is running and total burn remains `$0.303/hr`. Native-audited
   checkpoint 12,000 is next.
+  Checkpoint 12,000 passed with validation effectively flat after that recovery. All 12,000 rows
+  are finite/consecutive and cover 196,608,000 padded tokens (39.5752%); train/held-out loss is
+  1.3504689/1.6495684. Held-out is only +0.0024513 from step 11,500, remains 0.0629230 better than
+  checkpoint 11,000, and is +0.0964092 from the step-10,500 best. P10/median throughput is
+  3,660.85/3,824.20 tok/s; last-500 loss/gradient norm is 1.6164730/0.5103170; all 121 allocator
+  samples report exactly 34 temporary slabs/zero overflow. Rows 11,501–12,000 held RSS at
+  4,411–4,413MB, external at 2,841–2,843MB, and ArrayBuffers at 2,839–2,841MB. Exact
+  checkpoint/native-audit/metrics-prefix hashes match remote/mounted at `310b319b...` /
+  `64384ea6...` / `39ab674e...`; all 114 tensors and 57,688,576 parameters passed finite/nonzero.
+  The guard pruned remote checkpoint 9,000 only after mirror proof, then ledgered and removed exact
+  local SHA `59b8a988...`; both sides retain 10,000/11,000/12,000. The save released all 228
+  optimizer buffers and training resumed through 12,050 at 100% GPU. Both guards remain
+  active/zero-restart; balance was `$21.8377576613`, only Alpha is running, and total burn remains
+  `$0.303/hr`. Step 12,500 held-out validation is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
