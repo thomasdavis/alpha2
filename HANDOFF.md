@@ -1240,6 +1240,25 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   resumed through 22,550 at 3,853 tok/s. Both host services are active/zero-restart; balance
   `$18.2656717269`; the sole running pod is Alpha at `$0.303/hr` account burn. No text was generated,
   so Discord remained silent. Next: native checkpoint 23k and controlled 22k→23k outputs.
+- **Checkpoint 23,000 PASSED mechanically; two bounded response improvements posted:** 23,000
+  finite/consecutive rows cover 376,832,000 padded tokens (75.8525%). Train/held-out loss is
+  1.4600115/1.5330055; held-out is +0.0935882 from step 22.5k and +0.0959296 from the step-21.5k
+  best (eleventh among 46 reads). P10/median is 3,695.41/3,856.97 tok/s; last-500 loss/gradient norm
+  is 1.4711545/0.5466474 with no clipped batch. All 231 allocator samples remain exactly 34 slabs/
+  zero overflow. Rows 22,501–23,000 held RSS exactly at 4,418MB and external/ArrayBuffers at
+  2,841–2,843/2,839–2,841MB. Checkpoint/audit/metrics-prefix match remote/mounted at `4cd2cfe...` /
+  `06300c8...` / `a7d1fca...`; all 57,688,576 parameters are finite/nonzero. Mirror proof preceded
+  remote 20k pruning and two-state local deletion SHA `eb23e88...`; both sides retain 21k/22k/23k.
+  Original PID resumed through 23,150 at 3,935 tok/s and 100% GPU; both services active/zero-restart.
+  Balance `$17.9921067897`; Alpha remains `$0.22/hr`, while a separate Wajarri pod raised total account
+  burn to `$0.75/hr` and was left untouched. Same-prompt structural/EOS regressed 2→1/6→5,
+  nonempty/loops held at 4/2, and mean repetition improved 0.2352→0.1909. Casual changed from
+  unrelated emojis to a relevant EOS-terminated invitation; encouragement recovered from a
+  `-a-snap` loop to a relevant empathetic response with repetition 0.914→0.129 and no loop flag.
+  It still repeats and lacks EOS; four answers remain empty, cooking loops, and the joke became a
+  loop. Only those two exact pairs/rationales plus the aggregate boundary went to Discord in one
+  1,598-byte message. Exact output/summary/post hashes `6beebe1...` / `0683252...` / `b281d9e...`.
+  Next: step 23.5k; next controlled text at 24k.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

@@ -1712,6 +1712,28 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Alpha at `$0.303/hr` account burn. No model output was generated at this half-checkpoint, so
   Discord correctly remained silent. Native checkpoint 23,000 plus controlled 22k→23k output
   comparison is next.
+  Checkpoint 23,000 then passed every mechanical/native/mirror/retention gate, although held-out loss
+  wobbled again. The exact 23,000-row prefix is finite/consecutive and covers 376,832,000 padded
+  tokens (75.8525%); train/held-out loss is 1.4600115/1.5330055. Held-out is +0.0935882 from step
+  22,500 and +0.0959296 from step 21,500's best, ranking eleventh among 46 reads. P10/median
+  throughput is 3,695.41/3,856.97 tok/s; last-500 loss/gradient norm is 1.4711545/0.5466474, with no
+  clipped batch. All 231 allocator samples remain exactly 34 slabs/zero overflow. Rows 22,501–23,000
+  held RSS exactly at 4,418MB and external/ArrayBuffers at 2,841–2,843/2,839–2,841MB. Checkpoint/
+  native-audit/metrics-prefix hashes match remote/mounted at `4cd2cfe...` / `06300c8...` /
+  `a7d1fca...`; all 114 tensors and 57,688,576 parameters are finite/nonzero. Mirror proof preceded
+  remote checkpoint 20,000 pruning and two-state local deletion of SHA `eb23e88...`; both sides
+  retain 21k/22k/23k. The original trainer resumed through 23,150 at 3,935 tok/s and 100% GPU; both
+  services remain active/zero-restart. Balance was `$17.9921067897`; Alpha remains scoped at
+  `$0.22/hr`, while a separate Wajarri pod raised total account burn to `$0.75/hr` and was left
+  untouched. The identical 22k→23k suite regressed structural 2→1 and EOS 6→5, held nonempty and
+  loops at 4/2, and reduced mean repetition 0.2352→0.1909. Two responses nevertheless genuinely
+  improved: casual chat changed from unrelated emojis to a relevant EOS-terminated invitation, and
+  encouragement recovered from a `-a-snap` loop to a relevant empathetic response while repetition
+  fell 0.914→0.129 and the loop detector cleared. The latter still repeats and does not terminate;
+  four answers remain empty, cooking still loops, and the joke became a loop. Only those two exact
+  input/before/after pairs plus their rationale and the aggregate regression were posted to Discord
+  in one 1,598-byte message. Exact output/summary/post hashes are `6beebe1...` / `0683252...` /
+  `b281d9e...`. Step 23,500 is next; text next at 24k.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
