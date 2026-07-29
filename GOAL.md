@@ -1878,6 +1878,27 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `$15.6387599267`; only Alpha runs at `$0.303/hr` account burn. No model output was generated at this
   half-checkpoint, so Discord correctly remained silent. Native checkpoint 28,000 plus controlled
   27k→28k output comparison is next.
+  Checkpoint 28,000 then passed every mechanical/native/mirror/retention gate, with another validation
+  and output wobble. The exact 28,000-row prefix is finite/consecutive and covers 458,752,000 padded
+  tokens (92.3422%); train/held-out loss is 1.9920901/1.5399532. Held-out is +0.1157558 from step
+  27,500 and +0.1481493 from checkpoint 24,000's best, ranking twenty-first among 56 reads.
+  P10/median throughput is 3,688.46/3,849.72 tok/s; last-500 loss/gradient norm is
+  1.9377729/0.6713991. Five finite batches clipped at steps 27,693/27,697/27,841/27,914/27,980
+  (norm 1.0296–1.2598, coefficient 0.7938–0.9713); checkpoint 28,000 itself was unclipped. All 281
+  allocator samples remain exactly 34 slabs/zero overflow. Rows 27,501–28,000 held RSS exactly at
+  4,418MB and external/ArrayBuffers at 2,841–2,843/2,839–2,841MB. Checkpoint/native-audit/metrics-
+  prefix hashes match remote/mounted at `b697cef...` / `a52bc1f...` / `f1a97a0...`; all 114 tensors
+  and 57,688,576 parameters are finite/nonzero. Mirror proof preceded remote checkpoint 25,000 pruning
+  and two-state local deletion of SHA `cee2ec1...`; both sides retain 26k/27k/28k. The original
+  trainer resumed through 28,075 at 3,698 tok/s; both watcher processes remain live. Balance was
+  `$15.1785022137`; Alpha remains `$0.22/hr`, while a separate Wajarri pod raised total account burn
+  to `$0.752/hr` and was left untouched. The identical 27k→28k suite improved structural 0→1 and
+  nonempty 3→4, while EOS/loops held 5/3 and repetition barely moved 0.3374→0.3347. Those aggregate
+  changes were not semantic gains: casual merely changed from a Java-fence loop to an irrelevant
+  finite `Hello, World!` program; the newly nonempty joke was a new repetition loop; encouragement
+  and cooking remained loops; four answers stayed blank. No response-level qualitative improvement
+  existed, so Discord correctly remained silent. Exact output/summary hashes are `6c5c014...` /
+  `0587fdc...`. Step 28,500 is next; text next at 29k.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
