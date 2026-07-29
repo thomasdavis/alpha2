@@ -1230,6 +1230,16 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   loops; the new computer response was not a coherent joke; four answers remained empty. Nothing
   genuinely improved, so Discord remained silent. Exact output/summary hashes `f32c6dc...` /
   `5c73ab1...`. Next: step 22.5k; next controlled text at 23k.
+- **Step 22,500 PASSED and recovered the 22k validation wobble; no output/no Discord post:** 22,500
+  finite/consecutive rows cover 368,640,000 padded tokens (74.2035%). Train/held-out loss is
+  1.5070760/1.4394173, improving 0.0591434 from checkpoint 22k and sitting only 0.0023414 above the
+  step-21.5k best (third among 45 reads). P10/median is 3,693.81/3,855.82 tok/s; last-500 loss/
+  gradient norm is 1.4739300/0.5463152 with no clipped batch. All 226 allocator samples remain
+  exactly 34 slabs/zero overflow. Rows 22,001–22,500 held RSS exactly at 4,418MB and external/
+  ArrayBuffers at 2,841–2,842/2,839–2,840MB. Mounted metrics-prefix SHA is `5a6017c...`; original PID
+  resumed through 22,550 at 3,853 tok/s. Both host services are active/zero-restart; balance
+  `$18.2656717269`; the sole running pod is Alpha at `$0.303/hr` account burn. No text was generated,
+  so Discord remained silent. Next: native checkpoint 23k and controlled 22k→23k outputs.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,
