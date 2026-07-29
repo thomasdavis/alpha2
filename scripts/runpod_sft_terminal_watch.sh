@@ -10,6 +10,7 @@ remote_run=${4:?remote run required}
 local_run=${5:?local run required}
 source_commit=${6:?source commit required}
 interval=${7:-60}
+rsync_timeout_seconds=${RUNPOD_FINAL_RSYNC_TIMEOUT_SECONDS:-1800}
 
 [[ $host =~ ^[A-Za-z0-9.-]+$ ]] || { echo "invalid host: $host" >&2; exit 2; }
 [[ $port =~ ^[0-9]+$ ]] || { echo "invalid port: $port" >&2; exit 2; }
@@ -18,6 +19,9 @@ interval=${7:-60}
 [[ $local_run =~ ^/mnt/donto-data/alpha-runs/[A-Za-z0-9._/-]+$ ]] || { echo "invalid local run: $local_run" >&2; exit 2; }
 [[ $source_commit =~ ^[0-9a-f]{40}$ ]] || { echo "invalid source commit: $source_commit" >&2; exit 2; }
 [[ $interval =~ ^[0-9]+$ && $interval -ge 30 ]] || { echo "interval must be >= 30" >&2; exit 2; }
+[[ $rsync_timeout_seconds =~ ^[0-9]+$ && $rsync_timeout_seconds -ge 300 ]] || {
+  echo "RUNPOD_FINAL_RSYNC_TIMEOUT_SECONDS must be an integer >= 300" >&2; exit 2
+}
 [[ ${RUNPOD_FINALIZER_ONCE:-0} == 0 || ${RUNPOD_FINALIZER_ONCE:-0} == 1 ]] || {
   echo "RUNPOD_FINALIZER_ONCE must be 0 or 1" >&2
   exit 2
@@ -32,9 +36,9 @@ base_eval=/workspace/alpha2/runs/frozen-eval-base-flagship-20260728
 frozen_root=/runpod/data/frozen-eval-v1
 python_bin=/workspace/alpha2-hf-verify-venv/bin/python
 remote_helper="/workspace/alpha2-sft-terminal-finalize-$pod_id.sh"
-ssh_opts=(-i "$ssh_key" -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no)
-scp_opts=(-i "$ssh_key" -P "$port" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no)
-rsync_ssh="ssh -i $ssh_key -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no"
+ssh_opts=(-i "$ssh_key" -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no)
+scp_opts=(-i "$ssh_key" -P "$port" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no)
+rsync_ssh="ssh -i $ssh_key -p $port -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
 
 [[ -f $remote_helper_local ]] || { echo "remote helper missing: $remote_helper_local" >&2; exit 2; }
 [[ -f $ssh_key ]] || { echo "SSH key missing: $ssh_key" >&2; exit 2; }
@@ -95,8 +99,12 @@ ssh "${ssh_opts[@]}" "root@$host" bash "$remote_helper" finalize \
   "$remote_repo" "$remote_run" "$selection" "$base_eval" "$frozen_root" "$python_bin" "$source_commit"
 
 log "remote finalization complete; mirroring run"
-nice -n 10 ionice -c2 -n7 rsync -az --partial -e "$rsync_ssh" \
-  "root@$host:$remote_run/" "$local_run/"
+if ! nice -n 10 ionice -c2 -n7 timeout --foreground --signal=TERM --kill-after=30s \
+  "${rsync_timeout_seconds}s" rsync -az --partial -e "$rsync_ssh" \
+  "root@$host:$remote_run/" "$local_run/"; then
+  log "ERROR terminal artifact rsync failed or exceeded ${rsync_timeout_seconds}s; pod left untouched"
+  exit 3
+fi
 
 [[ -f $local_run/terminal-artifact-sha256.txt ]] || {
   log "ERROR mirrored artifact manifest missing; pod left untouched"

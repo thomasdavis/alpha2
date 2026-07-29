@@ -1069,7 +1069,24 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   Exact remote/mounted metrics match at `6635c36c...`; training resumed through 16,525 at 3,846
   tok/s with the original PID and 100% GPU utilization. Both guards remain active/zero-restart;
   balance was `$20.2917975666`, only Alpha is running, and total burn remains `$0.303/hr`. The saved
-  Discord webhook accepted the 865-byte report. Next: native-audited checkpoint 17,000.
+  Discord webhook accepted the 865-byte report.
+- **Checkpoint 17,000 PASSED and is byte+SHA mirrored; fourth-best validation:** the
+  exact 17,000-row prefix is finite/consecutive and covers 278,528,000 padded tokens (56.0649%).
+  Train/held-out loss is 1.2788125/1.5497097; P10/median is 3,677.31/3,836.17 tok/s; last-500
+  loss/gradient norm is 1.5493912/0.5237756. All 171 allocator samples remain exactly 34 slabs/zero
+  overflow; rows 16,501–17,000 held RSS exactly at 4,417MB and external/ArrayBuffers within
+  2,841–2,843/2,839–2,841MB. Native audit passed all 114 tensors and 57,688,576 parameters
+  finite/nonzero. Exact checkpoint/audit/remote-metrics-prefix hashes are `67d6fb8a...` /
+  `61e3098d...` / `763577a0...`. The RunPod SSH data path briefly degraded below 0.3MB/min even for a
+  raw bounded transfer, but the retry recovered at 07:47 UTC and exact local byte+SHA parity passed.
+  Only then did the guard prune remote checkpoint 14,000 and two-state ledger/delete exact local SHA
+  `ad42beef...`; both sides retain 15,000/16,000/17,000. Training resumed through 17,300 with the
+  original PID. Guard/finalizer rsync now has 600/1,800-second hard bounds plus SSH keepalives,
+  terminal transfer failure leaves the pod untouched, and failed guard mirroring still performs the
+  status check. Syntax, negative-timeout validation, and fake-rsync one-shot control-flow tests passed.
+  Both services are active with zero automatic restarts; balance `$20.0264510034`; only Alpha is
+  running at `$0.303/hr` total account burn. Discord accepted the 1,093-byte report and 628-byte
+  mirror-recovery correction. Next: step 17,500 validation.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

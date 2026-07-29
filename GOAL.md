@@ -1520,7 +1520,25 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   remote/mounted metrics match at `6635c36c...`; training resumed through 16,525 at 3,846 tok/s with
   the original PID and 100% GPU utilization. Both guards remain active/zero-restart; balance was
   `$20.2917975666`, only Alpha is running, and total burn remains `$0.303/hr`. The saved Discord
-  webhook accepted the 865-byte step-16,500 report. Native-audited checkpoint 17,000 is next.
+  webhook accepted the 865-byte step-16,500 report.
+  Checkpoint 17,000 passed every remote execution and native-checkpoint gate, with the run's
+  fourth-best validation read. The exact 17,000-row prefix is finite/consecutive and covers
+  278,528,000 padded tokens (56.0649%); train/held-out loss is 1.2788125/1.5497097. P10/median
+  throughput is 3,677.31/3,836.17 tok/s; last-500 loss/gradient norm is 1.5493912/0.5237756;
+  all 171 allocator samples report exactly 34 temporary slabs/zero overflow. Rows 16,501–17,000
+  held RSS exactly at 4,417MB, external at 2,841–2,843MB, and ArrayBuffers at 2,839–2,841MB.
+  The remote checkpoint/native audit passed all 114 tensors and 57,688,576 parameters finite/nonzero;
+  checkpoint/audit/remote-metrics-prefix hashes are `67d6fb8a...` / `61e3098d...` / `763577a0...`.
+  The RunPod SSH data path temporarily degraded below 0.3MB/min even for a raw bounded transfer, but
+  the retry recovered at 07:47 UTC: local checkpoint/audit/metrics-prefix byte+SHA parity is exact.
+  Only after that proof did the guard prune remote checkpoint 14,000 and two-state ledger/delete exact
+  local SHA `ad42beef...`; both sides retain 15,000/16,000/17,000. Training resumed through 17,300
+  with the original PID. The guard/finalizer now bound transfers to 600/1,800 seconds with SSH
+  keepalives; terminal mirror failure leaves the pod untouched; and a failed guard mirror no longer
+  skips its lightweight trainer-status check. Syntax, invalid-timeout probes, and a fake-rsync one-shot
+  control-flow test passed. Both services are active with zero automatic restarts; balance was
+  `$20.0264510034`, only Alpha is running, and total burn remains `$0.303/hr`. Discord accepted the
+  1,093-byte checkpoint report and its 628-byte mirror-recovery correction. Step 17,500 validation is next.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched

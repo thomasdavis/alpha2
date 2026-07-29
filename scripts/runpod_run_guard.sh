@@ -16,6 +16,7 @@ terminate_on_stall=${TERMINATE_ON_STALL:-0}
 remote_keep_checkpoints=${REMOTE_KEEP_CHECKPOINTS:-0}
 local_keep_checkpoints=${LOCAL_KEEP_CHECKPOINTS:-0}
 guard_once=${RUNPOD_GUARD_ONCE:-0}
+rsync_timeout_seconds=${RUNPOD_RSYNC_TIMEOUT_SECONDS:-600}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 [[ $host =~ ^[A-Za-z0-9.-]+$ ]] || { echo "invalid host: $host" >&2; exit 2; }
@@ -43,6 +44,9 @@ if (( local_keep_checkpoints > 0 && local_keep_checkpoints != remote_keep_checkp
   exit 2
 fi
 [[ $guard_once == 0 || $guard_once == 1 ]] || { echo "RUNPOD_GUARD_ONCE must be 0 or 1" >&2; exit 2; }
+[[ $rsync_timeout_seconds =~ ^[0-9]+$ && $rsync_timeout_seconds -ge 60 ]] || {
+  echo "RUNPOD_RSYNC_TIMEOUT_SECONDS must be an integer >= 60" >&2; exit 2
+}
 [[ -f $ssh_key ]] || { echo "SSH key missing: $ssh_key" >&2; exit 2; }
 if [[ $terminate_on_stall == 1 && ! $pod_id =~ ^[A-Za-z0-9]+$ ]]; then
   echo "TERMINATE_ON_STALL=1 requires a concrete RUNPOD_POD_ID" >&2
@@ -51,15 +55,16 @@ fi
 
 mkdir -p "$local_run"
 guard_log="$local_run/puller.log"
-ssh_opts=(-i "$ssh_key" -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no)
-rsync_ssh="ssh -i $ssh_key -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=no"
+ssh_opts=(-i "$ssh_key" -p "$port" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no)
+rsync_ssh="ssh -i $ssh_key -p $port -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$guard_log"
 }
 
 pull_once() {
-  nice -n 10 ionice -c2 -n7 rsync -az --partial \
+  nice -n 10 ionice -c2 -n7 timeout --foreground --signal=TERM --kill-after=30s \
+    "${rsync_timeout_seconds}s" rsync -az --partial \
     -e "$rsync_ssh" "root@$host:$remote_run/" "$local_run/"
 }
 
@@ -132,12 +137,12 @@ last_progress_epoch=$(date +%s)
 log "guard start remote=$host:$port:$remote_run local=$local_run interval=${interval}s stale=${stale_seconds}s"
 
 while true; do
+  pull_succeeded=1
   if ! pull_once; then
     log "WARNING rsync failed; connectivity failure is not treated as a training stall"
-    sleep "$interval"
-    continue
+    pull_succeeded=0
   fi
-  if prune_remote_checkpoints; then
+  if (( pull_succeeded == 1 )) && prune_remote_checkpoints; then
     prune_local_checkpoints || true
   fi
 
