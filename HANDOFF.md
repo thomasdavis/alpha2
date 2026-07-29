@@ -1130,6 +1130,23 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   through 18,525 at 3,875 tok/s. Balance `$19.6163806902`; only Alpha at `$0.303/hr`; both services
   active/zero-restart. Validation alone is not a qualitative Discord event, so nothing was posted.
   Next: native checkpoint 19,000 and controlled 18k→19k output comparison.
+- **Checkpoint 19,000 PASSED every execution/native/mirror gate, but the complete chat probe regressed:**
+  19,000 finite/consecutive rows cover 311,296,000 padded tokens (62.6608%). Train/held-out loss is
+  1.4295553/1.6717061, with held-out +0.1679830 from step 18,500 and +0.1933950 from the 15,000 best
+  (20th-best run read). P10/median is 3,681.04/3,840.26 tok/s; last-500 loss/gradient norm is
+  1.5209734/0.5390623; all 191 allocator samples remain exactly 34 slabs/zero overflow. Rows
+  18,501–19,000 held RSS exactly at 4,417MB and external/ArrayBuffers at 2,841–2,843/2,839–2,841MB.
+  Checkpoint/audit/metrics-prefix match remote/mounted at `5f0e6b5...` / `484c834...` /
+  `dabdb1b...`; all 114 tensors / 57,688,576 parameters are finite/nonzero. Mirror proof preceded
+  remote checkpoint-16,000 pruning and two-state local deletion of exact SHA `df81015...`; both sides
+  retain 17k/18k/19k. The original PID resumed through 19,100 at 100% GPU utilization; both host
+  services are active/zero-restart. Balance `$19.4234416217`; only Alpha at `$0.303/hr`. Identical
+  18k→19k eight-prompt generation regressed structural 1→0, EOS 6→5, loops 1→2, and mean repeat
+  0.1129→0.1546. One narrow response did improve: encouragement changed from a 0.892-repeat
+  `I'm so glad you're here` loop to a relevant, empathetic response at 0.054 repetition. Only that
+  1,363-byte input/before/after/explanation was posted to Discord, explicitly bounded by the aggregate
+  regression and remaining awkward/nonterminating text. Exact 19k output/summary hashes are
+  `64463d9...` / `7ed1cbb...`; posted artifact SHA `e7a5671...`. Next: step 19,500; next text at 20k.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

@@ -1587,6 +1587,26 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `$19.6163806902`, only Alpha runs at `$0.303/hr`, and both services remain active/zero-restart.
   Validation alone does not satisfy the Discord contract, so nothing was posted. Native checkpoint
   19,000 plus the next controlled 18k→19k output comparison is next.
+  Checkpoint 19,000 passed every mechanical, native-audit, mirror, retention, and liveness gate, but
+  it did not improve overall chat quality. The exact 19,000-row prefix is finite/consecutive and
+  covers 311,296,000 padded tokens (62.6608%); train/held-out loss is 1.4295553/1.6717061. Held-out
+  regressed 0.1679830 from step 18,500 and is +0.1933950 from the checkpoint-15,000 best (20th-best
+  run read). P10/median throughput is 3,681.04/3,840.26 tok/s; last-500 loss/gradient norm is
+  1.5209734/0.5390623; all 191 allocator samples remain exactly 34 slabs/zero overflow. Rows
+  18,501–19,000 held RSS exactly at 4,417MB, external at 2,841–2,843MB, and ArrayBuffers at
+  2,839–2,841MB. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `5f0e6b5...` / `484c834...` / `dabdb1b...`; all 114 tensors and 57,688,576 parameters are
+  finite/nonzero. Only after byte+SHA proof did the guard prune remote checkpoint 16,000 and
+  two-state ledger/delete exact local SHA `df81015...`; both sides retain 17,000/18,000/19,000.
+  The original trainer resumed through 19,100 at 100% GPU utilization; both services remain active
+  with zero automatic restarts. Balance was `$19.4234416217`; only Alpha runs at `$0.303/hr`.
+  Identical eight-prompt 18k→19k generation regressed structural pass 1→0, EOS 6→5, loops 1→2,
+  and mean four-gram repetition 0.1129→0.1546. One response nevertheless improved genuinely: the
+  encouragement prompt changed from a 0.892-repetition `I'm so glad you're here` loop into a relevant,
+  empathetic answer at 0.054 repetition. Its 1,363-byte actual input/before/after/explanation was the
+  only Discord post, with the aggregate regression and unfinished wording stated explicitly. Full 19k
+  output/summary hashes are `64463d9...` / `7ed1cbb...`; the posted artifact SHA is `e7a5671...`.
+  Step 19,500 is next; the next controlled output comparison is checkpoint 20,000.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
