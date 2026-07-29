@@ -1550,6 +1550,16 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   casual chat: a non-terminating star-emoji loop became a relevant greeting/follow-up question with EOS.
   Discord accepted only that 988-byte before/after example plus its honest boundary. Exact 15k/17k
   result hashes are `e1ca5e2b...` / `832722ff...`; summary hashes are `d8cc6914...` / `f082d290...`.
+  Step 17,500 passed every hard execution gate but was not a quality improvement. The exact 17,500-row
+  prefix is finite/consecutive and covers 286,720,000 padded tokens (57.7139%); train/held-out loss is
+  1.5036104/1.6043088. Held-out is +0.0545991 from checkpoint 17,000 and +0.1259977 from the 15,000
+  best, ranking 11th in the run. P10/median throughput is 3,677.61/3,836.33 tok/s; last-500
+  loss/gradient norm is 1.5333154/0.5266370; all 176 allocator samples remain exactly 34 slabs/zero
+  overflow. Rows 17,001–17,500 held RSS exactly at 4,417MB, external at 2,841–2,842MB, and
+  ArrayBuffers at 2,839–2,840MB. Mounted metrics-prefix SHA is `e7aae708...`; the original trainer
+  resumed through 17,550 at 3,541 tok/s. Balance was `$19.9540516978`, only Alpha is running, and
+  total burn remains `$0.303/hr`. Per the qualitative-only contract, nothing was posted to Discord.
+  Native-audited checkpoint 18,000 is next; compare its same-prompt outputs against 17,000 before any post.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
