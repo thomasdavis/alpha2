@@ -1012,6 +1012,28 @@ the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2
   unchanged RSS, and no restart or data loss occurred. Training resumed through 14,550 at
   3,952 tok/s with both guards active and zero restarts. Balance was `$20.9935850316`; only Alpha
   is running and total burn remains `$0.303/hr`. Next: native-audited checkpoint 15,000.
+- **Checkpoint 15,000 PASSED; substantial new validation best:** 15,000 finite/consecutive rows
+  cover 245,760,000 padded tokens (49.4690%). Train/held-out loss is 1.5967857/1.4783111; held-out
+  improved 0.1163430 from step 14,500 and 0.0748481 from the prior step-10,500 run best. P10/median
+  is 3,674.19/3,834.60 tok/s; last-500 loss/gradient norm is 1.5701235/0.5184629. All 151 allocator
+  samples report exactly 34 temporary slabs/zero overflow. Rows 14,501–15,000 held RSS exactly at
+  4,416MB, external at 2,841–2,843MB, and ArrayBuffers at 2,839–2,841MB. Exact remote/mounted
+  checkpoint/native-audit/metrics-prefix hashes are `32962998...` / `46d2d334...` / `3f923dea...`;
+  every one of 57,688,576 parameters passed finite/nonzero. Safe retention pruned checkpoint 12,000
+  only after mirror proof and ledgered local SHA `310b319b...`; both sides retain exactly
+  13,000/14,000/15,000. Training resumed through 15,150 at 3,674 tok/s with both guards active and
+  zero restarts. Balance was `$20.7500386482`; only Alpha is running and total burn remains
+  `$0.303/hr`. Next: step 15,500 held-out validation.
+- **Checkpoint-15,000 ad hoc chat probe remains below bar and was posted honestly to Discord:** eight
+  varied, non-frozen prompts were generated with deterministic greedy decoding and a 96-token cap.
+  The complete result was 0/8 structural pass, 4/8 nonempty, four immediate-EOS empty replies, three
+  repetition loops, and zero role leaks. The encouragement answer was recognizably conversational but
+  repetitive; no flattering subset was selected. Mounted input/output hashes are `4c12151b...` /
+  `e1ca5e2b...`; all nine webhook posts (provenance summary plus all eight results) were accepted. The
+  user-supplied webhook lives only in ignored mode-0600 `.env.discord.local`; reusable tracked
+  `scripts/post_discord_progress.sh` reads it and enforces JSON encoding plus a 1,900-byte cap. A
+  temporary second 3090 was deleted immediately after source inspection showed the sampler is CPU
+  inference; RunPod confirmed only the flagship pod remains running.
 - **Early ad hoc quality preview remains below the chat bar:** three non-frozen greedy prompts against
   full-run checkpoint 2,000 produced one recognizable personal answer and two obvious repetition loops.
   This is an honest 6.6%-of-epoch diagnostic only; no frozen prompt was inspected or used for tuning,

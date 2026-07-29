@@ -1462,6 +1462,29 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   Training resumed through 14,550 at 3,952 tok/s; both guards remain active/zero-restart. Balance
   was `$20.9935850316`; only Alpha is running and total burn remains `$0.303/hr`. Native-audited
   checkpoint 15,000 is next.
+  Checkpoint 15,000 passed every hard gate and set a substantial new validation best. All 15,000 rows
+  are finite/consecutive and cover 245,760,000 padded tokens (49.4690%); train/held-out loss is
+  1.5967857/1.4783111. Held-out improved 0.1163430 from step 14,500 and 0.0748481 from the prior
+  step-10,500 run best. P10/median throughput is 3,674.19/3,834.60 tok/s; last-500 loss/gradient norm
+  is 1.5701235/0.5184629; all 151 allocator samples report exactly 34 temporary slabs/zero overflow.
+  Rows 14,501–15,000 held RSS exactly at 4,416MB, external at 2,841–2,843MB, and ArrayBuffers at
+  2,839–2,841MB. Exact checkpoint/native-audit/metrics-prefix hashes match remote/mounted at
+  `32962998...` / `46d2d334...` / `3f923dea...`; all 114 tensors and 57,688,576 parameters passed
+  finite/nonzero. The guard pruned remote checkpoint 12,000 only after mirror proof, then two-state
+  ledgered and removed exact local SHA `310b319b...`; both sides retain 13,000/14,000/15,000. The
+  save released all 228 optimizer buffers and training resumed through 15,150 at 3,674 tok/s. Both
+  guards remain active/zero-restart; balance was `$20.7500386482`, only Alpha is running, and total
+  burn remains `$0.303/hr`. Step 15,500 held-out validation is next.
+  A separate deterministic greedy, 96-token ad hoc probe at checkpoint 15,000 preserved all eight
+  non-frozen prompts/results under the mounted run: 0/8 structural pass, 4/8 nonempty, four immediate-
+  EOS empty replies, three repetition loops, and zero role leaks. The encouragement prompt produced a
+  recognizable but repetitive reply; the aggregate remains decisively below the chat bar despite the
+  validation improvement. Input/output hashes are `4c12151b...` / `e1ca5e2b...`. All nine requested
+  Discord webhook messages (summary plus every result, including failures) were accepted. The webhook
+  is stored only in ignored mode-0600 `.env.discord.local`; tracked
+  `scripts/post_discord_progress.sh` reads it, JSON-encodes via `jq`, and rejects messages above its
+  1,900-byte safety limit. A temporary sampler pod was deleted immediately after confirming the sampler
+  is the optimized CPU inference path; RunPod then showed only the flagship pod running.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
