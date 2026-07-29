@@ -1397,6 +1397,18 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   optimizer buffers and training resumed through 12,050 at 100% GPU. Both guards remain
   active/zero-restart; balance was `$21.8377576613`, only Alpha is running, and total burn remains
   `$0.303/hr`. Step 12,500 held-out validation is next.
+  Step 12,500 passed every hard invariant but produced a sharp one-window validation wobble. All
+  12,500 rows are finite/consecutive and cover 204,800,000 padded tokens (41.2242%); train/held-out
+  loss is 1.6656476/1.7952452. Held-out is +0.1456768 from checkpoint 12,000, +0.1481280 from
+  step 11,500, and +0.2420860 from the step-10,500 best, while remaining 0.0175322 below the prior
+  step-9,500 spike. P10/median throughput is 3,662.10/3,824.11 tok/s; last-500 loss/gradient norm
+  is 1.6185794/0.5072211; all 126 allocator samples report exactly 34 temporary slabs/zero overflow.
+  Rows 12,001–12,500 held RSS exactly at 4,414MB and external/ArrayBuffers within
+  2,841–2,842/2,839–2,840MB. The exact metrics prefix matches remote/mounted at `c67c529b...`.
+  Training resumed through 12,550 at 3,659 tok/s; both guards remain active/zero-restart. Balance
+  was `$21.6689838187`; only Alpha is running and total burn remains `$0.303/hr`. With execution
+  gates clean, native-audited checkpoint 13,000 is the next discriminator rather than intervention
+  from a single five-batch read.
 - **Ops discipline** (box CLAUDE.md rules apply): verify-it-actually-works — measure real tok/s from
   metrics deltas not logs; watchdog terminates any pod whose checkpoint stream stalls 30 min; every
   run resumable (`--resume`); no fire-and-forget. `99a9116` bounds ~693MB checkpoint growth with matched
