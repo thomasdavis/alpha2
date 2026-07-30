@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER AUTHORIZED; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -23,7 +23,8 @@ argumentation, and cross-domain transfer. Donto's “emit free, preserve conflic
 method governs the hidden research substrate; Alpha should still talk naturally rather than emit ontology
 records.
 
-The ledger itself is an explicitly authorized public research artifact at `/corpus`. All live tables and views
+The ledger itself is an explicitly authorized public research artifact at `https://alpha.donto.org/corpus`.
+All live tables and views
 are inspectable read-only, including rejected work, while candidates, review, release membership, and actual
 training exposure remain separate states. Publication does not authorize generation or training.
 

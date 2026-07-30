@@ -1,6 +1,6 @@
 # PRD-11 — Public Alpha Corpus explorer
 
-- **Status:** implemented candidate; production release proof is recorded in Execution 02
+- **Status:** implemented and live; production release proof is recorded in Execution 02
 - **Route:** `https://alpha.donto.org/corpus`
 - **Audience:** the operator, collaborating research agents, dataset reviewers, and public researchers
 - **Data authority:** the canonical Alpha Corpus SQLite ledger on the mounted research drive

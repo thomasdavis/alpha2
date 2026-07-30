@@ -2,7 +2,7 @@
 
 **Status:** canonical project goal as of 2026-07-30
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
-**Current phase:** D5 calibration generated; human conceptual adjudication pending
+**Current phase:** D5 calibration generated; public read-only explorer live; human conceptual adjudication pending
 **Completed bounded scope:** D2–D4 implementation plus a 48-candidate GPT-5.4 D5 calibration
 **Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public release, or ad hoc Discord posting beyond the factual two-hour timer
 

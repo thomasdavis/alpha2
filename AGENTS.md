@@ -15,7 +15,8 @@ by one-GPU feasibility rather than a fixed parameter count.
 GPT-5.4 calibration may be inspected and human-reviewed. The operator separately authorized the public,
 anonymous, read-only ledger explorer specified by
 [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md); it may expose all tables and views but
-must not add a mutation surface or collapse scientific stages. Do not expand the corpus, call GPT-5.5, train,
+must not add a mutation surface or collapse scientific stages. It is live at `https://alpha.donto.org/corpus`;
+the public proxy blocks historical APIs and non-read methods. Do not expand the corpus, call GPT-5.5, train,
 provision RunPod, mutate live Donto, publish a different artifact, or send additional ad hoc Discord messages
 without another explicit bounded authorization. The separately authorized factual progress timer posts every two
 hours through `alpha-corpus-discord-progress.timer`; keep its claims stage-accurate. GPT-5.6-sol is the counsel

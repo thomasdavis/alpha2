@@ -8,7 +8,7 @@
 
 ## 1. Outcome
 
-The Alpha web application now has a first-class `/corpus` route backed directly by the canonical SQLite
+The Alpha web application now has a first-class public `/corpus` route backed directly by the canonical SQLite
 scientific ledger. It discovers the live schema instead of enumerating research relations in front-end code.
 Every current table and view is publicly navigable, with bounded rows, schema, indexes, declared lineage, and
 full-value inspection.
@@ -109,7 +109,9 @@ experimental. None created a runtime error in the explorer path.
 - direct mutation through a read-only connection failed with `attempt to write a readonly database`;
 - identifier-shaped injection inputs did not execute and the 48 candidate rows remained intact;
 - only identifiers resolved from current schema metadata can reach query construction; and
-- the browser exposes no mutation control or generic query endpoint.
+- the browser exposes no mutation control or generic query endpoint;
+- the public proxy returns 404 for every legacy `/api/*`, `/v1/*`, and `/chat/completions` route; and
+- the public proxy returns 405 for non-GET/HEAD requests, including `POST /corpus`.
 
 ## 5. Browser acceptance
 
@@ -145,18 +147,46 @@ The production standalone build was tested with a real Chromium runtime.
 
 These figures describe the warm local production route on this host; they are not a public-network SLA.
 
+### Measured public production profile
+
+The same Chromium profiler against the live Cloudflare URL measured:
+
+- TTFB: 87.3 ms;
+- FCP: 172 ms;
+- LCP: 340 ms; and
+- CLS: 0.
+
+The live browser repeated the desktop and mobile interaction checks, including relation filtering and the
+full-width mobile cell inspector. The public route had no document overflow, Next error overlay, or page error.
+
 ## 6. Deployment record
 
-The immutable live deployment, public DNS result, service state, origin route, and pushed revision are filled
-in only after the final release gate. Until those fields are recorded, candidate verification is not public
-deployment proof.
+The production gate passed on 2026-07-30.
 
-- Repository revision: pending final commit
-- Release directory: pending final commit
-- Service: `alpha-corpus-web.service` pending installation
-- Loopback: `127.0.0.1:3104` pending
-- Caddy origin proof: pending
-- Public URL: `https://alpha.donto.org/corpus` pending DNS and external proof
+- Web implementation revision: `569eb2c` (`feat(corpus): add public read-only ledger explorer`)
+- Service/Caddy contract revision: `5a30549`
+- Public write/API hardening revision: `7331b90`
+- Immutable release directory:
+  `/home/ajax/alpha2-web-releases/5a305495b329d87af1362ac09148470899c14552`
+- Current release pointer: `/home/ajax/alpha2-web-current`
+- Service: `alpha-corpus-web.service`, enabled and active as unprivileged user `ajax`
+- Service unit hash: `60316fc902d74430922ad9b7c1688704e9f822be3963694ea1cda1fa09d71f40`
+- Loopback: `127.0.0.1:3104`, HTTP 200
+- Caddy origin proof with local resolution: HTTPS 200 in 143 ms
+- Cloudflare DNS: proxied `A alpha.donto.org -> 15.235.185.42`
+- Independent DNS resolution: both `1.1.1.1` and `8.8.8.8` returned the Cloudflare edge addresses
+- Public URL: `https://alpha.donto.org/corpus`, HTTP/2 200 through Cloudflare and Caddy
+- Public HTML proof: `Alpha Corpus`, `Public · read only`, and 110 discovered relations
+- Post-release service state: active/running, zero restarts, 95.3 MB current and 146.8 MB peak memory
+
+Four post-release public journeys returned HTTP 200: the default corpus, `model_call` lineage, candidate schema,
+and a filtered rejected-candidate page. Warm response times ranged from 97 ms to 1.50 seconds; the slowest was
+the lineage path that derives all inbound foreign keys.
+
+The standalone build logs one pre-existing dashboard warning because no Turso application database is attached
+to this public read-only service. The corpus uses its separately declared SQLite path and is healthy. Caddy
+blocks every historical application API at this hostname, so the missing dashboard database cannot become a
+public mutation fallback.
 
 ## 7. Operational runbook
 

@@ -14,8 +14,10 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It dynamically exposes all 106 tables and four views without changing any candidate's stage. The latest audit
-packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is still next.
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 106 tables and four views without
+changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
+The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
+still next.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.
