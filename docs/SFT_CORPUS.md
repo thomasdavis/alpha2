@@ -105,3 +105,9 @@ optimizer/RNG state, corpus manifest/audits, contracts, full metric stream, and 
 available at `ajaxdavis/alpha-60m-training-checkpoints`, immutable revision
 `7198d1a1f094ffe88d06399ea99fecbd78fa8b66`. Local restart instructions are in
 `/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/RESUME.md`.
+
+Future SFT work must first address the monotonic unshuffled traversal and token-weighted
+answer-initiation weakness documented in
+[docs/resume/FAILURE-ANALYSIS.md](resume/FAILURE-ANALYSIS.md). The ordered repair program and admission
+criteria are in [docs/resume/EXPERIMENT-BACKLOG.md](resume/EXPERIMENT-BACKLOG.md) and
+[docs/resume/ACCEPTANCE-GATES.md](resume/ACCEPTANCE-GATES.md).

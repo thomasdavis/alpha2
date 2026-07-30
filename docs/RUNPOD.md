@@ -6,6 +6,9 @@
 > proven recovery runbook, not an instruction to provision a pod now. Future work must begin with a new
 > operator-approved continuation contract and the immutable recovery archive described below.
 
+For the authorization gate and exact future sequence, read
+[docs/resume/RUNPOD-RECOVERY.md](resume/RUNPOD-RECOVERY.md) before using any command in this runbook.
+
 ## Archived recovery state
 
 The native continuation bundle is public at

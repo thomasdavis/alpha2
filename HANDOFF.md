@@ -5,6 +5,10 @@ passed, and its chat-quality gate failed. This file preserves the exact restart/
 the chronological paid-run evidence. Box operating rules live in `/home/ajax/CLAUDE.md`; roadmap state
 is mirrored in `/home/ajax/TODO.md`.
 
+**Future resume entry point:** [docs/resume/README.md](docs/resume/README.md). Read its session checklist,
+current state, and decisions before reading the historical live record below. A bare “resume” request is
+not authorization to create a pod.
+
 ---
 
 ## CURRENT CLOSEOUT — no Alpha GPU or training run is live

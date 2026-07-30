@@ -153,3 +153,7 @@ Canonical evidence:
 - chat summary SHA-256 `c4751b33d19f09fbb84f223397af63897975980dfcf52172e9e18905ae955930`;
 - pair-analysis SHA-256 `92da0b3bf5bd984c579ded700c1b2f9bfe928fe010a5352f65d1a15aea3d48c6`;
 - semantic-report SHA-256 `35cc1a87fad2c4f258cfdbd5859d0a0106c0f2c1e8bdd0d6e5ada303a0ffc1e9`.
+
+The causal diagnosis, checkpoint oscillation table, and evidence that rules out padding and serving
+failures are in [docs/resume/FAILURE-ANALYSIS.md](resume/FAILURE-ANALYSIS.md). The frozen set remains a
+final admission set and must not become a future tuning target.

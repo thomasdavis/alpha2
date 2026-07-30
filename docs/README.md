@@ -78,6 +78,12 @@ Public artifacts:
 The Space deliberately exposes immediate-EOS/empty responses instead of disguising the failed model
 behind a fallback. `GOAL.md`, `HANDOFF.md`, and `docs/FROZEN_EVAL.md` contain the terminal evidence.
 
+## Future resumption
+
+Start with the [Alpha 60M future-resume dossier](resume/README.md). It records the frozen state, exact
+checkpoints, failure mechanism, evidence locations, binding decisions, repaired-SFT backlog, acceptance
+gates, serving operations, and a future RunPod recovery sequence. No new run is currently authorized.
+
 ## Prerequisites
 
 ### Required (all users)

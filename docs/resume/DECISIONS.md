@@ -1,0 +1,79 @@
+# Binding decisions and supersession log
+
+This is an append-only decision summary. Later work may add a superseding entry but must not edit an old
+decision into a different meaning.
+
+## 2026-07-22 — Alpha’s stack is the training system
+
+Every training FLOP must go through Alpha’s own tensor, autograd, tokenizer, and Helios Vulkan stack.
+External frameworks may verify conversion or run standard inference, but they may not train the model.
+
+## 2026-07-22 — GPU work must fail closed
+
+Core operations may not fall back silently to CPU. NVIDIA tests count only when the fail-closed wrapper
+proves that every expected GPU assertion executed with zero skip/fail/todo.
+
+## 2026-07-22 — Paid pods are disposable; evidence is not
+
+Checkpoint and metric evidence must be mirrored and hash-verified continuously. Stop is not sufficient
+for a pod that can retain billable storage; terminate the exact scoped pod after final verification.
+
+## 2026-07-29 — Discord is qualitative-improvement-only
+
+Routine loss, throughput, checkpoint, or service updates must not be posted. A Discord post requires
+the same input, before and after output, why it improved, and the aggregate boundary. The webhook stays
+in an ignored mode-0600 local file and never enters git.
+
+This supersedes the old AGENTS.md instruction to post samples every 200 steps.
+
+## 2026-07-30 — No more Alpha runs under the completed program
+
+After the terminal SFT and sealed evaluation, the user directed that no further run occur. No pod,
+training, continuation, new epoch, sweep, or frozen-eval tuning is authorized.
+
+Read-only verification, documentation, code preparation, and maintenance of the exact CPU serving path
+remain allowed.
+
+## 2026-07-30 — Quality failure remains the truth
+
+The terminal SFT checkpoint passed mechanical execution and failed D3. The sealed record is:
+
+- 2/100 structural;
+- 92 empty;
+- six loops;
+- 0/100 semantic PASS;
+- closed-book QA 0/200.
+
+Lower validation loss, conversion parity, or successful hosting cannot supersede that outcome.
+
+## 2026-07-30 — Publish as a failed-quality research artifact
+
+The user explicitly overrode the normal quality publication gate so the exact model could be preserved
+and inspected. The model card and Space must prominently state failure. This override does not turn D3
+into PASS and cannot be reused automatically for another checkpoint.
+
+## 2026-07-30 — Preserve native continuation state
+
+Base step 61,036, SFT step 29,000, and terminal SFT step 30,322 are retained locally and in a public
+Hugging Face archive with optimizer, RNG, tokenizer, contracts, metrics, and failed evaluations.
+
+The step-28,500 validation observation has no checkpoint and must never be represented as recoverable.
+
+## 2026-07-30 — Serve the exact model with no disguise
+
+The free static Hugging Face Space calls the exact low-priority Alpha CPU backend. Empty EOS must be
+shown honestly. No fallback model, canned response, hidden retry, or generation-setting trick may make
+the artifact appear better than it is.
+
+## Future supersession requirements
+
+A future decision to train again must record:
+
+- the new explicit user authorization;
+- date and bounded spend;
+- starting checkpoint;
+- new experiment contract;
+- which archived decision is being superseded;
+- why the new evidence justifies that change.
+
+Until then, “resume” means recover state and prepare a proposal, not start a GPU.

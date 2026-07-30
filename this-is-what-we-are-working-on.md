@@ -4,7 +4,8 @@
 > is no longer the active mission. The Alpha 60M program closed on 2026-07-30: all contracted execution
 > completed, the sealed chat gate failed, the artifacts and continuation checkpoints were published,
 > the Alpha RunPod was removed, and no further training run is authorized. Current truth is in
-> `GOAL.md`, `HANDOFF.md`, `docs/FROZEN_EVAL.md`, and `docs/RUNPOD.md`.
+> `GOAL.md`, `HANDOFF.md`, `docs/FROZEN_EVAL.md`, and `docs/RUNPOD.md`. Future sessions begin at
+> `docs/resume/README.md`.
 
 ## Historical mission
 - Make Helios consistently faster than CUDA on benchmark suites, with priority on flash-attention forward (`b1_h16_t512_d64`).

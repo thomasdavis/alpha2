@@ -10,6 +10,10 @@
 > with optimizer-bearing recovery state and a public Space. No Alpha pod or training run remains live,
 > and no further run is authorized.
 
+Future sessions start at [docs/resume/README.md](docs/resume/README.md). It contains the compact frozen
+state, failure analysis, evidence index, checkpoint catalog, decisions, acceptance gates, and recovery
+procedure. This long document remains the complete chronological program record.
+
 ---
 
 ## 1. Mission
