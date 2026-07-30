@@ -1,6 +1,6 @@
 ---
 title: Alpha 60M Research Artifact
-emoji: "α"
+emoji: "🔬"
 colorFrom: red
 colorTo: gray
 sdk: static
