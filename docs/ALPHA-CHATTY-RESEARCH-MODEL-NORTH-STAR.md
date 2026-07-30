@@ -6,6 +6,9 @@
 
 **Current authorization:** no data generation, model training, RunPod provisioning, or live Donto writes
 
+**Synthetic-data program:**
+[Alpha's synthetic conversational curriculum](ALPHA-SYNTHETIC-CONVERSATIONAL-CURRICULUM.md)
+
 **Relationship to earlier documents:** this document restores the intended model identity. The
 [dataset brief](RESEARCH-MODEL-DATASET-BRIEF.md), [Alpha Joints program](ALPHA-JOINTS-RESEARCH-PROGRAM.md),
 and [Donto research agenda](DONTO-ALPHA-RESEARCH-AGENDA.md) remain useful sources of methods and research
@@ -590,7 +593,8 @@ Useful subsidiary questions include:
 5. Does linguistic training help ontological reasoning, and does ontological training help linguistic
    analysis?
 6. Which abilities require continued pretraining rather than post-training?
-7. What is the smallest model scale at which conversation and conceptual depth coexist reliably?
+7. How should limited one-GPU capacity be divided between language fluency, dialogue state, and
+   conceptual depth?
 8. Can retrieval compensate for sparse factual memory without disrupting conversational flow?
 9. Which curriculum mixtures produce warmth and curiosity without synthetic agreeableness?
 10. Does explicit contrastive structure improve insight in free dialogue at equal token budgets?
@@ -696,30 +700,17 @@ is used to excuse failure in the other.
 
 ---
 
-## 13. Model size is a research variable, not a vow
+## 13. The one-GPU constraint
 
-The archived Alpha has 57.7 million parameters. That scale is scientifically attractive and may be
-capable of a surprisingly strong niche. It should remain the lower-bound probe.
+Alpha should be as small and efficient as possible while still achieving the conversational goal. The
+binding engineering constraint is simple: the model must be practical to train, evaluate, and serve on
+the single GPU available to the project.
 
-But the goal is a **small model that works**, not a 58M model at any cost.
-
-If controlled evidence shows that 58M cannot simultaneously sustain fluent conversation and the target
-conceptual breadth, the correct response is to test a modestly larger student—perhaps in the 100M to
-300M range—while preserving the same narrow knowledge priorities. A 200M model that is delightful and
-conceptually sharp is closer to the goal than a 58M model that is formally interesting but unusable.
-
-Scale decisions should be based on:
-
-- response reliability;
-- language fluency;
-- multi-turn context tracking;
-- interference between ordinary chat and specialist material;
-- conceptual transfer;
-- training and serving cost;
-- whether additional capacity learns reasoning behavior or merely more facts.
-
-The larger model is not automatically the final product. It can also serve as a positive control that
-shows whether the curriculum is learnable at all.
+The exact architecture is not the research identity or a novelty claim. It should be chosen within the
+one-GPU envelope according to observed response reliability, language fluency, multi-turn context
+tracking, conceptual depth, training stability, and serving cost. The final configuration should be
+reported as an implementation fact after those trade-offs are tested, not repeatedly foregrounded as
+the purpose of Alpha.
 
 ---
 
@@ -841,7 +832,7 @@ The following decisions should be binding for any future proposal:
 5. **No lower validation loss proves that Alpha is more conversational.**
 6. **No specialist vocabulary counts as conceptual understanding by itself.**
 7. **No retrieval system compensates for failure to understand the user's question.**
-8. **No commitment to 58M overrides evidence that a somewhat larger small model is required.**
+8. **No preferred architecture overrides the one-GPU conversational objective.**
 9. **No Donto integration writes directly into canonical knowledge during research evaluation.**
 10. **No new run follows from this document; compute requires renewed explicit authorization.**
 
@@ -864,8 +855,8 @@ Reject or revise a curriculum when it:
 External reviewers should help improve this north star without replacing it with a different project.
 They should address:
 
-1. What is the smallest plausible model scale for sustained natural conversation plus this conceptual
-   specialization?
+1. What architecture and context strategy best use a single GPU for sustained natural conversation and
+   this conceptual specialization?
 2. What pretraining foundation is necessary before a targeted conversational curriculum can work?
 3. Which existing corpora contain genuinely interactive linguistic or philosophical dialogue rather
    than textbook exposition?
@@ -876,7 +867,7 @@ They should address:
 8. Which linguistic and ontological domains offer the greatest transferable benefit per token?
 9. How should retrieval be attached without teaching machine-facing protocols into the core model?
 10. Which parts of Alpha Joints remain useful as diagnostics while staying subordinate to conversation?
-11. What evidence would show that 58M is the binding constraint?
+11. What evidence would distinguish a capacity bottleneck from a data or objective failure?
 12. What is the smallest controlled pilot that could falsify the curriculum hypothesis?
 
 Reviewers must state explicitly when they are proposing a different product. A more publishable
@@ -908,8 +899,8 @@ and helped them see it differently.
 
 The research can still succeed scientifically if it demonstrates that:
 
-- 58M is below the capacity threshold for the combined target;
-- conceptual specialization reliably harms ordinary chat at this scale;
+- the tested one-GPU configuration cannot sustain the combined target;
+- conceptual specialization reliably harms ordinary chat under the available capacity;
 - continued pretraining is necessary and SFT alone cannot install the target abilities;
 - synthetic dialogue style overwhelms the intended behavior;
 - retrieval cannot compensate for a weak linguistic foundation;
