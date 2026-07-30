@@ -1,0 +1,13 @@
+# Alpha public research workbench. The corpus route is public and read-only;
+# mutation safety is enforced by the application and SQLite connection, not Caddy.
+alpha.donto.org {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MiB
+			roll_keep 10
+		}
+	}
+	tls internal
+	encode gzip zstd
+	reverse_proxy 127.0.0.1:3104
+}
