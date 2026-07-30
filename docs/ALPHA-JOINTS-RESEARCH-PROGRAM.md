@@ -1,5 +1,11 @@
 # Alpha Joints: typed semantic equivariances across linguistic and ontological projections
 
+> **Product-scope correction (2026-07-30):** Alpha Joints is an optional learning-science method, not
+> Alpha's product identity. The governing model goal is a small, natural, chatty interlocutor with deep
+> practical understanding of language, ontology, and philosophy. See
+> [Alpha's chatty research-model north star](ALPHA-CHATTY-RESEARCH-MODEL-NORTH-STAR.md). If this program's
+> formal endpoints conflict with conversational quality, the north star takes priority.
+
 **Status:** proposed successor research program; no generation or training authorized  
 **Date:** 2026-07-30  
 **Repository:** `alpha2`  

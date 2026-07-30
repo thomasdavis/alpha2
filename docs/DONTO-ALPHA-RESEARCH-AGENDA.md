@@ -1,5 +1,11 @@
 # Donto × Alpha: predicate birth, semantic deconstruction, and small models that know how knowledge works
 
+> **Product-scope correction (2026-07-30):** Predicate Birth and Survival is a possible Donto
+> application, not Alpha's primary identity. Alpha's governing goal is a small, natural, chatty
+> interlocutor with deep practical understanding of language, ontology, and philosophy. See
+> [Alpha's chatty research-model north star](ALPHA-CHATTY-RESEARCH-MODEL-NORTH-STAR.md). Donto integration
+> and research novelty remain subordinate to that conversational goal.
+
 **Status:** research agenda for criticism and revision; not an implementation plan
 
 **Date:** 2026-07-30
