@@ -13,6 +13,18 @@ bulk generation cannot silently flood the ledger with polished conceptual mistak
 
 ## 2. Core architecture
 
+### 2.0 Initial model-routing decision and calibration evidence
+
+The operator's initial route is GPT-5.6-sol for high-leverage counsel, GPT-5.4 for bounded surface generation,
+and no default GPT-5.5 critic. GPT-5.5 requires a paired task-specific probe that demonstrates a concrete
+GPT-5.4 failure worth escalating. This supersedes any earlier assumption that GPT-5.5 should routinely design
+families or judge every batch.
+
+Execution 01 used 12 serialized GPT-5.4 calls for 48 candidates. Codex reported 445,709 input tokens, of which
+300,032 were cached, and 28,126 output tokens. The high per-session input overhead makes batching a measured
+optimization target before production. Future routing should compare accepted conceptual value—not raw row
+count—under one-family, multi-family, and higher-items-per-call treatments.
+
 ### 2.1 Orchestrator tier
 
 Use the strongest available reasoning model for tasks where mistakes propagate across many units:

@@ -16,6 +16,7 @@
     { "path": "packages/tensor" },
     { "path": "packages/effect-runtime" },
     { "path": "packages/historic-chat-gen" },
+    { "path": "packages/corpus" },
     { "path": "packages/datagen" },
     { "path": "apps/tui" },
     { "path": "apps/web" },

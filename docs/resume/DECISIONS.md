@@ -78,6 +78,33 @@ This decision authorizes documentation and external research review only. It doe
 decision above: ledger implementation, model calls for corpus generation, training, RunPod, live Donto writes,
 publication, and Discord posting each require a later explicit bounded authorization referencing PRD-09.
 
+## 2026-07-30 — Bounded D2–D5 ledger and calibration authorization
+
+The operator explicitly authorized work to begin on the PRDs: implement the scientific SQLite ledger and
+generation workflow, use GPT-5.6-sol for counsel reasoning, and use GPT-5.4 for synthetic sentence/dialogue
+generation. GPT-5.5 remains off unless a specific paired probe shows that a task needs it.
+
+The bounded result is recorded in
+`docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md`: D2–D4 are operational and a 48-candidate
+GPT-5.4 D5 calibration is generated and quarantined pending human adjudication. This does not authorize corpus
+expansion, model training, RunPod, live Donto mutation, public dataset release, or Discord posting.
+
+The storage condition is a project-owned soft pause: if the Alpha Corpus artifact tree exceeds 15 GiB, new
+corpus work pauses resumably. It is not a global disk hard rule and grants no permission to delete or move
+unrelated data.
+
+## 2026-07-30 — Alpha Corpus two-hour Discord progress updates
+
+The operator supplied a dedicated Discord webhook and directed Alpha Corpus to post a progress update every
+two hours, plus one immediately. This supersedes the earlier qualitative-improvement-only rule for factual
+Alpha Corpus program updates; that earlier rule still governs claims that a model output improved.
+
+The webhook remains only in ignored mode-0600 `.env.discord.progress.local`. The tracked sender dynamically
+reports ledger integrity, campaign/task/candidate counts, human-acceptance state, model routing and usage,
+repository revision/dirty count, generation/training activity, project-owned storage, and the current next
+gate. The system timer is `alpha-corpus-discord-progress.timer`. It may not turn structural validity into a
+quality claim or imply that training/GPU work is active when it is not.
+
 ## Future supersession requirements
 
 A future decision to train again must record:

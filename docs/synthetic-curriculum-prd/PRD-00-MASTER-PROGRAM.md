@@ -2,8 +2,11 @@
 
 **Document status:** canonical
 **Decision owner:** operator
-**Execution status:** specification only
+**Execution status:** ledger operational; first calibration generated; human review pending
 **Primary deliverables:** a reusable synthetic curriculum substrate and a chatty conceptually specialized Alpha
+
+The bounded implementation/calibration record is
+[Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md). It does not authorize training or corpus expansion.
 
 ## 1. Purpose
 

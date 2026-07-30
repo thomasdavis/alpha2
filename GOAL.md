@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** PRD SUITE COMPLETE; IMPLEMENTATION, GENERATION, TRAINING, GPU SPEND, AND LIVE DONTO MUTATION NOT YET AUTHORIZED
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -29,9 +29,11 @@ Donto-grounded mixtures are separate ablations. Model size is not a project iden
 fit and train safely on the one GPU available.
 
 The implementation sequence and explicit gates are in
-[PRD-09](docs/synthetic-curriculum-prd/PRD-09-IMPLEMENTATION-ACCEPTANCE.md). This goal currently authorizes only
-the committed documentation. The next permissible action is external research review and decision
-reconciliation, not corpus generation or a GPU run.
+[PRD-09](docs/synthetic-curriculum-prd/PRD-09-IMPLEMENTATION-ACCEPTANCE.md). The first bounded execution is
+documented in [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md): the SQLite
+ledger, six canary families, GPT-5.4 workflow, and 48-candidate calibration are complete and quarantined. The
+next action is human conceptual adjudication and cost/quality review. Corpus expansion, GPT-5.5 criticism,
+training, and GPU work require separate authorization.
 
 ---
 

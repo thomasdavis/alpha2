@@ -1,9 +1,9 @@
 # Alpha 60M future-resume dossier
 
 > **Current-project note (2026-07-30):** this directory remains the authoritative archive/recovery dossier for
-> the completed Alpha 60M run. Alpha's new planning goal is the documentation suite at
-> [../synthetic-curriculum-prd/README.md](../synthetic-curriculum-prd/README.md). The new goal does not authorize
-> implementation, generation, training, GPU spend, or continuation of the archived checkpoint.
+> the completed Alpha 60M run. Alpha's current goal is the synthetic-curriculum program at
+> [../synthetic-curriculum-prd/README.md](../synthetic-curriculum-prd/README.md). Its bounded D2–D5 calibration
+> is complete, but it does not authorize Alpha training, GPU spend, or continuation of this archived checkpoint.
 
 - **State frozen:** 2026-07-30
 - **Training authorization:** none

@@ -16,8 +16,8 @@ Review at minimum:
 5. Appendix A if assessing Donto alignment;
 6. Appendix B if assessing family quality.
 
-Treat the current phase as documentation only. Do not implement, generate, train, rent a GPU, alter Donto, or
-post externally.
+Treat the current phase as review of the completed bounded D2–D5 calibration. Do not expand generation, train,
+rent a GPU, alter Donto, or post externally.
 
 ## 3. Choose a review role
 

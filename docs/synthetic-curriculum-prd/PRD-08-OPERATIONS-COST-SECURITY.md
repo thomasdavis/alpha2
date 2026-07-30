@@ -134,6 +134,11 @@ Never infer success solely because a process exists or a queue row says `done`.
 
 ## 9. Storage admission
 
+The initial operator rule is a **project-owned soft pause**: compute the footprint of the Alpha Corpus ledger,
+raw calls, blobs, and derived artifacts, and pause new work if that tree exceeds 15 GiB. The pause is resumable.
+It is not a global disk threshold, does not inspect unrelated project sizes for admission, and authorizes no
+deletion or movement of unrelated data. The operator may clean the wider disk independently.
+
 Before a campaign, estimate:
 
 - raw prompt/response bytes;
@@ -146,8 +151,9 @@ Before a campaign, estimate:
 - model checkpoints;
 - temporary duplication during release build.
 
-Require headroom for the campaign, one safe snapshot, and release materialization. Monitor the mounted disk;
-past disk saturation on the box makes low-space operation unacceptable.
+Estimate headroom for the campaign, one safe snapshot, and release materialization. Wider mounted-disk state
+remains useful observability, but the automatic campaign action in the current implementation is only the
+15 GiB project-owned pause above.
 
 Content-addressed deduplication may save physical bytes without deleting separate provenance records.
 
@@ -173,9 +179,9 @@ Provider credentials, Hugging Face tokens, SSH keys, and the Discord webhook:
 - are redacted from exception output;
 - are rotated after suspected exposure.
 
-The Discord webhook supplied historically is considered sensitive. It is not read or used for routine
-progress. A future post must pass the qualitative-improvement-only policy: same input, before/after output,
-why the model improved, and an honest aggregate boundary.
+Discord webhooks are sensitive. The dedicated Alpha Corpus webhook is used only by the authorized factual
+two-hour progress timer and remains in an ignored mode-0600 environment file. Claims of model improvement still
+require the separate same-input before/after output, explanation, and aggregate-boundary contract.
 
 ## 12. Provider and model change control
 
@@ -273,8 +279,9 @@ Progress reports distinguish:
 - model passed or failed;
 - artifact published.
 
-No stage is described as the next. Discord receives only meaningful qualitative improvement under its binding
-contract. Repository documentation and sealed reports are the ordinary progress channel.
+No stage is described as complete before its gate. Discord receives factual Alpha Corpus progress through the
+authorized two-hour timer; model-improvement claims remain subject to their separate qualitative contract.
+Repository documentation and sealed reports remain the canonical progress channel.
 
 ## 19. Incident classes
 

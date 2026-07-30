@@ -1,4 +1,4 @@
-# HANDOFF — current PRD goal plus Alpha 60M archived closeout, state as of 2026-07-30
+# HANDOFF — Alpha Corpus D5 calibration plus Alpha 60M archived closeout, state as of 2026-07-30
 
 ## Current planning goal
 
@@ -8,10 +8,17 @@ chatty, fact-light conversational model and makes construction of a Donto-inspir
 synthetic corpus and SQLite scientific ledger a principal half of the program. The first planned training study
 is synthetic-only; model scale is governed by one-GPU feasibility, not a fixed parameter target.
 
-**Current authorization is documentation/research only.** No database implementation, corpus generation,
-training, GPU provisioning, live Donto mutation, publication, or Discord posting is authorized by the new goal.
-Begin with PRD-00 and PRD-09, preserve the archived result below, and require an explicit bounded authorization
-for the next stage.
+**Current state:** the bounded D2–D4 implementation and D5 generation portion are complete. Read
+[Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md). The canonical mounted
+ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 48 GPT-5.4 candidates across six
+quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
+The latest audit packet is under its `releases/audit/` directory. Human conceptual adjudication is next.
+
+Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish, or
+send additional ad hoc Discord messages without another bounded operator instruction. The factual progress
+timer `alpha-corpus-discord-progress.timer` is enabled every two hours; its first post returned HTTP 204 at
+09:09 UTC. GPT-5.6-sol is the counsel tier and GPT-5.4 is the initial worker. New corpus work pauses if the
+project-owned artifact tree exceeds 15 GiB; this does not create a global disk rule.
 
 ---
 

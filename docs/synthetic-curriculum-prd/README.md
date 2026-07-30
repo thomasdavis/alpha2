@@ -2,8 +2,9 @@
 
 **Status:** canonical project goal as of 2026-07-30
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
-**Current phase:** research and specification only
-**Not authorized yet:** corpus generation, database implementation, training, GPU rental, live Donto mutation, public release, or Discord posting
+**Current phase:** D5 calibration generated; human conceptual adjudication pending
+**Completed bounded scope:** D2–D4 implementation plus a 48-candidate GPT-5.4 D5 calibration
+**Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public release, or ad hoc Discord posting beyond the factual two-hour timer
 
 ## The goal in one paragraph
 
@@ -34,6 +35,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 12. [Appendix A — Donto lens crosswalk](APPENDIX-A-DONTO-LENS-CROSSWALK.md)
 13. [Appendix B — Worked family specifications](APPENDIX-B-WORKED-FAMILIES.md)
 14. [Appendix C — External research-agent return protocol](APPENDIX-C-RESEARCH-AGENT-PROTOCOL.md)
+15. [Execution 01 — Scientific ledger and GPT-5.4 calibration](EXECUTION-01-LEDGER-AND-CALIBRATION.md)
 
 ## Authority and supersession
 
@@ -72,8 +74,8 @@ The precedence order is:
   available GPU.
 - **The first causal training study is synthetic-only.** Human material may calibrate reviewers and frozen
   evaluation, but it does not enter the primary training mixture unless a later experiment explicitly says so.
-- **No generation is approved by this document.** Implementation and spending begin only after a separate
-  authorization cites a bounded stage in PRD-09.
+- **No generation is approved merely by this document.** The operator separately authorized and completed the
+  bounded D2–D5 calibration recorded in Execution 01. Any expansion still requires a new bounded decision.
 
 ## What “comprehensive” means here
 

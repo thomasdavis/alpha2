@@ -1,0 +1,12 @@
+[Unit]
+Description=Post Alpha Corpus progress every two hours
+
+[Timer]
+OnBootSec=2h
+OnUnitActiveSec=2h
+AccuracySec=1m
+Persistent=true
+Unit=alpha-corpus-discord-progress.service
+
+[Install]
+WantedBy=timers.target

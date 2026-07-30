@@ -2,17 +2,18 @@
 
 ## 1. Purpose
 
-This document turns the research vision into bounded implementation stages. It is a future execution plan, not
-current authority to implement, generate, train, spend, deploy, or mutate Donto.
+This document turns the research vision into bounded implementation stages. It is not authority by itself;
+direct operator decisions determine which bounded stages may execute.
 
 Each stage ends in inspectable evidence. Later stages do not begin because code exists; they begin after the
 preceding gate is explicitly adjudicated and the operator authorizes the next bounded scope.
 
 ## 2. Current state
 
-The project is at **D0 — specification**.
+The project is at **D5 — calibration generated, human conceptual adjudication pending**. The exact bounded
+record is [Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md).
 
-Done in D0:
+Done:
 
 - product north star fixed;
 - synthetic-data work recognized as a principal half of the program;
@@ -22,7 +23,22 @@ Done in D0:
 - first experimental data boundary fixed as synthetic-only;
 - fixed parameter-count framing removed;
 - one-GPU constraint recorded;
-- implementation and spend explicitly withheld.
+- D2 ledger: two hash-verified migrations, 106 tables, four current/public views, append-only triggers,
+  content-addressed blobs, and clean integrity/foreign-key validation;
+- D3 canaries: 49 categories, 16 transformations, and six quarantined family blueprints;
+- D4 orchestration: structured Codex calls, exact raw artifacts, bounded/idempotent tasks, validators, usage,
+  and completed-response recovery;
+- D5 generation portion: 12 GPT-5.4 calls, 48 candidates, 42 structurally valid and six retained rejections,
+  with a full human-audit packet;
+- GPT-5.5, training, GPU work, live Donto writes, and release remained unused during generation. A separately
+  authorized factual Discord progress timer was installed after the calibration.
+
+Open before D5 acceptance:
+
+- human blind or otherwise documented conceptual review;
+- critic calibration, if a critic is later justified;
+- human-grounded false-accept/false-reject measurement;
+- operator decision on production generation.
 
 ## 3. Stage D1 — External review and decision reconciliation
 
@@ -344,4 +360,5 @@ The current documentation task is done when:
 - the first experiment is unambiguously synthetic-only;
 - all changes are committed, pushed, and verified on the remote branch.
 
-This definition completes documentation only. It does not pass D1 or authorize D2.
+The original documentation definition is complete. Execution 01 proves a bounded D2–D4 vertical slice and the
+generation portion of D5; it does not pass D5 human adjudication or authorize D6–D12.

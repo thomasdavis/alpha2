@@ -1,0 +1,25 @@
+{
+  "name": "@alpha/corpus",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "alpha-corpus": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test dist/corpus.test.js",
+    "clean": "tsc -b --clean"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4"
+  }
+}
