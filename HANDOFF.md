@@ -1,9 +1,24 @@
-# HANDOFF — Alpha 60M archived closeout, state as of 2026-07-30
+# HANDOFF — current PRD goal plus Alpha 60M archived closeout, state as of 2026-07-30
 
-For any future agent. **Read `GOAL.md` first** (repo root): the program is closed, its execution gates
-passed, and its chat-quality gate failed. This file preserves the exact restart/publication state and
-the chronological paid-run evidence. Box operating rules live in `/home/ajax/CLAUDE.md`; roadmap state
-is mirrored in `/home/ajax/TODO.md`.
+## Current planning goal
+
+The current project goal is the canonical suite at
+[docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md). It defines Alpha as a small,
+chatty, fact-light conversational model and makes construction of a Donto-inspired, deeply categorized
+synthetic corpus and SQLite scientific ledger a principal half of the program. The first planned training study
+is synthetic-only; model scale is governed by one-GPU feasibility, not a fixed parameter target.
+
+**Current authorization is documentation/research only.** No database implementation, corpus generation,
+training, GPU provisioning, live Donto mutation, publication, or Discord posting is authorized by the new goal.
+Begin with PRD-00 and PRD-09, preserve the archived result below, and require an explicit bounded authorization
+for the next stage.
+
+---
+
+For any future agent. **Read `GOAL.md` first** (repo root): the archived Alpha 60M program is closed, its
+execution gates passed, and its chat-quality gate failed. This file preserves the exact restart/publication
+state and the chronological paid-run evidence. Box operating rules live in `/home/ajax/CLAUDE.md`; roadmap
+state is mirrored in `/home/ajax/TODO.md`.
 
 **Future resume entry point:** [docs/resume/README.md](docs/resume/README.md). Read its session checklist,
 current state, and decisions before reading the historical live record below. A bare “resume” request is

@@ -9,6 +9,11 @@
 **Authorization boundary:** this document does not authorize data generation, database construction,
 training, GPU provisioning, Donto writes, or publication claims
 
+**Canonical successor:**
+[Alpha Synthetic Conversational Intelligence PRD suite](synthetic-curriculum-prd/README.md). This document is
+retained as the immediate research rationale; the suite governs implementation, taxonomy, SQLite, generation,
+quality, releases, experiments, operations, and acceptance gates.
+
 **Governing product definition:**
 [Alpha's chatty research-model north star](ALPHA-CHATTY-RESEARCH-MODEL-NORTH-STAR.md)
 

@@ -1,5 +1,10 @@
 # Alpha 60M future-resume dossier
 
+> **Current-project note (2026-07-30):** this directory remains the authoritative archive/recovery dossier for
+> the completed Alpha 60M run. Alpha's new planning goal is the documentation suite at
+> [../synthetic-curriculum-prd/README.md](../synthetic-curriculum-prd/README.md). The new goal does not authorize
+> implementation, generation, training, GPU spend, or continuation of the archived checkpoint.
+
 - **State frozen:** 2026-07-30
 - **Training authorization:** none
 - **Terminal verdict:** execution PASS, chat-quality D3 FAIL

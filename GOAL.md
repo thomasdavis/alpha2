@@ -1,4 +1,41 @@
-# GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
+# CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
+
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** PRD SUITE COMPLETE; IMPLEMENTATION, GENERATION, TRAINING, GPU SPEND, AND LIVE DONTO MUTATION NOT YET AUTHORIZED
+
+The canonical goal is defined by
+[docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
+[PRD-00](docs/synthetic-curriculum-prd/PRD-00-MASTER-PROGRAM.md).
+
+Alpha is to become a small, genuinely chatty conversational model whose specialization is language, meaning,
+pragmatics, ontology, philosophy, evidence, intent, and knowledge itself rather than encyclopedic fact recall.
+Building the deeply categorized synthetic curriculum is roughly half the project. A strong reasoning model will
+orchestrate family design, routing, diagnosis, and difficult adjudication; economical 5.x-class workers will
+generate much of the bounded surface variation; independent critics and calibrated humans will review it. The
+entire scientific record—including raw attempts, rejections, disagreements, revisions, sources, renders,
+tokens, releases, exposures, checkpoints, and evaluations—will be preserved through an immutable SQLite
+ledger. Other researchers will be able to construct reproducible training and post-training sets from it.
+
+The Donto mega-extraction prompt supplies the intellectual starting point: mereology, teleology, identity,
+time, causation, agency, epistemology, modality, social ontology, event structure, provenance, and an open lens
+for freely minted distinctions. Alpha Corpus expands those lenses for natural conversation, pragmatics,
+common ground, inferential conceptual pacts, metalinguistic negotiation, rhetoric, interpretation, intent,
+argumentation, and cross-domain transfer. Donto's “emit free, preserve conflict, anchor evidence, align later”
+method governs the hidden research substrate; Alpha should still talk naturally rather than emit ontology
+records.
+
+The first planned primary experiment initializes Alpha without importing a pretrained model and trains only on
+an accepted synthetic release produced by this system. Later human, public-data, pretrained, retrieval, and
+Donto-grounded mixtures are separate ablations. Model size is not a project identity: the configuration must
+fit and train safely on the one GPU available.
+
+The implementation sequence and explicit gates are in
+[PRD-09](docs/synthetic-curriculum-prd/PRD-09-IMPLEMENTATION-ACCEPTANCE.md). This goal currently authorizes only
+the committed documentation. The next permissible action is external research review and decision
+reconciliation, not corpus generation or a GPU run.
+
+---
+
+# ARCHIVED GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
 
 **Set:** 2026-07-22 · **Closed:** 2026-07-30 · **Owner:** ajax + Codex (handoff from Claude) · **Status:** ARCHIVED — EXECUTION PASS / D3 FAIL / PUBLISHED BY EXPLICIT OPERATOR OVERRIDE
 **Budget:** $70.21 RunPod prepaid credit (hard ceiling; no per-token API spend anywhere in this program)

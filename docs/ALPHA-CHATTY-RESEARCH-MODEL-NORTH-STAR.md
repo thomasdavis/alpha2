@@ -6,6 +6,11 @@
 
 **Current authorization:** no data generation, model training, RunPod provisioning, or live Donto writes
 
+**Canonical implementation and research PRDs:**
+[Alpha Synthetic Conversational Intelligence suite](synthetic-curriculum-prd/README.md). The suite supersedes
+this document on data-system, generation, experimental, and implementation detail while preserving this north
+star's product identity.
+
 **Synthetic-data program:**
 [Alpha's synthetic conversational curriculum](ALPHA-SYNTHETIC-CONVERSATIONAL-CURRICULUM.md)
 
