@@ -2,7 +2,8 @@
 
 **Status:** canonical project goal as of 2026-07-30
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
-**Current phase:** D5 calibration generated; public read-only explorer live; human conceptual adjudication pending
+**Current phase:** D5 calibration generated; public read-only explorer live; human-adjudication protocol ready,
+review pending
 **Completed bounded scope:** D2–D4 implementation plus a 48-candidate GPT-5.4 D5 calibration
 **Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public release, or ad hoc Discord posting beyond the factual two-hour timer
 
@@ -38,6 +39,9 @@ requires it. Conversation remains the product; all formal machinery stays behind
 15. [Execution 01 — Scientific ledger and GPT-5.4 calibration](EXECUTION-01-LEDGER-AND-CALIBRATION.md)
 16. [PRD-11 — Public Alpha Corpus explorer](PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 17. [Execution 02 — Public Alpha Corpus explorer](EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md)
+18. [PRD-12 — D5 human adjudication and calibration closeout](PRD-12-D5-HUMAN-ADJUDICATION.md)
+19. [Appendix D — D5 human review instrument](APPENDIX-D-D5-REVIEW-INSTRUMENT.md)
+20. [Decision Packet 01 — D5 next-step decision](DECISION-PACKET-01-D5-NEXT-STEP.md)
 
 ## Authority and supersession
 

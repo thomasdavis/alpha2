@@ -407,6 +407,12 @@ Not established:
 
 The program is at **D5 generated, human adjudication pending**.
 
+The normative review procedure is now
+[PRD-12 — D5 human adjudication and calibration closeout](PRD-12-D5-HUMAN-ADJUDICATION.md), with the operational
+form in [Appendix D](APPENDIX-D-D5-REVIEW-INSTRUMENT.md) and unratified choices in
+[Decision Packet 01](DECISION-PACKET-01-D5-NEXT-STEP.md). Those later documents do not change the historical
+execution record below or authorize new calls.
+
 The next work should be review and decision work, not more generation:
 
 1. read the complete audit packet;

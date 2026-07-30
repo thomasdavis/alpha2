@@ -12,7 +12,11 @@ by one-GPU feasibility rather than a fixed parameter count.
 
 **Current execution boundary:** the operator authorized and completed the bounded D2–D5 slice recorded in
 [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md). The ledger and 48-candidate
-GPT-5.4 calibration may be inspected and human-reviewed. The operator separately authorized the public,
+GPT-5.4 calibration may be inspected and human-reviewed under
+[PRD-12](docs/synthetic-curriculum-prd/PRD-12-D5-HUMAN-ADJUDICATION.md) and
+[Appendix D](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). Review all 48 in a blind pass
+before revealing hidden contracts, preserve every judgment append-only, and do not fabricate human reviews
+with a model. The operator separately authorized the public,
 anonymous, read-only ledger explorer specified by
 [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md); it may expose all tables and views but
 must not add a mutation surface or collapse scientific stages. It is live at `https://alpha.donto.org/corpus`;

@@ -11,7 +11,10 @@ preceding gate is explicitly adjudicated and the operator authorizes the next bo
 ## 2. Current state
 
 The project is at **D5 — calibration generated, human conceptual adjudication pending**. The exact bounded
-record is [Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md).
+generation record is [Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md). The executable closeout protocol,
+review form, and unratified next-step package are [PRD-12](PRD-12-D5-HUMAN-ADJUDICATION.md),
+[Appendix D](APPENDIX-D-D5-REVIEW-INSTRUMENT.md), and
+[Decision Packet 01](DECISION-PACKET-01-D5-NEXT-STEP.md).
 
 Done:
 
@@ -35,10 +38,17 @@ Done:
 
 Open before D5 acceptance:
 
-- human blind or otherwise documented conceptual review;
+- human blind and contract-aware review of all 48 calibration candidates;
+- family synthesis for all six families and separate content/schema disposition for all six structural
+  rejections;
 - critic calibration, if a critic is later justified;
 - human-grounded false-accept/false-reject measurement;
 - operator decision on production generation.
+
+No model critic ran in Execution 01. The current six rejections are deterministic
+`unknown_secondary_lens` findings, so human disagreement with their disposition is a schema/taxonomy
+diagnostic rather than a critic false-reject measurement. PRD-12 creates the human reference against which a
+later, separately authorized critic can be measured.
 
 ## 3. Stage D1 — External review and decision reconciliation
 
@@ -361,4 +371,5 @@ The current documentation task is done when:
 - all changes are committed, pushed, and verified on the remote branch.
 
 The original documentation definition is complete. Execution 01 proves a bounded D2–D4 vertical slice and the
-generation portion of D5; it does not pass D5 human adjudication or authorize D6–D12.
+generation portion of D5. PRD-12 makes the remaining D5 human gate executable; it does not pass that gate or
+authorize D6–D12.

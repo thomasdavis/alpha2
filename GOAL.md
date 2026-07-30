@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN-ADJUDICATION PROTOCOL READY; REVIEW PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -39,8 +39,11 @@ documented in [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-A
 ledger, six canary families, GPT-5.4 workflow, and 48-candidate calibration are complete and quarantined. The
 public explorer contract and release record are [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md). The next research action
-is human conceptual adjudication and cost/quality review. Corpus expansion, GPT-5.5 criticism,
-training, and GPU work require separate authorization.
+is the complete blind and contract-aware review specified by
+[PRD-12](docs/synthetic-curriculum-prd/PRD-12-D5-HUMAN-ADJUDICATION.md) and
+[Appendix D](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). The resulting evidence feeds the
+unratified [Decision Packet 01](docs/synthetic-curriculum-prd/DECISION-PACKET-01-D5-NEXT-STEP.md). Corpus
+expansion, model criticism, training, and GPU work require separate authorization.
 
 ---
 

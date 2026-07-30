@@ -17,7 +17,13 @@ and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd
 It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 106 tables and four views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
-still next.
+still next, now governed by
+[PRD-12](docs/synthetic-curriculum-prd/PRD-12-D5-HUMAN-ADJUDICATION.md) and its complete
+[review instrument](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). The census is all 48
+candidates: blind conversational Pass A, contract-aware Pass B, six family syntheses, and separate content and
+schema dispositions for the six `unknown_secondary_lens` rejections. No model critic has run, so do not call
+those structural dispositions critic false accepts or rejects. The unratified next choices are in
+[Decision Packet 01](docs/synthetic-curriculum-prd/DECISION-PACKET-01-D5-NEXT-STEP.md).
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.
