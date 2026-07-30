@@ -12,6 +12,7 @@ tags:
   - from-scratch
   - conversational
   - experimental
+  - research-artifact
 datasets:
   - HuggingFaceTB/smol-smoltalk
   - HuggingFaceTB/smoltalk2
@@ -19,9 +20,13 @@ datasets:
   - allenai/soda
 ---
 
-<!-- DRAFT ONLY: do not upload until the terminal SFT analyzer, frozen D3 gate, and human semantic review pass. -->
+# Alpha 60M Chat — experimental failed checkpoint
 
-# Alpha 60M Chat
+> [!CAUTION]
+> **THIS CHECKPOINT FAILED THE PREDECLARED CHAT-QUALITY GATES.** It is published as a reproducible
+> research artifact at the operator's explicit direction, not as a usable assistant. In the sealed
+> evaluation, 92/100 chat responses were empty, six were degenerate loops, the other two were unusable
+> fragments, and closed-book QA scored 0/200.
 
 Alpha 60M Chat is the instruction-tuned sibling of
 [Alpha 60M Base](https://huggingface.co/ajaxdavis/alpha-60m-base), a 57,688,576-parameter causal
@@ -30,8 +35,8 @@ pretraining and supervised-fine-tuning step ran through Alpha's TypeScript tenso
 hand-written Helios Vulkan backend on an RTX 3090. PyTorch and Transformers were used only after
 training to verify and package the result.
 
-This is a very small experimental assistant, not a frontier model. Its frozen results and limitations
-are reported below without model-based grading.
+This is a very small experimental SFT checkpoint, not a frontier model or a chat-ready assistant. Its
+frozen results and limitations are reported below without model-based grading.
 
 ## Use
 
@@ -46,6 +51,9 @@ result = chat(
 )
 print(result[0]["generated_text"][-1]["content"])
 ```
+
+An empty assistant string is a common measured outcome for this checkpoint. Applications must display
+that honestly rather than silently retrying or substituting another model.
 
 The repository is a standard `LlamaForCausalLM` export with `model.safetensors`, `tokenizer.json`, and
 a Jinja chat template. It requires no custom code and no `trust_remote_code=True`.
@@ -77,8 +85,11 @@ a Jinja chat template. It requires no custom code and no `trust_remote_code=True
 - Full float32 training on one NVIDIA RTX 3090 through Helios Vulkan, with BDA and device-generated
   commands enabled, cooperative-matrix kernels disabled, and CPU fallback forbidden.
 
-Terminal throughput, loss, parameter audit, GPU-hours, and cost will be inserted only after the
-30,322-step analyzer passes.
+The terminal analyzer passed the execution contract: 30,322/30,322 finite consecutive rows, all
+57,688,576 parameters finite and nonzero, 305 allocator samples with zero overflow, median post-warmup
+throughput 3,847.23 tok/s, final train loss 1.7579851, final held-out loss 1.6439665, and final-three
+validation mean 1.7073496. The SFT trainer itself consumed 36.0038 measured iteration-hours, about
+$7.92 at the pod's $0.22/hr GPU rate; setup, evaluation, pilots, and other account workloads are excluded.
 
 ## SFT data
 
@@ -101,22 +112,23 @@ An exact 13-gram audit excluded overlap with both the pretraining and SFT corpor
 
 ## Frozen evaluation
 
-<!-- Replace this table only from the sealed terminal frozen-eval reports. -->
-
 | Metric | Base | Chat |
 |---|---:|---:|
-| Chat structural pass | 0 / 100 | PENDING |
-| EOS termination | 0 / 100 | PENDING |
-| User-role leaks | 0 / 100 | PENDING |
-| Degenerate repetition loops | 99 / 100 | PENDING |
-| Mean / maximum 4-gram repeat rate | 0.81256 / 0.98400 | PENDING |
-| Closed-book exact match | 0 / 200 | PENDING |
-| Answer contained | 1 / 200 | PENDING |
-| Mean token F1 | 0.000238 | PENDING |
+| Chat structural pass | 0 / 100 | 2 / 100 |
+| EOS termination | 0 / 100 | 94 / 100 |
+| Nonempty response | 99 / 100 | 8 / 100 |
+| User-role leaks | 0 / 100 | 0 / 100 |
+| Degenerate repetition loops | 99 / 100 | 6 / 100 |
+| Mean / maximum 4-gram repeat rate | 0.81256 / 0.98400 | 0.04904 / 0.98400 |
+| Closed-book exact match | 0 / 200 | 0 / 200 |
+| Answer contained | 1 / 200 | 0 / 200 |
+| Mean token F1 | 0.000238 | 0.000000 |
+| Blinded semantic review | not run | 0 PASS / 0 borderline / 100 FAIL |
 
-Publication is blocked unless the chat checkpoint achieves at least 95/100 structural passes, zero
-degenerate loops, a per-sample 4-gram repeat rate below 0.20, and a separate human review finds the
-outputs conversational rather than gibberish. Closed-book QA is descriptive and will be reported as-is.
+The predeclared machine gate required at least 95/100 structural passes, zero degenerate loops, and
+every sample below 0.20 four-gram repetition. The checkpoint failed. A separate reference-blinded review
+then inspected every output and also failed decisively. Publication records the experiment; it does not
+override either result.
 
 ## Limitations
 
@@ -129,10 +141,26 @@ outputs conversational rather than gibberish. Closed-book QA is descriptive and 
 - Contexts above 1,024 tokens are unsupported even if a tokenizer API reports a larger generic limit.
 - Greedy frozen evaluation covers format, termination, repetition, and a small QA sanity set; it is not
   a comprehensive capability or safety evaluation.
+- The dominant observed behavior is immediate EOS with no answer. When it does emit text, it may
+  collapse into repeated punctuation or irrelevant code. It should not be deployed as an assistant.
 
 ## Reproducibility
 
 The immutable SFT contract, source and data hashes, LR selector, failure-closed terminal analyzer,
 frozen evaluator, NVIDIA parity tests, RunPod bootstrap, and HF exporter are in the
-[Alpha repository](https://github.com/thomasdavis/alpha2). Final checkpoint/export hashes and Hub
-cold-load evidence will be added after the release gate passes.
+[Alpha repository](https://github.com/thomasdavis/alpha2).
+
+- Native terminal checkpoint SHA-256:
+  `6c279d086d8c0679495e38ebec8a473ac23d16bfb3b93516e144712963fecbc8`
+- Standard `model.safetensors` SHA-256:
+  `6bb349085512c45fe5cf732209a82a5c5196d2d7a12f0aea16bdb042546dca92`
+- Terminal analysis SHA-256:
+  `eb8823e72dbc08a15e78c97449cf6dd7024ab9e7ed0b0f8fd29855ac340e129b`
+- Machine D3 report SHA-256:
+  `92da0b3bf5bd984c579ded700c1b2f9bfe928fe010a5352f65d1a15aea3d48c6`
+- Semantic report SHA-256:
+  `35cc1a87fad2c4f258cfdbd5859d0a0106c0f2c1e8bdd0d6e5ada303a0ffc1e9`
+- Alpha/Transformers parity: 2/2 top-1, maximum logit difference `7.153e-06`.
+
+Optimizer-bearing recovery checkpoints and exact restart notes are archived separately in
+`ajaxdavis/alpha-60m-training-checkpoints`.

@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--publish", action="store_true", help="Create/update the public Hub repository")
+    parser.add_argument(
+        "--experimental-failed-release",
+        action="store_true",
+        help="Publish a hash-bound failed D3 checkpoint as an explicitly labelled research artifact",
+    )
     parser.add_argument("--commit-message", default="Publish validated Alpha 60M Chat")
     return parser.parse_args()
 
@@ -126,7 +131,12 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, Any]:
     require_equal(terminal.get("schema"), "alpha-sft-terminal-finalizer-v1", "terminal schema")
     require_equal(terminal.get("result"), "PASS", "terminal operational result")
     require_equal(terminal.get("source_commit"), SOURCE_COMMIT, "terminal source commit")
-    require_equal(terminal.get("machine_d3", {}).get("result"), "PASS", "terminal machine D3")
+    expected_quality_result = "FAIL" if args.experimental_failed_release else "PASS"
+    require_equal(
+        terminal.get("machine_d3", {}).get("result"),
+        expected_quality_result,
+        "terminal machine D3",
+    )
     terminal_checkpoint_sha = require_sha256(terminal.get("checkpoint", {}).get("sha256"), "terminal checkpoint SHA-256")
     require_equal(sft.get("schema"), "alpha-flagship-sft-analysis-v1", "SFT analysis schema")
     require_equal(sft.get("result"), "PASS", "SFT analysis result")
@@ -136,14 +146,17 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, Any]:
     require_equal(sft.get("checkpoint", {}).get("finite_parameter_elements"), 57_688_576, "SFT finite elements")
     require_equal(sft.get("checkpoint", {}).get("sha256"), terminal_checkpoint_sha, "SFT/terminal checkpoint SHA-256")
     require_equal(pair.get("schema"), "alpha-frozen-eval-pair-analysis-v1", "pair-analysis schema")
-    require_equal(pair.get("result"), "PASS", "machine D3 pair result")
+    require_equal(pair.get("result"), expected_quality_result, "machine D3 pair result")
     require_equal(pair.get("inputs_match"), True, "base/chat frozen inputs")
     require_equal(pair.get("chat", {}).get("checkpoint", {}).get("sha256"), terminal_checkpoint_sha, "pair/terminal checkpoint SHA-256")
     require_equal(semantic.get("schema"), "alpha-frozen-chat-semantic-review-v1", "semantic-review schema")
-    require_equal(semantic.get("result"), "PASS", "semantic-review result")
+    require_equal(semantic.get("result"), expected_quality_result, "semantic-review result")
     require_equal(semantic.get("reference_blinded"), True, "semantic reference blinding")
     require_equal(semantic.get("counts", {}).get("total"), 100, "semantic reviewed rows")
-    if semantic.get("counts", {}).get("PASS", 0) < 80 or semantic.get("counts", {}).get("FAIL") != 0:
+    if args.experimental_failed_release:
+        if semantic.get("counts", {}).get("FAIL", 0) < 1:
+            raise RuntimeError("experimental failed release has no semantic FAIL evidence")
+    elif semantic.get("counts", {}).get("PASS", 0) < 80 or semantic.get("counts", {}).get("FAIL") != 0:
         raise RuntimeError("semantic-review counts do not satisfy the predeclared gate")
     require_equal(
         semantic.get("provenance", {}).get("checkpoint", {}).get("sha256"),
@@ -167,6 +180,12 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, Any]:
     ):
         if required not in card_text:
             raise RuntimeError(f"model card is missing exact release evidence: {required}")
+    failed_release_marker = "THIS CHECKPOINT FAILED THE PREDECLARED CHAT-QUALITY GATES"
+    if args.experimental_failed_release:
+        if failed_release_marker not in card_text:
+            raise RuntimeError("experimental model card is missing the failed-quality warning")
+    elif failed_release_marker in card_text:
+        raise RuntimeError("passing release model card contains the failed-quality warning")
 
     return {
         "repo": args.repo,
@@ -174,6 +193,12 @@ def validate_inputs(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint_sha256": terminal_checkpoint_sha,
         "weights_sha256": weights_sha256,
         "parameter_elements": 57_688_576,
+        "release_classification": (
+            "EXPERIMENTAL_FAILED_CHAT_CANDIDATE"
+            if args.experimental_failed_release
+            else "D3_VALIDATED_CHAT_MODEL"
+        ),
+        "quality_gate_result": expected_quality_result,
         "export_manifest": export_manifest,
         "inputs": {
             "model_card": {"path": str(args.model_card), "sha256": sha256_file(args.model_card)},

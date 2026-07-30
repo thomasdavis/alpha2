@@ -160,5 +160,29 @@ class HfApi:
     await expect(execFileAsync("python3", rejectedArgs, { cwd: repoRoot }))
       .rejects.toMatchObject({ stderr: expect.stringContaining("machine D3 pair result") });
     await expect(readFile(rejectedOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await Promise.all([
+      writeFile(terminalPath, JSON.stringify({
+        schema: "alpha-sft-terminal-finalizer-v1", result: "PASS",
+        source_commit: "c333bf247fbe87b85d01f3d34789b46615dd1034",
+        checkpoint: { sha256: checkpointSha }, machine_d3: { result: "FAIL" },
+      }) + "\n"),
+      writeFile(semanticPath, JSON.stringify({
+        schema: "alpha-frozen-chat-semantic-review-v1", result: "FAIL", reference_blinded: true,
+        counts: { total: 100, PASS: 0, BORDERLINE: 0, FAIL: 100 },
+        provenance: { checkpoint: { sha256: checkpointSha } },
+      }) + "\n"),
+      writeFile(cardPath, `---\nlicense: apache-2.0\nlibrary_name: transformers\n---\n# Alpha 60M Chat\nTHIS CHECKPOINT FAILED THE PREDECLARED CHAT-QUALITY GATES\n${checkpointSha}\n${sha256(weights)}\n`),
+    ]);
+    const experimentalOut = join(outDir, "experimental.json");
+    const experimentalArgs = [
+      ...args.slice(0, -1), experimentalOut, "--experimental-failed-release",
+    ];
+    await execFileAsync("python3", experimentalArgs, { cwd: repoRoot });
+    const experimental = JSON.parse(await readFile(experimentalOut, "utf8"));
+    expect(experimental).toMatchObject({
+      schema: "alpha-hf-chat-publication-v1", result: "PASS", mode: "preflight",
+      release_classification: "EXPERIMENTAL_FAILED_CHAT_CANDIDATE", quality_gate_result: "FAIL",
+    });
   }, 120_000);
 });
