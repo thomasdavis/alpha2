@@ -28,7 +28,7 @@
   --border-2: #d1d5db;
   --text-primary: #111827;
   --text-secondary: #4b5563;
-  --text-muted: #9ca3af;
+  --text-muted: #6b7280;
   --accent: #2563eb;
   --green: #16a34a;
   --green-bg: #dcfce7;
@@ -48,7 +48,7 @@ html[data-theme='dark'] {
   --border-2: #333333;
   --text-primary: #e0e0e0;
   --text-secondary: #a3a3a3;
-  --text-muted: #555555;
+  --text-muted: #8b8b8b;
   --accent: #3b82f6;
   --green: #4ade80;
   --green-bg: #14532d;

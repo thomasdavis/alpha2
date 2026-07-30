@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   transpilePackages: [
-    "@alpha/core", "@alpha/db", "@alpha/tensor", "@alpha/autograd",
+    "@alpha/core", "@alpha/corpus", "@alpha/db", "@alpha/tensor", "@alpha/autograd",
     "@alpha/tokenizers", "@alpha/model", "@alpha/train", "@alpha/ui",
   ],
   serverExternalPackages: [],

@@ -12,9 +12,12 @@ by one-GPU feasibility rather than a fixed parameter count.
 
 **Current execution boundary:** the operator authorized and completed the bounded D2–D5 slice recorded in
 [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md). The ledger and 48-candidate
-GPT-5.4 calibration may be inspected and human-reviewed. Do not expand the corpus, call GPT-5.5, train,
-provision RunPod, mutate live Donto, publish a new artifact, or send additional ad hoc Discord messages without
-another explicit bounded authorization. The separately authorized factual progress timer posts every two
+GPT-5.4 calibration may be inspected and human-reviewed. The operator separately authorized the public,
+anonymous, read-only ledger explorer specified by
+[PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md); it may expose all tables and views but
+must not add a mutation surface or collapse scientific stages. Do not expand the corpus, call GPT-5.5, train,
+provision RunPod, mutate live Donto, publish a different artifact, or send additional ad hoc Discord messages
+without another explicit bounded authorization. The separately authorized factual progress timer posts every two
 hours through `alpha-corpus-discord-progress.timer`; keep its claims stage-accurate. GPT-5.6-sol is the counsel
 tier; GPT-5.4 is the initial surface-generation worker.
 

@@ -36,6 +36,8 @@ requires it. Conversation remains the product; all formal machinery stays behind
 13. [Appendix B — Worked family specifications](APPENDIX-B-WORKED-FAMILIES.md)
 14. [Appendix C — External research-agent return protocol](APPENDIX-C-RESEARCH-AGENT-PROTOCOL.md)
 15. [Execution 01 — Scientific ledger and GPT-5.4 calibration](EXECUTION-01-LEDGER-AND-CALIBRATION.md)
+16. [PRD-11 — Public Alpha Corpus explorer](PRD-11-PUBLIC-CORPUS-EXPLORER.md)
+17. [Execution 02 — Public Alpha Corpus explorer](EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md)
 
 ## Authority and supersession
 
@@ -76,6 +78,9 @@ The precedence order is:
   evaluation, but it does not enter the primary training mixture unless a later experiment explicitly says so.
 - **No generation is approved merely by this document.** The operator separately authorized and completed the
   bounded D2–D5 calibration recorded in Execution 01. Any expansion still requires a new bounded decision.
+- **The scientific ledger is publicly inspectable, not publicly mutable.** The operator separately authorized
+  the read-only explorer recorded in PRD-11 and Execution 02. Public visibility does not promote a candidate,
+  create a release, or authorize training.
 
 ## What “comprehensive” means here
 

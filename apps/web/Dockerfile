@@ -8,6 +8,7 @@ ARG COMMIT_SHA=""
 COPY package.json package-lock.json turbo.json tsconfig.base.json ./
 COPY apps/web/ apps/web/
 COPY packages/core/ packages/core/
+COPY packages/corpus/ packages/corpus/
 COPY packages/db/ packages/db/
 COPY packages/inference/ packages/inference/
 COPY packages/tensor/ packages/tensor/

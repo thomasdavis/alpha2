@@ -26,6 +26,18 @@ const nav: NavItem[] = [
     match: (p) => p === "/",
   },
   {
+    href: "/corpus",
+    label: "Corpus",
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <ellipse cx="8" cy="3.5" rx="5.5" ry="2" />
+        <path d="M2.5 3.5v4c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-4" />
+        <path d="M2.5 7.5v4c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-4" />
+      </svg>
+    ),
+    match: (p) => p === "/corpus" || p.startsWith("/corpus/"),
+  },
+  {
     href: "/training",
     label: "Live Training",
     icon: (
@@ -230,7 +242,7 @@ export function Sidebar() {
       {/* Footer */}
       <div className="border-t border-border px-5 py-3">
         <div className="text-[0.6rem] text-text-muted">
-          alpha.omegaai.dev
+          alpha.donto.org
         </div>
       </div>
     </aside>

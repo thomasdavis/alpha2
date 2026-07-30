@@ -1,4 +1,4 @@
-# HANDOFF — Alpha Corpus D5 calibration plus Alpha 60M archived closeout, state as of 2026-07-30
+# HANDOFF — Alpha Corpus public explorer plus D5 calibration and Alpha 60M archive, state as of 2026-07-30
 
 ## Current planning goal
 
@@ -12,10 +12,14 @@ is synthetic-only; model scale is governed by one-GPU feasibility, not a fixed p
 [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md). The canonical mounted
 ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 48 GPT-5.4 candidates across six
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
-The latest audit packet is under its `releases/audit/` directory. Human conceptual adjudication is next.
+The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
+and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
+It dynamically exposes all 106 tables and four views without changing any candidate's stage. The latest audit
+packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is still next.
 
-Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish, or
-send additional ad hoc Discord messages without another bounded operator instruction. The factual progress
+Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
+different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.
+The public read-only `/corpus` publication is the explicit exception recorded on 2026-07-30. The factual progress
 timer `alpha-corpus-discord-progress.timer` is enabled every two hours; its first post returned HTTP 204 at
 09:09 UTC. GPT-5.6-sol is the counsel tier and GPT-5.4 is the initial worker. New corpus work pauses if the
 project-owned artifact tree exceeds 15 GiB; this does not create a global disk rule.

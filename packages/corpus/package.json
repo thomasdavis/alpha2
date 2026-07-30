@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "test": "node --test dist/corpus.test.js",
+    "test": "node --test dist/*.test.js",
     "clean": "tsc -b --clean"
   },
   "dependencies": {

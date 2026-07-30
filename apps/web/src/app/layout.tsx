@@ -5,7 +5,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Alpha",
-  description: "GPT training dashboard",
+  description: "Public research workbench for Alpha models and synthetic conversational data",
 };
 
 export default function RootLayout({
@@ -20,7 +20,7 @@ export default function RootLayout({
           <Sidebar />
           <MobileHeader />
           <main className="min-h-screen lg:pl-56">
-            <div className="mx-auto max-w-6xl px-6 py-6">{children}</div>
+            <div className="mx-auto max-w-[112rem] px-4 py-5 sm:px-6 sm:py-6">{children}</div>
           </main>
         </Providers>
       </body>

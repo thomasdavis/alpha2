@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER AUTHORIZED; HUMAN ADJUDICATION PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -23,6 +23,10 @@ argumentation, and cross-domain transfer. Donto's “emit free, preserve conflic
 method governs the hidden research substrate; Alpha should still talk naturally rather than emit ontology
 records.
 
+The ledger itself is an explicitly authorized public research artifact at `/corpus`. All live tables and views
+are inspectable read-only, including rejected work, while candidates, review, release membership, and actual
+training exposure remain separate states. Publication does not authorize generation or training.
+
 The first planned primary experiment initializes Alpha without importing a pretrained model and trains only on
 an accepted synthetic release produced by this system. Later human, public-data, pretrained, retrieval, and
 Donto-grounded mixtures are separate ablations. Model size is not a project identity: the configuration must
@@ -32,7 +36,9 @@ The implementation sequence and explicit gates are in
 [PRD-09](docs/synthetic-curriculum-prd/PRD-09-IMPLEMENTATION-ACCEPTANCE.md). The first bounded execution is
 documented in [Execution 01](docs/synthetic-curriculum-prd/EXECUTION-01-LEDGER-AND-CALIBRATION.md): the SQLite
 ledger, six canary families, GPT-5.4 workflow, and 48-candidate calibration are complete and quarantined. The
-next action is human conceptual adjudication and cost/quality review. Corpus expansion, GPT-5.5 criticism,
+public explorer contract and release record are [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
+and [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md). The next research action
+is human conceptual adjudication and cost/quality review. Corpus expansion, GPT-5.5 criticism,
 training, and GPU work require separate authorization.
 
 ---

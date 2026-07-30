@@ -105,6 +105,18 @@ repository revision/dirty count, generation/training activity, project-owned sto
 gate. The system timer is `alpha-corpus-discord-progress.timer`. It may not turn structural validity into a
 quality claim or imply that training/GPU work is active when it is not.
 
+## 2026-07-30 — Public read-only Alpha Corpus explorer
+
+The operator explicitly authorized publication of the complete Alpha Corpus SQLite ledger at
+`https://alpha.donto.org/corpus`, with all current and future compatible tables and views visible. The existing
+Alpha dashboard remains the surrounding product. The explorer is anonymous and public because the ledger is a
+research artifact, but it has no mutation surface and opens SQLite read-only plus query-only.
+
+Public visibility does not change scientific stage. Generated, rejected, reviewed, public-ready, released, and
+training-exposed records remain separate. In particular, the current 48 calibration candidates remain
+quarantined pending human conceptual adjudication. This decision authorizes the read-only web publication and
+its supporting deployment; it does not authorize more generation, model training, GPU spend, or Donto writes.
+
 ## Future supersession requirements
 
 A future decision to train again must record:
