@@ -9,5 +9,9 @@ alpha.donto.org {
 	}
 	tls internal
 	encode gzip zstd
+	@legacy_api path /api/* /v1/* /chat/completions
+	respond @legacy_api 404
+	@non_read not method GET HEAD
+	respond @non_read 405
 	reverse_proxy 127.0.0.1:3104
 }
