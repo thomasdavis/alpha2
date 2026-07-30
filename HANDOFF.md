@@ -1,13 +1,55 @@
-# HANDOFF — alpha2 revival, state as of 2026-07-27 ~03:21 UTC
+# HANDOFF — Alpha 60M archived closeout, state as of 2026-07-30
 
-For the incoming agent. **Read `GOAL.md` first** (repo root) — it is the canonical program: mission,
-stage gates G0–G5, budget ledger, standing decisions. This file is the live session-state snapshot and
-the exact next steps. Box operating rules live in `/home/ajax/CLAUDE.md`; alpha2 memory in
-`~/.claude/projects/-home-ajax/memory/project_alpha2_revival.md`; roadmap block in `/home/ajax/TODO.md`.
+For any future agent. **Read `GOAL.md` first** (repo root): the program is closed, its execution gates
+passed, and its chat-quality gate failed. This file preserves the exact restart/publication state and
+the chronological paid-run evidence. Box operating rules live in `/home/ajax/CLAUDE.md`; roadmap state
+is mirrored in `/home/ajax/TODO.md`.
 
 ---
 
-## ⚠️ CURRENT LIVE OVERRIDE — recovery2 is training; old endpoint is dead
+## CURRENT CLOSEOUT — no Alpha GPU or training run is live
+
+- **Operator decision:** no more model runs after the sealed terminal evaluation. Do not provision a
+  RunPod or continue training unless the user gives a new explicit authorization and a new continuation
+  contract is written. The Alpha pod `gp4m6s8m06bhen` was removed by the fail-closed finalizer at
+  2026-07-30 00:17:45 UTC. RunPod then showed only an unrelated Wajarri pod; it was not touched.
+- **Terminal SFT:** exact source `c333bf247fbe87b85d01f3d34789b46615dd1034`, 30,322/30,322 finite
+  steps, one assistant-only epoch, 496,795,648 padded tokens, median post-warmup 3,847.23 tok/s, final
+  train/held-out loss 1.7579851/1.6439665, all 57,688,576 parameters finite/nonzero, and zero allocator
+  overflow. Native checkpoint SHA-256 is `6c279d086d8c0679495e38ebec8a473ac23d16bfb3b93516e144712963fecbc8`.
+- **D3 FAILED:** sealed chat result is 2/100 structural, 94/100 EOS, 8/100 nonempty, six degenerate
+  loops, and mean/max 4-gram repetition 0.04904/0.984. Closed-book QA is 0/200 exact, 0 contained,
+  mean F1 0. A reference-blinded inspection of every output returned 0 PASS / 0 BORDERLINE / 100 FAIL:
+  92 were empty, six looped, and the two remaining fragments were unusable. Machine report SHA
+  `92da0b3b...`; semantic report SHA `35cc1a87...`. This is not a chatty model.
+- **Standard public model:** [ajaxdavis/alpha-60m-chat](https://huggingface.co/ajaxdavis/alpha-60m-chat),
+  immutable revision `b481f46924b7a4777a029de1ffb44c06cc925d4c`, weights SHA `6bb34908...`.
+  Anonymous empty-cache stock Transformers loaded `LlamaForCausalLM`, exact parameter/hash counts,
+  CPU-only and without custom code. Plain text produced `Hello ever`; the message-list pipeline emitted
+  an empty assistant string, consistent with the sealed failure.
+- **Native restart archive:**
+  [ajaxdavis/alpha-60m-training-checkpoints](https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints),
+  revision `7198d1a1f094ffe88d06399ea99fecbd78fa8b66`. It contains full optimizer/RNG/tokenizer checkpoints
+  for base step 61,036 (`08e14fa9...`), best surviving SFT step 29,000 (`03eaac3e...`), and terminal
+  SFT step 30,322 (`6c279d08...`), plus the complete contracts, metrics, audits, and failed evals.
+  Local hardlink bundle: `/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/`;
+  `MANIFEST.sha256` is verified and `RESUME.md` gives the future RunPod procedure.
+- **Public Space:** [ajaxdavis/alpha-60m-chat](https://huggingface.co/spaces/ajaxdavis/alpha-60m-chat),
+  immutable Space revision `be0bd0428631d1585b13ddf9e93a8ed2d9254606`. Hugging Face rejected
+  Docker `cpu-basic` without PRO, so the free static Space calls the exact Alpha CPU inference backend
+  at `https://donto.org/alpha-60m`. Runtime source is `5bd723d`; service
+  `alpha2-hf-backend.service` is nice 19, CPU-capped, 3GB memory-capped, loopback-only behind Caddy,
+  and checkpoint-hash pinned. Desktop and 390px browser checks passed with no overflow; the UI prompt
+  flow displayed the real empty EOS in 1.883s. Screenshots and public API proof are under
+  `/mnt/donto-data/alpha-runs/alpha-60m-space-runtime-5bd723d-20260730/`.
+- **Discord:** no post was sent at terminal because the user required improvement-only posts and none
+  of the final outputs improved qualitatively. The ignored webhook file remains local and mode 0600.
+- **Canonical evidence:** terminal run
+  `/mnt/donto-data/alpha-runs/flagship-sft-c333bf2-20260728/`; publication reports live directly under
+  `/mnt/donto-data/alpha-runs/hf-*-20260730*`. Final project tag is
+  `alpha-60m-archive-20260730`.
+
+## Historical live recovery record — no endpoints or pods below are current
 
 - **Active pod `gp4m6s8m06bhen`**, RTX 3090 community, **$0.22/hr**. SSH:
   `ssh -i ~/.runpod/ssh/runpodctl-ssh-key -p 10784 root@99.69.17.69`.

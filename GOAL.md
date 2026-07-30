@@ -1,7 +1,14 @@
 # GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
 
-**Set:** 2026-07-22 · **Owner:** ajax + Codex (handoff from Claude) · **Status:** ACTIVE
+**Set:** 2026-07-22 · **Closed:** 2026-07-30 · **Owner:** ajax + Codex (handoff from Claude) · **Status:** ARCHIVED — EXECUTION PASS / D3 FAIL / PUBLISHED BY EXPLICIT OPERATOR OVERRIDE
 **Budget:** $70.21 RunPod prepaid credit (hard ceiling; no per-token API spend anywhere in this program)
+
+> **Final adjudication (2026-07-30):** the from-scratch Alpha/Helios program completed mechanically and
+> is reproducibly published, but it did **not** produce a chatty model. The sealed chat gate failed
+> (2/100 structural, 92 empty, six loops; semantic review 0 PASS / 100 FAIL; QA 0/200). At the user's
+> direction, the checkpoint was published as an explicitly failed-quality research artifact, together
+> with optimizer-bearing recovery state and a public Space. No Alpha pod or training run remains live,
+> and no further run is authorized.
 
 ---
 
@@ -49,6 +56,10 @@ standard `config.json` (`architectures:["LlamaForCausalLM"]`), `model.safetensor
 `tokenizer_config.json` + `chat_template.jinja`, honest model card (from-scratch provenance, data mix,
 full eval table, limitations). Verification: `pipeline("text-generation", "ajaxdavis/alpha-<N>m-chat")`
 produces formatted chat output on a clean machine with **zero custom code**.
+
+Final state: D1 passed. D2's packaging/cold-load portion passed, but the expected usable formatted chat
+output did not: the message-list cold load emitted immediate EOS. D2 is therefore a published failed
+artifact, not a successful chat deliverable. D3 failed and remains failed.
 
 **D3. The chat bar** (frozen eval, greedy decoding, run before upload):
 - ≥95/100 fixed chat prompts: responds in assistant role, terminates with EOS, no user-role leakage.
@@ -1979,7 +1990,9 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
   `alpha2-flagship-sft-finalizer-20260728` proved consecutive 3,250→3,300-row polls with the exact trainer
   PID. After a clean 30,322-step exit it automates terminal audit/analysis, frozen eval, pair analysis,
   HF export/parity, full remote-manifest/local-hash verification, and only then scoped pod removal.
-  Machine D3 failure is preserved rather than published; semantic review and chat upload remain manual.
+  Machine D3 failure is preserved rather than published by the watcher; semantic review and chat upload
+  remain manual. The later 2026-07-30 failed-quality upload used the separately guarded, explicit
+  `--experimental-failed-release` operator-override path and did not alter the failed gate.
   `e1df144` makes that manual boundary reproducible: its semantic-review preparer binds the
   terminal checkpoint/manifest/prompts/summary/results, rejects case drift, blinds held-out references,
   and emits all 100 cases under the predeclared conversational rubric only after terminal generation.
@@ -2002,19 +2015,28 @@ That, not the framework, is half of why every prior run produced gibberish. Fix 
 - [x] `config.json` (llama; explicit `num_key_value_heads`, `head_dim`, `rms_norm_eps=1e-5`, flat
       `rope_theta`, `tie_word_embeddings: true` + **omit lm_head from the file** — the #1 silent-garbage
       pitfall), `generation_config.json`, `chat_template.jinja` with `{% generation %}` markers.
-- [▶] Model cards: base card is public with the from-scratch story, exact architecture/training/cost,
-      ODC-By pretraining provenance, full failed base eval, and limitations. Chat card remains pending
-      the terminal frozen evaluation and semantic review; it must include Apache-2.0 / CC-BY-4.0 SFT
-      attribution and the true base-vs-chat table.
-- [▶] HF publication: `ajaxdavis/alpha-60m-base` is public at Hub commit `8693cb4c...`; anonymous
+- [x] Model cards: the base card is public with the from-scratch story, exact architecture/training/cost,
+      ODC-By pretraining provenance, full failed base eval, and limitations. The chat card is public with
+      Apache-2.0 / CC-BY-4.0 SFT attribution, the exact base-vs-chat table, terminal hashes, and a prominent
+      `THIS CHECKPOINT FAILED THE PREDECLARED CHAT-QUALITY GATES` warning.
+- [x] HF publication: `ajaxdavis/alpha-60m-base` is public at Hub commit `8693cb4c...`; anonymous
       empty-cache stock-Transformers CPU cold load passed both plain-text and message-list pipelines,
       exact 57,688,576 parameters, and safetensors SHA `d0aa2ccd...`. Publication proof is sealed under
-      `/mnt/donto-data/alpha-runs/hf-base-publication-c333bf2-20260728/`. Chat upload/cold-load and the
-      final `alpha2` release tag remain pending G5/D3.
-- [ ] Stretch (post-D2): GGUF via `convert_hf_to_gguf.py` (needs the `get_vocab_base_pre` patch for a
-      custom vocab — patch to `"gpt-2"` pre since we adopt the GPT-2 split regex); refresh the HF Space
-      (apps/hf) to serve the new model with proper chat template + EOS stop; update apps/web `/v1` route
-      (currently joins messages with `\n` and never stops on EOS — demo-killer).
+      `/mnt/donto-data/alpha-runs/hf-base-publication-c333bf2-20260728/`. The failed-quality chat export is
+      public at commit `b481f46924b7a4777a029de1ffb44c06cc925d4c`; anonymous empty-cache stock
+      Transformers loaded exact SHA `6bb34908...`, 57,688,576 parameters, and no custom code. Its chat
+      pipeline truthfully returned an empty assistant response.
+- [x] Continuation archive: `ajaxdavis/alpha-60m-training-checkpoints` at immutable revision
+      `7198d1a1f094ffe88d06399ea99fecbd78fa8b66` contains the base step 61,036, best surviving full SFT
+      step 29,000, and terminal SFT step 30,322 native ALPH files, each with AdamW state, optimizer step,
+      RNG state, tokenizer artifacts, contracts, complete metrics, audits, and failed-evaluation reports.
+- [x] Public Space: `ajaxdavis/alpha-60m-chat` (Space revision
+      `be0bd0428631d1585b13ddf9e93a8ed2d9254606`) is a free static HF front end because Docker
+      `cpu-basic` now requires PRO. It calls the exact low-priority Alpha CPU backend at
+      `https://donto.org/alpha-60m`, stops on atomic EOS, exposes empty EOS explicitly, and has desktop,
+      390px-mobile, API, CORS, service-memory, and zero-restart proof.
+- [ ] Deliberately not pursued: GGUF, another SFT epoch, LR changes, rejection sampling, or any further
+      model run. Those require a new user authorization and a new contract after the archived baseline.
 
 ## 5. Budget ledger (update on every spend; hard ceiling $70.21)
 
@@ -2065,7 +2087,7 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 | Repo secrets already public | Stage 1 scrub + rotation before any publicity |
 | JS heap/string limits on big corpora | shard corpus files ≤2GB; loader already chunks; token cache Int32 = 4 bytes/token budgeted |
 
-## 8. Immediate next actions (current 2026-07-28)
+## 8. Closeout actions (completed 2026-07-30)
 
 1. [x] Certify `c333bf2` on the live RTX 3090 as the SFT source: 46/46 GPU-gated tests passed with
    zero skips/failures/todos. This advances only the SFT stage boundary and preserves `e561f66` as
@@ -2073,12 +2095,14 @@ spot only with the checkpoint-puller running. NOTE: 4 stopped mobtranslate/migma
 2. [x] Complete the contracted SFT LR sweep. All three pilots completed 2,000/2,000 finite rows with
    complete allocator cadence and zero overflow. Strict PASS report `06243d36...` selects `3e-4`:
    final-three means 1.7839965 (`3e-4`), 1.8391179 (`1e-3`), 1.8586174 (`1e-4`).
-3. [▶] Complete the live 30,322-step / 496,795,648-token assistant-only masked SFT at selected
-   `3e-4`, under `alpha2-flagship-sft-guard-20260728.service`, preserving `c333bf2` provenance. Its
-   first recovery gate passed at step 1,000: held-out loss 1.9429283, zero allocator overflow, exact
-   692,528,815-byte remote/mounted checkpoint SHA `9149bc73...`, clean resume through step 1,050, and
-   zero guard restarts.
-4. Run the frozen chat-side eval and pair analyzer against the completed/mirrored base baseline, do
-   the separate human semantic review, then export/verify/publish both HF repos. The exact base export
-   already passes stock `LlamaForCausalLM` load, Alpha-vs-Transformers parity (2/2 top-1,
-   `6.771e-05` max logit delta), tokenizer parity, and a zero-custom-code CPU `pipeline()` cold load.
+3. [x] Completed the exact 30,322-step / 496,795,648-token assistant-only SFT at selected `3e-4` on
+   pinned source `c333bf2`. Terminal analyzer: 30,322 finite/consecutive rows, all 57,688,576 parameters
+   finite/nonzero, zero allocator overflow, 3,847.23 median post-warmup tok/s, final train/held-out
+   1.7579851/1.6439665. Terminal checkpoint SHA is `6c279d08...`.
+4. [x] Ran and preserved the sealed chat/QA evaluation and blinded semantic review. D3 failed exactly
+   as reported above; no Discord improvement post was made because no response improved qualitatively.
+5. [x] Removed Alpha pod `gp4m6s8m06bhen` only after the complete remote manifest was mirrored and
+   verified. The finalizer observed `$12.6551603856` account balance; the remaining RunPod workload was
+   unrelated Wajarri and was not touched.
+6. [x] Published and anonymously verified the base model, failed-quality chat artifact, native recovery
+   archive, free static Space, and exact Alpha backend. Final project tag: `alpha-60m-archive-20260730`.

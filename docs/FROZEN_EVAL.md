@@ -122,3 +122,34 @@ reserved for comprehensible but substantially flawed answers. The finalizer re-r
 sealed input, proves the packet still contains the exact prompts/outputs/machine flags in exact order,
 requires a verdict and rationale for all 100 cases, and preserves a machine-readable PASS or FAIL report.
 Machine structure and closed-book factual accuracy remain separately reported gates.
+
+## Terminal result — 2026-07-30
+
+The final step-30,322 SFT checkpoint was evaluated once against the unchanged frozen inputs. This is
+the terminal result; the operator then closed training and prohibited further runs.
+
+| Metric | Base step 61,036 | Chat step 30,322 |
+|---|---:|---:|
+| Structural pass | 0 / 100 | 2 / 100 |
+| EOS termination | 0 / 100 | 94 / 100 |
+| Nonempty | 99 / 100 | 8 / 100 |
+| User-role leaks | 0 / 100 | 0 / 100 |
+| Degenerate loops | 99 / 100 | 6 / 100 |
+| Mean / max 4-gram repeat rate | 0.81256 / 0.98400 | 0.04904 / 0.98400 |
+| QA exact / contained | 0 / 200 · 1 / 200 | 0 / 200 · 0 / 200 |
+| QA mean token F1 | 0.000238 | 0.000000 |
+| Blinded semantic review | not run | 0 PASS / 0 BORDERLINE / 100 FAIL |
+
+The machine gate and semantic gate both failed. Of the chat outputs, 92 were empty, six were degenerate
+loops, and the remaining two were unusable fragments (`#### 512 ` and a bare code fence). Publication
+as a failed-quality research artifact was a later explicit operator override; it does not change the
+gate result.
+
+Canonical evidence:
+
+- frozen manifest SHA-256 `bf6e6ea4e7fb9ccffd2bab6283de42fe33e681679883da06d691f06cb867ac68`;
+- chat results SHA-256 `bc369665e98ec49ae141e271508fa289d6fcbc7acc14fe8632360ba1f64fe161`;
+- QA results SHA-256 `82d3254f02f7c900e395ae82387256097a9926c4e651544215a993af5a5d0cd7`;
+- chat summary SHA-256 `c4751b33d19f09fbb84f223397af63897975980dfcf52172e9e18905ae955930`;
+- pair-analysis SHA-256 `92da0b3bf5bd984c579ded700c1b2f9bfe928fe010a5352f65d1a15aea3d48c6`;
+- semantic-report SHA-256 `35cc1a87fad2c4f258cfdbd5859d0a0106c0f2c1e8bdd0d6e5ada303a0ffc1e9`.

@@ -88,3 +88,20 @@ zero allocator overflow, and 650–750 MiB terminal checkpoints. It ranks the fi
 validation losses, then final validation loss and lower LR as deterministic tie-breaks. The one-epoch
 launcher will not accept a merely allowed numeric LR: it verifies the report's selected LR, source
 commit, and all six input hashes before launching 30,322 assistant-only steps.
+
+## Completed flagship outcome — 2026-07-30
+
+The strict sweep selected `3e-4` from `{1e-4, 3e-4, 1e-3}`. The contracted run then completed exactly
+one epoch: 30,322 steps, batch 16, block 1,024, and 496,795,648 padded tokens over 485,150 training and
+26,278 held-out conversations. All rows were finite and consecutive; every one of 57,688,576 parameters
+was finite/nonzero; 305 allocator samples reported zero overflow. Median post-warmup throughput was
+3,847.23 tok/s, final train/held-out loss was 1.7579851/1.6439665, and the final-three validation mean
+was 1.7073496.
+
+The execution contract passed but the downstream chat-quality gate failed; see `docs/FROZEN_EVAL.md`.
+No further SFT run is authorized. The exact terminal checkpoint is SHA-256 `6c279d086d...`; a slightly
+better surviving full checkpoint at step 29,000 is also retained. Both, plus the base checkpoint,
+optimizer/RNG state, corpus manifest/audits, contracts, full metric stream, and failure reports are
+available at `ajaxdavis/alpha-60m-training-checkpoints`, immutable revision
+`7198d1a1f094ffe88d06399ea99fecbd78fa8b66`. Local restart instructions are in
+`/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/RESUME.md`.

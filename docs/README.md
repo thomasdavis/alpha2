@@ -26,7 +26,7 @@ If you want a compact system you can read, modify, and benchmark end-to-end, thi
 - `apps/cli` — main `alpha` CLI (`train`, `sample`, `eval`, `bench`, `datagen`, `tokenizer build`)
 - `apps/web` — Next.js dashboard + API routes (including OpenAI-compatible endpoints)
 - `apps/tui` — terminal dashboard
-- `apps/hf` — Hugging Face integration/deployment helper app
+- `apps/hf` — reproducible Hugging Face model API and free static Space front end
 
 ### Core Packages
 
@@ -58,11 +58,25 @@ If you want a compact system you can read, modify, and benchmark end-to-end, thi
 
 ## Project Status
 
-Alpha is an active experimental/open-source project.
+Alpha's 2026-07-30 60M training program is archived. The implementation remains an experimental,
+open-source from-scratch stack, but no Alpha training run is currently authorized or live.
 
-- APIs and CLI flags may evolve
-- performance work is ongoing
-- some subsystems are optimized, others are still being hardened
+- The exact pretrain and SFT contracts completed successfully on Alpha/Helios.
+- The terminal SFT checkpoint **failed** the predeclared chat-quality gate: it is a reproducible research
+  artifact, not a usable chat assistant.
+- APIs and CLI flags may still evolve; some subsystems are optimized and others remain experimental.
+
+Public artifacts:
+
+- [failed-quality 60M chat model](https://huggingface.co/ajaxdavis/alpha-60m-chat), immutable revision
+  `b481f46924b7a4777a029de1ffb44c06cc925d4c`;
+- [native training checkpoints](https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints), immutable
+  revision `7198d1a1f094ffe88d06399ea99fecbd78fa8b66`;
+- [interactive Hugging Face Space](https://huggingface.co/spaces/ajaxdavis/alpha-60m-chat), immutable
+  revision `be0bd0428631d1585b13ddf9e93a8ed2d9254606`.
+
+The Space deliberately exposes immediate-EOS/empty responses instead of disguising the failed model
+behind a fallback. `GOAL.md`, `HANDOFF.md`, and `docs/FROZEN_EVAL.md` contain the terminal evidence.
 
 ## Prerequisites
 

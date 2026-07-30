@@ -1,6 +1,12 @@
 # This Is What We Are Working On
 
-## Mission
+> **ARCHIVED HISTORICAL PLAN.** This March 2026 working note is retained for engineering provenance but
+> is no longer the active mission. The Alpha 60M program closed on 2026-07-30: all contracted execution
+> completed, the sealed chat gate failed, the artifacts and continuation checkpoints were published,
+> the Alpha RunPod was removed, and no further training run is authorized. Current truth is in
+> `GOAL.md`, `HANDOFF.md`, `docs/FROZEN_EVAL.md`, and `docs/RUNPOD.md`.
+
+## Historical mission
 - Make Helios consistently faster than CUDA on benchmark suites, with priority on flash-attention forward (`b1_h16_t512_d64`).
 - Keep L4 training runs stable (no allocator-cap/OOM crashes), with reliable remote metrics/events/samples and Discord reporting.
 - Push Super Chat quality toward meaningful text with training loss trending down and validation behavior monitored for plateau/overfit.

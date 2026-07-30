@@ -1,5 +1,30 @@
 # RunPod runbook for Alpha/Helios (Vulkan) — proven 2026-07-22
 
+> **Archived status (2026-07-30):** the Alpha 60M program is closed. No Alpha pod or training process
+> is live, and no further run is authorized. The completed SFT checkpoint failed the frozen chat-quality
+> gate and was published only as an explicitly labelled research artifact. This document remains the
+> proven recovery runbook, not an instruction to provision a pod now. Future work must begin with a new
+> operator-approved continuation contract and the immutable recovery archive described below.
+
+## Archived recovery state
+
+The native continuation bundle is public at
+[`ajaxdavis/alpha-60m-training-checkpoints`](https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints),
+immutable revision `7198d1a1f094ffe88d06399ea99fecbd78fa8b66`. Its three recovery points are:
+
+| Recovery point | SHA-256 | Intended use |
+|---|---|---|
+| base step 61,036 | `08e14fa9604bf1b46ebcd5df37933c84d2496c1d05d9e4b32ebad98792cc6049` | canonical completed pretrain |
+| SFT step 29,000 | `03eaac3e7be06e8fb5720415a334b36d7ef5019fcff72ca9227636b84011a7f3` | best held-out loss among surviving full SFT checkpoints |
+| SFT step 30,322 | `6c279d086d8c0679495e38ebec8a473ac23d16bfb3b93516e144712963fecbc8` | canonical one-epoch continuation state |
+
+These are native ALPH checkpoints with model parameters, AdamW tensors and step, RNG state, and
+tokenizer state—not inference-only exports. Contracts, full metrics, audits, corpus/tokenizer manifests,
+and the failed evaluation travel with them. The identical local hardlink bundle is
+`/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/`; run `sha256sum -c MANIFEST.sha256`
+there and read `RESUME.md` before any future RunPod transfer. Do not reuse the frozen one-epoch SFT
+launcher unchanged: it terminates at step 30,322 by design.
+
 RunPod replaces the dead GCP fleet. Pods are docker containers (no privileged mode, no apt reliability,
 sometimes no github egress) with per-second billing. Everything below was executed and verified on a
 community RTX 3090 @ $0.22/hr.
@@ -147,13 +172,16 @@ Always run the one-shot preflight first. The watcher requires the exact terminal
 with no trainer process before it acts. It then runs the streaming terminal parameter/input audit, strict
 SFT analyzer, sealed 100-chat/200-QA evaluation, recomputed base/chat machine gate, standard HF export,
 and Alpha-vs-Transformers logit parity. A machine D3 failure is preserved as valid evidence; it is not
-turned into a publication. The watcher seals every remote artifact in a SHA-256 manifest, rsyncs the run,
+turned into a passing publication by the watcher. The 2026-07-30 failed-quality upload used a separate,
+explicit operator-override path and remains labelled as failed. The watcher seals every remote artifact in a SHA-256 manifest, rsyncs the run,
 verifies every local copy, and only then removes the named pod. Any operational failure exits with the pod
 untouched. Semantic review and Hugging Face chat publication remain manual gates.
 
-After terminal artifacts are mirrored, machine D3 passes, and the sealed semantic-review report passes,
+For a normal release, after terminal artifacts are mirrored, machine D3 passes, and the sealed semantic-review report passes,
 finish `docs/MODEL_CARD_CHAT.md` and run the release preflight. Publication is read-only by default and
-requires an explicit `--publish`:
+requires an explicit `--publish`. The archived 2026-07-30 artifact did not satisfy these quality gates;
+its publisher additionally required `--experimental-failed-release` so a failed model cannot be confused
+with the normal release path:
 
 ```bash
 nice -n19 ionice -c3 /mnt/donto-data/alpha-corpora/.venv/bin/python scripts/publish_hf_chat.py \
