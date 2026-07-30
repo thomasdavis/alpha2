@@ -86,6 +86,7 @@ function buildTokenizer(artifacts: TokenizerArtifacts): Tokenizer {
 
 const CHECKPOINT_PATH = process.env.CHECKPOINT_PATH ?? "/app/checkpoint.alph";
 const PORT = Number.parseInt(process.env.PORT ?? "7860", 10);
+const HOST = process.env.HOST ?? "127.0.0.1";
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65_535) throw new Error(`invalid PORT: ${process.env.PORT}`);
 
 console.log(`Loading checkpoint from ${CHECKPOINT_PATH}...`);
@@ -304,6 +305,6 @@ app.post("/v1/chat/completions", async (context) => {
   });
 });
 
-serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`Alpha HF Space listening on :${PORT}`);
+serve({ fetch: app.fetch, hostname: HOST, port: PORT }, () => {
+  console.log(`Alpha HF Space listening on ${HOST}:${PORT}`);
 });

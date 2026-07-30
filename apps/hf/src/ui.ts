@@ -1,6 +1,6 @@
 import { MODEL_ID } from "./protocol.js";
 
-export function renderUi(params: number, step: number): string {
+export function renderUi(params: number, step: number, apiBase = ""): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -159,14 +159,14 @@ export function renderUi(params: number, step: number): string {
             <label for="prompt" class="turn-role">Your prompt</label>
             <textarea id="prompt" name="prompt" maxlength="3000" required placeholder="Type a short prompt…"></textarea>
             <div class="actions">
-              <small>Served by Alpha’s own CPU inference engine. No request is sent to another model.</small>
+              <small>Served by Alpha’s own CPU inference engine on the project host. No request is sent to another model.</small>
               <button class="submit" id="submit" type="submit">Run checkpoint</button>
             </div>
           </form>
         </div>
       </section>
     </main>
-    <footer><span>${MODEL_ID}</span><span>Apache-2.0 code and weights</span><a href="/v1/models">OpenAI-compatible API</a><a href="/health">Health</a></footer>
+    <footer><span>${MODEL_ID}</span><span>Apache-2.0 code and weights</span><a href="${apiBase}/v1/models">OpenAI-compatible API</a><a href="${apiBase}/health">Health</a></footer>
   </div>
   <script>
     const form = document.getElementById("composer");
@@ -208,7 +208,7 @@ export function renderUi(params: number, step: number): string {
       runtime.textContent = "RUNNING";
       const started = performance.now();
       try {
-        const response = await fetch("/v1/chat/completions", {
+        const response = await fetch("${apiBase}/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages: [{ role: "user", content: value }], max_tokens: 96, temperature: 0 })
