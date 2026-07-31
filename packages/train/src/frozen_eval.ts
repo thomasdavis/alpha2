@@ -22,7 +22,11 @@ export function formatFrozenChatPrompt(messages: readonly FrozenChatMessage[]): 
     }
     parts.push(`${message.role === "user" ? "<|user|>" : "<|assistant|>"} ${message.content}`);
   }
-  return `${parts.join(" ")} <|assistant|> `;
+  // Do not append a literal space after the terminal assistant marker. In
+  // training, the following content token owns its leading space (for
+  // example, ` Hello`). A generation-only trailing space becomes a separate
+  // token that never occupies this boundary in the SFT corpus.
+  return `${parts.join(" ")} <|assistant|>`;
 }
 
 /** Fraction of generated token 4-grams that repeat an earlier generated 4-gram. */

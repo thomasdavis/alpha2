@@ -14,7 +14,7 @@ describe("frozen eval helpers", () => {
       { role: "assistant", content: "First answer" },
       { role: "user", content: "Follow-up" },
     ])).toBe(
-      "<|user|> First question <|assistant|> First answer <|user|> Follow-up <|assistant|> ",
+      "<|user|> First question <|assistant|> First answer <|user|> Follow-up <|assistant|>",
     );
   });
 

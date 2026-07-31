@@ -56,7 +56,7 @@ export function buildChatTemplate(): string {
     "{% if loop.last %}{{ ' <|end_of_text|>' }}{% else %}{{ ' ' }}{% endif %}" +
     "{% endif %}" +
     "{% endfor %}" +
-    "{% if add_generation_prompt %}{{ '<|assistant|> ' }}{% endif %}"
+    "{% if add_generation_prompt %}{{ '<|assistant|>' }}{% endif %}"
   );
 }
 

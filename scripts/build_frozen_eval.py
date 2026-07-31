@@ -156,7 +156,7 @@ def render_chat_prompt(messages: list[dict[str, str]]) -> str:
         f"{'<|user|>' if message['role'] == 'user' else '<|assistant|>'} {message['content']}"
         for message in messages
     ]
-    return " ".join(parts) + " <|assistant|> "
+    return " ".join(parts) + " <|assistant|>"
 
 
 def build_chat_candidates(

@@ -46,7 +46,9 @@ export function formatChatPrompt(messages: readonly ChatMessage[]): string {
     expected = expected === "user" ? "assistant" : "user";
   }
   if (expected !== "assistant") throw new Error("conversation must end with a user message");
-  return `${parts.join(" ")} <|assistant|> `;
+  // The first generated content token carries its own leading space. Adding
+  // one after the marker creates an out-of-distribution standalone token.
+  return `${parts.join(" ")} <|assistant|>`;
 }
 
 export function parseMessages(value: unknown): ChatMessage[] {

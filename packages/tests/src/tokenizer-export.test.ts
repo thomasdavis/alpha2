@@ -187,6 +187,12 @@ describe("HF tokenizer.json exporter", () => {
     expect(tokenizerConfig.chat_template).toContain("<|assistant|>");
     expect(tokenizerConfig.chat_template).toContain("{% if loop.last %}");
     expect(tokenizerConfig.chat_template).toContain("[Instructions: ");
+    expect(tokenizerConfig.chat_template).toContain(
+      "{% if add_generation_prompt %}{{ '<|assistant|>' }}{% endif %}",
+    );
+    expect(tokenizerConfig.chat_template).not.toContain(
+      "{% if add_generation_prompt %}{{ '<|assistant|> ' }}{% endif %}",
+    );
   });
 
   it("exported spec reproduces ByteBpeTokenizer.encode() on tricky strings", async () => {

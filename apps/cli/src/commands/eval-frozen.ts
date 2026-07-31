@@ -174,7 +174,7 @@ export async function evalFrozenCmd(args: string[]): Promise<void> {
   const qaResults: Array<Record<string, unknown>> = [];
   for (let i = 0; i < qaCases.length; i++) {
     const test = qaCases[i];
-    const generated = generate(`<|user|> ${test.question} <|assistant|> `, qaMaxTokens);
+    const generated = generate(`<|user|> ${test.question} <|assistant|>`, qaMaxTokens);
     const normalizedPrediction = normalizedAnswer(generated.text);
     const normalizedExpected = normalizedAnswer(test.answer);
     qaResults.push({

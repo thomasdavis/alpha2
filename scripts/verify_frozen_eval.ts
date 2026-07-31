@@ -31,7 +31,7 @@ function args(): Record<string, string> {
 function renderPrompt(messages: ChatRow["messages"]): string {
   return messages
     .map((message) => `${message.role === "user" ? "<|user|>" : "<|assistant|>"} ${message.content}`)
-    .join(" ") + " <|assistant|> ";
+    .join(" ") + " <|assistant|>";
 }
 
 async function main(): Promise<void> {
