@@ -1,5 +1,14 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { readFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import { sha256Bytes } from "./hash.js";
+import {
+  HUMAN_REVIEW_RUBRIC_SLUG,
+  HUMAN_REVIEW_RUBRIC_VERSION,
+  parseHumanReviewPacketText
+} from "./review-contract.js";
 import { resolveLedgerPaths } from "./storage.js";
+import type { HumanReviewPacket, HumanReviewPass } from "./types.js";
 
 export type CorpusRelationKind = "table" | "view";
 export type CorpusCellValue = string | number | null;
@@ -75,6 +84,24 @@ export interface CorpusPageRequest {
   sortDirection?: "asc" | "desc";
 }
 
+export interface CorpusReviewPacketSummary {
+  sessionId: string;
+  campaignSlug: string;
+  pass: HumanReviewPass;
+  reviewerAlias: string;
+  assignmentCount: number;
+  assignedCount: number;
+  completedCount: number;
+  createdAt: string;
+  packetSha256: string;
+}
+
+export interface CorpusReviewPacket {
+  packet: HumanReviewPacket;
+  packetSha256: string;
+  exportedAt: string;
+}
+
 interface SchemaRow {
   name: string;
   type: "table" | "view";
@@ -110,6 +137,12 @@ interface ForeignKeyRow {
   to: string;
   on_update: string;
   on_delete: string;
+}
+
+interface ReviewPacketRow {
+  blob_sha256: string;
+  relative_path: string;
+  created_at: string;
 }
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -247,6 +280,80 @@ export class CorpusReader {
       hasPreviousPage: page > 1,
       hasNextPage: page < pageCount
     };
+  }
+
+  listReviewPackets(): CorpusReviewPacketSummary[] {
+    if (!this.allRelations().some((relation) => relation.name === "export_artifact")
+      || !this.allRelations().some((relation) => relation.name === "blob")) return [];
+    const rows = this.database.prepare(`
+      SELECT ea.blob_sha256, b.relative_path, ea.created_at
+      FROM export_artifact ea
+      JOIN blob b ON b.sha256 = ea.blob_sha256
+      WHERE ea.format = 'human_review_packet_json'
+      ORDER BY ea.created_at DESC, ea.id DESC
+    `).all() as unknown as ReviewPacketRow[];
+    const sessions = new Map<string, CorpusReviewPacketSummary>();
+    for (const row of rows) {
+      const loaded = this.loadReviewPacketRow(row);
+      const packet = loaded.packet;
+      if (sessions.has(packet.sessionId)) continue;
+      const states = this.database.prepare(`
+        SELECT status, COUNT(*) AS count
+        FROM review_assignment
+        WHERE json_extract(blindness_json, '$.sessionId') = ?
+        GROUP BY status
+      `).all(packet.sessionId) as unknown as Array<{ status: string; count: number | bigint }>;
+      const stateCounts = Object.fromEntries(states.map((state) => [state.status, Number(state.count)]));
+      sessions.set(packet.sessionId, {
+        sessionId: packet.sessionId,
+        campaignSlug: packet.campaignSlug,
+        pass: packet.pass,
+        reviewerAlias: packet.reviewerAlias,
+        assignmentCount: packet.assignments.length,
+        assignedCount: stateCounts["assigned"] ?? 0,
+        completedCount: stateCounts["completed"] ?? 0,
+        createdAt: loaded.exportedAt,
+        packetSha256: loaded.packetSha256
+      });
+    }
+    return [...sessions.values()];
+  }
+
+  reviewPacket(sessionId: string): CorpusReviewPacket | null {
+    if (!/^review_session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+      return null;
+    }
+    if (!this.allRelations().some((relation) => relation.name === "export_artifact")
+      || !this.allRelations().some((relation) => relation.name === "blob")) return null;
+    const row = this.database.prepare(`
+      SELECT ea.blob_sha256, b.relative_path, ea.created_at
+      FROM export_artifact ea
+      JOIN blob b ON b.sha256 = ea.blob_sha256
+      WHERE ea.format = 'human_review_packet_json'
+        AND json_extract(ea.manifest_json, '$.sessionId') = ?
+      ORDER BY ea.created_at DESC, ea.id DESC
+      LIMIT 1
+    `).get(sessionId) as ReviewPacketRow | undefined;
+    return row ? this.loadReviewPacketRow(row) : null;
+  }
+
+  private loadReviewPacketRow(row: ReviewPacketRow): CorpusReviewPacket {
+    const corpusRoot = resolve(dirname(this.databasePath));
+    const absolutePath = resolve(corpusRoot, row.relative_path);
+    if (!absolutePath.startsWith(`${corpusRoot}${sep}`)) {
+      throw new Error(`Review packet blob escapes corpus root: ${row.relative_path}`);
+    }
+    const bytes = readFileSync(absolutePath);
+    const actualSha256 = sha256Bytes(bytes);
+    if (actualSha256 !== row.blob_sha256) {
+      throw new Error(`Review packet blob hash mismatch: expected ${row.blob_sha256}, received ${actualSha256}`);
+    }
+    const packet = parseHumanReviewPacketText(bytes.toString("utf8"));
+    if (packet.rubricSlug !== HUMAN_REVIEW_RUBRIC_SLUG
+      || packet.rubricVersion !== HUMAN_REVIEW_RUBRIC_VERSION) {
+      throw new Error(`Unsupported human-review rubric ${packet.rubricSlug} v${packet.rubricVersion}`);
+    }
+    return { packet, packetSha256: row.blob_sha256, exportedAt: row.created_at };
   }
 
   private requireRelation(name: string): CorpusRelationSummary {

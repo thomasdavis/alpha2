@@ -579,11 +579,19 @@ export function CorpusExplorer({
             release membership, and actual training exposure remain distinct and inspectable.
           </p>
         </div>
-        <dl className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
-          <div><dt className="text-text-muted">Relations</dt><dd className="mt-0.5 font-mono text-text-primary">{relations.length}</dd></div>
-          <div><dt className="text-text-muted">Tables / views</dt><dd className="mt-0.5 font-mono text-text-primary">{tables} / {views}</dd></div>
-          <div><dt className="text-text-muted">Ledger updated</dt><dd className="mt-0.5 font-mono text-text-primary">{formatTimestamp(databaseUpdatedAt)}</dd></div>
-        </dl>
+        <div className="flex flex-wrap items-start gap-4">
+          <dl className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
+            <div><dt className="text-text-muted">Relations</dt><dd className="mt-0.5 font-mono text-text-primary">{relations.length}</dd></div>
+            <div><dt className="text-text-muted">Tables / views</dt><dd className="mt-0.5 font-mono text-text-primary">{tables} / {views}</dd></div>
+            <div><dt className="text-text-muted">Ledger updated</dt><dd className="mt-0.5 font-mono text-text-primary">{formatTimestamp(databaseUpdatedAt)}</dd></div>
+          </dl>
+          <Link
+            href="/corpus/review"
+            className="min-h-11 rounded-md border border-border-2 px-3 py-2.5 text-sm font-medium text-text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Human review
+          </Link>
+        </div>
       </header>
 
       <StageStrip stages={stages} />

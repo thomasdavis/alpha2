@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./review-contract": {
+      "types": "./dist/review-contract.d.ts",
+      "import": "./dist/review-contract.js",
+      "default": "./dist/review-contract.js"
     }
   },
   "scripts": {

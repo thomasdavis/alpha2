@@ -8,80 +8,22 @@ import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import { writeAtomic } from "./storage.js";
 import type {
   GeneratedItem,
-  HumanReviewFinding,
   HumanReviewPacket,
   HumanReviewPacketAssignment,
   HumanReviewPass,
-  HumanReviewResponse,
   JsonValue
 } from "./types.js";
-
-const RUBRIC_SLUG = "d5-human-adjudication";
-const RUBRIC_VERSION = 1;
-
-const PASS_A_DIMENSIONS = [
-  "direct_responsiveness",
-  "conceptual_plausibility",
-  "linguistic_naturalness",
-  "conversational_naturalness",
-  "appropriate_depth_length",
-  "pedagogical_value",
-  "desire_to_continue",
-  "substantive_value_after_style_removed"
-] as const;
-
-const PASS_B_DIMENSIONS = [
-  "blueprint_validity",
-  "required_commitment_coverage",
-  "prohibited_commitment_safety",
-  "plurality_calibration",
-  "linguistic_pragmatic_validity",
-  "conversational_quality",
-  "pedagogical_value",
-  "metadata_schema_fit",
-  "style_distributional_value"
-] as const;
-
-const PASS_A_OUTCOMES = [
-  "acceptable_as_rendered",
-  "locally_repairable",
-  "major_rewrite_needed",
-  "conceptually_invalid",
-  "conversationally_invalid",
-  "valuable_as_negative",
-  "uncertain",
-  "requires_expertise"
-] as const;
-
-const PASS_B_OUTCOMES = [
-  "accept_as_positive",
-  "accept_as_negative",
-  "accept_as_ambiguous_set",
-  "accept_with_scope_restriction",
-  "repair_local",
-  "regenerate_from_blueprint",
-  "revise_blueprint",
-  "split_family",
-  "merge_as_projection",
-  "restrict_requires_authority",
-  "defer_theory_disagreement",
-  "reject_invalid",
-  "reject_duplicate",
-  "reject_style",
-  "reject_source_fidelity",
-  "reject_policy"
-] as const;
-
-const QUESTION_POLICIES = [
-  "necessary_before_answer",
-  "useful_after_partial_answer",
-  "optional_momentum",
-  "ritual_or_canned",
-  "misdirected",
-  "not_applicable"
-] as const;
-
-const MISSING_CLARIFICATION = ["no", "yes_missing_clarification", "uncertain", "not_applicable"] as const;
+import {
+  HUMAN_REVIEW_MISSING_CLARIFICATION,
+  HUMAN_REVIEW_QUESTION_POLICIES,
+  HUMAN_REVIEW_RUBRIC_SLUG,
+  HUMAN_REVIEW_RUBRIC_VERSION,
+  emptyHumanReviewResponse,
+  humanReviewDimensions,
+  humanReviewOutcomes,
+  humanReviewResponseErrors,
+  parseHumanReviewPacketText
+} from "./review-contract.js";
 
 const RUBRIC_DEFINITION = {
   sourceDocuments: [
@@ -98,17 +40,17 @@ const RUBRIC_DEFINITION = {
   passes: {
     A: {
       purpose: "Blind model-visible conversational and intellectual review",
-      dimensions: PASS_A_DIMENSIONS,
-      outcomes: PASS_A_OUTCOMES
+      dimensions: humanReviewDimensions("A").map((dimension) => dimension.key),
+      outcomes: humanReviewOutcomes("A").map((outcome) => outcome.value)
     },
     B: {
       purpose: "Contract-aware blueprint and realization review",
-      dimensions: PASS_B_DIMENSIONS,
-      outcomes: PASS_B_OUTCOMES
+      dimensions: humanReviewDimensions("B").map((dimension) => dimension.key),
+      outcomes: humanReviewOutcomes("B").map((outcome) => outcome.value)
     }
   },
-  questionPolicies: QUESTION_POLICIES,
-  missingClarification: MISSING_CLARIFICATION
+  questionPolicies: HUMAN_REVIEW_QUESTION_POLICIES.map((choice) => choice.value),
+  missingClarification: HUMAN_REVIEW_MISSING_CLARIFICATION.map((choice) => choice.value)
 } as unknown as JsonValue;
 
 interface CandidateRow {
@@ -171,26 +113,6 @@ function assertPass(value: string): asserts value is HumanReviewPass {
   if (value !== "A" && value !== "B") throw new Error(`Review pass must be A or B, received ${value}`);
 }
 
-function dimensionNames(pass: HumanReviewPass): readonly string[] {
-  return pass === "A" ? PASS_A_DIMENSIONS : PASS_B_DIMENSIONS;
-}
-
-function emptyResponse(pass: HumanReviewPass): HumanReviewResponse {
-  return {
-    outcome: null,
-    summaryUserAim: "",
-    summaryAssistantMove: "",
-    scores: Object.fromEntries(dimensionNames(pass).map((dimension) => [dimension, null])),
-    questionPolicy: null,
-    missingClarification: null,
-    findings: [],
-    rationale: "",
-    confidence: null,
-    uncertainty: "",
-    expertiseNeeded: ""
-  };
-}
-
 function visibleCandidate(pass: HumanReviewPass, row: CandidateRow): JsonValue {
   if (pass === "A") {
     return {
@@ -236,21 +158,23 @@ async function ensureHumanActor(ledger: Ledger, alias: string): Promise<string> 
 }
 
 async function ensureRubric(ledger: Ledger): Promise<string> {
-  const rubricId = stableId("rubric", RUBRIC_SLUG);
+  const rubricId = stableId("rubric", HUMAN_REVIEW_RUBRIC_SLUG);
   const definitionJson = canonicalJson(RUBRIC_DEFINITION);
   const digest = sha256Bytes(definitionJson);
-  const versionId = stableId("rubricv", `${RUBRIC_SLUG}:${RUBRIC_VERSION}:${digest}`);
+  const versionId = stableId(
+    "rubricv", `${HUMAN_REVIEW_RUBRIC_SLUG}:${HUMAN_REVIEW_RUBRIC_VERSION}:${digest}`
+  );
   const ts = now();
   await ledger.client.batch([
     {
       sql: "INSERT OR IGNORE INTO rubric(id, slug, created_at) VALUES (?, ?, ?)",
-      args: [rubricId, RUBRIC_SLUG, ts]
+      args: [rubricId, HUMAN_REVIEW_RUBRIC_SLUG, ts]
     },
     {
       sql: `INSERT OR IGNORE INTO rubric_version
             (id, rubric_id, version, definition_json, content_sha256, created_at)
             VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [versionId, rubricId, RUBRIC_VERSION, definitionJson, digest, ts]
+      args: [versionId, rubricId, HUMAN_REVIEW_RUBRIC_VERSION, definitionJson, digest, ts]
     }
   ], "write");
   const stored = await ledger.client.execute({
@@ -491,7 +415,7 @@ export async function prepareHumanReviewPacket(
     opaqueItemId: stableId("opaque", `${sessionId}:${assignment.candidateVersionId}`).slice(0, 19),
     candidateContentSha256: assignment.contentSha256,
     candidate: visibleCandidate(options.pass, assignment),
-    response: emptyResponse(options.pass)
+    response: emptyHumanReviewResponse(options.pass)
   }));
   const createdAt = now();
   const packet: HumanReviewPacket = {
@@ -500,8 +424,8 @@ export async function prepareHumanReviewPacket(
     sessionId,
     pass: options.pass,
     reviewerAlias: options.reviewerAlias.trim(),
-    rubricSlug: RUBRIC_SLUG,
-    rubricVersion: RUBRIC_VERSION,
+    rubricSlug: HUMAN_REVIEW_RUBRIC_SLUG,
+    rubricVersion: HUMAN_REVIEW_RUBRIC_VERSION,
     seed,
     createdAt,
     instructions: packetInstructions(options.pass),
@@ -522,68 +446,16 @@ export async function prepareHumanReviewPacket(
   };
 }
 
-function parsePacketText(text: string): HumanReviewPacket {
-  const parsed = JSON.parse(text) as unknown;
-  if (!isRecord(parsed) || parsed["schemaVersion"] !== 1 || typeof parsed["campaignSlug"] !== "string"
-    || typeof parsed["sessionId"] !== "string" || typeof parsed["pass"] !== "string"
-    || typeof parsed["reviewerAlias"] !== "string" || !Array.isArray(parsed["assignments"])) {
-    throw new Error("Human-review submission does not match packet schema version 1");
-  }
-  assertPass(parsed["pass"]);
-  return parsed as unknown as HumanReviewPacket;
-}
-
-function assertAllowed<T extends string>(value: string | null, allowed: readonly T[], label: string): T {
-  if (value === null || !allowed.includes(value as T)) throw new Error(`${label} has not been completed`);
-  return value as T;
-}
-
-function validateResponse(pass: HumanReviewPass, response: HumanReviewResponse, opaqueId: string): void {
-  assertAllowed(response.outcome, pass === "A" ? PASS_A_OUTCOMES : PASS_B_OUTCOMES, `${opaqueId} outcome`);
-  const expectedDimensions = dimensionNames(pass);
-  const actualDimensions = Object.keys(response.scores).sort();
-  if (actualDimensions.join("\0") !== [...expectedDimensions].sort().join("\0")) {
-    throw new Error(`${opaqueId} score dimensions differ from the rubric`);
-  }
-  for (const [dimension, score] of Object.entries(response.scores)) {
-    if (score === null || !Number.isInteger(score) || score < 0 || score > 4) {
-      throw new Error(`${opaqueId} score ${dimension} must be an integer from 0 to 4`);
-    }
-  }
-  assertAllowed(response.questionPolicy, QUESTION_POLICIES, `${opaqueId} questionPolicy`);
-  assertAllowed(response.missingClarification, MISSING_CLARIFICATION, `${opaqueId} missingClarification`);
-  if (response.rationale.trim().length < 1) throw new Error(`${opaqueId} rationale is required`);
-  if (response.confidence === null || !Number.isInteger(response.confidence)
-    || response.confidence < 0 || response.confidence > 4) {
-    throw new Error(`${opaqueId} confidence must be an integer from 0 to 4`);
-  }
-  if (pass === "A" && (response.summaryUserAim.trim().length < 1 || response.summaryAssistantMove.trim().length < 1)) {
-    throw new Error(`${opaqueId} Pass A summaries are required`);
-  }
-  for (const finding of response.findings) validateFinding(finding, opaqueId);
-}
-
-function validateFinding(finding: HumanReviewFinding, opaqueId: string): void {
-  if (!isRecord(finding) || typeof finding.dimension !== "string" || finding.dimension.trim().length < 1) {
-    throw new Error(`${opaqueId} finding dimension is required`);
-  }
-  if (!["observation", "minor", "major", "critical"].includes(finding.severity)) {
-    throw new Error(`${opaqueId} finding severity is invalid`);
-  }
-  if (finding.evidence.trim().length < 1 || finding.recommendation.trim().length < 1) {
-    throw new Error(`${opaqueId} findings require quoted evidence and a recommendation`);
-  }
-}
-
 export async function submitHumanReviewPacket(
   ledger: Ledger,
   path: string
 ): Promise<{ submitted: number; pass: HumanReviewPass; sessionId: string; submissionSha256: string }> {
   const submissionBytes = readFileSync(resolve(path));
-  const packet = parsePacketText(submissionBytes.toString("utf8"));
+  const packet = parseHumanReviewPacketText(submissionBytes.toString("utf8"));
   const actorId = await ensureHumanActor(ledger, packet.reviewerAlias);
   const rubricVersionId = await ensureRubric(ledger);
-  if (packet.rubricSlug !== RUBRIC_SLUG || packet.rubricVersion !== RUBRIC_VERSION) {
+  if (packet.rubricSlug !== HUMAN_REVIEW_RUBRIC_SLUG
+    || packet.rubricVersion !== HUMAN_REVIEW_RUBRIC_VERSION) {
     throw new Error("Human-review packet uses an unsupported rubric version");
   }
   if (packet.assignments.length < 1) throw new Error("Human-review packet has no assignments");
@@ -596,7 +468,8 @@ export async function submitHumanReviewPacket(
   for (const assignment of packet.assignments) {
     if (assignmentIds.has(assignment.assignmentId)) throw new Error(`Duplicate assignment ${assignment.assignmentId}`);
     assignmentIds.add(assignment.assignmentId);
-    validateResponse(packet.pass, assignment.response, assignment.opaqueItemId);
+    const responseErrors = humanReviewResponseErrors(packet.pass, assignment.response, assignment.opaqueItemId);
+    if (responseErrors.length > 0) throw new Error(responseErrors[0]);
     const stored = await ledger.client.execute({
       sql: `SELECT ra.candidate_version_id, ra.status, ra.blindness_json, cv.content_sha256, cv.candidate_id,
                    ra.reviewer_actor_id, ra.rubric_version_id
