@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { closeLedger, createCampaign, openLedger, seedLedger, type Ledger } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import {
+  ensureHumanActor,
   humanReviewStatus,
   prepareHumanReviewPacket,
   submitHumanReviewPacket
 } from "./review.js";
 import {
+  HUMAN_REVIEW_RUBRIC_SLUG,
   emptyHumanReviewSessionResponse,
   humanReviewPacketMatchesEnvelope,
   parseHumanReviewPacketText
@@ -115,9 +117,24 @@ function completePacket(packet: HumanReviewPacket): HumanReviewPacket {
     assignment.response.outcome = "acceptable_as_rendered";
     assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";
     assignment.response.summaryAssistantMove = "The assistant separates the persistent person from the temporary role.";
-    for (const dimension of Object.keys(assignment.response.scores)) assignment.response.scores[dimension] = 3;
+    if (packet.pass === "A") {
+      assignment.response.firstSentenceEngagement = "yes";
+      assignment.response.answeredBeforeUnnecessaryQuestion = "yes";
+    }
+    for (const dimension of Object.keys(assignment.response.scores)) {
+      assignment.response.scores[dimension] = 3;
+      assignment.response.dimensionEvidence[dimension] = `The exchange supplies visible evidence for ${dimension}.`;
+    }
     assignment.response.questionPolicy = "not_applicable";
     assignment.response.missingClarification = "no";
+    assignment.response.findings = [{
+      dimension: "direct_responsiveness",
+      severity: "observation",
+      evidence: "The assistant immediately distinguishes the person from the temporary role.",
+      whyItMatters: "The distinction directly answers the user's identity question.",
+      recommendation: "Keep the opening distinction as written.",
+      preserve: "Preserve the concise separation of bearer and role."
+    }];
     assignment.response.rationale = "The answer directly addresses the identity question and preserves the relevant distinction.";
     assignment.response.confidence = 3;
   }
@@ -167,6 +184,76 @@ test("Pass A packets blind contracts, include rejected candidates, and resume op
   }
 });
 
+test("a revised rubric supersedes open prior-rubric assignments without rewriting them", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const actorId = await ensureHumanActor(ledger, "operator-test");
+    const rubricId = stableId("rubric", HUMAN_REVIEW_RUBRIC_SLUG);
+    const priorDefinition = canonicalJson({ version: 1, purpose: "prior fixture rubric" });
+    const priorRubricVersionId = stableId(
+      "rubricv", `${HUMAN_REVIEW_RUBRIC_SLUG}:1:${sha256Bytes(priorDefinition)}`
+    );
+    const candidates = await ledger.client.execute(
+      "SELECT id FROM candidate_version ORDER BY id"
+    );
+    const statements = [{
+      sql: "INSERT INTO rubric(id, slug, created_at) VALUES (?, ?, '2026-07-31T00:00:00Z')",
+      args: [rubricId, HUMAN_REVIEW_RUBRIC_SLUG]
+    }, {
+      sql: `INSERT INTO rubric_version(id, rubric_id, version, definition_json, content_sha256, created_at)
+            VALUES (?, ?, 1, ?, ?, '2026-07-31T00:00:00Z')`,
+      args: [priorRubricVersionId, rubricId, priorDefinition, sha256Bytes(priorDefinition)]
+    }];
+    for (const [index, row] of candidates.rows.entries()) {
+      const candidateVersionId = String(row["id"]);
+      statements.push({
+        sql: `INSERT INTO review_assignment
+              (id, candidate_version_id, reviewer_actor_id, rubric_version_id, blindness_json,
+               status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, 'assigned', '2026-07-31T00:00:00Z', '2026-07-31T00:00:00Z')`,
+        args: [stableId("assignment", `${candidateVersionId}:${actorId}:${priorRubricVersionId}:A`),
+          candidateVersionId, actorId, priorRubricVersionId, canonicalJson({
+            pass: "A",
+            sessionId: "legacy-open-session",
+            seed: "rubric-supersession",
+            presentationIndex: index + 1
+          })]
+      });
+    }
+    await ledger.client.batch(statements, "write");
+
+    const prepared = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 2,
+      seed: "rubric-supersession"
+    });
+    const packet = JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket;
+    assert.equal(packet.rubricVersion, 2);
+    const supersessions = await ledger.client.execute(`
+      SELECT ras.superseded_assignment_id, ras.replacement_assignment_id,
+             old.status AS old_status, replacement.status AS replacement_status,
+             ras.prior_rubric_version_id, ras.replacement_rubric_version_id
+        FROM review_assignment_supersession ras
+        JOIN review_assignment old ON old.id = ras.superseded_assignment_id
+        JOIN review_assignment replacement ON replacement.id = ras.replacement_assignment_id
+       ORDER BY ras.id
+    `);
+    assert.equal(supersessions.rows.length, 2);
+    assert.equal(supersessions.rows.every((row) => row["old_status"] === "superseded"), true);
+    assert.equal(supersessions.rows.every((row) => row["replacement_status"] === "assigned"), true);
+    assert.equal(supersessions.rows.every((row) => row["prior_rubric_version_id"] === priorRubricVersionId), true);
+    assert.equal(supersessions.rows.every((row) => row["replacement_rubric_version_id"] !== priorRubricVersionId), true);
+    await assert.rejects(
+      ledger.client.execute("DELETE FROM review_assignment_supersession"),
+      /append-only/
+    );
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
 test("human submission is append-only evidence and never promotes candidate or training state", async () => {
   const ledger = await seededReviewLedger();
   try {
@@ -208,6 +295,24 @@ test("human submission is append-only evidence and never promotes candidate or t
       "SELECT COUNT(*) AS count FROM review WHERE reviewer_actor_id IS NOT NULL AND reviewer_model_revision_id IS NULL"
     );
     assert.equal(Number(humanReviews.rows[0]!["count"]), 2);
+    const normalizedEvidence = await ledger.client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM review_comprehension_assessment WHERE review_id IS NOT NULL) AS comprehension,
+        (SELECT COUNT(*) FROM review_dimension_evidence WHERE review_id IS NOT NULL) AS dimension_evidence,
+        (SELECT COUNT(*) FROM review_finding_explanation WHERE review_finding_id IS NOT NULL) AS finding_explanations
+    `);
+    assert.equal(Number(normalizedEvidence.rows[0]!["comprehension"]), 2);
+    assert.equal(Number(normalizedEvidence.rows[0]!["dimension_evidence"]), 16);
+    assert.equal(Number(normalizedEvidence.rows[0]!["finding_explanations"]), 2);
+    const explanation = await ledger.client.execute(
+      "SELECT why_it_matters, preserve FROM review_finding_explanation ORDER BY id LIMIT 1"
+    );
+    assert.match(String(explanation.rows[0]!["why_it_matters"]), /directly answers/);
+    assert.match(String(explanation.rows[0]!["preserve"]), /bearer and role/);
+    await assert.rejects(
+      ledger.client.execute("UPDATE review_dimension_evidence SET evidence = 'changed'"),
+      /append-only/
+    );
     await assert.rejects(submitHumanReviewPacket(ledger, prepared.packetPath), /not open/);
 
     await assert.rejects(
@@ -236,6 +341,18 @@ test("human submission is append-only evidence and never promotes candidate or t
     const repeatResult = await submitHumanReviewPacket(ledger, repeatPreparation.packetPath);
     assert.equal(repeatResult.primaryReviews, 0);
     assert.equal(repeatResult.repeatResponses, 2);
+    const repeatEvidence = await ledger.client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM review_comprehension_assessment
+          WHERE presentation_response_id IS NOT NULL) AS comprehension,
+        (SELECT COUNT(*) FROM review_dimension_evidence
+          WHERE presentation_response_id IS NOT NULL) AS dimension_evidence,
+        (SELECT COUNT(*) FROM review_finding_explanation
+          WHERE presentation_finding_id IS NOT NULL) AS finding_explanations
+    `);
+    assert.equal(Number(repeatEvidence.rows[0]!["comprehension"]), 2);
+    assert.equal(Number(repeatEvidence.rows[0]!["dimension_evidence"]), 16);
+    assert.equal(Number(repeatEvidence.rows[0]!["finding_explanations"]), 2);
 
     const passB = await prepareHumanReviewPacket(ledger, {
       campaignSlug: campaignConfig.slug,
@@ -289,7 +406,12 @@ test("submission requires complete reviewer competence and session-condition evi
       assignment.response.outcome = "acceptable_as_rendered";
       assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";
       assignment.response.summaryAssistantMove = "The assistant separates the persistent person from the temporary role.";
-      for (const dimension of Object.keys(assignment.response.scores)) assignment.response.scores[dimension] = 3;
+      assignment.response.firstSentenceEngagement = "yes";
+      assignment.response.answeredBeforeUnnecessaryQuestion = "yes";
+      for (const dimension of Object.keys(assignment.response.scores)) {
+        assignment.response.scores[dimension] = 3;
+        assignment.response.dimensionEvidence[dimension] = `Visible evidence supports ${dimension}.`;
+      }
       assignment.response.questionPolicy = "not_applicable";
       assignment.response.missingClarification = "no";
       assignment.response.rationale = "The candidate response is complete, but the session declaration is intentionally blank.";
@@ -306,6 +428,74 @@ test("submission requires complete reviewer competence and session-condition evi
     assert.equal(Number(evidence.rows[0]!["declarations"]), 0);
     assert.equal(Number(evidence.rows[0]!["reviews"]), 0);
     assert.equal(Number(evidence.rows[0]!["submissions"]), 0);
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
+test("submission requires evidence for every dimension before writing any human artifact", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const prepared = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 1,
+      seed: "missing-dimension-evidence"
+    });
+    const packet = completePacket(JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket);
+    const dimension = Object.keys(packet.assignments[0]!.response.dimensionEvidence)[0]!;
+    packet.assignments[0]!.response.dimensionEvidence[dimension] = "   ";
+    writeFileSync(prepared.packetPath, `${canonicalJson(packet as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitHumanReviewPacket(ledger, prepared.packetPath),
+      new RegExp(`needs one-sentence evidence for ${dimension}`)
+    );
+    const evidence = await ledger.client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM human_review_session_declaration) AS declarations,
+        (SELECT COUNT(*) FROM review) AS reviews,
+        (SELECT COUNT(*) FROM review_dimension_evidence) AS dimension_evidence,
+        (SELECT COUNT(*) FROM raw_artifact WHERE kind LIKE 'human_review_submission_pass_%') AS submissions
+    `);
+    assert.equal(Number(evidence.rows[0]!["declarations"]), 0);
+    assert.equal(Number(evidence.rows[0]!["reviews"]), 0);
+    assert.equal(Number(evidence.rows[0]!["dimension_evidence"]), 0);
+    assert.equal(Number(evidence.rows[0]!["submissions"]), 0);
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
+test("non-numeric dimension judgments remain explicit and are not coerced into scores", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const prepared = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 1,
+      seed: "explicit-uncertainty"
+    });
+    const packet = completePacket(JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket);
+    const dimension = Object.keys(packet.assignments[0]!.response.scores)[0]!;
+    packet.assignments[0]!.response.scores[dimension] = "uncertain";
+    packet.assignments[0]!.response.dimensionEvidence[dimension] =
+      "The visible exchange does not provide enough context for a defensible numeric judgment.";
+    writeFileSync(prepared.packetPath, `${canonicalJson(packet as unknown as JsonValue)}\n`);
+    await submitHumanReviewPacket(ledger, prepared.packetPath);
+    const stored = await ledger.client.execute({
+      sql: `SELECT rde.assessment_state, rde.evidence,
+                   (SELECT COUNT(*) FROM review_dimension_score rds
+                     WHERE rds.review_id = rde.review_id AND rds.dimension = rde.dimension) AS numeric_rows
+              FROM review_dimension_evidence rde
+             WHERE rde.dimension = ? AND rde.review_id IS NOT NULL`,
+      args: [dimension]
+    });
+    assert.equal(stored.rows.length, 1);
+    assert.equal(String(stored.rows[0]!["assessment_state"]), "uncertain");
+    assert.match(String(stored.rows[0]!["evidence"]), /not provide enough context/);
+    assert.equal(Number(stored.rows[0]!["numeric_rows"]), 0);
   } finally {
     closeLedger(ledger);
   }

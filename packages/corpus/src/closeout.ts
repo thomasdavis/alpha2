@@ -182,9 +182,20 @@ async function loadReview(
     sql: "SELECT dimension, score FROM review_dimension_score WHERE review_id = ? ORDER BY dimension",
     args: [reviewId]
   });
+  const dimensionAssessments = await ledger.client.execute({
+    sql: `SELECT rde.dimension, rde.assessment_state, rde.evidence, rds.score
+            FROM review_dimension_evidence rde
+            LEFT JOIN review_dimension_score rds
+              ON rds.review_id = rde.review_id AND rds.dimension = rde.dimension
+           WHERE rde.review_id = ? ORDER BY rde.dimension`,
+    args: [reviewId]
+  });
   const findings = await ledger.client.execute({
-    sql: `SELECT dimension, severity, evidence, recommendation FROM review_finding
-          WHERE review_id = ? ORDER BY id`,
+    sql: `SELECT rf.dimension, rf.severity, rf.evidence, rf.recommendation,
+                 rfe.why_it_matters, rfe.preserve
+            FROM review_finding rf
+            JOIN review_finding_explanation rfe ON rfe.review_finding_id = rf.id
+           WHERE rf.review_id = ? ORDER BY rf.id`,
     args: [reviewId]
   });
   return {
@@ -197,11 +208,21 @@ async function loadReview(
       scores: Object.fromEntries(scores.rows.map((score) => [
         String(score["dimension"]), Number(score["score"])
       ])),
+      dimensionAssessments: Object.fromEntries(dimensionAssessments.rows.map((assessment) => [
+        String(assessment["dimension"]),
+        {
+          state: String(assessment["assessment_state"]),
+          score: assessment["score"] === null ? null : Number(assessment["score"]),
+          evidence: String(assessment["evidence"])
+        }
+      ])),
       findings: findings.rows.map((finding) => ({
         dimension: String(finding["dimension"]),
         severity: String(finding["severity"]),
         evidence: String(finding["evidence"]),
-        recommendation: String(finding["recommendation"])
+        recommendation: String(finding["recommendation"]),
+        whyItMatters: String(finding["why_it_matters"]),
+        preserve: String(finding["preserve"])
       })),
       createdAt: String(row["created_at"])
     } as unknown as JsonValue

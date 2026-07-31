@@ -9,7 +9,7 @@ import type {
 import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
 
 export const HUMAN_REVIEW_RUBRIC_SLUG = "d5-human-adjudication";
-export const HUMAN_REVIEW_RUBRIC_VERSION = 1;
+export const HUMAN_REVIEW_RUBRIC_VERSION = 2;
 
 export interface HumanReviewChoice {
   value: string;
@@ -100,6 +100,18 @@ export const HUMAN_REVIEW_MISSING_CLARIFICATION: readonly HumanReviewChoice[] = 
   { value: "not_applicable", label: "Not applicable", description: "The item does not present a clarification decision." }
 ] as const;
 
+export const HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT: readonly HumanReviewChoice[] = [
+  { value: "yes", label: "Yes", description: "The first assistant sentence directly engages the user's actual move." },
+  { value: "partly", label: "Partly", description: "The opening is relevant, but indirect, incomplete, or partly generic." },
+  { value: "no", label: "No", description: "The opening does not directly engage the user's actual move." }
+] as const;
+
+export const HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION: readonly HumanReviewChoice[] = [
+  { value: "yes", label: "Yes", description: "The assistant contributes an answer before asking anything unnecessary." },
+  { value: "no", label: "No", description: "An unnecessary question precedes or replaces a useful answer." },
+  { value: "not_applicable", label: "Not applicable", description: "The exchange contains no such ordering decision." }
+] as const;
+
 export const HUMAN_REVIEW_COMPETENCIES: readonly HumanReviewChoice[] = [
   { value: "conversation", label: "Conversation", description: "Natural interaction, responsiveness, momentum, and appropriateness." },
   { value: "linguistics", label: "Linguistics", description: "Language form, meaning, pragmatics, discourse, or metalinguistic analysis." },
@@ -138,7 +150,10 @@ export function emptyHumanReviewResponse(pass: HumanReviewPass): HumanReviewResp
     outcome: null,
     summaryUserAim: "",
     summaryAssistantMove: "",
+    firstSentenceEngagement: null,
+    answeredBeforeUnnecessaryQuestion: null,
     scores: Object.fromEntries(humanReviewDimensions(pass).map((dimension) => [dimension.key, null])),
+    dimensionEvidence: Object.fromEntries(humanReviewDimensions(pass).map((dimension) => [dimension.key, ""])),
     questionPolicy: null,
     missingClarification: null,
     findings: [],
@@ -251,8 +266,14 @@ function findingErrors(finding: HumanReviewFinding, label: string): string[] {
   if (!isRecord(finding) || typeof finding.evidence !== "string" || finding.evidence.trim().length < 1) {
     errors.push(`${label} needs exact evidence.`);
   }
+  if (!isRecord(finding) || typeof finding.whyItMatters !== "string" || finding.whyItMatters.trim().length < 1) {
+    errors.push(`${label} needs an explanation of why it matters.`);
+  }
   if (!isRecord(finding) || typeof finding.recommendation !== "string" || finding.recommendation.trim().length < 1) {
-    errors.push(`${label} needs a recommendation.`);
+    errors.push(`${label} needs the smallest plausible repair.`);
+  }
+  if (!isRecord(finding) || typeof finding.preserve !== "string" || finding.preserve.trim().length < 1) {
+    errors.push(`${label} needs what the repair must preserve.`);
   }
   return errors;
 }
@@ -273,8 +294,22 @@ export function humanReviewResponseErrors(
   } else {
     for (const dimension of expectedDimensions) {
       const score = response.scores[dimension];
-      if (score === null || !Number.isInteger(score) || score < 0 || score > 4) {
-        errors.push(`${opaqueItemId} needs a 0–4 score for ${dimension}.`);
+      const validNumeric = typeof score === "number" && Number.isInteger(score) && score >= 0 && score <= 4;
+      if (!validNumeric && score !== "not_applicable" && score !== "uncertain") {
+        errors.push(`${opaqueItemId} needs a 0–4, not-applicable, or uncertain assessment for ${dimension}.`);
+      }
+    }
+  }
+  const actualEvidenceDimensions = isRecord(response.dimensionEvidence)
+    ? Object.keys(response.dimensionEvidence).sort()
+    : [];
+  if (actualEvidenceDimensions.join("\0") !== expectedDimensions.join("\0")) {
+    errors.push(`${opaqueItemId} evidence dimensions differ from rubric version ${HUMAN_REVIEW_RUBRIC_VERSION}.`);
+  } else {
+    for (const dimension of expectedDimensions) {
+      const evidence = response.dimensionEvidence[dimension];
+      if (typeof evidence !== "string" || evidence.trim().length < 1) {
+        errors.push(`${opaqueItemId} needs one-sentence evidence for ${dimension}.`);
       }
     }
   }
@@ -298,6 +333,17 @@ export function humanReviewResponseErrors(
     if (typeof response.summaryAssistantMove !== "string" || response.summaryAssistantMove.trim().length < 1) {
       errors.push(`${opaqueItemId} needs a summary of the assistant's move.`);
     }
+    if (!allowedValue(response.firstSentenceEngagement, HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT)) {
+      errors.push(`${opaqueItemId} needs a first-sentence engagement judgment.`);
+    }
+    if (!allowedValue(
+      response.answeredBeforeUnnecessaryQuestion,
+      HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION
+    )) {
+      errors.push(`${opaqueItemId} needs an answer-before-unnecessary-question judgment.`);
+    }
+  } else if (response.firstSentenceEngagement !== null || response.answeredBeforeUnnecessaryQuestion !== null) {
+    errors.push(`${opaqueItemId} contains Pass A comprehension judgments in Pass B.`);
   }
   if (!Array.isArray(response.findings)) {
     errors.push(`${opaqueItemId} findings must be a list.`);
@@ -344,6 +390,20 @@ export function parseHumanReviewPacketText(text: string): HumanReviewPacket {
       || typeof assignment.opaqueItemId !== "string" || typeof assignment.candidateContentSha256 !== "string"
       || !("candidate" in assignment) || !isRecord(assignment.response)) {
       throw new Error("Human-review submission contains an invalid assignment");
+    }
+    const response = assignment.response;
+    const empty = emptyHumanReviewResponse(parsed.pass);
+    if (!("firstSentenceEngagement" in response)) response["firstSentenceEngagement"] = null;
+    if (!("answeredBeforeUnnecessaryQuestion" in response)) {
+      response["answeredBeforeUnnecessaryQuestion"] = null;
+    }
+    if (!("dimensionEvidence" in response)) response["dimensionEvidence"] = empty.dimensionEvidence;
+    if (Array.isArray(response["findings"])) {
+      for (const finding of response["findings"]) {
+        if (!isRecord(finding)) continue;
+        if (!("whyItMatters" in finding)) finding["whyItMatters"] = "";
+        if (!("preserve" in finding)) finding["preserve"] = "";
+      }
     }
   }
   return parsed as unknown as HumanReviewPacket;

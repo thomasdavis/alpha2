@@ -15,6 +15,8 @@ import type {
   JsonValue
 } from "./types.js";
 import {
+  HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION,
+  HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT,
   HUMAN_REVIEW_MISSING_CLARIFICATION,
   HUMAN_REVIEW_QUESTION_POLICIES,
   HUMAN_REVIEW_RUBRIC_SLUG,
@@ -54,7 +56,10 @@ const RUBRIC_DEFINITION = {
     }
   },
   questionPolicies: HUMAN_REVIEW_QUESTION_POLICIES.map((choice) => choice.value),
-  missingClarification: HUMAN_REVIEW_MISSING_CLARIFICATION.map((choice) => choice.value)
+  missingClarification: HUMAN_REVIEW_MISSING_CLARIFICATION.map((choice) => choice.value),
+  firstSentenceEngagement: HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT.map((choice) => choice.value),
+  answeredBeforeUnnecessaryQuestion:
+    HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION.map((choice) => choice.value)
 } as unknown as JsonValue;
 
 interface CandidateRow {
@@ -483,7 +488,7 @@ function packetInstructions(pass: HumanReviewPass): string[] {
   if (pass === "A") {
     return [
       "Review only the model-visible messages. Do not inspect the public ledger or hidden contract for this item first.",
-      "Fill every response field. Use scores 0-4; quote exact evidence for findings.",
+      "Fill every response field. Use 0-4, not applicable, or uncertain for each dimension and give one sentence of model-visible evidence.",
       "Judge conceptual plausibility and conversational quality separately. Seal Pass A before preparing Pass B.",
       "A later session may contain blinded consistency presentations. Review every item independently; do not inspect presentation lineage."
     ];
@@ -491,7 +496,7 @@ function packetInstructions(pass: HumanReviewPass): string[] {
   return [
     "Pass A is sealed. Review the revealed blueprint, hidden contract, metadata, and structural status.",
     "Judge blueprint validity separately from the rendered conversation.",
-    "Use scores 0-4; quote exact evidence and select a PRD-04 scientific disposition."
+    "Use 0-4, not applicable, or uncertain for each dimension; give evidence and select a PRD-04 scientific disposition."
   ];
 }
 
@@ -647,6 +652,20 @@ export async function prepareHumanReviewPacket(
     ).localeCompare(seededRank(
       seed, `${right.candidate.candidateVersionId}:${right.presentationKind}:${right.sourceReviewId ?? ""}`
     )));
+    const primaryCandidateVersionIds = entries
+      .filter((entry) => entry.presentationKind === "primary")
+      .map((entry) => entry.candidate.candidateVersionId);
+    const olderOpenAssignments = primaryCandidateVersionIds.length === 0
+      ? []
+      : (await ledger.client.execute({
+          sql: `SELECT id, candidate_version_id, rubric_version_id
+                  FROM review_assignment
+                 WHERE reviewer_actor_id = ? AND rubric_version_id <> ? AND status = 'assigned'
+                   AND json_extract(blindness_json, '$.pass') = ?
+                   AND candidate_version_id IN (${primaryCandidateVersionIds.map(() => "?").join(", ")})
+                 ORDER BY id`,
+          args: [actorId, rubricVersionId, options.pass, ...primaryCandidateVersionIds]
+        })).rows;
     const inputSnapshotSha256 = sha256Bytes(canonicalJson(entries.map((entry) => ({
       assignmentId: entry.assignmentId,
       candidateVersionId: entry.candidate.candidateVersionId,
@@ -708,6 +727,35 @@ export async function prepareHumanReviewPacket(
         sourceReviewId: entry.sourceReviewId
       };
     });
+    for (const older of olderOpenAssignments) {
+      const candidateVersionId = String(older["candidate_version_id"]);
+      const replacement = assignments.find((assignment) => (
+        assignment.candidateVersionId === candidateVersionId
+        && assignment.presentationKind === "primary"
+      ));
+      if (replacement === undefined) {
+        throw new Error(`Cannot supersede prior assignment for missing candidate ${candidateVersionId}`);
+      }
+      const supersededAssignmentId = String(older["id"]);
+      const priorRubricVersionId = String(older["rubric_version_id"]);
+      const supersessionId = stableId(
+        "review_assignment_supersession", `${supersededAssignmentId}:${replacement.assignmentId}`
+      );
+      statements.push({
+        sql: `UPDATE review_assignment SET status = 'superseded', updated_at = ?
+               WHERE id = ? AND status = 'assigned'`,
+        args: [ts, supersededAssignmentId]
+      }, {
+        sql: `INSERT INTO review_assignment_supersession
+              (id, superseded_assignment_id, replacement_assignment_id, prior_rubric_version_id,
+               replacement_rubric_version_id, reason, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [supersessionId, supersededAssignmentId, replacement.assignmentId,
+          priorRubricVersionId, rubricVersionId,
+          "Rubric v2 adds required comprehension judgments, per-dimension evidence, explicit non-numeric states, and complete finding repair contracts.",
+          ts]
+      });
+    }
     await ledger.client.batch(statements, "write");
   }
   const packetAssignments: HumanReviewPacketAssignment[] = assignments.map((assignment) => {
@@ -920,6 +968,8 @@ export async function submitHumanReviewPacket(
       rationale: response.rationale,
       summaryUserAim: response.summaryUserAim,
       summaryAssistantMove: response.summaryAssistantMove,
+      firstSentenceEngagement: response.firstSentenceEngagement,
+      answeredBeforeUnnecessaryQuestion: response.answeredBeforeUnnecessaryQuestion,
       questionPolicy: response.questionPolicy,
       missingClarification: response.missingClarification,
       confidence: response.confidence,
@@ -938,11 +988,31 @@ export async function submitHumanReviewPacket(
               VALUES (?, ?, ?, ?, ?, ?)`,
         args: [reviewId, entry.candidateVersionId, actorId, response.outcome!, rationale, ts]
       });
-      for (const [dimension, score] of Object.entries(response.scores)) {
+      if (packet.pass === "A") {
         statements.push({
-          sql: `INSERT INTO review_dimension_score(id, review_id, dimension, score, created_at)
-                VALUES (?, ?, ?, ?, ?)`,
-          args: [stableId("score", `${reviewId}:${dimension}`), reviewId, dimension, score!, ts]
+          sql: `INSERT INTO review_comprehension_assessment
+                (id, review_id, presentation_response_id, first_sentence_engagement,
+                 answered_before_unnecessary_question, created_at)
+                VALUES (?, ?, NULL, ?, ?, ?)`,
+          args: [stableId("review_comprehension", reviewId), reviewId,
+            response.firstSentenceEngagement!, response.answeredBeforeUnnecessaryQuestion!, ts]
+        });
+      }
+      for (const [dimension, assessment] of Object.entries(response.scores)) {
+        if (typeof assessment === "number") {
+          statements.push({
+            sql: `INSERT INTO review_dimension_score(id, review_id, dimension, score, created_at)
+                  VALUES (?, ?, ?, ?, ?)`,
+            args: [stableId("score", `${reviewId}:${dimension}`), reviewId, dimension, assessment, ts]
+          });
+        }
+        statements.push({
+          sql: `INSERT INTO review_dimension_evidence
+                (id, review_id, presentation_response_id, dimension, assessment_state, evidence, created_at)
+                VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+          args: [stableId("review_dimension_evidence", `${reviewId}:${dimension}`), reviewId,
+            dimension, typeof assessment === "number" ? "score" : assessment!,
+            response.dimensionEvidence[dimension]!, ts]
         });
       }
       statements.push({
@@ -951,12 +1021,20 @@ export async function submitHumanReviewPacket(
         args: [stableId("score", `${reviewId}:reviewer_confidence`), reviewId, response.confidence!, ts]
       });
       for (const [index, finding] of response.findings.entries()) {
+        const findingId = stableId("finding", `${reviewId}:${index}:${finding.dimension}:${finding.evidence}`);
         statements.push({
           sql: `INSERT INTO review_finding
                 (id, review_id, dimension, severity, evidence, recommendation, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          args: [stableId("finding", `${reviewId}:${index}:${finding.dimension}:${finding.evidence}`), reviewId,
+          args: [findingId, reviewId,
             finding.dimension, finding.severity, finding.evidence, finding.recommendation, ts]
+        });
+        statements.push({
+          sql: `INSERT INTO review_finding_explanation
+                (id, review_finding_id, presentation_finding_id, why_it_matters, preserve, created_at)
+                VALUES (?, ?, NULL, ?, ?, ?)`,
+          args: [stableId("review_finding_explanation", findingId), findingId,
+            finding.whyItMatters, finding.preserve, ts]
         });
       }
       statements.push({
@@ -995,24 +1073,59 @@ export async function submitHumanReviewPacket(
         args: [presentationResponseId, entry.presentationId, actorId, reviewId ?? null, response.outcome!,
           canonicalJson(response as unknown as JsonValue), response.confidence!, submissionSha256, ts]
       });
-      for (const [dimension, score] of Object.entries(response.scores)) {
-        statements.push({
-          sql: `INSERT INTO review_presentation_score
-                (id, presentation_response_id, dimension, score, created_at)
-                VALUES (?, ?, ?, ?, ?)`,
-          args: [stableId("presentation_score", `${presentationResponseId}:${dimension}`),
-            presentationResponseId, dimension, score!, ts]
-        });
+      for (const [dimension, assessment] of Object.entries(response.scores)) {
+        if (typeof assessment === "number") {
+          statements.push({
+            sql: `INSERT INTO review_presentation_score
+                  (id, presentation_response_id, dimension, score, created_at)
+                  VALUES (?, ?, ?, ?, ?)`,
+            args: [stableId("presentation_score", `${presentationResponseId}:${dimension}`),
+              presentationResponseId, dimension, assessment, ts]
+          });
+        }
       }
       for (const [index, finding] of response.findings.entries()) {
+        const presentationFindingId = stableId("presentation_finding", `${presentationResponseId}:${index + 1}`);
         statements.push({
           sql: `INSERT INTO review_presentation_finding
                 (id, presentation_response_id, ordinal, dimension, severity, evidence, recommendation, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [stableId("presentation_finding", `${presentationResponseId}:${index + 1}`),
+          args: [presentationFindingId,
             presentationResponseId, index + 1, finding.dimension, finding.severity,
             finding.evidence, finding.recommendation, ts]
         });
+      }
+      if (entry.presentationKind === "hidden_repeat") {
+        if (packet.pass === "A") {
+          statements.push({
+            sql: `INSERT INTO review_comprehension_assessment
+                  (id, review_id, presentation_response_id, first_sentence_engagement,
+                   answered_before_unnecessary_question, created_at)
+                  VALUES (?, NULL, ?, ?, ?, ?)`,
+            args: [stableId("presentation_comprehension", presentationResponseId), presentationResponseId,
+              response.firstSentenceEngagement!, response.answeredBeforeUnnecessaryQuestion!, ts]
+          });
+        }
+        for (const [dimension, assessment] of Object.entries(response.scores)) {
+          statements.push({
+            sql: `INSERT INTO review_dimension_evidence
+                  (id, review_id, presentation_response_id, dimension, assessment_state, evidence, created_at)
+                  VALUES (?, NULL, ?, ?, ?, ?, ?)`,
+            args: [stableId("presentation_dimension_evidence", `${presentationResponseId}:${dimension}`),
+              presentationResponseId, dimension, typeof assessment === "number" ? "score" : assessment!,
+              response.dimensionEvidence[dimension]!, ts]
+          });
+        }
+        for (const [index, finding] of response.findings.entries()) {
+          const presentationFindingId = stableId("presentation_finding", `${presentationResponseId}:${index + 1}`);
+          statements.push({
+            sql: `INSERT INTO review_finding_explanation
+                  (id, review_finding_id, presentation_finding_id, why_it_matters, preserve, created_at)
+                  VALUES (?, NULL, ?, ?, ?, ?)`,
+            args: [stableId("presentation_finding_explanation", presentationFindingId), presentationFindingId,
+              finding.whyItMatters, finding.preserve, ts]
+          });
+        }
       }
       statements.push({
         sql: "UPDATE review_presentation SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'assigned'",

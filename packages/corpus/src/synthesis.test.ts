@@ -128,7 +128,14 @@ function completeHumanPacket(packet: HumanReviewPacket): HumanReviewPacket {
     assignment.response.outcome = packet.pass === "A" ? "acceptable_as_rendered" : "accept_as_positive";
     assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";
     assignment.response.summaryAssistantMove = "The assistant distinguishes the persistent bearer from the temporary role.";
-    for (const dimension of Object.keys(assignment.response.scores)) assignment.response.scores[dimension] = 3;
+    if (packet.pass === "A") {
+      assignment.response.firstSentenceEngagement = "yes";
+      assignment.response.answeredBeforeUnnecessaryQuestion = "yes";
+    }
+    for (const dimension of Object.keys(assignment.response.scores)) {
+      assignment.response.scores[dimension] = 3;
+      assignment.response.dimensionEvidence[dimension] = `The rendered exchange supports ${dimension}.`;
+    }
     assignment.response.questionPolicy = "not_applicable";
     assignment.response.missingClarification = "no";
     assignment.response.rationale = "The response can be assessed against the role and bearer distinction.";

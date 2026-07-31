@@ -5,11 +5,14 @@ import type {
   HumanReviewFinding,
   HumanReviewPacket,
   HumanReviewResponse,
+  HumanReviewScore,
   HumanReviewSessionResponse
 } from "@alpha/corpus";
 import {
+  HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION,
   HUMAN_REVIEW_COMPETENCIES,
   HUMAN_REVIEW_FATIGUE_LEVELS,
+  HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT,
   HUMAN_REVIEW_INTERRUPTION_STATUSES,
   HUMAN_REVIEW_MISSING_CLARIFICATION,
   HUMAN_REVIEW_QUESTION_POLICIES,
@@ -152,11 +155,13 @@ function TextAreaField({
 function ScoreFields({
   packet,
   response,
-  updateScore
+  updateScore,
+  updateEvidence
 }: {
   packet: HumanReviewPacket;
   response: HumanReviewResponse;
-  updateScore: (dimension: string, score: number) => void;
+  updateScore: (dimension: string, score: Exclude<HumanReviewScore, null>) => void;
+  updateEvidence: (dimension: string, evidence: string) => void;
 }) {
   return (
     <div className="divide-y divide-border rounded-lg border border-border">
@@ -183,6 +188,30 @@ function ScoreFields({
                 <span title={anchor.label}>{anchor.value}</span>
               </label>
             ))}
+            {(["not_applicable", "uncertain"] as const).map((state) => (
+              <label key={state} className="flex min-h-11 cursor-pointer items-center gap-1.5 text-xs text-text-secondary">
+                <input
+                  type="radio"
+                  name={`${packet.sessionId}-${dimension.key}`}
+                  value={state}
+                  aria-label={`${dimension.label}: ${state === "not_applicable" ? "Not applicable" : "Uncertain"}`}
+                  checked={response.scores[dimension.key] === state}
+                  onChange={() => updateScore(dimension.key, state)}
+                  className="h-4 w-4 accent-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                />
+                <span>{state === "not_applicable" ? "N/A" : "?"}</span>
+              </label>
+            ))}
+          </div>
+          <div className="lg:col-span-2">
+            <TextAreaField
+              id={`dimension-evidence-${dimension.key}`}
+              label={`Evidence for ${dimension.label}`}
+              value={response.dimensionEvidence[dimension.key] ?? ""}
+              onChange={(evidence) => updateEvidence(dimension.key, evidence)}
+              hint="Give one concise sentence grounded in the model-visible exchange."
+              rows={2}
+            />
           </div>
         </fieldset>
       ))}
@@ -254,11 +283,27 @@ function FindingEditor({
           rows={2}
         />
         <TextAreaField
+          id={`finding-${index}-why-it-matters`}
+          label="Why it matters"
+          value={finding.whyItMatters}
+          onChange={(whyItMatters) => onChange({ ...finding, whyItMatters })}
+          hint="Explain the conceptual, conversational, or scientific consequence."
+          rows={2}
+        />
+        <TextAreaField
           id={`finding-${index}-recommendation`}
-          label="Recommendation"
+          label="Smallest plausible repair"
           value={finding.recommendation}
           onChange={(recommendation) => onChange({ ...finding, recommendation })}
-          hint="State the bounded repair or reason to preserve the failure."
+          hint="State the narrowest change that would address the finding."
+          rows={2}
+        />
+        <TextAreaField
+          id={`finding-${index}-preserve`}
+          label="What must be preserved"
+          value={finding.preserve}
+          onChange={(preserve) => onChange({ ...finding, preserve })}
+          hint="Name the useful behavior, distinction, or evidence the repair must not erase."
           rows={2}
         />
       </div>
@@ -630,6 +675,26 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
                     onChange={(summaryAssistantMove) => updateResponse((response) => ({ ...response, summaryAssistantMove }))}
                     rows={3}
                   />
+                  <SelectField
+                    id="first-sentence-engagement"
+                    label="Did the first assistant sentence directly engage the user?"
+                    value={activeAssignment.response.firstSentenceEngagement}
+                    choices={HUMAN_REVIEW_FIRST_SENTENCE_ENGAGEMENT}
+                    onChange={(firstSentenceEngagement) => updateResponse((response) => ({
+                      ...response,
+                      firstSentenceEngagement
+                    }))}
+                  />
+                  <SelectField
+                    id="answered-before-unnecessary-question"
+                    label="Did the assistant answer before asking anything unnecessary?"
+                    value={activeAssignment.response.answeredBeforeUnnecessaryQuestion}
+                    choices={HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION}
+                    onChange={(answeredBeforeUnnecessaryQuestion) => updateResponse((response) => ({
+                      ...response,
+                      answeredBeforeUnnecessaryQuestion
+                    }))}
+                  />
                 </div>
               </section>
             )}
@@ -645,6 +710,10 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
                 updateScore={(dimension, score) => updateResponse((response) => ({
                   ...response,
                   scores: { ...response.scores, [dimension]: score }
+                }))}
+                updateEvidence={(dimension, evidence) => updateResponse((response) => ({
+                  ...response,
+                  dimensionEvidence: { ...response.dimensionEvidence, [dimension]: evidence }
                 }))}
               />
             </section>
@@ -682,7 +751,14 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
                   type="button"
                   onClick={() => updateResponse((response) => ({
                     ...response,
-                    findings: [...response.findings, { dimension: "", severity: "observation", evidence: "", recommendation: "" }]
+                    findings: [...response.findings, {
+                      dimension: "",
+                      severity: "observation",
+                      evidence: "",
+                      whyItMatters: "",
+                      recommendation: "",
+                      preserve: ""
+                    }]
                   }))}
                   className="min-h-11 rounded-md border border-border-2 px-3 py-2 text-xs font-semibold text-text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >

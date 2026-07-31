@@ -101,19 +101,25 @@ export interface ReviewEnvelope {
 }
 
 export type HumanReviewPass = "A" | "B";
+export type HumanReviewScore = number | "not_applicable" | "uncertain" | null;
 
 export interface HumanReviewFinding {
   dimension: string;
   severity: "observation" | "minor" | "major" | "critical";
   evidence: string;
+  whyItMatters: string;
   recommendation: string;
+  preserve: string;
 }
 
 export interface HumanReviewResponse {
   outcome: string | null;
   summaryUserAim: string;
   summaryAssistantMove: string;
-  scores: Record<string, number | null>;
+  firstSentenceEngagement: string | null;
+  answeredBeforeUnnecessaryQuestion: string | null;
+  scores: Record<string, HumanReviewScore>;
+  dimensionEvidence: Record<string, string>;
   questionPolicy: string | null;
   missingClarification: string | null;
   findings: HumanReviewFinding[];

@@ -99,11 +99,18 @@ export interface FamilySynthesisReviewEvidence {
   outcome: string;
   rationale: JsonValue;
   scores: Record<string, number>;
+  dimensionAssessments: Record<string, {
+    state: string;
+    score: number | null;
+    evidence: string;
+  }>;
   findings: Array<{
     dimension: string;
     severity: string;
     evidence: string;
     recommendation: string;
+    whyItMatters: string;
+    preserve: string;
   }>;
 }
 

@@ -542,7 +542,8 @@ export class CorpusReader {
     }
     const packet = parseHumanReviewPacketText(bytes.toString("utf8"));
     if (packet.rubricSlug !== HUMAN_REVIEW_RUBRIC_SLUG
-      || packet.rubricVersion !== HUMAN_REVIEW_RUBRIC_VERSION) {
+      || packet.rubricVersion < 1
+      || packet.rubricVersion > HUMAN_REVIEW_RUBRIC_VERSION) {
       throw new Error(`Unsupported human-review rubric ${packet.rubricSlug} v${packet.rubricVersion}`);
     }
     return { packet, packetSha256: row.blob_sha256, exportedAt: row.created_at };

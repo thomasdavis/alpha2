@@ -1544,6 +1544,127 @@ const v8: string[] = [
   ...v8ImmutableTables.flatMap(immutabilityTriggers)
 ];
 
+const v9ImmutableTables = [
+  "review_comprehension_assessment",
+  "review_dimension_evidence",
+  "review_finding_explanation"
+];
+
+const v9: string[] = [
+  `CREATE TABLE IF NOT EXISTS review_comprehension_assessment (
+    id TEXT PRIMARY KEY,
+    review_id TEXT UNIQUE REFERENCES review(id),
+    presentation_response_id TEXT UNIQUE REFERENCES review_presentation_response(id),
+    first_sentence_engagement TEXT NOT NULL,
+    answered_before_unnecessary_question TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK((review_id IS NOT NULL) <> (presentation_response_id IS NOT NULL)),
+    CHECK(first_sentence_engagement IN ('yes', 'partly', 'no')),
+    CHECK(answered_before_unnecessary_question IN ('yes', 'no', 'not_applicable'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_dimension_evidence (
+    id TEXT PRIMARY KEY,
+    review_id TEXT REFERENCES review(id),
+    presentation_response_id TEXT REFERENCES review_presentation_response(id),
+    dimension TEXT NOT NULL,
+    assessment_state TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK((review_id IS NOT NULL) <> (presentation_response_id IS NOT NULL)),
+    CHECK(assessment_state IN ('score', 'not_applicable', 'uncertain')),
+    CHECK(length(trim(evidence)) > 0),
+    UNIQUE(review_id, dimension),
+    UNIQUE(presentation_response_id, dimension)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_finding_explanation (
+    id TEXT PRIMARY KEY,
+    review_finding_id TEXT UNIQUE REFERENCES review_finding(id),
+    presentation_finding_id TEXT UNIQUE REFERENCES review_presentation_finding(id),
+    why_it_matters TEXT NOT NULL,
+    preserve TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK((review_finding_id IS NOT NULL) <> (presentation_finding_id IS NOT NULL)),
+    CHECK(length(trim(why_it_matters)) > 0),
+    CHECK(length(trim(preserve)) > 0)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_review_dimension_evidence_review
+     ON review_dimension_evidence(review_id, dimension)`,
+  `CREATE INDEX IF NOT EXISTS idx_review_dimension_evidence_presentation
+     ON review_dimension_evidence(presentation_response_id, dimension)`,
+  `DROP VIEW IF EXISTS review_repeat_stability`,
+  `CREATE VIEW review_repeat_stability AS
+     SELECT rp.id AS presentation_id,
+            rps.id AS session_id,
+            rps.campaign_id,
+            rp.review_assignment_id,
+            ra.candidate_version_id,
+            rp.source_review_id,
+            rpr.id AS repeat_response_id,
+            CASE WHEN rpr.outcome = source.outcome THEN 1 ELSE 0 END AS outcome_match,
+            CASE WHEN json_extract(rpr.response_json, '$.questionPolicy')
+                       = json_extract(source.rationale, '$.questionPolicy') THEN 1 ELSE 0 END AS question_policy_match,
+            CASE WHEN json_extract(rpr.response_json, '$.missingClarification')
+                       = json_extract(source.rationale, '$.missingClarification') THEN 1 ELSE 0 END AS missing_clarification_match,
+            ABS(rpr.confidence - CAST(json_extract(source.rationale, '$.confidence') AS INTEGER)) AS confidence_delta,
+            (SELECT AVG(CASE
+                          WHEN repeated.assessment_state = original.assessment_state
+                           AND (repeated.assessment_state <> 'score' OR repeated_score.score = original_score.score)
+                          THEN 1.0 ELSE 0.0 END)
+               FROM review_dimension_evidence repeated
+               JOIN review_dimension_evidence original
+                 ON original.review_id = rp.source_review_id
+                AND original.dimension = repeated.dimension
+               LEFT JOIN review_presentation_score repeated_score
+                 ON repeated_score.presentation_response_id = repeated.presentation_response_id
+                AND repeated_score.dimension = repeated.dimension
+               LEFT JOIN review_dimension_score original_score
+                 ON original_score.review_id = original.review_id
+                AND original_score.dimension = original.dimension
+              WHERE repeated.presentation_response_id = rpr.id) AS dimension_exact_rate,
+            (SELECT AVG(ABS(repeated_score.score - original_score.score))
+               FROM review_dimension_evidence repeated
+               JOIN review_dimension_evidence original
+                 ON original.review_id = rp.source_review_id
+                AND original.dimension = repeated.dimension
+                AND original.assessment_state = 'score'
+               JOIN review_presentation_score repeated_score
+                 ON repeated_score.presentation_response_id = repeated.presentation_response_id
+                AND repeated_score.dimension = repeated.dimension
+               JOIN review_dimension_score original_score
+                 ON original_score.review_id = original.review_id
+                AND original_score.dimension = original.dimension
+              WHERE repeated.presentation_response_id = rpr.id
+                AND repeated.assessment_state = 'score') AS mean_absolute_score_delta,
+            rpr.created_at
+       FROM review_presentation rp
+       JOIN review_presentation_session rps ON rps.id = rp.session_id
+       JOIN review_assignment ra ON ra.id = rp.review_assignment_id
+       JOIN review_presentation_response rpr ON rpr.presentation_id = rp.id
+       JOIN review source ON source.id = rp.source_review_id
+      WHERE rp.presentation_kind = 'hidden_repeat'`,
+  ...v9ImmutableTables.flatMap(immutabilityTriggers)
+];
+
+const v10ImmutableTables = ["review_assignment_supersession"];
+
+const v10: string[] = [
+  `CREATE TABLE IF NOT EXISTS review_assignment_supersession (
+    id TEXT PRIMARY KEY,
+    superseded_assignment_id TEXT NOT NULL UNIQUE REFERENCES review_assignment(id),
+    replacement_assignment_id TEXT NOT NULL UNIQUE REFERENCES review_assignment(id),
+    prior_rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    replacement_rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK(superseded_assignment_id <> replacement_assignment_id),
+    CHECK(prior_rubric_version_id <> replacement_rubric_version_id),
+    CHECK(length(trim(reason)) > 0)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_review_assignment_supersession_rubric
+     ON review_assignment_supersession(prior_rubric_version_id, replacement_rubric_version_id)`,
+  ...v10ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
@@ -1552,7 +1673,9 @@ export const migrations: Migration[] = [
   { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 },
   { version: 6, name: "d5_blinded_repeat_presentations", statements: v6 },
   { version: 7, name: "d5_campaign_closeout", statements: v7 },
-  { version: 8, name: "d5_human_review_session_declarations", statements: v8 }
+  { version: 8, name: "d5_human_review_session_declarations", statements: v8 },
+  { version: 9, name: "d5_review_evidence_completeness", statements: v9 },
+  { version: 10, name: "d5_review_rubric_supersession", statements: v10 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1595,6 +1718,10 @@ export const requiredTables = [
   "review_presentation_response",
   "review_presentation_score",
   "review_presentation_finding",
+  "review_comprehension_assessment",
+  "review_dimension_evidence",
+  "review_finding_explanation",
+  "review_assignment_supersession",
   "human_review_session_declaration",
   "human_review_session_competence",
   "campaign_closeout_assignment",
