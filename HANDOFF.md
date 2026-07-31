@@ -33,8 +33,8 @@ All response fields are blank: there are still zero human reviews, adjudications
 exposures. Submit through the local `review-submit` CLI only after a real human completes the form; never fill
 it with a model while labeling the result human.
 
-The same blinded packet is now practical to review at `https://alpha.donto.org/corpus/review`. The deployed
-workspace is recorded in
+The same blinded packet is now practical to review at `https://alpha.donto.org/corpus/review`. The original
+deployed workspace is recorded in
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md), autosaves only in browser
 local storage, validates against the same executable rubric as `review-submit`, and downloads JSON. It has no
 public submit action; the app and Caddy return 405 to non-read methods. The original workspace release source
@@ -46,8 +46,8 @@ The aggregate-pipeline release was introduced at
 derives the complete aggregate D5 pipeline from SQLite: Pass A 0/48 with 12 open, hidden repeats 0/6, Pass B
 0/48, Pass C 0/6, structural dispositions 0/6, and Pass D 0/1. It explicitly says the open packet is one
 session within the 48-candidate census and exposes none of the lineage that would compromise blind review.
-Public desktop and 390 px browser checks passed and POST remained 405. That release is now the immediate
-rollback target for the immutable-envelope release described below.
+Public desktop and 390 px browser checks passed and POST remained 405. That release remains a historical
+rollback point for the later immutable-envelope and workspace releases.
 
 The local Pass B preparer is additionally fail-closed at revision
 `b52792b4e0821852e500466be7f0640cf6f60b67`; see
@@ -58,7 +58,7 @@ zero open first-class Pass A sessions for the same reviewer/rubric. A live prema
 nonzero at 0/48 and 0/6, while the canonical SQLite SHA-256 remained exactly
 `7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce` before and after.
 
-The current production review release is
+The immutable-envelope production release was introduced at
 `e07477b934897b71f241724a230e2ccd6320e0c9`; see
 [Execution 11](docs/synthetic-curriculum-prd/EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md). The importer and
 browser now canonicalize a packet with every response reset, then require every remaining byte of meaning to
@@ -92,6 +92,19 @@ found 48 distinct legacy `intendedResponsePolicy` strings across 48 current cand
 `response_policy_target` rows; it did not reveal candidate-to-policy mappings. PRD-14 specifies an extensible
 policy graph, compositional targets, natural-language compilation, observed-behavior evidence, and release
 balance. Do not backfill or publish individual mappings before D5 blindness is complete.
+
+The current production review application is
+`c4e7c4db2e007ee247113bbfe97029f5a84eec1f`; see
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). It restores the
+assignment navigator at mobile widths, adds packet-scoped position persistence and first/next-incomplete
+navigation, moves focus and scroll to selected assignments, gives rubric scores descriptive accessible names,
+recovers explicitly from incompatible local drafts, and fixes theme contrast and duplicate main landmarks.
+The 22/22 corpus suite, typecheck, optimized build, immutable canary, desktop/mobile public Chromium checks, and
+200/405 method boundary pass. The deployed immutable release is
+`/home/ajax/alpha2-web-releases/c4e7c4db2e007ee247113bbfe97029f5a84eec1f`; the rejected first canary remains
+preserved at `f8e2d95596c2e68a4092b851e571aa95088707cd` as correction evidence. The main SQLite hash is still
+`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; 12 Pass A assignments remain open,
+all human/downstream evidence remains zero, and the project-owned tree is 37,905,554 bytes (36.15 MiB).
 
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run

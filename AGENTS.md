@@ -30,7 +30,9 @@ hours through `alpha-corpus-discord-progress.timer`; keep its claims stage-accur
 tier; GPT-5.4 is the initial surface-generation worker.
 
 The first session can be completed at `https://alpha.donto.org/corpus/review`; see
-[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). This is a local-first form:
+[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md) and the current hardened release
+in [Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). This is a
+local-first form:
 browser autosave and packet download are allowed, but only the local `review-submit` CLI may write a completed
 human packet into SQLite. Never add a public review POST, server action, or direct database mutation.
 
@@ -80,8 +82,8 @@ remaining blind primaries and repeats. Do not weaken it to per-candidate eligibi
 draft and local submission to the exact immutable envelope of a previously exported packet. Only response
 objects may change. Do not weaken the comparison to assignment IDs or candidate hashes: candidate prose,
 instructions, order, seed, reviewer, opaque identity, and presentation identity are all review evidence. The
-live release is `e07477b934897b71f241724a230e2ccd6320e0c9`; its browser tamper test discarded altered local
-candidate text. Human reviews remain zero.
+immutable-envelope release was introduced at `e07477b934897b71f241724a230e2ccd6320e0c9`; its browser tamper
+test discarded altered local candidate text. Human reviews remain zero.
 
 [Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md) extends the exact
 exported-envelope contract to Pass C family synthesis, embedded structural dispositions, and Pass D closeout.
@@ -102,6 +104,14 @@ finding that all 48 current candidates use distinct free-form policy strings whi
 remain empty. It defines a data-driven, versioned, compositional policy graph; target/compiler/observation
 separation; and family/release distribution controls. Do not expose candidate-level mappings before blind
 review, hard-code a policy enum, or treat an intended policy as observed success.
+
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) records the current
+public review application at `c4e7c4db2e007ee247113bbfe97029f5a84eec1f`. It restores the assignment navigator
+on mobile, persists packet-scoped review position, adds first/next-incomplete navigation, focuses and scrolls
+selected assignments, gives rubric radios descriptive accessible names, recovers safely from invalid local
+drafts, and corrects contrast and duplicate landmarks. The 22/22 corpus suite, typecheck, optimized build,
+immutable canary, public Chromium proof, and 200/405 boundary pass. The canonical ledger remains byte-identical
+with 12 open assignments and zero human evidence; usability is not adjudication.
 
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes

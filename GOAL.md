@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING FOR ALL HUMAN PACKETS LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING FOR ALL HUMAN PACKETS LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -50,8 +50,10 @@ The first executable review session is recorded in
 Pass A assignments and zero completed reviews. The workflow refuses to expose hidden contracts in Pass A,
 requires a sealed human submission before Pass B, and never changes release or training state automatically.
 The browser instrument is live at `https://alpha.donto.org/corpus/review` and recorded in
-[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). It autosaves only in the
-reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
+[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md), with its current hardened
+deployment recorded in
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). It autosaves only
+in the reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
 
 [Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md) records the deployed
 reviewer-scoped campaign panel at revision `8f25d51c362921480d68e37a22d57a9ee39d47d9`. It makes the complete
@@ -99,7 +101,8 @@ response objects may differ. Candidate text, instructions, seed, ordering and ev
 bound. The public workspace uses the same check and discarded a deliberately altered local-storage candidate
 on reload. The canonical blank packet's computed envelope SHA equals its export SHA
 `6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; all human, release, training, and
-authorization counts remain zero. The live service runs the same revision with zero restarts.
+authorization counts remain zero. That revision introduced the immutable-envelope contract; the current
+application release retains it.
 
 [Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md) generalizes that
 provenance contract to Pass C family synthesis, the structural dispositions embedded in Pass C, and Pass D
@@ -122,6 +125,14 @@ strings and zero normalized targets; no individual mapping or quality judgment w
 are versioned data, compose required/optional/prohibited moves, compile into natural instructions, and retain
 intended behavior separately from observed human evidence and release distribution. Migration and D5 backfill
 remain locked behind blind review and closeout.
+
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) records the current
+deployed review workspace at application revision `c4e7c4db2e007ee247113bbfe97029f5a84eec1f`. Real desktop and
+mobile Chromium proof now covers visible 12-item navigation, packet-scoped position recovery, first/next-
+incomplete controls, focus and scroll movement, descriptive score names, safe invalid-draft recovery, corrected
+contrast, one main landmark, no overflow, and public 200/405 boundaries. The canonical SQLite SHA remains
+`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; all human and downstream evidence
+counts remain zero. The project-owned artifact tree is 37,905,554 bytes (approximately 36.15 MiB).
 
 ---
 

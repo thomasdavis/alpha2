@@ -34,6 +34,9 @@ The implementation contract for the still-locked D6 evaluation substrate is
 The D5-derived response-policy normalization and distribution contract is
 [PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md); its migration and backfill remain locked until blind review
 and closeout.
+The deployed accessibility, fatigue-reduction, recovery, and responsive-navigation proof for the local-first
+human instrument is
+[Execution 13](EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md).
 
 Done:
 
@@ -55,8 +58,9 @@ Done:
 - D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, separate
   structural-disposition evidence, and non-binding Pass D campaign closeout; versioned rubrics; append-only
   human submission; a deployed local-first browser workspace; a hidden-lineage-safe aggregate pipeline;
-  22/22 corpus tests; exact binding of every response to an exported immutable packet envelope; and the first 12 of 48 Pass A
-  assignments prepared with zero fabricated
+  mobile/desktop assignment navigation, incomplete-work recovery, packet-scoped position persistence, accessible
+  score names, and corrected contrast/landmarks; 22/22 corpus tests; exact binding of every response to an
+  exported immutable packet envelope; and the first 12 of 48 Pass A assignments prepared with zero fabricated
   judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without
   duplicating candidates or candidate reviews; responses, scores, findings, and derived stability remain
