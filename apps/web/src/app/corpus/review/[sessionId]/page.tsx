@@ -17,7 +17,7 @@ export default async function ReviewSessionPage({
   if (!loaded) notFound();
 
   return (
-    <main className="mx-auto w-full max-w-7xl space-y-5">
+    <div className="mx-auto w-full max-w-7xl space-y-5">
       <nav aria-label="Breadcrumb" className="text-xs text-text-muted">
         <Link href="/corpus" className="hover:text-text-primary hover:underline">Alpha Corpus</Link>
         <span className="mx-2">/</span>
@@ -30,6 +30,6 @@ export default async function ReviewSessionPage({
         packetSha256={loaded.packetSha256}
         exportedAt={loaded.exportedAt}
       />
-    </main>
+    </div>
   );
 }

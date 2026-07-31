@@ -162,7 +162,7 @@ export default function CorpusReviewPage() {
     .filter((entry): entry is CorpusReviewCampaignProgress => entry !== null);
 
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-8">
+    <div className="mx-auto w-full max-w-6xl space-y-8">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -265,6 +265,6 @@ export default function CorpusReviewPage() {
           </div>
         )}
       </section>
-    </main>
+    </div>
   );
 }
