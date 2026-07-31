@@ -427,6 +427,9 @@ export interface SftExample {
    *  EOS is excluded. This lets training emphasize the decision to BEGIN an
    *  answer without a second per-token array or accidentally boosting EOS. */
   assistantContentSpans?: Uint32Array;
+  /** Token positions of assistant-turn EOS markers. Kept separate from ordinary
+   *  content so response initiation and clean stopping can be weighted independently. */
+  assistantEndPositions?: Uint32Array;
 }
 
 /** Optional SFT sampling and loss-weighting policy. Defaults preserve the
@@ -440,6 +443,8 @@ export interface SftDataLoaderOptions {
   startTokenCount?: number;
   /** Relative weight of emphasized start tokens before row normalization. */
   startTokenMultiplier?: number;
+  /** Relative weight of each assistant-turn EOS before row normalization. */
+  endTokenMultiplier?: number;
 }
 
 /**
@@ -476,6 +481,7 @@ export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: Cha
   const tokens = tokenizer.encode(convText);
   const roleMask = new Uint8Array(tokens.length);
   const assistantContentSpans: number[] = [];
+  const assistantEndPositions: number[] = [];
   let inAssistant = false;
   let contentStart = -1;
   const closeContentSpan = (end: number): void => {
@@ -495,6 +501,7 @@ export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: Cha
     } else if (id === ids.eotId) {
       closeContentSpan(i);    // EOS remains supervised but is not ordinary content
       roleMask[i] = inAssistant ? 1 : 0; // include the EOS that ends the turn
+      if (inAssistant) assistantEndPositions.push(i);
       inAssistant = false;
     } else {
       roleMask[i] = inAssistant ? 1 : 0;
@@ -502,7 +509,12 @@ export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: Cha
     }
   }
   closeContentSpan(tokens.length);
-  return { tokens, roleMask, assistantContentSpans: Uint32Array.from(assistantContentSpans) };
+  return {
+    tokens,
+    roleMask,
+    assistantContentSpans: Uint32Array.from(assistantContentSpans),
+    assistantEndPositions: Uint32Array.from(assistantEndPositions),
+  };
 }
 
 /** Small deterministic PRNG used only to construct an epoch permutation. */
@@ -557,11 +569,15 @@ export class SftDataLoader implements BatchSource {
     if (examples.length === 0) throw new RangeError("SftDataLoader needs at least one conversation");
     const startTokenCount = options.startTokenCount ?? 0;
     const startTokenMultiplier = options.startTokenMultiplier ?? 1;
+    const endTokenMultiplier = options.endTokenMultiplier ?? 1;
     if (!Number.isSafeInteger(startTokenCount) || startTokenCount < 0) {
       throw new RangeError(`startTokenCount must be a non-negative integer: ${startTokenCount}`);
     }
     if (!Number.isFinite(startTokenMultiplier) || startTokenMultiplier <= 0) {
       throw new RangeError(`startTokenMultiplier must be finite and positive: ${startTokenMultiplier}`);
+    }
+    if (!Number.isFinite(endTokenMultiplier) || endTokenMultiplier <= 0) {
+      throw new RangeError(`endTokenMultiplier must be finite and positive: ${endTokenMultiplier}`);
     }
     this.examples = examples;
     this.batchSize = batchSize;
@@ -572,6 +588,7 @@ export class SftDataLoader implements BatchSource {
       balanceConversations: options.balanceConversations ?? false,
       startTokenCount,
       startTokenMultiplier,
+      endTokenMultiplier,
     };
 
     const elems = batchSize * blockSize;
@@ -603,11 +620,13 @@ export class SftDataLoader implements BatchSource {
       const tok = ex.tokens;
       const rm = ex.roleMask;
       const contentSpans = ex.assistantContentSpans;
+      const endPositions = ex.assistantEndPositions;
       const L = tok.length;
       const dst = b * T;
       const pairs = Math.min(T, L - 1); // usable (input,target) positions
       let rowWeight = 0;
       let spanOffset = 0;
+      let endOffset = 0;
       for (let i = 0; i < pairs; i++) {
         inputs[dst + i] = tok[i];
         targets[dst + i] = tok[i + 1];
@@ -619,7 +638,13 @@ export class SftDataLoader implements BatchSource {
         const isAnswerStart = !!contentSpans && spanOffset < contentSpans.length &&
           targetIndex >= contentSpans[spanOffset] &&
           targetIndex < Math.min(contentSpans[spanOffset + 1], contentSpans[spanOffset] + this.options.startTokenCount);
-        const weight = isAnswerStart ? this.options.startTokenMultiplier : 1;
+        while (endPositions && endOffset < endPositions.length && endPositions[endOffset] < targetIndex) endOffset++;
+        const isAnswerEnd = !!endPositions && endOffset < endPositions.length && endPositions[endOffset] === targetIndex;
+        const weight = isAnswerStart
+          ? this.options.startTokenMultiplier
+          : isAnswerEnd
+            ? this.options.endTokenMultiplier
+            : 1;
         mask[dst + i] = weight; // weight of the PREDICTED token
         rowWeight += weight;
       }

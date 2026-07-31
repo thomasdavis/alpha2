@@ -111,6 +111,7 @@ describe("SFT: role-mask construction (buildSftExample)", () => {
   it("records compact content spans per turn but never includes EOS", () => {
     const ex = buildSftExample("<|user|>a<|assistant|>bc<|end_of_text|><|user|>d<|assistant|>e<|end_of_text|>", tok, ids);
     expect(Array.from(ex.assistantContentSpans!)).toEqual([3, 5, 9, 10]);
+    expect(Array.from(ex.assistantEndPositions!)).toEqual([5, 10]);
   });
 });
 
@@ -151,22 +152,23 @@ describe("SFT: SftDataLoader batch layout + mask alignment", () => {
     for (let i = 0; i < T; i++) expect(mask[i]).toBe(ex.roleMask[i + 1]); // first T pairs
   });
 
-  it("balances rows and emphasizes answer starts without boosting EOS", () => {
+  it("balances rows and weights answer starts and EOS independently", () => {
     const short = buildSftExample("<|user|>q<|assistant|>ab<|end_of_text|>", tok, ids);
     const long = buildSftExample("<|user|>q<|assistant|>abcdef<|end_of_text|>", tok, ids);
     const loader = new SftDataLoader([short, long], 2, 12, {
       balanceConversations: true,
       startTokenCount: 2,
       startTokenMultiplier: 4,
+      endTokenMultiplier: 3,
     });
     const mask = loader.nextBatch().lossMask!.data as Float32Array;
     const rows = [mask.slice(0, 12), mask.slice(12, 24)];
     for (const row of rows) expect(Array.from(row).reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 6);
-    // Short row raw weights are [4,4,1] for a,b,EOS.
+    // Short row raw weights are [4,4,3] for a,b,EOS.
     const live = Array.from(rows[0]).filter((weight) => weight > 0);
-    expect(live[0]).toBeCloseTo(4 / 9, 6);
-    expect(live[1]).toBeCloseTo(4 / 9, 6);
-    expect(live[2]).toBeCloseTo(1 / 9, 6);
+    expect(live[0]).toBeCloseTo(4 / 11, 6);
+    expect(live[1]).toBeCloseTo(4 / 11, 6);
+    expect(live[2]).toBeCloseTo(3 / 11, 6);
   });
 });
 

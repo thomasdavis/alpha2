@@ -772,14 +772,18 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const sftStartTokens = Math.max(0, Number.parseInt(process.env.ALPHA_SFT_START_TOKENS ?? "0", 10) || 0);
     const parsedStartWeight = Number.parseFloat(process.env.ALPHA_SFT_START_WEIGHT ?? "1");
     const sftStartWeight = Number.isFinite(parsedStartWeight) && parsedStartWeight > 0 ? parsedStartWeight : 1;
+    const parsedEndWeight = Number.parseFloat(process.env.ALPHA_SFT_END_WEIGHT ?? "1");
+    const sftEndWeight = Number.isFinite(parsedEndWeight) && parsedEndWeight > 0 ? parsedEndWeight : 1;
     const commonSftOptions = {
       balanceConversations: sftBalance,
       startTokenCount: sftStartTokens,
       startTokenMultiplier: sftStartWeight,
+      endTokenMultiplier: sftEndWeight,
     };
     console.log(
       `SFT policy: shuffle=${sftShuffle ? `epoch(seed=${trainConfig.seed})` : "off"} ` +
-      `conversationBalance=${sftBalance} startTokens=${sftStartTokens} startWeight=${sftStartWeight}`,
+      `conversationBalance=${sftBalance} startTokens=${sftStartTokens} ` +
+      `startWeight=${sftStartWeight} endWeight=${sftEndWeight}`,
     );
     if (valDataPath) {
       const trainEx = await loadSftExamples(dataPath, tokenizer);
