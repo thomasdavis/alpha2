@@ -10,6 +10,7 @@ import {
   prepareHumanReviewPacket,
   submitHumanReviewPacket
 } from "./review.js";
+import { humanReviewPacketMatchesEnvelope } from "./review-contract.js";
 import type { CampaignConfig, GeneratedItem, HumanReviewPacket, JsonValue } from "./types.js";
 
 const temporaryHomes: string[] = [];
@@ -236,6 +237,69 @@ test("submission rejects a changed candidate version hash", async () => {
     await assert.rejects(submitHumanReviewPacket(ledger, prepared.packetPath), /candidate version changed/);
     const reviews = await ledger.client.execute("SELECT COUNT(*) AS count FROM review");
     assert.equal(Number(reviews.rows[0]!["count"]), 0);
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
+test("submission accepts response-only changes but rejects altered visible packet envelopes", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const prepared = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 1,
+      seed: "immutable-envelope"
+    });
+    const exported = JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket;
+    const completed = completePacket(JSON.parse(JSON.stringify(exported)) as HumanReviewPacket);
+    assert.equal(humanReviewPacketMatchesEnvelope(completed, exported), true);
+
+    const alteredCandidate = JSON.parse(JSON.stringify(completed)) as HumanReviewPacket;
+    const visible = alteredCandidate.assignments[0]!.candidate as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    visible.messages[1]!.content = "This is not the assistant response that was exported for review.";
+    assert.equal(humanReviewPacketMatchesEnvelope(alteredCandidate, exported), false);
+    writeFileSync(prepared.packetPath, `${canonicalJson(alteredCandidate as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitHumanReviewPacket(ledger, prepared.packetPath),
+      /immutable envelope does not match an exported packet/
+    );
+
+    const alteredPresentationId = JSON.parse(JSON.stringify(completed)) as HumanReviewPacket;
+    alteredPresentationId.assignments[0]!.presentationId = "presentation_tampered";
+    assert.equal(humanReviewPacketMatchesEnvelope(alteredPresentationId, exported), false);
+    writeFileSync(prepared.packetPath, `${canonicalJson(alteredPresentationId as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitHumanReviewPacket(ledger, prepared.packetPath),
+      /Unknown review assignment/
+    );
+
+    const alteredPresentation = JSON.parse(JSON.stringify(completed)) as HumanReviewPacket;
+    alteredPresentation.assignments[0]!.opaqueItemId = "opaque_tampered";
+    assert.equal(humanReviewPacketMatchesEnvelope(alteredPresentation, exported), false);
+    writeFileSync(prepared.packetPath, `${canonicalJson(alteredPresentation as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitHumanReviewPacket(ledger, prepared.packetPath),
+      /immutable envelope does not match an exported packet/
+    );
+
+    const evidence = await ledger.client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM review) AS reviews,
+        (SELECT COUNT(*) FROM review_presentation_response) AS presentation_responses,
+        (SELECT COUNT(*) FROM raw_artifact WHERE kind LIKE 'human_review_submission_pass_%') AS submissions
+    `);
+    assert.equal(Number(evidence.rows[0]!["reviews"]), 0);
+    assert.equal(Number(evidence.rows[0]!["presentation_responses"]), 0);
+    assert.equal(Number(evidence.rows[0]!["submissions"]), 0);
+
+    writeFileSync(prepared.packetPath, `${canonicalJson(completed as unknown as JsonValue)}\n`);
+    const accepted = await submitHumanReviewPacket(ledger, prepared.packetPath);
+    assert.equal(accepted.submitted, 1);
+    assert.equal(accepted.packetEnvelopeSha256, prepared.packetSha256);
   } finally {
     closeLedger(ledger);
   }

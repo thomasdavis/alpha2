@@ -21,6 +21,7 @@ import {
   emptyHumanReviewResponse,
   humanReviewDimensions,
   humanReviewOutcomes,
+  humanReviewPacketEnvelopeJson,
   humanReviewResponseErrors,
   parseHumanReviewPacketText
 } from "./review-contract.js";
@@ -170,6 +171,21 @@ export async function ensureHumanActor(ledger: Ledger, alias: string): Promise<s
   return id;
 }
 
+async function requireHumanActor(ledger: Ledger, alias: string): Promise<string> {
+  const clean = alias.trim();
+  if (clean.length < 1 || clean.length > 80) throw new Error("Reviewer alias must contain 1-80 characters");
+  const id = stableId("actor", `human:${clean}`);
+  const stored = await ledger.client.execute({
+    sql: "SELECT kind, display_name FROM actor WHERE id = ?",
+    args: [id]
+  });
+  if (stored.rows.length !== 1 || String(stored.rows[0]!["kind"]) !== "human"
+    || String(stored.rows[0]!["display_name"]) !== clean) {
+    throw new Error(`Human reviewer ${clean} was not registered by packet preparation`);
+  }
+  return id;
+}
+
 export async function ensureHumanReviewRubric(ledger: Ledger): Promise<string> {
   const rubricId = stableId("rubric", HUMAN_REVIEW_RUBRIC_SLUG);
   const definitionJson = canonicalJson(RUBRIC_DEFINITION);
@@ -196,6 +212,22 @@ export async function ensureHumanReviewRubric(ledger: Ledger): Promise<string> {
   });
   if (stored.rows.length !== 1 || String(stored.rows[0]!["content_sha256"]) !== digest) {
     throw new Error("Stored D5 human-review rubric differs from the executable definition");
+  }
+  return versionId;
+}
+
+async function requireHumanReviewRubric(ledger: Ledger): Promise<string> {
+  const definitionJson = canonicalJson(RUBRIC_DEFINITION);
+  const digest = sha256Bytes(definitionJson);
+  const versionId = stableId(
+    "rubricv", `${HUMAN_REVIEW_RUBRIC_SLUG}:${HUMAN_REVIEW_RUBRIC_VERSION}:${digest}`
+  );
+  const stored = await ledger.client.execute({
+    sql: "SELECT content_sha256 FROM rubric_version WHERE id = ?",
+    args: [versionId]
+  });
+  if (stored.rows.length !== 1 || String(stored.rows[0]!["content_sha256"]) !== digest) {
+    throw new Error("D5 human-review rubric was not registered by packet preparation");
   }
   return versionId;
 }
@@ -721,17 +753,18 @@ export async function submitHumanReviewPacket(
   repeatResponses: number;
   pass: HumanReviewPass;
   sessionId: string;
+  packetEnvelopeSha256: string;
   submissionSha256: string;
 }> {
   const submissionBytes = readFileSync(resolve(path));
   const packet = parseHumanReviewPacketText(submissionBytes.toString("utf8"));
-  const actorId = await ensureHumanActor(ledger, packet.reviewerAlias);
-  const rubricVersionId = await ensureHumanReviewRubric(ledger);
   if (packet.rubricSlug !== HUMAN_REVIEW_RUBRIC_SLUG
     || packet.rubricVersion !== HUMAN_REVIEW_RUBRIC_VERSION) {
     throw new Error("Human-review packet uses an unsupported rubric version");
   }
   if (packet.assignments.length < 1) throw new Error("Human-review packet has no assignments");
+  const actorId = await requireHumanActor(ledger, packet.reviewerAlias);
+  const rubricVersionId = await requireHumanReviewRubric(ledger);
   const assignmentIds = new Set<string>();
   const validated: Array<{
     assignment: HumanReviewPacketAssignment;
@@ -829,6 +862,25 @@ export async function submitHumanReviewPacket(
       throw new Error("Review packet does not contain every open presentation in its session");
     }
   }
+  const packetEnvelopeJson = humanReviewPacketEnvelopeJson(packet);
+  const packetEnvelopeSha256 = sha256Bytes(packetEnvelopeJson);
+  const exportedEnvelope = await ledger.client.execute({
+    sql: `SELECT ea.id FROM export_artifact ea
+          JOIN blob b ON b.sha256 = ea.blob_sha256
+          WHERE ea.format = 'human_review_packet_json'
+            AND ea.blob_sha256 = ?
+            AND b.byte_length = ?
+            AND b.media_type = 'application/json'
+            AND json_valid(ea.manifest_json)
+            AND json_extract(ea.manifest_json, '$.sessionId') = ?
+            AND json_extract(ea.manifest_json, '$.pass') = ?
+          LIMIT 1`,
+    args: [packetEnvelopeSha256, Buffer.byteLength(packetEnvelopeJson, "utf8"),
+      packet.sessionId, packet.pass]
+  });
+  if (exportedEnvelope.rows.length !== 1) {
+    throw new Error("Human-review submission immutable envelope does not match an exported packet");
+  }
   const submissionSha256 = await putBlob(ledger, submissionBytes, "application/json");
   const ts = now();
   const statements: Array<{ sql: string; args: InValue[] }> = [{
@@ -854,6 +906,7 @@ export async function submitHumanReviewPacket(
       pass: packet.pass,
       assignmentId: entry.assignment.assignmentId,
       presentationId: entry.presentationId ?? null,
+      packetEnvelopeSha256,
       submissionSha256
     } as unknown as JsonValue);
     if (createsReview && reviewId !== undefined) {
@@ -898,6 +951,7 @@ export async function submitHumanReviewPacket(
           candidateId: entry.candidateId,
           pass: packet.pass,
           sessionId: packet.sessionId,
+          packetEnvelopeSha256,
           submissionSha256
         } as JsonValue), ts]
       });
@@ -953,6 +1007,7 @@ export async function submitHumanReviewPacket(
             sourceReviewId: entry.sourceReviewId,
             candidateId: entry.candidateId,
             sessionId: packet.sessionId,
+            packetEnvelopeSha256,
             submissionSha256
           } as JsonValue), ts]
         });
@@ -980,6 +1035,7 @@ export async function submitHumanReviewPacket(
     repeatResponses: validated.filter((entry) => entry.presentationKind === "hidden_repeat").length,
     pass: packet.pass,
     sessionId: packet.sessionId,
+    packetEnvelopeSha256,
     submissionSha256
   };
 }

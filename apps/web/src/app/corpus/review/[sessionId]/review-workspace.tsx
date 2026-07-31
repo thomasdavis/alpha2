@@ -12,6 +12,7 @@ import {
   HUMAN_REVIEW_SCORE_ANCHORS,
   humanReviewDimensions,
   humanReviewOutcomes,
+  humanReviewPacketMatchesEnvelope,
   humanReviewResponseErrors,
   parseHumanReviewPacketText
 } from "@alpha/corpus/review-contract";
@@ -47,17 +48,6 @@ function visibleMessages(candidate: unknown): VisibleMessage[] {
       return [];
     }
     return [{ role: message["role"], content: message["content"] }];
-  });
-}
-
-function packetMatchesSource(draft: HumanReviewPacket, source: HumanReviewPacket): boolean {
-  if (draft.sessionId !== source.sessionId || draft.pass !== source.pass
-    || draft.rubricSlug !== source.rubricSlug || draft.rubricVersion !== source.rubricVersion
-    || draft.assignments.length !== source.assignments.length) return false;
-  return draft.assignments.every((assignment, index) => {
-    const original = source.assignments[index];
-    return original?.assignmentId === assignment.assignmentId
-      && original.candidateContentSha256 === assignment.candidateContentSha256;
   });
 }
 
@@ -275,7 +265,7 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
       const stored = window.localStorage.getItem(storageKey);
       if (stored) {
         const parsed = parseHumanReviewPacketText(stored);
-        if (packetMatchesSource(parsed, sourcePacket)) setDraft(parsed);
+        if (humanReviewPacketMatchesEnvelope(parsed, sourcePacket)) setDraft(parsed);
       }
       setSaveState("saved");
     } catch {
