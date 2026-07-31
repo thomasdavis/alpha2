@@ -97,6 +97,12 @@ tension by keeping metadata, lineage, digests, policies, and safe aggregates in 
 prompt/answer plaintext remains in a separately verified encrypted vault until retirement. Do not implement or
 populate D6 merely because this PRD exists: D5 human closeout and a bounded operator decision remain required.
 
+[PRD-14](docs/synthetic-curriculum-prd/PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md) addresses the D5 aggregate
+finding that all 48 current candidates use distinct free-form policy strings while normalized policy targets
+remain empty. It defines a data-driven, versioned, compositional policy graph; target/compiler/observation
+separation; and family/release distribution controls. Do not expose candidate-level mappings before blind
+review, hard-code a policy enum, or treat an intended policy as observed success.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

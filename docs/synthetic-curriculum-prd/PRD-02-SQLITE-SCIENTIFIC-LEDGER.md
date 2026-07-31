@@ -195,6 +195,11 @@ the purpose of a dialogue does not imply private belief.
 Message content never includes a mandatory chat delimiter. A message may contain literal markup when it is
 part of what a participant said; that is distinguished from rendering syntax.
 
+The preliminary `response_policy_target` relation is expanded conceptually by
+[PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md). Raw free-form instructions remain immutable; future policy
+definitions, target components, compiled instructions, observations, and distribution findings are separate
+versioned evidence rather than a destructive string normalization.
+
 ### 5.5 Sources, evidence, and rights
 
 | Table | Purpose |

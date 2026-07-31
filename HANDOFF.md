@@ -86,6 +86,13 @@ relations. It preserves the operator's public-all-tables goal by publishing safe
 keeping private evaluation plaintext in an unserved encrypted vault. Do not migrate or populate D6 before the
 human D5 closeout and a bounded operator decision.
 
+The other current planning-only refinement is
+[PRD-14](docs/synthetic-curriculum-prd/PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md). An aggregate-only SQLite query
+found 48 distinct legacy `intendedResponsePolicy` strings across 48 current candidates and zero
+`response_policy_target` rows; it did not reveal candidate-to-policy mappings. PRD-14 specifies an extensible
+policy graph, compositional targets, natural-language compilation, observed-behavior evidence, and release
+balance. Do not backfill or publish individual mappings before D5 blindness is complete.
+
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
 `analysis_run_a32f01644e1a96a9ea601b35b35626aa` is tied to exact revision

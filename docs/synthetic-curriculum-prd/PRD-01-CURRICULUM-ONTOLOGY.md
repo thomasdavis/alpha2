@@ -428,6 +428,10 @@ Candidate turns can target:
 - close naturally;
 - answer and stop.
 
+These functions are not a closed enum and do not by themselves specify the appropriate next move. Their
+versioned, compositional design-target, natural-language compilation, observed-behavior, and distribution
+contract is [PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md).
+
 The `answer and stop` category receives deliberate representation so Alpha does not learn to append a question
 to every response.
 

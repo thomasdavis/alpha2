@@ -59,6 +59,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 29. [Execution 11 — D5 immutable review-packet envelope](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md)
 30. [Execution 12 — D5 immutable-envelope binding for every human packet](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md)
 31. [PRD-13 — Evaluation firewall, private vault, and freeze protocol](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md)
+32. [PRD-14 — Conversational response-policy control plane](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md)
 
 ## Authority and supersession
 

@@ -31,6 +31,9 @@ The generalization of that gate to every A/B/C/D human packet is
 [Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md).
 The implementation contract for the still-locked D6 evaluation substrate is
 [PRD-13](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md).
+The D5-derived response-policy normalization and distribution contract is
+[PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md); its migration and backfill remain locked until blind review
+and closeout.
 
 Done:
 

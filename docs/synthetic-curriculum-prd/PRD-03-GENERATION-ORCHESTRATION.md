@@ -119,6 +119,8 @@ For each family, the orchestrator produces a structured blueprint containing:
 - authority type and human-review needs.
 
 Blueprints are reviewed before expensive surface expansion. A flawed blueprint can corrupt an entire family.
+PRD-14 defines how desired response policies become versioned compositional targets, how those targets compile
+to natural worker instructions, and how intended versus observed distributions remain separate.
 
 ### Stage C — Seed realization
 

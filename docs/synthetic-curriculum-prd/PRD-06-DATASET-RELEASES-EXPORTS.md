@@ -115,6 +115,9 @@ Users should be able to request, for example:
 - release and exposure history;
 - novelty/deduplication thresholds.
 
+PRD-14 supplies the future versioned policy graph and target-versus-observed distribution records behind these
+facets. Third-party selection must not treat legacy free-form policy prose as a stable categorical value.
+
 The public interface should expose stable views and a small query builder. Users may also write SQL directly.
 
 ## 7. Example cohort specifications

@@ -161,6 +161,10 @@ rights ambiguity, and public claims of validity.
 Reviews the distribution, leakage, provenance, coverage, style, rights, and reconstructability of a cohort,
 not just individual units.
 
+For conversational action, [PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md) requires reviewers to keep the
+blueprint policy, compiled worker instruction, observed response move, question/closure behavior, and release
+distribution in separate evidence layers. A declared target never proves that a generated response achieved it.
+
 ### D5 candidate passes and family synthesis
 
 For a bounded family calibration, candidate review proceeds through distinct evidence layers:

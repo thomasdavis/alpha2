@@ -115,7 +115,9 @@ several identity-through-change families; they are not evidence that those items
 The profile also exposes a design issue for later taxonomy work: nearly every generated
 `intendedResponsePolicy` is free-form prose rather than a controlled operational category. The ledger keeps
 that exact prose. A future approved schema revision should relate it to a separately versioned response-policy
-taxonomy without replacing the raw instruction.
+taxonomy without replacing the raw instruction. The aggregate audit later confirmed 48 distinct strings for
+48 current candidates and zero normalized `response_policy_target` rows. The future design is specified in
+[PRD-14](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md); no candidate-level mapping occurs before blind D5 review.
 
 ## 5. Provenance failure and append-only correction
 

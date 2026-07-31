@@ -116,6 +116,13 @@ public ledger will retain complete safe metadata and ciphertext commitments so a
 private prompt and answer plaintext will stay in a separate encrypted vault until retirement. The D5 human
 closeout and a bounded operator decision still precede implementation or population.
 
+[PRD-14](docs/synthetic-curriculum-prd/PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md) turns the frozen D5 aggregate
+policy gap into a future control-plane contract. The 48 current candidates have 48 distinct free-form policy
+strings and zero normalized targets; no individual mapping or quality judgment was exposed. Future policies
+are versioned data, compose required/optional/prohibited moves, compile into natural instructions, and retain
+intended behavior separately from observed human evidence and release distribution. Migration and D5 backfill
+remain locked behind blind review and closeout.
+
 ---
 
 # ARCHIVED GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
