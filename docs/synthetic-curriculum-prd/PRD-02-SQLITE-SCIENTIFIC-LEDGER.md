@@ -276,6 +276,8 @@ schema-valid tool/output path, never regex extraction from prose.
 | `rubric` | Stable quality construct |
 | `rubric_version` | Exact criteria and anchors |
 | `review_assignment` | Candidate, reviewer, blindness, order, deadline |
+| `human_review_session_declaration` | Reviewer competence scope, timing, interruption, fatigue, conditions, and exact packet/submission hashes |
+| `human_review_session_competence` | Normalized declared competence values for one immutable human session declaration |
 | `review_presentation_session` | Ordered hash-bound review session, including repeat allocation |
 | `review_presentation` | One primary or hidden-repeat appearance without duplicating the review |
 | `review_presentation_response` | Immutable response to one appearance |

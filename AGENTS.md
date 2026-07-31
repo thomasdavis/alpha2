@@ -31,7 +31,7 @@ tier; GPT-5.4 is the initial surface-generation worker.
 
 The first session can be completed at `https://alpha.donto.org/corpus/review`; see
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md) and the current hardened release
-in [Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). This is a
+in [Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md). This is a
 local-first form:
 browser autosave and packet download are allowed, but only the local `review-submit` CLI may write a completed
 human packet into SQLite. Never add a public review POST, server action, or direct database mutation.
@@ -58,8 +58,8 @@ identity, but the public ledger can reveal it, so reviewers must not inspect pre
 session.
 
 [Execution 08](docs/synthetic-curriculum-prd/EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md) adds the final
-fail-closed Pass D evidence path. The canonical ledger is now at seven migrations, 129 tables, five views, and
-186 triggers. A packet cannot prepare before the same human has complete A/B reviews, six repeat-stability
+fail-closed Pass D evidence path. At that checkpoint the ledger had seven migrations, 129 tables, five views,
+and 186 triggers. A packet cannot prepare before the same human has complete A/B reviews, six repeat-stability
 rows, every Pass C family synthesis and structural disposition, and a current analysis run. Its schema forces
 `execution_authorized = 0`; it cannot create lifecycle transitions, release members, training exposures,
 model calls, or compute. The live proof fails at missing Pass A and leaves all Pass D/adjudication tables empty.
@@ -105,13 +105,19 @@ remain empty. It defines a data-driven, versioned, compositional policy graph; t
 separation; and family/release distribution controls. Do not expose candidate-level mappings before blind
 review, hard-code a policy enum, or treat an intended policy as observed success.
 
-[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) records the current
-public review application at `c4e7c4db2e007ee247113bbfe97029f5a84eec1f`. It restores the assignment navigator
-on mobile, persists packet-scoped review position, adds first/next-incomplete navigation, focuses and scrolls
-selected assignments, gives rubric radios descriptive accessible names, recovers safely from invalid local
-drafts, and corrects contrast and duplicate landmarks. The 22/22 corpus suite, typecheck, optimized build,
-immutable canary, public Chromium proof, and 200/405 boundary pass. The canonical ledger remains byte-identical
-with 12 open assignments and zero human evidence; usability is not adjudication.
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) is the historical
+workspace-hardening record at `c4e7c4db2e007ee247113bbfe97029f5a84eec1f`. It restores mobile navigation,
+incomplete-work controls, focus, accessible score names, invalid-draft recovery, and contrast. Its statement
+that position was stored as an opaque identity was corrected append-only: that release stored a numeric index.
+
+[Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md) records the current
+public application at `ccdd9e6f00129a28571fd1158b42acf508fb0991` and migration 8. The canonical ledger now
+has eight migrations, 131 tables, five views, and 190 triggers. Completed A/B submissions must include
+competence scope, start/end, interruption, fatigue, and condition evidence; incomplete declarations write
+nothing. Earlier packet blobs remain preserved and readable as explicitly incomplete. The active position now
+really is an opaque item identity. The 23/23 corpus suite, typecheck, optimized build, immutable canary, public
+desktop/mobile Chromium proof, and 200/405 boundary pass. There are still 12 open Pass A assignments and zero
+human or downstream evidence; provenance readiness is not adjudication.
 
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes

@@ -216,6 +216,11 @@ Before reviewing production data, every model and human reviewer sees a calibrat
 Track dimension-level agreement, bias, severity, false acceptance, false rejection, and uncertainty. A reviewer
 may be qualified for conversational naturalness and unqualified for mereology. Capability profiles are scoped.
 
+Every sealed human A/B session also records the reviewer's declared competence scope, start/end, interruption,
+fatigue, and material conditions. These declarations are provenance rather than automatic authority scores.
+They are append-only, bound to exact packet/submission hashes, and must validate before any review evidence is
+written. The first executable implementation is [Execution 14](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md).
+
 Calibration expires after material rubric, model, or prompt changes.
 
 ## 6. Counterexample protocol

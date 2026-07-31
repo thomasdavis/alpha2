@@ -21,6 +21,15 @@
 
 **Model calls, synthetic generation, training, GPU work, release promotion, and Donto mutation:** none
 
+## 0. Later correction and supersession
+
+Execution 14 supersedes this document as the current deployment record. Inspection found that revision
+`c4e7c4d...` persisted the active assignment as a packet-scoped **numeric position**, although sections 3.3
+and 4.1 below described it as an opaque presentation identity. That historical claim was wrong. The record is
+retained here rather than silently rewritten; revision `8fa7e4a...` is where the stored position became the
+opaque item identity. Execution 14 also adds reviewer-session provenance, legacy-packet continuity, migration
+8, and the current release `ccdd9e6f...`.
+
 ## 1. Outcome
 
 The existing local-first D5 Pass A workspace is now practical to use for a sustained human review session on

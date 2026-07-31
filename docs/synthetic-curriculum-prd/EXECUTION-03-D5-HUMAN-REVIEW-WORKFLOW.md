@@ -198,9 +198,14 @@ has approved any candidate.
 ## 8. Current gate
 
 The immediate next action is a real human completing the 12 blank Pass A response objects. A model must not fill
-them while claiming human authority. After local `review-submit` validates and records that packet, the same
-reviewer can prepare Pass B for those sealed candidates. The remaining 36 Pass A candidates follow in later
-sessions, with family synthesis only after all individual passes.
+them while claiming human authority.
+
+**Supersession recorded 2026-07-31:** the original sentence here said the same reviewer could prepare Pass B
+for those 12 sealed candidates. Execution 10 proved that candidate-local reveal would contaminate the remaining
+blind campaign. After this packet is imported, continue the remaining Pass A census and six hidden repeats.
+Pass B remains unavailable until all 48 Pass A reviews, all required repeat-stability rows, and zero open
+first-class Pass A sessions exist for the reviewer and rubric. Execution 14 also requires the completed packet
+to include reviewer competence and session-condition evidence before any row is written.
 
 No new synthetic generation, critic model, release, training, or GPU work is justified merely because the
 review machinery now works.

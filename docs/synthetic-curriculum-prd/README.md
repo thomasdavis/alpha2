@@ -6,7 +6,8 @@
 the complete reviewer-scoped A/repeat/B/C/structural/D pipeline is visible without hidden lineage; first-class
 surface evidence, fail-closed Pass A–D evidence workflows, and exact exported-packet envelope binding across
 every human packet type are live; the review instrument now has mobile navigation, incomplete-work recovery,
-packet-scoped position persistence, accessible score names, and browser-proven focus/contrast/landmark behavior;
+opaque packet-scoped position persistence, first-class reviewer competence/session-condition provenance,
+legacy-packet continuity, accessible score names, and browser-proven focus/contrast/landmark behavior;
 first 12 blinded Pass A assignments prepared, human responses pending
 **Completed bounded scope:** D2–D4 implementation, a 48-candidate GPT-5.4 D5 calibration, its immutable
 current-version surface/distribution profile, blinded presentation substrate, family/structural synthesis
@@ -62,6 +63,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 31. [PRD-13 — Evaluation firewall, private vault, and freeze protocol](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md)
 32. [PRD-14 — Conversational response-policy control plane](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md)
 33. [Execution 13 — D5 human-review workspace hardening](EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md)
+34. [Execution 14 — D5 reviewer-session provenance and legacy-packet continuity](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md)
 
 ## Authority and supersession
 

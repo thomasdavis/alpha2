@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 129 tables and five views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 131 tables and five views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -29,9 +29,11 @@ The review workflow is now operational and recorded in
 [Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md). The first blinded Pass A
 session has 12 assigned candidates at
 `/mnt/donto-data/donto-resources/research/alpha2-corpus/releases/review/alpha-calibration-v1-a-review_session_1b479c00-3195-4d1f-ac69-86489019cd3e/`.
-All response fields are blank: there are still zero human reviews, adjudications, release members, and training
-exposures. Submit through the local `review-submit` CLI only after a real human completes the form; never fill
-it with a model while labeling the result human.
+All assignment responses and the reviewer competence/session-condition declaration are blank: there are still
+zero human reviews, declarations, adjudications, release members, and training exposures. The current packet
+SHA-256 is `95b962709e9ad77aa91f2249f0648f1ee026b5ce3d64aaff792b615f751a484a`. Submit through the local
+`review-submit` CLI only after a real human completes the form; never fill it with a model while labeling the
+result human.
 
 The same blinded packet is now practical to review at `https://alpha.donto.org/corpus/review`. The original
 deployed workspace is recorded in
@@ -65,7 +67,7 @@ browser now canonicalize a packet with every response reset, then require every 
 match an exact exported packet. A changed assistant message with the original candidate hash and a changed
 opaque presentation identity both fail without writing a review or submission artifact. A real public browser
 tamper probe inserted a sentinel into local storage, reloaded, and observed the source packet restored in both
-the DOM and storage. The canonical packet remains blank at SHA-256
+the DOM and storage. That checkpoint's blank packet remains preserved at SHA-256
 `6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; human reviews remain zero. The 22/22
 corpus suite, optimized web build, canary, manifest, public 200/405 boundaries, ledger integrity, foreign keys,
 and blob validation pass. The project-owned footprint is 35.76 MiB.
@@ -93,18 +95,25 @@ found 48 distinct legacy `intendedResponsePolicy` strings across 48 current cand
 policy graph, compositional targets, natural-language compilation, observed-behavior evidence, and release
 balance. Do not backfill or publish individual mappings before D5 blindness is complete.
 
+Execution 13 records the prior workspace-hardening release and preserves its corrections. Its claim that the
+position value was an opaque identity was wrong: revision `c4e7c4d...` stored a packet-scoped numeric index.
+
 The current production review application is
-`c4e7c4db2e007ee247113bbfe97029f5a84eec1f`; see
-[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). It restores the
-assignment navigator at mobile widths, adds packet-scoped position persistence and first/next-incomplete
-navigation, moves focus and scroll to selected assignments, gives rubric scores descriptive accessible names,
-recovers explicitly from incompatible local drafts, and fixes theme contrast and duplicate main landmarks.
-The 22/22 corpus suite, typecheck, optimized build, immutable canary, desktop/mobile public Chromium checks, and
-200/405 method boundary pass. The deployed immutable release is
-`/home/ajax/alpha2-web-releases/c4e7c4db2e007ee247113bbfe97029f5a84eec1f`; the rejected first canary remains
-preserved at `f8e2d95596c2e68a4092b851e571aa95088707cd` as correction evidence. The main SQLite hash is still
-`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; 12 Pass A assignments remain open,
-all human/downstream evidence remains zero, and the project-owned tree is 37,905,554 bytes (36.15 MiB).
+`ccdd9e6f00129a28571fd1158b42acf508fb0991`; see
+[Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md). It retains the
+navigation and accessibility improvements, now stores the active opaque item identity, requires competence
+scope plus start/end/interruption/fatigue/condition evidence, and preserves older v1 packets as readable but
+explicitly incomplete. Migration 8 brings the ledger to eight migrations, 131 tables, five views, and 190
+triggers. The 23/23 corpus suite, typecheck, optimized build, immutable canary, desktop/mobile public Chromium
+checks, legacy-packet index proof, and 200/405 method boundary pass. The deployed immutable release is
+`/home/ajax/alpha2-web-releases/ccdd9e6f00129a28571fd1158b42acf508fb0991`; its manifest SHA-256 is
+`927f62f0240228ef5cd36016199c66a953796f6706a72f0cfbb03c0b1acdf147`. The main SQLite SHA-256 is
+`d2ccec649ab4aaeb0aac427391de0366a2b16b852477b2aa0da1724dd2ce9d19`; 12 Pass A assignments remain open,
+all human/downstream evidence remains zero, and the project-owned tree is 42,336,230 bytes (40.37 MiB).
+The pre-migration backup is
+`backups/pre-d5-session-declarations-20260731T054250Z.sqlite` at SHA-256
+`ee96b8a8573df70a1ab4b0d4b56176a4b765a062cf3a82fde85d574ae73fec38`; migration 8 digest is
+`0374db80ce8ff18195c7e8f1ce57b78bac6f13b9c9f92f6f23014bb93f8b0f51`.
 
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run

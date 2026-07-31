@@ -6,6 +6,10 @@
 
 **Rule:** complete and seal the blind form before viewing the contract-aware form
 
+**Executable provenance:** Execution 14 makes the reviewer/session header a required A/B packet response and
+stores it append-only in `human_review_session_declaration` plus normalized competence rows. A missing or
+incomplete header causes the local importer to write nothing.
+
 ## 1. Reviewer and session header
 
 | Field | Entry |
@@ -323,6 +327,8 @@ authority at zero, so completing the worksheet still cannot start generation, re
 | Form element | Ledger record |
 |---|---|
 | reviewer/session identity | `actor`, raw form artifact |
+| reviewer competence scope and session conditions | `human_review_session_declaration` |
+| normalized declared competences | `human_review_session_competence` |
 | protocol version | `rubric`, `rubric_version` |
 | presentation and blinding | `review_assignment.blindness_json` |
 | Pass A or Pass B outcome | `review` |
@@ -344,7 +350,7 @@ be measured. The reviewer must never overwrite the Pass A rationale after seeing
 
 ## 8. Review completion checklist
 
-- [ ] Reviewer identity and competence declared.
+- [ ] Reviewer identity, competence scope, session start/end, interruption, fatigue, and material conditions declared.
 - [ ] Pass A completed without forbidden metadata.
 - [ ] Pass A sealed before contract reveal.
 - [ ] Pass B checks every required/prohibited commitment.

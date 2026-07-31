@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING FOR ALL HUMAN PACKETS LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET AND REVIEWER-SESSION PROVENANCE LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -52,7 +52,7 @@ requires a sealed human submission before Pass B, and never changes release or t
 The browser instrument is live at `https://alpha.donto.org/corpus/review` and recorded in
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md), with its current hardened
 deployment recorded in
-[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md). It autosaves only
+[Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md). It autosaves only
 in the reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
 
 [Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md) records the deployed
@@ -78,12 +78,12 @@ blinded presentation responses and reviewer-stability evidence without duplicati
 Migration 7 and
 [Execution 08](docs/synthetic-curriculum-prd/EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md) add the final
 non-binding campaign synthesis, exact evidence bases, failure clusters, distribution assessments, and
-recommended D5 states. The canonical ledger now has 129 tables, five views, and 186 triggers. SQL forces
+recommended D5 states. That checkpoint had 129 tables, five views, and 186 triggers. SQL forces
 closeout execution authority to zero. The live prerequisite proofs leave every new human-evidence table,
 adjudication, release membership, and training exposure empty. The immediate authority-bearing action remains
 real human Pass A review; implementation must not be mistaken for adjudication.
 
-Post-Execution-09 reconciliation remains clean at seven migrations, 129 tables, five views, 186 triggers, 48
+The Execution-09 checkpoint was clean at seven migrations, 129 tables, five views, 186 triggers, 48
 candidates, 12 open Pass A assignments, and zero human reviews, adjudications, release members, training
 exposures, or execution authorizations. The complete project-owned artifact tree is 35.65 MiB.
 
@@ -100,9 +100,10 @@ now reduce to the exact immutable envelope of a packet already exported for the 
 response objects may differ. Candidate text, instructions, seed, ordering and every presentation identity are
 bound. The public workspace uses the same check and discarded a deliberately altered local-storage candidate
 on reload. The canonical blank packet's computed envelope SHA equals its export SHA
-`6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; all human, release, training, and
-authorization counts remain zero. That revision introduced the immutable-envelope contract; the current
-application release retains it.
+`6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48` at that checkpoint; the blob remains
+preserved. Execution 14 re-exported the same assignment cohort with the additive blank session declaration at
+SHA-256 `95b962709e9ad77aa91f2249f0648f1ee026b5ce3d64aaff792b615f751a484a`. All human, release, training, and
+authorization counts remain zero. The current application retains the immutable-envelope contract.
 
 [Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md) generalizes that
 provenance contract to Pass C family synthesis, the structural dispositions embedded in Pass C, and Pass D
@@ -126,13 +127,19 @@ are versioned data, compose required/optional/prohibited moves, compile into nat
 intended behavior separately from observed human evidence and release distribution. Migration and D5 backfill
 remain locked behind blind review and closeout.
 
-[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) records the current
-deployed review workspace at application revision `c4e7c4db2e007ee247113bbfe97029f5a84eec1f`. Real desktop and
-mobile Chromium proof now covers visible 12-item navigation, packet-scoped position recovery, first/next-
-incomplete controls, focus and scroll movement, descriptive score names, safe invalid-draft recovery, corrected
-contrast, one main landmark, no overflow, and public 200/405 boundaries. The canonical SQLite SHA remains
-`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; all human and downstream evidence
-counts remain zero. The project-owned artifact tree is 37,905,554 bytes (approximately 36.15 MiB).
+[Execution 13](docs/synthetic-curriculum-prd/EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md) records the prior
+workspace-hardening deployment and retains a correction: its active position was packet-scoped but numeric,
+not an opaque identity.
+
+[Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md) records the current
+deployment at `ccdd9e6f00129a28571fd1158b42acf508fb0991`. Migration 8 makes reviewer competence, competence scope,
+session start/end, interruption, fatigue, and review conditions first-class append-only evidence. An incomplete
+declaration writes neither raw submission nor review rows. Historical v1 packet bytes remain preserved and
+readable as explicitly incomplete. Real desktop/mobile Chromium proof covers the declaration, opaque position
+recovery, one main landmark, no overflow, and public 200/405 boundaries. The canonical ledger has eight
+migrations, 131 tables, five views, and 190 triggers; SQLite SHA-256 is
+`d2ccec649ab4aaeb0aac427391de0366a2b16b852477b2aa0da1724dd2ce9d19`. All human and downstream evidence
+counts remain zero. The project-owned artifact tree is 42,336,230 bytes (approximately 40.37 MiB).
 
 ---
 

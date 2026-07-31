@@ -4,8 +4,8 @@
 
 **Applies to:** `alpha-calibration-v1` only
 
-**Current gate:** 48 generated candidates, 12 open blinded Pass A assignments, zero human reviews, zero
-adjudications, zero closeouts
+**Current gate:** 48 generated candidates, 12 open blinded Pass A assignments, zero human-review session
+declarations, zero human reviews, zero adjudications, zero closeouts
 
 **Authority:** PRD-04 quality policy, PRD-09 D5 acceptance gate, and direct operator decisions
 
@@ -31,6 +31,12 @@ previously exported for the same session and pass. Structural-disposition respon
 but their worksheet membership and candidate identities are immutable. See
 [Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md) and
 [Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md).
+
+**Reviewer-session provenance:** every completed A/B packet must declare reviewer competence scope, start/end,
+interruption, fatigue, and material review conditions. The declaration and normalized competence rows are
+append-only and are written in the same transaction as the review only after the exact packet envelope and all
+response fields validate. Preserved v1 packets without the additive declaration remain readable as explicitly
+incomplete; see [Execution 14](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md).
 
 ## 1. Purpose
 
@@ -277,10 +283,13 @@ families, repeats, analysis evidence, instructions, timestamp, and ordering are 
 
 Execution 07 implements this distinction directly. Later Pass A sessions schedule completed prior A reviews
 under fresh opaque presentation IDs, store repeat responses separately, and expose a stability view without
-creating a second candidate review. The current first session predates that layer and remains byte-identical;
-its completion is the prerequisite for choosing the first legitimate repeat.
+creating a second candidate review. The first session's earlier packet exports remain content-addressed and
+unchanged. Its current re-export preserves assignment identities and candidate surfaces while adding the
+repeat instruction and blank reviewer-session declaration; completion is the prerequisite for choosing the
+first legitimate repeat.
 - Place no more than two candidates from one family consecutively in Pass A.
-- Complete Pass B only after the corresponding Pass A form is immutable.
+- Reveal no Pass B packet until the complete 48-candidate Pass A census, all six hidden repeats, and every open
+  first-class Pass A session for that reviewer/rubric are sealed.
 - Complete family comparison after all individual first passes, so a strong sibling does not excuse a weak
   one.
 - If fatigue or uncertainty rises, pause. An incomplete traceable review is better than a forced judgment.
@@ -440,13 +449,15 @@ mutation. The write path must perform append-only transactions and create:
 1. an `actor` identifying the reviewer without placing unnecessary personal data in the public ledger;
 2. a versioned `rubric` and `rubric_version` containing this protocol's exact dimensions and anchors;
 3. one or more `review_assignment` rows with blindness and presentation-order metadata;
-4. a `review` row for each sealed Pass A and Pass B assessment;
-5. `review_dimension_score` rows for applicable scored dimensions;
-6. `review_finding` rows with exact evidence and recommended disposition;
-7. `disagreement_case` rows when judgments conflict or expertise is insufficient;
-8. `repair_request` rows that say what must change and what must be preserved;
-9. an `adjudication` plus `adjudication_basis` rows only after the evidence is complete;
-10. `quality_state_transition` only when authorized by the adjudication and lifecycle policy.
+4. one immutable `human_review_session_declaration` plus normalized
+   `human_review_session_competence` rows for each sealed A/B session;
+5. a `review` row for each sealed Pass A and Pass B assessment;
+6. `review_dimension_score` rows for applicable scored dimensions;
+7. `review_finding` rows with exact evidence and recommended disposition;
+8. `disagreement_case` rows when judgments conflict or expertise is insufficient;
+9. `repair_request` rows that say what must change and what must be preserved;
+10. an `adjudication` plus `adjudication_basis` rows only after the evidence is complete;
+11. `quality_state_transition` only when authorized by the adjudication and lifecycle policy.
 
 Pass D additionally records its workflow and campaign evidence in `campaign_closeout_assignment`,
 `campaign_closeout`, `campaign_closeout_state`, `campaign_closeout_basis`, `campaign_failure_cluster`,
@@ -615,11 +626,13 @@ D5 human adjudication is complete only when:
 
 ## 19. Immediate next action
 
-Open the live local-first workspace, conduct Pass A on the prepared 12 blinded candidates, download the
-completed packet, and import it through the local append-only `review-submit` command. Do not begin with a
-model critic: the point of this phase is to create the human reference that a critic would later be measured
-against. Execution 05's surface evidence may nominate comparisons but must not be shown in a way that breaks
-Pass A blindness.
+Open the live local-first workspace, honestly declare the reviewer's competence scope and session conditions,
+conduct Pass A on the prepared 12 blinded candidates, download the completed packet, and import it through the
+local append-only `review-submit` command. The current blank packet is SHA-256
+`95b962709e9ad77aa91f2249f0648f1ee026b5ce3d64aaff792b615f751a484a`; earlier packet blobs remain preserved.
+Do not begin with a model critic: the point of this phase is to create the human reference that a critic would
+later be measured against. Execution 05's surface evidence may nominate comparisons but must not be shown in a
+way that breaks Pass A blindness.
 
 The dashboard now makes the campaign denominator explicit: the prepared 12-item packet is one session within
 the 48-candidate Pass A census. Finishing it does not unlock Pass B or complete D5. Continue with additional
@@ -643,3 +656,7 @@ All A/B/C/D importers now share one exact exported-envelope verifier; see
 [Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md). The C and D adversarial tests prove that a
 completed response attached to a timestamp-altered packet writes neither scientific rows nor raw submission
 artifacts. This hardens future evidence capture but does not change the current zero-human-evidence state.
+
+Execution 14 additionally proves that an incomplete A/B reviewer-session declaration writes neither the raw
+submission nor any declaration or review row. The public explorer exposes both provenance tables read-only;
+they correctly contain zero rows before a real human submission.
