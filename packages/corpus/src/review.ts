@@ -6,6 +6,7 @@ import type { Ledger } from "./db.js";
 import { putBlob } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import { writeAtomic } from "./storage.js";
+import { requireExportedPacketEnvelope } from "./packet-envelope.js";
 import type {
   GeneratedItem,
   HumanReviewPacket,
@@ -171,7 +172,7 @@ export async function ensureHumanActor(ledger: Ledger, alias: string): Promise<s
   return id;
 }
 
-async function requireHumanActor(ledger: Ledger, alias: string): Promise<string> {
+export async function requireHumanActor(ledger: Ledger, alias: string): Promise<string> {
   const clean = alias.trim();
   if (clean.length < 1 || clean.length > 80) throw new Error("Reviewer alias must contain 1-80 characters");
   const id = stableId("actor", `human:${clean}`);
@@ -216,7 +217,7 @@ export async function ensureHumanReviewRubric(ledger: Ledger): Promise<string> {
   return versionId;
 }
 
-async function requireHumanReviewRubric(ledger: Ledger): Promise<string> {
+export async function requireHumanReviewRubric(ledger: Ledger): Promise<string> {
   const definitionJson = canonicalJson(RUBRIC_DEFINITION);
   const digest = sha256Bytes(definitionJson);
   const versionId = stableId(
@@ -862,25 +863,17 @@ export async function submitHumanReviewPacket(
       throw new Error("Review packet does not contain every open presentation in its session");
     }
   }
-  const packetEnvelopeJson = humanReviewPacketEnvelopeJson(packet);
-  const packetEnvelopeSha256 = sha256Bytes(packetEnvelopeJson);
-  const exportedEnvelope = await ledger.client.execute({
-    sql: `SELECT ea.id FROM export_artifact ea
-          JOIN blob b ON b.sha256 = ea.blob_sha256
-          WHERE ea.format = 'human_review_packet_json'
-            AND ea.blob_sha256 = ?
-            AND b.byte_length = ?
-            AND b.media_type = 'application/json'
-            AND json_valid(ea.manifest_json)
-            AND json_extract(ea.manifest_json, '$.sessionId') = ?
-            AND json_extract(ea.manifest_json, '$.pass') = ?
-          LIMIT 1`,
-    args: [packetEnvelopeSha256, Buffer.byteLength(packetEnvelopeJson, "utf8"),
-      packet.sessionId, packet.pass]
+  const packetEnvelopeSha256 = await requireExportedPacketEnvelope(ledger, {
+    format: "human_review_packet_json",
+    sessionId: packet.sessionId,
+    pass: packet.pass,
+    envelopeJson: humanReviewPacketEnvelopeJson(packet)
+  }).catch((error: unknown) => {
+    if (error instanceof Error && error.message === "Submission immutable envelope does not match an exported packet") {
+      throw new Error("Human-review submission immutable envelope does not match an exported packet");
+    }
+    throw error;
   });
-  if (exportedEnvelope.rows.length !== 1) {
-    throw new Error("Human-review submission immutable envelope does not match an exported packet");
-  }
   const submissionSha256 = await putBlob(ledger, submissionBytes, "application/json");
   const ts = now();
   const statements: Array<{ sql: string; args: InValue[] }> = [{

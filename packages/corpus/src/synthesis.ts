@@ -4,7 +4,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { putBlob, type Ledger } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
-import { ensureHumanActor, ensureHumanReviewRubric } from "./review.js";
+import {
+  ensureHumanActor,
+  ensureHumanReviewRubric,
+  requireHumanActor,
+  requireHumanReviewRubric
+} from "./review.js";
+import { requireExportedPacketEnvelope } from "./packet-envelope.js";
 import { writeAtomic } from "./storage.js";
 import {
   COVERAGE_ADEQUACY,
@@ -14,6 +20,7 @@ import {
   FAMILY_SYNTHESIS_DISPOSITIONS,
   FAMILY_SYNTHESIS_RUBRIC_SLUG,
   FAMILY_SYNTHESIS_RUBRIC_VERSION,
+  familySynthesisPacketEnvelopeJson,
   familySynthesisAssignmentErrors,
   parseFamilySynthesisPacketText,
   STRUCTURAL_CONTENT_UTILITY,
@@ -60,6 +67,7 @@ export interface SubmittedFamilySynthesis {
   sessionId: string;
   familySyntheses: number;
   structuralDispositions: number;
+  packetEnvelopeSha256: string;
   submissionSha256: string;
 }
 
@@ -154,6 +162,23 @@ async function ensureFamilySynthesisRubric(ledger: Ledger): Promise<string> {
   });
   if (stored.rows.length !== 1 || String(stored.rows[0]!["content_sha256"]) !== digest) {
     throw new Error("Stored D5 family-synthesis rubric differs from the executable definition");
+  }
+  return versionId;
+}
+
+async function requireFamilySynthesisRubric(ledger: Ledger): Promise<string> {
+  const definitionJson = canonicalJson(FAMILY_SYNTHESIS_RUBRIC_DEFINITION as unknown as JsonValue);
+  const digest = sha256Bytes(definitionJson);
+  const versionId = stableId(
+    "rubricv",
+    `${FAMILY_SYNTHESIS_RUBRIC_SLUG}:${FAMILY_SYNTHESIS_RUBRIC_VERSION}:${digest}`
+  );
+  const stored = await ledger.client.execute({
+    sql: "SELECT content_sha256 FROM rubric_version WHERE id = ?",
+    args: [versionId]
+  });
+  if (stored.rows.length !== 1 || String(stored.rows[0]!["content_sha256"]) !== digest) {
+    throw new Error("D5 family-synthesis rubric was not registered by packet preparation");
   }
   return versionId;
 }
@@ -556,9 +581,9 @@ export async function submitFamilySynthesisPacket(
     throw new Error("Family-synthesis packet uses an unsupported rubric version");
   }
   const campaignIdValue = await campaignId(ledger, packet.campaignSlug);
-  const actorId = await ensureHumanActor(ledger, packet.reviewerAlias);
-  const candidateRubricVersionId = await ensureHumanReviewRubric(ledger);
-  const rubricVersionId = await ensureFamilySynthesisRubric(ledger);
+  const actorId = await requireHumanActor(ledger, packet.reviewerAlias);
+  const candidateRubricVersionId = await requireHumanReviewRubric(ledger);
+  const rubricVersionId = await requireFamilySynthesisRubric(ledger);
   const evidence = await loadFamilyEvidence(
     ledger,
     packet.campaignSlug,
@@ -601,6 +626,18 @@ export async function submitFamilySynthesisPacket(
     if (errors.length > 0) throw new Error(errors.join("\n"));
     validated.push({ packetAssignment, evidence: family });
   }
+
+  const packetEnvelopeSha256 = await requireExportedPacketEnvelope(ledger, {
+    format: "human_family_synthesis_packet_json",
+    sessionId: packet.sessionId,
+    pass: "C",
+    envelopeJson: familySynthesisPacketEnvelopeJson(packet)
+  }).catch((error: unknown) => {
+    if (error instanceof Error && error.message === "Submission immutable envelope does not match an exported packet") {
+      throw new Error("Family-synthesis submission immutable envelope does not match an exported packet");
+    }
+    throw error;
+  });
 
   const submissionSha256 = await putBlob(ledger, submissionBytes, "application/json");
   const ts = now();
@@ -704,6 +741,7 @@ export async function submitFamilySynthesisPacket(
         assignmentId: assignment.assignmentId,
         familyVersionId: assignment.familyVersionId,
         sessionId: packet.sessionId,
+        packetEnvelopeSha256,
         submissionSha256
       } as JsonValue), ts]
     });
@@ -713,6 +751,7 @@ export async function submitFamilySynthesisPacket(
     sessionId: packet.sessionId,
     familySyntheses: validated.length,
     structuralDispositions: structuralDispositionCount,
+    packetEnvelopeSha256,
     submissionSha256
   };
 }

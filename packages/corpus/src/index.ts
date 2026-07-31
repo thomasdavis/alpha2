@@ -5,6 +5,8 @@ export * from "./closeout.js";
 export * from "./db.js";
 export * from "./generate.js";
 export * from "./hash.js";
+export * from "./packet-envelope-contract.js";
+export * from "./packet-envelope.js";
 export * from "./prompts.js";
 export * from "./profile.js";
 export * from "./report.js";

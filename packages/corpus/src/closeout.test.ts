@@ -8,7 +8,10 @@ import {
   prepareCampaignCloseoutPacket,
   submitCampaignCloseoutPacket
 } from "./closeout.js";
-import type { CampaignCloseoutPacket } from "./closeout-contract.js";
+import {
+  campaignCloseoutPacketMatchesEnvelope,
+  type CampaignCloseoutPacket
+} from "./closeout-contract.js";
 import { closeLedger, createCampaign, openLedger, putBlob, seedLedger, type Ledger } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import { prepareHumanReviewPacket, submitHumanReviewPacket } from "./review.js";
@@ -342,11 +345,27 @@ test("Pass D records non-binding adjudication evidence without lifecycle or exec
     await assert.rejects(submitCampaignCloseoutPacket(ledger, prepared.packetPath), /recommendation summary/);
 
     const completed = completeCloseoutPacket(blank);
+    assert.equal(campaignCloseoutPacketMatchesEnvelope(completed, blank), true);
+    const envelopeTampered = structuredClone(completed);
+    envelopeTampered.createdAt = "2099-01-01T00:00:00.000Z";
+    assert.equal(campaignCloseoutPacketMatchesEnvelope(envelopeTampered, blank), false);
+    writeFileSync(prepared.packetPath, `${canonicalJson(envelopeTampered as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitCampaignCloseoutPacket(ledger, prepared.packetPath),
+      /immutable envelope does not match an exported packet/
+    );
+    const beforeSubmission = await Promise.all([
+      ledger.client.execute("SELECT COUNT(*) AS count FROM campaign_closeout"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM adjudication"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM raw_artifact WHERE kind = 'campaign_closeout_submission'")
+    ]);
+    assert.deepEqual(beforeSubmission.map((entry) => Number(entry.rows[0]!["count"])), [0, 0, 0]);
     writeFileSync(prepared.packetPath, `${canonicalJson(completed as unknown as JsonValue)}\n`);
     const result = await submitCampaignCloseoutPacket(ledger, prepared.packetPath);
     assert.equal(result.candidateAdjudications, 2);
     assert.equal(result.failureClusters, 1);
     assert.equal(result.recommendedStates, 1);
+    assert.equal(result.packetEnvelopeSha256, prepared.packetSha256);
     assert.equal(result.executionAuthorized, false);
 
     const counts = await Promise.all([

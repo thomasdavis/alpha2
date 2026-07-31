@@ -11,7 +11,10 @@ import {
   prepareFamilySynthesisPacket,
   submitFamilySynthesisPacket
 } from "./synthesis.js";
-import type { FamilySynthesisPacket } from "./synthesis-contract.js";
+import {
+  familySynthesisPacketMatchesEnvelope,
+  type FamilySynthesisPacket
+} from "./synthesis-contract.js";
 import type { CampaignConfig, GeneratedItem, HumanReviewPacket, JsonValue } from "./types.js";
 
 const temporaryHomes: string[] = [];
@@ -242,10 +245,26 @@ test("Pass C records family and structural evidence append-only without promotio
     writeFileSync(prepared.packetPath, `${canonicalJson(blank as unknown as JsonValue)}\n`);
     await assert.rejects(submitFamilySynthesisPacket(ledger, prepared.packetPath), /needs a family disposition/);
     const completed = completeSynthesisPacket(blank);
+    assert.equal(familySynthesisPacketMatchesEnvelope(completed, blank), true);
+    const envelopeTampered = structuredClone(completed);
+    envelopeTampered.createdAt = "2099-01-01T00:00:00.000Z";
+    assert.equal(familySynthesisPacketMatchesEnvelope(envelopeTampered, blank), false);
+    writeFileSync(prepared.packetPath, `${canonicalJson(envelopeTampered as unknown as JsonValue)}\n`);
+    await assert.rejects(
+      submitFamilySynthesisPacket(ledger, prepared.packetPath),
+      /immutable envelope does not match an exported packet/
+    );
+    const beforeSubmission = await Promise.all([
+      ledger.client.execute("SELECT COUNT(*) AS count FROM family_synthesis"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM structural_disposition"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM raw_artifact WHERE kind = 'human_family_synthesis_submission'")
+    ]);
+    assert.deepEqual(beforeSubmission.map((entry) => Number(entry.rows[0]!["count"])), [0, 0, 0]);
     writeFileSync(prepared.packetPath, `${canonicalJson(completed as unknown as JsonValue)}\n`);
     const result = await submitFamilySynthesisPacket(ledger, prepared.packetPath);
     assert.equal(result.familySyntheses, 1);
     assert.equal(result.structuralDispositions, 1);
+    assert.equal(result.packetEnvelopeSha256, prepared.packetSha256);
 
     const counts = await Promise.all([
       ledger.client.execute("SELECT COUNT(*) AS count FROM family_synthesis"),

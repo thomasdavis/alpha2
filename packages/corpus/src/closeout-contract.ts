@@ -1,4 +1,5 @@
 import { HUMAN_REVIEW_PASS_B_OUTCOMES } from "./review-contract.js";
+import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
 import type { JsonValue } from "./types.js";
 
 export const CAMPAIGN_CLOSEOUT_RUBRIC_SLUG = "d5-campaign-closeout";
@@ -192,6 +193,24 @@ export function emptyCampaignCloseoutResponse(
     confidence: null,
     executionAuthorizationAcknowledgement: "non_binding_no_execution_authority"
   };
+}
+
+export function campaignCloseoutPacketEnvelope(packet: CampaignCloseoutPacket): CampaignCloseoutPacket {
+  return {
+    ...packet,
+    response: emptyCampaignCloseoutResponse(packet.candidates)
+  };
+}
+
+export function campaignCloseoutPacketEnvelopeJson(packet: CampaignCloseoutPacket): string {
+  return canonicalPacketEnvelopeJson(campaignCloseoutPacketEnvelope(packet) as unknown as JsonValue);
+}
+
+export function campaignCloseoutPacketMatchesEnvelope(
+  candidate: CampaignCloseoutPacket,
+  exported: CampaignCloseoutPacket
+): boolean {
+  return campaignCloseoutPacketEnvelopeJson(candidate) === campaignCloseoutPacketEnvelopeJson(exported);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

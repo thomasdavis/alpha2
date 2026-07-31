@@ -5,6 +5,7 @@ import type {
   HumanReviewResponse,
   JsonValue
 } from "./types.js";
+import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
 
 export const HUMAN_REVIEW_RUBRIC_SLUG = "d5-human-adjudication";
 export const HUMAN_REVIEW_RUBRIC_VERSION = 1;
@@ -122,18 +123,6 @@ export function emptyHumanReviewResponse(pass: HumanReviewPass): HumanReviewResp
   };
 }
 
-function sortJson(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, sortJson(child)])
-    );
-  }
-  return value;
-}
-
 /**
  * Return the immutable, model-visible packet envelope. Reviewer responses are
  * the only mutable portion of a submitted packet, so they are reset to the
@@ -154,7 +143,7 @@ export function humanReviewPacketEnvelope(packet: HumanReviewPacket): HumanRevie
 
 /** Browser-safe canonical form; this module intentionally has no Node imports. */
 export function humanReviewPacketEnvelopeJson(packet: HumanReviewPacket): string {
-  return JSON.stringify(sortJson(humanReviewPacketEnvelope(packet) as unknown as JsonValue));
+  return canonicalPacketEnvelopeJson(humanReviewPacketEnvelope(packet) as unknown as JsonValue);
 }
 
 export function humanReviewPacketMatchesEnvelope(

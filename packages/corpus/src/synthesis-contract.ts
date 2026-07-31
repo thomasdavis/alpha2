@@ -1,4 +1,5 @@
 import type { JsonValue } from "./types.js";
+import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
 
 export const FAMILY_SYNTHESIS_RUBRIC_SLUG = "d5-family-synthesis";
 export const FAMILY_SYNTHESIS_RUBRIC_VERSION = 1;
@@ -182,6 +183,30 @@ export function emptyStructuralDisposition(candidateVersionId: string): Structur
     rationale: "",
     confidence: null
   };
+}
+
+export function familySynthesisPacketEnvelope(packet: FamilySynthesisPacket): FamilySynthesisPacket {
+  return {
+    ...packet,
+    instructions: [...packet.instructions],
+    assignments: packet.assignments.map((assignment) => ({
+      ...assignment,
+      response: emptyFamilySynthesisResponse(),
+      structuralDispositions: assignment.structuralDispositions.map((disposition) =>
+        emptyStructuralDisposition(disposition.candidateVersionId))
+    }))
+  };
+}
+
+export function familySynthesisPacketEnvelopeJson(packet: FamilySynthesisPacket): string {
+  return canonicalPacketEnvelopeJson(familySynthesisPacketEnvelope(packet) as unknown as JsonValue);
+}
+
+export function familySynthesisPacketMatchesEnvelope(
+  candidate: FamilySynthesisPacket,
+  exported: FamilySynthesisPacket
+): boolean {
+  return familySynthesisPacketEnvelopeJson(candidate) === familySynthesisPacketEnvelopeJson(exported);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

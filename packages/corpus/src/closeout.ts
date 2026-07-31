@@ -4,11 +4,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { putBlob, type Ledger } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
-import { ensureHumanActor, ensureHumanReviewRubric } from "./review.js";
+import {
+  ensureHumanActor,
+  ensureHumanReviewRubric,
+  requireHumanActor,
+  requireHumanReviewRubric
+} from "./review.js";
+import { requireExportedPacketEnvelope } from "./packet-envelope.js";
 import { writeAtomic } from "./storage.js";
 import {
   CAMPAIGN_CLOSEOUT_RUBRIC_SLUG,
   CAMPAIGN_CLOSEOUT_RUBRIC_VERSION,
+  campaignCloseoutPacketEnvelopeJson,
   campaignCloseoutResponseErrors,
   closeoutContractDefinition,
   emptyCampaignCloseoutResponse,
@@ -54,6 +61,7 @@ export interface SubmittedCampaignCloseout {
   candidateAdjudications: number;
   failureClusters: number;
   recommendedStates: number;
+  packetEnvelopeSha256: string;
   submissionSha256: string;
   executionAuthorized: false;
 }
@@ -132,6 +140,22 @@ async function ensureCloseoutRubric(ledger: Ledger): Promise<string> {
   return versionId;
 }
 
+async function requireCloseoutRubric(ledger: Ledger): Promise<string> {
+  const definitionJson = canonicalJson(closeoutContractDefinition());
+  const digest = sha256Bytes(definitionJson);
+  const versionId = stableId(
+    "rubricv", `${CAMPAIGN_CLOSEOUT_RUBRIC_SLUG}:${CAMPAIGN_CLOSEOUT_RUBRIC_VERSION}:${digest}`
+  );
+  const stored = await ledger.client.execute({
+    sql: "SELECT content_sha256 FROM rubric_version WHERE id = ?",
+    args: [versionId]
+  });
+  if (stored.rows.length !== 1 || String(stored.rows[0]!["content_sha256"]) !== digest) {
+    throw new Error("D5 campaign-closeout rubric was not registered by packet preparation");
+  }
+  return versionId;
+}
+
 async function loadReview(
   ledger: Ledger,
   candidateVersionId: string,
@@ -187,10 +211,10 @@ async function loadReview(
 async function loadCloseoutEvidence(
   ledger: Ledger,
   campaignSlug: string,
-  actorId: string
+  actorId: string,
+  candidateRubricVersionId: string
 ): Promise<CloseoutEvidence> {
   const resolvedCampaignId = await campaignId(ledger, campaignSlug);
-  const candidateRubricVersionId = await ensureHumanReviewRubric(ledger);
   const rows = await ledger.client.execute({
     sql: `SELECT cc.candidate_id, cc.candidate_version_id, cc.family_slug, cc.status, cc.content_sha256,
                  fv.id AS family_version_id
@@ -453,14 +477,14 @@ async function recordPacket(
             (id, release_id, cohort_snapshot_id, format, blob_sha256, manifest_json, created_at)
             VALUES (?, NULL, NULL, 'campaign_closeout_packet_json', ?, ?, ?)`,
       args: [stableId("export", `campaign-closeout:${packet.sessionId}:json:${packetSha}`), packetSha,
-        canonicalJson({ path: packetPath, sessionId: packet.sessionId } as JsonValue), ts]
+        canonicalJson({ path: packetPath, pass: "D", sessionId: packet.sessionId } as JsonValue), ts]
     },
     {
       sql: `INSERT OR IGNORE INTO export_artifact
             (id, release_id, cohort_snapshot_id, format, blob_sha256, manifest_json, created_at)
             VALUES (?, NULL, NULL, 'campaign_closeout_packet_markdown', ?, ?, ?)`,
       args: [stableId("export", `campaign-closeout:${packet.sessionId}:markdown:${markdownSha}`), markdownSha,
-        canonicalJson({ path: markdownPath, sessionId: packet.sessionId } as JsonValue), ts]
+        canonicalJson({ path: markdownPath, pass: "D", sessionId: packet.sessionId } as JsonValue), ts]
     }
   ], "write");
   return packetSha;
@@ -471,7 +495,13 @@ export async function prepareCampaignCloseoutPacket(
   options: PrepareCampaignCloseoutOptions
 ): Promise<PreparedCampaignCloseout> {
   const actorId = await ensureHumanActor(ledger, options.adjudicatorAlias);
-  const evidence = await loadCloseoutEvidence(ledger, options.campaignSlug, actorId);
+  const candidateRubricVersionId = await ensureHumanReviewRubric(ledger);
+  const evidence = await loadCloseoutEvidence(
+    ledger,
+    options.campaignSlug,
+    actorId,
+    candidateRubricVersionId
+  );
   const rubricVersionId = await ensureCloseoutRubric(ledger);
   const existing = await ledger.client.execute({
     sql: `SELECT id, session_id, input_snapshot_sha256, status, created_at
@@ -567,8 +597,14 @@ export async function submitCampaignCloseoutPacket(
     || packet.rubricVersion !== CAMPAIGN_CLOSEOUT_RUBRIC_VERSION) {
     throw new Error("Campaign-closeout packet uses an unsupported rubric version");
   }
-  const actorId = await ensureHumanActor(ledger, packet.adjudicatorAlias);
-  const evidence = await loadCloseoutEvidence(ledger, packet.campaignSlug, actorId);
+  const actorId = await requireHumanActor(ledger, packet.adjudicatorAlias);
+  const candidateRubricVersionId = await requireHumanReviewRubric(ledger);
+  const evidence = await loadCloseoutEvidence(
+    ledger,
+    packet.campaignSlug,
+    actorId,
+    candidateRubricVersionId
+  );
   if (packet.population.candidates !== evidence.candidates.length
     || packet.population.families !== evidence.families.length
     || packet.population.structurallyRejected !== evidence.structurallyRejected
@@ -581,7 +617,7 @@ export async function submitCampaignCloseoutPacket(
     || expectedSnapshot !== evidence.inputSnapshotSha256) {
     throw new Error("Campaign-closeout packet evidence differs from the current frozen ledger evidence");
   }
-  const rubricVersionId = await ensureCloseoutRubric(ledger);
+  const rubricVersionId = await requireCloseoutRubric(ledger);
   const assignment = await ledger.client.execute({
     sql: `SELECT id, session_id, input_snapshot_sha256, status
           FROM campaign_closeout_assignment
@@ -595,6 +631,18 @@ export async function submitCampaignCloseoutPacket(
   }
   const errors = campaignCloseoutResponseErrors(packet);
   if (errors.length > 0) throw new Error(errors[0]);
+
+  const packetEnvelopeSha256 = await requireExportedPacketEnvelope(ledger, {
+    format: "campaign_closeout_packet_json",
+    sessionId: packet.sessionId,
+    pass: "D",
+    envelopeJson: campaignCloseoutPacketEnvelopeJson(packet)
+  }).catch((error: unknown) => {
+    if (error instanceof Error && error.message === "Submission immutable envelope does not match an exported packet") {
+      throw new Error("Campaign-closeout submission immutable envelope does not match an exported packet");
+    }
+    throw error;
+  });
 
   const submissionSha256 = await putBlob(ledger, bytes, "application/json");
   const ts = now();
@@ -774,6 +822,7 @@ export async function submitCampaignCloseoutPacket(
     args: [eventId, closeoutId, canonicalJson({
       campaignId: evidence.campaignId,
       sessionId: packet.sessionId,
+      packetEnvelopeSha256,
       submissionSha256,
       executionAuthorized: false
     } as JsonValue), ts]
@@ -784,6 +833,7 @@ export async function submitCampaignCloseoutPacket(
     candidateAdjudications: packet.response.candidateDispositions.length,
     failureClusters: packet.response.failureClusters.length,
     recommendedStates: packet.response.recommendedStates.length,
+    packetEnvelopeSha256,
     submissionSha256,
     executionAuthorized: false
   };
