@@ -637,12 +637,20 @@ export function CorpusExplorer({
           </div>
         </aside>
 
-        <main className="min-w-0 overflow-hidden rounded-lg border border-border bg-surface">
+        <section
+          aria-labelledby="corpus-relation-heading"
+          className="min-w-0 overflow-hidden rounded-lg border border-border bg-surface"
+        >
           <header className="border-b border-border px-4 py-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="break-all font-mono text-lg font-semibold text-text-primary">{detail.name}</h2>
+                  <h2
+                    id="corpus-relation-heading"
+                    className="break-all font-mono text-lg font-semibold text-text-primary"
+                  >
+                    {detail.name}
+                  </h2>
                   <span className="rounded border border-border bg-surface-2 px-2 py-0.5 text-[0.68rem] text-text-secondary">{detail.kind}</span>
                 </div>
                 <p className="mt-1 text-xs text-text-muted">
@@ -671,7 +679,7 @@ export function CorpusExplorer({
           {view === "rows" && <RowsView page={page} detail={detail} openCell={openCell} />}
           {view === "schema" && <SchemaView detail={detail} />}
           {view === "lineage" && <LineageView detail={detail} />}
-        </main>
+        </section>
       </div>
 
       <CellInspector
