@@ -4,12 +4,25 @@ import type {
   HumanReviewPass,
   HumanReviewResponse,
   HumanReviewSessionResponse,
+  HiddenContract,
   JsonValue
 } from "./types.js";
 import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
 
-export const HUMAN_REVIEW_RUBRIC_SLUG = "d5-human-adjudication";
-export const HUMAN_REVIEW_RUBRIC_VERSION = 2;
+export const HUMAN_REVIEW_PASS_A_RUBRIC_SLUG = "d5-human-adjudication";
+export const HUMAN_REVIEW_PASS_A_RUBRIC_VERSION = 2;
+export const HUMAN_REVIEW_PASS_B_RUBRIC_SLUG = "d5-human-adjudication-pass-b";
+export const HUMAN_REVIEW_PASS_B_RUBRIC_VERSION = 1;
+
+/** Backwards-compatible aliases: the original shared identity is now Pass A. */
+export const HUMAN_REVIEW_RUBRIC_SLUG = HUMAN_REVIEW_PASS_A_RUBRIC_SLUG;
+export const HUMAN_REVIEW_RUBRIC_VERSION = HUMAN_REVIEW_PASS_A_RUBRIC_VERSION;
+
+export function humanReviewRubric(pass: HumanReviewPass): { slug: string; version: number } {
+  return pass === "A"
+    ? { slug: HUMAN_REVIEW_PASS_A_RUBRIC_SLUG, version: HUMAN_REVIEW_PASS_A_RUBRIC_VERSION }
+    : { slug: HUMAN_REVIEW_PASS_B_RUBRIC_SLUG, version: HUMAN_REVIEW_PASS_B_RUBRIC_VERSION };
+}
 
 export interface HumanReviewChoice {
   value: string;
@@ -112,6 +125,38 @@ export const HUMAN_REVIEW_ANSWERED_BEFORE_UNNECESSARY_QUESTION: readonly HumanRe
   { value: "not_applicable", label: "Not applicable", description: "The exchange contains no such ordering decision." }
 ] as const;
 
+export const HUMAN_REVIEW_PASS_B_BLUEPRINT_CRITERIA = [
+  { key: "distinction_worth_teaching", label: "Distinction worth teaching", choices: ["yes", "scoped", "no", "disputed"] },
+  { key: "required_commitments_defensible", label: "Required commitments defensible", choices: ["all", "some", "none", "disputed"] },
+  { key: "prohibited_commitments_prohibited", label: "Prohibited commitments truly prohibited", choices: ["all", "some", "none", "disputed"] },
+  { key: "admissible_analyses_complete", label: "Admissible analyses complete", choices: ["yes", "undercoverage", "overcoverage", "disputed"] },
+  { key: "discriminating_evidence_valid", label: "Discriminating evidence is discriminating", choices: ["yes", "partly", "no"] },
+  { key: "competency_question_useful", label: "Competency question clear and useful", choices: ["yes", "repair", "no"] },
+  { key: "plurality_not_forced", label: "Avoids imposing one theory where plurality is legitimate", choices: ["no_imposition", "imposes_one_theory", "uncertain"] }
+] as const;
+
+export const HUMAN_REVIEW_PASS_B_METADATA_FIELDS = [
+  { key: "primary_lens", label: "Primary lens", choices: ["correct", "alternative", "invalid"] },
+  { key: "secondary_lenses", label: "Secondary lenses", choices: ["correct", "mixed_field_types", "missing_category", "invalid"] },
+  { key: "transformation", label: "Transformation", choices: ["correct", "alternative", "invalid"] },
+  { key: "difficulty", label: "Difficulty", choices: ["correct", "too_low", "too_high"] },
+  { key: "response_policy", label: "Response policy", choices: ["useful", "overprescriptive", "canned", "mismatched"] },
+  { key: "kind", label: "Candidate kind", choices: ["correct", "alternative"] }
+] as const;
+
+export const HUMAN_REVIEW_PASS_B_CLARIFICATION = [
+  { value: "yes", label: "Yes", description: "A clarification would resolve the important uncertainty." },
+  { value: "partly", label: "Partly", description: "Clarification would narrow but not eliminate the alternatives." },
+  { value: "no", label: "No", description: "The plurality or uncertainty would remain." },
+  { value: "not_applicable", label: "Not applicable", description: "There is no clarification question here." }
+] as const;
+
+export const HUMAN_REVIEW_PASS_B_CHANGED_PASS_A = [
+  { value: "yes", label: "Yes", description: "The revealed contract changes the blinded judgment." },
+  { value: "partly", label: "Partly", description: "The contract changes only part of the blinded judgment." },
+  { value: "no", label: "No", description: "The contract does not change the blinded judgment." }
+] as const;
+
 export const HUMAN_REVIEW_COMPETENCIES: readonly HumanReviewChoice[] = [
   { value: "conversation", label: "Conversation", description: "Natural interaction, responsiveness, momentum, and appropriateness." },
   { value: "linguistics", label: "Linguistics", description: "Language form, meaning, pragmatics, discourse, or metalinguistic analysis." },
@@ -145,8 +190,84 @@ export function humanReviewOutcomes(pass: HumanReviewPass): readonly HumanReview
   return pass === "A" ? HUMAN_REVIEW_PASS_A_OUTCOMES : HUMAN_REVIEW_PASS_B_OUTCOMES;
 }
 
-export function emptyHumanReviewResponse(pass: HumanReviewPass): HumanReviewResponse {
+function candidateItem(candidate: JsonValue | undefined): Record<string, JsonValue> | null {
+  if (!isRecord(candidate)) return null;
+  return isRecord(candidate["item"])
+    ? candidate["item"] as Record<string, JsonValue>
+    : candidate as Record<string, JsonValue>;
+}
+
+function contractList(contract: HiddenContract | Record<string, JsonValue> | null, key: keyof HiddenContract): string[] {
+  if (!contract || !Array.isArray(contract[key])) return [];
+  return (contract[key] as unknown[]).filter((value): value is string => typeof value === "string");
+}
+
+function emptyPassBContractReview(candidate?: JsonValue): NonNullable<HumanReviewResponse["passBReview"]> {
+  const item = candidateItem(candidate);
+  const contract = item && isRecord(item["hiddenContract"])
+    ? item["hiddenContract"] as Record<string, JsonValue>
+    : null;
+  const targets = (key: keyof HiddenContract) => contractList(contract, key);
   return {
+    blueprint: HUMAN_REVIEW_PASS_B_BLUEPRINT_CRITERIA.map((criterion) => ({
+      criterion: criterion.key,
+      judgment: null,
+      rationale: ""
+    })),
+    requiredCommitments: targets("requiredCommitments").map((targetText, index) => ({
+      ordinal: index + 1,
+      targetText,
+      expressed: null,
+      correctness: null,
+      naturalness: null,
+      notes: ""
+    })),
+    prohibitedCommitments: targets("prohibitedCommitments").map((targetText, index) => ({
+      ordinal: index + 1,
+      targetText,
+      violated: null,
+      evidence: "",
+      severity: null
+    })),
+    deltaInstructions: [
+      ...targets("preserve").map((targetText, index) => ({
+        instructionKind: "preserve" as const,
+        ordinal: index + 1,
+        targetText,
+        satisfied: null,
+        evidence: ""
+      })),
+      ...targets("change").map((targetText, index) => ({
+        instructionKind: "change" as const,
+        ordinal: index + 1,
+        targetText,
+        satisfied: null,
+        evidence: ""
+      }))
+    ],
+    pluralityEvidence: {
+      importantAnalysesRetained: "",
+      unsupportedAnalysesIntroduced: "",
+      unjustifiedCollapse: "",
+      missingEvidenceNamed: "",
+      sourceBoundariesPreserved: "",
+      clarificationWouldResolve: null
+    },
+    metadataFit: HUMAN_REVIEW_PASS_B_METADATA_FIELDS.map((field) => ({
+      field: field.key,
+      judgment: null,
+      repair: ""
+    })),
+    passComparison: {
+      changedPassA: null,
+      contractEffect: "",
+      evidenceBasis: ""
+    }
+  };
+}
+
+export function emptyHumanReviewResponse(pass: HumanReviewPass, candidate?: JsonValue): HumanReviewResponse {
+  const response: HumanReviewResponse = {
     outcome: null,
     summaryUserAim: "",
     summaryAssistantMove: "",
@@ -162,6 +283,8 @@ export function emptyHumanReviewResponse(pass: HumanReviewPass): HumanReviewResp
     uncertainty: "",
     expertiseNeeded: ""
   };
+  if (pass === "B") response.passBReview = emptyPassBContractReview(candidate);
+  return response;
 }
 
 export function emptyHumanReviewSessionResponse(): HumanReviewSessionResponse {
@@ -190,7 +313,7 @@ export function humanReviewPacketEnvelope(packet: HumanReviewPacket): HumanRevie
     sessionResponse: emptyHumanReviewSessionResponse(),
     assignments: packet.assignments.map((assignment) => ({
       ...assignment,
-      response: emptyHumanReviewResponse(packet.pass)
+      response: emptyHumanReviewResponse(packet.pass, assignment.candidate)
     }))
   };
 }
@@ -278,10 +401,138 @@ function findingErrors(finding: HumanReviewFinding, label: string): string[] {
   return errors;
 }
 
+function exactText(value: unknown, expected: string, label: string, errors: string[]): void {
+  if (value !== expected) errors.push(`${label} target differs from the immutable contract.`);
+}
+
+function requiredText(value: unknown, label: string, errors: string[]): void {
+  if (typeof value !== "string" || value.trim().length < 1) errors.push(`${label} needs evidence or rationale.`);
+}
+
+function oneOf(value: unknown, allowed: readonly string[], label: string, errors: string[]): void {
+  if (typeof value !== "string" || !allowed.includes(value)) errors.push(`${label} needs a valid judgment.`);
+}
+
+function passBContractReviewErrors(
+  response: HumanReviewResponse,
+  opaqueItemId: string,
+  candidate?: JsonValue
+): string[] {
+  const errors: string[] = [];
+  const review = response.passBReview;
+  if (!isRecord(review)) return [`${opaqueItemId} needs the complete Pass B contract worksheet.`];
+  const expected = emptyPassBContractReview(candidate);
+
+  if (!Array.isArray(review.blueprint) || review.blueprint.length !== expected.blueprint.length) {
+    errors.push(`${opaqueItemId} blueprint assessment does not match the immutable worksheet.`);
+  } else {
+    review.blueprint.forEach((assessment, index) => {
+      const criterion = HUMAN_REVIEW_PASS_B_BLUEPRINT_CRITERIA[index]!;
+      if (!isRecord(assessment) || assessment.criterion !== criterion.key) {
+        errors.push(`${opaqueItemId} blueprint criterion ${index + 1} differs from the worksheet.`);
+        return;
+      }
+      oneOf(assessment.judgment, criterion.choices, `${opaqueItemId} ${criterion.label}`, errors);
+      requiredText(assessment.rationale, `${opaqueItemId} ${criterion.label}`, errors);
+    });
+  }
+
+  if (!Array.isArray(review.requiredCommitments)
+    || review.requiredCommitments.length !== expected.requiredCommitments.length) {
+    errors.push(`${opaqueItemId} required-commitment rows differ from the immutable contract.`);
+  } else {
+    review.requiredCommitments.forEach((assessment, index) => {
+      const target = expected.requiredCommitments[index]!;
+      if (!isRecord(assessment) || assessment.ordinal !== target.ordinal) {
+        errors.push(`${opaqueItemId} required commitment ${index + 1} has an invalid ordinal.`);
+        return;
+      }
+      exactText(assessment.targetText, target.targetText, `${opaqueItemId} required commitment ${index + 1}`, errors);
+      oneOf(assessment.expressed, ["yes", "implicit", "no"], `${opaqueItemId} required commitment ${index + 1} expression`, errors);
+      oneOf(assessment.correctness, ["yes", "no", "disputed"], `${opaqueItemId} required commitment ${index + 1} correctness`, errors);
+      oneOf(assessment.naturalness, ["yes", "no"], `${opaqueItemId} required commitment ${index + 1} naturalness`, errors);
+      requiredText(assessment.notes, `${opaqueItemId} required commitment ${index + 1}`, errors);
+    });
+  }
+
+  if (!Array.isArray(review.prohibitedCommitments)
+    || review.prohibitedCommitments.length !== expected.prohibitedCommitments.length) {
+    errors.push(`${opaqueItemId} prohibited-commitment rows differ from the immutable contract.`);
+  } else {
+    review.prohibitedCommitments.forEach((assessment, index) => {
+      const target = expected.prohibitedCommitments[index]!;
+      if (!isRecord(assessment) || assessment.ordinal !== target.ordinal) {
+        errors.push(`${opaqueItemId} prohibited commitment ${index + 1} has an invalid ordinal.`);
+        return;
+      }
+      exactText(assessment.targetText, target.targetText, `${opaqueItemId} prohibited commitment ${index + 1}`, errors);
+      oneOf(assessment.violated, ["yes", "no", "uncertain"], `${opaqueItemId} prohibited commitment ${index + 1}`, errors);
+      oneOf(assessment.severity, ["observation", "minor", "major", "critical"], `${opaqueItemId} prohibited commitment ${index + 1} severity`, errors);
+      requiredText(assessment.evidence, `${opaqueItemId} prohibited commitment ${index + 1}`, errors);
+    });
+  }
+
+  if (!Array.isArray(review.deltaInstructions)
+    || review.deltaInstructions.length !== expected.deltaInstructions.length) {
+    errors.push(`${opaqueItemId} preserve/change rows differ from the immutable contract.`);
+  } else {
+    review.deltaInstructions.forEach((assessment, index) => {
+      const target = expected.deltaInstructions[index]!;
+      if (!isRecord(assessment) || assessment.ordinal !== target.ordinal
+        || assessment.instructionKind !== target.instructionKind) {
+        errors.push(`${opaqueItemId} delta instruction ${index + 1} differs from the worksheet.`);
+        return;
+      }
+      exactText(assessment.targetText, target.targetText, `${opaqueItemId} delta instruction ${index + 1}`, errors);
+      oneOf(assessment.satisfied, ["yes", "partly", "no"], `${opaqueItemId} delta instruction ${index + 1}`, errors);
+      requiredText(assessment.evidence, `${opaqueItemId} delta instruction ${index + 1}`, errors);
+    });
+  }
+
+  if (!isRecord(review.pluralityEvidence)) {
+    errors.push(`${opaqueItemId} needs the plurality and evidence worksheet.`);
+  } else {
+    requiredText(review.pluralityEvidence.importantAnalysesRetained, `${opaqueItemId} important analyses retained`, errors);
+    requiredText(review.pluralityEvidence.unsupportedAnalysesIntroduced, `${opaqueItemId} unsupported analyses introduced`, errors);
+    requiredText(review.pluralityEvidence.unjustifiedCollapse, `${opaqueItemId} unjustified collapse`, errors);
+    requiredText(review.pluralityEvidence.missingEvidenceNamed, `${opaqueItemId} missing evidence named`, errors);
+    requiredText(review.pluralityEvidence.sourceBoundariesPreserved, `${opaqueItemId} source boundaries`, errors);
+    oneOf(review.pluralityEvidence.clarificationWouldResolve,
+      HUMAN_REVIEW_PASS_B_CLARIFICATION.map((choice) => choice.value),
+      `${opaqueItemId} clarification effect`, errors);
+  }
+
+  if (!Array.isArray(review.metadataFit) || review.metadataFit.length !== expected.metadataFit.length) {
+    errors.push(`${opaqueItemId} metadata-fit rows differ from the immutable worksheet.`);
+  } else {
+    review.metadataFit.forEach((assessment, index) => {
+      const field = HUMAN_REVIEW_PASS_B_METADATA_FIELDS[index]!;
+      if (!isRecord(assessment) || assessment.field !== field.key) {
+        errors.push(`${opaqueItemId} metadata field ${index + 1} differs from the worksheet.`);
+        return;
+      }
+      oneOf(assessment.judgment, field.choices, `${opaqueItemId} ${field.label}`, errors);
+      requiredText(assessment.repair, `${opaqueItemId} ${field.label}`, errors);
+    });
+  }
+
+  if (!isRecord(review.passComparison)) {
+    errors.push(`${opaqueItemId} needs the Pass A comparison.`);
+  } else {
+    oneOf(review.passComparison.changedPassA,
+      HUMAN_REVIEW_PASS_B_CHANGED_PASS_A.map((choice) => choice.value),
+      `${opaqueItemId} Pass A change`, errors);
+    requiredText(review.passComparison.contractEffect, `${opaqueItemId} contract effect`, errors);
+    requiredText(review.passComparison.evidenceBasis, `${opaqueItemId} Pass A evidence basis`, errors);
+  }
+  return errors;
+}
+
 export function humanReviewResponseErrors(
   pass: HumanReviewPass,
   response: HumanReviewResponse,
-  opaqueItemId = "Item"
+  opaqueItemId = "Item",
+  candidate?: JsonValue
 ): string[] {
   const errors: string[] = [];
   if (!isRecord(response)) return [`${opaqueItemId} response is missing.`];
@@ -290,7 +541,7 @@ export function humanReviewResponseErrors(
   const expectedDimensions = humanReviewDimensions(pass).map((dimension) => dimension.key).sort();
   const actualDimensions = isRecord(response.scores) ? Object.keys(response.scores).sort() : [];
   if (actualDimensions.join("\0") !== expectedDimensions.join("\0")) {
-    errors.push(`${opaqueItemId} score dimensions differ from rubric version ${HUMAN_REVIEW_RUBRIC_VERSION}.`);
+    errors.push(`${opaqueItemId} score dimensions differ from rubric version ${humanReviewRubric(pass).version}.`);
   } else {
     for (const dimension of expectedDimensions) {
       const score = response.scores[dimension];
@@ -304,7 +555,7 @@ export function humanReviewResponseErrors(
     ? Object.keys(response.dimensionEvidence).sort()
     : [];
   if (actualEvidenceDimensions.join("\0") !== expectedDimensions.join("\0")) {
-    errors.push(`${opaqueItemId} evidence dimensions differ from rubric version ${HUMAN_REVIEW_RUBRIC_VERSION}.`);
+    errors.push(`${opaqueItemId} evidence dimensions differ from rubric version ${humanReviewRubric(pass).version}.`);
   } else {
     for (const dimension of expectedDimensions) {
       const evidence = response.dimensionEvidence[dimension];
@@ -342,8 +593,13 @@ export function humanReviewResponseErrors(
     )) {
       errors.push(`${opaqueItemId} needs an answer-before-unnecessary-question judgment.`);
     }
+    if (response.passBReview !== undefined) {
+      errors.push(`${opaqueItemId} contains a Pass B worksheet in Pass A.`);
+    }
   } else if (response.firstSentenceEngagement !== null || response.answeredBeforeUnnecessaryQuestion !== null) {
     errors.push(`${opaqueItemId} contains Pass A comprehension judgments in Pass B.`);
+  } else {
+    errors.push(...passBContractReviewErrors(response, opaqueItemId, candidate));
   }
   if (!Array.isArray(response.findings)) {
     errors.push(`${opaqueItemId} findings must be a list.`);
@@ -392,12 +648,13 @@ export function parseHumanReviewPacketText(text: string): HumanReviewPacket {
       throw new Error("Human-review submission contains an invalid assignment");
     }
     const response = assignment.response;
-    const empty = emptyHumanReviewResponse(parsed.pass);
+    const empty = emptyHumanReviewResponse(parsed.pass, assignment.candidate as JsonValue);
     if (!("firstSentenceEngagement" in response)) response["firstSentenceEngagement"] = null;
     if (!("answeredBeforeUnnecessaryQuestion" in response)) {
       response["answeredBeforeUnnecessaryQuestion"] = null;
     }
     if (!("dimensionEvidence" in response)) response["dimensionEvidence"] = empty.dimensionEvidence;
+    if (parsed.pass === "B" && !("passBReview" in response)) response["passBReview"] = empty.passBReview;
     if (Array.isArray(response["findings"])) {
       for (const finding of response["findings"]) {
         if (!isRecord(finding)) continue;

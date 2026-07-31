@@ -112,6 +112,68 @@ export interface HumanReviewFinding {
   preserve: string;
 }
 
+export interface PassBBlueprintAssessment {
+  criterion: string;
+  judgment: string | null;
+  rationale: string;
+}
+
+export interface PassBRequiredCommitmentAssessment {
+  ordinal: number;
+  targetText: string;
+  expressed: string | null;
+  correctness: string | null;
+  naturalness: string | null;
+  notes: string;
+}
+
+export interface PassBProhibitedCommitmentAssessment {
+  ordinal: number;
+  targetText: string;
+  violated: string | null;
+  evidence: string;
+  severity: string | null;
+}
+
+export interface PassBDeltaInstructionAssessment {
+  instructionKind: "preserve" | "change";
+  ordinal: number;
+  targetText: string;
+  satisfied: string | null;
+  evidence: string;
+}
+
+export interface PassBPluralityEvidenceAssessment {
+  importantAnalysesRetained: string;
+  unsupportedAnalysesIntroduced: string;
+  unjustifiedCollapse: string;
+  missingEvidenceNamed: string;
+  sourceBoundariesPreserved: string;
+  clarificationWouldResolve: string | null;
+}
+
+export interface PassBMetadataFitAssessment {
+  field: string;
+  judgment: string | null;
+  repair: string;
+}
+
+export interface PassBPassComparison {
+  changedPassA: string | null;
+  contractEffect: string;
+  evidenceBasis: string;
+}
+
+export interface PassBContractReview {
+  blueprint: PassBBlueprintAssessment[];
+  requiredCommitments: PassBRequiredCommitmentAssessment[];
+  prohibitedCommitments: PassBProhibitedCommitmentAssessment[];
+  deltaInstructions: PassBDeltaInstructionAssessment[];
+  pluralityEvidence: PassBPluralityEvidenceAssessment;
+  metadataFit: PassBMetadataFitAssessment[];
+  passComparison: PassBPassComparison;
+}
+
 export interface HumanReviewResponse {
   outcome: string | null;
   summaryUserAim: string;
@@ -127,6 +189,8 @@ export interface HumanReviewResponse {
   confidence: number | null;
   uncertainty: string;
   expertiseNeeded: string;
+  /** Present only in Pass B. Pass A's immutable packet envelope remains unchanged. */
+  passBReview?: PassBContractReview;
 }
 
 export interface HumanReviewSessionResponse {
