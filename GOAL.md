@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING FOR ALL HUMAN PACKETS LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -100,6 +100,14 @@ bound. The public workspace uses the same check and discarded a deliberately alt
 on reload. The canonical blank packet's computed envelope SHA equals its export SHA
 `6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; all human, release, training, and
 authorization counts remain zero. The live service runs the same revision with zero restarts.
+
+[Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md) generalizes that
+provenance contract to Pass C family synthesis, the structural dispositions embedded in Pass C, and Pass D
+campaign closeout at revision `6a33410`. C responses and disposition judgments may change, but family evidence,
+instructions, ordering, timestamps, and structural candidate membership may not. D may change only its response;
+all population, candidate, family, repeat, and analysis evidence remains bound. Tampered completed packets write
+zero scientific and raw-submission rows. The focused corpus suite passes 22/22, the optimized web build passes,
+and the canonical SQLite hash and zero-human-evidence state remain unchanged.
 
 ---
 

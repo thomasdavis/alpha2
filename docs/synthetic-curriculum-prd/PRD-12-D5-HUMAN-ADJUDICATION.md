@@ -25,9 +25,12 @@ review for the same reviewer and rubric, all `min(6, candidate count)` hidden-re
 no first-class Pass A presentation session remains open; see
 [Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
 
-**Submission-envelope enforcement:** browser-local drafts and local submissions may change response fields
-only. Every other field must match an exact, content-addressed packet previously exported for the same session
-and pass; see [Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md).
+**Submission-envelope enforcement:** browser-local drafts and every local A/B/C/D submission may change only
+its explicitly typed response worksheet. Every other field must match an exact, content-addressed packet
+previously exported for the same session and pass. Structural-disposition responses are mutable in Pass C,
+but their worksheet membership and candidate identities are immutable. See
+[Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md) and
+[Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md).
 
 ## 1. Purpose
 
@@ -239,7 +242,9 @@ The executable Pass C contract is recorded in
 every current candidate has exactly one sealed human Pass A and Pass B review for the reviewer. It then binds
 each family response to the exact family blueprint, current candidate versions and hashes, structural
 failures, and A/B review evidence. It also requires a separate structural disposition for every rejected
-sibling and cannot create release membership or training exposure.
+sibling and cannot create release membership or training exposure. Submission additionally requires the exact
+exported Pass C envelope: family purpose, blueprint, candidate evidence, instructions, ordering, and the set of
+structural-disposition candidate identities cannot change while responses are being filled.
 
 ### 6.4 Pass D — adjudication and campaign synthesis
 
@@ -258,6 +263,8 @@ adjudicator has exactly one sealed A and B review per current candidate, the req
 rows, one synthesis per family, every required structural disposition, and the current authoritative analysis
 run. It binds the response to an exact evidence digest, stores dispositions and campaign diagnoses append-only,
 and forces `execution_authorized = 0`. It creates no lifecycle transition, release member, or training exposure.
+The completed response must also reduce to the exact exported Pass D envelope; population, candidates,
+families, repeats, analysis evidence, instructions, timestamp, and ordering are not editable submission fields.
 
 ## 7. Presentation, ordering, and fatigue controls
 
@@ -631,3 +638,8 @@ Pass D is likewise implemented and intentionally empty; see
 [Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md). Its live prerequisite check stops at the
 missing Pass A review and creates zero closeout assignments or adjudications. Do not prefill its public tables
 or treat a recommended D5 state as a later-stage authorization.
+
+All A/B/C/D importers now share one exact exported-envelope verifier; see
+[Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md). The C and D adversarial tests prove that a
+completed response attached to a timestamp-altered packet writes neither scientific rows nor raw submission
+artifacts. This hardens future evidence capture but does not change the current zero-human-evidence state.

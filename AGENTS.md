@@ -83,6 +83,14 @@ instructions, order, seed, reviewer, opaque identity, and presentation identity 
 live release is `e07477b934897b71f241724a230e2ccd6320e0c9`; its browser tamper test discarded altered local
 candidate text. Human reviews remain zero.
 
+[Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md) extends the exact
+exported-envelope contract to Pass C family synthesis, embedded structural dispositions, and Pass D closeout.
+Only the typed response worksheets may change; presentation, evidence, ordering, instructions, timestamps,
+and structural worksheet membership remain bound to a content-addressed export. Submissions now use read-only
+actor/rubric requirements and write no raw artifact before the envelope passes. Revision `6a33410` passes the
+22/22 focused corpus suite and optimized web build; the canonical ledger remains byte-identical with zero
+human evidence.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

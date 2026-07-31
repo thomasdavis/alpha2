@@ -70,6 +70,14 @@ the DOM and storage. The canonical packet remains blank at SHA-256
 corpus suite, optimized web build, canary, manifest, public 200/405 boundaries, ledger integrity, foreign keys,
 and blob validation pass. The project-owned footprint is 35.76 MiB.
 
+The local downstream importers are additionally hardened at revision `6a33410`; see
+[Execution 12](docs/synthetic-curriculum-prd/EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md). Pass C family
+synthesis plus structural dispositions and Pass D closeout now use the same exact exported-envelope contract
+as A/B. Completed-but-timestamp-altered packets write zero scientific or raw-submission evidence, and accepted
+events retain separate envelope and submission hashes. No public redeploy was necessary because the public
+workspace exposes only the already-protected A/B instrument. The canonical SQLite main-file SHA remains
+`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; every human-evidence count remains zero.
+
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
 `analysis_run_a32f01644e1a96a9ea601b35b35626aa` is tied to exact revision
