@@ -41,6 +41,14 @@ Treat only `analysis_run_a32f01644e1a96a9ea601b35b35626aa` as the current run. T
 `surface_distribution_only`; they do not replace blind human review, semantic duplicate adjudication, or
 release decisions.
 
+[Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md) implements the
+family-level Pass C and separate structural-rejection disposition path. The canonical ledger is migrated to
+five migrations, 117 tables, four views, and 168 triggers. Pass C must remain empty until every current
+candidate has one sealed human Pass A and Pass B review for the same reviewer; the live fail-closed proof has
+zero Pass C assignments, syntheses, dispositions, release members, and training exposures. Do not populate
+these records with model-authored judgments labeled as human. Six hidden Pass A repeat presentations and Pass
+D campaign adjudication remain implementation gaps.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

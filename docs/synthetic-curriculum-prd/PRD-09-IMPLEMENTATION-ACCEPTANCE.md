@@ -15,7 +15,8 @@ generation record is [Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md). The
 review form, and unratified next-step package are [PRD-12](PRD-12-D5-HUMAN-ADJUDICATION.md),
 [Appendix D](APPENDIX-D-D5-REVIEW-INSTRUMENT.md), and
 [Decision Packet 01](DECISION-PACKET-01-D5-NEXT-STEP.md). The first-class deterministic evidence checkpoint is
-[Execution 05](EXECUTION-05-D5-SURFACE-EVIDENCE.md).
+[Execution 05](EXECUTION-05-D5-SURFACE-EVIDENCE.md). The fail-closed family-synthesis and structural-
+disposition implementation is [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
 
 Done:
 
@@ -27,16 +28,17 @@ Done:
 - first experimental data boundary fixed as synthetic-only;
 - fixed parameter-count framing removed;
 - one-GPU constraint recorded;
-- D2 ledger: four hash-verified migrations, 112 tables, four current/public views, 160 append-only triggers,
+- D2/D5 ledger: five hash-verified migrations, 117 tables, four current/public views, 168 append-only triggers,
   content-addressed blobs, and clean integrity/foreign-key validation;
 - D3 canaries: 49 categories, 16 transformations, and six quarantined family blueprints;
 - D4 orchestration: structured Codex calls, exact raw artifacts, bounded/idempotent tasks, validators, usage,
   and completed-response recovery;
 - D5 generation portion: 12 GPT-5.4 calls, 48 candidates, 42 structurally valid and six retained rejections,
   with a full human-audit packet;
-- D5 review substrate: executable blinded Pass A and contract-aware Pass B packets, versioned rubric,
-  append-only human submission, a deployed local-first browser workspace, 15/15 corpus tests, and the first 12
-  Pass A assignments prepared with zero fabricated judgments;
+- D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, and separate
+  structural-disposition evidence; versioned rubrics; append-only human submission; a deployed local-first
+  browser workspace; 17/17 corpus tests; and the first 12 Pass A assignments prepared with zero fabricated
+  judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 deterministic evidence: one current-version snapshot, 236 scoped metrics, 2,256 pair/method surface
   edges, 488 dynamic signatures, and an append-only correction for one erroneous software-revision claim;
 - GPT-5.5, training, GPU work, live Donto writes, and release remained unused during generation. A separately

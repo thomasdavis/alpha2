@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + FIRST-CLASS SURFACE PROFILE RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED FAMILY SYNTHESIS WORKFLOW RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -59,6 +59,13 @@ The current-version D5 surface profile is recorded in
 discovered template signatures. The evidence is explicitly surface/distributional and cannot satisfy the
 human quality gate. One incorrect operator-supplied Git revision remains linked append-only to the corrected
 run, demonstrating the ledger's correction semantics rather than being silently erased.
+
+The family-level Pass C and structural-rejection workflow is recorded in
+[Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md). Migration 5 brings
+the canonical ledger to 117 tables and 168 triggers and adds exact family-synthesis and disposition basis
+relations. The live prerequisite proof correctly refuses Pass C while A/B are incomplete and leaves every new
+evidence table, release membership, and training exposure empty. The immediate authority-bearing action
+remains real human Pass A review; implementation must not be mistaken for adjudication.
 
 ---
 

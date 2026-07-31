@@ -1,6 +1,7 @@
 # PRD-12 — D5 human adjudication and calibration closeout
 
-**Status:** normative planning contract; review instrument deployed; review has not begun
+**Status:** normative planning contract; Pass A/B instrument and fail-closed Pass C workflow deployed; human
+review has not begun
 
 **Applies to:** `alpha-calibration-v1` only
 
@@ -218,6 +219,13 @@ Group all eight siblings for each family and ask:
 
 Family comparison is where semantic duplication and blueprint-level failure become visible. Candidate-level
 scores must not be treated as independent observations in later statistical summaries.
+
+The executable Pass C contract is recorded in
+[Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md). It refuses to create even an assignment until
+every current candidate has exactly one sealed human Pass A and Pass B review for the reviewer. It then binds
+each family response to the exact family blueprint, current candidate versions and hashes, structural
+failures, and A/B review evidence. It also requires a separate structural disposition for every rejected
+sibling and cannot create release membership or training exposure.
 
 ### 6.4 Pass D — adjudication and campaign synthesis
 
@@ -571,3 +579,8 @@ completed packet, and import it through the local append-only `review-submit` co
 model critic: the point of this phase is to create the human reference that a critic would later be measured
 against. Execution 05's surface evidence may nominate comparisons but must not be shown in a way that breaks
 Pass A blindness.
+
+The Pass C implementation is ready but intentionally empty: zero assignments, zero family syntheses, and
+zero structural dispositions. Do not bypass its A/B gate merely to populate the new public tables. The six
+hidden Pass A repeat presentations required by Section 7 still need a separate presentation-event workflow;
+they must not be implemented as duplicate candidates or duplicate scientific reviews.

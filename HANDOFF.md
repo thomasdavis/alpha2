@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 112 tables and four views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 117 tables and four views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -48,7 +48,18 @@ The D5 deterministic profile is now first-class and recorded in
 2,256 similarity edges, and 488 signatures. The earlier run
 `analysis_run_e6e5e45da332d9482be1ed7ca586780f` contains an incorrect operator-supplied revision and is
 explicitly superseded by `analysis_run_correction_d74d355ddcfc337474809c4dd1b618e0`; never cite it as
-current. The canonical ledger is clean at four migrations, zero FK/blob failures, and 18.46 MiB.
+current.
+
+The Pass C family-synthesis and structural-rejection workflow is implemented at revision `66783ae` and
+recorded in
+[Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md). Migration 5 adds
+five first-class tables and eight append-only triggers, taking the canonical ledger to five migrations, 117
+tables, four views, and 168 triggers. A pre-migration SQLite backup has SHA-256
+`c4ae7e7b0720fd4c69f97b3331d53946e4b8dfbc9cc15869f2d0af959c58450e`. The live Pass C preparation correctly
+failed because A/B evidence is incomplete and created zero assignments, syntheses, structural dispositions,
+release members, or training exposures. All new relations return HTTP 200 in the public explorer. The
+canonical ledger is clean with zero FK/blob failures and a 24.03 MiB project-owned footprint at verification.
+Hidden Pass A repeats and Pass D adjudication remain open.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

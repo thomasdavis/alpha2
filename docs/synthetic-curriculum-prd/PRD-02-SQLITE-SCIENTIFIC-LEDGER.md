@@ -281,8 +281,16 @@ schema-valid tool/output path, never regex extraction from prose.
 | `disagreement_case` | Preserved unresolved review conflict |
 | `repair_request` | Specific requested revision |
 | `quality_state_transition` | Candidate lifecycle history |
+| `family_synthesis_assignment` | Pass C reviewer/session/input-snapshot gate for one family |
+| `family_synthesis` | Immutable comparison and diagnosis across one family's siblings |
+| `family_synthesis_basis` | Exact sealed candidate reviews used by a family synthesis |
+| `structural_disposition` | Separate content/schema judgment for a structurally rejected candidate |
+| `structural_disposition_basis` | Exact validator failures and reviews supporting that disposition |
 
 Reviews never overwrite one another. An adjudication can select an action without erasing minority analysis.
+Family synthesis is not candidate adjudication and does not imply release or training approval. The current
+physical schema enforces sealed Pass A and Pass B evidence before Pass C assignments may be prepared; see
+[Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
 
 ### 5.9 Similarity, duplication, and contamination
 
@@ -544,11 +552,16 @@ derivation contracts are tested.
 
 ## 15. Current D5 physical checkpoint
 
-Execution 05 records the first derived-evidence materialization. The canonical ledger has four migrations,
-112 tables, four views, and 160 append-only triggers. The frozen 48-candidate snapshot contributes one
+Execution 05 records the first derived-evidence materialization. Execution 06 adds the fail-closed family
+synthesis and structural-disposition evidence layer. The canonical ledger now has five migrations, 117
+tables, four views, and 168 append-only triggers. The frozen 48-candidate snapshot contributes one
 authoritative surface-analysis run containing 236 scoped metrics, 2,256 pair/method similarity edges, and 488
 dynamic template signatures. A provenance-erroneous predecessor and its typed correction are intentionally
 retained, so physical row counts include both runs.
+
+The five new Pass C relations are empty by design while human Pass A and Pass B remain incomplete. Their
+presence proves schema and workflow capability, not review completion. Their no-promotion and exact-basis
+contract is recorded in [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
 
 This checkpoint satisfies only the bounded D5 surface-analysis requirements. It does not complete PRD-02's
 future release, token-exposure, evaluation, embedding, contamination, or checkpoint-lineage catalog.

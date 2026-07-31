@@ -64,6 +64,25 @@ const reviewRows = sqliteRows(`
   FROM review_assignment
 `);
 const humanReviewRows = sqliteRows("SELECT COUNT(*) AS count FROM review WHERE reviewer_actor_id IS NOT NULL");
+const synthesisRows = sqliteRows(`
+  SELECT COALESCE(SUM(CASE WHEN status = 'assigned' THEN 1 ELSE 0 END), 0) AS pass_c_assigned,
+         COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS pass_c_completed
+  FROM family_synthesis_assignment
+  WHERE campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+`);
+const familySynthesisRows = sqliteRows(`
+  SELECT COUNT(*) AS family_syntheses
+  FROM family_synthesis fs
+  JOIN family_synthesis_assignment fsa ON fsa.id = fs.assignment_id
+  WHERE fsa.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+`);
+const structuralDispositionRows = sqliteRows(`
+  SELECT COUNT(*) AS structural_dispositions
+  FROM structural_disposition sd
+  JOIN family_synthesis fs ON fs.id = sd.family_synthesis_id
+  JOIN family_synthesis_assignment fsa ON fsa.id = fs.assignment_id
+  WHERE fsa.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+`);
 const analysisRows = sqliteRows(`
   SELECT ar.id AS analysis_run_id,
          (SELECT COUNT(*) FROM analysis_metric am WHERE am.analysis_run_id = ar.id) AS metric_count,
@@ -93,15 +112,26 @@ const footprint = directorySize(corpusHome);
 const usage = usageRows[0];
 const reviewProgress = reviewRows[0];
 const humanReviews = Number(humanReviewRows[0]?.["count"] ?? 0);
+const synthesisProgress = synthesisRows[0];
+const passCAssigned = Number(synthesisProgress?.["pass_c_assigned"] ?? 0);
+const passCCompleted = Number(synthesisProgress?.["pass_c_completed"] ?? 0);
+const familySyntheses = Number(familySynthesisRows[0]?.["family_syntheses"] ?? 0);
+const structuralDispositions = Number(structuralDispositionRows[0]?.["structural_dispositions"] ?? 0);
 const analysis = analysisRows[0];
 const humanAccepted = Number(progress["human_accepted"]);
 const passACompleted = Number(reviewProgress?.["pass_a_completed"] ?? 0);
 const passBAssigned = Number(reviewProgress?.["pass_b_assigned"] ?? 0);
-const nextGate = passACompleted < Number(progress["candidates"])
+const candidateCount = Number(progress["candidates"]);
+const passBCompleted = Number(reviewProgress?.["pass_b_completed"] ?? 0);
+const nextGate = passACompleted < candidateCount
   ? "complete blinded Pass A human review; hidden contracts remain sealed"
-  : passBAssigned === 0
+  : passBCompleted < candidateCount && passBAssigned === 0
     ? "prepare contract-aware Pass B from sealed Pass A evidence"
-    : "complete Pass B and family synthesis before any generation decision";
+    : passBCompleted < candidateCount
+      ? "complete contract-aware Pass B; Pass C remains fail-closed"
+      : passCCompleted === 0
+        ? "prepare and complete Pass C family synthesis plus each structural-rejection disposition"
+        : "complete operator adjudication and campaign synthesis before any generation decision";
 
 const content = [
   `**Alpha Corpus progress — ${new Date().toISOString()}**`,
@@ -109,6 +139,7 @@ const content = [
   `Ledger: integrity=${String(integrityRows[0]?.["integrity_check"] ?? "unknown")}; campaign=${String(progress["status"])}; tasks=${Number(progress["completed_tasks"])}/${Number(progress["task_count"])}; calls=${Number(progress["model_calls"])}.`,
   `Calibration: ${Number(progress["candidates"])} candidates; ${Number(progress["structurally_valid"])} structurally valid; ${Number(progress["structurally_rejected"])} retained rejections; ${humanAccepted} human accepted. Structural validity is not training approval.`,
   `Human review: Pass A ${passACompleted}/${Number(progress["candidates"])} completed (${Number(reviewProgress?.["pass_a_assigned"] ?? 0)} assigned); Pass B ${Number(reviewProgress?.["pass_b_completed"] ?? 0)} completed (${passBAssigned} assigned); ${humanReviews} append-only human review records.`,
+  `Family synthesis: Pass C ${passCCompleted} completed (${passCAssigned} assigned); ${familySyntheses} family synthesis records; ${structuralDispositions}/6 retained structural rejections dispositioned. Pass C cannot open until every current candidate has one sealed human Pass A and Pass B review.`,
   analysis
     ? `Deterministic surface evidence: ${Number(analysis["metric_count"])} scoped metrics; ${Number(analysis["similarity_edge_count"])} pair/method edges; ${Number(analysis["template_signature_count"])} dynamic signatures. This is not semantic or human approval.`
     : "Deterministic surface evidence: no current analysis run recorded.",

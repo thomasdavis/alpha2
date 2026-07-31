@@ -161,6 +161,24 @@ rights ambiguity, and public claims of validity.
 Reviews the distribution, leakage, provenance, coverage, style, rights, and reconstructability of a cohort,
 not just individual units.
 
+### D5 candidate passes and family synthesis
+
+For a bounded family calibration, candidate review proceeds through distinct evidence layers:
+
+- **Pass A** judges model-visible conversation without family, lineage, contract, validator, or model cues;
+- **Pass B** reveals the family and hidden contract only after Pass A is sealed and judges contract fit;
+- **Pass C** compares every sibling only after all current candidates have sealed A and B evidence;
+- **Pass D** is later adjudication and campaign synthesis, not an automatic consequence of Pass C.
+
+Pass C records coverage pressure, strongest and weakest units, semantic duplicate groups, shared errors and
+style signatures, response-policy imbalance, metadata mismatch, missing negatives, blueprint repair,
+uncertainty, and family disposition. Every structurally rejected sibling also receives a separate disposition
+of content utility, validator correctness, semantic type, remedy, and automatic-accept/reject hazards.
+
+The workflow must fail closed before its prerequisites, bind every response to an exact evidence snapshot,
+retain the raw submission, and leave candidate, release, and training state unchanged. The executable D5
+implementation is recorded in [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
+
 ## 5. Reviewer calibration
 
 Before reviewing production data, every model and human reviewer sees a calibration set containing:
