@@ -20,6 +20,11 @@ Pass C, structural dispositions, and Pass D. It exposes no candidate IDs, family
 status, or repeat identity; see
 [Execution 09](EXECUTION-09-D5-PIPELINE-VISIBILITY.md).
 
+**Pass B enforcement:** the local preparer refuses Pass B until every current candidate has a sealed Pass A
+review for the same reviewer and rubric, all `min(6, candidate count)` hidden-repeat stability rows exist, and
+no first-class Pass A presentation session remains open; see
+[Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
+
 ## 1. Purpose
 
 This PRD turns the abstract review principles in PRD-04 into an executable human-adjudication protocol for the
@@ -609,6 +614,8 @@ The dashboard now makes the campaign denominator explicit: the prepared 12-item 
 the 48-candidate Pass A census. Finishing it does not unlock Pass B or complete D5. Continue with additional
 blinded Pass A sessions and the six hidden repeats according to the ledger-derived pipeline before revealing
 contracts. The panel is evidence visibility only; it neither prepares assignments nor imports judgments.
+The local CLI independently enforces the same campaign boundary; per-candidate Pass A completion is not enough
+to prepare Pass B.
 
 The Pass C implementation is ready but intentionally empty: zero assignments, zero family syntheses, and
 zero structural dispositions. Do not bypass its A/B gate merely to populate the new public tables. The six

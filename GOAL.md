@@ -85,6 +85,13 @@ Post-Execution-09 reconciliation remains clean at seven migrations, 129 tables, 
 candidates, 12 open Pass A assignments, and zero human reviews, adjudications, release members, training
 exposures, or execution authorizations. The complete project-owned artifact tree is 35.65 MiB.
 
+[Execution 10](docs/synthetic-curriculum-prd/EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md) closes a discovered
+campaign-blindness defect at revision `b52792b4e0821852e500466be7f0640cf6f60b67`. The local CLI previously
+allowed Pass B for an individually reviewed candidate before the remaining Pass A census and hidden repeats
+were complete. It now requires all 48 sealed Pass A reviews, all six repeat-stability rows, and no open
+first-class Pass A session before revealing any contract-aware packet. The exact forbidden live command failed
+at 0/48 and 0/6 without changing the SQLite file hash, size, modification time, or any scientific count.
+
 ---
 
 # ARCHIVED GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face

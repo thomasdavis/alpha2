@@ -69,6 +69,12 @@ Pass B 0/48, Pass C 0/6, structural dispositions 0/6, and Pass D 0/1, with downs
 hidden contracts, structural status, or repeat identity; do not weaken that blindness contract. Revision
 `8f25d51c362921480d68e37a22d57a9ee39d47d9` is live and public non-read methods remain 405.
 
+[Execution 10](docs/synthetic-curriculum-prd/EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md) closes the corresponding
+local CLI boundary. Never reveal Pass B candidate-by-candidate. Preparation now requires complete Pass A for
+every current candidate, all required hidden-repeat stability rows, and zero open first-class Pass A sessions
+for the same reviewer and rubric. The gate is campaign-wide because seeing any contract can contaminate the
+remaining blind primaries and repeats. Do not weaken it to per-candidate eligibility.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

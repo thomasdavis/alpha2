@@ -54,6 +54,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 25. [Execution 07 — D5 blinded repeat presentations](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md)
 26. [Execution 08 — D5 campaign-closeout workflow](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md)
 27. [Execution 09 — D5 campaign-pipeline visibility](EXECUTION-09-D5-PIPELINE-VISIBILITY.md)
+28. [Execution 10 — D5 campaign-wide Pass B blindness gate](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md)
 
 ## Authority and supersession
 

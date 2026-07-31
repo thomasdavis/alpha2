@@ -49,6 +49,15 @@ session within the 48-candidate census and exposes none of the lineage that woul
 Public desktop and 390 px browser checks passed, POST remains 405, and the prior `cc9be14` release remains the
 rollback target.
 
+The local Pass B preparer is additionally fail-closed at revision
+`b52792b4e0821852e500466be7f0640cf6f60b67`; see
+[Execution 10](docs/synthetic-curriculum-prd/EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md). An audit found that the
+old candidate-level predicate would reveal contracts for completed candidates before the remaining blind
+census and repeat presentations. Pass B now requires all 48 Pass A reviews, all six repeat-stability rows, and
+zero open first-class Pass A sessions for the same reviewer/rubric. A live premature Pass B command exited
+nonzero at 0/48 and 0/6, while the canonical SQLite SHA-256 remained exactly
+`7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce` before and after.
+
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
 `analysis_run_a32f01644e1a96a9ea601b35b35626aa` is tied to exact revision

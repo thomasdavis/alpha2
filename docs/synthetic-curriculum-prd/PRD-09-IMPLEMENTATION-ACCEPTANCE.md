@@ -23,6 +23,8 @@ The non-binding campaign-closeout implementation is
 [Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md).
 The deployed aggregate campaign-state panel is
 [Execution 09](EXECUTION-09-D5-PIPELINE-VISIBILITY.md).
+The campaign-wide executable Pass B blindness gate is
+[Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
 
 Done:
 
@@ -49,7 +51,9 @@ Done:
   judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without
   duplicating candidates or candidate reviews; responses, scores, findings, and derived stability remain
-  append-only. The live repeat population is correctly zero before human Pass A;
+  append-only. The live repeat population is correctly zero before human Pass A. Pass B preparation now fails
+  closed until all current candidates have sealed Pass A evidence, all required repeat-stability rows exist,
+  and no first-class Pass A presentation session remains assigned;
 - D5 closeout substrate: exact A/B/repeat/C/structural/analysis evidence is frozen into a resumable Pass D
   packet; candidate adjudication bases, failure clusters, distribution assessments, uncertainty, and
   recommended states are append-only; SQL forces zero execution authority; live preparation fails at missing
