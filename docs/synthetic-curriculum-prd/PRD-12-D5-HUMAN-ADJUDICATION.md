@@ -1,11 +1,11 @@
 # PRD-12 — D5 human adjudication and calibration closeout
 
-**Status:** normative planning contract; Pass A/B instrument, blinded-repeat layer, and fail-closed Pass C
-workflow deployed; human review has not begun
+**Status:** normative planning contract; fail-closed Pass A–D workflows deployed; human review has not begun
 
 **Applies to:** `alpha-calibration-v1` only
 
-**Current gate:** 48 generated candidates, zero human reviews, zero adjudications
+**Current gate:** 48 generated candidates, 12 open blinded Pass A assignments, zero human reviews, zero
+adjudications, zero closeouts
 
 **Authority:** PRD-04 quality policy, PRD-09 D5 acceptance gate, and direct operator decisions
 
@@ -238,6 +238,13 @@ After individual reviews are frozen, the adjudicator:
 5. prepares the non-binding next-decision packet;
 6. does not modify candidate text in place.
 
+The executable Pass D path is recorded in
+[Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md). It cannot prepare a packet until the same human
+adjudicator has exactly one sealed A and B review per current candidate, the required hidden-repeat stability
+rows, one synthesis per family, every required structural disposition, and the current authoritative analysis
+run. It binds the response to an exact evidence digest, stores dispositions and campaign diagnoses append-only,
+and forces `execution_authorized = 0`. It creates no lifecycle transition, release member, or training exposure.
+
 ## 7. Presentation, ordering, and fatigue controls
 
 - Randomize Pass A across family, status, kind, and difficulty.
@@ -420,6 +427,11 @@ mutation. The write path must perform append-only transactions and create:
 9. an `adjudication` plus `adjudication_basis` rows only after the evidence is complete;
 10. `quality_state_transition` only when authorized by the adjudication and lifecycle policy.
 
+Pass D additionally records its workflow and campaign evidence in `campaign_closeout_assignment`,
+`campaign_closeout`, `campaign_closeout_state`, `campaign_closeout_basis`, `campaign_failure_cluster`,
+`campaign_failure_cluster_member`, and `campaign_distribution_assessment`. A closeout recommendation is not
+the lifecycle authority contemplated by item 10; the current implementation cannot create that transition.
+
 The system must preserve raw submitted forms as content-addressed artifacts and record the software revision,
 rubric hash, candidate-version hash, and transaction time. A later correction supersedes a review or
 adjudication; it never rewrites the old rationale.
@@ -572,6 +584,9 @@ D5 human adjudication is complete only when:
 - question necessity, style, semantic duplication, and conversational contribution are summarized;
 - disagreements and expertise limits remain visible;
 - candidate adjudications cite their review basis;
+- one Pass D campaign closeout cites every required adjudication, synthesis, structural, repeat, and analysis
+  basis and records all eight conversational-distribution assessments;
+- the closeout retains schema-enforced zero execution authority;
 - zero candidates are silently promoted into a release or training exposure;
 - an operator-facing campaign report states what is known, unknown, and proposed next;
 - any new call, generation, evaluation, release, training, or GPU work is placed in a separate bounded
@@ -590,3 +605,8 @@ zero structural dispositions. Do not bypass its A/B gate merely to populate the 
 hidden Pass A repeats are now supported by the separate presentation-event workflow in
 [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md), but zero are assigned until a real human seals
 the first Pass A session.
+
+Pass D is likewise implemented and intentionally empty; see
+[Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md). Its live prerequisite check stops at the
+missing Pass A review and creates zero closeout assignments or adjudications. Do not prefill its public tables
+or treat a recommended D5 state as a later-stage authorization.

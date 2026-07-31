@@ -94,6 +94,30 @@ const repeatStabilityRows = sqliteRows(`
   SELECT COUNT(*) AS count FROM review_repeat_stability
   WHERE campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
 `);
+const closeoutRows = sqliteRows(`
+  SELECT
+    (SELECT COUNT(*) FROM campaign_closeout_assignment cca
+      WHERE cca.campaign_id = gc.id AND cca.status = 'assigned') AS assigned,
+    (SELECT COUNT(*) FROM campaign_closeout_assignment cca
+      WHERE cca.campaign_id = gc.id AND cca.status = 'completed') AS completed,
+    (SELECT COUNT(*) FROM campaign_closeout cc
+      WHERE cc.campaign_id = gc.id) AS closeouts,
+    (SELECT COUNT(*) FROM campaign_closeout cc
+      WHERE cc.campaign_id = gc.id AND cc.execution_authorized <> 0) AS execution_authorizations,
+    (SELECT COUNT(*) FROM adjudication a
+      JOIN candidate_version cv ON cv.id = a.candidate_version_id
+      JOIN candidate c ON c.id = cv.candidate_id
+      WHERE c.campaign_id = gc.id AND json_valid(a.rationale)
+        AND json_extract(a.rationale, '$.campaignCloseoutId') IS NOT NULL) AS adjudications
+  FROM generation_campaign gc WHERE gc.slug = 'alpha-calibration-v1'
+`);
+const closeoutStateRows = sqliteRows(`
+  SELECT ccs.state, COUNT(*) AS count
+  FROM campaign_closeout_state ccs
+  JOIN campaign_closeout cc ON cc.id = ccs.campaign_closeout_id
+  WHERE cc.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+  GROUP BY ccs.state ORDER BY ccs.state
+`);
 const analysisRows = sqliteRows(`
   SELECT ar.id AS analysis_run_id,
          (SELECT COUNT(*) FROM analysis_metric am WHERE am.analysis_run_id = ar.id) AS metric_count,
@@ -132,21 +156,35 @@ const presentationProgress = presentationRows[0];
 const repeatAssigned = Number(presentationProgress?.["repeat_assigned"] ?? 0);
 const repeatCompleted = Number(presentationProgress?.["repeat_completed"] ?? 0);
 const repeatStabilityCount = Number(repeatStabilityRows[0]?.["count"] ?? 0);
+const closeoutProgress = closeoutRows[0] ?? {};
+const closeoutAssigned = Number(closeoutProgress["assigned"] ?? 0);
+const closeoutCompleted = Number(closeoutProgress["completed"] ?? 0);
+const closeoutCount = Number(closeoutProgress["closeouts"] ?? 0);
+const closeoutAdjudications = Number(closeoutProgress["adjudications"] ?? 0);
+const closeoutAuthorizations = Number(closeoutProgress["execution_authorizations"] ?? 0);
+const closeoutStates = closeoutStateRows.length === 0
+  ? "none"
+  : closeoutStateRows.map((row) => `${String(row["state"])}=${Number(row["count"])}`).join(", ");
 const analysis = analysisRows[0];
 const humanAccepted = Number(progress["human_accepted"]);
 const passACompleted = Number(reviewProgress?.["pass_a_completed"] ?? 0);
 const passBAssigned = Number(reviewProgress?.["pass_b_assigned"] ?? 0);
 const candidateCount = Number(progress["candidates"]);
 const passBCompleted = Number(reviewProgress?.["pass_b_completed"] ?? 0);
+const expectedRepeats = Math.min(6, candidateCount);
 const nextGate = passACompleted < candidateCount
   ? "complete blinded Pass A human review; hidden contracts remain sealed"
-  : passBCompleted < candidateCount && passBAssigned === 0
-    ? "prepare contract-aware Pass B from sealed Pass A evidence"
-    : passBCompleted < candidateCount
-      ? "complete contract-aware Pass B; Pass C remains fail-closed"
-      : passCCompleted === 0
-        ? "prepare and complete Pass C family synthesis plus each structural-rejection disposition"
-        : "complete operator adjudication and campaign synthesis before any generation decision";
+  : repeatCompleted < expectedRepeats
+    ? "complete the blinded Pass A repeat presentations before revealing contracts"
+    : passBCompleted < candidateCount && passBAssigned === 0
+      ? "prepare contract-aware Pass B from sealed Pass A evidence"
+      : passBCompleted < candidateCount
+        ? "complete contract-aware Pass B; Pass C remains fail-closed"
+        : passCCompleted === 0
+          ? "prepare and complete Pass C family synthesis plus each structural-rejection disposition"
+          : closeoutCompleted === 0
+            ? "complete non-binding Pass D campaign closeout; it grants no execution authority"
+            : "request a separately bounded authorization for the next evidence-gated stage";
 
 const content = [
   `**Alpha Corpus progress — ${new Date().toISOString()}**`,
@@ -154,8 +192,9 @@ const content = [
   `Ledger: integrity=${String(integrityRows[0]?.["integrity_check"] ?? "unknown")}; campaign=${String(progress["status"])}; tasks=${Number(progress["completed_tasks"])}/${Number(progress["task_count"])}; calls=${Number(progress["model_calls"])}.`,
   `Calibration: ${Number(progress["candidates"])} candidates; ${Number(progress["structurally_valid"])} structurally valid; ${Number(progress["structurally_rejected"])} retained rejections; ${humanAccepted} human accepted. Structural validity is not training approval.`,
   `Human review: Pass A ${passACompleted}/${Number(progress["candidates"])} completed (${Number(reviewProgress?.["pass_a_assigned"] ?? 0)} assigned); Pass B ${Number(reviewProgress?.["pass_b_completed"] ?? 0)} completed (${passBAssigned} assigned); ${humanReviews} append-only human review records.`,
-  `Blinded consistency: ${repeatCompleted}/6 repeat presentations completed (${repeatAssigned} assigned); ${repeatStabilityCount} separately scored stability rows. Repeats do not inflate candidate or review counts.`,
+  `Blinded consistency: ${repeatCompleted}/${expectedRepeats} repeat presentations completed (${repeatAssigned} assigned); ${repeatStabilityCount} separately scored stability rows. Repeats do not inflate candidate or review counts.`,
   `Family synthesis: Pass C ${passCCompleted} completed (${passCAssigned} assigned); ${familySyntheses} family synthesis records; ${structuralDispositions}/6 retained structural rejections dispositioned. Pass C cannot open until every current candidate has one sealed human Pass A and Pass B review.`,
+  `Campaign closeout: ${closeoutCompleted} completed (${closeoutAssigned} assigned); ${closeoutCount} records; ${closeoutAdjudications} candidate adjudications; states=${closeoutStates}; execution authorizations=${closeoutAuthorizations}. Closeout is evidence, not permission to generate or train.`,
   analysis
     ? `Deterministic surface evidence: ${Number(analysis["metric_count"])} scoped metrics; ${Number(analysis["similarity_edge_count"])} pair/method edges; ${Number(analysis["template_signature_count"])} dynamic signatures. This is not semantic or human approval.`
     : "Deterministic surface evidence: no current analysis run recorded.",

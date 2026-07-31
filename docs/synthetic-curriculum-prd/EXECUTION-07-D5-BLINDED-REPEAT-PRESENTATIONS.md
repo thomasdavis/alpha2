@@ -257,11 +257,12 @@ the user's requirement that the present corpus tables remain publicly inspectabl
 
 ## 12. Remaining D5 gate
 
-The protocol implementation gap is closed. The authority gate is not.
+The blinded-repeat protocol implementation gap is closed. Execution 08 subsequently closes the Pass D
+campaign-closeout implementation gap. The authority gate is not.
 
 The immediate next action remains a real human completion of the existing 12-item Pass A packet. Only after
 that response is sealed can the scheduler legitimately choose its first repeat. Pass B, Pass C, the six actual
-stability observations, and Pass D campaign adjudication remain empty future evidence.
+stability observations, and the now-implemented Pass D campaign adjudication remain empty future evidence.
 
 No semantic-quality, conversation-quality, reviewer-reliability, or training-usefulness claim follows from
 this implementation alone.

@@ -313,6 +313,11 @@ Check and justify any that apply:
 
 No checked state is authorization. Attach Decision Packet 01 and obtain a separate operator decision.
 
+Execution 08 turns this worksheet into a content-addressed local packet only after A, hidden repeats, B, C,
+structural disposition, and authoritative surface evidence are complete for the adjudicator. The packet
+requires every distribution dimension and recommended state to be justified. Its SQL schema fixes execution
+authority at zero, so completing the worksheet still cannot start generation, release, or training.
+
 ## 7. Suggested ledger mapping
 
 | Form element | Ledger record |
@@ -326,6 +331,11 @@ No checked state is authorization. Attach Decision Packet 01 and obtain a separa
 | conflicting judgments | `disagreement_case` |
 | requested local change | `repair_request` |
 | final candidate disposition | `adjudication`, `adjudication_basis` |
+| Pass D workflow and submitted synthesis | `campaign_closeout_assignment`, `campaign_closeout` |
+| recommended D5 state | `campaign_closeout_state` |
+| campaign-level evidence lineage | `campaign_closeout_basis` |
+| failure cluster and cited members | `campaign_failure_cluster`, `campaign_failure_cluster_member` |
+| conversational-distribution assessment | `campaign_distribution_assessment` |
 | lifecycle promotion/restriction | `quality_state_transition` |
 | original submitted form | content-addressed `raw_artifact`/`blob` |
 

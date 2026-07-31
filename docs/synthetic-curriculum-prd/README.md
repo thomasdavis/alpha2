@@ -3,11 +3,11 @@
 **Status:** canonical project goal as of 2026-07-31
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
 **Current phase:** D5 calibration generated; public read-only explorer and local-first review workspace live;
-first-class surface evidence, blinded-repeat support, and fail-closed Pass C workflow recorded; first 12
-blinded Pass A assignments prepared, human responses pending
+first-class surface evidence and fail-closed Pass A–D evidence workflows recorded; first 12 blinded Pass A
+assignments prepared, human responses pending
 **Completed bounded scope:** D2–D4 implementation, a 48-candidate GPT-5.4 D5 calibration, its immutable
-current-version surface/distribution profile, blinded presentation substrate, and fail-closed Pass C evidence
-substrate
+current-version surface/distribution profile, blinded presentation substrate, family/structural synthesis
+substrate, and non-binding campaign-closeout substrate
 **Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public dataset
 release, or ad hoc Discord posting beyond the factual two-hour timer
 
@@ -51,6 +51,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 23. [Execution 05 — D5 first-class surface and distribution evidence](EXECUTION-05-D5-SURFACE-EVIDENCE.md)
 24. [Execution 06 — D5 family synthesis and structural-disposition workflow](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md)
 25. [Execution 07 — D5 blinded repeat presentations](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md)
+26. [Execution 08 — D5 campaign-closeout workflow](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md)
 
 ## Authority and supersession
 

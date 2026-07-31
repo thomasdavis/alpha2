@@ -1,6 +1,6 @@
 # Decision Packet 01 — Alpha Corpus after D5 human review
 
-**Status:** unratified template; not an authorization
+**Status:** unratified template; Pass D ledger substrate live; no human closeout exists; not an authorization
 
 **Prepared for:** operator decision after PRD-12 review completion
 
@@ -33,6 +33,12 @@ Do not ratify a next step until the decision record links:
 - current ledger, repository, and rubric revisions;
 - current project-owned storage footprint;
 - unresolved disagreement and expertise register.
+
+Execution 08 requires these inputs before it can prepare the campaign-closeout packet and records their exact
+bases in the ledger. When that human packet is eventually completed, attach its `campaign_closeout` ID,
+submitted blob SHA-256, recommended-state rows, failure clusters, and distribution assessments here. The
+closeout's schema-enforced `execution_authorized = 0` is intentional: this decision packet remains the place
+where the operator separately bounds any later action.
 
 ## 3. What the first calibration can and cannot establish
 

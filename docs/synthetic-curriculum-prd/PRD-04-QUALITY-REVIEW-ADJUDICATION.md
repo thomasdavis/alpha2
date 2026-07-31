@@ -185,6 +185,14 @@ separately. Stability measures outcome, policy, confidence, and dimension-score 
 possibility that a stable judgment is wrong or that a changed judgment is justified. The executable contract
 is [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
 
+Pass D now has an executable non-binding campaign-closeout path. It requires the same human adjudicator's
+complete A/B population, hidden-repeat stability, all family syntheses, every required structural disposition,
+and the current authoritative analysis run. It records candidate adjudications and their exact bases, failure
+clusters, conversational-distribution assessments, uncertainty, and recommended D5 states. The schema forces
+zero execution authority and the transaction creates no lifecycle transition, release member, or training
+exposure. See [Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md). The live relations remain empty
+until a real human completes the preceding passes.
+
 ## 5. Reviewer calibration
 
 Before reviewing production data, every model and human reviewer sees a calibration set containing:

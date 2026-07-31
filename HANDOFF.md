@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 122 tables and five views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 129 tables and five views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -63,12 +63,23 @@ checkpoint.
 
 The hidden-repeat implementation is now recorded in
 [Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) at revision
-`249a00f`. Migration 6 brings the current ledger to six migrations, 122 tables, five views, and 174 triggers.
+`249a00f`. Migration 6 took that checkpoint to six migrations, 122 tables, five views, and 174 triggers.
 Its pre-migration backup SHA-256 is
 `c914d560405642ce641570ed8794172ec3a36edc2948ed3d27bda800059b2918`. The original 12-item packet remains
 byte-identical at SHA-256 `6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`.
 All presentation/repeat rows remain zero until a real human completes Pass A; all six new public relations
-return HTTP 200. The current footprint is 29.68 MiB. Pass D adjudication remains open.
+return HTTP 200. The footprint at that checkpoint was 29.68 MiB.
+
+The final fail-closed Pass D campaign-closeout path is implemented at revision `6cd4921` and recorded in
+[Execution 08](docs/synthetic-curriculum-prd/EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md). Migration 7
+brings the canonical ledger to seven migrations, 129 tables, five views, and 186 triggers. Its pre-migration
+backup SHA-256 is `ad4afb5622f30adca5c00df4b2425805bfe5235c250c8cc11f097f267002d5e3`; migration digest is
+`d64055b6b6f1572d2a3fd1bd2f57760b6b164fe3e77aaa76be04c9cb4b7ab275`. The live preparation command fails
+at the first missing sealed Pass A review and creates zero closeout assignments. Closeouts, adjudications,
+recommended states, failure clusters, release members, and training exposures remain zero. SQL enforces
+`execution_authorized = 0`; Pass D can recommend later evidence stages but can never start them. All seven
+new relations return HTTP 200 in the public explorer. Integrity, foreign keys, and blob checks are clean; the
+project-owned footprint is 35.39 MiB. The immediate authority-bearing action remains real human Pass A.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

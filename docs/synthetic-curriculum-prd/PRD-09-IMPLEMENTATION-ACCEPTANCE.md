@@ -19,6 +19,8 @@ review form, and unratified next-step package are [PRD-12](PRD-12-D5-HUMAN-ADJUD
 disposition implementation is [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
 The blinded repeat-presentation implementation is
 [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
+The non-binding campaign-closeout implementation is
+[Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md).
 
 Done:
 
@@ -30,20 +32,25 @@ Done:
 - first experimental data boundary fixed as synthetic-only;
 - fixed parameter-count framing removed;
 - one-GPU constraint recorded;
-- D2/D5 ledger: six hash-verified migrations, 122 tables, five current/public views, 174 append-only triggers,
+- D2/D5 ledger: seven hash-verified migrations, 129 tables, five current/public views, 186 append-only triggers,
   content-addressed blobs, and clean integrity/foreign-key validation;
 - D3 canaries: 49 categories, 16 transformations, and six quarantined family blueprints;
 - D4 orchestration: structured Codex calls, exact raw artifacts, bounded/idempotent tasks, validators, usage,
   and completed-response recovery;
 - D5 generation portion: 12 GPT-5.4 calls, 48 candidates, 42 structurally valid and six retained rejections,
   with a full human-audit packet;
-- D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, and separate
-  structural-disposition evidence; versioned rubrics; append-only human submission; a deployed local-first
-  browser workspace; 18/18 corpus tests; and the first 12 Pass A assignments prepared with zero fabricated
+- D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, separate
+  structural-disposition evidence, and non-binding Pass D campaign closeout; versioned rubrics; append-only
+  human submission; a deployed local-first browser workspace; 20/20 corpus tests; and the first 12 Pass A
+  assignments prepared with zero fabricated
   judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without
   duplicating candidates or candidate reviews; responses, scores, findings, and derived stability remain
-  append-only; 18/18 corpus tests pass. The live repeat population is correctly zero before human Pass A;
+  append-only. The live repeat population is correctly zero before human Pass A;
+- D5 closeout substrate: exact A/B/repeat/C/structural/analysis evidence is frozen into a resumable Pass D
+  packet; candidate adjudication bases, failure clusters, distribution assessments, uncertainty, and
+  recommended states are append-only; SQL forces zero execution authority; live preparation fails at missing
+  Pass A and creates no assignment, lifecycle transition, release member, or training exposure;
 - D5 deterministic evidence: one current-version snapshot, 236 scoped metrics, 2,256 pair/method surface
   edges, 488 dynamic signatures, and an append-only correction for one erroneous software-revision claim;
 - GPT-5.5, training, GPU work, live Donto writes, and release remained unused during generation. A separately
@@ -54,6 +61,7 @@ Open before D5 acceptance:
 - human blind and contract-aware review of all 48 calibration candidates;
 - family synthesis for all six families and separate content/schema disposition for all six structural
   rejections;
+- non-binding campaign closeout over the complete human and deterministic evidence;
 - critic calibration, if a critic is later justified;
 - human-grounded false-accept/false-reject measurement;
 - operator decision on production generation.

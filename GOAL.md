@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED FAMILY SYNTHESIS WORKFLOW RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -64,10 +64,14 @@ The family-level Pass C and structural-rejection workflow is recorded in
 [Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md). Migration 5 brings
 the ledger exact family-synthesis and disposition basis relations. Migration 6 and
 [Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) add separate
-blinded presentation responses and reviewer-stability evidence without duplicating candidate reviews. The
-canonical ledger now has 122 tables, five views, and 174 triggers. The live prerequisite proofs leave every
-new human-evidence table, release membership, and training exposure empty. The immediate authority-bearing
-action remains real human Pass A review; implementation must not be mistaken for adjudication.
+blinded presentation responses and reviewer-stability evidence without duplicating candidate reviews.
+Migration 7 and
+[Execution 08](docs/synthetic-curriculum-prd/EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md) add the final
+non-binding campaign synthesis, exact evidence bases, failure clusters, distribution assessments, and
+recommended D5 states. The canonical ledger now has 129 tables, five views, and 186 triggers. SQL forces
+closeout execution authority to zero. The live prerequisite proofs leave every new human-evidence table,
+adjudication, release membership, and training exposure empty. The immediate authority-bearing action remains
+real human Pass A review; implementation must not be mistaken for adjudication.
 
 ---
 

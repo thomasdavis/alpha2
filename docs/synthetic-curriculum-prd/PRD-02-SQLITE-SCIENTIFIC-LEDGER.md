@@ -291,6 +291,13 @@ schema-valid tool/output path, never regex extraction from prose.
 | `family_synthesis_basis` | Exact sealed candidate reviews used by a family synthesis |
 | `structural_disposition` | Separate content/schema judgment for a structurally rejected candidate |
 | `structural_disposition_basis` | Exact validator failures and reviews supporting that disposition |
+| `campaign_closeout_assignment` | Pass D adjudicator/session/input-snapshot workflow gate |
+| `campaign_closeout` | Immutable non-binding campaign synthesis and authority acknowledgement |
+| `campaign_closeout_state` | Evidence-supported D5 states recommended for later operator decision |
+| `campaign_closeout_basis` | Exact adjudication, synthesis, repeat, structural, and analysis evidence |
+| `campaign_failure_cluster` | Campaign-level diagnosis, repair proposal, and later-call requirement |
+| `campaign_failure_cluster_member` | Exact frozen evidence assigned to a failure cluster |
+| `campaign_distribution_assessment` | Required conversational-distribution finding and evidence references |
 
 Reviews never overwrite one another. An adjudication can select an action without erasing minority analysis.
 Family synthesis is not candidate adjudication and does not imply release or training approval. The current
@@ -559,8 +566,10 @@ derivation contracts are tested.
 
 Execution 05 records the first derived-evidence materialization. Execution 06 adds the fail-closed family
 synthesis and structural-disposition evidence layer. Execution 07 separates review assignments from blinded
-repeat presentations and adds a reviewer-stability view. The canonical ledger now has six migrations, 122
-tables, five views, and 174 append-only triggers. The frozen 48-candidate snapshot contributes one
+repeat presentations and adds a reviewer-stability view. Execution 08 adds the non-binding Pass D campaign
+closeout, exact evidence bases, failure clusters, recommended states, and distribution assessments. The
+canonical ledger now has seven migrations, 129 tables, five views, and 186 append-only triggers. The frozen
+48-candidate snapshot contributes one
 authoritative surface-analysis run containing 236 scoped metrics, 2,256 pair/method similarity edges, and 488
 dynamic template signatures. A provenance-erroneous predecessor and its typed correction are intentionally
 retained, so physical row counts include both runs.
@@ -572,6 +581,12 @@ contract is recorded in [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW
 The presentation relations are also empty while the original 12-item legacy Pass A packet remains open.
 Future repeat responses remain separate from candidate reviews and are summarized by
 `review_repeat_stability`; see [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
+
+The seven campaign-closeout relations are also empty by design. Pass D cannot prepare a packet until the same
+human adjudicator has complete A/B reviews, the required hidden repeats, all family syntheses and structural
+dispositions, and one current authoritative analysis run. Its schema forces `execution_authorized = 0` and
+its write path cannot create lifecycle transitions, release members, or training exposures; see
+[Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md).
 
 This checkpoint satisfies only the bounded D5 surface-analysis requirements. It does not complete PRD-02's
 future release, token-exposure, evaluation, embedding, contamination, or checkpoint-lineage catalog.

@@ -48,11 +48,19 @@ zero Pass C assignments, syntheses, dispositions, release members, and training 
 these records with model-authored judgments labeled as human.
 
 [Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) adds the separate
-presentation-event layer required for six hidden Pass A repeats. The canonical ledger is now at six
-migrations, 122 tables, five views, and 174 triggers. Repeat responses never create extra candidate reviews;
+presentation-event layer required for six hidden Pass A repeats. Migration 6 took the ledger to six
+migrations, 122 tables, five views, and 174 triggers at that checkpoint. Repeat responses never create extra
+candidate reviews;
 the current repeat population is zero until a human seals the first Pass A session. The packet hides repeat
 identity, but the public ledger can reveal it, so reviewers must not inspect presentation lineage during a
-session. Pass D campaign adjudication remains an implementation gap.
+session.
+
+[Execution 08](docs/synthetic-curriculum-prd/EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md) adds the final
+fail-closed Pass D evidence path. The canonical ledger is now at seven migrations, 129 tables, five views, and
+186 triggers. A packet cannot prepare before the same human has complete A/B reviews, six repeat-stability
+rows, every Pass C family synthesis and structural disposition, and a current analysis run. Its schema forces
+`execution_authorized = 0`; it cannot create lifecycle transitions, release members, training exposures,
+model calls, or compute. The live proof fails at missing Pass A and leaves all Pass D/adjudication tables empty.
 
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
