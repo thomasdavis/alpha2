@@ -1,9 +1,40 @@
-# Frozen current state
+# Current state
+
+## Active result
+
+The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The bounded
+corrective run is complete and checkpoint 1,200 is selected. Final held-out evaluation, publication, and pod
+termination are in progress; do not start another training run.
+
+| Item | Current state |
+|---|---|
+| Active source | training `57c065e35c7564688726dafb404efaff952d860b`; prompt fix `cf4ad61` |
+| Initialization | clean pre-SFT base SHA `08e14fa9604bf1b46ebcd5df37933c84d2496c1d05d9e4b32ebad98792cc6049` |
+| Corrective data | 33,113 train / 1,767 development conversations |
+| Full run | 2,200 steps, complete and finite |
+| Selected checkpoint | step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` |
+| Repair development result | 48/48 nonempty, 48/48 EOS, 0 role leaks, 5 loops |
+| Final frozen result | in progress at first writing; bind before closeout |
+| Paid pod | `ksotbczj60mntk`, remove immediately after verified copy/export |
+| AlphaCorpus | paused side project; no candidate entered this run |
+
+The selected model is structurally conversational and materially better than the archived terminal checkpoint.
+It is not yet a strong semantic or philosophical model.
+
+Canonical new evidence:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/
+
+Full account:
+
+    docs/resume/CHAT-REPAIR-2026-07-31.md
+
+## Archived terminal baseline
 
 ## Program status
 
-The Alpha 60M program closed on 2026-07-30. The engineering execution succeeded; the creative objective
-did not. No new run is authorized.
+The first Alpha program closed on 2026-07-30. Its engineering execution succeeded; its creative objective
+did not. Its evidence remains immutable even though the later corrective run supersedes it as the model candidate.
 
 | Item | Frozen state |
 |---|---|
@@ -19,7 +50,7 @@ did not. No new run is authorized.
 | Terminal execution gate | PASS |
 | Terminal chat-quality gate | FAIL |
 | Alpha RunPod | removed |
-| Further training authorization | none |
+| Further training authorization | superseded by the bounded 2026-07-31 corrective run |
 
 ## Terminal quality truth
 
@@ -30,8 +61,8 @@ did not. No new run is authorized.
 - Blinded semantic review: 0 PASS, 0 BORDERLINE, 100 FAIL.
 - Closed-book QA: 0/200 exact and 0 contained.
 
-The two structurally passing outputs were not useful answers. The program must always be described as
-a mechanically successful failed-quality research artifact, never as a chat model release.
+The two structurally passing outputs were not useful answers. This remains the truth about that checkpoint and
+must not be rewritten as though the later repair had been present.
 
 ## Durable storage
 
@@ -72,10 +103,10 @@ Allowed without renewed training authorization:
 - add tests and repair code without running training;
 - prepare a proposed experiment contract.
 
-Requires explicit renewed authorization:
+Requires explicit renewed authorization after this closeout:
 
 - create or repurpose a RunPod for Alpha;
 - execute any training or continuation step;
 - run another frozen evaluation intended to tune against the frozen set;
-- change public quality claims;
+- change public quality claims without binding them to the selected checkpoint's exact evaluation;
 - delete native checkpoints, failed outputs, or canonical evidence.

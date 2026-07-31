@@ -1,4 +1,30 @@
-# CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
+# CURRENT GOAL — recover the original Alpha chat model
+
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** CORRECTIVE RUN COMPLETE; CHECKPOINT 1,200 SELECTED; FINAL EVALUATION AND PUBLICATION CLOSEOUT IN PROGRESS
+
+The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
+effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
+the active training objective.
+
+The authoritative execution record is
+[docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). The corrective run starts from
+the clean pre-SFT base, uses a compact deterministically shuffled conversation corpus, weights conversations
+equally, independently protects assistant starts and EOS, and selects by free generation rather than validation
+loss. Checkpoint 1,200 is selected at SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
+
+The selected candidate is structurally chatty but semantically immature: 48/48 development prompts received
+nonempty EOS-terminated responses with no role leaks, but five responses looped and many conceptual answers were
+shallow or wrong. The final untouched 100-chat/200-QA evaluation, native/Transformers parity, public Hub/Space
+refresh, checkpoint archive, and paid-pod termination are the remaining closeout gates. Do not launch another
+training run merely because later specializations remain desirable.
+
+Model size is not the goal. The active constraint is that experiments train safely and economically on one
+rented GPU, with scale chosen by measured conversational return and actual hardware utilization.
+
+---
+
+# PAUSED SIDE GOAL — Build Alpha's synthetic conversational-intelligence program
 
 **Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE PACKET, SESSION, AND PASS-A EVIDENCE PROVENANCE LIVE; 12 V1 ASSIGNMENTS PRESERVED AS SUPERSEDED; SAME 12 CANDIDATES READY UNDER RUBRIC V2; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 

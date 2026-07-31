@@ -3,6 +3,36 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+## 2026-07-31 chat repair
+
+Root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/
+
+Primary files:
+
+| Evidence | Purpose |
+|---|---|
+| `full-end2/checkpoint-1200.json` | selected native corrective checkpoint |
+| `full-end2/run/config.json` | full executed configuration |
+| `full-end2/run/repair-contract.json` | exact source, input hashes, and intervention contract |
+| `full-end2/run/metrics.jsonl` | complete 2,200-step trajectory |
+| `full-end2/eval-step-*/` | corrected free-generation comparisons at steps 1,200–2,200 |
+| `full-end2/nvidia-gate/` | exact 46/46 NVIDIA assertion evidence |
+| `full-end2/hf-alpha-60m-chat-repair-1200/` | standard six-file portable export |
+| `final-heldout/` | untouched 100-chat/200-QA result after verified copy |
+
+Selected checkpoint SHA-256:
+
+    399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec
+
+Corrective corpus root:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/
+
+The corpus manifest binds 33,113 train and 1,767 development conversations. No AlphaCorpus candidate was used.
+See `CHAT-REPAIR-2026-07-31.md` for the prompt-boundary diagnosis and honest output examples.
+
 ## Terminal run
 
 Root:

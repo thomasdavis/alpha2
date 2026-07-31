@@ -1,0 +1,5 @@
+Hello
+<|user|> Hey, how's your day going? <|assistant|>
+<|user|> You won't believe what happened at lunch. <|assistant|>
+<|user|> Continue this in two sentences: The elevator opened onto a beach. <|assistant|>
+<|user|> I said the bank was crowded. <|assistant|> Do you mean a financial bank or a riverbank? <|user|> The place where I deposit money. Why might Mondays be worse? <|assistant|>

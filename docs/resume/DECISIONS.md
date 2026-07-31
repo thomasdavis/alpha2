@@ -105,6 +105,9 @@ repository revision/dirty count, generation/training activity, project-owned sto
 gate. The system timer is `alpha-corpus-discord-progress.timer`. It may not turn structural validity into a
 quality claim or imply that training/GPU work is active when it is not.
 
+The timer was disabled and stopped on 2026-07-31 when the operator paused AlphaCorpus. This preserves the
+historical authorization without continuing irrelevant side-project posts during chat-model work.
+
 ## 2026-07-30 — Public read-only Alpha Corpus explorer
 
 The operator explicitly authorized publication of the complete Alpha Corpus SQLite ledger at
@@ -116,6 +119,36 @@ Public visibility does not change scientific stage. Generated, rejected, reviewe
 training-exposed records remain separate. In particular, the current 48 calibration candidates remain
 quarantined pending human conceptual adjudication. This decision authorizes the read-only web publication and
 its supporting deployment; it does not authorize more generation, model training, GPU spend, or Donto writes.
+
+## 2026-07-31 — Original chatty-model goal restored
+
+The operator paused AlphaCorpus and explicitly restored the original model goal, funded additional RunPod work,
+and authorized research followed by a bounded corrective training run. This superseded the 2026-07-30 no-run
+decision only for the recorded repair experiment. AlphaCorpus remains preserved and public but is a side project.
+
+The model's size is not a benchmark. Experiments should remain small enough to train on one rented GPU, while a
+larger GPU or model is allowed when the planned workload can use it and the measured gain justifies the cost.
+
+## 2026-07-31 — Select by free conversation, not held-out loss
+
+The corrective run used deterministic epoch shuffling, equal conversation weighting, an 8x multiplier on the
+first four assistant content tokens, and independent 2x EOS weighting. Checkpoint 1,200 is selected because it
+gave the strongest aggregate free-generation trade-off, despite later checkpoints reaching lower validation
+loss. Later loss alone cannot override stopping, repetition, role, and qualitative conversation evidence.
+
+## 2026-07-31 — Generation prompts end exactly at the assistant marker
+
+The byte-BPE training boundary gives the first assistant content token ownership of its leading space. A literal
+space appended after terminal `<|assistant|>` becomes a separate out-of-distribution token. Generation-only
+prompts therefore end exactly at `<|assistant|>`; historical assistant turns still retain a space before known
+content. Commit `cf4ad61` binds this rule in evaluator, API, suite builder, verifier, and HF template tests.
+
+## 2026-07-31 — Discord remains improvement-only for model outputs
+
+One post was made after corrected checkpoint 1,200 demonstrated a genuine structural improvement and included
+exact before/after outputs, the reason for improvement, aggregate results, and remaining semantic failures. No
+later checkpoint earned another post. AlphaCorpus's separate factual-progress timer does not authorize routine
+model-training posts.
 
 ## Future supersession requirements
 

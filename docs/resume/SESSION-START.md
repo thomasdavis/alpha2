@@ -8,6 +8,7 @@ resume request is not permission to spend money or start training.
 1. Confirm the working directory is /mnt/donto-data/workspace/alpha2.
 2. Read, in order:
    - docs/resume/README.md
+   - docs/resume/CHAT-REPAIR-2026-07-31.md
    - docs/resume/CURRENT-STATE.md
    - docs/resume/DECISIONS.md
    - HANDOFF.md
@@ -18,7 +19,13 @@ resume request is not permission to spend money or start training.
        git log -5 --oneline --decorate
        git remote -v
 
-4. Verify the local recovery bundle without copying or deleting it:
+4. Verify the selected corrective checkpoint, then the older recovery bundle if historical reconstruction is
+   required:
+
+       sha256sum /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/checkpoint-1200.json
+
+   The selected SHA-256 must be
+   `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
 
        cd /mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730
        sha256sum -c MANIFEST.sha256
@@ -36,15 +43,16 @@ resume request is not permission to spend money or start training.
 
        runpodctl pod list
 
-   Never stop, remove, signal, or reuse a pod owned by another project. At closeout the remaining live
-   pod belonged to Wajarri, not Alpha.
+   Never stop, remove, signal, or reuse a pod owned by another project. The 2026-07-31 repair pod was
+   `ksotbczj60mntk`; the final closeout must verify that exact pod has been removed.
 
 ## Authorization checkpoint
 
-Before any Alpha pod is created, the user must explicitly authorize a new run after being reminded that:
+Before any later Alpha pod is created, the user must explicitly authorize a new run after being reminded that:
 
-- the terminal model failed D3;
-- no current continuation contract exists;
+- the archived terminal model failed D3;
+- the later selected corrective model is conversational but still loops and answers shallowly;
+- the completed corrective contract does not authorize another run;
 - another unmodified SFT epoch is not an approved repair;
 - native recovery state is already safe locally and on Hugging Face;
 - a bounded experiment and maximum spend must be agreed first.

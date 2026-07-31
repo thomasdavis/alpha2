@@ -1,6 +1,51 @@
-# HANDOFF — Alpha Corpus D5 review pipeline plus calibration and Alpha 60M archive, state as of 2026-07-31
+# HANDOFF — Alpha chat repair active; AlphaCorpus paused, state as of 2026-07-31
 
-## Current planning goal
+## ACTIVE GOAL — make the original Alpha model reliably chatty
+
+The operator explicitly returned the project to the original product goal on 2026-07-31: Alpha should be a
+small, natural conversational model. AlphaCorpus remains a valuable side project, but its D5 review workflow is
+paused and is not the active model-training objective. Do not restart corpus generation, human-review pipeline
+work, or public explorer work merely because the historical section below is detailed.
+
+The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). The short version:
+
+- The archived terminal checkpoint really did have an answer-initiation failure, but the evaluator, native API,
+  Hugging Face template, and Space also appended an erroneous generation-only space after `<|assistant|>`.
+  With byte-level BPE that created a standalone token at a boundary absent from SFT and could turn otherwise
+  viable checkpoints into code-fence/forum attractors. Commit `cf4ad61` fixes every generation path and adds
+  regressions; historical assistant turns retain their necessary content-leading space.
+- A compact 34,880-conversation corrective corpus was built from existing staged sources, deterministically
+  shuffled and split. The trainer now weights conversations equally, gives the first four assistant content
+  tokens an 8x multiplier, gives terminal EOS 2x weight, and never counts EOS as an answer-start token.
+- The full corrective run completed on a single RTX 4090 from the clean pre-SFT base. Checkpoint 1,200 is the
+  selected candidate: SHA-256 `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
+  On the 48-case repair-development suite it produced 48/48 nonempty, 48/48 EOS-terminated responses, no role
+  leaks, and five repetition loops. Examples include “It’s going well, thanks. How about you?”, “What happened?”,
+  and “The elevator opened onto a beach.” This is a genuine structural recovery, not semantic mastery.
+- Later checkpoints did not improve the overall conversational trade-off. Validation loss was lowest later, but
+  free generation became more repetitive or failed to stop, so checkpoint selection correctly followed actual
+  generation rather than teacher-forced loss.
+- The untouched 100-chat/200-QA final evaluation, standard Hugging Face export, publication refresh, and service
+  cutover are the remaining closeout steps. The paid pod is `ksotbczj60mntk` at $0.69/hr and must be removed as
+  soon as those artifacts are safely copied and verified.
+
+Current local evidence root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/
+
+Current corpus root:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/
+
+The generated replies are often shallow, vague, or wrong, and five of 48 development cases still loop. Do not
+describe this candidate as philosophically intelligent or generally capable. The recovered capability is the
+more basic prerequisite: it starts, responds in a conversational register, and usually stops.
+
+---
+
+## PAUSED SIDE PROJECT — AlphaCorpus D5 review pipeline
+
+### Previous planning goal
 
 The current project goal is the canonical suite at
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md). It defines Alpha as a small,
@@ -172,9 +217,9 @@ authority-bearing action remains real human Pass A.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.
-The public read-only `/corpus` publication is the explicit exception recorded on 2026-07-30. The factual progress
-timer `alpha-corpus-discord-progress.timer` is enabled every two hours; its first post returned HTTP 204 at
-09:09 UTC. GPT-5.6-sol is the counsel tier and GPT-5.4 is the initial worker. New corpus work pauses if the
+The public read-only `/corpus` publication is the explicit exception recorded on 2026-07-30. The former factual
+progress timer `alpha-corpus-discord-progress.timer` was disabled and stopped when AlphaCorpus was paused on
+2026-07-31; its first historical post returned HTTP 204 at 09:09 UTC. GPT-5.6-sol is the counsel tier and GPT-5.4 is the initial worker. New corpus work pauses if the
 project-owned artifact tree exceeds 15 GiB; this does not create a global disk rule.
 
 ---

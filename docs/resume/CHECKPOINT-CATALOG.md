@@ -1,5 +1,22 @@
 # Checkpoint catalog and preservation contract
 
+## Selected chat-repair checkpoint
+
+| Native file | Step | Meaning | SHA-256 |
+|---|---:|---|---|
+| `alpha-chat-repair-20260731/full-end2/checkpoint-1200.json` | 1,200 corrective | selected free-generation trade-off after clean-base chat repair | `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` |
+
+Despite the historical `.json` suffix, this is the native Alpha checkpoint container and carries parameters,
+optimizer, RNG, tokenizer, and step state. It is the preferred conversational restart point after the 2026-07-31
+experiment. It must be added to the public native recovery archive before the paid pod is removed.
+
+Canonical mounted path:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/checkpoint-1200.json
+
+Its standard inference-only Hugging Face export is beside it under
+`full-end2/hf-alpha-60m-chat-repair-1200/` and is not a lossless training restart.
+
 ## Canonical native recovery points
 
 | Native file in archive | Step | Meaning | SHA-256 |

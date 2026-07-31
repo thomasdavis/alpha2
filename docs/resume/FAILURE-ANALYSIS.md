@@ -2,17 +2,40 @@
 
 ## Short answer
 
-The model did not learn a stable policy for beginning an assistant response. Teacher-forced SFT made it
-reasonably good at predicting tokens inside an answer after the correct answer prefix was already
-present, but the first token after the assistant marker represented only a tiny fraction of the loss.
-At inference, EOS often won that first-token contest. Greedy decoding then stopped immediately.
+There were two failures, not one.
+
+First, the model did not learn a stable policy for beginning an assistant response. Teacher-forced SFT made it
+reasonably good at predicting tokens inside an answer after the correct answer prefix was already present, but
+the first token after the assistant marker represented only a tiny fraction of the loss. At inference, EOS often
+won that first-token contest and greedy decoding stopped immediately.
+
+Second, every generation path appended a literal space after the final `<|assistant|>` marker. Alpha's byte BPE
+normally absorbs that space into the first content token. At a generation boundary the literal space instead
+became a standalone token absent from the SFT boundary, activating code-fence and forum-like modes in otherwise
+viable corrective checkpoints.
 
 Occasionally a content token narrowly beat EOS. In those cases the model entered a memorized local
 pattern and could produce a superficially conversational sentence. Small prompt or checkpoint changes
 could flip that winner, which made quality look intermittent.
 
-This is an evidence-backed diagnosis, not a causal ablation. No new model run was performed after
-closeout.
+The 2026-07-31 corrective run supplied causal evidence for the training diagnosis: deterministic shuffling,
+equal conversation weighting, explicit first-content-token weighting, and independent EOS weighting produced
+48/48 nonempty development responses from the clean base. The prompt diagnosis was isolated on the same
+checkpoint: changing only `<|assistant|> ` to `<|assistant|>` changed a code-fence loop into an ordinary response
+and EOS under both fast and reference inference. See `CHAT-REPAIR-2026-07-31.md`.
+
+## Generation-boundary correction
+
+| Text | Token IDs | Meaning |
+|---|---|---|
+| `<|assistant|>` | `[257]` | correct terminal generation marker |
+| `<|assistant|> ` | `[257, 32]` | erroneous standalone space token |
+| `<|assistant|> Hello` | `[257, 400, 11713]` | valid known content with a space-owning first token |
+
+Commit `cf4ad61` fixes the frozen evaluator, QA evaluator, native API, frozen-suite builder/verifier, and exported
+Hugging Face chat template. Historical assistant turns still need their space before known content. The original
+terminal outputs remain authentic evidence of the previously published runtime, but that 100-case result mixed
+checkpoint weakness with this protocol defect and cannot be treated as a clean model-only estimate.
 
 ## Terminal evidence
 
