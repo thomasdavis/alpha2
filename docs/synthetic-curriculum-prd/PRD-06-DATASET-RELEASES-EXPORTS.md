@@ -46,7 +46,8 @@ Shared prefixes, chosen and rejected branches, and explicit relation/delta prove
 ### 3.6 Evaluation package
 
 Public development/evaluation subset with executable or adjudicated contracts. Private evaluation remains
-absent from public artifacts until retirement.
+absent from public artifacts until retirement. PRD-13 specifies how the public ledger can expose all evaluation
+metadata tables and cryptographic commitments without serving private prompt or answer plaintext.
 
 ### 3.7 Negative and disagreement package
 

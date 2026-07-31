@@ -78,6 +78,14 @@ events retain separate envelope and submission hashes. No public redeploy was ne
 workspace exposes only the already-protected A/B instrument. The canonical SQLite main-file SHA remains
 `7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce`; every human-evidence count remains zero.
 
+The future D6 substrate is now specified—but not executed—in
+[PRD-13](docs/synthetic-curriculum-prd/PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md). The live schema currently has
+only a preliminary `evaluation_output` placeholder. PRD-13 defines the missing evaluation suite, family, item,
+expectation, review, metric, run, output, contamination, split-closure, human-study, and private-payload
+relations. It preserves the operator's public-all-tables goal by publishing safe metadata and commitments while
+keeping private evaluation plaintext in an unserved encrypted vault. Do not migrate or populate D6 before the
+human D5 closeout and a bounded operator decision.
+
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
 `analysis_run_a32f01644e1a96a9ea601b35b35626aa` is tied to exact revision

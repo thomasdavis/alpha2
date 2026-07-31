@@ -388,3 +388,7 @@ AlphaPact is ready to freeze only when:
 - benchmark model failures demonstrate a useful difficulty range;
 - the exact evaluation harness and decoder are versioned;
 - no benchmark content enters the primary training corpus.
+
+The physical freeze, private-payload, contamination-closure, and evaluation-run requirements that enforce
+these criteria are specified in [PRD-13](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md). This benchmark definition
+does not itself authorize D6 implementation or item authoring before D5 closeout.

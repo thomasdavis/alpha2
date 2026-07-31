@@ -91,6 +91,12 @@ actor/rubric requirements and write no raw artifact before the envelope passes. 
 22/22 focused corpus suite and optimized web build; the canonical ledger remains byte-identical with zero
 human evidence.
 
+[PRD-13](docs/synthetic-curriculum-prd/PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md) is the implementation-ready
+contract for the still-locked D6 evaluation substrate. It resolves the public-all-tables/private-benchmark
+tension by keeping metadata, lineage, digests, policies, and safe aggregates in public SQLite while private
+prompt/answer plaintext remains in a separately verified encrypted vault until retirement. Do not implement or
+populate D6 merely because this PRD exists: D5 human closeout and a bounded operator decision remain required.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

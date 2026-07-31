@@ -58,6 +58,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 28. [Execution 10 — D5 campaign-wide Pass B blindness gate](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md)
 29. [Execution 11 — D5 immutable review-packet envelope](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md)
 30. [Execution 12 — D5 immutable-envelope binding for every human packet](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md)
+31. [PRD-13 — Evaluation firewall, private vault, and freeze protocol](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md)
 
 ## Authority and supersession
 

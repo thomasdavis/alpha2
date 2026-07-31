@@ -27,6 +27,10 @@ The campaign-wide executable Pass B blindness gate is
 [Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
 The exact exported-packet envelope gate for browser drafts and local human submissions is
 [Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md).
+The generalization of that gate to every A/B/C/D human packet is
+[Execution 12](EXECUTION-12-D5-ALL-PACKET-ENVELOPE-BINDING.md).
+The implementation contract for the still-locked D6 evaluation substrate is
+[PRD-13](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md).
 
 Done:
 
@@ -217,6 +221,7 @@ D6 evaluation construction and D7 pilot generation, separately.
 ### Work
 
 - author independent evaluation families;
+- implement the public-ledger/private-vault firewall in PRD-13 before storing private item plaintext;
 - establish authority type and adjudication;
 - create public development and sealed private portions;
 - benchmark humans, strong models, and available small baselines;
@@ -227,6 +232,8 @@ D6 evaluation construction and D7 pilot generation, separately.
 ### Acceptance
 
 - family-level independence and leakage audit pass;
+- every public evaluation table remains browseable while private prompt/answer plaintext remains absent from
+  the public SQLite file, blob tree, HTTP responses, logs, and training-visible artifacts;
 - human agreement supports the adjudicable subset;
 - set-valued cases preserve legitimate disagreement;
 - terminology-scrub and false-bridge controls work;

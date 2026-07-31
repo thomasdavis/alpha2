@@ -389,6 +389,11 @@ when per-token causal queries justify its size.
 | `evaluation_failure` | Empty, loop, timeout, invalid decoder, contamination |
 | `statistical_analysis` | Model/specification, family clusters, intervals |
 
+The D6 materialization contract is [PRD-13](PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md). Private evaluation
+payloads use public commitments and encrypted external vault objects: their metadata, lineage, hashes,
+policies, runs, and safe aggregates remain visible in the public all-table ledger, but prompt and answer
+plaintext never enters the publicly served SQLite file before retirement.
+
 ### 5.13 Artifact and event substrate
 
 | Table | Purpose |

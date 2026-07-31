@@ -109,6 +109,13 @@ all population, candidate, family, repeat, and analysis evidence remains bound. 
 zero scientific and raw-submission rows. The focused corpus suite passes 22/22, the optimized web build passes,
 and the canonical SQLite hash and zero-human-evidence state remain unchanged.
 
+[PRD-13](docs/synthetic-curriculum-prd/PRD-13-EVALUATION-FIREWALL-AND-FREEZE.md) now specifies the D6 evaluation
+firewall without claiming D6 execution. It defines the suite/item/review/metric/run/contamination/human-study
+tables, exact freeze and run protocols, family-level leakage closure, and adversarial acceptance tests. The
+public ledger will retain complete safe metadata and ciphertext commitments so all tables remain browseable;
+private prompt and answer plaintext will stay in a separate encrypted vault until retirement. The D5 human
+closeout and a bounded operator decision still precede implementation or population.
+
 ---
 
 # ARCHIVED GOAL — Bring Alpha back to life: a from-scratch chatty model, trained by Alpha's own code, published on Hugging Face
