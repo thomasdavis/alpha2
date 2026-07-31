@@ -209,6 +209,7 @@ export function parseHumanReviewPacketText(text: string): HumanReviewPacket {
   }
   for (const assignment of parsed.assignments) {
     if (!isRecord(assignment) || typeof assignment.assignmentId !== "string"
+      || ("presentationId" in assignment && typeof assignment.presentationId !== "string")
       || typeof assignment.opaqueItemId !== "string" || typeof assignment.candidateContentSha256 !== "string"
       || !("candidate" in assignment) || !isRecord(assignment.response)) {
       throw new Error("Human-review submission contains an invalid assignment");

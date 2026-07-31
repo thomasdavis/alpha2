@@ -125,6 +125,7 @@ export interface HumanReviewResponse {
 
 export interface HumanReviewPacketAssignment {
   assignmentId: string;
+  presentationId?: string;
   opaqueItemId: string;
   candidateContentSha256: string;
   candidate: JsonValue;

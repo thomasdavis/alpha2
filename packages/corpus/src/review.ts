@@ -67,6 +67,17 @@ interface AssignmentRow extends CandidateRow {
   blindness: Record<string, unknown>;
 }
 
+interface PacketAssignmentRow extends AssignmentRow {
+  presentationId?: string;
+  opaqueItemId?: string;
+  presentationKind?: "primary" | "hidden_repeat";
+  sourceReviewId?: string;
+}
+
+interface RepeatCandidateRow extends AssignmentRow {
+  sourceReviewId: string;
+}
+
 export interface PrepareHumanReviewOptions {
   campaignSlug: string;
   reviewerAlias: string;
@@ -90,6 +101,8 @@ export interface HumanReviewStatus {
   assignments: Record<string, number>;
   reviews: Record<string, number>;
   humanReviewArtifacts: number;
+  presentations: Record<string, number>;
+  repeatStabilityRows: number;
   candidateStatuses: Record<string, number>;
   releaseMembers: number;
   trainingExposures: number;
@@ -229,6 +242,105 @@ async function openAssignments(
   });
 }
 
+async function openPresentationAssignments(
+  ledger: Ledger,
+  campaign: string,
+  actorId: string,
+  rubricVersionId: string,
+  pass: HumanReviewPass
+): Promise<PacketAssignmentRow[]> {
+  const result = await ledger.client.execute({
+    sql: `SELECT rp.id AS presentation_id, rp.opaque_item_id, rp.presentation_kind, rp.source_review_id,
+                 rp.review_assignment_id AS assignment_id, ra.blindness_json,
+                 cc.candidate_version_id, cc.family_slug, cc.kind, cc.status,
+                 cc.content_json, cc.hidden_contract_json, cc.content_sha256,
+                 rps.id AS session_id, rps.seed
+          FROM review_presentation rp
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          JOIN review_assignment ra ON ra.id = rp.review_assignment_id
+          JOIN corpus_candidate_current cc ON cc.candidate_version_id = ra.candidate_version_id
+          JOIN generation_campaign gc ON gc.id = cc.campaign_id
+          WHERE gc.slug = ? AND rps.reviewer_actor_id = ? AND rps.rubric_version_id = ?
+            AND rps.review_pass = ? AND rps.status = 'assigned' AND rp.status = 'assigned'
+          ORDER BY rp.ordinal`,
+    args: [campaign, actorId, rubricVersionId, pass]
+  });
+  return result.rows.map((raw) => {
+    const row = raw as Record<string, unknown>;
+    const blindness = parseJsonRecord(String(row["blindness_json"]), "assignment blindness");
+    blindness["sessionId"] = String(row["session_id"]);
+    blindness["seed"] = String(row["seed"]);
+    return {
+      ...candidateFromRow(row),
+      assignmentId: String(row["assignment_id"]),
+      blindness,
+      presentationId: String(row["presentation_id"]),
+      opaqueItemId: String(row["opaque_item_id"]),
+      presentationKind: String(row["presentation_kind"]) as "primary" | "hidden_repeat",
+      sourceReviewId: row["source_review_id"] === null ? undefined : String(row["source_review_id"])
+    };
+  });
+}
+
+async function completedRepeatCount(
+  ledger: Ledger,
+  campaign: string,
+  actorId: string,
+  rubricVersionId: string
+): Promise<number> {
+  const result = await ledger.client.execute({
+    sql: `SELECT COUNT(*) AS count
+          FROM review_presentation rp
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          JOIN generation_campaign gc ON gc.id = rps.campaign_id
+          WHERE gc.slug = ? AND rps.reviewer_actor_id = ? AND rps.rubric_version_id = ?
+            AND rps.review_pass = 'A' AND rp.presentation_kind = 'hidden_repeat'`,
+    args: [campaign, actorId, rubricVersionId]
+  });
+  return Number(result.rows[0]!["count"]);
+}
+
+async function selectRepeatCandidates(
+  ledger: Ledger,
+  campaign: string,
+  actorId: string,
+  rubricVersionId: string,
+  limit: number,
+  seed: string
+): Promise<RepeatCandidateRow[]> {
+  if (limit <= 0) return [];
+  const result = await ledger.client.execute({
+    sql: `SELECT ra.id AS assignment_id, ra.blindness_json, r.id AS source_review_id,
+                 cc.candidate_version_id, cc.family_slug, cc.kind, cc.status,
+                 cc.content_json, cc.hidden_contract_json, cc.content_sha256
+          FROM review_assignment ra
+          JOIN review r ON json_extract(r.rationale, '$.assignmentId') = ra.id
+          JOIN corpus_candidate_current cc ON cc.candidate_version_id = ra.candidate_version_id
+          JOIN generation_campaign gc ON gc.id = cc.campaign_id
+          WHERE gc.slug = ? AND ra.reviewer_actor_id = ? AND ra.rubric_version_id = ?
+            AND ra.status = 'completed' AND json_extract(ra.blindness_json, '$.pass') = 'A'
+            AND json_extract(r.rationale, '$.pass') = 'A'
+            AND NOT EXISTS (
+              SELECT 1 FROM review_presentation prior
+              WHERE prior.review_assignment_id = ra.id AND prior.presentation_kind = 'hidden_repeat'
+            )`,
+    args: [campaign, actorId, rubricVersionId]
+  });
+  return result.rows
+    .map((raw) => {
+      const row = raw as Record<string, unknown>;
+      return {
+        ...candidateFromRow(row),
+        assignmentId: String(row["assignment_id"]),
+        blindness: parseJsonRecord(String(row["blindness_json"]), "assignment blindness"),
+        sourceReviewId: String(row["source_review_id"])
+      };
+    })
+    .sort((left, right) => seededRank(seed, `${left.candidateVersionId}:repeat`)
+      .localeCompare(seededRank(seed, `${right.candidateVersionId}:repeat`)))
+    .slice(0, limit);
+}
+
 async function selectCandidates(
   ledger: Ledger,
   campaign: string,
@@ -274,7 +386,8 @@ function packetInstructions(pass: HumanReviewPass): string[] {
     return [
       "Review only the model-visible messages. Do not inspect the public ledger or hidden contract for this item first.",
       "Fill every response field. Use scores 0-4; quote exact evidence for findings.",
-      "Judge conceptual plausibility and conversational quality separately. Seal Pass A before preparing Pass B."
+      "Judge conceptual plausibility and conversational quality separately. Seal Pass A before preparing Pass B.",
+      "A later session may contain blinded consistency presentations. Review every item independently; do not inspect presentation lineage."
     ];
   }
   return [
@@ -363,9 +476,14 @@ export async function prepareHumanReviewPacket(
   await campaignId(ledger, options.campaignSlug);
   const actorId = await ensureHumanActor(ledger, options.reviewerAlias);
   const rubricVersionId = await ensureHumanReviewRubric(ledger);
-  let assignments = await openAssignments(
+  let assignments: PacketAssignmentRow[] = await openPresentationAssignments(
     ledger, options.campaignSlug, actorId, rubricVersionId, options.pass
   );
+  if (assignments.length === 0) {
+    assignments = await openAssignments(
+      ledger, options.campaignSlug, actorId, rubricVersionId, options.pass
+    );
+  }
   const resumed = assignments.length > 0;
   let sessionId: string;
   let seed: string;
@@ -375,48 +493,129 @@ export async function prepareHumanReviewPacket(
   } else {
     sessionId = `review_session_${randomUUID()}`;
     seed = options.seed ?? randomUUID();
-    const candidates = await selectCandidates(
+    const primaryPool = await selectCandidates(
       ledger, options.campaignSlug, actorId, rubricVersionId, options.pass, options.limit, seed
     );
-    if (candidates.length === 0) {
+    let repeats: RepeatCandidateRow[] = [];
+    if (options.pass === "A") {
+      const repeatCount = await completedRepeatCount(
+        ledger, options.campaignSlug, actorId, rubricVersionId
+      );
+      const repeatRemaining = Math.max(0, 6 - repeatCount);
+      const repeatSlots = primaryPool.length > 0
+        ? Math.min(2, repeatRemaining, Math.max(0, options.limit - 1))
+        : Math.min(repeatRemaining, options.limit);
+      repeats = await selectRepeatCandidates(
+        ledger, options.campaignSlug, actorId, rubricVersionId, repeatSlots, seed
+      );
+    }
+    const candidates = primaryPool.slice(0, Math.max(0, options.limit - repeats.length));
+    if (candidates.length === 0 && repeats.length === 0) {
       throw new Error(`No candidates are eligible for Pass ${options.pass}`);
     }
     const ts = now();
     const statements: Array<{ sql: string; args: InValue[] }> = [];
-    assignments = candidates.map((candidate, index) => {
-      const assignmentId = stableId(
-        "assignment", `${candidate.candidateVersionId}:${actorId}:${rubricVersionId}:${options.pass}`
-      );
+    const entries: Array<{
+      candidate: CandidateRow | RepeatCandidateRow;
+      assignmentId: string;
+      presentationKind: "primary" | "hidden_repeat";
+      sourceReviewId?: string;
+    }> = [
+      ...candidates.map((candidate) => ({
+        candidate,
+        assignmentId: stableId(
+          "assignment", `${candidate.candidateVersionId}:${actorId}:${rubricVersionId}:${options.pass}`
+        ),
+        presentationKind: "primary" as const
+      })),
+      ...repeats.map((candidate) => ({
+        candidate,
+        assignmentId: candidate.assignmentId,
+        presentationKind: "hidden_repeat" as const,
+        sourceReviewId: candidate.sourceReviewId
+      }))
+    ];
+    entries.sort((left, right) => seededRank(
+      seed, `${left.candidate.candidateVersionId}:${left.presentationKind}:${left.sourceReviewId ?? ""}`
+    ).localeCompare(seededRank(
+      seed, `${right.candidate.candidateVersionId}:${right.presentationKind}:${right.sourceReviewId ?? ""}`
+    )));
+    const inputSnapshotSha256 = sha256Bytes(canonicalJson(entries.map((entry) => ({
+      assignmentId: entry.assignmentId,
+      candidateVersionId: entry.candidate.candidateVersionId,
+      candidateContentSha256: entry.candidate.contentSha256,
+      presentationKind: entry.presentationKind,
+      sourceReviewId: entry.sourceReviewId ?? null
+    })) as unknown as JsonValue));
+    const resolvedCampaignId = await campaignId(ledger, options.campaignSlug);
+    statements.push({
+      sql: `INSERT INTO review_presentation_session
+            (id, campaign_id, reviewer_actor_id, rubric_version_id, review_pass, seed,
+             input_snapshot_sha256, requested_presentations, repeat_presentations, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'assigned', ?, ?)`,
+      args: [sessionId, resolvedCampaignId, actorId, rubricVersionId, options.pass, seed,
+        inputSnapshotSha256, entries.length, repeats.length, ts, ts]
+    });
+    assignments = entries.map((entry, index) => {
       const blindness = {
         pass: options.pass,
         sessionId,
         seed,
         presentationIndex: index + 1,
-        hiddenRepeat: false,
+        hiddenRepeat: entry.presentationKind === "hidden_repeat",
         visibleFields: options.pass === "A" ? ["kind", "messages"] : ["all_candidate_and_contract_fields"],
         hiddenFields: options.pass === "A"
           ? ["identity", "family", "title", "difficulty", "generator_notes", "response_policy", "lenses", "transformation", "hidden_contract", "structural_status", "other_reviews"]
           : ["other_reviews"]
       };
+      if (entry.presentationKind === "primary") {
+        statements.push({
+          sql: `INSERT INTO review_assignment
+                (id, candidate_version_id, reviewer_actor_id, rubric_version_id, blindness_json,
+                 status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)`,
+          args: [entry.assignmentId, entry.candidate.candidateVersionId, actorId, rubricVersionId,
+            canonicalJson(blindness as unknown as JsonValue), ts, ts]
+        });
+      }
+      const presentationId = stableId(
+        "presentation", `${sessionId}:${entry.assignmentId}:${entry.presentationKind}`
+      );
+      const opaqueItemId = stableId(
+        "opaque", `${sessionId}:${entry.candidate.candidateVersionId}:${presentationId}`
+      ).slice(0, 19);
       statements.push({
-        sql: `INSERT INTO review_assignment
-              (id, candidate_version_id, reviewer_actor_id, rubric_version_id, blindness_json,
-               status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?)`,
-        args: [assignmentId, candidate.candidateVersionId, actorId, rubricVersionId,
-          canonicalJson(blindness as unknown as JsonValue), ts, ts]
+        sql: `INSERT INTO review_presentation
+              (id, session_id, review_assignment_id, presentation_kind, source_review_id, ordinal,
+               opaque_item_id, candidate_content_sha256, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assigned', ?, ?)`,
+        args: [presentationId, sessionId, entry.assignmentId, entry.presentationKind,
+          entry.sourceReviewId ?? null, index + 1, opaqueItemId, entry.candidate.contentSha256, ts, ts]
       });
-      return { ...candidate, assignmentId, blindness };
+      return {
+        ...entry.candidate,
+        assignmentId: entry.assignmentId,
+        blindness,
+        presentationId,
+        opaqueItemId,
+        presentationKind: entry.presentationKind,
+        sourceReviewId: entry.sourceReviewId
+      };
     });
     await ledger.client.batch(statements, "write");
   }
-  const packetAssignments: HumanReviewPacketAssignment[] = assignments.map((assignment) => ({
-    assignmentId: assignment.assignmentId,
-    opaqueItemId: stableId("opaque", `${sessionId}:${assignment.candidateVersionId}`).slice(0, 19),
-    candidateContentSha256: assignment.contentSha256,
-    candidate: visibleCandidate(options.pass, assignment),
-    response: emptyHumanReviewResponse(options.pass)
-  }));
+  const packetAssignments: HumanReviewPacketAssignment[] = assignments.map((assignment) => {
+    const packetAssignment: HumanReviewPacketAssignment = {
+      assignmentId: assignment.assignmentId,
+      opaqueItemId: assignment.opaqueItemId
+        ?? stableId("opaque", `${sessionId}:${assignment.candidateVersionId}`).slice(0, 19),
+      candidateContentSha256: assignment.contentSha256,
+      candidate: visibleCandidate(options.pass, assignment),
+      response: emptyHumanReviewResponse(options.pass)
+    };
+    if (assignment.presentationId !== undefined) packetAssignment.presentationId = assignment.presentationId;
+    return packetAssignment;
+  });
   const createdAt = now();
   const packet: HumanReviewPacket = {
     schemaVersion: 1,
@@ -449,7 +648,14 @@ export async function prepareHumanReviewPacket(
 export async function submitHumanReviewPacket(
   ledger: Ledger,
   path: string
-): Promise<{ submitted: number; pass: HumanReviewPass; sessionId: string; submissionSha256: string }> {
+): Promise<{
+  submitted: number;
+  primaryReviews: number;
+  repeatResponses: number;
+  pass: HumanReviewPass;
+  sessionId: string;
+  submissionSha256: string;
+}> {
   const submissionBytes = readFileSync(resolve(path));
   const packet = parseHumanReviewPacketText(submissionBytes.toString("utf8"));
   const actorId = await ensureHumanActor(ledger, packet.reviewerAlias);
@@ -464,26 +670,60 @@ export async function submitHumanReviewPacket(
     assignment: HumanReviewPacketAssignment;
     candidateVersionId: string;
     candidateId: string;
+    presentationId?: string;
+    presentationKind: "legacy_primary" | "primary" | "hidden_repeat";
+    sourceReviewId?: string;
   }> = [];
   for (const assignment of packet.assignments) {
     if (assignmentIds.has(assignment.assignmentId)) throw new Error(`Duplicate assignment ${assignment.assignmentId}`);
     assignmentIds.add(assignment.assignmentId);
     const responseErrors = humanReviewResponseErrors(packet.pass, assignment.response, assignment.opaqueItemId);
     if (responseErrors.length > 0) throw new Error(responseErrors[0]);
-    const stored = await ledger.client.execute({
-      sql: `SELECT ra.candidate_version_id, ra.status, ra.blindness_json, cv.content_sha256, cv.candidate_id,
-                   ra.reviewer_actor_id, ra.rubric_version_id
-            FROM review_assignment ra
-            JOIN candidate_version cv ON cv.id = ra.candidate_version_id
-            WHERE ra.id = ?`,
-      args: [assignment.assignmentId]
-    });
+    const stored = assignment.presentationId === undefined
+      ? await ledger.client.execute({
+        sql: `SELECT ra.candidate_version_id, ra.status AS assignment_status, ra.blindness_json,
+                     cv.content_sha256, cv.candidate_id, ra.reviewer_actor_id, ra.rubric_version_id,
+                     NULL AS presentation_id, 'legacy_primary' AS presentation_kind,
+                     NULL AS source_review_id, NULL AS presentation_status, NULL AS presentation_session_id
+              FROM review_assignment ra
+              JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+              WHERE ra.id = ?`,
+        args: [assignment.assignmentId]
+      })
+      : await ledger.client.execute({
+        sql: `SELECT ra.candidate_version_id, ra.status AS assignment_status, ra.blindness_json,
+                     cv.content_sha256, cv.candidate_id, ra.reviewer_actor_id, ra.rubric_version_id,
+                     rp.id AS presentation_id, rp.presentation_kind, rp.source_review_id,
+                     rp.status AS presentation_status, rps.id AS presentation_session_id,
+                     rps.review_pass, rps.status AS session_status
+              FROM review_presentation rp
+              JOIN review_presentation_session rps ON rps.id = rp.session_id
+              JOIN review_assignment ra ON ra.id = rp.review_assignment_id
+              JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+              WHERE rp.id = ? AND ra.id = ?`,
+        args: [assignment.presentationId, assignment.assignmentId]
+      });
     if (stored.rows.length !== 1) throw new Error(`Unknown review assignment ${assignment.assignmentId}`);
     const row = stored.rows[0]!;
     const blindness = parseJsonRecord(String(row["blindness_json"]), "stored blindness");
-    if (String(row["status"]) !== "assigned" || String(blindness["pass"]) !== packet.pass
-      || String(blindness["sessionId"]) !== packet.sessionId) {
-      throw new Error(`Assignment ${assignment.assignmentId} is not open for this pass/session`);
+    const presentationKind = String(row["presentation_kind"]) as "legacy_primary" | "primary" | "hidden_repeat";
+    if (presentationKind === "legacy_primary") {
+      if (String(row["assignment_status"]) !== "assigned" || String(blindness["pass"]) !== packet.pass
+        || String(blindness["sessionId"]) !== packet.sessionId) {
+        throw new Error(`Assignment ${assignment.assignmentId} is not open for this pass/session`);
+      }
+    } else {
+      if (String(row["presentation_id"]) !== assignment.presentationId
+        || String(row["presentation_status"]) !== "assigned"
+        || String(row["presentation_session_id"]) !== packet.sessionId
+        || String(row["session_status"]) !== "assigned"
+        || String(row["review_pass"]) !== packet.pass) {
+        throw new Error(`Presentation ${assignment.presentationId} is not open for this pass/session`);
+      }
+      const expectedAssignmentStatus = presentationKind === "primary" ? "assigned" : "completed";
+      if (String(row["assignment_status"]) !== expectedAssignmentStatus) {
+        throw new Error(`Presentation ${assignment.presentationId} has an invalid assignment state`);
+      }
     }
     if (String(row["reviewer_actor_id"]) !== actorId || String(row["rubric_version_id"]) !== rubricVersionId) {
       throw new Error(`Assignment ${assignment.assignmentId} reviewer or rubric mismatch`);
@@ -491,11 +731,36 @@ export async function submitHumanReviewPacket(
     if (String(row["content_sha256"]) !== assignment.candidateContentSha256) {
       throw new Error(`Assignment ${assignment.assignmentId} candidate version changed`);
     }
-    validated.push({
+    const entry: {
+      assignment: HumanReviewPacketAssignment;
+      candidateVersionId: string;
+      candidateId: string;
+      presentationId?: string;
+      presentationKind: "legacy_primary" | "primary" | "hidden_repeat";
+      sourceReviewId?: string;
+    } = {
       assignment,
       candidateVersionId: String(row["candidate_version_id"]),
-      candidateId: String(row["candidate_id"])
+      candidateId: String(row["candidate_id"]),
+      presentationKind
+    };
+    if (assignment.presentationId !== undefined) entry.presentationId = assignment.presentationId;
+    if (row["source_review_id"] !== null) entry.sourceReviewId = String(row["source_review_id"]);
+    validated.push(entry);
+  }
+  const presentationEntries = validated.filter((entry) => entry.presentationId !== undefined);
+  if (presentationEntries.length > 0) {
+    if (presentationEntries.length !== validated.length) {
+      throw new Error("A review packet cannot mix legacy assignments and first-class presentations");
+    }
+    const open = await ledger.client.execute({
+      sql: `SELECT COUNT(*) AS count FROM review_presentation
+            WHERE session_id = ? AND status = 'assigned'`,
+      args: [packet.sessionId]
     });
+    if (Number(open.rows[0]!["count"]) !== presentationEntries.length) {
+      throw new Error("Review packet does not contain every open presentation in its session");
+    }
   }
   const submissionSha256 = await putBlob(ledger, submissionBytes, "application/json");
   const ts = now();
@@ -506,7 +771,10 @@ export async function submitHumanReviewPacket(
   }];
   for (const entry of validated) {
     const response = entry.assignment.response;
-    const reviewId = stableId("review", `${entry.assignment.assignmentId}:${submissionSha256}`);
+    const createsReview = entry.presentationKind !== "hidden_repeat";
+    const reviewId = createsReview
+      ? stableId("review", `${entry.assignment.assignmentId}:${submissionSha256}`)
+      : undefined;
     const rationale = canonicalJson({
       rationale: response.rationale,
       summaryUserAim: response.summaryUserAim,
@@ -518,59 +786,135 @@ export async function submitHumanReviewPacket(
       expertiseNeeded: response.expertiseNeeded,
       pass: packet.pass,
       assignmentId: entry.assignment.assignmentId,
+      presentationId: entry.presentationId ?? null,
       submissionSha256
     } as unknown as JsonValue);
-    statements.push({
-      sql: `INSERT INTO review
-            (id, candidate_version_id, reviewer_actor_id, outcome, rationale, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [reviewId, entry.candidateVersionId, actorId, response.outcome!, rationale, ts]
-    });
-    for (const [dimension, score] of Object.entries(response.scores)) {
+    if (createsReview && reviewId !== undefined) {
+      statements.push({
+        sql: `INSERT INTO review
+              (id, candidate_version_id, reviewer_actor_id, outcome, rationale, created_at)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [reviewId, entry.candidateVersionId, actorId, response.outcome!, rationale, ts]
+      });
+      for (const [dimension, score] of Object.entries(response.scores)) {
+        statements.push({
+          sql: `INSERT INTO review_dimension_score(id, review_id, dimension, score, created_at)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: [stableId("score", `${reviewId}:${dimension}`), reviewId, dimension, score!, ts]
+        });
+      }
       statements.push({
         sql: `INSERT INTO review_dimension_score(id, review_id, dimension, score, created_at)
-              VALUES (?, ?, ?, ?, ?)`,
-        args: [stableId("score", `${reviewId}:${dimension}`), reviewId, dimension, score!, ts]
+              VALUES (?, ?, 'reviewer_confidence', ?, ?)`,
+        args: [stableId("score", `${reviewId}:reviewer_confidence`), reviewId, response.confidence!, ts]
       });
-    }
-    statements.push({
-      sql: `INSERT INTO review_dimension_score(id, review_id, dimension, score, created_at)
-            VALUES (?, ?, 'reviewer_confidence', ?, ?)`,
-      args: [stableId("score", `${reviewId}:reviewer_confidence`), reviewId, response.confidence!, ts]
-    });
-    for (const [index, finding] of response.findings.entries()) {
+      for (const [index, finding] of response.findings.entries()) {
+        statements.push({
+          sql: `INSERT INTO review_finding
+                (id, review_id, dimension, severity, evidence, recommendation, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          args: [stableId("finding", `${reviewId}:${index}:${finding.dimension}:${finding.evidence}`), reviewId,
+            finding.dimension, finding.severity, finding.evidence, finding.recommendation, ts]
+        });
+      }
       statements.push({
-        sql: `INSERT INTO review_finding
-              (id, review_id, dimension, severity, evidence, recommendation, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        args: [stableId("finding", `${reviewId}:${index}:${finding.dimension}:${finding.evidence}`), reviewId,
-          finding.dimension, finding.severity, finding.evidence, finding.recommendation, ts]
+        sql: "UPDATE review_assignment SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'assigned'",
+        args: [ts, entry.assignment.assignmentId]
+      });
+      const eventId = stableId("event", `human-review-submitted:${reviewId}`);
+      statements.push({
+        sql: `INSERT INTO event(id, event_type, object_kind, object_id, payload_json, created_at)
+              VALUES (?, 'human_review_submitted', 'review', ?, ?, ?)`,
+        args: [eventId, reviewId, canonicalJson({
+          assignmentId: entry.assignment.assignmentId,
+          presentationId: entry.presentationId ?? null,
+          candidateId: entry.candidateId,
+          pass: packet.pass,
+          sessionId: packet.sessionId,
+          submissionSha256
+        } as JsonValue), ts]
+      });
+      statements.push({
+        sql: `INSERT INTO event_object(id, event_id, object_kind, object_id, created_at)
+              VALUES (?, ?, 'candidate_version', ?, ?)`,
+        args: [stableId("eventobj", `${eventId}:${entry.candidateVersionId}`), eventId, entry.candidateVersionId, ts]
       });
     }
+    if (entry.presentationId !== undefined) {
+      const presentationResponseId = stableId(
+        "presentation_response", `${entry.presentationId}:${submissionSha256}`
+      );
+      statements.push({
+        sql: `INSERT INTO review_presentation_response
+              (id, presentation_id, reviewer_actor_id, created_review_id, outcome, response_json,
+               confidence, submission_blob_sha256, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [presentationResponseId, entry.presentationId, actorId, reviewId ?? null, response.outcome!,
+          canonicalJson(response as unknown as JsonValue), response.confidence!, submissionSha256, ts]
+      });
+      for (const [dimension, score] of Object.entries(response.scores)) {
+        statements.push({
+          sql: `INSERT INTO review_presentation_score
+                (id, presentation_response_id, dimension, score, created_at)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: [stableId("presentation_score", `${presentationResponseId}:${dimension}`),
+            presentationResponseId, dimension, score!, ts]
+        });
+      }
+      for (const [index, finding] of response.findings.entries()) {
+        statements.push({
+          sql: `INSERT INTO review_presentation_finding
+                (id, presentation_response_id, ordinal, dimension, severity, evidence, recommendation, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [stableId("presentation_finding", `${presentationResponseId}:${index + 1}`),
+            presentationResponseId, index + 1, finding.dimension, finding.severity,
+            finding.evidence, finding.recommendation, ts]
+        });
+      }
+      statements.push({
+        sql: "UPDATE review_presentation SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'assigned'",
+        args: [ts, entry.presentationId]
+      });
+      if (entry.presentationKind === "hidden_repeat") {
+        if (entry.sourceReviewId === undefined) throw new Error("Hidden repeat is missing its source review");
+        const repeatEventId = stableId("event", `human-review-repeat-submitted:${presentationResponseId}`);
+        statements.push({
+          sql: `INSERT INTO event(id, event_type, object_kind, object_id, payload_json, created_at)
+                VALUES (?, 'human_review_repeat_submitted', 'review_presentation_response', ?, ?, ?)`,
+          args: [repeatEventId, presentationResponseId, canonicalJson({
+            presentationId: entry.presentationId,
+            sourceReviewId: entry.sourceReviewId,
+            candidateId: entry.candidateId,
+            sessionId: packet.sessionId,
+            submissionSha256
+          } as JsonValue), ts]
+        });
+        statements.push({
+          sql: `INSERT INTO event_object(id, event_id, object_kind, object_id, created_at)
+                VALUES (?, ?, 'candidate_version', ?, ?)`,
+          args: [stableId("eventobj", `${repeatEventId}:${entry.candidateVersionId}`),
+            repeatEventId, entry.candidateVersionId, ts]
+        });
+      }
+    }
+  }
+  if (presentationEntries.length > 0) {
     statements.push({
-      sql: "UPDATE review_assignment SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'assigned'",
-      args: [ts, entry.assignment.assignmentId]
-    });
-    const eventId = stableId("event", `human-review-submitted:${reviewId}`);
-    statements.push({
-      sql: `INSERT INTO event(id, event_type, object_kind, object_id, payload_json, created_at)
-            VALUES (?, 'human_review_submitted', 'review', ?, ?, ?)`,
-      args: [eventId, reviewId, canonicalJson({
-        assignmentId: entry.assignment.assignmentId,
-        candidateId: entry.candidateId,
-        pass: packet.pass,
-        sessionId: packet.sessionId,
-        submissionSha256
-      } as JsonValue), ts]
-    });
-    statements.push({
-      sql: `INSERT INTO event_object(id, event_id, object_kind, object_id, created_at)
-            VALUES (?, ?, 'candidate_version', ?, ?)`,
-      args: [stableId("eventobj", `${eventId}:${entry.candidateVersionId}`), eventId, entry.candidateVersionId, ts]
+      sql: `UPDATE review_presentation_session SET status = 'completed', updated_at = ?
+            WHERE id = ? AND status = 'assigned'
+              AND NOT EXISTS (SELECT 1 FROM review_presentation rp WHERE rp.session_id = ? AND rp.status <> 'completed')`,
+      args: [ts, packet.sessionId, packet.sessionId]
     });
   }
   await ledger.client.batch(statements, "write");
-  return { submitted: validated.length, pass: packet.pass, sessionId: packet.sessionId, submissionSha256 };
+  return {
+    submitted: validated.length,
+    primaryReviews: validated.filter((entry) => entry.presentationKind !== "hidden_repeat").length,
+    repeatResponses: validated.filter((entry) => entry.presentationKind === "hidden_repeat").length,
+    pass: packet.pass,
+    sessionId: packet.sessionId,
+    submissionSha256
+  };
 }
 
 export async function humanReviewStatus(ledger: Ledger, campaignSlug: string): Promise<HumanReviewStatus> {
@@ -596,6 +940,17 @@ export async function humanReviewStatus(ledger: Ledger, campaignSlug: string): P
   const artifactCount = await ledger.client.execute(
     "SELECT COUNT(*) AS count FROM raw_artifact WHERE kind LIKE 'human_review_submission_pass_%'"
   );
+  const presentations = await ledger.client.execute({
+    sql: `SELECT rp.presentation_kind || ':' || rp.status AS key, COUNT(*) AS count
+          FROM review_presentation rp
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          WHERE rps.campaign_id = ? GROUP BY key`,
+    args: [id]
+  });
+  const repeatStability = await ledger.client.execute({
+    sql: "SELECT COUNT(*) AS count FROM review_repeat_stability WHERE campaign_id = ?",
+    args: [id]
+  });
   const releaseMembers = await ledger.client.execute("SELECT COUNT(*) AS count FROM release_member");
   const trainingExposures = await ledger.client.execute("SELECT COUNT(*) AS count FROM training_exposure");
   const grouped = (rows: Array<Record<string, unknown>>): Record<string, number> => Object.fromEntries(
@@ -606,6 +961,8 @@ export async function humanReviewStatus(ledger: Ledger, campaignSlug: string): P
     assignments: grouped(assignments.rows as Array<Record<string, unknown>>),
     reviews: grouped(reviews.rows as Array<Record<string, unknown>>),
     humanReviewArtifacts: Number(artifactCount.rows[0]!["count"]),
+    presentations: grouped(presentations.rows as Array<Record<string, unknown>>),
+    repeatStabilityRows: Number(repeatStability.rows[0]!["count"]),
     candidateStatuses: grouped(candidates.rows as Array<Record<string, unknown>>),
     releaseMembers: Number(releaseMembers.rows[0]!["count"]),
     trainingExposures: Number(trainingExposures.rows[0]!["count"])

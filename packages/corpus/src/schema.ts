@@ -1283,12 +1283,132 @@ const v5: string[] = [
   ...v5ImmutableTables.flatMap(immutabilityTriggers)
 ];
 
+const v6ImmutableTables = [
+  "review_presentation_response",
+  "review_presentation_score",
+  "review_presentation_finding"
+];
+
+const v6: string[] = [
+  `CREATE TABLE IF NOT EXISTS review_presentation_session (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    review_pass TEXT NOT NULL,
+    seed TEXT NOT NULL,
+    input_snapshot_sha256 TEXT NOT NULL,
+    requested_presentations INTEGER NOT NULL,
+    repeat_presentations INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(review_pass IN ('A', 'B')),
+    CHECK(requested_presentations > 0),
+    CHECK(repeat_presentations >= 0 AND repeat_presentations <= requested_presentations),
+    CHECK(status IN ('assigned', 'completed'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_presentation (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES review_presentation_session(id),
+    review_assignment_id TEXT NOT NULL REFERENCES review_assignment(id),
+    presentation_kind TEXT NOT NULL,
+    source_review_id TEXT REFERENCES review(id),
+    ordinal INTEGER NOT NULL,
+    opaque_item_id TEXT NOT NULL,
+    candidate_content_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(session_id, ordinal),
+    UNIQUE(review_assignment_id, presentation_kind),
+    CHECK(presentation_kind IN ('primary', 'hidden_repeat')),
+    CHECK((presentation_kind = 'primary' AND source_review_id IS NULL)
+       OR (presentation_kind = 'hidden_repeat' AND source_review_id IS NOT NULL)),
+    CHECK(ordinal > 0),
+    CHECK(status IN ('assigned', 'completed'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_presentation_response (
+    id TEXT PRIMARY KEY,
+    presentation_id TEXT NOT NULL UNIQUE REFERENCES review_presentation(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    created_review_id TEXT REFERENCES review(id),
+    outcome TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    submission_blob_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    created_at TEXT NOT NULL,
+    CHECK(confidence BETWEEN 0 AND 4)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_presentation_score (
+    id TEXT PRIMARY KEY,
+    presentation_response_id TEXT NOT NULL REFERENCES review_presentation_response(id),
+    dimension TEXT NOT NULL,
+    score REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(presentation_response_id, dimension),
+    CHECK(score >= 0.0 AND score <= 4.0)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS review_presentation_finding (
+    id TEXT PRIMARY KEY,
+    presentation_response_id TEXT NOT NULL REFERENCES review_presentation_response(id),
+    ordinal INTEGER NOT NULL,
+    dimension TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(presentation_response_id, ordinal),
+    CHECK(ordinal > 0),
+    CHECK(severity IN ('observation', 'minor', 'major', 'critical'))
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_review_presentation_session_status
+     ON review_presentation_session(campaign_id, reviewer_actor_id, review_pass, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_review_presentation_assignment_kind
+     ON review_presentation(review_assignment_id, presentation_kind, status)`,
+  `CREATE VIEW IF NOT EXISTS review_repeat_stability AS
+     SELECT rp.id AS presentation_id,
+            rps.id AS session_id,
+            rps.campaign_id,
+            rp.review_assignment_id,
+            ra.candidate_version_id,
+            rp.source_review_id,
+            rpr.id AS repeat_response_id,
+            CASE WHEN rpr.outcome = source.outcome THEN 1 ELSE 0 END AS outcome_match,
+            CASE WHEN json_extract(rpr.response_json, '$.questionPolicy')
+                       = json_extract(source.rationale, '$.questionPolicy') THEN 1 ELSE 0 END AS question_policy_match,
+            CASE WHEN json_extract(rpr.response_json, '$.missingClarification')
+                       = json_extract(source.rationale, '$.missingClarification') THEN 1 ELSE 0 END AS missing_clarification_match,
+            ABS(rpr.confidence - CAST(json_extract(source.rationale, '$.confidence') AS INTEGER)) AS confidence_delta,
+            (SELECT AVG(CASE WHEN rpscore.score = original.score THEN 1.0 ELSE 0.0 END)
+               FROM review_presentation_score rpscore
+               JOIN review_dimension_score original
+                 ON original.review_id = rp.source_review_id
+                AND original.dimension = rpscore.dimension
+              WHERE rpscore.presentation_response_id = rpr.id) AS dimension_exact_rate,
+            (SELECT AVG(ABS(rpscore.score - original.score))
+               FROM review_presentation_score rpscore
+               JOIN review_dimension_score original
+                 ON original.review_id = rp.source_review_id
+                AND original.dimension = rpscore.dimension
+              WHERE rpscore.presentation_response_id = rpr.id) AS mean_absolute_score_delta,
+            rpr.created_at
+       FROM review_presentation rp
+       JOIN review_presentation_session rps ON rps.id = rp.session_id
+       JOIN review_assignment ra ON ra.id = rp.review_assignment_id
+       JOIN review_presentation_response rpr ON rpr.presentation_id = rp.id
+       JOIN review source ON source.id = rp.source_review_id
+      WHERE rp.presentation_kind = 'hidden_repeat'`,
+  ...v6ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
   { version: 3, name: "first_class_surface_analysis", statements: v3 },
   { version: 4, name: "append_only_analysis_run_corrections", statements: v4 },
-  { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 }
+  { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 },
+  { version: 6, name: "d5_blinded_repeat_presentations", statements: v6 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1326,6 +1446,11 @@ export const requiredTables = [
   "family_synthesis_basis",
   "structural_disposition",
   "structural_disposition_basis",
+  "review_presentation_session",
+  "review_presentation",
+  "review_presentation_response",
+  "review_presentation_score",
+  "review_presentation_finding",
   "dataset_release",
   "rendered_unit",
   "training_exposure",
@@ -1337,5 +1462,6 @@ export const requiredViews = [
   "corpus_candidate_current",
   "public_training_candidate",
   "campaign_progress",
-  "candidate_review_state"
+  "candidate_review_state",
+  "review_repeat_stability"
 ] as const;

@@ -213,3 +213,87 @@ test("submission rejects a changed candidate version hash", async () => {
     closeLedger(ledger);
   }
 });
+
+test("Pass A hides repeat identity, records stability separately, and does not inflate candidate reviews", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const first = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 1,
+      seed: "repeat-primary-session"
+    });
+    const firstPacket = completePacket(
+      JSON.parse(readFileSync(first.packetPath, "utf8")) as HumanReviewPacket
+    );
+    assert.equal(typeof firstPacket.assignments[0]!.presentationId, "string");
+    writeFileSync(first.packetPath, `${canonicalJson(firstPacket as unknown as JsonValue)}\n`);
+    const firstResult = await submitHumanReviewPacket(ledger, first.packetPath);
+    assert.equal(firstResult.primaryReviews, 1);
+    assert.equal(firstResult.repeatResponses, 0);
+
+    const second = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 2,
+      seed: "repeat-mixed-session"
+    });
+    const secondPacket = JSON.parse(readFileSync(second.packetPath, "utf8")) as HumanReviewPacket;
+    assert.equal(secondPacket.assignments.length, 2);
+    assert.equal(secondPacket.assignments.every((assignment) => typeof assignment.presentationId === "string"), true);
+    assert.equal(JSON.stringify(secondPacket).includes("hidden_repeat"), false);
+    assert.equal(JSON.stringify(secondPacket).includes("sourceReviewId"), false);
+
+    const presentationsBefore = await ledger.client.execute({
+      sql: `SELECT presentation_kind, COUNT(*) AS count FROM review_presentation
+            WHERE session_id = ? GROUP BY presentation_kind ORDER BY presentation_kind`,
+      args: [second.sessionId]
+    });
+    assert.deepEqual(
+      presentationsBefore.rows.map((row) => [String(row["presentation_kind"]), Number(row["count"])]),
+      [["hidden_repeat", 1], ["primary", 1]]
+    );
+
+    completePacket(secondPacket);
+    writeFileSync(second.packetPath, `${canonicalJson(secondPacket as unknown as JsonValue)}\n`);
+    const secondResult = await submitHumanReviewPacket(ledger, second.packetPath);
+    assert.equal(secondResult.submitted, 2);
+    assert.equal(secondResult.primaryReviews, 1);
+    assert.equal(secondResult.repeatResponses, 1);
+
+    const reviewCount = await ledger.client.execute("SELECT COUNT(*) AS count FROM review");
+    const assignmentCount = await ledger.client.execute("SELECT COUNT(*) AS count FROM review_assignment");
+    const responseCount = await ledger.client.execute("SELECT COUNT(*) AS count FROM review_presentation_response");
+    assert.equal(Number(reviewCount.rows[0]!["count"]), 2);
+    assert.equal(Number(assignmentCount.rows[0]!["count"]), 2);
+    assert.equal(Number(responseCount.rows[0]!["count"]), 3);
+
+    const stability = await ledger.client.execute(
+      "SELECT outcome_match, question_policy_match, missing_clarification_match, confidence_delta, dimension_exact_rate, mean_absolute_score_delta FROM review_repeat_stability"
+    );
+    assert.equal(stability.rows.length, 1);
+    assert.equal(Number(stability.rows[0]!["outcome_match"]), 1);
+    assert.equal(Number(stability.rows[0]!["question_policy_match"]), 1);
+    assert.equal(Number(stability.rows[0]!["missing_clarification_match"]), 1);
+    assert.equal(Number(stability.rows[0]!["confidence_delta"]), 0);
+    assert.equal(Number(stability.rows[0]!["dimension_exact_rate"]), 1);
+    assert.equal(Number(stability.rows[0]!["mean_absolute_score_delta"]), 0);
+
+    const status = await humanReviewStatus(ledger, campaignConfig.slug);
+    assert.equal(status.presentations["primary:completed"], 2);
+    assert.equal(status.presentations["hidden_repeat:completed"], 1);
+    assert.equal(status.repeatStabilityRows, 1);
+    assert.equal(status.releaseMembers, 0);
+    assert.equal(status.trainingExposures, 0);
+
+    await assert.rejects(
+      ledger.client.execute("UPDATE review_presentation_response SET outcome = 'uncertain'"),
+      /append-only/
+    );
+    await assert.rejects(submitHumanReviewPacket(ledger, second.packetPath), /not open/);
+  } finally {
+    closeLedger(ledger);
+  }
+});
