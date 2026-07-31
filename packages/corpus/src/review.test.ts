@@ -177,6 +177,33 @@ test("human submission is append-only evidence and never promotes candidate or t
     assert.equal(Number(humanReviews.rows[0]!["count"]), 2);
     await assert.rejects(submitHumanReviewPacket(ledger, prepared.packetPath), /not open/);
 
+    await assert.rejects(
+      prepareHumanReviewPacket(ledger, {
+        campaignSlug: campaignConfig.slug,
+        reviewerAlias: "operator-test",
+        pass: "B",
+        limit: 2,
+        seed: "premature-pass-b"
+      }),
+      /Pass B is locked.*2\/2 candidate reviews, 0\/2 repeat-stability rows/
+    );
+    const repeatPreparation = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 2,
+      seed: "complete-repeat-gate"
+    });
+    const repeatPacket = completePacket(
+      JSON.parse(readFileSync(repeatPreparation.packetPath, "utf8")) as HumanReviewPacket
+    );
+    assert.equal(JSON.stringify(repeatPacket).includes("hidden_repeat"), false);
+    assert.equal(JSON.stringify(repeatPacket).includes("sourceReviewId"), false);
+    writeFileSync(repeatPreparation.packetPath, `${canonicalJson(repeatPacket as unknown as JsonValue)}\n`);
+    const repeatResult = await submitHumanReviewPacket(ledger, repeatPreparation.packetPath);
+    assert.equal(repeatResult.primaryReviews, 0);
+    assert.equal(repeatResult.repeatResponses, 2);
+
     const passB = await prepareHumanReviewPacket(ledger, {
       campaignSlug: campaignConfig.slug,
       reviewerAlias: "operator-test",
@@ -232,6 +259,21 @@ test("Pass A hides repeat identity, records stability separately, and does not i
     const firstResult = await submitHumanReviewPacket(ledger, first.packetPath);
     assert.equal(firstResult.primaryReviews, 1);
     assert.equal(firstResult.repeatResponses, 0);
+    await assert.rejects(
+      prepareHumanReviewPacket(ledger, {
+        campaignSlug: campaignConfig.slug,
+        reviewerAlias: "operator-test",
+        pass: "B",
+        limit: 1,
+        seed: "individual-candidate-leak-attempt"
+      }),
+      /Pass B is locked.*1\/2 candidate reviews, 0\/2 repeat-stability rows/
+    );
+    const prematurePassB = await ledger.client.execute(
+      `SELECT COUNT(*) AS count FROM review_assignment
+       WHERE json_extract(blindness_json, '$.pass') = 'B'`
+    );
+    assert.equal(Number(prematurePassB.rows[0]!["count"]), 0);
 
     const second = await prepareHumanReviewPacket(ledger, {
       campaignSlug: campaignConfig.slug,

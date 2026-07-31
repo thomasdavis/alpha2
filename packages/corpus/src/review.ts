@@ -381,6 +381,69 @@ async function selectCandidates(
     .slice(0, limit);
 }
 
+async function assertPassBPrerequisites(
+  ledger: Ledger,
+  resolvedCampaignId: string,
+  campaignSlug: string,
+  actorId: string,
+  rubricVersionId: string
+): Promise<void> {
+  const [candidateEvidence, repeatEvidence, openSessions] = await Promise.all([
+    ledger.client.execute({
+      sql: `SELECT COUNT(*) AS candidate_count,
+                   COALESCE(SUM(CASE WHEN EXISTS (
+                     SELECT 1
+                     FROM review_assignment ra
+                     JOIN review r
+                       ON r.candidate_version_id = ra.candidate_version_id
+                      AND r.reviewer_actor_id = ra.reviewer_actor_id
+                     WHERE ra.candidate_version_id = cc.candidate_version_id
+                       AND ra.reviewer_actor_id = ? AND ra.rubric_version_id = ?
+                       AND ra.status = 'completed'
+                       AND json_valid(ra.blindness_json)
+                       AND json_extract(ra.blindness_json, '$.pass') = 'A'
+                       AND json_valid(r.rationale)
+                       AND json_extract(r.rationale, '$.pass') = 'A'
+                       AND json_extract(r.rationale, '$.assignmentId') = ra.id
+                     GROUP BY ra.id
+                     HAVING COUNT(r.id) = 1
+                   ) THEN 1 ELSE 0 END), 0) AS pass_a_completed
+            FROM corpus_candidate_current cc
+            WHERE cc.campaign_id = ?`,
+      args: [actorId, rubricVersionId, resolvedCampaignId]
+    }),
+    ledger.client.execute({
+      sql: `SELECT COUNT(*) AS count
+            FROM review_repeat_stability rrs
+            JOIN review_presentation rp ON rp.id = rrs.presentation_id
+            JOIN review_presentation_session rps ON rps.id = rp.session_id
+            WHERE rrs.campaign_id = ? AND rps.reviewer_actor_id = ?
+              AND rps.rubric_version_id = ? AND rps.review_pass = 'A'
+              AND rps.status = 'completed' AND rp.status = 'completed'`,
+      args: [resolvedCampaignId, actorId, rubricVersionId]
+    }),
+    ledger.client.execute({
+      sql: `SELECT COUNT(*) AS count FROM review_presentation_session
+            WHERE campaign_id = ? AND reviewer_actor_id = ? AND rubric_version_id = ?
+              AND review_pass = 'A' AND status = 'assigned'`,
+      args: [resolvedCampaignId, actorId, rubricVersionId]
+    })
+  ]);
+  const candidateCount = Number(candidateEvidence.rows[0]!["candidate_count"]);
+  const completedPassA = Number(candidateEvidence.rows[0]!["pass_a_completed"]);
+  const expectedRepeats = Math.min(6, candidateCount);
+  const completedRepeats = Number(repeatEvidence.rows[0]!["count"]);
+  const assignedPassASessions = Number(openSessions.rows[0]!["count"]);
+  if (candidateCount < 1) throw new Error(`Campaign ${campaignSlug} has no current candidates`);
+  if (completedPassA !== candidateCount || completedRepeats !== expectedRepeats || assignedPassASessions !== 0) {
+    throw new Error(
+      `Pass B is locked until blinded Pass A is sealed for every current candidate and all hidden repeats: `
+      + `${completedPassA}/${candidateCount} candidate reviews, ${completedRepeats}/${expectedRepeats} `
+      + `repeat-stability rows, ${assignedPassASessions} open first-class Pass A presentation sessions`
+    );
+  }
+}
+
 function packetInstructions(pass: HumanReviewPass): string[] {
   if (pass === "A") {
     return [
@@ -473,9 +536,14 @@ export async function prepareHumanReviewPacket(
   if (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 48) {
     throw new Error("Human-review packet limit must be an integer from 1 to 48");
   }
-  await campaignId(ledger, options.campaignSlug);
+  const resolvedCampaignId = await campaignId(ledger, options.campaignSlug);
   const actorId = await ensureHumanActor(ledger, options.reviewerAlias);
   const rubricVersionId = await ensureHumanReviewRubric(ledger);
+  if (options.pass === "B") {
+    await assertPassBPrerequisites(
+      ledger, resolvedCampaignId, options.campaignSlug, actorId, rubricVersionId
+    );
+  }
   let assignments: PacketAssignmentRow[] = await openPresentationAssignments(
     ledger, options.campaignSlug, actorId, rubricVersionId, options.pass
   );
@@ -547,7 +615,6 @@ export async function prepareHumanReviewPacket(
       presentationKind: entry.presentationKind,
       sourceReviewId: entry.sourceReviewId ?? null
     })) as unknown as JsonValue));
-    const resolvedCampaignId = await campaignId(ledger, options.campaignSlug);
     statements.push({
       sql: `INSERT INTO review_presentation_session
             (id, campaign_id, reviewer_actor_id, rubric_version_id, review_pass, seed,

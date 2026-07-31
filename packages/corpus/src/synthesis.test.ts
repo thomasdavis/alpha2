@@ -145,6 +145,23 @@ async function completePass(
   await submitHumanReviewPacket(ledger, prepared.packetPath);
 }
 
+async function completeRepeats(ledger: Ledger): Promise<void> {
+  const prepared = await prepareHumanReviewPacket(ledger, {
+    campaignSlug: campaignConfig.slug,
+    reviewerAlias: "operator-test",
+    pass: "A",
+    limit: 2,
+    seed: "synthesis-repeat-gate"
+  });
+  const packet = completeHumanPacket(
+    JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket
+  );
+  writeFileSync(prepared.packetPath, `${canonicalJson(packet as unknown as JsonValue)}\n`);
+  const result = await submitHumanReviewPacket(ledger, prepared.packetPath);
+  assert.equal(result.primaryReviews, 0);
+  assert.equal(result.repeatResponses, 2);
+}
+
 function completeSynthesisPacket(packet: FamilySynthesisPacket): FamilySynthesisPacket {
   for (const assignment of packet.assignments) {
     const first = assignment.candidates[0]!.candidateVersionId;
@@ -201,6 +218,7 @@ test("Pass C records family and structural evidence append-only without promotio
   const ledger = await synthesisLedger();
   try {
     await completePass(ledger, "A");
+    await completeRepeats(ledger);
     await completePass(ledger, "B");
     const prepared = await prepareFamilySynthesisPacket(ledger, {
       campaignSlug: campaignConfig.slug,
