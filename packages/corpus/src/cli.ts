@@ -18,6 +18,11 @@ import {
   prepareFamilySynthesisPacket,
   submitFamilySynthesisPacket
 } from "./synthesis.js";
+import {
+  campaignCloseoutStatus,
+  prepareCampaignCloseoutPacket,
+  submitCampaignCloseoutPacket
+} from "./closeout.js";
 
 function option(args: string[], name: string, fallback?: string): string | undefined {
   const index = args.indexOf(name);
@@ -71,6 +76,9 @@ function help(): void {
   synthesis-prepare --reviewer ALIAS [--output PATH] [--home PATH] [--campaign alpha-calibration-v1]
   synthesis-submit --file PATH [--home PATH]
   synthesis-status [--home PATH] [--campaign alpha-calibration-v1]
+  closeout-prepare --adjudicator ALIAS [--output PATH] [--home PATH] [--campaign alpha-calibration-v1]
+  closeout-submit --file PATH [--home PATH]
+  closeout-status [--home PATH] [--campaign alpha-calibration-v1]
 
 generate is a dry-run unless --execute is supplied. New generation pauses when this
 project's own ledger and artifact tree exceeds 15 GiB. It never trains Alpha.
@@ -171,6 +179,22 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     }
     if (command === "synthesis-status") {
       print(await familySynthesisStatus(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
+      return;
+    }
+    if (command === "closeout-prepare") {
+      print(await prepareCampaignCloseoutPacket(ledger, {
+        campaignSlug: option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!,
+        adjudicatorAlias: requiredOption(args, "--adjudicator"),
+        outputDirectory: option(args, "--output")
+      }));
+      return;
+    }
+    if (command === "closeout-submit") {
+      print(await submitCampaignCloseoutPacket(ledger, requiredOption(args, "--file")));
+      return;
+    }
+    if (command === "closeout-status") {
+      print(await campaignCloseoutStatus(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
       return;
     }
     throw new Error(`Unknown command ${command}`);

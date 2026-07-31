@@ -1402,13 +1402,114 @@ const v6: string[] = [
   ...v6ImmutableTables.flatMap(immutabilityTriggers)
 ];
 
+const v7ImmutableTables = [
+  "campaign_closeout",
+  "campaign_closeout_state",
+  "campaign_closeout_basis",
+  "campaign_failure_cluster",
+  "campaign_failure_cluster_member",
+  "campaign_distribution_assessment"
+];
+
+const v7: string[] = [
+  `CREATE TABLE IF NOT EXISTS campaign_closeout_assignment (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    adjudicator_actor_id TEXT NOT NULL REFERENCES actor(id),
+    rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    session_id TEXT NOT NULL,
+    input_snapshot_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(campaign_id, adjudicator_actor_id, rubric_version_id),
+    CHECK(status IN ('assigned', 'completed'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_closeout (
+    id TEXT PRIMARY KEY,
+    assignment_id TEXT NOT NULL UNIQUE REFERENCES campaign_closeout_assignment(id),
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    adjudicator_actor_id TEXT NOT NULL REFERENCES actor(id),
+    recommendation_summary TEXT NOT NULL,
+    known_json TEXT NOT NULL,
+    unknown_json TEXT NOT NULL,
+    proposed_next_json TEXT NOT NULL,
+    disagreement_json TEXT NOT NULL,
+    overall_rationale TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    execution_authorized INTEGER NOT NULL DEFAULT 0,
+    submission_blob_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    created_at TEXT NOT NULL,
+    CHECK(confidence BETWEEN 0 AND 4),
+    CHECK(execution_authorized = 0)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_closeout_state (
+    id TEXT PRIMARY KEY,
+    campaign_closeout_id TEXT NOT NULL REFERENCES campaign_closeout(id),
+    state TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(campaign_closeout_id, state),
+    CHECK(state IN ('D5_REPAIR_REQUIRED', 'D5_CRITIC_CALIBRATION_JUSTIFIED',
+      'D5_BATCHING_PROBE_JUSTIFIED', 'D5_EVALUATION_DESIGN_JUSTIFIED', 'D5_STOP'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_closeout_basis (
+    id TEXT PRIMARY KEY,
+    campaign_closeout_id TEXT NOT NULL REFERENCES campaign_closeout(id),
+    basis_kind TEXT NOT NULL,
+    basis_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(campaign_closeout_id, basis_kind, basis_id)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_failure_cluster (
+    id TEXT PRIMARY KEY,
+    campaign_closeout_id TEXT NOT NULL REFERENCES campaign_closeout(id),
+    cluster_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    locus TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    proposed_repair TEXT NOT NULL,
+    new_calls_needed TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(campaign_closeout_id, cluster_key)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_failure_cluster_member (
+    id TEXT PRIMARY KEY,
+    failure_cluster_id TEXT NOT NULL REFERENCES campaign_failure_cluster(id),
+    member_kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(failure_cluster_id, member_kind, member_id),
+    CHECK(member_kind IN ('candidate_version', 'family_version', 'review', 'family_synthesis',
+      'structural_disposition'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS campaign_distribution_assessment (
+    id TEXT PRIMARY KEY,
+    campaign_closeout_id TEXT NOT NULL REFERENCES campaign_closeout(id),
+    dimension TEXT NOT NULL,
+    assessment TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(campaign_closeout_id, dimension)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_campaign_closeout_assignment_status
+     ON campaign_closeout_assignment(campaign_id, adjudicator_actor_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_campaign_closeout_state
+     ON campaign_closeout_state(state, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_campaign_failure_cluster_locus
+     ON campaign_failure_cluster(locus, severity)`,
+  ...v7ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
   { version: 3, name: "first_class_surface_analysis", statements: v3 },
   { version: 4, name: "append_only_analysis_run_corrections", statements: v4 },
   { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 },
-  { version: 6, name: "d5_blinded_repeat_presentations", statements: v6 }
+  { version: 6, name: "d5_blinded_repeat_presentations", statements: v6 },
+  { version: 7, name: "d5_campaign_closeout", statements: v7 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1451,6 +1552,13 @@ export const requiredTables = [
   "review_presentation_response",
   "review_presentation_score",
   "review_presentation_finding",
+  "campaign_closeout_assignment",
+  "campaign_closeout",
+  "campaign_closeout_state",
+  "campaign_closeout_basis",
+  "campaign_failure_cluster",
+  "campaign_failure_cluster_member",
+  "campaign_distribution_assessment",
   "dataset_release",
   "rendered_unit",
   "training_exposure",

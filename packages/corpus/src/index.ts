@@ -1,5 +1,7 @@
 export * from "./analysis.js";
 export * from "./browser.js";
+export * from "./closeout-contract.js";
+export * from "./closeout.js";
 export * from "./db.js";
 export * from "./generate.js";
 export * from "./hash.js";
