@@ -1,6 +1,6 @@
 # PRD-12 — D5 human adjudication and calibration closeout
 
-**Status:** normative planning contract; review has not begun
+**Status:** normative planning contract; review instrument deployed; review has not begun
 
 **Applies to:** `alpha-calibration-v1` only
 
@@ -10,6 +10,9 @@
 
 **Execution boundary:** documentation and human review only; this document does not authorize more model calls,
 training, GPU use, corpus release, or live Donto mutation
+
+**Review route:** `https://alpha.donto.org/corpus/review` (browser-local draft and download only; local
+`review-submit` remains the sole ledger-write path)
 
 ## 1. Purpose
 

@@ -29,6 +29,11 @@ without another explicit bounded authorization. The separately authorized factua
 hours through `alpha-corpus-discord-progress.timer`; keep its claims stage-accurate. GPT-5.6-sol is the counsel
 tier; GPT-5.4 is the initial surface-generation worker.
 
+The first session can be completed at `https://alpha.donto.org/corpus/review`; see
+[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). This is a local-first form:
+browser autosave and packet download are allowed, but only the local `review-submit` CLI may write a completed
+human packet into SQLite. Never add a public review POST, server action, or direct database mutation.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

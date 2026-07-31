@@ -1,4 +1,4 @@
-# HANDOFF — Alpha Corpus public explorer plus D5 calibration and Alpha 60M archive, state as of 2026-07-30
+# HANDOFF — Alpha Corpus D5 review workspace plus calibration and Alpha 60M archive, state as of 2026-07-31
 
 ## Current planning goal
 
@@ -32,6 +32,13 @@ session has 12 assigned candidates at
 All response fields are blank: there are still zero human reviews, adjudications, release members, and training
 exposures. Submit through the local `review-submit` CLI only after a real human completes the form; never fill
 it with a model while labeling the result human.
+
+The same blinded packet is now practical to review at `https://alpha.donto.org/corpus/review`. The deployed
+workspace is recorded in
+[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md), autosaves only in browser
+local storage, validates against the same executable rubric as `review-submit`, and downloads JSON. It has no
+public submit action; the app and Caddy return 405 to non-read methods. Release source is `cc9be14`; the public
+service is active with zero restarts. Human responses are still pending.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

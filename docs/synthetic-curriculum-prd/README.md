@@ -1,11 +1,12 @@
 # Alpha Synthetic Conversational Intelligence — canonical PRD suite
 
-**Status:** canonical project goal as of 2026-07-30
+**Status:** canonical project goal as of 2026-07-31
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
-**Current phase:** D5 calibration generated; public read-only explorer live; human-review workflow operational;
+**Current phase:** D5 calibration generated; public read-only explorer and local-first review workspace live;
 first 12 blinded Pass A assignments prepared, human responses pending
 **Completed bounded scope:** D2–D4 implementation plus a 48-candidate GPT-5.4 D5 calibration
-**Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public release, or ad hoc Discord posting beyond the factual two-hour timer
+**Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public dataset
+release, or ad hoc Discord posting beyond the factual two-hour timer
 
 ## The goal in one paragraph
 
@@ -43,6 +44,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 19. [Appendix D — D5 human review instrument](APPENDIX-D-D5-REVIEW-INSTRUMENT.md)
 20. [Decision Packet 01 — D5 next-step decision](DECISION-PACKET-01-D5-NEXT-STEP.md)
 21. [Execution 03 — D5 human-review workflow](EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md)
+22. [Execution 04 — D5 local-first review workspace](EXECUTION-04-D5-REVIEW-WORKSPACE.md)
 
 ## Authority and supersession
 

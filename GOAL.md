@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN-REVIEW WORKFLOW OPERATIONAL; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -49,6 +49,9 @@ The first executable review session is recorded in
 [Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md). It contains 12 blinded
 Pass A assignments and zero completed reviews. The workflow refuses to expose hidden contracts in Pass A,
 requires a sealed human submission before Pass B, and never changes release or training state automatically.
+The browser instrument is live at `https://alpha.donto.org/corpus/review` and recorded in
+[Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). It autosaves only in the
+reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
 
 ---
 
