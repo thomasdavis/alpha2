@@ -129,6 +129,7 @@ export function renderUi(
     .submit:focus-visible { outline: 3px solid var(--teal-soft); outline-offset: 2px; }
     .submit:disabled { cursor: wait; opacity: 0.62; }
     footer { max-width: 1240px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 64px) 44px; display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 13px; }
+    .status-short { display: none; }
     @media (max-width: 780px) {
       header { align-items: flex-start; }
       .status { max-width: 150px; text-align: right; }
@@ -139,6 +140,8 @@ export function renderUi(
       .transcript { min-height: 270px; }
       .actions { align-items: flex-start; flex-direction: column; }
       .submit { width: 100%; }
+      .status-long { display: none; }
+      .status-short { display: inline; }
     }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
   </style>
@@ -147,7 +150,7 @@ export function renderUi(
   <div class="shell">
     <header>
       <div class="brand"><span class="mark" aria-hidden="true">α</span><span>Alpha research</span></div>
-      <div class="status">Corrective checkpoint · quality gate ${evidence.qualityGate.toLowerCase()}</div>
+      <div class="status"><span class="status-long">Corrective checkpoint · quality gate ${evidence.qualityGate.toLowerCase()}</span><span class="status-short">Quality gate · ${evidence.qualityGate.toLowerCase()}</span></div>
     </header>
     <main>
       <section class="hero" aria-labelledby="page-title">
