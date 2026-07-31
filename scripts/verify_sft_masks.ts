@@ -28,9 +28,12 @@ interface SourceSpan {
 }
 
 interface CorpusManifest {
-  total: number;
-  output: { sha256: string; bytes: number };
-  source_spans: SourceSpan[];
+  schema?: string;
+  total?: number;
+  output?: { sha256: string; bytes: number };
+  source_spans?: SourceSpan[];
+  rows?: Record<string, number>;
+  outputs?: Record<string, { sha256: string; bytes: number }>;
 }
 
 function args(): Record<string, string> {
@@ -63,16 +66,24 @@ async function main(): Promise<void> {
   if (!Number.isSafeInteger(blockSize) || blockSize < 2) throw new Error("--block must be an integer >= 2");
 
   const manifest = JSON.parse(await readFile(cli.manifest, "utf8")) as CorpusManifest;
-  if (!Array.isArray(manifest.source_spans) || manifest.source_spans.length === 0) {
-    throw new Error("manifest has no source_spans; rebuild it with the current corpus builder");
+  const split = cli.split;
+  const total = split ? manifest.rows?.[split] : manifest.total;
+  const output = split ? manifest.outputs?.[split] : manifest.output;
+  if (!Number.isSafeInteger(total) || (total ?? 0) < 1 || !output) {
+    throw new Error(split
+      ? `manifest has no valid rows/outputs entry for split ${split}`
+      : "manifest has no valid total/output entry");
   }
+  const sourceSpans = Array.isArray(manifest.source_spans) && manifest.source_spans.length > 0
+    ? manifest.source_spans
+    : [{ source: split ? `interleaved:${split}` : "interleaved", start_line: 1, end_line: total! }];
   const artifacts = JSON.parse(await readFile(cli.tokenizer, "utf8")) as TokenizerArtifacts;
   const tokenizer = tokenizerFromArtifacts(artifacts);
   const ids = resolveChatSpecialIds(tokenizer);
 
-  const selected = new Set<number>([1, manifest.total]);
-  for (let line = every; line <= manifest.total; line += every) selected.add(line);
-  for (const span of manifest.source_spans) {
+  const selected = new Set<number>([1, total!]);
+  for (let line = every; line <= total!; line += every) selected.add(line);
+  for (const span of sourceSpans) {
     selected.add(span.start_line);
     selected.add(span.end_line);
   }
@@ -151,9 +162,9 @@ async function main(): Promise<void> {
   }
 
   const sha256 = hash.digest("hex");
-  if (lineNumber !== manifest.total) throw new Error(`row count ${lineNumber} != manifest ${manifest.total}`);
-  if (bytes !== manifest.output.bytes) throw new Error(`byte count ${bytes} != manifest ${manifest.output.bytes}`);
-  if (sha256 !== manifest.output.sha256) throw new Error(`sha256 ${sha256} != manifest ${manifest.output.sha256}`);
+  if (lineNumber !== total) throw new Error(`row count ${lineNumber} != manifest ${total}`);
+  if (bytes !== output.bytes) throw new Error(`byte count ${bytes} != manifest ${output.bytes}`);
+  if (sha256 !== output.sha256) throw new Error(`sha256 ${sha256} != manifest ${output.sha256}`);
   if (sampled !== selected.size) throw new Error(`sample count ${sampled} != selected ${selected.size}`);
   sampleLengths.sort((a, b) => a - b);
   const percentile = (p: number) => sampleLengths[Math.min(sampleLengths.length - 1, Math.floor(p * sampleLengths.length))];
@@ -172,7 +183,7 @@ async function main(): Promise<void> {
     selection: {
       every,
       block_size: blockSize,
-      source_spans: manifest.source_spans,
+      source_spans: sourceSpans,
       rows_sampled: sampled,
     },
     mask_checks: {

@@ -765,17 +765,43 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // Assistant-only SFT: one rendered conversation per line → per-example
     // lossMask. Deterministic doc-aware train/val split when no valData given.
     console.log(`SFT mode: loading conversations from ${dataPath.split("/").pop()} (assistant-only masked loss)...`);
+    const sftShuffleRaw = (process.env.ALPHA_SFT_SHUFFLE ?? "0").trim().toLowerCase();
+    const sftShuffle = sftShuffleRaw === "1" || sftShuffleRaw === "true" || sftShuffleRaw === "yes" || sftShuffleRaw === "on";
+    const sftBalanceRaw = (process.env.ALPHA_SFT_BALANCE_CONVERSATIONS ?? "0").trim().toLowerCase();
+    const sftBalance = sftBalanceRaw === "1" || sftBalanceRaw === "true" || sftBalanceRaw === "yes" || sftBalanceRaw === "on";
+    const sftStartTokens = Math.max(0, Number.parseInt(process.env.ALPHA_SFT_START_TOKENS ?? "0", 10) || 0);
+    const parsedStartWeight = Number.parseFloat(process.env.ALPHA_SFT_START_WEIGHT ?? "1");
+    const sftStartWeight = Number.isFinite(parsedStartWeight) && parsedStartWeight > 0 ? parsedStartWeight : 1;
+    const commonSftOptions = {
+      balanceConversations: sftBalance,
+      startTokenCount: sftStartTokens,
+      startTokenMultiplier: sftStartWeight,
+    };
+    console.log(
+      `SFT policy: shuffle=${sftShuffle ? `epoch(seed=${trainConfig.seed})` : "off"} ` +
+      `conversationBalance=${sftBalance} startTokens=${sftStartTokens} startWeight=${sftStartWeight}`,
+    );
     if (valDataPath) {
       const trainEx = await loadSftExamples(dataPath, tokenizer);
       const valEx = await loadSftExamples(valDataPath, tokenizer);
-      sftTrain = new SftDataLoader(trainEx, trainConfig.batchSize, modelConfig.blockSize);
-      sftVal = valEx.length > 0 ? new SftDataLoader(valEx, trainConfig.batchSize, modelConfig.blockSize) : null;
+      sftTrain = new SftDataLoader(trainEx, trainConfig.batchSize, modelConfig.blockSize, {
+        ...commonSftOptions,
+        shuffleSeed: sftShuffle ? trainConfig.seed : undefined,
+      });
+      sftVal = valEx.length > 0
+        ? new SftDataLoader(valEx, trainConfig.batchSize, modelConfig.blockSize, commonSftOptions)
+        : null;
     } else {
       const allEx = await loadSftExamples(dataPath, tokenizer);
       const valFraction = clamp01(Number.parseFloat(process.env.ALPHA_SFT_VAL_FRACTION ?? "0.05"), 0, 0.5);
       const { train, val } = splitSftExamples(allEx, valFraction, trainConfig.seed);
-      sftTrain = new SftDataLoader(train.length > 0 ? train : allEx, trainConfig.batchSize, modelConfig.blockSize);
-      sftVal = val.length > 0 ? new SftDataLoader(val, trainConfig.batchSize, modelConfig.blockSize) : null;
+      sftTrain = new SftDataLoader(train.length > 0 ? train : allEx, trainConfig.batchSize, modelConfig.blockSize, {
+        ...commonSftOptions,
+        shuffleSeed: sftShuffle ? trainConfig.seed : undefined,
+      });
+      sftVal = val.length > 0
+        ? new SftDataLoader(val, trainConfig.batchSize, modelConfig.blockSize, commonSftOptions)
+        : null;
     }
     console.log(
       `SFT conversations: train=${sftTrain.conversationCount} val=${sftVal?.conversationCount ?? 0} ` +

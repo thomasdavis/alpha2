@@ -423,6 +423,23 @@ export interface SftExample {
    *  AFTER an <|assistant|> marker up to and including the terminating
    *  <|end_of_text|>). Role markers and user tokens are 0. */
   roleMask: Uint8Array;
+  /** Compact [start,end) pairs for ordinary content in each assistant turn.
+   *  EOS is excluded. This lets training emphasize the decision to BEGIN an
+   *  answer without a second per-token array or accidentally boosting EOS. */
+  assistantContentSpans?: Uint32Array;
+}
+
+/** Optional SFT sampling and loss-weighting policy. Defaults preserve the
+ * historical loader exactly: source order, binary assistant-token mask. */
+export interface SftDataLoaderOptions {
+  /** Deterministically reshuffle conversations at each epoch when provided. */
+  shuffleSeed?: number;
+  /** Give every conversation equal total loss weight after truncation. */
+  balanceConversations?: boolean;
+  /** Number of ordinary content tokens to emphasize at each assistant start. */
+  startTokenCount?: number;
+  /** Relative weight of emphasized start tokens before row normalization. */
+  startTokenMultiplier?: number;
 }
 
 /**
@@ -458,23 +475,58 @@ export function resolveChatSpecialIds(tokenizer: Tokenizer): ChatSpecialIds {
 export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: ChatSpecialIds): SftExample {
   const tokens = tokenizer.encode(convText);
   const roleMask = new Uint8Array(tokens.length);
+  const assistantContentSpans: number[] = [];
   let inAssistant = false;
+  let contentStart = -1;
+  const closeContentSpan = (end: number): void => {
+    if (contentStart >= 0) assistantContentSpans.push(contentStart, end);
+    contentStart = -1;
+  };
   for (let i = 0; i < tokens.length; i++) {
     const id = tokens[i];
     if (id === ids.assistantId) {
+      closeContentSpan(i);
       roleMask[i] = 0;        // marker itself is prompt scaffolding
       inAssistant = true;     // content that follows is assistant-generated
     } else if (id === ids.userId) {
+      closeContentSpan(i);
       roleMask[i] = 0;
       inAssistant = false;
     } else if (id === ids.eotId) {
+      closeContentSpan(i);    // EOS remains supervised but is not ordinary content
       roleMask[i] = inAssistant ? 1 : 0; // include the EOS that ends the turn
       inAssistant = false;
     } else {
       roleMask[i] = inAssistant ? 1 : 0;
+      if (inAssistant && contentStart < 0) contentStart = i;
     }
   }
-  return { tokens, roleMask };
+  closeContentSpan(tokens.length);
+  return { tokens, roleMask, assistantContentSpans: Uint32Array.from(assistantContentSpans) };
+}
+
+/** Small deterministic PRNG used only to construct an epoch permutation. */
+function shuffleState(seed: number, epoch: number): () => number {
+  let state = (seed ^ Math.imul(epoch + 1, 0x9e3779b1)) >>> 0;
+  if (state === 0) state = 0x6d2b79f5;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+}
+
+function epochPermutation(length: number, seed: number, epoch: number): Int32Array {
+  const order = Int32Array.from({ length }, (_, index) => index);
+  const next = shuffleState(seed, epoch);
+  for (let i = length - 1; i > 0; i--) {
+    const j = next() % (i + 1);
+    const tmp = order[i];
+    order[i] = order[j];
+    order[j] = tmp;
+  }
+  return order;
 }
 
 /**
@@ -486,24 +538,41 @@ export function buildSftExample(convText: string, tokenizer: Tokenizer, ids: Cha
  * mask is zero (padding-only, or a turn with no assistant content) is legal and
  * produces no NaN because the masked-CE denominator is floored at 1.
  *
- * Deterministic: a monotonically advancing cursor walks the conversation list in
- * order and wraps at the end (no RNG), so runs are reproducible.
+ * Deterministic: a monotonically advancing position walks either source order
+ * or a seed-derived epoch permutation, so uninterrupted and resumed runs agree.
  */
 export class SftDataLoader implements BatchSource {
   private examples: SftExample[];
   private batchSize: number;
   private blockSize: number;
-  private cursor = 0;
+  private position = 0;
   private batchRing: DataBatch[] = [];
   private batchRingIdx = 0;
   private totalTokens: number;
+  private options: Required<Omit<SftDataLoaderOptions, "shuffleSeed">> & Pick<SftDataLoaderOptions, "shuffleSeed">;
+  private permutationEpoch = -1;
+  private permutation: Int32Array | null = null;
 
-  constructor(examples: SftExample[], batchSize: number, blockSize: number) {
+  constructor(examples: SftExample[], batchSize: number, blockSize: number, options: SftDataLoaderOptions = {}) {
     if (examples.length === 0) throw new RangeError("SftDataLoader needs at least one conversation");
+    const startTokenCount = options.startTokenCount ?? 0;
+    const startTokenMultiplier = options.startTokenMultiplier ?? 1;
+    if (!Number.isSafeInteger(startTokenCount) || startTokenCount < 0) {
+      throw new RangeError(`startTokenCount must be a non-negative integer: ${startTokenCount}`);
+    }
+    if (!Number.isFinite(startTokenMultiplier) || startTokenMultiplier <= 0) {
+      throw new RangeError(`startTokenMultiplier must be finite and positive: ${startTokenMultiplier}`);
+    }
     this.examples = examples;
     this.batchSize = batchSize;
     this.blockSize = blockSize;
     this.totalTokens = examples.reduce((acc, e) => acc + e.tokens.length, 0);
+    this.options = {
+      shuffleSeed: options.shuffleSeed,
+      balanceConversations: options.balanceConversations ?? false,
+      startTokenCount,
+      startTokenMultiplier,
+    };
 
     const elems = batchSize * blockSize;
     for (let i = 0; i < 2; i++) {
@@ -529,19 +598,36 @@ export class SftDataLoader implements BatchSource {
     mask.fill(0);
 
     for (let b = 0; b < B; b++) {
-      const ex = this.examples[(this.cursor + b) % this.examples.length];
+      const examplePosition = this.position + b;
+      const ex = this.examples[this.exampleIndex(examplePosition)];
       const tok = ex.tokens;
       const rm = ex.roleMask;
+      const contentSpans = ex.assistantContentSpans;
       const L = tok.length;
       const dst = b * T;
       const pairs = Math.min(T, L - 1); // usable (input,target) positions
+      let rowWeight = 0;
+      let spanOffset = 0;
       for (let i = 0; i < pairs; i++) {
         inputs[dst + i] = tok[i];
         targets[dst + i] = tok[i + 1];
-        mask[dst + i] = rm[i + 1]; // weight of the PREDICTED token
+        if (rm[i + 1] === 0) continue;
+        const targetIndex = i + 1;
+        while (contentSpans && spanOffset < contentSpans.length && targetIndex >= contentSpans[spanOffset + 1]) {
+          spanOffset += 2;
+        }
+        const isAnswerStart = !!contentSpans && spanOffset < contentSpans.length &&
+          targetIndex >= contentSpans[spanOffset] &&
+          targetIndex < Math.min(contentSpans[spanOffset + 1], contentSpans[spanOffset] + this.options.startTokenCount);
+        const weight = isAnswerStart ? this.options.startTokenMultiplier : 1;
+        mask[dst + i] = weight; // weight of the PREDICTED token
+        rowWeight += weight;
+      }
+      if (this.options.balanceConversations && rowWeight > 0) {
+        for (let i = 0; i < pairs; i++) mask[dst + i] /= rowWeight;
       }
     }
-    this.cursor = (this.cursor + B) % this.examples.length;
+    this.position += B;
 
     return {
       inputs: { ...batch.inputs },
@@ -552,8 +638,24 @@ export class SftDataLoader implements BatchSource {
 
   seekBatches(count: number): void {
     if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`batch count must be a non-negative integer: ${count}`);
-    this.cursor = (count * this.batchSize) % this.examples.length;
+    const position = count * this.batchSize;
+    if (!Number.isSafeInteger(position)) throw new RangeError(`batch position exceeds safe integer range: ${position}`);
+    this.position = position;
     this.batchRingIdx = count % this.batchRing.length;
+    this.permutationEpoch = -1;
+    this.permutation = null;
+  }
+
+  private exampleIndex(position: number): number {
+    const length = this.examples.length;
+    const offset = position % length;
+    if (this.options.shuffleSeed === undefined) return offset;
+    const epoch = Math.floor(position / length);
+    if (this.permutationEpoch !== epoch || this.permutation === null) {
+      this.permutation = epochPermutation(length, this.options.shuffleSeed, epoch);
+      this.permutationEpoch = epoch;
+    }
+    return this.permutation[offset];
   }
 
   get stepsPerEpoch(): number {

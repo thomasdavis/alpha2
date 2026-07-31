@@ -1,0 +1,16 @@
+{
+  "schema": "alpha-chat-repair-dev-v1",
+  "status": "development-selection-only",
+  "chat": {
+    "path": "chat-prompts.jsonl",
+    "rows": 48,
+    "sha256": "8c526ec84bdeaed40fe50e0d7c280ad5539427824f3f8c239b089f682714950f"
+  },
+  "qaPlaceholder": {
+    "path": "qa-placeholder.jsonl",
+    "rows": 1,
+    "sha256": "76e6cc64199a722405b6c3b97baa7fed4fe6fd91a0d61f9836e4b6b0bc26a9e4"
+  },
+  "selectionRule": "Aggregate greedy free-generation behavior only; no single prompt authorizes continuation.",
+  "finalEvaluation": "The historical frozen suite remains untouched until checkpoint selection is complete."
+}

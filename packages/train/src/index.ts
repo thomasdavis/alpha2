@@ -8,6 +8,7 @@ export {
   SftDataLoader, loadSftExamples, buildSftExample, resolveChatSpecialIds, splitSftExamples,
   CHAT_USER_TOKEN, CHAT_ASSISTANT_TOKEN, CHAT_EOT_TOKEN,
   type DataBatch, type BatchSource, type PretrainShardManifest, type SftExample, type ChatSpecialIds,
+  type SftDataLoaderOptions,
 } from "./data.js";
 export {
   FileCheckpoint, buildCheckpointState, releaseCheckpointSnapshotBuffers, restoreParams,

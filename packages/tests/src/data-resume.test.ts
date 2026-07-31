@@ -81,6 +81,29 @@ describe("data-loader resume positioning", () => {
     expect(inputIds(resumed)).toEqual(expected);
   });
 
+  it("shuffled SFT visits every conversation once per epoch and resumes exactly", () => {
+    const examples: SftExample[] = Array.from({ length: 8 }, (_, index) => ({
+      tokens: Int32Array.of(100 + index, 200 + index),
+      roleMask: Uint8Array.of(0, 1),
+    }));
+    const options = { shuffleSeed: 20260731 };
+    const epoch = new SftDataLoader(examples, 2, 2, options);
+    const seen: number[] = [];
+    for (let batch = 0; batch < 4; batch++) {
+      const inputs = epoch.nextBatch().inputs.data as Int32Array;
+      seen.push(inputs[0], inputs[2]);
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual(examples.map((ex) => ex.tokens[0]));
+
+    const skipped = 11;
+    const uninterrupted = new SftDataLoader(examples, 3, 2, options);
+    for (let i = 0; i < skipped; i++) uninterrupted.nextBatch();
+    const expected = batchIds(uninterrupted);
+    const resumed = new SftDataLoader(examples, 3, 2, options);
+    resumed.seekBatches(skipped);
+    expect(batchIds(resumed)).toEqual(expected);
+  });
+
   it.each([false, true])("ShardedDataLoader is batch-identical to logical concatenation (packed=%s)", (packed) => {
     const all = tokenArray(47);
     const shards = [all.slice(0, 13), all.slice(13, 20), all.slice(20, 31), all.slice(31)];
@@ -253,7 +276,9 @@ describe("data-loader resume positioning", () => {
         },
       });
       expect(events).toContain("run_initialized_from_checkpoint");
-      expect(checkpointGc).toHaveBeenCalledTimes(2);
+      // Each one-step run reaches both terminal evaluation and checkpointing;
+      // both paths explicitly reclaim host buffers before continuing.
+      expect(checkpointGc).toHaveBeenCalledTimes(4);
       expect(checkpointPayload).toMatchObject({
         hostGcRan: true,
         hostRssBeforeGcMB: expect.any(Number),
