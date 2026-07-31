@@ -70,6 +70,7 @@ CONTRACT_TMP="$contract_tmp" node -e '
       answerStartTokens: 4,
       answerStartMultiplier: 8,
       eosBoostedAsAnswerStart: false,
+      cpuFallbackAllowed: false,
     },
     selection: {
       suite: "eval/chat-repair-dev-v1",
@@ -84,6 +85,7 @@ CONTRACT_TMP="$contract_tmp" node -e '
 mv "$contract_tmp" "$run_dir/repair-contract.json"
 
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}
+export HELIOS_NO_FALLBACK=1
 export HELIOS_DISABLE_COOP_MAT=1
 export HELIOS_WG_SIZE=64
 export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512
