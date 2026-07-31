@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CorpusReader } from "./browser.js";
-import { sha256Bytes } from "./hash.js";
+import { closeLedger, createCampaign, openLedger, seedLedger } from "./db.js";
+import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import { emptyHumanReviewResponse } from "./review-contract.js";
-import type { HumanReviewPacket } from "./types.js";
+import type { CampaignConfig, HumanReviewPacket, JsonValue } from "./types.js";
 
 const temporaryHomes: string[] = [];
 
@@ -107,6 +108,85 @@ function reviewFixture(): { databasePath: string; blobPath: string; packet: Huma
   return { databasePath, blobPath, packet, sha256 };
 }
 
+async function reviewProgressFixture(): Promise<string> {
+  const home = mkdtempSync(join(tmpdir(), "alpha-corpus-browser-progress-test-"));
+  temporaryHomes.push(home);
+  const ledger = await openLedger(home);
+  await seedLedger(ledger);
+  const config: CampaignConfig = {
+    slug: "progress-campaign",
+    purpose: "public review progress fixture",
+    workerModel: "gpt-5.4",
+    criticModel: "disabled",
+    maxGenerationCalls: 0,
+    maxReviewCalls: 0,
+    itemsPerFamily: 2,
+    artifactLimitBytes: 15 * 1024 * 1024 * 1024
+  };
+  const campaignId = await createCampaign(ledger, config);
+  const family = await ledger.client.execute(
+    "SELECT id FROM concept_family WHERE slug = 'role-versus-bearer'"
+  );
+  const familyId = String(family.rows[0]!["id"]);
+  const actorId = stableId("actor", "human:fixture-reviewer");
+  const candidateIds = ["one", "two"].map((key) => stableId("candidate", `${campaignId}:${familyId}:${key}`));
+  const versionIds = candidateIds.map((candidateId) => stableId("candidatev", `${candidateId}:1`));
+  const content = canonicalJson({
+    itemKey: "progress-fixture",
+    kind: "micro_dialogue",
+    title: "Fixture",
+    primaryLens: "social_ontology",
+    secondaryLenses: [],
+    transformation: "temporal_shift",
+    intendedResponsePolicy: "Answer directly.",
+    difficulty: "introductory",
+    messages: [
+      { role: "user", content: "Did the person change?" },
+      { role: "assistant", content: "The role changed; the person persisted." }
+    ],
+    linguisticPair: null,
+    generatorNotes: "fixture"
+  } as JsonValue);
+  const hidden = canonicalJson({
+    requiredCommitments: ["The person persists."],
+    prohibitedCommitments: ["The person ceased to exist."],
+    preserve: ["Identity"],
+    change: ["Role"],
+    admissibleAnalyses: ["Role and bearer differ."],
+    discriminatingEvidence: []
+  } as JsonValue);
+  await ledger.client.batch([
+    {
+      sql: "INSERT INTO actor(id, kind, display_name, created_at) VALUES (?, 'human', 'fixture-reviewer', '2026-07-31T00:00:00Z')",
+      args: [actorId]
+    },
+    ...candidateIds.flatMap((candidateId, index) => [
+      {
+        sql: `INSERT INTO candidate
+              (id, campaign_id, family_id, item_key, kind, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, 'micro_dialogue', ?, '2026-07-31T00:00:00Z', '2026-07-31T00:00:00Z')`,
+        args: [candidateId, campaignId, familyId, `progress-${index + 1}`,
+          index === 0 ? "structurally_valid" : "structurally_rejected"]
+      },
+      {
+        sql: `INSERT INTO candidate_version
+              (id, candidate_id, version, content_json, hidden_contract_json, content_sha256, created_at)
+              VALUES (?, ?, 1, ?, ?, ?, '2026-07-31T00:00:00Z')`,
+        args: [versionIds[index]!, candidateId, content, hidden, sha256Bytes(content)]
+      }
+    ]),
+    {
+      sql: `INSERT INTO review_assignment
+            (id, candidate_version_id, reviewer_actor_id, blindness_json, status, created_at, updated_at)
+            VALUES ('assignment_progress', ?, ?, '{"pass":"A","sessionId":"fixture"}', 'assigned',
+                    '2026-07-31T00:00:00Z', '2026-07-31T00:00:00Z')`,
+      args: [versionIds[0]!, actorId]
+    }
+  ], "write");
+  closeLedger(ledger);
+  return ledger.paths.database;
+}
+
 afterEach(() => {
   while (temporaryHomes.length > 0) {
     rmSync(temporaryHomes.pop()!, { recursive: true, force: true });
@@ -197,6 +277,35 @@ test("reader fails closed when a public review packet blob is modified", () => {
   const reader = new CorpusReader(fixture.databasePath);
   try {
     assert.throws(() => reader.reviewPacket(fixture.packet.sessionId), /blob hash mismatch/);
+  } finally {
+    reader.close();
+  }
+});
+
+test("reader reports the reviewer-scoped D5 pipeline without exposing candidate lineage", async () => {
+  const reader = new CorpusReader(await reviewProgressFixture());
+  try {
+    assert.deepEqual(reader.reviewCampaignProgress("progress-campaign", "fixture-reviewer"), {
+      campaignSlug: "progress-campaign",
+      reviewerAlias: "fixture-reviewer",
+      candidates: 2,
+      families: 1,
+      structuralRejections: 1,
+      passA: { assigned: 1, completed: 0, total: 2 },
+      hiddenRepeats: { assigned: 0, completed: 0, total: 2, stabilityRows: 0 },
+      passB: { assigned: 0, completed: 0, total: 2 },
+      passC: { assigned: 0, completed: 0, total: 1 },
+      structuralDispositions: { completed: 0, total: 1 },
+      passD: {
+        assigned: 0,
+        completed: 0,
+        total: 1,
+        adjudications: 0,
+        executionAuthorizations: 0
+      }
+    });
+    assert.equal(reader.reviewCampaignProgress("missing", "fixture-reviewer"), null);
+    assert.equal(reader.reviewCampaignProgress("progress-campaign", "missing"), null);
   } finally {
     reader.close();
   }

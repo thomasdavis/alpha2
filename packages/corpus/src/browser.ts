@@ -102,6 +102,29 @@ export interface CorpusReviewPacket {
   exportedAt: string;
 }
 
+export interface CorpusReviewStageProgress {
+  assigned: number;
+  completed: number;
+  total: number;
+}
+
+export interface CorpusReviewCampaignProgress {
+  campaignSlug: string;
+  reviewerAlias: string;
+  candidates: number;
+  families: number;
+  structuralRejections: number;
+  passA: CorpusReviewStageProgress;
+  hiddenRepeats: CorpusReviewStageProgress & { stabilityRows: number };
+  passB: CorpusReviewStageProgress;
+  passC: CorpusReviewStageProgress;
+  structuralDispositions: { completed: number; total: number };
+  passD: CorpusReviewStageProgress & {
+    adjudications: number;
+    executionAuthorizations: number;
+  };
+}
+
 interface SchemaRow {
   name: string;
   type: "table" | "view";
@@ -143,6 +166,26 @@ interface ReviewPacketRow {
   blob_sha256: string;
   relative_path: string;
   created_at: string;
+}
+
+interface ReviewCampaignProgressRow {
+  candidate_count: number | bigint;
+  family_count: number | bigint;
+  structural_rejection_count: number | bigint;
+  pass_a_assigned: number | bigint;
+  pass_a_completed: number | bigint;
+  repeat_assigned: number | bigint;
+  repeat_completed: number | bigint;
+  repeat_stability_rows: number | bigint;
+  pass_b_assigned: number | bigint;
+  pass_b_completed: number | bigint;
+  pass_c_assigned: number | bigint;
+  pass_c_completed: number | bigint;
+  structural_dispositions: number | bigint;
+  pass_d_assigned: number | bigint;
+  pass_d_completed: number | bigint;
+  pass_d_adjudications: number | bigint;
+  execution_authorizations: number | bigint;
 }
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -317,6 +360,155 @@ export class CorpusReader {
       });
     }
     return [...sessions.values()];
+  }
+
+  reviewCampaignProgress(campaignSlug: string, reviewerAlias: string): CorpusReviewCampaignProgress | null {
+    const requiredRelations = [
+      "actor",
+      "adjudication",
+      "campaign_closeout",
+      "campaign_closeout_assignment",
+      "candidate",
+      "candidate_version",
+      "corpus_candidate_current",
+      "family_synthesis",
+      "family_synthesis_assignment",
+      "generation_campaign",
+      "review_assignment",
+      "review_presentation",
+      "review_presentation_session",
+      "review_repeat_stability",
+      "structural_disposition"
+    ];
+    const available = new Set(this.allRelations().map((relation) => relation.name));
+    if (requiredRelations.some((relation) => !available.has(relation))) return null;
+
+    const row = this.database.prepare(`
+      WITH scope AS (
+        SELECT gc.id AS campaign_id, a.id AS actor_id
+        FROM generation_campaign gc
+        JOIN actor a ON a.kind = 'human' AND a.display_name = ?
+        WHERE gc.slug = ?
+      )
+      SELECT
+        (SELECT COUNT(*) FROM corpus_candidate_current cc
+          WHERE cc.campaign_id = scope.campaign_id) AS candidate_count,
+        (SELECT COUNT(DISTINCT cc.family_id) FROM corpus_candidate_current cc
+          WHERE cc.campaign_id = scope.campaign_id) AS family_count,
+        (SELECT COUNT(*) FROM corpus_candidate_current cc
+          WHERE cc.campaign_id = scope.campaign_id AND cc.status = 'structurally_rejected')
+          AS structural_rejection_count,
+        (SELECT COUNT(*) FROM review_assignment ra
+          JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+          JOIN candidate c ON c.id = cv.candidate_id
+          WHERE c.campaign_id = scope.campaign_id AND ra.reviewer_actor_id = scope.actor_id
+            AND json_extract(ra.blindness_json, '$.pass') = 'A' AND ra.status = 'assigned')
+          AS pass_a_assigned,
+        (SELECT COUNT(*) FROM review_assignment ra
+          JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+          JOIN candidate c ON c.id = cv.candidate_id
+          WHERE c.campaign_id = scope.campaign_id AND ra.reviewer_actor_id = scope.actor_id
+            AND json_extract(ra.blindness_json, '$.pass') = 'A' AND ra.status = 'completed')
+          AS pass_a_completed,
+        (SELECT COUNT(*) FROM review_presentation rp
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          WHERE rps.campaign_id = scope.campaign_id AND rps.reviewer_actor_id = scope.actor_id
+            AND rp.presentation_kind = 'hidden_repeat' AND rp.status = 'assigned')
+          AS repeat_assigned,
+        (SELECT COUNT(*) FROM review_presentation rp
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          WHERE rps.campaign_id = scope.campaign_id AND rps.reviewer_actor_id = scope.actor_id
+            AND rp.presentation_kind = 'hidden_repeat' AND rp.status = 'completed')
+          AS repeat_completed,
+        (SELECT COUNT(*) FROM review_repeat_stability rrs
+          JOIN review_presentation rp ON rp.id = rrs.presentation_id
+          JOIN review_presentation_session rps ON rps.id = rp.session_id
+          WHERE rps.campaign_id = scope.campaign_id AND rps.reviewer_actor_id = scope.actor_id)
+          AS repeat_stability_rows,
+        (SELECT COUNT(*) FROM review_assignment ra
+          JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+          JOIN candidate c ON c.id = cv.candidate_id
+          WHERE c.campaign_id = scope.campaign_id AND ra.reviewer_actor_id = scope.actor_id
+            AND json_extract(ra.blindness_json, '$.pass') = 'B' AND ra.status = 'assigned')
+          AS pass_b_assigned,
+        (SELECT COUNT(*) FROM review_assignment ra
+          JOIN candidate_version cv ON cv.id = ra.candidate_version_id
+          JOIN candidate c ON c.id = cv.candidate_id
+          WHERE c.campaign_id = scope.campaign_id AND ra.reviewer_actor_id = scope.actor_id
+            AND json_extract(ra.blindness_json, '$.pass') = 'B' AND ra.status = 'completed')
+          AS pass_b_completed,
+        (SELECT COUNT(*) FROM family_synthesis_assignment fsa
+          WHERE fsa.campaign_id = scope.campaign_id AND fsa.reviewer_actor_id = scope.actor_id
+            AND fsa.status = 'assigned') AS pass_c_assigned,
+        (SELECT COUNT(*) FROM family_synthesis_assignment fsa
+          WHERE fsa.campaign_id = scope.campaign_id AND fsa.reviewer_actor_id = scope.actor_id
+            AND fsa.status = 'completed') AS pass_c_completed,
+        (SELECT COUNT(*) FROM structural_disposition sd
+          JOIN family_synthesis fs ON fs.id = sd.family_synthesis_id
+          JOIN family_synthesis_assignment fsa ON fsa.id = fs.assignment_id
+          WHERE fsa.campaign_id = scope.campaign_id AND fsa.reviewer_actor_id = scope.actor_id)
+          AS structural_dispositions,
+        (SELECT COUNT(*) FROM campaign_closeout_assignment cca
+          WHERE cca.campaign_id = scope.campaign_id AND cca.adjudicator_actor_id = scope.actor_id
+            AND cca.status = 'assigned') AS pass_d_assigned,
+        (SELECT COUNT(*) FROM campaign_closeout_assignment cca
+          WHERE cca.campaign_id = scope.campaign_id AND cca.adjudicator_actor_id = scope.actor_id
+            AND cca.status = 'completed') AS pass_d_completed,
+        (SELECT COUNT(*) FROM adjudication a
+          JOIN campaign_closeout cc
+            ON cc.id = CASE WHEN json_valid(a.rationale)
+              THEN json_extract(a.rationale, '$.campaignCloseoutId') END
+          WHERE cc.campaign_id = scope.campaign_id AND cc.adjudicator_actor_id = scope.actor_id)
+          AS pass_d_adjudications,
+        (SELECT COUNT(*) FROM campaign_closeout cc
+          WHERE cc.campaign_id = scope.campaign_id AND cc.adjudicator_actor_id = scope.actor_id
+            AND cc.execution_authorized <> 0) AS execution_authorizations
+      FROM scope
+    `).get(reviewerAlias, campaignSlug) as ReviewCampaignProgressRow | undefined;
+    if (!row) return null;
+
+    const candidates = Number(row.candidate_count);
+    const families = Number(row.family_count);
+    const structuralRejections = Number(row.structural_rejection_count);
+    return {
+      campaignSlug,
+      reviewerAlias,
+      candidates,
+      families,
+      structuralRejections,
+      passA: {
+        assigned: Number(row.pass_a_assigned),
+        completed: Number(row.pass_a_completed),
+        total: candidates
+      },
+      hiddenRepeats: {
+        assigned: Number(row.repeat_assigned),
+        completed: Number(row.repeat_completed),
+        total: Math.min(6, candidates),
+        stabilityRows: Number(row.repeat_stability_rows)
+      },
+      passB: {
+        assigned: Number(row.pass_b_assigned),
+        completed: Number(row.pass_b_completed),
+        total: candidates
+      },
+      passC: {
+        assigned: Number(row.pass_c_assigned),
+        completed: Number(row.pass_c_completed),
+        total: families
+      },
+      structuralDispositions: {
+        completed: Number(row.structural_dispositions),
+        total: structuralRejections
+      },
+      passD: {
+        assigned: Number(row.pass_d_assigned),
+        completed: Number(row.pass_d_completed),
+        total: 1,
+        adjudications: Number(row.pass_d_adjudications),
+        executionAuthorizations: Number(row.execution_authorizations)
+      }
+    };
   }
 
   reviewPacket(sessionId: string): CorpusReviewPacket | null {

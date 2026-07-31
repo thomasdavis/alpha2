@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getCorpusReader } from "@/lib/corpus";
+import type { CorpusReviewCampaignProgress } from "@alpha/corpus";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,9 +16,150 @@ function formatTimestamp(value: string): string {
   }).format(date) + " UTC";
 }
 
+type PipelineStage = {
+  label: string;
+  detail: string;
+  completed: number;
+  total: number;
+  assigned?: number;
+  unlocked: boolean;
+};
+
+function stageStatus(stage: PipelineStage): "complete" | "current" | "locked" {
+  if (stage.total > 0 && stage.completed >= stage.total) return "complete";
+  return stage.unlocked ? "current" : "locked";
+}
+
+function nextReviewAction(progress: CorpusReviewCampaignProgress): string {
+  if (progress.passA.completed < progress.passA.total) {
+    return progress.passA.assigned > 0
+      ? `Complete and locally import the ${progress.passA.assigned} open Pass A assignments. They are one session within the ${progress.candidates}-candidate census.`
+      : `Prepare the next blinded Pass A session; ${progress.passA.completed} of ${progress.passA.total} candidates are sealed.`;
+  }
+  if (progress.hiddenRepeats.completed < progress.hiddenRepeats.total) {
+    return `Complete the hidden Pass A repeat presentations before revealing contracts; ${progress.hiddenRepeats.completed} of ${progress.hiddenRepeats.total} are sealed.`;
+  }
+  if (progress.passB.completed < progress.passB.total) {
+    return `Complete contract-aware Pass B for all ${progress.passB.total} candidates without altering the sealed Pass A evidence.`;
+  }
+  if (progress.passC.completed < progress.passC.total
+    || progress.structuralDispositions.completed < progress.structuralDispositions.total) {
+    return `Complete all ${progress.passC.total} family syntheses and ${progress.structuralDispositions.total} separate structural dispositions.`;
+  }
+  if (progress.passD.completed < progress.passD.total) {
+    return "Complete the non-binding Pass D campaign closeout. Its recommendations cannot authorize generation, release, training, or compute.";
+  }
+  return "D5 evidence is closed. Any next experiment still requires a separately bounded operator authorization.";
+}
+
+function ReviewPipeline({ progress }: { progress: CorpusReviewCampaignProgress }) {
+  const passAComplete = progress.passA.completed >= progress.passA.total;
+  const repeatsComplete = progress.hiddenRepeats.completed >= progress.hiddenRepeats.total;
+  const passBComplete = progress.passB.completed >= progress.passB.total;
+  const passCComplete = progress.passC.completed >= progress.passC.total;
+  const structuralComplete = progress.structuralDispositions.completed >= progress.structuralDispositions.total;
+  const stages: PipelineStage[] = [
+    {
+      label: "Pass A",
+      detail: "Blind conversation",
+      ...progress.passA,
+      unlocked: true
+    },
+    {
+      label: "Repeats",
+      detail: "Blind stability",
+      completed: progress.hiddenRepeats.completed,
+      total: progress.hiddenRepeats.total,
+      assigned: progress.hiddenRepeats.assigned,
+      unlocked: passAComplete
+    },
+    {
+      label: "Pass B",
+      detail: "Contract aware",
+      ...progress.passB,
+      unlocked: passAComplete && repeatsComplete
+    },
+    {
+      label: "Pass C",
+      detail: "Family synthesis",
+      ...progress.passC,
+      unlocked: passAComplete && repeatsComplete && passBComplete
+    },
+    {
+      label: "Structural",
+      detail: "Rejected cases",
+      completed: progress.structuralDispositions.completed,
+      total: progress.structuralDispositions.total,
+      unlocked: passAComplete && repeatsComplete && passBComplete
+    },
+    {
+      label: "Pass D",
+      detail: "Campaign closeout",
+      ...progress.passD,
+      unlocked: passAComplete && repeatsComplete && passBComplete && passCComplete && structuralComplete
+    }
+  ];
+
+  return (
+    <article className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-4">
+        <div>
+          <p className="font-mono text-xs font-semibold text-text-primary">{progress.campaignSlug}</p>
+          <p className="mt-1 text-xs text-text-muted">
+            reviewer {progress.reviewerAlias} · {progress.candidates} candidates · {progress.families} families
+          </p>
+        </div>
+        <span className={`rounded border px-2 py-1 text-[0.68rem] font-semibold ${
+          progress.passD.executionAuthorizations === 0
+            ? "border-green/30 bg-green-bg text-green"
+            : "border-red/30 bg-red-bg text-red"
+        }`}>
+          {progress.passD.executionAuthorizations === 0 ? "No execution authority" : "Authority anomaly"}
+        </span>
+      </div>
+      <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {stages.map((stage) => {
+          const status = stageStatus(stage);
+          return (
+            <div key={stage.label} className="bg-surface px-4 py-4">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-text-primary">{stage.label}</p>
+                <span className={`text-[0.64rem] font-semibold uppercase tracking-[0.08em] ${
+                  status === "complete" ? "text-green" : status === "current" ? "text-blue" : "text-text-muted"
+                }`}>
+                  {status}
+                </span>
+              </div>
+              <p className="mt-1 text-[0.68rem] text-text-muted">{stage.detail}</p>
+              <p className="mt-4 font-mono text-lg font-semibold tabular-nums text-text-primary">
+                {stage.completed}<span className="text-text-muted"> / {stage.total}</span>
+              </p>
+              {stage.assigned !== undefined && stage.assigned > 0 ? (
+                <p className="mt-1 text-[0.68rem] text-text-secondary">{stage.assigned} open</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="border-t border-border bg-surface-2 px-4 py-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">Current gate</p>
+        <p className="mt-1 text-sm leading-6 text-text-primary">{nextReviewAction(progress)}</p>
+        <p className="mt-1 text-xs leading-5 text-text-muted">
+          Browser drafts are not evidence until the downloaded packet passes the local importer.
+        </p>
+      </div>
+    </article>
+  );
+}
+
 export default function CorpusReviewPage() {
   const reader = getCorpusReader();
   const packets = reader.listReviewPackets();
+  const progress = [...new Map(
+    packets.map((packet) => [`${packet.campaignSlug}\0${packet.reviewerAlias}`, packet] as const)
+  ).values()]
+    .map((packet) => reader.reviewCampaignProgress(packet.campaignSlug, packet.reviewerAlias))
+    .filter((entry): entry is CorpusReviewCampaignProgress => entry !== null);
 
   return (
     <main className="mx-auto w-full max-w-6xl space-y-8">
@@ -57,6 +199,25 @@ export default function CorpusReviewPage() {
           </p>
         </div>
       </section>
+
+      {progress.length > 0 ? (
+        <section aria-labelledby="campaign-pipeline-heading">
+          <div>
+            <h2 id="campaign-pipeline-heading" className="text-base font-semibold text-text-primary">
+              D5 campaign pipeline
+            </h2>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-text-muted">
+              Reviewer-scoped counts derived from the public ledger. No candidate IDs, family labels, hidden
+              contracts, structural status, or repeat identity are exposed here.
+            </p>
+          </div>
+          <div className="mt-4 space-y-4">
+            {progress.map((entry) => (
+              <ReviewPipeline key={`${entry.campaignSlug}:${entry.reviewerAlias}`} progress={entry} />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section aria-labelledby="open-sessions-heading">
         <div className="flex items-baseline justify-between gap-4">
