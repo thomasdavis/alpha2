@@ -62,6 +62,13 @@ rows, every Pass C family synthesis and structural disposition, and a current an
 `execution_authorized = 0`; it cannot create lifecycle transitions, release members, training exposures,
 model calls, or compute. The live proof fails at missing Pass A and leaves all Pass D/adjudication tables empty.
 
+[Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md) deploys an aggregate-only
+D5 campaign panel at `https://alpha.donto.org/corpus/review`. It shows Pass A 0/48 with 12 open, repeats 0/6,
+Pass B 0/48, Pass C 0/6, structural dispositions 0/6, and Pass D 0/1, with downstream stages locked. Treat the
+12-item packet as one session, not D5 completion. The page does not expose candidate IDs, family labels,
+hidden contracts, structural status, or repeat identity; do not weaken that blindness contract. Revision
+`8f25d51c362921480d68e37a22d57a9ee39d47d9` is live and public non-read methods remain 405.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

@@ -1,4 +1,4 @@
-# HANDOFF — Alpha Corpus D5 review workspace plus calibration and Alpha 60M archive, state as of 2026-07-31
+# HANDOFF — Alpha Corpus D5 review pipeline plus calibration and Alpha 60M archive, state as of 2026-07-31
 
 ## Current planning goal
 
@@ -37,8 +37,17 @@ The same blinded packet is now practical to review at `https://alpha.donto.org/c
 workspace is recorded in
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md), autosaves only in browser
 local storage, validates against the same executable rubric as `review-submit`, and downloads JSON. It has no
-public submit action; the app and Caddy return 405 to non-read methods. Release source is `cc9be14`; the public
-service is active with zero restarts. Human responses are still pending.
+public submit action; the app and Caddy return 405 to non-read methods. The original workspace release source
+was `cc9be14`; human responses are still pending.
+
+The current production release is now
+`8f25d51c362921480d68e37a22d57a9ee39d47d9`, recorded in
+[Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md). The review dashboard
+derives the complete aggregate D5 pipeline from SQLite: Pass A 0/48 with 12 open, hidden repeats 0/6, Pass B
+0/48, Pass C 0/6, structural dispositions 0/6, and Pass D 0/1. It explicitly says the open packet is one
+session within the 48-candidate census and exposes none of the lineage that would compromise blind review.
+Public desktop and 390 px browser checks passed, POST remains 405, and the prior `cc9be14` release remains the
+rollback target.
 
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
@@ -79,7 +88,9 @@ at the first missing sealed Pass A review and creates zero closeout assignments.
 recommended states, failure clusters, release members, and training exposures remain zero. SQL enforces
 `execution_authorized = 0`; Pass D can recommend later evidence stages but can never start them. All seven
 new relations return HTTP 200 in the public explorer. Integrity, foreign keys, and blob checks are clean; the
-project-owned footprint is 35.39 MiB. The immediate authority-bearing action remains real human Pass A.
+project-owned footprint was 35.39 MiB at that checkpoint. After the Execution 09 browser evidence, the complete
+project-owned tree is 35.65 MiB. Integrity, foreign keys, and blobs remain clean. The immediate
+authority-bearing action remains real human Pass A.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

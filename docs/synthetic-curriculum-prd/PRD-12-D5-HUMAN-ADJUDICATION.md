@@ -15,6 +15,11 @@ training, GPU use, corpus release, or live Donto mutation
 **Review route:** `https://alpha.donto.org/corpus/review` (browser-local draft and download only; local
 `review-submit` remains the sole ledger-write path)
 
+**Pipeline visibility:** the route derives aggregate reviewer-scoped counts for Pass A, hidden repeats, Pass B,
+Pass C, structural dispositions, and Pass D. It exposes no candidate IDs, family labels, contracts, structural
+status, or repeat identity; see
+[Execution 09](EXECUTION-09-D5-PIPELINE-VISIBILITY.md).
+
 ## 1. Purpose
 
 This PRD turns the abstract review principles in PRD-04 into an executable human-adjudication protocol for the
@@ -599,6 +604,11 @@ completed packet, and import it through the local append-only `review-submit` co
 model critic: the point of this phase is to create the human reference that a critic would later be measured
 against. Execution 05's surface evidence may nominate comparisons but must not be shown in a way that breaks
 Pass A blindness.
+
+The dashboard now makes the campaign denominator explicit: the prepared 12-item packet is one session within
+the 48-candidate Pass A census. Finishing it does not unlock Pass B or complete D5. Continue with additional
+blinded Pass A sessions and the six hidden repeats according to the ledger-derived pipeline before revealing
+contracts. The panel is evidence visibility only; it neither prepares assignments nor imports judgments.
 
 The Pass C implementation is ready but intentionally empty: zero assignments, zero family syntheses, and
 zero structural dispositions. Do not bypass its A/B gate merely to populate the new public tables. The six

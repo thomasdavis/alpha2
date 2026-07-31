@@ -3,8 +3,9 @@
 **Status:** canonical project goal as of 2026-07-31
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
 **Current phase:** D5 calibration generated; public read-only explorer and local-first review workspace live;
-first-class surface evidence and fail-closed Pass A–D evidence workflows recorded; first 12 blinded Pass A
-assignments prepared, human responses pending
+the complete reviewer-scoped A/repeat/B/C/structural/D pipeline is visible without hidden lineage; first-class
+surface evidence and fail-closed Pass A–D evidence workflows recorded; first 12 blinded Pass A assignments
+prepared, human responses pending
 **Completed bounded scope:** D2–D4 implementation, a 48-candidate GPT-5.4 D5 calibration, its immutable
 current-version surface/distribution profile, blinded presentation substrate, family/structural synthesis
 substrate, and non-binding campaign-closeout substrate
@@ -52,6 +53,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 24. [Execution 06 — D5 family synthesis and structural-disposition workflow](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md)
 25. [Execution 07 — D5 blinded repeat presentations](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md)
 26. [Execution 08 — D5 campaign-closeout workflow](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md)
+27. [Execution 09 — D5 campaign-pipeline visibility](EXECUTION-09-D5-PIPELINE-VISIBILITY.md)
 
 ## Authority and supersession
 

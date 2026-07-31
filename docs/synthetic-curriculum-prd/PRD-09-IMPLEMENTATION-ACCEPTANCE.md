@@ -21,6 +21,8 @@ The blinded repeat-presentation implementation is
 [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
 The non-binding campaign-closeout implementation is
 [Execution 08](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md).
+The deployed aggregate campaign-state panel is
+[Execution 09](EXECUTION-09-D5-PIPELINE-VISIBILITY.md).
 
 Done:
 
@@ -41,7 +43,8 @@ Done:
   with a full human-audit packet;
 - D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, separate
   structural-disposition evidence, and non-binding Pass D campaign closeout; versioned rubrics; append-only
-  human submission; a deployed local-first browser workspace; 20/20 corpus tests; and the first 12 Pass A
+  human submission; a deployed local-first browser workspace; a hidden-lineage-safe aggregate pipeline;
+  21/21 corpus tests; and the first 12 of 48 Pass A
   assignments prepared with zero fabricated
   judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without

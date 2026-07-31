@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -53,6 +53,14 @@ The browser instrument is live at `https://alpha.donto.org/corpus/review` and re
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). It autosaves only in the
 reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
 
+[Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md) records the deployed
+reviewer-scoped campaign panel at revision `8f25d51c362921480d68e37a22d57a9ee39d47d9`. It makes the complete
+`A -> six hidden repeats -> B -> C + structural dispositions -> D` sequence visible and states that the 12
+open assignments are one session within the 48-candidate Pass A census. It returns aggregate counts only: no
+candidate IDs, family labels, hidden contracts, structural status, or repeat identity. Desktop and 390 px
+public browser proofs passed with no overflow or error overlay; public POST remains 405. This visibility does
+not create scientific evidence or execution authority.
+
 The current-version D5 surface profile is recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Its corrected run stores
 236 campaign/family metrics, all 2,256 word/character pairwise similarity measurements, and 488 dynamically
@@ -72,6 +80,10 @@ recommended D5 states. The canonical ledger now has 129 tables, five views, and 
 closeout execution authority to zero. The live prerequisite proofs leave every new human-evidence table,
 adjudication, release membership, and training exposure empty. The immediate authority-bearing action remains
 real human Pass A review; implementation must not be mistaken for adjudication.
+
+Post-Execution-09 reconciliation remains clean at seven migrations, 129 tables, five views, 186 triggers, 48
+candidates, 12 open Pass A assignments, and zero human reviews, adjudications, release members, training
+exposures, or execution authorizations. The complete project-owned artifact tree is 35.65 MiB.
 
 ---
 

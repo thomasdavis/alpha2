@@ -1,7 +1,9 @@
 # PRD-11 — Public Alpha Corpus explorer
 
-- **Status:** implemented and live; production release proof is recorded in Execution 02
+- **Status:** implemented and live; explorer proof is recorded in Execution 02 and D5 review-pipeline proof in
+  Execution 09
 - **Route:** `https://alpha.donto.org/corpus`
+- **Review route:** `https://alpha.donto.org/corpus/review`
 - **Audience:** the operator, collaborating research agents, dataset reviewers, and public researchers
 - **Data authority:** the canonical Alpha Corpus SQLite ledger on the mounted research drive
 - **Access policy:** public and read-only
@@ -28,6 +30,13 @@ The route succeeds when a visitor can:
 The explorer is a public research instrument. It must not turn generated material into an implied dataset
 release, structural validity into human approval, or release membership into proof that a row was used for
 training.
+
+The sibling review route is a local-first human instrument over hash-verified packets. Its dashboard may expose
+reviewer-scoped aggregate stage counts so the operator can distinguish a session from the whole D5 campaign,
+but it must not reveal candidate IDs, family labels, hidden contracts, structural status, or repeat identity.
+It has no public write path: browser drafts remain local, downloads remain unsubmitted files, and only the
+validated local importer may create review evidence. Execution 09 records the deployed aggregate pipeline and
+the unchanged scientific state.
 
 ## 2. Scope
 
