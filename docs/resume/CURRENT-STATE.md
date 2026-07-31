@@ -28,7 +28,7 @@ chat model remained unchanged, and the paid Alpha pod was removed after verified
 | V2 exact comparison | baseline 24 loops; best v2 still 29 loops on the same 69 prompts |
 | V2 sealed final | never executed or inspected |
 | V2 recovery archive | revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, 53 files |
-| V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched |
+| V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched; final live list empty |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
 result is not structurally reliable and its semantic behavior is weak. Repair v2 did not improve it. Alpha is

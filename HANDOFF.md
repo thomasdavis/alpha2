@@ -25,8 +25,10 @@ The latest authoritative record is
   `c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`.
 - Anonymous verification found 53 public files and exact LFS hashes for both retained checkpoints. The public
   checksum manifest SHA-256 is `b733f5704e722faadd2e6e46cd9505be44e7952da75d3d001aa65ac92cc6cf5f`.
-- Alpha pod `omn3hktwqs7r5l` was removed only after verified recovery. The currently visible RunPod
-  `7pk5wnwgtazb0z` is an unrelated workload and must not be touched.
+- Alpha pod `omn3hktwqs7r5l` was removed only after verified recovery. RunPod `7pk5wnwgtazb0z`, visible in the
+  immediate termination proof, belonged to an unrelated workload and was untouched; it was no longer listed at
+  the final documentation audit. Always recheck live pod ownership rather than treating either observation as
+  permanent.
 - No v2 improvement announcement was posted. One later operator-requested webhook test used an exact rejected
   sample and was clearly labelled as a test; it did not change the improvement-only rule.
 - Do not continue either v2 branch blindly. A future paid run requires explicit authorization and a genuinely

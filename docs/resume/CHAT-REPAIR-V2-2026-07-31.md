@@ -352,8 +352,9 @@ checkpoint, all four evaluations, and remote logs were local and hash-verified. 
     /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/pilot-b/runpod-before-termination.txt
     /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/pilot-b/runpod-after-termination.txt
 
-The after listing retains only unrelated pod `7pk5wnwgtazb0z`; that workload was deliberately untouched. No paid
-Alpha compute remains live.
+The immediate after listing retained only unrelated pod `7pk5wnwgtazb0z`; that workload was deliberately
+untouched. A later final documentation audit found the live RunPod list empty. No paid Alpha compute remains
+live, and neither observation authorizes actions against another project's future pods.
 
 ## Discord record
 
