@@ -10,7 +10,11 @@ import {
   prepareHumanReviewPacket,
   submitHumanReviewPacket
 } from "./review.js";
-import { humanReviewPacketMatchesEnvelope } from "./review-contract.js";
+import {
+  emptyHumanReviewSessionResponse,
+  humanReviewPacketMatchesEnvelope,
+  parseHumanReviewPacketText
+} from "./review-contract.js";
 import type { CampaignConfig, GeneratedItem, HumanReviewPacket, JsonValue } from "./types.js";
 
 const temporaryHomes: string[] = [];
@@ -134,6 +138,12 @@ test("Pass A packets blind contracts, include rejected candidates, and resume op
     assert.equal(prepared.resumed, false);
     const packet = JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket;
     assert.equal(packet.assignments.length, 2);
+    const legacyPacket = JSON.parse(JSON.stringify(packet)) as Record<string, unknown>;
+    delete legacyPacket["sessionResponse"];
+    assert.deepEqual(
+      parseHumanReviewPacketText(JSON.stringify(legacyPacket)).sessionResponse,
+      emptyHumanReviewSessionResponse()
+    );
     for (const assignment of packet.assignments) {
       const visible = assignment.candidate as Record<string, unknown>;
       assert.deepEqual(Object.keys(visible).sort(), ["kind", "messages"]);

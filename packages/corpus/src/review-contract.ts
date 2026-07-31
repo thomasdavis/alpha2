@@ -315,18 +315,27 @@ export function parseHumanReviewPacketText(text: string): HumanReviewPacket {
     || typeof parsed.rubricVersion !== "number" || typeof parsed.seed !== "string"
     || typeof parsed.createdAt !== "string" || !Array.isArray(parsed.instructions)
     || !parsed.instructions.every((instruction) => typeof instruction === "string")
-    || !isRecord(parsed.sessionResponse)
-    || !Array.isArray(parsed.sessionResponse["declaredCompetencies"])
-    || !parsed.sessionResponse["declaredCompetencies"].every((value) => typeof value === "string")
-    || typeof parsed.sessionResponse["competenceNote"] !== "string"
-    || typeof parsed.sessionResponse["startedAt"] !== "string"
-    || typeof parsed.sessionResponse["endedAt"] !== "string"
-    || !(parsed.sessionResponse["interruptionStatus"] === null
-      || typeof parsed.sessionResponse["interruptionStatus"] === "string")
-    || !(parsed.sessionResponse["fatigueLevel"] === null
-      || typeof parsed.sessionResponse["fatigueLevel"] === "string")
-    || typeof parsed.sessionResponse["conditionsNote"] !== "string"
     || !Array.isArray(parsed.assignments)) {
+    throw new Error("Human-review submission does not match packet schema version 1");
+  }
+  const sessionResponse = parsed["sessionResponse"];
+  if (sessionResponse === undefined) {
+    // Early v1 review packets predate the additive reviewer-session declaration.
+    // Preserve their exact artifact bytes while normalizing them to an explicitly
+    // incomplete declaration in memory. Submission validation still requires the
+    // reviewer to complete every declaration field before any evidence is written.
+    parsed["sessionResponse"] = emptyHumanReviewSessionResponse();
+  } else if (!isRecord(sessionResponse)
+    || !Array.isArray(sessionResponse["declaredCompetencies"])
+    || !sessionResponse["declaredCompetencies"].every((value) => typeof value === "string")
+    || typeof sessionResponse["competenceNote"] !== "string"
+    || typeof sessionResponse["startedAt"] !== "string"
+    || typeof sessionResponse["endedAt"] !== "string"
+    || !(sessionResponse["interruptionStatus"] === null
+      || typeof sessionResponse["interruptionStatus"] === "string")
+    || !(sessionResponse["fatigueLevel"] === null
+      || typeof sessionResponse["fatigueLevel"] === "string")
+    || typeof sessionResponse["conditionsNote"] !== "string") {
     throw new Error("Human-review submission does not match packet schema version 1");
   }
   for (const assignment of parsed.assignments) {
