@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + FIRST-CLASS SURFACE PROFILE RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE LIVE; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -52,6 +52,13 @@ requires a sealed human submission before Pass B, and never changes release or t
 The browser instrument is live at `https://alpha.donto.org/corpus/review` and recorded in
 [Execution 04](docs/synthetic-curriculum-prd/EXECUTION-04-D5-REVIEW-WORKSPACE.md). It autosaves only in the
 reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
+
+The current-version D5 surface profile is recorded in
+[Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Its corrected run stores
+236 campaign/family metrics, all 2,256 word/character pairwise similarity measurements, and 488 dynamically
+discovered template signatures. The evidence is explicitly surface/distributional and cannot satisfy the
+human quality gate. One incorrect operator-supplied Git revision remains linked append-only to the corrected
+run, demonstrating the ledger's correction semantics rather than being silently erased.
 
 ---
 

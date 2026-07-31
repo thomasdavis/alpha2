@@ -27,6 +27,8 @@ Do not ratify a next step until the decision record links:
 - structural dispositions for all six rejected candidates;
 - failure-cluster report;
 - conversational-distribution report;
+- current authoritative `analysis_run` plus any `analysis_run_correction` rows;
+- surface-similarity and template-signature findings with their explicit non-semantic limitations;
 - hidden-repeat and Pass A/B stability report;
 - current ledger, repository, and rubric revisions;
 - current project-owned storage footprint;

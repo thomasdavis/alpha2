@@ -136,6 +136,11 @@ and exact duplicates.
 Similarity clustering, style signatures, lexical leakage, question rate, response-length outliers, source
 entailment candidates, category coverage, and consistency between hidden state and expected deltas.
 
+The first D5 R1 materialization is recorded in Execution 05. It stores current-version candidate-level word
+and character n-gram similarities, campaign/family distributions, and dynamically discovered word n-gram
+signatures as `surface_distribution_only`. These are review nominations, not semantic clusters, quality
+scores, critic decisions, or admissibility judgments.
+
 ### R2 — Model critics
 
 Independent dimension-specific critics produce findings with evidence. They may recommend accept, repair,

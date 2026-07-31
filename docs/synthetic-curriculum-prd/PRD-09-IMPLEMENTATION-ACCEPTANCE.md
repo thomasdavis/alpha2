@@ -14,7 +14,8 @@ The project is at **D5 — calibration generated, human conceptual adjudication 
 generation record is [Execution 01](EXECUTION-01-LEDGER-AND-CALIBRATION.md). The executable closeout protocol,
 review form, and unratified next-step package are [PRD-12](PRD-12-D5-HUMAN-ADJUDICATION.md),
 [Appendix D](APPENDIX-D-D5-REVIEW-INSTRUMENT.md), and
-[Decision Packet 01](DECISION-PACKET-01-D5-NEXT-STEP.md).
+[Decision Packet 01](DECISION-PACKET-01-D5-NEXT-STEP.md). The first-class deterministic evidence checkpoint is
+[Execution 05](EXECUTION-05-D5-SURFACE-EVIDENCE.md).
 
 Done:
 
@@ -26,7 +27,7 @@ Done:
 - first experimental data boundary fixed as synthetic-only;
 - fixed parameter-count framing removed;
 - one-GPU constraint recorded;
-- D2 ledger: two hash-verified migrations, 106 tables, four current/public views, append-only triggers,
+- D2 ledger: four hash-verified migrations, 112 tables, four current/public views, 160 append-only triggers,
   content-addressed blobs, and clean integrity/foreign-key validation;
 - D3 canaries: 49 categories, 16 transformations, and six quarantined family blueprints;
 - D4 orchestration: structured Codex calls, exact raw artifacts, bounded/idempotent tasks, validators, usage,
@@ -34,8 +35,10 @@ Done:
 - D5 generation portion: 12 GPT-5.4 calls, 48 candidates, 42 structurally valid and six retained rejections,
   with a full human-audit packet;
 - D5 review substrate: executable blinded Pass A and contract-aware Pass B packets, versioned rubric,
-  append-only human submission, a deployed local-first browser workspace, 14/14 corpus tests, and the first 12
+  append-only human submission, a deployed local-first browser workspace, 15/15 corpus tests, and the first 12
   Pass A assignments prepared with zero fabricated judgments;
+- D5 deterministic evidence: one current-version snapshot, 236 scoped metrics, 2,256 pair/method surface
+  edges, 488 dynamic signatures, and an append-only correction for one erroneous software-revision claim;
 - GPT-5.5, training, GPU work, live Donto writes, and release remained unused during generation. A separately
   authorized factual Discord progress timer was installed after the calibration.
 

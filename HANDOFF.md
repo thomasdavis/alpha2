@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 106 tables and four views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 112 tables and four views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -39,6 +39,16 @@ workspace is recorded in
 local storage, validates against the same executable rubric as `review-submit`, and downloads JSON. It has no
 public submit action; the app and Caddy return 405 to non-read methods. Release source is `cc9be14`; the public
 service is active with zero restarts. Human responses are still pending.
+
+The D5 deterministic profile is now first-class and recorded in
+[Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run
+`analysis_run_a32f01644e1a96a9ea601b35b35626aa` is tied to exact revision
+`002e123f71cdc30ef883b6fb6222a47240578001` and input snapshot
+`8ce2bf64152c674f17b707137774ad7be42eb0ad5c2a51ec3953a196f75ac03e`. It contributes 236 metrics,
+2,256 similarity edges, and 488 signatures. The earlier run
+`analysis_run_e6e5e45da332d9482be1ed7ca586780f` contains an incorrect operator-supplied revision and is
+explicitly superseded by `analysis_run_correction_d74d355ddcfc337474809c4dd1b618e0`; never cite it as
+current. The canonical ledger is clean at four migrations, zero FK/blob failures, and 18.46 MiB.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

@@ -3,8 +3,9 @@
 **Status:** canonical project goal as of 2026-07-31
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
 **Current phase:** D5 calibration generated; public read-only explorer and local-first review workspace live;
-first 12 blinded Pass A assignments prepared, human responses pending
-**Completed bounded scope:** D2–D4 implementation plus a 48-candidate GPT-5.4 D5 calibration
+first-class surface evidence recorded; first 12 blinded Pass A assignments prepared, human responses pending
+**Completed bounded scope:** D2–D4 implementation, a 48-candidate GPT-5.4 D5 calibration, and its immutable
+current-version surface/distribution profile
 **Not authorized yet:** further corpus expansion, training, GPU rental, live Donto mutation, public dataset
 release, or ad hoc Discord posting beyond the factual two-hour timer
 
@@ -45,6 +46,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 20. [Decision Packet 01 — D5 next-step decision](DECISION-PACKET-01-D5-NEXT-STEP.md)
 21. [Execution 03 — D5 human-review workflow](EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md)
 22. [Execution 04 — D5 local-first review workspace](EXECUTION-04-D5-REVIEW-WORKSPACE.md)
+23. [Execution 05 — D5 first-class surface and distribution evidence](EXECUTION-05-D5-SURFACE-EVIDENCE.md)
 
 ## Authority and supersession
 
@@ -88,6 +90,9 @@ The precedence order is:
 - **The scientific ledger is publicly inspectable, not publicly mutable.** The operator separately authorized
   the read-only explorer recorded in PRD-11 and Execution 02. Public visibility does not promote a candidate,
   create a release, or authorize training.
+- **Derived evidence stays typed and corrigible.** Surface similarity, template signatures, and distribution
+  metrics record method, input snapshot, code revision, and limitations. A provenance error is superseded by
+  an append-only correction relation, never hidden by rewriting history.
 
 ## What “comprehensive” means here
 

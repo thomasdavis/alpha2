@@ -78,9 +78,14 @@ Automated analysis reports:
 - median assistant length 32 words, mean 33.78, maximum 70, and p90 54;
 - three of 78 assistant messages ending in a question;
 - zero exact duplicate assistant messages;
-- zero near-duplicate pairs above 0.70 shingle similarity;
-- maximum pairwise shingle similarity 0.095;
+- zero current-candidate pairs above 0.70 under either recorded surface method;
+- maximum current-candidate word 3-gram Jaccard 0.063492 and character 5-gram Jaccard 0.211111;
 - 14 introductory, 23 intermediate, and 11 advanced candidates.
+
+Execution 05 freezes the method and exact input snapshot behind these figures in first-class SQLite tables.
+The earlier audit packet's 0.095 figure used assistant-message pairings; the first-class profile uses one
+combined assistant surface per current candidate so repaired candidate versions cannot inflate the population.
+Neither method measures semantic duplication.
 
 These are distributional diagnostics, not quality judgments. Low surface duplication does not prove
 conceptual diversity. Short answers do not prove conversational skill. Structural validity does not prove
@@ -561,6 +566,8 @@ D5 human adjudication is complete only when:
 
 ## 19. Immediate next action
 
-Implement or verify the local append-only human-review entry path, register this rubric version, and conduct
-Pass A on the first randomized 8–12 candidates. Do not begin with a model critic: the point of this phase is
-to create the human reference that a critic would later be measured against.
+Open the live local-first workspace, conduct Pass A on the prepared 12 blinded candidates, download the
+completed packet, and import it through the local append-only `review-submit` command. Do not begin with a
+model critic: the point of this phase is to create the human reference that a critic would later be measured
+against. Execution 05's surface evidence may nominate comparisons but must not be shown in a way that breaks
+Pass A blindness.

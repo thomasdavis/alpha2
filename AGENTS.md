@@ -34,6 +34,13 @@ The first session can be completed at `https://alpha.donto.org/corpus/review`; s
 browser autosave and packet download are allowed, but only the local `review-submit` CLI may write a completed
 human packet into SQLite. Never add a public review POST, server action, or direct database mutation.
 
+[Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md) records the frozen D5
+surface profile: 236 scoped metrics, 2,256 candidate-pair/method edges, and 488 dynamic signatures in
+append-only tables. It also preserves one erroneous software-revision claim and its explicit correction.
+Treat only `analysis_run_a32f01644e1a96a9ea601b35b35626aa` as the current run. These records are
+`surface_distribution_only`; they do not replace blind human review, semantic duplicate adjudication, or
+release decisions.
+
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.

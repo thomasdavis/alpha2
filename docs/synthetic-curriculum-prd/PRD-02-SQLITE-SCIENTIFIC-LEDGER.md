@@ -301,6 +301,12 @@ Reviews never overwrite one another. An adjudication can select an action withou
 Similarity proposes; it does not destructively deduplicate. Near-duplicates may be valuable controlled
 paraphrases if the family says so.
 
+The D5 physical schema now materializes `analysis_method`, `analysis_run`, `analysis_metric`,
+`similarity_edge`, `template_signature`, and `analysis_run_correction`. The last table preserves corrections
+to derived-run provenance without mutating the erroneous run. Embeddings, duplicate clusters, contamination
+probes, and lexical holdouts remain later materializations: no empty or guessed semantic record is created
+merely to make the physical schema resemble this catalog.
+
 ### 5.10 Releases, cohorts, and exports
 
 | Table | Purpose |
@@ -535,3 +541,14 @@ classes, reconstruct every released model-visible byte, retain every rejected at
 delimiters and tokenization were introduced only by an identified renderer. A compact early physical schema is
 acceptable only if deferred materializations remain exactly derivable from immutable artifacts and their
 derivation contracts are tested.
+
+## 15. Current D5 physical checkpoint
+
+Execution 05 records the first derived-evidence materialization. The canonical ledger has four migrations,
+112 tables, four views, and 160 append-only triggers. The frozen 48-candidate snapshot contributes one
+authoritative surface-analysis run containing 236 scoped metrics, 2,256 pair/method similarity edges, and 488
+dynamic template signatures. A provenance-erroneous predecessor and its typed correction are intentionally
+retained, so physical row counts include both runs.
+
+This checkpoint satisfies only the bounded D5 surface-analysis requirements. It does not complete PRD-02's
+future release, token-exposure, evaluation, embedding, contamination, or checkpoint-lineage catalog.

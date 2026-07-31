@@ -64,6 +64,18 @@ const reviewRows = sqliteRows(`
   FROM review_assignment
 `);
 const humanReviewRows = sqliteRows("SELECT COUNT(*) AS count FROM review WHERE reviewer_actor_id IS NOT NULL");
+const analysisRows = sqliteRows(`
+  SELECT ar.id AS analysis_run_id,
+         (SELECT COUNT(*) FROM analysis_metric am WHERE am.analysis_run_id = ar.id) AS metric_count,
+         (SELECT COUNT(*) FROM similarity_edge se WHERE se.analysis_run_id = ar.id) AS similarity_edge_count,
+         (SELECT COUNT(*) FROM template_signature ts WHERE ts.analysis_run_id = ar.id) AS template_signature_count
+  FROM analysis_run ar
+  LEFT JOIN analysis_run_correction correction ON correction.erroneous_analysis_run_id = ar.id
+  WHERE ar.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+    AND correction.erroneous_analysis_run_id IS NULL
+  ORDER BY ar.completed_at DESC
+  LIMIT 1
+`);
 
 const commit = command("git", ["log", "-1", "--format=%h %s"]);
 const dirtyFiles = command("git", ["status", "--porcelain"])
@@ -81,6 +93,7 @@ const footprint = directorySize(corpusHome);
 const usage = usageRows[0];
 const reviewProgress = reviewRows[0];
 const humanReviews = Number(humanReviewRows[0]?.["count"] ?? 0);
+const analysis = analysisRows[0];
 const humanAccepted = Number(progress["human_accepted"]);
 const passACompleted = Number(reviewProgress?.["pass_a_completed"] ?? 0);
 const passBAssigned = Number(reviewProgress?.["pass_b_assigned"] ?? 0);
@@ -96,6 +109,9 @@ const content = [
   `Ledger: integrity=${String(integrityRows[0]?.["integrity_check"] ?? "unknown")}; campaign=${String(progress["status"])}; tasks=${Number(progress["completed_tasks"])}/${Number(progress["task_count"])}; calls=${Number(progress["model_calls"])}.`,
   `Calibration: ${Number(progress["candidates"])} candidates; ${Number(progress["structurally_valid"])} structurally valid; ${Number(progress["structurally_rejected"])} retained rejections; ${humanAccepted} human accepted. Structural validity is not training approval.`,
   `Human review: Pass A ${passACompleted}/${Number(progress["candidates"])} completed (${Number(reviewProgress?.["pass_a_assigned"] ?? 0)} assigned); Pass B ${Number(reviewProgress?.["pass_b_completed"] ?? 0)} completed (${passBAssigned} assigned); ${humanReviews} append-only human review records.`,
+  analysis
+    ? `Deterministic surface evidence: ${Number(analysis["metric_count"])} scoped metrics; ${Number(analysis["similarity_edge_count"])} pair/method edges; ${Number(analysis["template_signature_count"])} dynamic signatures. This is not semantic or human approval.`
+    : "Deterministic surface evidence: no current analysis run recorded.",
   `Models: GPT-5.6-sol counsel; GPT-5.4 worker; GPT-5.5 not used. Tokens: ${Number(usage["input_tokens"]).toLocaleString()} input (${Number(usage["cached_input_tokens"]).toLocaleString()} cached), ${Number(usage["output_tokens"]).toLocaleString()} output.`,
   `Repository: ${commit}; ${dirtyFiles} pending file(s). Generation active: ${generationActive ? "yes" : "no"}. Training/GPU active: no.`,
   `Project-owned artifacts: ${mib(footprint)} of the 15 GiB soft-pause threshold.`,
