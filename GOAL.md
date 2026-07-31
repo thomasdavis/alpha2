@@ -1,6 +1,6 @@
 # CURRENT GOAL — recover the original Alpha chat model
 
-**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** CORRECTIVE RUN CLOSED; CHECKPOINT 1,200 PUBLISHED; FINAL QUALITY GATE FAILED; NO PAID POD LIVE
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE AGAIN BY OPERATOR DIRECTION; PUBLISHED STEP 1,200 IS THE FAILURE-ANALYSIS BASELINE; NO PAID POD LIVE YET
 
 The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
 effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
@@ -17,7 +17,10 @@ The selected candidate looked structurally chatty on development—48/48 nonempt
 the untouched suite measured only 55/100 structural passes, 70/100 nonempty replies, 31 loops, and 0/200 exact
 closed-book QA. The quality gate therefore remains FAIL. Native/Transformers parity passed 87/87 positions; the
 checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and the paid
-pod is removed. Do not launch another training run merely because later specializations remain desirable.
+pod was removed. On 2026-07-31 the operator explicitly directed the project to continue until Alpha is a genuinely
+effective chat model. The next paid run is authorized only after the frozen failures are stratified and a new
+finite contract isolates the intervention; do not blindly continue step 2,200 or reuse the narrow development
+suite as the selector.
 
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.
