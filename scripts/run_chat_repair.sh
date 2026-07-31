@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/run_chat_repair.sh TRAIN DEV MANIFEST TOKENIZER INIT_CHECKPOINT RUN_DIR \
-#     [STEPS=2200] [LR=0.00005] [BATCH=32]
+#     [STEPS=2200] [LR=0.00005] [BATCH=32] [START_WEIGHT=8] [START_TOKENS=4]
 
 set -euo pipefail
 
@@ -16,6 +16,8 @@ run_dir=${6:?new run directory required}
 steps=${7:-2200}
 learning_rate=${8:-0.00005}
 batch_size=${9:-32}
+start_weight=${10:-8}
+start_tokens=${11:-4}
 
 for required in "$train_data" "$dev_data" "$manifest" "$tokenizer" "$init_checkpoint" apps/cli/dist/main.js; do
   [[ -f $required ]] || { echo "required file missing: $required" >&2; exit 1; }
@@ -23,6 +25,8 @@ done
 [[ ! -e $run_dir ]] || { echo "run directory already exists: $run_dir" >&2; exit 1; }
 [[ $steps =~ ^[1-9][0-9]*$ ]] || { echo "STEPS must be a positive integer" >&2; exit 2; }
 [[ $batch_size =~ ^[1-9][0-9]*$ ]] || { echo "BATCH must be a positive integer" >&2; exit 2; }
+[[ $start_weight =~ ^[1-9][0-9]*$ ]] || { echo "START_WEIGHT must be a positive integer" >&2; exit 2; }
+[[ $start_tokens =~ ^[1-9][0-9]*$ ]] || { echo "START_TOKENS must be a positive integer" >&2; exit 2; }
 
 train_sha=$(sha256sum "$train_data" | awk '{print $1}')
 dev_sha=$(sha256sum "$dev_data" | awk '{print $1}')
@@ -41,6 +45,7 @@ SOURCE_COMMIT="$source_commit" TRAIN_DATA="$train_data" TRAIN_SHA="$train_sha" \
 DEV_DATA="$dev_data" DEV_SHA="$dev_sha" MANIFEST="$manifest" MANIFEST_SHA="$manifest_sha" \
 TOKENIZER="$tokenizer" TOKENIZER_SHA="$tokenizer_sha" INIT_CHECKPOINT="$init_checkpoint" \
 CHECKPOINT_SHA="$checkpoint_sha" STEPS="$steps" LR="$learning_rate" BATCH="$batch_size" \
+START_WEIGHT="$start_weight" START_TOKENS="$start_tokens" \
 CONTRACT_TMP="$contract_tmp" node -e '
   const fs = require("node:fs");
   const contract = {
@@ -67,8 +72,8 @@ CONTRACT_TMP="$contract_tmp" node -e '
       checkpointInterval: 200,
       deterministicEpochShuffle: true,
       equalConversationWeight: true,
-      answerStartTokens: 4,
-      answerStartMultiplier: 8,
+      answerStartTokens: Number(process.env.START_TOKENS),
+      answerStartMultiplier: Number(process.env.START_WEIGHT),
       eosBoostedAsAnswerStart: false,
       gpuGateRequired: true,
       smallTensorCpuFallbackThreshold: 4096,
@@ -93,8 +98,8 @@ export ALPHA_FAIL_ON_SMOKE_TEST=1
 export ALPHA_ALLOW_RESUME_MISMATCH=1 # deliberate 1024 -> 512 RoPE context migration; weights are shape-compatible
 export ALPHA_SFT_SHUFFLE=1
 export ALPHA_SFT_BALANCE_CONVERSATIONS=1
-export ALPHA_SFT_START_TOKENS=4
-export ALPHA_SFT_START_WEIGHT=8
+export ALPHA_SFT_START_TOKENS="$start_tokens"
+export ALPHA_SFT_START_WEIGHT="$start_weight"
 export ALPHA_SAMPLE_FROM_CHECKPOINT=0
 export ALPHA_GPU_METRICS_SAMPLE_EVERY=25
 
