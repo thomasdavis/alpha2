@@ -1200,11 +1200,95 @@ const v4: string[] = [
   ...immutabilityTriggers("analysis_run_correction")
 ];
 
+const v5ImmutableTables = [
+  "family_synthesis",
+  "family_synthesis_basis",
+  "structural_disposition",
+  "structural_disposition_basis"
+];
+
+const v5: string[] = [
+  `CREATE TABLE IF NOT EXISTS family_synthesis_assignment (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    family_version_id TEXT NOT NULL REFERENCES family_version(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    session_id TEXT NOT NULL,
+    input_snapshot_sha256 TEXT NOT NULL,
+    blindness_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(campaign_id, family_version_id, reviewer_actor_id, rubric_version_id),
+    CHECK(status IN ('assigned', 'completed'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS family_synthesis (
+    id TEXT PRIMARY KEY,
+    assignment_id TEXT NOT NULL UNIQUE REFERENCES family_synthesis_assignment(id),
+    family_version_id TEXT NOT NULL REFERENCES family_version(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    disposition TEXT NOT NULL,
+    central_distinction TEXT NOT NULL,
+    coverage_json TEXT NOT NULL,
+    diagnosis_json TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    submission_blob_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    created_at TEXT NOT NULL,
+    CHECK(confidence BETWEEN 0 AND 4)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS family_synthesis_basis (
+    id TEXT PRIMARY KEY,
+    family_synthesis_id TEXT NOT NULL REFERENCES family_synthesis(id),
+    candidate_version_id TEXT NOT NULL REFERENCES candidate_version(id),
+    review_id TEXT NOT NULL REFERENCES review(id),
+    review_pass TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(family_synthesis_id, review_id),
+    CHECK(review_pass IN ('A', 'B'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS structural_disposition (
+    id TEXT PRIMARY KEY,
+    family_synthesis_id TEXT NOT NULL REFERENCES family_synthesis(id),
+    candidate_version_id TEXT NOT NULL REFERENCES candidate_version(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    content_utility TEXT NOT NULL,
+    validator_finding_correctness TEXT NOT NULL,
+    identified_value TEXT NOT NULL,
+    semantic_type TEXT NOT NULL,
+    remedy TEXT NOT NULL,
+    automatic_acceptance_hazard TEXT NOT NULL,
+    automatic_rejection_hazard TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    confidence INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(family_synthesis_id, candidate_version_id),
+    CHECK(confidence BETWEEN 0 AND 4)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS structural_disposition_basis (
+    id TEXT PRIMARY KEY,
+    structural_disposition_id TEXT NOT NULL REFERENCES structural_disposition(id),
+    basis_kind TEXT NOT NULL,
+    basis_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(structural_disposition_id, basis_kind, basis_id)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_family_synthesis_assignment_status
+     ON family_synthesis_assignment(campaign_id, reviewer_actor_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_family_synthesis_family
+     ON family_synthesis(family_version_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_structural_disposition_candidate
+     ON structural_disposition(candidate_version_id, created_at)`,
+  ...v5ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
   { version: 3, name: "first_class_surface_analysis", statements: v3 },
-  { version: 4, name: "append_only_analysis_run_corrections", statements: v4 }
+  { version: 4, name: "append_only_analysis_run_corrections", statements: v4 },
+  { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1237,6 +1321,11 @@ export const requiredTables = [
   "similarity_edge",
   "template_signature",
   "analysis_run_correction",
+  "family_synthesis_assignment",
+  "family_synthesis",
+  "family_synthesis_basis",
+  "structural_disposition",
+  "structural_disposition_basis",
   "dataset_release",
   "rendered_unit",
   "training_exposure",

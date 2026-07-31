@@ -140,7 +140,7 @@ async function campaignId(ledger: Ledger, slug: string): Promise<string> {
   return String(result.rows[0]!["id"]);
 }
 
-async function ensureHumanActor(ledger: Ledger, alias: string): Promise<string> {
+export async function ensureHumanActor(ledger: Ledger, alias: string): Promise<string> {
   const clean = alias.trim();
   if (clean.length < 1 || clean.length > 80) throw new Error("Reviewer alias must contain 1-80 characters");
   const id = stableId("actor", `human:${clean}`);
@@ -157,7 +157,7 @@ async function ensureHumanActor(ledger: Ledger, alias: string): Promise<string> 
   return id;
 }
 
-async function ensureRubric(ledger: Ledger): Promise<string> {
+export async function ensureHumanReviewRubric(ledger: Ledger): Promise<string> {
   const rubricId = stableId("rubric", HUMAN_REVIEW_RUBRIC_SLUG);
   const definitionJson = canonicalJson(RUBRIC_DEFINITION);
   const digest = sha256Bytes(definitionJson);
@@ -362,7 +362,7 @@ export async function prepareHumanReviewPacket(
   }
   await campaignId(ledger, options.campaignSlug);
   const actorId = await ensureHumanActor(ledger, options.reviewerAlias);
-  const rubricVersionId = await ensureRubric(ledger);
+  const rubricVersionId = await ensureHumanReviewRubric(ledger);
   let assignments = await openAssignments(
     ledger, options.campaignSlug, actorId, rubricVersionId, options.pass
   );
@@ -453,7 +453,7 @@ export async function submitHumanReviewPacket(
   const submissionBytes = readFileSync(resolve(path));
   const packet = parseHumanReviewPacketText(submissionBytes.toString("utf8"));
   const actorId = await ensureHumanActor(ledger, packet.reviewerAlias);
-  const rubricVersionId = await ensureRubric(ledger);
+  const rubricVersionId = await ensureHumanReviewRubric(ledger);
   if (packet.rubricSlug !== HUMAN_REVIEW_RUBRIC_SLUG
     || packet.rubricVersion !== HUMAN_REVIEW_RUBRIC_VERSION) {
     throw new Error("Human-review packet uses an unsupported rubric version");

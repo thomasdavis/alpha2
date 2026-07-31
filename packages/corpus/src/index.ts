@@ -11,5 +11,7 @@ export * from "./review.js";
 export * from "./schemas.js";
 export * from "./seeds.js";
 export * from "./storage.js";
+export * from "./synthesis-contract.js";
+export * from "./synthesis.js";
 export * from "./types.js";
 export * from "./validate.js";

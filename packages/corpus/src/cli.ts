@@ -13,6 +13,11 @@ import { analyzeCampaign } from "./analysis.js";
 import { formatBytes } from "./storage.js";
 import { humanReviewStatus, prepareHumanReviewPacket, submitHumanReviewPacket } from "./review.js";
 import { recordAnalysisRunCorrection, writeCalibrationProfile } from "./profile.js";
+import {
+  familySynthesisStatus,
+  prepareFamilySynthesisPacket,
+  submitFamilySynthesisPacket
+} from "./synthesis.js";
 
 function option(args: string[], name: string, fallback?: string): string | undefined {
   const index = args.indexOf(name);
@@ -63,6 +68,9 @@ function help(): void {
   review-prepare --reviewer ALIAS [--pass A|B] [--count 12] [--seed VALUE] [--output PATH] [--home PATH]
   review-submit --file PATH [--home PATH]
   review-status [--home PATH] [--campaign alpha-calibration-v1]
+  synthesis-prepare --reviewer ALIAS [--output PATH] [--home PATH] [--campaign alpha-calibration-v1]
+  synthesis-submit --file PATH [--home PATH]
+  synthesis-status [--home PATH] [--campaign alpha-calibration-v1]
 
 generate is a dry-run unless --execute is supplied. New generation pauses when this
 project's own ledger and artifact tree exceeds 15 GiB. It never trains Alpha.
@@ -147,6 +155,22 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     }
     if (command === "review-status") {
       print(await humanReviewStatus(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
+      return;
+    }
+    if (command === "synthesis-prepare") {
+      print(await prepareFamilySynthesisPacket(ledger, {
+        campaignSlug: option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!,
+        reviewerAlias: requiredOption(args, "--reviewer"),
+        outputDirectory: option(args, "--output")
+      }));
+      return;
+    }
+    if (command === "synthesis-submit") {
+      print(await submitFamilySynthesisPacket(ledger, requiredOption(args, "--file")));
+      return;
+    }
+    if (command === "synthesis-status") {
+      print(await familySynthesisStatus(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
       return;
     }
     throw new Error(`Unknown command ${command}`);
