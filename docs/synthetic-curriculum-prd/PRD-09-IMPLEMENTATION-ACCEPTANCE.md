@@ -25,6 +25,8 @@ The deployed aggregate campaign-state panel is
 [Execution 09](EXECUTION-09-D5-PIPELINE-VISIBILITY.md).
 The campaign-wide executable Pass B blindness gate is
 [Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
+The exact exported-packet envelope gate for browser drafts and local human submissions is
+[Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md).
 
 Done:
 
@@ -46,7 +48,7 @@ Done:
 - D5 review substrate: executable blinded Pass A, contract-aware Pass B, family-level Pass C, separate
   structural-disposition evidence, and non-binding Pass D campaign closeout; versioned rubrics; append-only
   human submission; a deployed local-first browser workspace; a hidden-lineage-safe aggregate pipeline;
-  21/21 corpus tests; and the first 12 of 48 Pass A
+  22/22 corpus tests; exact binding of every response to an exported immutable packet envelope; and the first 12 of 48 Pass A
   assignments prepared with zero fabricated
   judgments. Pass C is proven to create zero assignments before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without

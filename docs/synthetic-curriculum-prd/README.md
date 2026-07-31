@@ -4,8 +4,8 @@
 **Authority:** operator direction plus the binding decisions in `docs/resume/DECISIONS.md`
 **Current phase:** D5 calibration generated; public read-only explorer and local-first review workspace live;
 the complete reviewer-scoped A/repeat/B/C/structural/D pipeline is visible without hidden lineage; first-class
-surface evidence and fail-closed Pass A–D evidence workflows recorded; first 12 blinded Pass A assignments
-prepared, human responses pending
+surface evidence, fail-closed Pass A–D evidence workflows, and exact exported-packet envelope binding are live;
+first 12 blinded Pass A assignments prepared, human responses pending
 **Completed bounded scope:** D2–D4 implementation, a 48-candidate GPT-5.4 D5 calibration, its immutable
 current-version surface/distribution profile, blinded presentation substrate, family/structural synthesis
 substrate, and non-binding campaign-closeout substrate
@@ -55,6 +55,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 26. [Execution 08 — D5 campaign-closeout workflow](EXECUTION-08-D5-CAMPAIGN-CLOSEOUT-WORKFLOW.md)
 27. [Execution 09 — D5 campaign-pipeline visibility](EXECUTION-09-D5-PIPELINE-VISIBILITY.md)
 28. [Execution 10 — D5 campaign-wide Pass B blindness gate](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md)
+29. [Execution 11 — D5 immutable review-packet envelope](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md)
 
 ## Authority and supersession
 

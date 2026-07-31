@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET BINDING LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -91,6 +91,15 @@ allowed Pass B for an individually reviewed candidate before the remaining Pass 
 were complete. It now requires all 48 sealed Pass A reviews, all six repeat-stability rows, and no open
 first-class Pass A session before revealing any contract-aware packet. The exact forbidden live command failed
 at 0/48 and 0/6 without changing the SQLite file hash, size, modification time, or any scientific count.
+
+[Execution 11](docs/synthetic-curriculum-prd/EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md) closes a separate
+review-provenance defect at revision `e07477b934897b71f241724a230e2ccd6320e0c9`. A response submission must
+now reduce to the exact immutable envelope of a packet already exported for the session and pass; only rubric
+response objects may differ. Candidate text, instructions, seed, ordering and every presentation identity are
+bound. The public workspace uses the same check and discarded a deliberately altered local-storage candidate
+on reload. The canonical blank packet's computed envelope SHA equals its export SHA
+`6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; all human, release, training, and
+authorization counts remain zero. The live service runs the same revision with zero restarts.
 
 ---
 

@@ -40,14 +40,14 @@ local storage, validates against the same executable rubric as `review-submit`, 
 public submit action; the app and Caddy return 405 to non-read methods. The original workspace release source
 was `cc9be14`; human responses are still pending.
 
-The current production release is now
+The aggregate-pipeline release was introduced at
 `8f25d51c362921480d68e37a22d57a9ee39d47d9`, recorded in
 [Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md). The review dashboard
 derives the complete aggregate D5 pipeline from SQLite: Pass A 0/48 with 12 open, hidden repeats 0/6, Pass B
 0/48, Pass C 0/6, structural dispositions 0/6, and Pass D 0/1. It explicitly says the open packet is one
 session within the 48-candidate census and exposes none of the lineage that would compromise blind review.
-Public desktop and 390 px browser checks passed, POST remains 405, and the prior `cc9be14` release remains the
-rollback target.
+Public desktop and 390 px browser checks passed and POST remained 405. That release is now the immediate
+rollback target for the immutable-envelope release described below.
 
 The local Pass B preparer is additionally fail-closed at revision
 `b52792b4e0821852e500466be7f0640cf6f60b67`; see
@@ -57,6 +57,18 @@ census and repeat presentations. Pass B now requires all 48 Pass A reviews, all 
 zero open first-class Pass A sessions for the same reviewer/rubric. A live premature Pass B command exited
 nonzero at 0/48 and 0/6, while the canonical SQLite SHA-256 remained exactly
 `7184a38a4213e319008d8f8f2b170f6d3c4c5d934b581c2afa9d7aad6c4847ce` before and after.
+
+The current production review release is
+`e07477b934897b71f241724a230e2ccd6320e0c9`; see
+[Execution 11](docs/synthetic-curriculum-prd/EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md). The importer and
+browser now canonicalize a packet with every response reset, then require every remaining byte of meaning to
+match an exact exported packet. A changed assistant message with the original candidate hash and a changed
+opaque presentation identity both fail without writing a review or submission artifact. A real public browser
+tamper probe inserted a sentinel into local storage, reloaded, and observed the source packet restored in both
+the DOM and storage. The canonical packet remains blank at SHA-256
+`6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`; human reviews remain zero. The 22/22
+corpus suite, optimized web build, canary, manifest, public 200/405 boundaries, ledger integrity, foreign keys,
+and blob validation pass. The project-owned footprint is 35.76 MiB.
 
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run

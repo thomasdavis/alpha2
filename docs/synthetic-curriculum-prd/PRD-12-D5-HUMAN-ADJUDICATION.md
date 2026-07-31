@@ -25,6 +25,10 @@ review for the same reviewer and rubric, all `min(6, candidate count)` hidden-re
 no first-class Pass A presentation session remains open; see
 [Execution 10](EXECUTION-10-D5-PASS-B-BLINDNESS-GATE.md).
 
+**Submission-envelope enforcement:** browser-local drafts and local submissions may change response fields
+only. Every other field must match an exact, content-addressed packet previously exported for the same session
+and pass; see [Execution 11](EXECUTION-11-D5-IMMUTABLE-REVIEW-ENVELOPE.md).
+
 ## 1. Purpose
 
 This PRD turns the abstract review principles in PRD-04 into an executable human-adjudication protocol for the
