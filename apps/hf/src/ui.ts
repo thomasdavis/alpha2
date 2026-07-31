@@ -1,13 +1,44 @@
 import { MODEL_ID } from "./protocol.js";
 
-export function renderUi(params: number, step: number, apiBase = ""): string {
+export interface UiEvidence {
+  readonly totalChat: number;
+  readonly structuralPass: number;
+  readonly emptyReplies: number;
+  readonly degenerateLoops: number;
+  readonly qaExact: number;
+  readonly qaTotal: number;
+  readonly meanRepeat: string;
+  readonly maxRepeat: string;
+  readonly checkpointSha256: string;
+  readonly qualityGate: "PASS" | "FAIL";
+}
+
+export const SELECTED_EVIDENCE: UiEvidence = {
+  totalChat: 100,
+  structuralPass: 55,
+  emptyReplies: 30,
+  degenerateLoops: 31,
+  qaExact: 0,
+  qaTotal: 200,
+  meanRepeat: "0.1414",
+  maxRepeat: "0.840",
+  checkpointSha256: "399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec",
+  qualityGate: "FAIL",
+};
+
+export function renderUi(
+  params: number,
+  step: number,
+  apiBase = "",
+  evidence: UiEvidence = SELECTED_EVIDENCE,
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Inspect and query the archived Alpha 60M experimental checkpoint.">
-  <title>Alpha 60M · research artifact</title>
+  <meta name="description" content="Talk directly to Alpha's selected conversational repair checkpoint and inspect its measured limits.">
+  <title>Alpha · conversational repair checkpoint</title>
   <style>
     :root {
       color-scheme: light;
@@ -15,12 +46,11 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
       --muted: oklch(0.48 0.018 248);
       --line: oklch(0.89 0.012 248);
       --soft: oklch(0.975 0.008 248);
-      --danger: oklch(0.57 0.21 18);
-      --danger-soft: oklch(0.96 0.035 18);
+      --warning: oklch(0.52 0.13 62);
+      --warning-soft: oklch(0.97 0.025 62);
       --teal: oklch(0.48 0.095 190);
       --teal-soft: oklch(0.96 0.025 190);
       --white: oklch(1 0 0);
-      --shadow: 0 18px 50px oklch(0.20 0.018 248 / 0.07);
     }
     * { box-sizing: border-box; }
     html { background: var(--white); }
@@ -28,7 +58,7 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
       margin: 0;
       color: var(--ink);
       background: var(--white);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 15px;
       line-height: 1.55;
     }
@@ -57,16 +87,16 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 19px;
     }
-    .status { display: flex; align-items: center; gap: 9px; color: var(--danger); font-size: 13px; font-weight: 690; }
-    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+    .status { display: flex; align-items: center; gap: 9px; color: var(--warning); font-size: 13px; font-weight: 690; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
     main { max-width: 1240px; margin: 0 auto; padding: clamp(34px, 6vw, 78px) clamp(20px, 4vw, 64px) 72px; }
     .hero { max-width: 850px; margin-bottom: 42px; }
-    .eyebrow { margin: 0 0 10px; color: var(--danger); font-size: 12px; font-weight: 760; letter-spacing: 0.12em; text-transform: uppercase; }
-    h1 { margin: 0; max-width: 760px; font-size: clamp(39px, 6vw, 72px); line-height: 0.98; letter-spacing: -0.055em; font-weight: 760; }
-    .lede { max-width: 710px; margin: 24px 0 0; color: var(--muted); font-size: clamp(17px, 2vw, 20px); }
-    .warning { margin-top: 28px; padding: 17px 20px; border-left: 4px solid var(--danger); background: var(--danger-soft); }
-    .warning strong { display: block; margin-bottom: 3px; color: var(--danger); }
-    .workspace { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.75fr); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    .eyebrow { margin: 0 0 10px; color: var(--teal); font-size: 13px; font-weight: 720; }
+    h1 { margin: 0; max-width: 760px; font-size: 54px; line-height: 1.02; letter-spacing: -0.035em; font-weight: 760; text-wrap: balance; }
+    .lede { max-width: 70ch; margin: 24px 0 0; color: var(--muted); font-size: 19px; text-wrap: pretty; }
+    .warning { margin-top: 28px; padding: 17px 20px; border: 1px solid oklch(0.82 0.06 62); border-radius: 8px; background: var(--warning-soft); }
+    .warning strong { display: block; margin-bottom: 3px; color: var(--warning); }
+    .workspace { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.75fr); border: 1px solid var(--line); }
     aside { padding: 26px; background: var(--soft); border-right: 1px solid var(--line); }
     h2 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
     .metric-list { margin: 24px 0 28px; padding: 0; list-style: none; }
@@ -85,7 +115,7 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
     .turn-role { padding-top: 2px; color: var(--muted); font: 680 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
     .turn-body { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .turn.assistant .turn-role { color: var(--teal); }
-    .turn.failure .turn-body { color: var(--danger); font-style: italic; }
+    .turn.failure .turn-body { color: var(--warning); font-style: italic; }
     .composer { padding: 22px 26px 26px; border-top: 1px solid var(--line); }
     .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 13px; }
     .preset { border: 1px solid var(--line); border-radius: 5px; padding: 7px 10px; color: var(--muted); background: var(--white); cursor: pointer; font-size: 12px; }
@@ -94,14 +124,16 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
     textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 3px var(--teal-soft); }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 13px; }
     .actions small { color: var(--muted); }
-    .submit { min-width: 122px; padding: 10px 17px; border: 1px solid var(--danger); border-radius: 6px; color: var(--white); background: var(--danger); cursor: pointer; font-weight: 710; }
-    .submit:hover { background: oklch(0.51 0.21 18); }
-    .submit:focus-visible { outline: 3px solid var(--danger-soft); outline-offset: 2px; }
+    .submit { min-width: 122px; padding: 10px 17px; border: 1px solid var(--teal); border-radius: 6px; color: var(--white); background: var(--teal); cursor: pointer; font-weight: 710; }
+    .submit:hover { background: oklch(0.42 0.095 190); }
+    .submit:focus-visible { outline: 3px solid var(--teal-soft); outline-offset: 2px; }
     .submit:disabled { cursor: wait; opacity: 0.62; }
     footer { max-width: 1240px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 64px) 44px; display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 13px; }
     @media (max-width: 780px) {
       header { align-items: flex-start; }
       .status { max-width: 150px; text-align: right; }
+      h1 { font-size: 38px; }
+      .lede { font-size: 17px; }
       .workspace { grid-template-columns: 1fr; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .transcript { min-height: 270px; }
@@ -115,46 +147,48 @@ export function renderUi(params: number, step: number, apiBase = ""): string {
   <div class="shell">
     <header>
       <div class="brand"><span class="mark" aria-hidden="true">α</span><span>Alpha research</span></div>
-      <div class="status">Archived · D3 quality gate failed</div>
+      <div class="status">Corrective checkpoint · quality gate ${evidence.qualityGate.toLowerCase()}</div>
     </header>
     <main>
       <section class="hero" aria-labelledby="page-title">
-        <p class="eyebrow">57.7M parameters · built from scratch</p>
-        <h1 id="page-title">A finished experiment, shown without spin.</h1>
-        <p class="lede">Alpha 60M completed one billion pretraining tokens and a full SFT epoch on the custom TypeScript/Vulkan stack. The mechanics passed. The resulting checkpoint did not become a useful chat model.</p>
-        <div class="warning" role="note"><strong>Measured limitation</strong>In the sealed evaluation, 92 of 100 replies were empty, six looped, and two were unusable fragments. This console returns the checkpoint’s real output—including a blank EOS.</div>
+        <p class="eyebrow">Selected conversation repair · trained from scratch</p>
+        <h1 id="page-title">Alpha answers now. The difficult part is what it says.</h1>
+        <p class="lede">The corrective run repaired the old model’s empty-response behavior. This checkpoint can hold an ordinary short exchange, but it remains semantically immature and sometimes repetitive.</p>
+        <div class="warning" role="note"><strong>Measured boundary</strong>${evidence.structuralPass} of ${evidence.totalChat} untouched prompts produced a nonempty, EOS-terminated assistant response; ${evidence.degenerateLoops} met the repetition-loop threshold. The quality gate remains ${evidence.qualityGate.toLowerCase()}.</div>
       </section>
 
       <section class="workspace" aria-label="Alpha checkpoint console">
         <aside>
-          <h2>Frozen evidence</h2>
+          <h2>Untouched evaluation</h2>
           <ul class="metric-list">
-            <li><span>Structural pass</span><b>2 / 100</b></li>
-            <li><span>Empty replies</span><b>92 / 100</b></li>
-            <li><span>Degenerate loops</span><b>6 / 100</b></li>
-            <li><span>Closed-book QA</span><b>0 / 200</b></li>
-            <li><span>Export parity</span><b>PASS</b></li>
-            <li><span>Terminal step</span><b>${step.toLocaleString("en-US")}</b></li>
+            <li><span>Structural pass</span><b>${evidence.structuralPass} / ${evidence.totalChat}</b></li>
+            <li><span>Empty replies</span><b>${evidence.emptyReplies} / ${evidence.totalChat}</b></li>
+            <li><span>Degenerate loops</span><b>${evidence.degenerateLoops} / ${evidence.totalChat}</b></li>
+            <li><span>Mean / max repetition</span><b>${evidence.meanRepeat} / ${evidence.maxRepeat}</b></li>
+            <li><span>Closed-book QA</span><b>${evidence.qaExact} / ${evidence.qaTotal}</b></li>
+            <li><span>Export parity</span><b>87 / 87</b></li>
+            <li><span>Corrective step</span><b>${step.toLocaleString("en-US")}</b></li>
           </ul>
           <div class="detail">
-            <p><strong>${(params / 1e6).toFixed(2)}M</strong> finite parameters. Native checkpoint, optimizer state, RNG state, metrics, and failure reports are archived.</p>
+            <p><strong>${(params / 1e6).toFixed(2)}M</strong> finite parameters. Native optimizer/RNG state, the earlier failure, corrected evaluations, and exact outputs are preserved.</p>
+            <p>Checkpoint <code>${evidence.checkpointSha256.slice(0, 12)}…</code></p>
             <p><a href="https://huggingface.co/ajaxdavis/alpha-60m-chat" target="_blank" rel="noreferrer">Model card</a> · <a href="https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints" target="_blank" rel="noreferrer">Recovery archive</a></p>
           </div>
         </aside>
 
         <div class="console">
           <div class="console-head">
-            <div><h2>Checkpoint console</h2><p>Greedy decoding · 1,024-token context · no fallback model</p></div>
+            <div><h2>Checkpoint console</h2><p>Greedy decoding · 512-token context · no fallback model</p></div>
             <span class="runtime" id="runtime">READY</span>
           </div>
           <div class="transcript" id="transcript" aria-live="polite">
-            <div class="empty-state" id="empty-state"><b>Ask the archived model directly.</b>The response may be empty. That is evidence, not a transport error; the interface will mark it explicitly.</div>
+            <div class="empty-state" id="empty-state"><b>Talk to the selected checkpoint directly.</b>Try a short conversational prompt. The interface shows the model’s exact response and never substitutes another model.</div>
           </div>
           <form class="composer" id="composer">
             <div class="presets" aria-label="Example prompts">
-              <button class="preset" type="button" data-prompt="Explain why the sky looks blue in two short sentences.">Blue sky</button>
-              <button class="preset" type="button" data-prompt="Write a friendly greeting for a new neighbour.">Friendly greeting</button>
-              <button class="preset" type="button" data-prompt="What is 17 multiplied by 6? Explain the calculation.">Simple maths</button>
+              <button class="preset" type="button" data-prompt="Hey, how's your day going?">Casual greeting</button>
+              <button class="preset" type="button" data-prompt="You won't believe what happened at lunch.">Keep it going</button>
+              <button class="preset" type="button" data-prompt="What makes a decision fair?">Concept question</button>
             </div>
             <label for="prompt" class="turn-role">Your prompt</label>
             <textarea id="prompt" name="prompt" maxlength="3000" required placeholder="Type a short prompt…"></textarea>

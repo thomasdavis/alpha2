@@ -1,4 +1,4 @@
-/** Public HF Space for the terminal Alpha 60M SFT research artifact. */
+/** Public inference service for Alpha's selected conversational-repair checkpoint. */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { serve } from "@hono/node-server";
@@ -16,7 +16,7 @@ import {
 import { BpeTokenizer, ByteBpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import { Hono } from "hono";
 import { END_TOKEN, finiteNumber, formatChatPrompt, MODEL_ID, parseMessages, positiveInteger } from "./protocol.js";
-import { renderUi } from "./ui.js";
+import { renderUi, SELECTED_EVIDENCE } from "./ui.js";
 
 interface LoadedCheckpoint {
   readonly modelConfig: ModelConfig;
@@ -110,7 +110,7 @@ app.use("*", async (context, next) => {
   context.header("Access-Control-Allow-Origin", "*");
   context.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   context.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  context.header("X-Alpha-Quality-Gate", "FAIL");
+  context.header("X-Alpha-Quality-Gate", SELECTED_EVIDENCE.qualityGate);
 });
 app.options("*", (context) => context.body(null, 204));
 app.onError((error, context) => {
@@ -124,16 +124,23 @@ app.get("/health", (context) => context.json({
   model: MODEL_ID,
   parameters: paramCount,
   checkpoint_step: checkpoint.step,
-  quality_gate: "FAIL",
+  quality_gate: SELECTED_EVIDENCE.qualityGate,
   started_at: startedAt,
 }));
 app.get("/evidence", (context) => context.json({
   model: MODEL_ID,
-  quality_gate: "FAIL",
-  frozen_chat: { structural_pass: 2, total: 100, empty: 92, degenerate_loops: 6 },
-  frozen_qa: { exact_match: 0, total: 200 },
-  export_parity: { result: "PASS", top1: "2/2", max_logit_difference: 7.153e-6 },
-  checkpoint_sha256: "6c279d086d8c0679495e38ebec8a473ac23d16bfb3b93516e144712963fecbc8",
+  quality_gate: SELECTED_EVIDENCE.qualityGate,
+  frozen_chat: {
+    structural_pass: SELECTED_EVIDENCE.structuralPass,
+    total: SELECTED_EVIDENCE.totalChat,
+    empty: SELECTED_EVIDENCE.emptyReplies,
+    degenerate_loops: SELECTED_EVIDENCE.degenerateLoops,
+    mean_four_gram_repeat_rate: SELECTED_EVIDENCE.meanRepeat,
+    max_four_gram_repeat_rate: SELECTED_EVIDENCE.maxRepeat,
+  },
+  frozen_qa: { exact_match: SELECTED_EVIDENCE.qaExact, total: SELECTED_EVIDENCE.qaTotal },
+  export_parity: { result: "PASS", top1: "87/87", max_logit_difference: 5.531e-5 },
+  checkpoint_sha256: SELECTED_EVIDENCE.checkpointSha256,
 }));
 app.get("/v1/models", (context) => context.json({
   object: "list",

@@ -1,5 +1,5 @@
 [Unit]
-Description=Alpha 60M public research-artifact inference backend
+Description=Alpha selected conversational-repair inference backend
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=ajax
 Group=ajax
 WorkingDirectory=/mnt/donto-data/workspace/alpha2
-Environment=CHECKPOINT_PATH=/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/hf-archive/checkpoints/sft-terminal-step-30322.alph
+Environment=CHECKPOINT_PATH=/mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/checkpoint-1200.json
 Environment=HOST=127.0.0.1
 Environment=PORT=7860
 ExecStart=/usr/bin/node /home/ajax/bin/alpha-60m-space-server.mjs
@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadOnlyPaths=/mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/hf-archive/checkpoints/sft-terminal-step-30322.alph
+ReadOnlyPaths=/mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/checkpoint-1200.json
 
 [Install]
 WantedBy=multi-user.target

@@ -3,8 +3,8 @@
 ## Active result
 
 The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The bounded
-corrective run is complete and checkpoint 1,200 is selected. Final held-out evaluation, publication, and pod
-termination are in progress; do not start another training run.
+corrective run is complete and checkpoint 1,200 is selected. Final held-out evaluation is complete and the paid
+pod is removed; publication closeout is in progress. Do not start another training run.
 
 | Item | Current state |
 |---|---|
@@ -14,12 +14,12 @@ termination are in progress; do not start another training run.
 | Full run | 2,200 steps, complete and finite |
 | Selected checkpoint | step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` |
 | Repair development result | 48/48 nonempty, 48/48 EOS, 0 role leaks, 5 loops |
-| Final frozen result | in progress at first writing; bind before closeout |
-| Paid pod | `ksotbczj60mntk`, remove immediately after verified copy/export |
+| Final frozen result | 55/100 structural, 70/100 nonempty, 31 loops, QA 0/200; gate FAIL |
+| Paid pod | `ksotbczj60mntk` removed; `runpodctl pod list` empty after removal |
 | AlphaCorpus | paused side project; no candidate entered this run |
 
-The selected model is structurally conversational and materially better than the archived terminal checkpoint.
-It is not yet a strong semantic or philosophical model.
+The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
+result is not structurally reliable and its semantic behavior is weak. It is not yet a dependable chatbot.
 
 Canonical new evidence:
 

@@ -7,7 +7,8 @@
 - **Corrective run:** complete
 - **Selected checkpoint:** step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`
 - **Development verdict:** structurally chatty, semantically immature
-- **Closeout:** final frozen evaluation, publication, and pod termination in progress
+- **Frozen result:** 55/100 structural, 70/100 nonempty, 31 loops, QA 0/200; quality gate FAIL
+- **Closeout:** publication in progress; paid pod removed
 
 This directory is the shortest safe route into the model program. It preserves the archived failure, the later
 corrective experiment, and the evidence required before any further paid run.
@@ -36,11 +37,11 @@ contain the complete chronological record; this directory is the compact recover
 - Alpha trained the model successfully through its own TypeScript, Vulkan, autograd, tokenizer, and
   checkpoint stack.
 - The archived terminal checkpoint failed: 92 empty responses, six loops, two unusable fragments, and QA 0/200.
-- The later corrective checkpoint 1,200 produces nonempty, EOS-terminated replies on all 48 repair-development
-  cases, but still has five loops and weak semantic answers.
+- The later corrective checkpoint 1,200 produced nonempty, EOS-terminated replies on all 48 repair-development
+  cases, but the untouched suite fell to 55/100 structural, 70/100 nonempty, and 31 loops.
 - The evaluator and serving prompt also inserted a standalone generation-only space after the assistant marker.
   Commit `cf4ad61` fixes that boundary; historical failed outputs remain preserved.
-- The paid Alpha pod exists only for final evaluation/export and must be removed after verified copy.
+- The paid Alpha pod was removed after final evaluation was copied, hashed, and recomputed.
 - The standard Hugging Face model is inference-only. Future training must use a native ALPH checkpoint
   from the recovery archive because it carries AdamW, RNG, tokenizer, and step state.
 - Failed evaluations, abandoned trajectories, and old metrics are evidence. Never overwrite or

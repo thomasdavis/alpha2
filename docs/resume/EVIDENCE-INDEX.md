@@ -21,6 +21,7 @@ Primary files:
 | `full-end2/nvidia-gate/` | exact 46/46 NVIDIA assertion evidence |
 | `full-end2/hf-alpha-60m-chat-repair-1200/` | standard six-file portable export |
 | `final-heldout/` | untouched 100-chat/200-QA result after verified copy |
+| `final-heldout-pair-analysis.json` | recomputed frozen-input and machine-gate comparison |
 
 Selected checkpoint SHA-256:
 
@@ -32,6 +33,17 @@ Corrective corpus root:
 
 The corpus manifest binds 33,113 train and 1,767 development conversations. No AlphaCorpus candidate was used.
 See `CHAT-REPAIR-2026-07-31.md` for the prompt-boundary diagnosis and honest output examples.
+
+Final selected frozen outputs:
+
+| File | SHA-256 |
+|---|---|
+| `final-heldout/chat-results.jsonl` | `3f1a178299468be0549f32f7c871445de2113ed652bfd82c3068588445311570` |
+| `final-heldout/qa-results.jsonl` | `137a3981401e0563dd1bdde2e2fc86aa04112363deb10a879d10b3fb495c9300` |
+| `final-heldout/summary.json` | `997535ef15a9cd00a44c7c7d84474539688a317d98112d25695995061b9699af` |
+| `final-heldout-pair-analysis.json` | `8e6b245c9932ca93887549a6e839ce61337eb52a7925a4d3bc9930a978b29763` |
+
+Final machine result: 55/100 structural, 70/100 nonempty, 31 loops, and 0/200 closed-book QA exact. Gate FAIL.
 
 ## Terminal run
 

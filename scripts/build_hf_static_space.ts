@@ -12,7 +12,7 @@ if (!output.startsWith("/mnt/donto-data/alpha-runs/")) {
   throw new Error("--out must live under /mnt/donto-data/alpha-runs/");
 }
 await mkdir(dirname(output), { recursive: true });
-await writeFile(output, renderUi(57_688_576, 30_322, "https://donto.org/alpha-60m"), {
+await writeFile(output, renderUi(57_688_576, 1_200, "https://donto.org/alpha-60m"), {
   encoding: "utf-8",
   flag: "wx",
 });

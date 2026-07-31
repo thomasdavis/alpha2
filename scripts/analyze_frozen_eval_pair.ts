@@ -241,9 +241,31 @@ async function main(): Promise<void> {
   assertSha256(manifest.final?.chat?.sha256, "frozen manifest chat SHA-256");
   assertSha256(manifest.final?.closed_book_qa?.sha256, "frozen manifest QA SHA-256");
   assertEqual(base.summary.checkpoint.step, 61_036, "base checkpoint step");
-  assertEqual(chat.summary.checkpoint.step, 30_322, "chat checkpoint step");
-  if (!isDeepStrictEqual(base.summary.checkpoint.modelConfig, chat.summary.checkpoint.modelConfig)) {
-    throw new Error("base/chat model config differs");
+  const expectedChatStep = cli["expected-chat-step"] === undefined
+    ? 30_322
+    : Number(cli["expected-chat-step"]);
+  if (!Number.isSafeInteger(expectedChatStep) || expectedChatStep < 0) {
+    throw new Error(`--expected-chat-step must be a non-negative safe integer: ${cli["expected-chat-step"]}`);
+  }
+  assertEqual(chat.summary.checkpoint.step, expectedChatStep, "chat checkpoint step");
+  const expectedChatBlockSize = cli["expected-chat-block-size"] === undefined
+    ? undefined
+    : Number(cli["expected-chat-block-size"]);
+  if (expectedChatBlockSize === undefined) {
+    if (!isDeepStrictEqual(base.summary.checkpoint.modelConfig, chat.summary.checkpoint.modelConfig)) {
+      throw new Error("base/chat model config differs");
+    }
+  } else {
+    if (!Number.isSafeInteger(expectedChatBlockSize) || expectedChatBlockSize < 1) {
+      throw new Error(`--expected-chat-block-size must be a positive safe integer: ${cli["expected-chat-block-size"]}`);
+    }
+    assertEqual(chat.summary.checkpoint.modelConfig.blockSize, expectedChatBlockSize, "chat checkpoint block size");
+    const { blockSize: baseBlockSize, ...baseShape } = base.summary.checkpoint.modelConfig;
+    const { blockSize: chatBlockSize, ...chatShape } = chat.summary.checkpoint.modelConfig;
+    if (!isDeepStrictEqual(baseShape, chatShape)) throw new Error("base/chat model config differs beyond block size");
+    if (!Number.isSafeInteger(baseBlockSize) || !Number.isSafeInteger(chatBlockSize)) {
+      throw new Error("base/chat block size is not a safe integer");
+    }
   }
   for (const suite of ["chat", "qa"] as const) {
     assertEqual(base.summary.inputs[suite].sha256, chat.summary.inputs[suite].sha256, `${suite} input SHA-256`);
@@ -269,6 +291,13 @@ async function main(): Promise<void> {
       degenerate_loops_maximum: 0,
       per_sample_four_gram_repeat_rate_exclusive_maximum: 0.2,
     },
+    model_config_comparison: expectedChatBlockSize === undefined
+      ? { result: "EXACT_MATCH" }
+      : {
+          result: "MATCH_EXCEPT_PREDECLARED_BLOCK_SIZE",
+          base_block_size: base.summary.checkpoint.modelConfig.blockSize,
+          chat_block_size: chat.summary.checkpoint.modelConfig.blockSize,
+        },
     inputs_match: true,
     base: base.summary,
     chat: chat.summary,

@@ -11,8 +11,9 @@ This is not a claim that Alpha is a strong reasoner. The selected checkpoint sti
 misreads idioms and conceptual questions, and enters a repetition loop in five of 48 development cases. The
 result is best described as **structurally chatty, semantically immature**.
 
-No further training run is currently justified. The final untouched evaluation, portable export, public
-publication, and restart archive should be completed from the selected checkpoint before spending more GPU.
+No further training run is currently justified. The final untouched evaluation failed the predeclared quality
+gate, and the portable export, public publication, and restart archive preserve that result before any later
+experiment spends more GPU.
 
 ## Product goal and scope
 
@@ -240,8 +241,34 @@ The 100-chat/200-QA frozen suite was held until checkpoint selection. Its input 
 | 100 chat prompts | `6c463debaaf4f59452bc5e88ce85ca81f64c8a9e91974822609b5ac0883f7121` |
 | 200 closed-book QA items | `bbbeec574f5dd25a07ec1ff1c5a184d1709397345c394aa793f6a6d5d3c30a62` |
 
-At the time this document was first written, that evaluation was still running on the selected checkpoint. Replace
-this paragraph with the immutable summary, output hashes, and honest interpretation before publication closeout.
+| Metric | Selected step 1,200 |
+|---|---:|
+| Structural pass | 55 / 100 |
+| Nonempty | 70 / 100 |
+| EOS terminated | 56 / 100 |
+| Empty | 30 / 100 |
+| Role leaks | 0 / 100 |
+| Degenerate loops | 31 / 100 |
+| Mean / maximum 4-gram repetition | 0.141388 / 0.840 |
+| Closed-book QA exact / contained | 0 / 200 / 0 / 200 |
+| Closed-book QA mean token F1 | 0.015292 |
+| Predeclared structural/repetition gate | **FAIL** |
+
+The untouched suite exposes a large development-to-evaluation gap. The repair improved the archived server's
+2/100 structural pass and 92/100 empty profile, but it did not produce a dependable chatbot: 30 frozen prompts
+were still empty, 44 did not terminate on EOS, and 31 crossed the loop threshold. The full outputs are preserved
+without model-judge relabeling.
+
+| Output | SHA-256 |
+|---|---|
+| `chat-results.jsonl` | `3f1a178299468be0549f32f7c871445de2113ed652bfd82c3068588445311570` |
+| `qa-results.jsonl` | `137a3981401e0563dd1bdde2e2fc86aa04112363deb10a879d10b3fb495c9300` |
+| `summary.json` | `997535ef15a9cd00a44c7c7d84474539688a317d98112d25695995061b9699af` |
+| pair analysis | `8e6b245c9932ca93887549a6e839ce61337eb52a7925a4d3bc9930a978b29763` |
+
+The pair analyzer verified the same frozen inputs and matching model shape except for the predeclared context
+change from 1,024 to 512 tokens. Its result is FAIL. Relative to the clean base it gained 55 structural passes
+and reduced detected loops by 68, while remaining far short of the release gate.
 
 ## Portable export
 
@@ -289,12 +316,12 @@ remains well below the operator’s 15 GiB pause threshold.
 - [x] Select checkpoint 1,200.
 - [x] Diagnose and fix the generation-boundary defect in all paths.
 - [x] Export a standard Hugging Face payload.
-- [ ] Finish and copy the untouched 100-chat/200-QA evaluation.
+- [x] Finish, copy, hash, and independently recompute the untouched 100-chat/200-QA evaluation.
 - [x] Prove native/Transformers logit parity on the selected export.
 - [ ] Update the public model card and upload the selected model.
 - [ ] Add the native checkpoint and complete run evidence to the recovery archive.
 - [ ] Update the public Space/backend to the selected hash and verify real browser output.
-- [ ] Terminate pod `ksotbczj60mntk` and verify no paid Alpha pod remains.
+- [x] Terminate pod `ksotbczj60mntk` and verify no paid Alpha pod remains.
 - [ ] Commit and push the closeout documentation and exact public revisions.
 
 ## If training is resumed later

@@ -17,9 +17,9 @@ from typing import Any
 REPO = "ajaxdavis/alpha-60m-chat"
 BACKEND = "https://donto.org/alpha-60m"
 CHECKPOINT_REPO = "ajaxdavis/alpha-60m-training-checkpoints"
-CHECKPOINT_REVISION = "7198d1a1f094ffe88d06399ea99fecbd78fa8b66"
-CHECKPOINT_SHA256 = "6c279d086d8c0679495e38ebec8a473ac23d16bfb3b93516e144712963fecbc8"
-MODEL_REVISION = "b481f46924b7a4777a029de1ffb44c06cc925d4c"
+CHECKPOINT_REVISION = "ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60"
+CHECKPOINT_SHA256 = "399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec"
+MODEL_REVISION = "ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0"
 EXPECTED_FILES = {"README.md", "index.html"}
 
 
@@ -67,7 +67,7 @@ def build_staging(destination: Path) -> dict[str, Any]:
     html = (destination / "index.html").read_text(encoding="utf-8")
     for marker in (
         "sdk: static",
-        "The checkpoint failed its predeclared chat-quality gates.",
+        "55/100 replies passed the basic",
         BACKEND,
         CHECKPOINT_REPO,
         CHECKPOINT_REVISION,
@@ -77,10 +77,12 @@ def build_staging(destination: Path) -> dict[str, Any]:
         if marker not in readme_text:
             raise RuntimeError(f"Space README is missing required evidence: {marker}")
     for marker in (
-        "A finished experiment, shown without spin.",
-        "Archived · D3 quality gate failed",
+        "Alpha answers now. The difficult part is what it says.",
+        "Corrective checkpoint · quality gate fail",
         f'{BACKEND}/v1/chat/completions',
-        "92 / 100",
+        "55 / 100",
+        "30 / 100",
+        "31 / 100",
         "0 / 200",
     ):
         if marker not in html:
@@ -113,7 +115,7 @@ def publish(staging: Path, preflight: dict[str, Any]) -> dict[str, Any]:
         repo_id=REPO,
         repo_type="space",
         folder_path=staging,
-        commit_message="Publish terminal Alpha 60M static research Space",
+        commit_message="Publish selected Alpha conversational repair Space",
         delete_patterns="*",
     )
     revision = getattr(commit, "oid", None)
