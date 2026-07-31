@@ -4,7 +4,7 @@
 
 The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The bounded
 corrective run is complete and checkpoint 1,200 is selected. Final held-out evaluation is complete and the paid
-pod is removed; publication closeout is in progress. Do not start another training run.
+pod is removed; publication and live serving closeout are complete. Do not start another training run.
 
 | Item | Current state |
 |---|---|
@@ -17,6 +17,10 @@ pod is removed; publication closeout is in progress. Do not start another traini
 | Final frozen result | 55/100 structural, 70/100 nonempty, 31 loops, QA 0/200; gate FAIL |
 | Paid pod | `ksotbczj60mntk` removed; `runpodctl pod list` empty after removal |
 | AlphaCorpus | paused side project; no candidate entered this run |
+| Standard model | revision `ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0` |
+| Native archive | revision `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60` |
+| Public Space | revision `d87e0950baf0a16ccd2859c2cee6314602ba2881` |
+| Live backend | step 1,200, quality FAIL, source `e55cb23` |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
 result is not structurally reliable and its semantic behavior is weak. It is not yet a dependable chatbot.
@@ -70,23 +74,34 @@ Local continuation bundle:
 
     /mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730/
 
-Public native archive:
+Historical native archive revision before corrective evidence:
 
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints
     revision 7198d1a1f094ffe88d06399ea99fecbd78fa8b66
 
-Public standard model:
+Historical standard model revision before corrective publication:
 
     https://huggingface.co/ajaxdavis/alpha-60m-chat
     revision b481f46924b7a4777a029de1ffb44c06cc925d4c
     safetensors SHA-256 6bb349085512c45fe5cf732209a82a5c5196d2d7a12f0aea16bdb042546dca92
+
+Current selected continuation source:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/blob/ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60/checkpoints/chat-repair-selected-step-1200.alph
+    SHA-256 399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec
+
+Current standard model:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-chat
+    revision ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0
+    safetensors SHA-256 a5214ebad501b8bd3b09f7552c0db67417d18c3b66432f66f847de0e723dd688
 
 The native archive, not model.safetensors, is the continuation source of truth.
 
 ## Serving state
 
 The free static Hugging Face Space is revision
-be0bd0428631d1585b13ddf9e93a8ed2d9254606. It calls the exact Alpha CPU backend at
+`d87e0950baf0a16ccd2859c2cee6314602ba2881`. It calls the exact Alpha CPU backend at
 https://donto.org/alpha-60m. The backend is installed as alpha2-hf-backend.service, loopback-only behind
 Caddy, nice 19, CPU-capped, and memory-capped at 3 GB.
 

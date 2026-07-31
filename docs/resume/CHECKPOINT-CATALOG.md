@@ -8,7 +8,8 @@
 
 Despite the historical `.json` suffix, this is the native Alpha checkpoint container and carries parameters,
 optimizer, RNG, tokenizer, and step state. It is the preferred conversational restart point after the 2026-07-31
-experiment. It must be added to the public native recovery archive before the paid pod is removed.
+experiment. It is publicly preserved as `checkpoints/chat-repair-selected-step-1200.alph` at recovery revision
+`ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60`.
 
 Canonical mounted path:
 
@@ -54,7 +55,7 @@ Local hardlink bundle:
 Public immutable archive:
 
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints
-    revision 7198d1a1f094ffe88d06399ea99fecbd78fa8b66
+    revision ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60
 
 The local files are hard links to canonical mounted-drive artifacts. They protect against path-level
 cleanup without duplicating roughly 2.1 GB of blocks. Deleting either hardlink name does not delete the
@@ -79,7 +80,7 @@ Compare that exact value with the table above before a launcher can see the file
 The standard model at ajaxdavis/alpha-60m-chat contains model.safetensors and tokenizer/config files.
 Its weights SHA-256 is:
 
-    6bb349085512c45fe5cf732209a82a5c5196d2d7a12f0aea16bdb042546dca92
+    a5214ebad501b8bd3b09f7552c0db67417d18c3b66432f66f847de0e723dd688
 
 It intentionally omits optimizer and RNG state and must not be presented as a lossless training resume.
 It is useful for standard Transformers inference and independent parity checks only.

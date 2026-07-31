@@ -1,6 +1,6 @@
 # CURRENT GOAL — recover the original Alpha chat model
 
-**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** CORRECTIVE RUN COMPLETE; CHECKPOINT 1,200 SELECTED; FINAL EVALUATION AND PUBLICATION CLOSEOUT IN PROGRESS
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** CORRECTIVE RUN CLOSED; CHECKPOINT 1,200 PUBLISHED; FINAL QUALITY GATE FAILED; NO PAID POD LIVE
 
 The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
 effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
@@ -13,11 +13,11 @@ equally, independently protects assistant starts and EOS, and selects by free ge
 loss. Checkpoint 1,200 is selected at SHA-256
 `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
 
-The selected candidate is structurally chatty but semantically immature: 48/48 development prompts received
-nonempty EOS-terminated responses with no role leaks, but five responses looped and many conceptual answers were
-shallow or wrong. The final untouched 100-chat/200-QA evaluation, native/Transformers parity, public Hub/Space
-refresh, checkpoint archive, and paid-pod termination are the remaining closeout gates. Do not launch another
-training run merely because later specializations remain desirable.
+The selected candidate looked structurally chatty on development—48/48 nonempty EOS-terminated responses—but
+the untouched suite measured only 55/100 structural passes, 70/100 nonempty replies, 31 loops, and 0/200 exact
+closed-book QA. The quality gate therefore remains FAIL. Native/Transformers parity passed 87/87 positions; the
+checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and the paid
+pod is removed. Do not launch another training run merely because later specializations remain desirable.
 
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.

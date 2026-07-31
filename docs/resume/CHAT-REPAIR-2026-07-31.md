@@ -318,11 +318,26 @@ remains well below the operator’s 15 GiB pause threshold.
 - [x] Export a standard Hugging Face payload.
 - [x] Finish, copy, hash, and independently recompute the untouched 100-chat/200-QA evaluation.
 - [x] Prove native/Transformers logit parity on the selected export.
-- [ ] Update the public model card and upload the selected model.
-- [ ] Add the native checkpoint and complete run evidence to the recovery archive.
-- [ ] Update the public Space/backend to the selected hash and verify real browser output.
+- [x] Update the public model card and upload the selected model.
+- [x] Add the native checkpoint and complete run evidence to the recovery archive.
+- [x] Update the public Space/backend to the selected hash and verify real browser output.
 - [x] Terminate pod `ksotbczj60mntk` and verify no paid Alpha pod remains.
-- [ ] Commit and push the closeout documentation and exact public revisions.
+- [x] Commit and push the implementation/publication release; commit final exact revisions in the handoff pass.
+
+## Public release
+
+| Artifact | Immutable revision / identity |
+|---|---|
+| Standard Transformers model | `ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0` |
+| Native recovery archive and run evidence | `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60` |
+| Static Hugging Face Space | `d87e0950baf0a16ccd2859c2cee6314602ba2881` |
+| Live backend source | `e55cb23d894ff5b7eeb818428ffe9bc0ea76490c` |
+| Installed backend bundle SHA-256 | `c2bd8a24387584cf0eae11082adef235e62a7d12b901c749e5ddd23b18b642f4` |
+
+Anonymous Hub metadata reports the selected `model.safetensors` as 230,770,456 bytes with LFS SHA-256
+`a5214ebad501b8bd3b09f7552c0db67417d18c3b66432f66f847de0e723dd688`, and the selected native checkpoint as
+692,528,814 bytes with LFS SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
 
 ## If training is resumed later
 

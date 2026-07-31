@@ -11,22 +11,22 @@ model is useful and it must never substitute another model.
         -> 127.0.0.1:7860
         -> alpha2-hf-backend.service
         -> native Alpha CPU inference
-        -> terminal ALPH checkpoint step 30,322
+        -> selected native corrective checkpoint step 1,200
 
 Space:
 
     https://huggingface.co/spaces/ajaxdavis/alpha-60m-chat
-    revision be0bd0428631d1585b13ddf9e93a8ed2d9254606
+    revision d87e0950baf0a16ccd2859c2cee6314602ba2881
 
 Model:
 
     https://huggingface.co/ajaxdavis/alpha-60m-chat
-    revision b481f46924b7a4777a029de1ffb44c06cc925d4c
+    revision ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0
 
 Checkpoint source:
 
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints
-    revision 7198d1a1f094ffe88d06399ea99fecbd78fa8b66
+    revision ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60
 
 ## Runtime source
 
@@ -35,11 +35,11 @@ Checkpoint source:
 - Optional paid Docker Space: apps/hf/Dockerfile.space
 - Public static page builder: scripts/build_hf_static_space.ts
 - Static Space publisher: scripts/publish_hf_space.py
-- Runtime source commit: 5bd723db49b15df1b80a279a016c68727270bacc
+- Runtime source commit: `e55cb23d894ff5b7eeb818428ffe9bc0ea76490c`
 
 The installed backend bundle is /home/ajax/bin/alpha-60m-space-server.mjs. Its recorded SHA-256 is:
 
-    f36416475ee8ab3f321e38064275b914c0aee4267c8cdda262aef5315913208c
+    c2bd8a24387584cf0eae11082adef235e62a7d12b901c749e5ddd23b18b642f4
 
 The adjacent commit sidecar identifies the runtime source commit, not later documentation changes.
 
@@ -58,8 +58,11 @@ Health must report:
 
 - model ajaxdavis/alpha-60m-chat;
 - 57,688,576 parameters;
-- checkpoint step 30,322;
+- checkpoint step 1,200;
 - quality_gate FAIL.
+
+The evidence endpoint must additionally report 55/100 structural, 30/100 empty, 31/100 loops, QA 0/200, and
+checkpoint SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
 
 Do not use generation output as a routine service heartbeat. Health and metadata endpoints avoid
 confusing operational checks with new model evaluation.
@@ -72,7 +75,7 @@ If the backend is unhealthy:
 
        journalctl -u alpha2-hf-backend.service -n 200 --no-pager
 
-2. Verify the unit still points to the archived terminal checkpoint.
+2. Verify the unit still points to the selected step-1,200 checkpoint.
 3. Verify the checkpoint hash before restart.
 4. Validate Caddy configuration if routing changed.
 5. Restart only the backend:
@@ -94,7 +97,7 @@ Do not restart unrelated donto services as a first response.
 - no webhook, HF token, RunPod credential, or SSH key is required at inference time;
 - public responses carry X-Alpha-Quality-Gate: FAIL;
 - CORS is intentionally open for the static Hugging Face origin;
-- maximum context is 1,024 tokens and maximum completion is 256 tokens.
+- maximum context is 512 tokens and maximum completion is 256 tokens.
 
 ## Expected empty response
 
@@ -117,3 +120,14 @@ immutable Hub revision and update evidence. Do not rewrite the archived revision
 The current account lacked paid Docker Space entitlement, so the public Space is static and calls the
 OVH backend. If entitlement later exists, the Dockerfile remains a reproducible option, but migration
 must preserve exact checkpoint identity, API behavior, quality warnings, and browser verification.
+
+## 2026-07-31 cutover proof
+
+Canonical runtime and browser evidence:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/
+
+The public API returned “It's going well, thank you. How about you?” with `finish_reason=stop` and
+`X-Alpha-Quality-Gate: FAIL`. The static Space was exercised in a real browser at desktop and 390-pixel
+viewports. The final narrow view had no horizontal overflow, one main landmark, the shortened mobile status
+“Quality gate · fail,” and no browser errors. Screenshots are under `public/browser/`.

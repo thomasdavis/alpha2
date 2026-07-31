@@ -1,4 +1,4 @@
-# HANDOFF — Alpha chat repair active; AlphaCorpus paused, state as of 2026-07-31
+# HANDOFF — Alpha chat repair published with quality FAIL; AlphaCorpus paused, state as of 2026-07-31
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -25,9 +25,18 @@ The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-
 - Later checkpoints did not improve the overall conversational trade-off. Validation loss was lowest later, but
   free generation became more repetitive or failed to stop, so checkpoint selection correctly followed actual
   generation rather than teacher-forced loss.
-- The untouched 100-chat/200-QA final evaluation, standard Hugging Face export, publication refresh, and service
-  cutover are the remaining closeout steps. The paid pod is `ksotbczj60mntk` at $0.69/hr and must be removed as
-  soon as those artifacts are safely copied and verified.
+- The untouched suite measured 55/100 structural passes, 70/100 nonempty replies, 56/100 EOS terminations,
+  31 loops, and 0/200 exact or contained QA answers. The development suite substantially overstated
+  generalization. The model is more conversational than the archived terminal release, but the final gate FAILS.
+- The selected native checkpoint and full evidence are public at recovery revision
+  `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60`; the standard Transformers model is revision
+  `ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0`; the static Space is revision
+  `d87e0950baf0a16ccd2859c2cee6314602ba2881`.
+- The public backend serves step 1,200 and exact checkpoint SHA
+  `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`, with no fallback model. A real browser
+  submitted “Hey, how is your day going?” and received “It’s going well, thank you. How about you?”
+- Pod `ksotbczj60mntk` was removed after the untouched outputs were copied, hashed, and recomputed;
+  `runpodctl pod list` was empty immediately afterward.
 
 Current local evidence root:
 
@@ -37,9 +46,9 @@ Current corpus root:
 
     /mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/
 
-The generated replies are often shallow, vague, or wrong, and five of 48 development cases still loop. Do not
-describe this candidate as philosophically intelligent or generally capable. The recovered capability is the
-more basic prerequisite: it starts, responds in a conversational register, and usually stops.
+The generated replies are often shallow, vague, wrong, empty, or repetitive. Do not describe this candidate as
+philosophically intelligent, generally capable, or reliably chatty. It demonstrates a partial recovery of
+conversational initiation, with the complete failure profile preserved for the next experiment.
 
 ---
 

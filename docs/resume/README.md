@@ -8,7 +8,7 @@
 - **Selected checkpoint:** step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`
 - **Development verdict:** structurally chatty, semantically immature
 - **Frozen result:** 55/100 structural, 70/100 nonempty, 31 loops, QA 0/200; quality gate FAIL
-- **Closeout:** publication in progress; paid pod removed
+- **Closeout:** model, recovery evidence, Space, and live backend published; paid pod removed
 
 This directory is the shortest safe route into the model program. It preserves the archived failure, the later
 corrective experiment, and the evidence required before any further paid run.

@@ -139,6 +139,26 @@ source-order problem.
 
 ## Publication reports
 
+Corrective release:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/hf-space-published-v2.json
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/hf-cold-load/report.json
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/backend-health-public.json
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/backend-evidence-public.json
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/chat-response.json
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/public/browser/
+
+Corrective public identities:
+
+| Artifact | Revision / SHA-256 |
+|---|---|
+| Standard model revision | `ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0` |
+| Native archive revision | `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60` |
+| Static Space revision | `d87e0950baf0a16ccd2859c2cee6314602ba2881` |
+| Installed backend bundle | `c2bd8a24387584cf0eae11082adef235e62a7d12b901c749e5ddd23b18b642f4` |
+
+Historical terminal publication:
+
     /mnt/donto-data/alpha-runs/hf-chat-publication-experimental-published-20260730.json
     /mnt/donto-data/alpha-runs/hf-checkpoint-publication-published-20260730.json
     /mnt/donto-data/alpha-runs/hf-static-space-publication-published-v2-20260730.json

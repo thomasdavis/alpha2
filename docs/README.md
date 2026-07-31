@@ -58,25 +58,25 @@ If you want a compact system you can read, modify, and benchmark end-to-end, thi
 
 ## Project Status
 
-Alpha's 2026-07-30 60M training program is archived. The implementation remains an experimental,
+Alpha's 2026-07-31 corrective chat run is closed and published. The implementation remains an experimental,
 open-source from-scratch stack, but no Alpha training run is currently authorized or live.
 
 - The exact pretrain and SFT contracts completed successfully on Alpha/Helios.
-- The terminal SFT checkpoint **failed** the predeclared chat-quality gate: it is a reproducible research
-  artifact, not a usable chat assistant.
+- The selected corrective checkpoint improved response initiation, but still **failed** the predeclared
+  chat-quality gate: 55/100 structural passes, 70/100 nonempty, 31 loops, and QA 0/200 exact.
 - APIs and CLI flags may still evolve; some subsystems are optimized and others remain experimental.
 
 Public artifacts:
 
-- [failed-quality 60M chat model](https://huggingface.co/ajaxdavis/alpha-60m-chat), immutable revision
-  `b481f46924b7a4777a029de1ffb44c06cc925d4c`;
+- [selected failed-quality chat model](https://huggingface.co/ajaxdavis/alpha-60m-chat), immutable revision
+  `ab1c5be13a12c0feb2d5e2c9af89bd5924a0e8b0`;
 - [native training checkpoints](https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints), immutable
-  revision `7198d1a1f094ffe88d06399ea99fecbd78fa8b66`;
+  revision `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60`;
 - [interactive Hugging Face Space](https://huggingface.co/spaces/ajaxdavis/alpha-60m-chat), immutable
-  revision `be0bd0428631d1585b13ddf9e93a8ed2d9254606`.
+  revision `d87e0950baf0a16ccd2859c2cee6314602ba2881`.
 
-The Space deliberately exposes immediate-EOS/empty responses instead of disguising the failed model
-behind a fallback. `GOAL.md`, `HANDOFF.md`, and `docs/FROZEN_EVAL.md` contain the terminal evidence.
+The Space deliberately exposes immediate-EOS/empty responses instead of disguising the failed model behind a
+fallback. `GOAL.md`, `HANDOFF.md`, and `docs/resume/CHAT-REPAIR-2026-07-31.md` contain the current evidence.
 
 ## Future resumption
 
