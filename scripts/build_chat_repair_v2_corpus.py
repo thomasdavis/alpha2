@@ -130,19 +130,26 @@ def keep_lowest(
 def strip_dominant_leading_pair(
     candidates: list[RawCandidate], minimum_count: int = 32, minimum_fraction: float = 0.5
 ) -> tuple[list[RawCandidate], dict[str, object] | None]:
-    pairs = Counter(candidate.turns[:2] for candidate in candidates if len(candidate.turns) >= 4)
-    pair, count = pairs.most_common(1)[0] if pairs else ((), 0)
+    # Greeting prompts vary ("Hi", "Hello", "Hi there"), while this source's
+    # canned first assistant response is nearly invariant. Detect that response
+    # from the distribution instead of matching greeting words or a literal
+    # phrase, then remove the entire opening exchange only where it occurs.
+    # Requiring another user-assistant exchange preserves a valid conversation.
+    replies = Counter(candidate.turns[1] for candidate in candidates if len(candidate.turns) >= 4)
+    reply, count = replies.most_common(1)[0] if replies else ((), 0)
     if count < minimum_count or count / max(1, len(candidates)) < minimum_fraction:
         return candidates, None
     stripped = [
-        replace(candidate, turns=candidate.turns[2:]) if candidate.turns[:2] == pair else candidate
+        replace(candidate, turns=candidate.turns[2:])
+        if len(candidate.turns) >= 4 and candidate.turns[1] == reply
+        else candidate
         for candidate in candidates
     ]
     return stripped, {
         "count": count,
         "fraction": count / len(candidates),
-        "pair_sha256": sha256_bytes(json.dumps(pair, ensure_ascii=False).encode()),
-        "policy": "strip only when one exact leading user-assistant pair occupies at least half the source",
+        "assistant_response_sha256": sha256_bytes(json.dumps(reply, ensure_ascii=False).encode()),
+        "policy": "strip the leading user-assistant exchange only when one exact first assistant response occupies at least half the source",
     }
 
 

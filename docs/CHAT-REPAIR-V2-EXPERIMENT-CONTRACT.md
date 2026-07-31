@@ -1,6 +1,6 @@
 # Alpha chat repair v2 — evidence and experiment contract
 
-**Status:** active design gate; no paid pod is live  
+**Status:** local corpus/mask/evaluation gates passed; baseline development evaluation running; no paid pod is live
 **Product:** an effective, natural conversational model  
 **Constraint:** one rented GPU; model scale is not a benchmark or identity
 
@@ -138,10 +138,15 @@ Planned source roles:
 
 | Source | Role in the mixture |
 |---|---|
-| Smol Magpie ultra-short train split | concise direct assistant responses and bounded follow-ups |
+| Smol Magpie ultra-short train split | broad direct-assistant instruction and follow-up behavior, with every answer capped at 256 tokens |
 | OASST2 train split | human-authored assistant behavior and longer explanatory answers |
 | Everyday conversations | short multi-turn continuity after removing the dominant greeting pair |
-| SODA | minority social-conversation seasoning, no longer the corpus identity |
+| [SODA](https://aclanthology.org/2023.emnlp-main.799/) | minority social-conversation seasoning, no longer the corpus identity |
+
+SODA is not being rejected as low-quality data: its authors report strong human and model results when social
+commonsense contextualization is part of the design. Alpha's first repair discarded that broader conditioning and
+treated alternating dialogue strings as generic assistant turns. Reducing its share is therefore a correction of
+task mismatch, not a claim against the source.
 
 All selection operations are content-independent or distribution-derived:
 
@@ -152,12 +157,53 @@ All selection operations are content-independent or distribution-derived:
 - deterministic source sampling by hashed identity;
 - a per-source cap on exact assistant-turn reuse;
 - a per-source cap on first-four-token answer signatures;
-- removal of a leading user/assistant pair only when the same exact pair occupies at least half of that source;
+- removal of a leading user/assistant exchange only when one exact first assistant response occupies at least half of that source;
 - exact conversation deduplication across sources;
 - deterministic conversation-level train/development split.
 
 The greeting transform does not search for `hello`, `how can I help`, or any other hand-maintained phrase. It is
-derived from frequency and recorded by hash, preventing a literal string rule from becoming the data model.
+derived from the first-response distribution and recorded by hash, preventing a literal string rule from becoming
+the data model while still handling several surface forms of the user's greeting.
+
+### Frozen corpus result
+
+The first provisional build is preserved under `alpha-chat-repair-v2-20260731`; it exposed that exact-pair
+detection did not join several surface forms of a greeting and retained only eight everyday conversations. It is
+evidence, not a training input. The corrected immutable build is:
+
+`/mnt/donto-data/donto-resources/research/alpha-chat-repair-v2-r2-20260731`
+
+| Measurement | Frozen result |
+|---|---:|
+| Accepted conversations | 24,701 |
+| Train / corpus-development | 23,529 / 1,172 |
+| Smol Magpie | 12,532 (50.7%) |
+| SODA | 8,000 (32.4%) |
+| OASST2 | 2,131 (8.6%) |
+| Everyday after dynamic greeting removal | 2,038 (8.3%) |
+| Assistant turns | 72,416 |
+| Assistant answers at or above 0.2 repeated-four-gram rate | 0 |
+| Exact duplicate assistant turns after first occurrence | 902 (1.25%) |
+| Most common first-four-token signature | 206 turns (0.28%) |
+
+The dynamic transform detected one first assistant response in 2,248 / 2,260 everyday conversations (99.47%)
+and removed the whole opening exchange only on those rows. The response text is never a rule; only its SHA-256
+is retained in the manifest.
+
+Input hashes:
+
+| Artifact | Rows | SHA-256 |
+|---|---:|---|
+| `train.txt` | 23,529 | `5307b6ec210a172f853f7d5ba353727e1a6f065a337154954b049d989f403f63` |
+| `dev.txt` | 1,172 | `cf0b94f41d78144b4496a5569b42d6ceb08086709e13b745c652bbea0701f5b9` |
+| `catalog.jsonl` | 24,701 | `ea24421dce04feaedc3497aa24bafd4859e6aee68def2c1665e6d67b769e9527` |
+| Native Alpha tokenizer artifact | — | `c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24` |
+| Exact published Hugging Face tokenizer export used by Python builders | — | `37372c9b1bdbf7d9655444e90247bef957018d0d7ff0b668d1330e28d97c44cf` |
+
+Every one of the 23,529 training rows and 1,172 corpus-development rows passed the native Alpha-tokenizer mask
+audit at block 1,024: role markers are atomic, the assistant-only state machine is correct, final EOS is
+supervised, and no row exceeds the block. This distinguishes the model's native training artifact from its
+behaviorally equivalent Hugging Face export rather than accidentally passing the latter to the trainer.
 
 ## Evaluation firewall
 
@@ -189,6 +235,18 @@ Checkpoint selection uses generated behavior, not validation loss. The primary a
 Automatic gates are necessary but not sufficient. A small fixed panel of exact outputs is reviewed for directness,
 contingency, coherence, and naturalness. A decoder trick that only suppresses an n-gram is not a model win.
 
+### Frozen evaluation result
+
+| Suite | Rows | SHA-256 | Use |
+|---|---:|---|---|
+| Development | 96 | `156f70d6f374a006b668b7d6c2edd54f541097b0d015e313c11033d0cd098f33` | checkpoint selection |
+| Development qualitative panel | 12 | `4e5b1e3025087d7a2d57282f8f8b548f4def9e07996ad2f5f7a3e93e8e9759ea` | exact human inspection |
+| Sealed final | 150 | `8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d` | one execution after selection |
+
+All 800 eligible candidate prompts reserve at least 128 generation positions. The only exclusions were the 100
+IDs already consumed by the published final; exact overlap with the new train and corpus-development rows is zero.
+The sealed-final bytes exist for reproducibility but remain unexecuted and uninspected during selection.
+
 ## Paid experiment sequence
 
 ### Gate 0 — local inputs
@@ -207,7 +265,7 @@ Before renting anything:
 Purpose: test whether corrected context and de-templated direct-assistant data repair stopping and repetition
 without paying to reacquire answer initiation.
 
-Provisional finite contract:
+Authoritative finite pilot contract:
 
 | Setting | Value |
 |---|---:|
@@ -222,6 +280,10 @@ Provisional finite contract:
 | Assistant EOS | 4x |
 | Conversation weighting | equal |
 | Epoch order | deterministic shuffle |
+
+The exact fail-closed launcher is `scripts/run_chat_repair_v2.sh`; deterministic checkpoint evaluation is
+`scripts/evaluate_chat_repair_v2.sh`. The launcher verifies corpus and evaluation-freeze hashes before creating
+its run contract and refuses to overwrite a run directory.
 
 The EOS multiplier is intentionally separated from response-start weighting. A higher EOS weight is allowed only
 because the first four content tokens remain independently protected; empty-first-token behavior is checked at
@@ -247,11 +309,25 @@ successive checkpoints or when the predeclared maximum is reached. The final sui
 
 ## GPU decision
 
-No pod is currently live. The known RTX 4090 path completed the prior finite run and is the default because it is
-operationally proven. A larger-memory GPU is justified only if the block-1,024 batch probe demonstrates that the
-extra memory produces a meaningfully larger effective batch or higher measured tokens per dollar. Hardware name
-or peak FLOPS is not sufficient; Alpha's custom Vulkan kernels must demonstrate real throughput on the rented
-device before the full pilot proceeds.
+No pod is currently live. A live RunPod GraphQL query on 2026-07-31 returned:
+
+| GPU | Memory | Lowest available on-demand price | Stock in queried cloud |
+|---|---:|---:|---|
+| RTX 4090 community | 24 GB | $0.34/hour | Low |
+| RTX 5090 community | 32 GB | $0.69/hour | Low |
+| A40 secure | 48 GB | $0.44/hour | High |
+| L40S community | 48 GB | $0.79/hour | Low |
+| H100 SXM secure | 80 GB | $2.99/hour | High |
+
+The known RTX 4090 path completed the prior finite run at roughly 8.5–8.9K tokens/second and is the default
+because it is operationally proven. The A40 is the only plausible larger-memory alternative at current prices,
+but more memory does not guarantee more throughput: it has substantially lower raw compute, and Alpha's custom
+Vulkan kernels must demonstrate that a larger batch offsets that difference. The 5090, L40S, and H100 are not
+justified for the pilot without a measured custom-kernel advantage.
+
+A larger-memory GPU is justified only if the block-1,024 batch probe demonstrates a meaningfully larger effective
+batch and higher measured tokens per dollar. Hardware name or peak FLOPS is not sufficient; Alpha's kernels must
+demonstrate real throughput on the rented device before the full pilot proceeds.
 
 Every launched process must be verified by advancing steps, bounded RSS/VRAM, output checkpoints, and measured
 tokens per second. A created pod or a living PID is not proof of useful work.

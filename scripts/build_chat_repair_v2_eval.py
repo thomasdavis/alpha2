@@ -173,7 +173,13 @@ def main() -> int:
         "oasst2-validation": 25,
         "smol-magpie-ultra-short": 100,
     }
+    panel_quotas = {
+        "everyday-conversations": 2,
+        "oasst2-validation": 4,
+        "smol-magpie-ultra-short": 6,
+    }
     development = stratified_select(eligible, dev_quotas, args.seed, "development")
+    qualitative_panel = stratified_select(development, panel_quotas, args.seed, "qualitative-panel")
     development_ids = {str(row["id"]) for row in development}
     final_pool = [row for row in eligible if str(row["id"]) not in development_ids]
     final = stratified_select(final_pool, final_quotas, args.seed, "sealed-final")
@@ -183,8 +189,10 @@ def main() -> int:
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     development_path = out_dir / "development-chat-prompts.jsonl"
+    panel_path = out_dir / "development-qualitative-panel.jsonl"
     final_path = out_dir / "sealed-final-chat-prompts.jsonl"
     write_atomic(development_path, "\n".join(json.dumps(row, sort_keys=True) for row in development) + "\n")
+    write_atomic(panel_path, "\n".join(json.dumps(row, sort_keys=True) for row in qualitative_panel) + "\n")
     write_atomic(final_path, "\n".join(json.dumps(row, sort_keys=True) for row in final) + "\n")
     manifest = {
         "schema": "alpha-chat-repair-v2-eval-freeze-v1",
@@ -196,6 +204,7 @@ def main() -> int:
             "priorFinalIdsExcluded": len(prior_ids),
             "exactFullConversationTrainingOverlapAllowed": 0,
             "developmentQuotas": dev_quotas,
+            "qualitativePanelQuotas": panel_quotas,
             "sealedFinalQuotas": final_quotas,
             "statisticalUnit": "prompt conversation",
             "checkpointSelection": "development only",
@@ -212,6 +221,7 @@ def main() -> int:
         },
         "outputs": {
             "development": sha256_file(development_path),
+            "qualitativePanel": sha256_file(panel_path),
             "sealedFinal": sha256_file(final_path),
         },
     }

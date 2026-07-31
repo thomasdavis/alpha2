@@ -1,10 +1,11 @@
 # RunPod runbook for Alpha/Helios (Vulkan) — proven 2026-07-22
 
-> **Archived status (2026-07-30):** the Alpha 60M program is closed. No Alpha pod or training process
-> is live, and no further run is authorized. The completed SFT checkpoint failed the frozen chat-quality
-> gate and was published only as an explicitly labelled research artifact. This document remains the
-> proven recovery runbook, not an instruction to provision a pod now. Future work must begin with a new
-> operator-approved continuation contract and the immutable recovery archive described below.
+> **Active status (2026-07-31):** the operator has reopened Alpha's original conversational-model goal and
+> funded a bounded continuation. The published step-1,200 corrective checkpoint remains a failed-quality
+> baseline, not the answer. No pod was live when repair v2 began; provisioning is authorized only after the
+> local corpus, mask, evaluation-freeze, and exact-run gates in
+> [`CHAT-REPAIR-V2-EXPERIMENT-CONTRACT.md`](CHAT-REPAIR-V2-EXPERIMENT-CONTRACT.md) pass. This runbook remains
+> the proven operational recipe.
 
 For the authorization gate and exact future sequence, read
 [docs/resume/RUNPOD-RECOVERY.md](resume/RUNPOD-RECOVERY.md) before using any command in this runbook.

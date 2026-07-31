@@ -22,6 +22,14 @@ effective chat model. The next paid run is authorized only after the frozen fail
 finite contract isolates the intervention; do not blindly continue step 2,200 or reuse the narrow development
 suite as the selector.
 
+Repair v2 has now frozen a corrected 24,701-conversation corpus at block 1,024, including 23,529 training rows
+and 1,172 corpus-development rows. All rows are structurally valid; exhaustive native-tokenizer mask audits pass;
+no target answer crosses the loop threshold; and the most common four-token answer start is only 0.28% of turns.
+The visible 96-prompt development selector, fixed 12-prompt qualitative panel, and disjoint 150-prompt sealed final
+are hash-bound. The exact bounded continuation launcher is `scripts/run_chat_repair_v2.sh`. The published
+step-1,200 checkpoint is being measured on the new development suite before the paid RTX 4090 pilot; the sealed
+final remains unexecuted.
+
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.
 
