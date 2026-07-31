@@ -111,8 +111,8 @@ function ReviewPipeline({ progress }: { progress: CorpusReviewCampaignProgress }
         </div>
         <span className={`rounded border px-2 py-1 text-[0.68rem] font-semibold ${
           progress.passD.executionAuthorizations === 0
-            ? "border-green/30 bg-green-bg text-green"
-            : "border-red/30 bg-red-bg text-red"
+            ? "border-green/30 bg-green-bg text-text-primary"
+            : "border-red/30 bg-red-bg text-text-primary"
         }`}>
           {progress.passD.executionAuthorizations === 0 ? "No execution authority" : "Authority anomaly"}
         </span>
@@ -125,7 +125,7 @@ function ReviewPipeline({ progress }: { progress: CorpusReviewCampaignProgress }
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-text-primary">{stage.label}</p>
                 <span className={`text-[0.64rem] font-semibold uppercase tracking-[0.08em] ${
-                  status === "complete" ? "text-green" : status === "current" ? "text-blue" : "text-text-muted"
+                  status === "complete" ? "text-text-primary" : status === "current" ? "text-blue" : "text-text-muted"
                 }`}>
                   {status}
                 </span>
@@ -167,7 +167,7 @@ export default function CorpusReviewPage() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-text-primary">Human review workspace</h1>
-            <span className="rounded border border-blue/30 bg-blue-bg px-2 py-1 text-[0.68rem] font-semibold text-blue">
+            <span className="rounded border border-blue/30 bg-blue-bg px-2 py-1 text-[0.68rem] font-semibold text-text-primary">
               Local draft only
             </span>
           </div>
@@ -254,7 +254,7 @@ export default function CorpusReviewPage() {
                   <div className="md:text-right">
                     <Link
                       href={`/corpus/review/${encodeURIComponent(packet.sessionId)}`}
-                      className="inline-flex min-h-11 items-center rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      className="inline-flex min-h-11 items-center rounded-md bg-accent px-3 py-2 text-sm font-semibold text-bg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                     >
                       Review
                     </Link>

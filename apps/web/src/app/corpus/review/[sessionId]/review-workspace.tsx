@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   HumanReviewFinding,
   HumanReviewPacket,
@@ -29,6 +29,13 @@ interface VisibleMessage {
 }
 
 type SaveState = "loading" | "saved" | "memory-only";
+
+function firstIncompleteIndex(packet: HumanReviewPacket): number {
+  const index = packet.assignments.findIndex(
+    (assignment) => humanReviewResponseErrors(packet.pass, assignment.response, assignment.opaqueItemId).length > 0
+  );
+  return index < 0 ? 0 : index;
+}
 
 function clonePacket(packet: HumanReviewPacket): HumanReviewPacket {
   return JSON.parse(JSON.stringify(packet)) as HumanReviewPacket;
@@ -163,6 +170,7 @@ function ScoreFields({
                   type="radio"
                   name={`${packet.sessionId}-${dimension.key}`}
                   value={anchor.value}
+                  aria-label={`${dimension.label}: ${anchor.value}, ${anchor.label}`}
                   checked={response.scores[dimension.key] === anchor.value}
                   onChange={() => updateScore(dimension.key, anchor.value)}
                   className="h-4 w-4 accent-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -258,14 +266,34 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   const [activeIndex, setActiveIndex] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("loading");
   const [restored, setRestored] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
+  const candidateHeadingRef = useRef<HTMLHeadingElement>(null);
   const storageKey = `alpha-corpus-review:${sourcePacket.sessionId}:${packetSha256}`;
+  const positionStorageKey = `${storageKey}:active-index`;
 
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(storageKey);
       if (stored) {
-        const parsed = parseHumanReviewPacketText(stored);
-        if (humanReviewPacketMatchesEnvelope(parsed, sourcePacket)) setDraft(parsed);
+        try {
+          const parsed = parseHumanReviewPacketText(stored);
+          if (humanReviewPacketMatchesEnvelope(parsed, sourcePacket)) {
+            setDraft(parsed);
+            const savedPosition = window.localStorage.getItem(positionStorageKey);
+            const savedIndex = savedPosition === null ? Number.NaN : Number(savedPosition);
+            setActiveIndex(Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex < parsed.assignments.length
+              ? savedIndex
+              : firstIncompleteIndex(parsed));
+          } else {
+            window.localStorage.removeItem(storageKey);
+            window.localStorage.removeItem(positionStorageKey);
+            setRestoreNotice("An incompatible local draft was discarded. The verified exported packet remains unchanged.");
+          }
+        } catch {
+          window.localStorage.removeItem(storageKey);
+          window.localStorage.removeItem(positionStorageKey);
+          setRestoreNotice("An unreadable local draft was discarded. The verified exported packet remains unchanged.");
+        }
       }
       setSaveState("saved");
     } catch {
@@ -273,7 +301,7 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
     } finally {
       setRestored(true);
     }
-  }, [sourcePacket, storageKey]);
+  }, [positionStorageKey, sourcePacket, storageKey]);
 
   useEffect(() => {
     if (!restored || saveState === "memory-only") return;
@@ -285,6 +313,15 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
     }
   }, [draft, restored, saveState, storageKey]);
 
+  useEffect(() => {
+    if (!restored || saveState === "memory-only") return;
+    try {
+      window.localStorage.setItem(positionStorageKey, String(activeIndex));
+    } catch {
+      setSaveState("memory-only");
+    }
+  }, [activeIndex, positionStorageKey, restored, saveState]);
+
   const errors = useMemo(
     () => draft.assignments.map((assignment) => humanReviewResponseErrors(draft.pass, assignment.response, assignment.opaqueItemId)),
     [draft]
@@ -295,6 +332,11 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   const activeErrors = errors[activeIndex] ?? [];
   const messages = visibleMessages(activeAssignment.candidate);
   const dimensions = humanReviewDimensions(draft.pass);
+  const firstIncomplete = errors.findIndex((itemErrors) => itemErrors.length > 0);
+  const nextIncomplete = errors.findIndex((itemErrors, index) => index > activeIndex && itemErrors.length > 0);
+  const wrappedIncomplete = nextIncomplete >= 0
+    ? nextIncomplete
+    : errors.findIndex((itemErrors, index) => index < activeIndex && itemErrors.length > 0);
 
   function updateResponse(update: (response: HumanReviewResponse) => HumanReviewResponse) {
     setDraft((current) => ({
@@ -308,8 +350,18 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   function resetLocalDraft() {
     if (!window.confirm("Discard every locally saved response in this review session?")) return;
     window.localStorage.removeItem(storageKey);
+    window.localStorage.removeItem(positionStorageKey);
     setDraft(clonePacket(sourcePacket));
     setActiveIndex(0);
+    setRestoreNotice(null);
+  }
+
+  function goToAssignment(index: number) {
+    setActiveIndex(index);
+    window.requestAnimationFrame(() => {
+      candidateHeadingRef.current?.focus({ preventScroll: true });
+      candidateHeadingRef.current?.scrollIntoView({ block: "start" });
+    });
   }
 
   return (
@@ -318,10 +370,10 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-text-primary">D5 review · Pass {draft.pass}</h1>
-            <span className="rounded border border-yellow/30 bg-yellow-bg px-2 py-1 text-[0.68rem] font-semibold text-yellow">
+            <span className="rounded border border-yellow/30 bg-yellow-bg px-2 py-1 text-[0.68rem] font-semibold text-text-primary">
               {draft.pass === "A" ? "Blinded" : "Contract aware"}
             </span>
-            <span className="rounded border border-border bg-surface-2 px-2 py-1 text-[0.68rem] font-medium text-text-secondary">
+            <span aria-live="polite" className="rounded border border-border bg-surface-2 px-2 py-1 text-[0.68rem] font-medium text-text-secondary">
               {saveState === "loading" ? "Loading draft" : saveState === "saved" ? "Saved in this browser" : "Memory only"}
             </span>
           </div>
@@ -334,23 +386,46 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
             {draft.sessionId} · packet {packetSha256.slice(0, 12)}… · exported {formatTimestamp(exportedAt)}
           </p>
         </div>
-        <div className="text-right">
+        <div className="min-w-28 text-right" aria-live="polite">
           <p className="font-mono text-lg font-semibold tabular-nums text-text-primary">{completedCount}/{draft.assignments.length}</p>
           <p className="text-xs text-text-muted">items complete locally</p>
+          <progress
+            className="mt-2 h-1.5 w-full accent-[var(--accent)]"
+            value={completedCount}
+            max={draft.assignments.length}
+            aria-label={`${completedCount} of ${draft.assignments.length} assignments complete locally`}
+          />
         </div>
       </header>
 
+      {restoreNotice && (
+        <p role="status" className="rounded-md border border-border bg-surface-2 px-4 py-3 text-sm leading-6 text-text-primary">
+          {restoreNotice}
+        </p>
+      )}
+
       {saveState === "memory-only" && (
-        <p role="alert" className="rounded-md border border-yellow/40 bg-yellow-bg px-4 py-3 text-sm leading-6 text-yellow">
+        <p role="alert" className="rounded-md border border-yellow/40 bg-yellow-bg px-4 py-3 text-sm leading-6 text-text-primary">
           Browser storage is unavailable. Your answers exist only in this tab; download drafts frequently.
         </p>
       )}
 
       <div className="grid min-w-0 gap-5 xl:grid-cols-[15rem_minmax(0,1fr)]">
-        <aside className="self-start overflow-hidden rounded-lg border border-border bg-surface xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col">
-          <div className="border-b border-border px-4 py-3">
-            <p className="text-xs font-semibold text-text-primary">Assignments</p>
-            <p className="mt-0.5 text-[0.68rem] text-text-muted">Family and status remain hidden.</p>
+        <section aria-labelledby="assignment-nav-heading" className="self-start overflow-hidden rounded-lg border border-border bg-surface xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col">
+          <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3 xl:block">
+            <div>
+              <h2 id="assignment-nav-heading" className="text-xs font-semibold text-text-primary">Assignments</h2>
+              <p className="mt-0.5 text-[0.68rem] text-text-muted">Family and status remain hidden.</p>
+            </div>
+            {firstIncomplete >= 0 && firstIncomplete !== activeIndex && (
+              <button
+                type="button"
+                onClick={() => goToAssignment(firstIncomplete)}
+                className="min-h-11 rounded-md border border-border-2 px-2.5 py-2 text-xs font-semibold text-text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent xl:mt-3 xl:w-full"
+              >
+                Resume first incomplete
+              </button>
+            )}
           </div>
           <nav aria-label="Review assignments" className="max-h-56 overflow-y-auto p-2 xl:max-h-none xl:flex-1">
             <ol className="grid grid-cols-3 gap-1 sm:grid-cols-6 xl:grid-cols-1">
@@ -361,10 +436,10 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
                   <li key={assignment.assignmentId}>
                     <button
                       type="button"
-                      onClick={() => setActiveIndex(index)}
+                      onClick={() => goToAssignment(index)}
                       aria-current={active ? "step" : undefined}
                       className={`flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-                        active ? "bg-blue-bg font-semibold text-blue" : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+                        active ? "bg-blue-bg font-semibold text-text-primary" : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
                       }`}
                     >
                       <span>{index + 1}</span>
@@ -377,14 +452,21 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
               })}
             </ol>
           </nav>
-        </aside>
+        </section>
 
-        <main className="min-w-0 space-y-8">
+        <div className="min-w-0 space-y-8">
           <section aria-labelledby="candidate-heading" className="overflow-hidden rounded-lg border border-border bg-surface">
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
               <div>
                 <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-text-muted">Assignment {activeIndex + 1}</p>
-                <h2 id="candidate-heading" className="mt-0.5 font-mono text-sm font-semibold text-text-primary">{activeAssignment.opaqueItemId}</h2>
+                <h2
+                  ref={candidateHeadingRef}
+                  id="candidate-heading"
+                  tabIndex={-1}
+                  className="mt-0.5 break-all font-mono text-sm font-semibold text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  {activeAssignment.opaqueItemId}
+                </h2>
               </div>
               <span className="rounded border border-border bg-surface-2 px-2 py-1 font-mono text-[0.68rem] text-text-muted">
                 {isRecord(activeAssignment.candidate) && typeof activeAssignment.candidate["kind"] === "string"
@@ -568,15 +650,15 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
               </div>
             </section>
 
-            <section aria-labelledby="validation-heading" className={`rounded-lg border px-4 py-4 ${activeErrors.length === 0 ? "border-green/30 bg-green-bg" : "border-border bg-surface"}`}>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 id="validation-heading" className={`text-sm font-semibold ${activeErrors.length === 0 ? "text-green" : "text-text-primary"}`}>
-                    {activeErrors.length === 0 ? "Assignment complete" : `${activeErrors.length} fields remain`}
-                  </h2>
-                  <p className={`mt-1 text-xs ${activeErrors.length === 0 ? "text-green" : "text-text-muted"}`}>
-                    Validation uses the same rubric contract as the local SQLite importer.
-                  </p>
+              <section aria-labelledby="validation-heading" className={`rounded-lg border px-4 py-4 ${activeErrors.length === 0 ? "border-green/30 bg-green-bg" : "border-border bg-surface"}`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 id="validation-heading" className="text-sm font-semibold text-text-primary">
+                      {activeErrors.length === 0 ? "Assignment complete" : `${activeErrors.length} fields remain`}
+                    </h2>
+                    <p className={`mt-1 text-xs ${activeErrors.length === 0 ? "text-text-primary" : "text-text-muted"}`}>
+                      Validation uses the same rubric contract as the local SQLite importer.
+                    </p>
                 </div>
                 {activeErrors.length > 0 && (
                   <details>
@@ -593,22 +675,33 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
               <button
                 type="button"
                 disabled={activeIndex === 0}
-                onClick={() => setActiveIndex((index) => Math.max(0, index - 1))}
+                onClick={() => goToAssignment(Math.max(0, activeIndex - 1))}
                 className="min-h-11 rounded-md border border-border-2 px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 Previous
               </button>
-              <button
-                type="button"
-                disabled={activeIndex === draft.assignments.length - 1}
-                onClick={() => setActiveIndex((index) => Math.min(draft.assignments.length - 1, index + 1))}
-                className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                Next assignment
-              </button>
+              <div className="flex flex-wrap justify-end gap-2">
+                {wrappedIncomplete >= 0 && wrappedIncomplete !== activeIndex && (
+                  <button
+                    type="button"
+                    onClick={() => goToAssignment(wrappedIncomplete)}
+                    className="min-h-11 rounded-md border border-border-2 px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    Next incomplete
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={activeIndex === draft.assignments.length - 1}
+                  onClick={() => goToAssignment(Math.min(draft.assignments.length - 1, activeIndex + 1))}
+                  className="min-h-11 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  Next assignment
+                </button>
+              </div>
             </div>
           </form>
-        </main>
+        </div>
       </div>
 
       <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-border pt-6">
@@ -637,7 +730,7 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
             type="button"
             disabled={!allComplete}
             onClick={() => downloadPacket(draft, "completed")}
-            className="min-h-11 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="min-h-11 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-bg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             Download completed packet
           </button>
