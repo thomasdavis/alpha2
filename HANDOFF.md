@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 117 tables and four views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 122 tables and five views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -58,8 +58,17 @@ tables, four views, and 168 triggers. A pre-migration SQLite backup has SHA-256
 `c4ae7e7b0720fd4c69f97b3331d53946e4b8dfbc9cc15869f2d0af959c58450e`. The live Pass C preparation correctly
 failed because A/B evidence is incomplete and created zero assignments, syntheses, structural dispositions,
 release members, or training exposures. All new relations return HTTP 200 in the public explorer. The
-canonical ledger is clean with zero FK/blob failures and a 24.03 MiB project-owned footprint at verification.
-Hidden Pass A repeats and Pass D adjudication remain open.
+canonical ledger was clean with zero FK/blob failures and a 24.03 MiB project-owned footprint at that
+checkpoint.
+
+The hidden-repeat implementation is now recorded in
+[Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) at revision
+`249a00f`. Migration 6 brings the current ledger to six migrations, 122 tables, five views, and 174 triggers.
+Its pre-migration backup SHA-256 is
+`c914d560405642ce641570ed8794172ec3a36edc2948ed3d27bda800059b2918`. The original 12-item packet remains
+byte-identical at SHA-256 `6740d83545335ec520989452eb2619bead4d95af62e681c7dfcd7e9245132c48`.
+All presentation/repeat rows remain zero until a real human completes Pass A; all six new public relations
+return HTTP 200. The current footprint is 29.68 MiB. Pass D adjudication remains open.
 
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.

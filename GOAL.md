@@ -62,10 +62,12 @@ run, demonstrating the ledger's correction semantics rather than being silently 
 
 The family-level Pass C and structural-rejection workflow is recorded in
 [Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md). Migration 5 brings
-the canonical ledger to 117 tables and 168 triggers and adds exact family-synthesis and disposition basis
-relations. The live prerequisite proof correctly refuses Pass C while A/B are incomplete and leaves every new
-evidence table, release membership, and training exposure empty. The immediate authority-bearing action
-remains real human Pass A review; implementation must not be mistaken for adjudication.
+the ledger exact family-synthesis and disposition basis relations. Migration 6 and
+[Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) add separate
+blinded presentation responses and reviewer-stability evidence without duplicating candidate reviews. The
+canonical ledger now has 122 tables, five views, and 174 triggers. The live prerequisite proofs leave every
+new human-evidence table, release membership, and training exposure empty. The immediate authority-bearing
+action remains real human Pass A review; implementation must not be mistaken for adjudication.
 
 ---
 

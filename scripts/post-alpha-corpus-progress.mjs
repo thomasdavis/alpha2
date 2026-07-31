@@ -83,6 +83,17 @@ const structuralDispositionRows = sqliteRows(`
   JOIN family_synthesis_assignment fsa ON fsa.id = fs.assignment_id
   WHERE fsa.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
 `);
+const presentationRows = sqliteRows(`
+  SELECT COALESCE(SUM(CASE WHEN rp.presentation_kind = 'hidden_repeat' AND rp.status = 'assigned' THEN 1 ELSE 0 END), 0) AS repeat_assigned,
+         COALESCE(SUM(CASE WHEN rp.presentation_kind = 'hidden_repeat' AND rp.status = 'completed' THEN 1 ELSE 0 END), 0) AS repeat_completed
+  FROM review_presentation rp
+  JOIN review_presentation_session rps ON rps.id = rp.session_id
+  WHERE rps.campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+`);
+const repeatStabilityRows = sqliteRows(`
+  SELECT COUNT(*) AS count FROM review_repeat_stability
+  WHERE campaign_id = (SELECT id FROM generation_campaign WHERE slug = 'alpha-calibration-v1')
+`);
 const analysisRows = sqliteRows(`
   SELECT ar.id AS analysis_run_id,
          (SELECT COUNT(*) FROM analysis_metric am WHERE am.analysis_run_id = ar.id) AS metric_count,
@@ -117,6 +128,10 @@ const passCAssigned = Number(synthesisProgress?.["pass_c_assigned"] ?? 0);
 const passCCompleted = Number(synthesisProgress?.["pass_c_completed"] ?? 0);
 const familySyntheses = Number(familySynthesisRows[0]?.["family_syntheses"] ?? 0);
 const structuralDispositions = Number(structuralDispositionRows[0]?.["structural_dispositions"] ?? 0);
+const presentationProgress = presentationRows[0];
+const repeatAssigned = Number(presentationProgress?.["repeat_assigned"] ?? 0);
+const repeatCompleted = Number(presentationProgress?.["repeat_completed"] ?? 0);
+const repeatStabilityCount = Number(repeatStabilityRows[0]?.["count"] ?? 0);
 const analysis = analysisRows[0];
 const humanAccepted = Number(progress["human_accepted"]);
 const passACompleted = Number(reviewProgress?.["pass_a_completed"] ?? 0);
@@ -139,6 +154,7 @@ const content = [
   `Ledger: integrity=${String(integrityRows[0]?.["integrity_check"] ?? "unknown")}; campaign=${String(progress["status"])}; tasks=${Number(progress["completed_tasks"])}/${Number(progress["task_count"])}; calls=${Number(progress["model_calls"])}.`,
   `Calibration: ${Number(progress["candidates"])} candidates; ${Number(progress["structurally_valid"])} structurally valid; ${Number(progress["structurally_rejected"])} retained rejections; ${humanAccepted} human accepted. Structural validity is not training approval.`,
   `Human review: Pass A ${passACompleted}/${Number(progress["candidates"])} completed (${Number(reviewProgress?.["pass_a_assigned"] ?? 0)} assigned); Pass B ${Number(reviewProgress?.["pass_b_completed"] ?? 0)} completed (${passBAssigned} assigned); ${humanReviews} append-only human review records.`,
+  `Blinded consistency: ${repeatCompleted}/6 repeat presentations completed (${repeatAssigned} assigned); ${repeatStabilityCount} separately scored stability rows. Repeats do not inflate candidate or review counts.`,
   `Family synthesis: Pass C ${passCCompleted} completed (${passCAssigned} assigned); ${familySyntheses} family synthesis records; ${structuralDispositions}/6 retained structural rejections dispositioned. Pass C cannot open until every current candidate has one sealed human Pass A and Pass B review.`,
   analysis
     ? `Deterministic surface evidence: ${Number(analysis["metric_count"])} scoped metrics; ${Number(analysis["similarity_edge_count"])} pair/method edges; ${Number(analysis["template_signature_count"])} dynamic signatures. This is not semantic or human approval.`

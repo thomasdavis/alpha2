@@ -296,10 +296,10 @@ This execution does not finish D5. The next authority-bearing action is still hu
 local-first review workspace. After all A reviews are sealed, Pass B may open; only after all B reviews are
 sealed may Pass C open.
 
-One protocol feature remains unimplemented: PRD-12 requires six hidden repeat presentations across Pass A
-sessions to measure within-reviewer stability. The present review-assignment identity permits one assignment
-per candidate, reviewer, rubric, and pass, so repeat presentations need a separate presentation-event layer
-rather than duplicate scientific reviews. That work should preserve:
+At this checkpoint, one protocol feature remained unimplemented: PRD-12's six hidden repeat presentations
+across Pass A sessions. [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) subsequently closed
+that implementation gap with a separate presentation-event layer rather than duplicate scientific reviews.
+Its contract preserves:
 
 - a single candidate denominator;
 - hidden repeat identity during review;
@@ -307,7 +307,7 @@ rather than duplicate scientific reviews. That work should preserve:
 - a stability measurement separate from candidate outcome;
 - no leakage from repeat scheduling into Pass A content.
 
-Pass D campaign adjudication also remains a specification rather than an executable workflow. It must not be
+Pass D campaign adjudication still remains a specification rather than an executable workflow. It must not be
 implemented by treating family synthesis as automatic authorization.
 
 ## 13. Honest current conclusion

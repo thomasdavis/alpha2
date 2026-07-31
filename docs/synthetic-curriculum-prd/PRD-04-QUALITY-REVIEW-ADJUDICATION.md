@@ -179,6 +179,12 @@ The workflow must fail closed before its prerequisites, bind every response to a
 retain the raw submission, and leave candidate, release, and training state unchanged. The executable D5
 implementation is recorded in [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
 
+Pass A repeat presentations are presentation-level reliability evidence, not additional candidate reviews.
+Each repeat uses a fresh opaque ID, hides its source review in the model-visible packet, and stores its response
+separately. Stability measures outcome, policy, confidence, and dimension-score agreement while preserving the
+possibility that a stable judgment is wrong or that a changed judgment is justified. The executable contract
+is [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
+
 ## 5. Reviewer calibration
 
 Before reviewing production data, every model and human reviewer sees a calibration set containing:

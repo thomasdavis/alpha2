@@ -42,12 +42,17 @@ Treat only `analysis_run_a32f01644e1a96a9ea601b35b35626aa` as the current run. T
 release decisions.
 
 [Execution 06](docs/synthetic-curriculum-prd/EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md) implements the
-family-level Pass C and separate structural-rejection disposition path. The canonical ledger is migrated to
-five migrations, 117 tables, four views, and 168 triggers. Pass C must remain empty until every current
+family-level Pass C and separate structural-rejection disposition path. Pass C must remain empty until every current
 candidate has one sealed human Pass A and Pass B review for the same reviewer; the live fail-closed proof has
 zero Pass C assignments, syntheses, dispositions, release members, and training exposures. Do not populate
-these records with model-authored judgments labeled as human. Six hidden Pass A repeat presentations and Pass
-D campaign adjudication remain implementation gaps.
+these records with model-authored judgments labeled as human.
+
+[Execution 07](docs/synthetic-curriculum-prd/EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md) adds the separate
+presentation-event layer required for six hidden Pass A repeats. The canonical ledger is now at six
+migrations, 122 tables, five views, and 174 triggers. Repeat responses never create extra candidate reviews;
+the current repeat population is zero until a human seals the first Pass A session. The packet hides repeat
+identity, but the public ledger can reveal it, so reviewers must not inspect presentation lineage during a
+session. Pass D campaign adjudication remains an implementation gap.
 
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes

@@ -1,7 +1,7 @@
 # PRD-12 — D5 human adjudication and calibration closeout
 
-**Status:** normative planning contract; Pass A/B instrument and fail-closed Pass C workflow deployed; human
-review has not begun
+**Status:** normative planning contract; Pass A/B instrument, blinded-repeat layer, and fail-closed Pass C
+workflow deployed; human review has not begun
 
 **Applies to:** `alpha-calibration-v1` only
 
@@ -246,6 +246,11 @@ After individual reviews are frozen, the adjudicator:
 - Record session order, timestamp, reviewer, and any interruption.
 - Include six hidden repeat presentations across sessions to measure within-reviewer stability. Repeats are
   presentation events, not additional candidates and do not inflate the denominator.
+
+Execution 07 implements this distinction directly. Later Pass A sessions schedule completed prior A reviews
+under fresh opaque presentation IDs, store repeat responses separately, and expose a stability view without
+creating a second candidate review. The current first session predates that layer and remains byte-identical;
+its completion is the prerequisite for choosing the first legitimate repeat.
 - Place no more than two candidates from one family consecutively in Pass A.
 - Complete Pass B only after the corresponding Pass A form is immutable.
 - Complete family comparison after all individual first passes, so a strong sibling does not excuse a weak
@@ -582,5 +587,6 @@ Pass A blindness.
 
 The Pass C implementation is ready but intentionally empty: zero assignments, zero family syntheses, and
 zero structural dispositions. Do not bypass its A/B gate merely to populate the new public tables. The six
-hidden Pass A repeat presentations required by Section 7 still need a separate presentation-event workflow;
-they must not be implemented as duplicate candidates or duplicate scientific reviews.
+hidden Pass A repeats are now supported by the separate presentation-event workflow in
+[Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md), but zero are assigned until a real human seals
+the first Pass A session.

@@ -271,6 +271,11 @@ schema-valid tool/output path, never regex extraction from prose.
 | `rubric` | Stable quality construct |
 | `rubric_version` | Exact criteria and anchors |
 | `review_assignment` | Candidate, reviewer, blindness, order, deadline |
+| `review_presentation_session` | Ordered hash-bound review session, including repeat allocation |
+| `review_presentation` | One primary or hidden-repeat appearance without duplicating the review |
+| `review_presentation_response` | Immutable response to one appearance |
+| `review_presentation_score` | Dimension scores for a presentation response |
+| `review_presentation_finding` | Evidence-grounded findings for a presentation response |
 | `review` | Immutable review event |
 | `review_dimension_score` | Separate score/decision per construct |
 | `review_finding` | Span-grounded issue or strength |
@@ -553,8 +558,9 @@ derivation contracts are tested.
 ## 15. Current D5 physical checkpoint
 
 Execution 05 records the first derived-evidence materialization. Execution 06 adds the fail-closed family
-synthesis and structural-disposition evidence layer. The canonical ledger now has five migrations, 117
-tables, four views, and 168 append-only triggers. The frozen 48-candidate snapshot contributes one
+synthesis and structural-disposition evidence layer. Execution 07 separates review assignments from blinded
+repeat presentations and adds a reviewer-stability view. The canonical ledger now has six migrations, 122
+tables, five views, and 174 append-only triggers. The frozen 48-candidate snapshot contributes one
 authoritative surface-analysis run containing 236 scoped metrics, 2,256 pair/method similarity edges, and 488
 dynamic template signatures. A provenance-erroneous predecessor and its typed correction are intentionally
 retained, so physical row counts include both runs.
@@ -562,6 +568,10 @@ retained, so physical row counts include both runs.
 The five new Pass C relations are empty by design while human Pass A and Pass B remain incomplete. Their
 presence proves schema and workflow capability, not review completion. Their no-promotion and exact-basis
 contract is recorded in [Execution 06](EXECUTION-06-D5-FAMILY-SYNTHESIS-WORKFLOW.md).
+
+The presentation relations are also empty while the original 12-item legacy Pass A packet remains open.
+Future repeat responses remain separate from candidate reviews and are summarized by
+`review_repeat_stability`; see [Execution 07](EXECUTION-07-D5-BLINDED-REPEAT-PRESENTATIONS.md).
 
 This checkpoint satisfies only the bounded D5 surface-analysis requirements. It does not complete PRD-02's
 future release, token-exposure, evaluation, embedding, contamination, or checkpoint-lineage catalog.
