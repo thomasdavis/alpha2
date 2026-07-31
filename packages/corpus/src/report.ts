@@ -28,13 +28,11 @@ export async function writeAuditPacket(
   const stats = await campaignStats(ledger, campaignSlug);
   const analysis = await analyzeCampaign(ledger, campaignSlug);
   const rows = await ledger.client.execute({
-    sql: `SELECT c.id AS candidate_id, f.slug AS family_slug, c.status, cv.content_json,
-                 cv.hidden_contract_json
-          FROM candidate c
-          JOIN concept_family f ON f.id = c.family_id
-          JOIN candidate_version cv ON cv.candidate_id = c.id
-          WHERE c.campaign_id = ?
-          ORDER BY f.slug, c.item_key`,
+    sql: `SELECT cc.candidate_id, cc.family_slug, cc.status, cc.content_json,
+                 cc.hidden_contract_json
+          FROM corpus_candidate_current cc
+          WHERE cc.campaign_id = ?
+          ORDER BY cc.family_slug, cc.item_key`,
     args: [stats.campaignId]
   });
   const candidates: AuditCandidate[] = [];

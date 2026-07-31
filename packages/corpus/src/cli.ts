@@ -11,6 +11,7 @@ import { writeAuditPacket } from "./report.js";
 import { analyzeCampaign } from "./analysis.js";
 import { formatBytes } from "./storage.js";
 import { humanReviewStatus, prepareHumanReviewPacket, submitHumanReviewPacket } from "./review.js";
+import { writeCalibrationProfile } from "./profile.js";
 
 function option(args: string[], name: string, fallback?: string): string | undefined {
   const index = args.indexOf(name);
@@ -42,6 +43,7 @@ function help(): void {
   generate [--execute] [--home PATH] [--families N] [--items-per-call N] [--model gpt-5.4]
   status [--home PATH] [--campaign alpha-calibration-v1]
   analyze [--home PATH] [--campaign alpha-calibration-v1]
+  profile --revision GIT_REVISION [--home PATH] [--campaign alpha-calibration-v1]
   audit [--home PATH] [--campaign alpha-calibration-v1]
   review-prepare --reviewer ALIAS [--pass A|B] [--count 12] [--seed VALUE] [--output PATH] [--home PATH]
   review-submit --file PATH [--home PATH]
@@ -89,6 +91,13 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     }
     if (command === "analyze") {
       print(await analyzeCampaign(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
+      return;
+    }
+    if (command === "profile") {
+      print(await writeCalibrationProfile(ledger, {
+        campaignSlug: option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!,
+        softwareRevision: requiredOption(args, "--revision")
+      }));
       return;
     }
     if (command === "audit") {

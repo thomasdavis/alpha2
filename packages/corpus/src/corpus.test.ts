@@ -21,6 +21,9 @@ import {
 import { generationEnvelopeSchema } from "./schemas.js";
 import { categorySeeds, transformationSeeds } from "./seeds.js";
 import { writeAuditPacket } from "./report.js";
+import { analyzeCampaign } from "./analysis.js";
+import { writeCalibrationProfile } from "./profile.js";
+import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import type { CampaignConfig, GeneratedItem, StructuredCallResult } from "./types.js";
 import { validateCandidate } from "./validate.js";
 
@@ -219,6 +222,99 @@ test("the corpus-owned storage limit causes a resumable campaign pause", async (
     assert.equal(await checkCampaignStorage(ledger, campaignId), false);
     const row = await ledger.client.execute({ sql: "SELECT status FROM generation_campaign WHERE id = ?", args: [campaignId] });
     assert.equal(String(row.rows[0]!["status"]), "paused_storage");
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
+test("surface profiling uses current versions, is idempotent, immutable, and cannot promote data", async () => {
+  const ledger = await seededLedger();
+  try {
+    const campaignId = await createCampaign(ledger, { ...campaignConfig, slug: "surface-profile" });
+    const family = (await listFamilies(ledger)).find((entry) => entry.slug === "role-versus-bearer")!;
+    const task = await createTask(ledger, campaignId, family.id, "test", "surface-profile:call:1", "gpt-5.4");
+    const callId = await recordStructuredCall(
+      ledger,
+      task.id,
+      "gpt-5.4",
+      "worker",
+      "test-prompt",
+      "Generate surface-profile fixtures.",
+      "generation-envelope",
+      generationEnvelopeSchema,
+      successfulCall(),
+      1
+    );
+    const first = {
+      ...validItem,
+      itemKey: "surface-profile-dialogue-01"
+    };
+    const second = {
+      ...validItem,
+      itemKey: "surface-profile-dialogue-02",
+      messages: [
+        validItem.messages[0]!,
+        { role: "assistant" as const, content: "Yes. Graduating ends the student role you held; the person remains the same." }
+      ]
+    };
+    const validation = { valid: true, findings: [] };
+    await recordCandidate(ledger, campaignId, family.id, callId, first, validation);
+    await recordCandidate(ledger, campaignId, family.id, callId, second, validation);
+
+    const firstCandidateId = stableId("candidate", `${campaignId}:${family.id}:${first.itemKey}`);
+    const revisedContent = {
+      ...first,
+      messages: [
+        first.messages[0]!,
+        { role: "assistant" as const, content: "Yes. Graduating ends the student role you held; the person remains the same person." }
+      ]
+    };
+    const { hiddenContract: ignoredContract, ...visibleRevision } = revisedContent;
+    void ignoredContract;
+    const revisedJson = canonicalJson(visibleRevision as unknown as import("./types.js").JsonValue);
+    await ledger.client.execute({
+      sql: `INSERT INTO candidate_version
+            (id, candidate_id, version, content_json, hidden_contract_json, content_sha256, created_at)
+            VALUES (?, ?, 2, ?, ?, ?, '2026-07-31T00:00:00Z')`,
+      args: [
+        stableId("candidatev", `${firstCandidateId}:2`),
+        firstCandidateId,
+        revisedJson,
+        canonicalJson(first.hiddenContract as unknown as import("./types.js").JsonValue),
+        sha256Bytes(revisedJson)
+      ]
+    });
+
+    const analysis = await analyzeCampaign(ledger, "surface-profile");
+    assert.equal(analysis.candidates, 2);
+    const firstRun = await writeCalibrationProfile(ledger, {
+      campaignSlug: "surface-profile",
+      softwareRevision: "test-revision"
+    });
+    const resumedRun = await writeCalibrationProfile(ledger, {
+      campaignSlug: "surface-profile",
+      softwareRevision: "test-revision"
+    });
+    assert.equal(firstRun.resumed, false);
+    assert.equal(resumedRun.resumed, true);
+    assert.equal(resumedRun.analysisRunId, firstRun.analysisRunId);
+    assert.equal(firstRun.similarityEdgeCount, 2);
+    assert.ok(firstRun.metricCount > 0);
+    assert.ok(firstRun.templateSignatureCount > 0);
+
+    const counts = await Promise.all([
+      ledger.client.execute("SELECT COUNT(*) AS count FROM analysis_run"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM similarity_edge"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM release_member"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM training_exposure")
+    ]);
+    assert.deepEqual(counts.map((result) => Number(result.rows[0]!["count"])), [1, 2, 0, 0]);
+    await assert.rejects(
+      ledger.client.execute("UPDATE analysis_run SET disclaimer = 'quality passed'"),
+      /append-only/
+    );
+    assert.match(firstRun.warning, /not a semantic duplicate judgment/);
+    assert.equal((await validateLedger(ledger)).foreignKeyViolations, 0);
   } finally {
     closeLedger(ledger);
   }

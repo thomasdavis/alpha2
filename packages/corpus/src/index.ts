@@ -4,6 +4,7 @@ export * from "./db.js";
 export * from "./generate.js";
 export * from "./hash.js";
 export * from "./prompts.js";
+export * from "./profile.js";
 export * from "./report.js";
 export * from "./review-contract.js";
 export * from "./review.js";

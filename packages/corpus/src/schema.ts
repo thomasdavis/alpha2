@@ -1090,9 +1090,104 @@ const v2: string[] = [
     GROUP BY cc.candidate_id, cc.family_slug, cc.item_key, cc.status`
 ];
 
+const v3ImmutableTables = [
+  "analysis_method",
+  "analysis_run",
+  "analysis_metric",
+  "similarity_edge",
+  "template_signature"
+];
+
+const v3: string[] = [
+  `CREATE TABLE IF NOT EXISTS analysis_method (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    definition TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(slug, version)
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS analysis_run (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    analysis_method_id TEXT NOT NULL REFERENCES analysis_method(id),
+    software_revision_id TEXT NOT NULL REFERENCES software_revision(id),
+    input_snapshot_sha256 TEXT NOT NULL,
+    output_blob_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    status TEXT NOT NULL,
+    evidence_scope TEXT NOT NULL,
+    disclaimer TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    UNIQUE(campaign_id, analysis_method_id, software_revision_id, input_snapshot_sha256),
+    CHECK(status = 'completed'),
+    CHECK(evidence_scope = 'surface_distribution_only')
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS analysis_metric (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL REFERENCES analysis_run(id),
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    value_real REAL,
+    value_text TEXT,
+    unit TEXT NOT NULL,
+    denominator REAL,
+    detail TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, scope_kind, scope_id, metric),
+    CHECK((value_real IS NOT NULL AND value_text IS NULL)
+       OR (value_real IS NULL AND value_text IS NOT NULL))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS similarity_edge (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL REFERENCES analysis_run(id),
+    left_candidate_version_id TEXT NOT NULL REFERENCES candidate_version(id),
+    right_candidate_version_id TEXT NOT NULL REFERENCES candidate_version(id),
+    method TEXT NOT NULL,
+    score REAL NOT NULL,
+    review_threshold REAL NOT NULL,
+    classification TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, left_candidate_version_id, right_candidate_version_id, method),
+    CHECK(left_candidate_version_id < right_candidate_version_id),
+    CHECK(score >= 0.0 AND score <= 1.0),
+    CHECK(review_threshold >= 0.0 AND review_threshold <= 1.0),
+    CHECK(classification IN ('surface_review_candidate', 'not_flagged'))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS template_signature (
+    id TEXT PRIMARY KEY,
+    analysis_run_id TEXT NOT NULL REFERENCES analysis_run(id),
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    signature_kind TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL,
+    denominator INTEGER NOT NULL,
+    rate REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(analysis_run_id, scope_kind, scope_id, signature_kind, signature),
+    CHECK(candidate_count >= 0),
+    CHECK(denominator > 0),
+    CHECK(rate >= 0.0 AND rate <= 1.0)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_analysis_run_campaign
+     ON analysis_run(campaign_id, completed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_analysis_metric_run_scope
+     ON analysis_metric(analysis_run_id, scope_kind, scope_id, metric)`,
+  `CREATE INDEX IF NOT EXISTS idx_similarity_edge_run_score
+     ON similarity_edge(analysis_run_id, method, score DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_template_signature_run_rate
+     ON template_signature(analysis_run_id, scope_kind, scope_id, rate DESC)`,
+  ...v3ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
-  { version: 2, name: "current_and_public_views", statements: v2 }
+  { version: 2, name: "current_and_public_views", statements: v2 },
+  { version: 3, name: "first_class_surface_analysis", statements: v3 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1119,6 +1214,11 @@ export const requiredTables = [
   "candidate_version",
   "candidate_failure",
   "review",
+  "analysis_method",
+  "analysis_run",
+  "analysis_metric",
+  "similarity_edge",
+  "template_signature",
   "dataset_release",
   "rendered_unit",
   "training_exposure",
