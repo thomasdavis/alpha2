@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN-ADJUDICATION PROTOCOL READY; REVIEW PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION GENERATED; PUBLIC READ-ONLY EXPLORER LIVE; HUMAN-REVIEW WORKFLOW OPERATIONAL; FIRST 12 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -44,6 +44,11 @@ is the complete blind and contract-aware review specified by
 [Appendix D](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). The resulting evidence feeds the
 unratified [Decision Packet 01](docs/synthetic-curriculum-prd/DECISION-PACKET-01-D5-NEXT-STEP.md). Corpus
 expansion, model criticism, training, and GPU work require separate authorization.
+
+The first executable review session is recorded in
+[Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md). It contains 12 blinded
+Pass A assignments and zero completed reviews. The workflow refuses to expose hidden contracts in Pass A,
+requires a sealed human submission before Pass B, and never changes release or training state automatically.
 
 ---
 

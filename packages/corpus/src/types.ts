@@ -100,6 +100,51 @@ export interface ReviewEnvelope {
   batchFindings: string[];
 }
 
+export type HumanReviewPass = "A" | "B";
+
+export interface HumanReviewFinding {
+  dimension: string;
+  severity: "observation" | "minor" | "major" | "critical";
+  evidence: string;
+  recommendation: string;
+}
+
+export interface HumanReviewResponse {
+  outcome: string | null;
+  summaryUserAim: string;
+  summaryAssistantMove: string;
+  scores: Record<string, number | null>;
+  questionPolicy: string | null;
+  missingClarification: string | null;
+  findings: HumanReviewFinding[];
+  rationale: string;
+  confidence: number | null;
+  uncertainty: string;
+  expertiseNeeded: string;
+}
+
+export interface HumanReviewPacketAssignment {
+  assignmentId: string;
+  opaqueItemId: string;
+  candidateContentSha256: string;
+  candidate: JsonValue;
+  response: HumanReviewResponse;
+}
+
+export interface HumanReviewPacket {
+  schemaVersion: 1;
+  campaignSlug: string;
+  sessionId: string;
+  pass: HumanReviewPass;
+  reviewerAlias: string;
+  rubricSlug: string;
+  rubricVersion: number;
+  seed: string;
+  createdAt: string;
+  instructions: string[];
+  assignments: HumanReviewPacketAssignment[];
+}
+
 export interface ModelAlias {
   alias: string;
   modelId: string;

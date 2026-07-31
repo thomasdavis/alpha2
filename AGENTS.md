@@ -16,7 +16,10 @@ GPT-5.4 calibration may be inspected and human-reviewed under
 [PRD-12](docs/synthetic-curriculum-prd/PRD-12-D5-HUMAN-ADJUDICATION.md) and
 [Appendix D](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). Review all 48 in a blind pass
 before revealing hidden contracts, preserve every judgment append-only, and do not fabricate human reviews
-with a model. The operator separately authorized the public,
+with a model. [Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md) implements
+the local workflow and prepares the first 12-item Pass A session under reviewer alias `ajax`; its blank form is
+the current human action. Do not inspect candidate lineage before completing that blind form. The operator
+separately authorized the public,
 anonymous, read-only ledger explorer specified by
 [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md); it may expose all tables and views but
 must not add a mutation surface or collapse scientific stages. It is live at `https://alpha.donto.org/corpus`;

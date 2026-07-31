@@ -25,6 +25,14 @@ schema dispositions for the six `unknown_secondary_lens` rejections. No model cr
 those structural dispositions critic false accepts or rejects. The unratified next choices are in
 [Decision Packet 01](docs/synthetic-curriculum-prd/DECISION-PACKET-01-D5-NEXT-STEP.md).
 
+The review workflow is now operational and recorded in
+[Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md). The first blinded Pass A
+session has 12 assigned candidates at
+`/mnt/donto-data/donto-resources/research/alpha2-corpus/releases/review/alpha-calibration-v1-a-review_session_1b479c00-3195-4d1f-ac69-86489019cd3e/`.
+All response fields are blank: there are still zero human reviews, adjudications, release members, and training
+exposures. Submit through the local `review-submit` CLI only after a real human completes the form; never fill
+it with a model while labeling the result human.
+
 Do not expand the corpus, invoke GPT-5.5, train, provision GPU infrastructure, mutate live Donto, publish a
 different artifact, or send additional ad hoc Discord messages without another bounded operator instruction.
 The public read-only `/corpus` publication is the explicit exception recorded on 2026-07-30. The factual progress

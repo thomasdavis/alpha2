@@ -7,7 +7,8 @@ const repo = "/mnt/donto-data/workspace/alpha2";
 const corpusHome = process.env.ALPHA_CORPUS_HOME
   ?? "/mnt/donto-data/donto-resources/research/alpha2-corpus";
 const webhook = process.env.ALPHA_DISCORD_WEBHOOK_URL;
-if (!webhook) throw new Error("ALPHA_DISCORD_WEBHOOK_URL is not configured");
+const dryRun = process.env.ALPHA_DISCORD_DRY_RUN === "1";
+if (!webhook && !dryRun) throw new Error("ALPHA_DISCORD_WEBHOOK_URL is not configured");
 
 function command(binary, args) {
   return execFileSync(binary, args, { cwd: repo, encoding: "utf8" }).trim();
@@ -55,6 +56,14 @@ const usageRows = sqliteRows(`
   FROM model_call_usage
 `);
 const integrityRows = sqliteRows("PRAGMA integrity_check");
+const reviewRows = sqliteRows(`
+  SELECT COALESCE(SUM(CASE WHEN json_extract(blindness_json, '$.pass') = 'A' AND status = 'assigned' THEN 1 ELSE 0 END), 0) AS pass_a_assigned,
+         COALESCE(SUM(CASE WHEN json_extract(blindness_json, '$.pass') = 'A' AND status = 'completed' THEN 1 ELSE 0 END), 0) AS pass_a_completed,
+         COALESCE(SUM(CASE WHEN json_extract(blindness_json, '$.pass') = 'B' AND status = 'assigned' THEN 1 ELSE 0 END), 0) AS pass_b_assigned,
+         COALESCE(SUM(CASE WHEN json_extract(blindness_json, '$.pass') = 'B' AND status = 'completed' THEN 1 ELSE 0 END), 0) AS pass_b_completed
+  FROM review_assignment
+`);
+const humanReviewRows = sqliteRows("SELECT COUNT(*) AS count FROM review WHERE reviewer_actor_id IS NOT NULL");
 
 const commit = command("git", ["log", "-1", "--format=%h %s"]);
 const dirtyFiles = command("git", ["status", "--porcelain"])
@@ -70,32 +79,43 @@ try {
 }
 const footprint = directorySize(corpusHome);
 const usage = usageRows[0];
+const reviewProgress = reviewRows[0];
+const humanReviews = Number(humanReviewRows[0]?.["count"] ?? 0);
 const humanAccepted = Number(progress["human_accepted"]);
-const nextGate = humanAccepted === 0
-  ? "human conceptual adjudication of the audit packet; not more generation"
-  : "operator adjudication of whether another bounded stage is justified";
+const passACompleted = Number(reviewProgress?.["pass_a_completed"] ?? 0);
+const passBAssigned = Number(reviewProgress?.["pass_b_assigned"] ?? 0);
+const nextGate = passACompleted < Number(progress["candidates"])
+  ? "complete blinded Pass A human review; hidden contracts remain sealed"
+  : passBAssigned === 0
+    ? "prepare contract-aware Pass B from sealed Pass A evidence"
+    : "complete Pass B and family synthesis before any generation decision";
 
 const content = [
   `**Alpha Corpus progress — ${new Date().toISOString()}**`,
   "Goal: a chatty model specialized in language, ontology, philosophy, evidence, intent, and knowledge structure; synthetic curriculum construction is a principal half of the project.",
   `Ledger: integrity=${String(integrityRows[0]?.["integrity_check"] ?? "unknown")}; campaign=${String(progress["status"])}; tasks=${Number(progress["completed_tasks"])}/${Number(progress["task_count"])}; calls=${Number(progress["model_calls"])}.`,
   `Calibration: ${Number(progress["candidates"])} candidates; ${Number(progress["structurally_valid"])} structurally valid; ${Number(progress["structurally_rejected"])} retained rejections; ${humanAccepted} human accepted. Structural validity is not training approval.`,
+  `Human review: Pass A ${passACompleted}/${Number(progress["candidates"])} completed (${Number(reviewProgress?.["pass_a_assigned"] ?? 0)} assigned); Pass B ${Number(reviewProgress?.["pass_b_completed"] ?? 0)} completed (${passBAssigned} assigned); ${humanReviews} append-only human review records.`,
   `Models: GPT-5.6-sol counsel; GPT-5.4 worker; GPT-5.5 not used. Tokens: ${Number(usage["input_tokens"]).toLocaleString()} input (${Number(usage["cached_input_tokens"]).toLocaleString()} cached), ${Number(usage["output_tokens"]).toLocaleString()} output.`,
   `Repository: ${commit}; ${dirtyFiles} pending file(s). Generation active: ${generationActive ? "yes" : "no"}. Training/GPU active: no.`,
   `Project-owned artifacts: ${mib(footprint)} of the 15 GiB soft-pause threshold.`,
   `Current next gate: ${nextGate}.`
 ].join("\n");
 
-const response = await fetch(webhook, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({
-    username: "Alpha Corpus",
-    content,
-    allowed_mentions: { parse: [] }
-  })
-});
-if (!response.ok) {
-  throw new Error(`Discord progress post failed with HTTP ${response.status}`);
+if (dryRun) {
+  process.stdout.write(JSON.stringify({ posted: false, dryRun: true, content }, null, 2) + "\n");
+} else {
+  const response = await fetch(webhook, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      username: "Alpha Corpus",
+      content,
+      allowed_mentions: { parse: [] }
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Discord progress post failed with HTTP ${response.status}`);
+  }
+  process.stdout.write(JSON.stringify({ posted: true, status: response.status, bytes: content.length }) + "\n");
 }
-process.stdout.write(JSON.stringify({ posted: true, status: response.status, bytes: content.length }) + "\n");

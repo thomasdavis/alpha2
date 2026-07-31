@@ -10,6 +10,7 @@ import { CALIBRATION_CAMPAIGN_SLUG, generateCalibration } from "./generate.js";
 import { writeAuditPacket } from "./report.js";
 import { analyzeCampaign } from "./analysis.js";
 import { formatBytes } from "./storage.js";
+import { humanReviewStatus, prepareHumanReviewPacket, submitHumanReviewPacket } from "./review.js";
 
 function option(args: string[], name: string, fallback?: string): string | undefined {
   const index = args.indexOf(name);
@@ -21,6 +22,12 @@ function positiveInteger(value: string | undefined, fallback: number, label: str
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${label} must be a positive integer`);
   return parsed;
+}
+
+function requiredOption(args: string[], name: string): string {
+  const value = option(args, name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
 }
 
 function print(value: unknown): void {
@@ -36,6 +43,9 @@ function help(): void {
   status [--home PATH] [--campaign alpha-calibration-v1]
   analyze [--home PATH] [--campaign alpha-calibration-v1]
   audit [--home PATH] [--campaign alpha-calibration-v1]
+  review-prepare --reviewer ALIAS [--pass A|B] [--count 12] [--seed VALUE] [--output PATH] [--home PATH]
+  review-submit --file PATH [--home PATH]
+  review-status [--home PATH] [--campaign alpha-calibration-v1]
 
 generate is a dry-run unless --execute is supplied. New generation pauses when this
 project's own ledger and artifact tree exceeds 15 GiB. It never trains Alpha.
@@ -83,6 +93,27 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
     }
     if (command === "audit") {
       print(await writeAuditPacket(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
+      return;
+    }
+    if (command === "review-prepare") {
+      const pass = option(args, "--pass", "A")!;
+      if (pass !== "A" && pass !== "B") throw new Error("--pass must be A or B");
+      print(await prepareHumanReviewPacket(ledger, {
+        campaignSlug: option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!,
+        reviewerAlias: requiredOption(args, "--reviewer"),
+        pass,
+        limit: positiveInteger(option(args, "--count"), 12, "count"),
+        seed: option(args, "--seed"),
+        outputDirectory: option(args, "--output")
+      }));
+      return;
+    }
+    if (command === "review-submit") {
+      print(await submitHumanReviewPacket(ledger, requiredOption(args, "--file")));
+      return;
+    }
+    if (command === "review-status") {
+      print(await humanReviewStatus(ledger, option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!));
       return;
     }
     throw new Error(`Unknown command ${command}`);

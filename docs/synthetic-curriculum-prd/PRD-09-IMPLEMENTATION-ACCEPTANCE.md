@@ -33,6 +33,9 @@ Done:
   and completed-response recovery;
 - D5 generation portion: 12 GPT-5.4 calls, 48 candidates, 42 structurally valid and six retained rejections,
   with a full human-audit packet;
+- D5 review substrate: executable blinded Pass A and contract-aware Pass B packets, versioned rubric,
+  append-only human submission, 12/12 corpus tests, and the first 12 Pass A assignments prepared with zero
+  fabricated judgments;
 - GPT-5.5, training, GPU work, live Donto writes, and release remained unused during generation. A separately
   authorized factual Discord progress timer was installed after the calibration.
 
