@@ -1,6 +1,6 @@
 # CURRENT GOAL — Build Alpha's synthetic conversational-intelligence program
 
-**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE EXPORTED-PACKET AND REVIEWER-SESSION PROVENANCE LIVE; FIRST 12 OF 48 PASS A ASSIGNMENTS READY; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
+**Set:** 2026-07-30 · **Owner:** ajax + Codex · **Status:** D2–D4 OPERATIONAL; D5 CALIBRATION + SURFACE PROFILE + FAIL-CLOSED PASS A–D WORKFLOWS RECORDED; PUBLIC READ-ONLY EXPLORER + HARDENED LOCAL-FIRST REVIEW WORKSPACE + COMPLETE AGGREGATE D5 PIPELINE + IMMUTABLE PACKET, SESSION, AND PASS-A EVIDENCE PROVENANCE LIVE; 12 V1 ASSIGNMENTS PRESERVED AS SUPERSEDED; SAME 12 CANDIDATES READY UNDER RUBRIC V2; HUMAN RESPONSES PENDING; NO TRAINING/GPU AUTHORIZATION
 
 The canonical goal is defined by
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md) and
@@ -54,6 +54,15 @@ The browser instrument is live at `https://alpha.donto.org/corpus/review` and re
 deployment recorded in
 [Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md). It autosaves only
 in the reviewer's browser and downloads a packet; the public server exposes no review mutation endpoint.
+
+[Execution 15](docs/synthetic-curriculum-prd/EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md) records the
+current rubric-v2 deployment at `2c6da67121938c8c033e7d0e30ddaefd0f0949ba`. It closes every Appendix D Pass A
+field gap, represents `not_applicable` and `uncertain` without false numeric coercion, propagates complete
+evidence into Pass C/D, and records 12 v1→v2 assignment supersessions over an unchanged candidate-content
+population. The ledger has ten migrations, 135 tables, five views, and 198 triggers; SQLite SHA-256 after WAL
+checkpoint is `0695bbf651d74c227931016fbe14e617337872d05ebf494f33aa264973dd327b`. The blank v2 packet is
+`8c6a99c8c4dc1d74ceca0e75eb1767bb3229b9c9f2529c26d800b58e62b66f92`. All human and downstream evidence
+counts remain zero. Pass B's contract-indexed matrices remain an explicit implementation gate before reveal.
 
 [Execution 09](docs/synthetic-curriculum-prd/EXECUTION-09-D5-PIPELINE-VISIBILITY.md) records the deployed
 reviewer-scoped campaign panel at revision `8f25d51c362921480d68e37a22d57a9ee39d47d9`. It makes the complete

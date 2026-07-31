@@ -17,8 +17,10 @@ GPT-5.4 calibration may be inspected and human-reviewed under
 [Appendix D](docs/synthetic-curriculum-prd/APPENDIX-D-D5-REVIEW-INSTRUMENT.md). Review all 48 in a blind pass
 before revealing hidden contracts, preserve every judgment append-only, and do not fabricate human reviews
 with a model. [Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md) implements
-the local workflow and prepares the first 12-item Pass A session under reviewer alias `ajax`; its blank form is
-the current human action. Do not inspect candidate lineage before completing that blind form. The operator
+the local workflow. [Execution 15](docs/synthetic-curriculum-prd/EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md)
+supersedes its blank rubric-v1 assignments with the same 12 candidate-content hashes under rubric v2; that
+blank v2 form is the current human action. Do not inspect candidate lineage before completing the blind form.
+The operator
 separately authorized the public,
 anonymous, read-only ledger explorer specified by
 [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md); it may expose all tables and views but
@@ -118,6 +120,15 @@ nothing. Earlier packet blobs remain preserved and readable as explicitly incomp
 really is an opaque item identity. The 23/23 corpus suite, typecheck, optimized build, immutable canary, public
 desktop/mobile Chromium proof, and 200/405 boundary pass. There are still 12 open Pass A assignments and zero
 human or downstream evidence; provenance readiness is not adjudication.
+
+[Execution 15](docs/synthetic-curriculum-prd/EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md) supersedes that
+deployment record. The current public application is `2c6da67121938c8c033e7d0e30ddaefd0f0949ba`; the ledger
+has ten migrations, 135 tables, five views, and 198 triggers. Rubric v2 requires the two Pass A
+immediate-comprehension judgments, evidence for every numeric/`not_applicable`/`uncertain` dimension, and the
+complete finding repair contract. Twelve blank v1 assignments remain linked to their twelve v2 replacements;
+all human evidence remains zero. Pass B remains locked, and Appendix D sections 3.1–3.4 still require a
+separately versioned contract-indexed worksheet before reveal. Do not raise the shared A/B rubric in a way
+that strands sealed Pass A evidence.
 
 Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha2-corpus`. Pause new corpus work
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes

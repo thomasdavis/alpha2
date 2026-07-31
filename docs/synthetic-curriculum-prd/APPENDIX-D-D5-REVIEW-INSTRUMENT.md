@@ -10,6 +10,12 @@
 stores it append-only in `human_review_session_declaration` plus normalized competence rows. A missing or
 incomplete header causes the local importer to write nothing.
 
+Execution 15 makes every Pass A field below executable under rubric v2: the two immediate-comprehension
+judgments, one evidence sentence per numeric/`not_applicable`/`uncertain` dimension assessment, and the full
+six-field finding repair contract. The old blank v1 assignments are preserved as explicitly superseded; the
+v2 packet retains the exact candidate-content population. Sections 3.1–3.4 remain a normative Pass B contract
+whose contract-indexed matrices must be implemented under a separately versioned Pass B scheme before reveal.
+
 ## 1. Reviewer and session header
 
 | Field | Entry |

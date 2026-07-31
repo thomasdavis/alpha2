@@ -39,6 +39,9 @@ human instrument is
 [Execution 13](EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md).
 The first-class reviewer competence/session-condition record, legacy-packet compatibility proof, and current
 public deployment are [Execution 14](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md).
+The complete Pass A evidence contract, explicit non-numeric dimension states, rubric-v1-to-v2 supersession,
+and current public deployment are
+[Execution 15](EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md).
 
 Done:
 
@@ -50,7 +53,7 @@ Done:
 - first experimental data boundary fixed as synthetic-only;
 - fixed parameter-count framing removed;
 - one-GPU constraint recorded;
-- D2/D5 ledger: eight hash-verified migrations, 131 tables, five current/public views, 190 append-only triggers,
+- D2/D5 ledger: ten hash-verified migrations, 135 tables, five current/public views, 198 append-only triggers,
   content-addressed blobs, and clean integrity/foreign-key validation;
 - D3 canaries: 49 categories, 16 transformations, and six quarantined family blueprints;
 - D4 orchestration: structured Codex calls, exact raw artifacts, bounded/idempotent tasks, validators, usage,
@@ -62,10 +65,12 @@ Done:
   human submission; a deployed local-first browser workspace; a hidden-lineage-safe aggregate pipeline;
   mobile/desktop assignment navigation, incomplete-work recovery, packet-scoped position persistence, accessible
   score names, reviewer competence and session-condition declarations, and corrected contrast/landmarks;
-  23/23 corpus tests; exact binding of every response to an exported immutable packet envelope; safe in-memory
-  normalization of preserved pre-declaration v1 packets; and the first 12 of 48 Pass A assignments prepared
-  with zero fabricated judgments. Pass C is proven to create zero assignments before all A/B prerequisites are
-  sealed;
+  26/26 corpus tests; exact binding of every response to an exported immutable packet envelope; safe in-memory
+  normalization of preserved v1 packets; required immediate-comprehension judgments, per-dimension evidence,
+  explicit `not_applicable`/`uncertain` states, and complete finding repair contracts; 12 preserved superseded
+  v1 assignments plus the first 12 of 48 Pass A assignments prepared under rubric v2 over the same
+  candidate-content population with zero fabricated judgments. Pass C is proven to create zero assignments
+  before all A/B prerequisites are sealed;
 - D5 repeat substrate: future Pass A sessions can interleave six blinded consistency presentations without
   duplicating candidates or candidate reviews; responses, scores, findings, and derived stability remain
   append-only. The live repeat population is correctly zero before human Pass A. Pass B preparation now fails
@@ -82,6 +87,8 @@ Done:
 
 Open before D5 acceptance:
 
+- implement Appendix D sections 3.1–3.4 as a pass-specific, contract-indexed Pass B worksheet without
+  invalidating sealed Pass A rubric-v2 evidence;
 - human blind and contract-aware review of all 48 calibration candidates;
 - family synthesis for all six families and separate content/schema disposition for all six structural
   rejections;

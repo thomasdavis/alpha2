@@ -4,7 +4,8 @@
 
 **Applies to:** `alpha-calibration-v1` only
 
-**Current gate:** 48 generated candidates, 12 open blinded Pass A assignments, zero human-review session
+**Current gate:** 48 generated candidates, 12 preserved superseded rubric-v1 assignments, 12 open blinded
+rubric-v2 Pass A assignments over the same candidate-content population, zero human-review session
 declarations, zero human reviews, zero adjudications, zero closeouts
 
 **Authority:** PRD-04 quality policy, PRD-09 D5 acceptance gate, and direct operator decisions
@@ -37,6 +38,13 @@ interruption, fatigue, and material review conditions. The declaration and norma
 append-only and are written in the same transaction as the review only after the exact packet envelope and all
 response fields validate. Preserved v1 packets without the additive declaration remain readable as explicitly
 incomplete; see [Execution 14](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md).
+
+**Pass A evidence completeness:** Execution 15 raises the executable human rubric to v2 and records the full
+Appendix D Pass A worksheet in append-only first-class relations. It preserves explicit
+`not_applicable`/`uncertain` states without coercing them into numeric scores and links every old blank
+assignment to its exact v2 replacement. Pass B remains locked; its contract-indexed sections 3.1–3.4 must be
+implemented with pass-specific version compatibility before reveal. See
+[Execution 15](EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md).
 
 ## 1. Purpose
 

@@ -14,7 +14,7 @@ ledger is `/mnt/donto-data/donto-resources/research/alpha2-corpus`; it contains 
 quarantined families, 42 structurally valid and six retained rejections, with no human-accepted/training rows.
 The public read-only explorer is specified by [PRD-11](docs/synthetic-curriculum-prd/PRD-11-PUBLIC-CORPUS-EXPLORER.md)
 and its release evidence belongs in [Execution 02](docs/synthetic-curriculum-prd/EXECUTION-02-PUBLIC-CORPUS-EXPLORER.md).
-It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 131 tables and five views without
+It is live at `https://alpha.donto.org/corpus` and dynamically exposes all 135 tables and five views without
 changing any candidate's stage. The public proxy blocks every legacy application API and every non-read method.
 The latest audit packet is under the ledger's `releases/audit/` directory. Human conceptual adjudication is
 still next, now governed by
@@ -27,11 +27,12 @@ those structural dispositions critic false accepts or rejects. The unratified ne
 
 The review workflow is now operational and recorded in
 [Execution 03](docs/synthetic-curriculum-prd/EXECUTION-03-D5-HUMAN-REVIEW-WORKFLOW.md). The first blinded Pass A
-session has 12 assigned candidates at
-`/mnt/donto-data/donto-resources/research/alpha2-corpus/releases/review/alpha-calibration-v1-a-review_session_1b479c00-3195-4d1f-ac69-86489019cd3e/`.
+population has 12 assigned candidates. Its original rubric-v1 assignments are preserved as superseded; the
+current rubric-v2 packet is at
+`/mnt/donto-data/donto-resources/research/alpha2-corpus/releases/review/alpha-calibration-v1-a-rubric-v2/`.
 All assignment responses and the reviewer competence/session-condition declaration are blank: there are still
 zero human reviews, declarations, adjudications, release members, and training exposures. The current packet
-SHA-256 is `95b962709e9ad77aa91f2249f0648f1ee026b5ce3d64aaff792b615f751a484a`. Submit through the local
+SHA-256 is `8c6a99c8c4dc1d74ceca0e75eb1767bb3229b9c9f2529c26d800b58e62b66f92`. Submit through the local
 `review-submit` CLI only after a real human completes the form; never fill it with a model while labeling the
 result human.
 
@@ -98,7 +99,7 @@ balance. Do not backfill or publish individual mappings before D5 blindness is c
 Execution 13 records the prior workspace-hardening release and preserves its corrections. Its claim that the
 position value was an opaque identity was wrong: revision `c4e7c4d...` stored a packet-scoped numeric index.
 
-The current production review application is
+The Execution-14 production review application was
 `ccdd9e6f00129a28571fd1158b42acf508fb0991`; see
 [Execution 14](docs/synthetic-curriculum-prd/EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md). It retains the
 navigation and accessibility improvements, now stores the active opaque item identity, requires competence
@@ -114,6 +115,17 @@ The pre-migration backup is
 `backups/pre-d5-session-declarations-20260731T054250Z.sqlite` at SHA-256
 `ee96b8a8573df70a1ab4b0d4b56176a4b765a062cf3a82fde85d574ae73fec38`; migration 8 digest is
 `0374db80ce8ff18195c7e8f1ce57b78bac6f13b9c9f92f6f23014bb93f8b0f51`.
+
+The current production review application is
+`2c6da67121938c8c033e7d0e30ddaefd0f0949ba`; see
+[Execution 15](docs/synthetic-curriculum-prd/EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md). Rubric v2 makes
+the two immediate-comprehension judgments, evidence for every dimension, explicit non-numeric states, and the
+complete finding repair contract executable and append-only. Twelve blank v1 assignments remain linked to
+their twelve v2 replacements over the same candidate-content hashes. The ledger has ten migrations, 135
+tables, five views, and 198 triggers. The current SQLite SHA-256 is
+`0695bbf651d74c227931016fbe14e617337872d05ebf494f33aa264973dd327b`; every human, adjudication, release,
+training, and authorization count remains zero. Pass B's contract-indexed Appendix D matrices are the next
+implementation seam and must not be approximated by the current generic dimensions.
 
 The D5 deterministic profile is now first-class and recorded in
 [Execution 05](docs/synthetic-curriculum-prd/EXECUTION-05-D5-SURFACE-EVIDENCE.md). Current run

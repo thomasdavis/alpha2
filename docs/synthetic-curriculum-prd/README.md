@@ -64,6 +64,7 @@ requires it. Conversation remains the product; all formal machinery stays behind
 32. [PRD-14 — Conversational response-policy control plane](PRD-14-RESPONSE-POLICY-CONTROL-PLANE.md)
 33. [Execution 13 — D5 human-review workspace hardening](EXECUTION-13-D5-REVIEW-WORKSPACE-HARDENING.md)
 34. [Execution 14 — D5 reviewer-session provenance and legacy-packet continuity](EXECUTION-14-D5-REVIEW-SESSION-PROVENANCE.md)
+35. [Execution 15 — D5 review evidence completeness and rubric supersession](EXECUTION-15-D5-REVIEW-EVIDENCE-COMPLETENESS.md)
 
 ## Authority and supersession
 
