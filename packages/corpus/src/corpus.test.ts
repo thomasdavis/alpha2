@@ -22,7 +22,7 @@ import { generationEnvelopeSchema } from "./schemas.js";
 import { categorySeeds, transformationSeeds } from "./seeds.js";
 import { writeAuditPacket } from "./report.js";
 import { analyzeCampaign } from "./analysis.js";
-import { writeCalibrationProfile } from "./profile.js";
+import { recordAnalysisRunCorrection, writeCalibrationProfile } from "./profile.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
 import type { CampaignConfig, GeneratedItem, StructuredCallResult } from "./types.js";
 import { validateCandidate } from "./validate.js";
@@ -302,15 +302,36 @@ test("surface profiling uses current versions, is idempotent, immutable, and can
     assert.ok(firstRun.metricCount > 0);
     assert.ok(firstRun.templateSignatureCount > 0);
 
+    const correctedRun = await writeCalibrationProfile(ledger, {
+      campaignSlug: "surface-profile",
+      softwareRevision: "corrected-test-revision"
+    });
+    const correction = await recordAnalysisRunCorrection(ledger, {
+      erroneousAnalysisRunId: firstRun.analysisRunId,
+      correctedAnalysisRunId: correctedRun.analysisRunId,
+      reason: "The first run recorded an incorrect operator-supplied software revision."
+    });
+    assert.equal(correction.resumed, false);
+    assert.equal((await recordAnalysisRunCorrection(ledger, {
+      erroneousAnalysisRunId: firstRun.analysisRunId,
+      correctedAnalysisRunId: correctedRun.analysisRunId,
+      reason: "The first run recorded an incorrect operator-supplied software revision."
+    })).resumed, true);
+
     const counts = await Promise.all([
       ledger.client.execute("SELECT COUNT(*) AS count FROM analysis_run"),
       ledger.client.execute("SELECT COUNT(*) AS count FROM similarity_edge"),
+      ledger.client.execute("SELECT COUNT(*) AS count FROM analysis_run_correction"),
       ledger.client.execute("SELECT COUNT(*) AS count FROM release_member"),
       ledger.client.execute("SELECT COUNT(*) AS count FROM training_exposure")
     ]);
-    assert.deepEqual(counts.map((result) => Number(result.rows[0]!["count"])), [1, 2, 0, 0]);
+    assert.deepEqual(counts.map((result) => Number(result.rows[0]!["count"])), [2, 4, 1, 0, 0]);
     await assert.rejects(
       ledger.client.execute("UPDATE analysis_run SET disclaimer = 'quality passed'"),
+      /append-only/
+    );
+    await assert.rejects(
+      ledger.client.execute("DELETE FROM analysis_run_correction"),
       /append-only/
     );
     assert.match(firstRun.warning, /not a semantic duplicate judgment/);

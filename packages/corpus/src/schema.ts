@@ -1184,10 +1184,27 @@ const v3: string[] = [
   ...v3ImmutableTables.flatMap(immutabilityTriggers)
 ];
 
+const v4: string[] = [
+  `CREATE TABLE IF NOT EXISTS analysis_run_correction (
+    id TEXT PRIMARY KEY,
+    erroneous_analysis_run_id TEXT NOT NULL REFERENCES analysis_run(id),
+    corrected_analysis_run_id TEXT NOT NULL REFERENCES analysis_run(id),
+    reason TEXT NOT NULL,
+    authority TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(erroneous_analysis_run_id, corrected_analysis_run_id),
+    CHECK(erroneous_analysis_run_id <> corrected_analysis_run_id)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_analysis_run_correction_erroneous
+     ON analysis_run_correction(erroneous_analysis_run_id, created_at)`,
+  ...immutabilityTriggers("analysis_run_correction")
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
-  { version: 3, name: "first_class_surface_analysis", statements: v3 }
+  { version: 3, name: "first_class_surface_analysis", statements: v3 },
+  { version: 4, name: "append_only_analysis_run_corrections", statements: v4 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1219,6 +1236,7 @@ export const requiredTables = [
   "analysis_metric",
   "similarity_edge",
   "template_signature",
+  "analysis_run_correction",
   "dataset_release",
   "rendered_unit",
   "training_exposure",

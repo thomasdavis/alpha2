@@ -26,6 +26,14 @@ export interface CalibrationProfileResult {
   warning: string;
 }
 
+export interface AnalysisRunCorrectionResult {
+  correctionId: string;
+  erroneousAnalysisRunId: string;
+  correctedAnalysisRunId: string;
+  reason: string;
+  resumed: boolean;
+}
+
 function exactWrite(path: string, bytes: string): void {
   if (existsSync(path)) {
     const existing = readFileSync(path);
@@ -286,5 +294,75 @@ export async function writeCalibrationProfile(
     templateSignatureCount: data.templateSignatures.length,
     resumed: false,
     warning: DISCLAIMER
+  };
+}
+
+export async function recordAnalysisRunCorrection(
+  ledger: Ledger,
+  options: {
+    erroneousAnalysisRunId: string;
+    correctedAnalysisRunId: string;
+    reason: string;
+  }
+): Promise<AnalysisRunCorrectionResult> {
+  const reason = options.reason.trim();
+  if (!reason) throw new Error("Analysis-run correction reason must be non-empty");
+  if (options.erroneousAnalysisRunId === options.correctedAnalysisRunId) {
+    throw new Error("An analysis run cannot correct itself");
+  }
+  const runs = await ledger.client.execute({
+    sql: `SELECT id FROM analysis_run WHERE id IN (?, ?)`,
+    args: [options.erroneousAnalysisRunId, options.correctedAnalysisRunId]
+  });
+  if (runs.rows.length !== 2) throw new Error("Both erroneous and corrected analysis runs must exist");
+  const correctionId = stableId(
+    "analysis_run_correction",
+    `${options.erroneousAnalysisRunId}:${options.correctedAnalysisRunId}`
+  );
+  const existing = await ledger.client.execute({
+    sql: "SELECT reason FROM analysis_run_correction WHERE id = ?",
+    args: [correctionId]
+  });
+  if (existing.rows.length > 0) {
+    if (String(existing.rows[0]!["reason"]) !== reason) {
+      throw new Error(`Analysis correction ${correctionId} changed under the same identity`);
+    }
+    return {
+      correctionId,
+      erroneousAnalysisRunId: options.erroneousAnalysisRunId,
+      correctedAnalysisRunId: options.correctedAnalysisRunId,
+      reason,
+      resumed: true
+    };
+  }
+  const ts = new Date().toISOString();
+  await ledger.client.batch([
+    {
+      sql: `INSERT INTO analysis_run_correction
+            (id, erroneous_analysis_run_id, corrected_analysis_run_id, reason, authority, created_at)
+            VALUES (?, ?, ?, ?, 'operator_provenance_correction', ?)`,
+      args: [correctionId, options.erroneousAnalysisRunId, options.correctedAnalysisRunId, reason, ts]
+    },
+    {
+      sql: `INSERT INTO event(id, event_type, object_kind, object_id, payload_json, created_at)
+            VALUES (?, 'analysis_run_provenance_corrected', 'analysis_run_correction', ?, ?, ?)`,
+      args: [
+        stableId("event", `analysis-run-provenance-corrected:${correctionId}`),
+        correctionId,
+        canonicalJson({
+          erroneousAnalysisRunId: options.erroneousAnalysisRunId,
+          correctedAnalysisRunId: options.correctedAnalysisRunId,
+          reason
+        }),
+        ts
+      ]
+    }
+  ], "write");
+  return {
+    correctionId,
+    erroneousAnalysisRunId: options.erroneousAnalysisRunId,
+    correctedAnalysisRunId: options.correctedAnalysisRunId,
+    reason,
+    resumed: false
   };
 }

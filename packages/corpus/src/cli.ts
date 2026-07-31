@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   campaignStats,
   closeLedger,
@@ -11,7 +12,7 @@ import { writeAuditPacket } from "./report.js";
 import { analyzeCampaign } from "./analysis.js";
 import { formatBytes } from "./storage.js";
 import { humanReviewStatus, prepareHumanReviewPacket, submitHumanReviewPacket } from "./review.js";
-import { writeCalibrationProfile } from "./profile.js";
+import { recordAnalysisRunCorrection, writeCalibrationProfile } from "./profile.js";
 
 function option(args: string[], name: string, fallback?: string): string | undefined {
   const index = args.indexOf(name);
@@ -35,6 +36,19 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+function verifiedGitRevision(repoRoot: string, requested?: string): string {
+  const current = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+  if (!/^[0-9a-f]{40}$/.test(current)) throw new Error(`Could not resolve a full Git revision from ${repoRoot}`);
+  if (requested && requested !== current) {
+    throw new Error(`--revision ${requested} does not match current Git HEAD ${current}`);
+  }
+  return current;
+}
+
 function help(): void {
   process.stdout.write(`alpha-corpus commands:
   init [--home PATH]
@@ -43,7 +57,8 @@ function help(): void {
   generate [--execute] [--home PATH] [--families N] [--items-per-call N] [--model gpt-5.4]
   status [--home PATH] [--campaign alpha-calibration-v1]
   analyze [--home PATH] [--campaign alpha-calibration-v1]
-  profile --revision GIT_REVISION [--home PATH] [--campaign alpha-calibration-v1]
+  profile [--revision CURRENT_FULL_GIT_REVISION] [--repo-root PATH] [--home PATH] [--campaign alpha-calibration-v1]
+  analysis-correct --erroneous-run ID --corrected-run ID --reason TEXT [--home PATH]
   audit [--home PATH] [--campaign alpha-calibration-v1]
   review-prepare --reviewer ALIAS [--pass A|B] [--count 12] [--seed VALUE] [--output PATH] [--home PATH]
   review-submit --file PATH [--home PATH]
@@ -94,9 +109,18 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
       return;
     }
     if (command === "profile") {
+      const repoRoot = resolve(option(args, "--repo-root", process.cwd())!);
       print(await writeCalibrationProfile(ledger, {
         campaignSlug: option(args, "--campaign", CALIBRATION_CAMPAIGN_SLUG)!,
-        softwareRevision: requiredOption(args, "--revision")
+        softwareRevision: verifiedGitRevision(repoRoot, option(args, "--revision"))
+      }));
+      return;
+    }
+    if (command === "analysis-correct") {
+      print(await recordAnalysisRunCorrection(ledger, {
+        erroneousAnalysisRunId: requiredOption(args, "--erroneous-run"),
+        correctedAnalysisRunId: requiredOption(args, "--corrected-run"),
+        reason: requiredOption(args, "--reason")
       }));
       return;
     }
