@@ -8,6 +8,7 @@ resume request is not permission to spend money or start training.
 1. Confirm the working directory is /mnt/donto-data/workspace/alpha2.
 2. Read, in order:
    - docs/resume/README.md
+   - docs/resume/CHAT-REPAIR-V2-2026-07-31.md
    - docs/resume/CHAT-REPAIR-2026-07-31.md
    - docs/resume/CURRENT-STATE.md
    - docs/resume/DECISIONS.md
@@ -19,13 +20,19 @@ resume request is not permission to spend money or start training.
        git log -5 --oneline --decorate
        git remote -v
 
-4. Verify the selected corrective checkpoint, then the older recovery bundle if historical reconstruction is
-   required:
+4. Verify the selected corrective checkpoint and the rejected v2 branch required for the planned analysis, then
+   the older recovery bundle if historical reconstruction is required:
 
        sha256sum /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/checkpoint-1200.json
 
    The selected SHA-256 must be
    `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
+
+       sha256sum /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/pilot-b/run/checkpoint-{800,1600}.json
+
+   The v2 hashes must be `fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4`
+   and `1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8`. They are rejected recovery
+   states, not selected models.
 
        cd /mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730
        sha256sum -c MANIFEST.sha256
@@ -43,8 +50,9 @@ resume request is not permission to spend money or start training.
 
        runpodctl pod list
 
-   Never stop, remove, signal, or reuse a pod owned by another project. The 2026-07-31 repair pod was
-   `ksotbczj60mntk`; the final closeout must verify that exact pod has been removed.
+   Never stop, remove, signal, or reuse a pod owned by another project. The first 2026-07-31 repair pod was
+   `ksotbczj60mntk`; repair-v2 pod `omn3hktwqs7r5l` was also removed. Pod `7pk5wnwgtazb0z` was an unrelated
+   workload at v2 closeout and must not be touched based on this dossier.
 
 ## Authorization checkpoint
 
@@ -52,7 +60,8 @@ Before any later Alpha pod is created, the user must explicitly authorize a new 
 
 - the archived terminal model failed D3;
 - the later selected corrective model is conversational but still loops and answers shallowly;
-- the completed corrective contract does not authorize another run;
+- repair v2 made every selector response nonempty but made repetition and semantic contingency worse;
+- neither completed corrective contract authorizes another run;
 - another unmodified SFT epoch is not an approved repair;
 - native recovery state is already safe locally and on Hugging Face;
 - a bounded experiment and maximum spend must be agreed first.

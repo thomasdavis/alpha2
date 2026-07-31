@@ -72,6 +72,12 @@ Evaluate a sealed non-frozen development set using deterministic greedy decoding
 
 A single compelling example cannot pass A4.
 
+Repair v2 is the binding negative precedent for this gate. It achieved universal nonempty development output but
+failed because loop counts and semantic contingency regressed on exact shared prompts. A future selector must
+therefore compare only mutually generation-eligible IDs, stratify by source/prompt family, and reject a candidate
+that replaces emptiness with fluent irrelevance or repetition. The v2 sealed-final suite remains unspent and is
+not a development selector.
+
 ## Gate A5 — checkpoint admission
 
 A checkpoint can be retained as the next-stage source only when:

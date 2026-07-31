@@ -1,8 +1,28 @@
 # Agent Guidelines
 
-## Current project goal — synthetic conversational intelligence PRD program (2026-07-30)
+## Current project goal — original Alpha conversational model (2026-07-31)
 
-The canonical current goal is the documentation suite at
+The operator paused AlphaCorpus and restored the original product objective: make Alpha a genuinely chatty,
+effective conversational model. The latest bounded execution is complete and negative. Read
+[Chat Repair v2](docs/resume/CHAT-REPAIR-V2-2026-07-31.md), then
+[Current State](docs/resume/CURRENT-STATE.md), [Decisions](docs/resume/DECISIONS.md), and the repository
+[HANDOFF](HANDOFF.md).
+
+Repair v2 tested both continuation from the selected public checkpoint and one clean-base control. Every v2
+candidate initiated an answer on every selector prompt, but all regressed on exact-comparison repetition,
+stopping, and qualitative semantic contingency. No v2 checkpoint was selected; the sealed-final suite was never
+opened; the public model remains the earlier step 1,200 with quality `FAIL`. All recovery evidence is public at
+training-archive revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`. Alpha pod `omn3hktwqs7r5l` is removed;
+the other visible RunPod is unrelated and must not be touched.
+
+Do not start another training run or tune against the sealed evaluation without new explicit authorization and
+a genuinely new finite intervention aimed at semantic contingency or autoregressive stability. “Resume” means
+recover the evidence and continue the product/research reasoning; it does not authorize blind continuation of a
+rejected trajectory.
+
+## Paused side project — synthetic conversational intelligence PRD program (2026-07-30)
+
+The canonical side-project goal is the documentation suite at
 [docs/synthetic-curriculum-prd/README.md](docs/synthetic-curriculum-prd/README.md), governed by
 [PRD-00](docs/synthetic-curriculum-prd/PRD-00-MASTER-PROGRAM.md). Alpha is to become a small, genuinely
 chatty model specialized in language, meaning, ontology, philosophy, evidence, and conceptual inquiry. Building
@@ -134,11 +154,12 @@ Corpus-owned storage lives under `/mnt/donto-data/donto-resources/research/alpha
 resumably if that project tree exceeds 15 GiB. This is not a global disk hard rule and never authorizes changes
 to unrelated data.
 
-## Current archive override — 2026-07-30
+## Current training authority — repair-v2 closeout, 2026-07-31
 
-The Alpha 60M program is closed. No training, continuation, sweep, frozen-eval tuning, or Alpha RunPod
-creation is authorized. A future “resume” request means recover both the current PRD goal and the archived
-model state, then prepare a bounded proposal; it does not itself authorize spend.
+The bounded repair-v2 program is closed without a new winner. No training, continuation, sweep, sealed-eval
+execution, or Alpha RunPod creation is currently authorized. A future “resume” request means recover the active
+chat-product goal, the rejected v2 evidence, and the paused PRD side project, then prepare a bounded proposal; it
+does not itself authorize spend.
 
 Read [docs/resume/README.md](docs/resume/README.md) and
 [docs/resume/SESSION-START.md](docs/resume/SESSION-START.md) before acting. The binding decisions are in

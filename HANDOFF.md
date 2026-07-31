@@ -1,4 +1,4 @@
-# HANDOFF — Alpha chat repair published with quality FAIL; AlphaCorpus paused, state as of 2026-07-31
+# HANDOFF — Alpha repair v2 rejected; best honest checkpoint unchanged; AlphaCorpus paused, state as of 2026-07-31
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -7,7 +7,33 @@ small, natural conversational model. AlphaCorpus remains a valuable side project
 paused and is not the active model-training objective. Do not restart corpus generation, human-review pipeline
 work, or public explorer work merely because the historical section below is detailed.
 
-The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). The short version:
+The latest authoritative record is
+[Chat Repair v2 2026-07-31](docs/resume/CHAT-REPAIR-V2-2026-07-31.md). Repair v2 is complete and negative:
+
+- Pilot A continued the published checkpoint for 800 bounded steps. Pilot B then ran the one predeclared
+  clean-base control for 1,600 steps from SHA
+  `08e14fa9604bf1b46ebcd5df37933c84d2496c1d05d9e4b32ebad98792cc6049`.
+- Every v2 selector checkpoint answered all 96 prompts, so the response-initiation intervention worked. On the
+  exact 69 prompts shared with the public baseline, however, the baseline had 24 loop flags; Pilot A's best was
+  30 and the clean-base control's best was 29. Qualitative panels showed parroting, semantic errors, generic
+  nonanswers, and repeated-phrase attractors.
+- No v2 checkpoint was selected. The 150-prompt sealed-final suite was never executed or inspected. The public
+  model, Space, and backend deliberately remain on the earlier selected step 1,200.
+- All eight clean-base checkpoints, metrics, four evaluations, and logs are mounted under
+  `/mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/`. Step 800 and terminal step 1,600 are additionally
+  public with optimizer/RNG state at training-archive revision
+  `c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`.
+- Anonymous verification found 53 public files and exact LFS hashes for both retained checkpoints. The public
+  checksum manifest SHA-256 is `b733f5704e722faadd2e6e46cd9505be44e7952da75d3d001aa65ac92cc6cf5f`.
+- Alpha pod `omn3hktwqs7r5l` was removed only after verified recovery. The currently visible RunPod
+  `7pk5wnwgtazb0z` is an unrelated workload and must not be touched.
+- No v2 improvement announcement was posted. One later operator-requested webhook test used an exact rejected
+  sample and was clearly labelled as a test; it did not change the improvement-only rule.
+- Do not continue either v2 branch blindly. A future paid run requires explicit authorization and a genuinely
+  new finite intervention aimed at semantic contingency or autoregressive stability.
+
+The selected checkpoint's earlier recovery record is
+[Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
 
 - The archived terminal checkpoint really did have an answer-initiation failure, but the evaluator, native API,
   Hugging Face template, and Space also appended an erroneous generation-only space after `<|assistant|>`.
@@ -38,17 +64,22 @@ The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-
 - Pod `ksotbczj60mntk` was removed after the untouched outputs were copied, hashed, and recomputed;
   `runpodctl pod list` was empty immediately afterward.
 
-Current local evidence root:
+Selected-repair local evidence root:
 
     /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/
+
+Rejected-v2 local evidence root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/
 
 Current corpus root:
 
     /mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/
 
-The generated replies are often shallow, vague, wrong, empty, or repetitive. Do not describe this candidate as
-philosophically intelligent, generally capable, or reliably chatty. It demonstrates a partial recovery of
-conversational initiation, with the complete failure profile preserved for the next experiment.
+The generated replies are often shallow, vague, wrong, empty, or repetitive. Do not describe the selected or
+rejected candidates as philosophically intelligent, generally capable, or reliably chatty. The selected model
+demonstrates a partial recovery of conversational initiation; v2 proves that reliable initiation alone does not
+produce semantic contingency or stable conversation.
 
 ---
 

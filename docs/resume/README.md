@@ -8,25 +8,27 @@
 - **Selected checkpoint:** step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`
 - **Development verdict:** structurally chatty, semantically immature
 - **Frozen result:** 55/100 structural, 70/100 nonempty, 31 loops, QA 0/200; quality gate FAIL
-- **Closeout:** model, recovery evidence, Space, and live backend published; paid pod removed
+- **Repair v2:** continuation and clean-base control both rejected; no new selection; sealed final untouched
+- **Closeout:** best honest model unchanged; v2 recovery archive published; paid Alpha pod removed
 
 This directory is the shortest safe route into the model program. It preserves the archived failure, the later
 corrective experiment, and the evidence required before any further paid run.
 
 ## Read order
 
-1. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — active corrective run and selected candidate.
-2. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
-3. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, and authority state.
-4. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
+1. [CHAT-REPAIR-V2-2026-07-31.md](CHAT-REPAIR-V2-2026-07-31.md) — latest bounded experiment, rejection, diagnosis, and recovery.
+2. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — selected corrective checkpoint and its failed final gate.
+3. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
+4. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, and authority state.
+5. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
    terminated immediately.
-5. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
-6. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
-7. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
-8. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
-9. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
-10. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
-11. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifact.
+6. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
+7. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
+8. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
+9. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
+10. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
+11. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
+12. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifact.
 
 Then read the repository-level [GOAL.md](../../GOAL.md), [HANDOFF.md](../../HANDOFF.md),
 [docs/RUNPOD.md](../RUNPOD.md), and [docs/FROZEN_EVAL.md](../FROZEN_EVAL.md). GOAL.md and HANDOFF.md
@@ -39,6 +41,8 @@ contain the complete chronological record; this directory is the compact recover
 - The archived terminal checkpoint failed: 92 empty responses, six loops, two unusable fragments, and QA 0/200.
 - The later corrective checkpoint 1,200 produced nonempty, EOS-terminated replies on all 48 repair-development
   cases, but the untouched suite fell to 55/100 structural, 70/100 nonempty, and 31 loops.
+- Repair v2 made all 96 selector responses nonempty, but both continuation and clean-base training increased
+  repetition on exact shared prompts. No v2 checkpoint was selected and the sealed-final suite was not opened.
 - The evaluator and serving prompt also inserted a standalone generation-only space after the assistant marker.
   Commit `cf4ad61` fixes that boundary; historical failed outputs remain preserved.
 - The paid Alpha pod was removed after final evaluation was copied, hashed, and recomputed.

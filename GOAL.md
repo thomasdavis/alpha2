@@ -1,34 +1,36 @@
 # CURRENT GOAL — recover the original Alpha chat model
 
-**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE AGAIN BY OPERATOR DIRECTION; PUBLISHED STEP 1,200 IS THE FAILURE-ANALYSIS BASELINE; NO PAID POD LIVE YET
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE PRODUCT GOAL; REPAIR V2 COMPLETE AND REJECTED; BEST HONEST PUBLIC CHECKPOINT UNCHANGED; NO ALPHA POD LIVE
 
 The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
 effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
 the active training objective.
 
-The authoritative execution record is
-[docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). The corrective run starts from
-the clean pre-SFT base, uses a compact deterministically shuffled conversation corpus, weights conversations
-equally, independently protects assistant starts and EOS, and selects by free generation rather than validation
-loss. Checkpoint 1,200 is selected at SHA-256
-`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
+The authoritative latest execution record is
+[docs/resume/CHAT-REPAIR-V2-2026-07-31.md](docs/resume/CHAT-REPAIR-V2-2026-07-31.md). The earlier selected repair
+is recorded in [docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). Checkpoint 1,200
+remains selected at SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` because no v2 candidate beat it on
+untouched comparable conversation behavior.
 
 The selected candidate looked structurally chatty on development—48/48 nonempty EOS-terminated responses—but
 the untouched suite measured only 55/100 structural passes, 70/100 nonempty replies, 31 loops, and 0/200 exact
 closed-book QA. The quality gate therefore remains FAIL. Native/Transformers parity passed 87/87 positions; the
-checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and the paid
-pod was removed. On 2026-07-31 the operator explicitly directed the project to continue until Alpha is a genuinely
-effective chat model. The next paid run is authorized only after the frozen failures are stratified and a new
-finite contract isolates the intervention; do not blindly continue step 2,200 or reuse the narrow development
-suite as the selector.
+checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and its paid
+pod was removed. On 2026-07-31 the operator explicitly directed the product goal to continue until Alpha is a
+genuinely effective chat model.
 
-Repair v2 has now frozen a corrected 24,701-conversation corpus at block 1,024, including 23,529 training rows
-and 1,172 corpus-development rows. All rows are structurally valid; exhaustive native-tokenizer mask audits pass;
-no target answer crosses the loop threshold; and the most common four-token answer start is only 0.28% of turns.
-The visible 96-prompt development selector, fixed 12-prompt qualitative panel, and disjoint 150-prompt sealed final
-are hash-bound. The exact bounded continuation launcher is `scripts/run_chat_repair_v2.sh`. The published
-step-1,200 checkpoint is being measured on the new development suite before the paid RTX 4090 pilot; the sealed
-final remains unexecuted.
+Repair v2 froze a corrected 24,701-conversation corpus at block 1,024 and two bounded experiments. Pilot A
+continued the selected checkpoint for 800 steps; the predeclared Pilot B control ran 1,600 steps from the clean
+pre-SFT base. Every v2 checkpoint answered all 96 development prompts, but repetition and semantic contingency
+were worse than the selected baseline on the exact 69 shared prompts. No v2 checkpoint was selected, and the
+sealed-final suite remains unexecuted and uninspected.
+
+All v2 evidence is local at `/mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/` and public at training
+archive revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`. Alpha pod `omn3hktwqs7r5l` was removed after
+verified recovery; the remaining RunPod is unrelated. The next paid run is not a continuation of either failed
+trajectory: it requires a new explicit authorization and a finite intervention aimed at semantic contingency or
+autoregressive stability, with selection by generated conversation rather than loss.
 
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.

@@ -45,6 +45,76 @@ Final selected frozen outputs:
 
 Final machine result: 55/100 structural, 70/100 nonempty, 31 loops, and 0/200 closed-book QA exact. Gate FAIL.
 
+## 2026-07-31 chat repair v2
+
+Root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/
+
+Authoritative narrative:
+
+    docs/resume/CHAT-REPAIR-V2-2026-07-31.md
+
+Primary files:
+
+| Evidence | Purpose |
+|---|---|
+| `pilot-a/evaluations/baseline-step1200-development/` | published baseline on the frozen v2 selector |
+| `pilot-a/evaluations/pilot-a-eval-step-{200,400,600,800}/` | bounded continuation outputs and exact shared-ID comparisons |
+| `pilot-b/run/config.json` | executed clean-base configuration |
+| `pilot-b/run/repair-contract.json` | exact clean-base input and intervention contract |
+| `pilot-b/run/metrics.jsonl` | complete 1,600-step finite trajectory |
+| `pilot-b/run/MANIFEST.sha256` | all eight optimizer-bearing checkpoints plus run state |
+| `pilot-b/evaluations/pilot-b-eval-step-{400,800,1200,1600}/` | raw outputs, machine summaries, exact comparisons, and fixed panels |
+| `pilot-b/remote-logs/` | launcher and evaluator logs copied from the pod |
+| `pilot-b/runpod-before-termination.txt` | exact Alpha and unrelated pod state before removal |
+| `pilot-b/runpod-after-termination.txt` | proof the Alpha pod was removed and the unrelated pod preserved |
+| `hf-recovery-archive/CHECKSUMS.sha256` | complete 53-file public recovery payload seal |
+
+The exact comparable 69-prompt result rejected every v2 checkpoint. The published baseline had 24 loop flags;
+Pilot A's best was 30, and the clean-base control's best was 29. All v2 checkpoints were nonempty on all 96
+development prompts, demonstrating that response initiation and conversational competence are separate.
+
+Clean-base checkpoint hashes:
+
+| Step | SHA-256 |
+|---:|---|
+| 200 | `689c377420dc928b34200aef75fe06738160a6c8c45adafe8ea5fb9c2488bad4` |
+| 400 | `276d8fe12f30ffa9acc80336712baa5aac4d459b89e585ad536352fe61574332` |
+| 600 | `d0b440470c7863afa75e470fea19548f8bc9ddc15c951e380c2f54ee416151dd` |
+| 800 | `fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4` |
+| 1,000 | `f50b47c61788a69305ad94ea6bd428762e3ce8c2fe8e75e3139d231fe62b8f5a` |
+| 1,200 | `ffac13d2fde9de551224c9764e26a0f36acf2b5acc64a6b30fad0ef092afdce1` |
+| 1,400 | `fd1968b554b0b460ae9e0d49fc8e1a1da0b701d0a027976ba0e5c826dd1ca930` |
+| 1,600 | `1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8` |
+
+Public negative-result archive:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/tree/c1117378c0bc8b81b408be09c000f80ea9f027d7/chat-repair-v2-20260731
+
+Anonymous publication proof:
+
+| Item | Verified value |
+|---|---|
+| Immutable revision | `c1117378c0bc8b81b408be09c000f80ea9f027d7` |
+| Nested files | 53 |
+| Checkpoint LFS metadata | step 800 and step 1,600 SHA/size both matched |
+| README SHA-256 | `3235310d50eb4da238d8658106eb484abb3d2f96068f259730f6b7f6206ec953` |
+| `CHECKSUMS.sha256` SHA-256 | `b733f5704e722faadd2e6e46cd9505be44e7952da75d3d001aa65ac92cc6cf5f` |
+
+Post-rejection live browser proof:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/public-verification/space-live-selected-step1200-20260731.png
+    SHA-256 54a56df6d34bcfac0e68727953feb4bc2846c77226730f876ae9a2f19d685d14
+
+The real browser submitted `Hey, how is your day going?`, displayed `It's going well, thank you. How about you?`,
+retained the visible quality-fail status, one main landmark, and no horizontal overflow. Health and evidence
+endpoints bound the runtime to selected step 1,200 and its exact checkpoint SHA.
+
+The sealed-final suite SHA-256 is
+`8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d`; it was never executed or inspected.
+No v2 model-improvement Discord announcement was made.
+
 ## Terminal run
 
 Root:

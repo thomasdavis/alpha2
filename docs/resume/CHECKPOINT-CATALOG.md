@@ -18,6 +18,26 @@ Canonical mounted path:
 Its standard inference-only Hugging Face export is beside it under
 `full-end2/hf-alpha-60m-chat-repair-1200/` and is not a lossless training restart.
 
+## Rejected chat-repair-v2 recovery branch
+
+Repair v2 produced no selected checkpoint. Its clean-base control nevertheless remains fully restartable and is
+preserved as negative-result evidence.
+
+| Native file | Step | Meaning | SHA-256 |
+|---|---:|---|---|
+| `alpha-chat-repair-v2-20260731/pilot-b/run/checkpoint-800.json` | 800 | highest full-suite structural count within the clean-base control; rejected | `fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4` |
+| `alpha-chat-repair-v2-20260731/pilot-b/run/checkpoint-1600.json` | 1,600 | final clean-base continuation state; rejected | `1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8` |
+
+Both files carry parameters, AdamW state, RNG, tokenizer identity, configuration, and training step. They are
+public under:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/tree/c1117378c0bc8b81b408be09c000f80ea9f027d7/chat-repair-v2-20260731/checkpoints
+
+The mounted run retains all eight 200-step checkpoints. Its `MANIFEST.sha256` has SHA-256
+`48023b6874d3571f22802d122b8d895df034b3b0e71c466c27371800d719ce0d`. Do not treat either public v2 state as
+the selected model. A future branch may use step 1,600 only with a new declared intervention; blind continuation
+of the rejected objective is not supported by the evidence.
+
 ## Canonical native recovery points
 
 | Native file in archive | Step | Meaning | SHA-256 |
@@ -55,7 +75,8 @@ Local hardlink bundle:
 Public immutable archive:
 
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints
-    revision ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60
+    selected-checkpoint recovery revision ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60
+    latest archive revision c1117378c0bc8b81b408be09c000f80ea9f027d7
 
 The local files are hard links to canonical mounted-drive artifacts. They protect against path-level
 cleanup without duplicating roughly 2.1 GB of blocks. Deleting either hardlink name does not delete the

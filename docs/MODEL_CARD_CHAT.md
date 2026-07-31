@@ -179,6 +179,17 @@ The historical terminal checkpoint's 2/100 structural and 92/100 empty result de
 runtime. Because that runtime also contained the prompt-boundary defect, it is not a clean model-only control for
 the corrected checkpoint. Both records are preserved rather than rewriting the old one.
 
+### Subsequent repair-v2 negative result
+
+A later bounded experiment tested continuation from this selected checkpoint and a clean-base control on a
+corrected 1,024-token conversation corpus. Every v2 selector checkpoint answered all 96 development prompts, but
+all increased repetition and weakened semantic contingency on exact prompts shared with this model. No v2
+checkpoint was selected, the sealed-final suite was not opened, and this public model remained unchanged.
+
+The negative result and optimizer-bearing v2 recovery states are preserved at training-archive revision
+`c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`. Newer does not mean better; those
+checkpoints are not model releases.
+
 No model judge supplied the semantic assessment in this card. The development examples below were inspected
 directly, and the full final frozen outputs are published as evidence.
 

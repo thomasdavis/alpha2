@@ -2,9 +2,12 @@
 
 ## Active result
 
-The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The bounded
-corrective run is complete and checkpoint 1,200 is selected. Final held-out evaluation is complete and the paid
-pod is removed; publication and live serving closeout are complete. Do not start another training run.
+The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The first
+corrective run selected checkpoint 1,200 and published it with an honest quality `FAIL`. Repair v2 then tested
+both bounded continuation from that checkpoint and a clean-base control on a corrected 1,024-token corpus.
+Every v2 checkpoint answered every development prompt, but all regressed on repetition, stopping, and
+qualitative contingency. No v2 checkpoint was selected, the sealed-final suite was never opened, the public
+chat model remained unchanged, and the paid Alpha pod was removed after verified recovery.
 
 | Item | Current state |
 |---|---|
@@ -21,9 +24,15 @@ pod is removed; publication and live serving closeout are complete. Do not start
 | Native archive | revision `ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60` |
 | Public Space | revision `d87e0950baf0a16ccd2859c2cee6314602ba2881` |
 | Live backend | step 1,200, quality FAIL, source `e55cb23` |
+| Repair v2 | Pilot A rejected; clean-base control rejected; no selection |
+| V2 exact comparison | baseline 24 loops; best v2 still 29 loops on the same 69 prompts |
+| V2 sealed final | never executed or inspected |
+| V2 recovery archive | revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, 53 files |
+| V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
-result is not structurally reliable and its semantic behavior is weak. It is not yet a dependable chatbot.
+result is not structurally reliable and its semantic behavior is weak. Repair v2 did not improve it. Alpha is
+not yet a dependable chatbot, and no further run is authorized without a genuinely new finite intervention.
 
 Canonical new evidence:
 
@@ -32,6 +41,7 @@ Canonical new evidence:
 Full account:
 
     docs/resume/CHAT-REPAIR-2026-07-31.md
+    docs/resume/CHAT-REPAIR-V2-2026-07-31.md
 
 ## Archived terminal baseline
 
@@ -89,6 +99,14 @@ Current selected continuation source:
 
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/blob/ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60/checkpoints/chat-repair-selected-step-1200.alph
     SHA-256 399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec
+
+Rejected v2 recovery branch:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/tree/c1117378c0bc8b81b408be09c000f80ea9f027d7/chat-repair-v2-20260731
+    step 800 SHA-256 fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4
+    step 1,600 SHA-256 1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8
+
+Those v2 files are optimizer-bearing recovery states, not selected public models.
 
 Current standard model:
 

@@ -150,6 +150,54 @@ exact before/after outputs, the reason for improvement, aggregate results, and r
 later checkpoint earned another post. AlphaCorpus's separate factual-progress timer does not authorize routine
 model-training posts.
 
+## 2026-07-31 — Repair v2 rejects both continuation and clean-base training
+
+The operator authorized one bounded 800-step continuation pilot and, after that pilot rejected the simple
+continuation hypothesis, one 1,600-step clean-base causal control. Both used the frozen v2 corpus and development
+selector. The clean-base control was the last authorized training run in this experiment.
+
+Every v2 checkpoint answered all 96 development prompts, but every declared candidate exceeded the published
+baseline's repetition on the exact 69 shared generation-eligible IDs. Pilot A's best structural checkpoints had
+32–33 loops versus the baseline's 24. The clean-base control improved from 35 to 29 loops across its declared
+checkpoints but never reached the baseline; its qualitative panels also showed semantic errors, parroting,
+generic nonanswers, and repeated-phrase attractors.
+
+No v2 checkpoint is selected. The public model remains the earlier step-1,200 checkpoint at SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`. This does not upgrade that checkpoint's
+own quality verdict: its untouched gate remains `FAIL`.
+
+## 2026-07-31 — A failed development selector does not spend the sealed final
+
+The v2 sealed-final suite was frozen before execution at SHA-256
+`8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d`. Because no candidate passed the visible
+development and qualitative gates, the sealed-final prompts and answers were never executed or inspected. A
+future experiment may not imply a v2 final result exists.
+
+## 2026-07-31 — Preserve v2 as a public negative-result recovery branch
+
+The mounted run retains every clean-base checkpoint at 200-step intervals with optimizer and RNG state. Step
+800 and the terminal step 1,600 are additionally published in the existing recovery repository under immutable
+revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`. Anonymous verification found
+53 nested files, matched both checkpoint LFS hashes and sizes, and reproduced the public README and checksum
+manifest byte-for-byte.
+
+This publication is a recovery and negative-result archive. It is not a model release and cannot supersede the
+selected checkpoint merely because it is newer.
+
+## 2026-07-31 — Repair v2 closes without more blind continuation
+
+The Alpha pod `omn3hktwqs7r5l` was removed after all run and evaluation evidence was copied and hash-verified.
+The unrelated live pod was not modified. Any later Alpha training needs new explicit authorization and a new
+finite intervention aimed at semantic contingency or autoregressive stability. Continuing Pilot A, continuing
+clean-base step 1,600, or repeatedly evaluating against the same visible outputs is not authorized by “resume.”
+
+## 2026-07-31 — User-requested Discord test did not change the posting rule
+
+After v2 closeout, the operator explicitly requested one webhook test using the last frozen qualitative sample.
+It was labelled as a test, identified step 1,600 as rejected, included the exact input and output, and explained
+that response initiation passed while semantic contingency failed. It was not an improvement announcement and
+does not authorize routine training posts.
+
 ## Future supersession requirements
 
 A future decision to train again must record:
