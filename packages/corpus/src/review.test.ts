@@ -100,6 +100,13 @@ async function seededReviewLedger(): Promise<Ledger> {
 }
 
 function completePacket(packet: HumanReviewPacket): HumanReviewPacket {
+  packet.sessionResponse.declaredCompetencies = ["conversation", "ontology"];
+  packet.sessionResponse.competenceNote = "Testing the declared review-condition contract.";
+  packet.sessionResponse.startedAt = "2026-07-31T00:00:00.000Z";
+  packet.sessionResponse.endedAt = "2026-07-31T00:30:00.000Z";
+  packet.sessionResponse.interruptionStatus = "none";
+  packet.sessionResponse.fatigueLevel = "none";
+  packet.sessionResponse.conditionsNote = "No material interruption or fatigue in this fixture.";
   for (const assignment of packet.assignments) {
     assignment.response.outcome = "acceptable_as_rendered";
     assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";
@@ -172,6 +179,21 @@ test("human submission is append-only evidence and never promotes candidate or t
     assert.equal(status.candidateStatuses["structurally_rejected"], 1);
     assert.equal(status.releaseMembers, 0);
     assert.equal(status.trainingExposures, 0);
+    const declarations = await ledger.client.execute(
+      "SELECT session_id, interruption_status, fatigue_level FROM human_review_session_declaration"
+    );
+    assert.equal(declarations.rows.length, 1);
+    assert.equal(String(declarations.rows[0]!["session_id"]), prepared.sessionId);
+    assert.equal(String(declarations.rows[0]!["interruption_status"]), "none");
+    assert.equal(String(declarations.rows[0]!["fatigue_level"]), "none");
+    const competencies = await ledger.client.execute(
+      "SELECT competence FROM human_review_session_competence ORDER BY competence"
+    );
+    assert.deepEqual(competencies.rows.map((row) => String(row["competence"])), ["conversation", "ontology"]);
+    await assert.rejects(
+      ledger.client.execute("UPDATE human_review_session_declaration SET fatigue_level = 'high'"),
+      /append-only/
+    );
     const humanReviews = await ledger.client.execute(
       "SELECT COUNT(*) AS count FROM review WHERE reviewer_actor_id IS NOT NULL AND reviewer_model_revision_id IS NULL"
     );
@@ -237,6 +259,43 @@ test("submission rejects a changed candidate version hash", async () => {
     await assert.rejects(submitHumanReviewPacket(ledger, prepared.packetPath), /candidate version changed/);
     const reviews = await ledger.client.execute("SELECT COUNT(*) AS count FROM review");
     assert.equal(Number(reviews.rows[0]!["count"]), 0);
+  } finally {
+    closeLedger(ledger);
+  }
+});
+
+test("submission requires complete reviewer competence and session-condition evidence before any write", async () => {
+  const ledger = await seededReviewLedger();
+  try {
+    const prepared = await prepareHumanReviewPacket(ledger, {
+      campaignSlug: campaignConfig.slug,
+      reviewerAlias: "operator-test",
+      pass: "A",
+      limit: 1,
+      seed: "session-declaration"
+    });
+    const packet = JSON.parse(readFileSync(prepared.packetPath, "utf8")) as HumanReviewPacket;
+    for (const assignment of packet.assignments) {
+      assignment.response.outcome = "acceptable_as_rendered";
+      assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";
+      assignment.response.summaryAssistantMove = "The assistant separates the persistent person from the temporary role.";
+      for (const dimension of Object.keys(assignment.response.scores)) assignment.response.scores[dimension] = 3;
+      assignment.response.questionPolicy = "not_applicable";
+      assignment.response.missingClarification = "no";
+      assignment.response.rationale = "The candidate response is complete, but the session declaration is intentionally blank.";
+      assignment.response.confidence = 3;
+    }
+    writeFileSync(prepared.packetPath, `${canonicalJson(packet as unknown as JsonValue)}\n`);
+    await assert.rejects(submitHumanReviewPacket(ledger, prepared.packetPath), /Declare at least one valid reviewer competence/);
+    const evidence = await ledger.client.execute(`
+      SELECT
+        (SELECT COUNT(*) FROM human_review_session_declaration) AS declarations,
+        (SELECT COUNT(*) FROM review) AS reviews,
+        (SELECT COUNT(*) FROM raw_artifact WHERE kind LIKE 'human_review_submission_pass_%') AS submissions
+    `);
+    assert.equal(Number(evidence.rows[0]!["declarations"]), 0);
+    assert.equal(Number(evidence.rows[0]!["reviews"]), 0);
+    assert.equal(Number(evidence.rows[0]!["submissions"]), 0);
   } finally {
     closeLedger(ledger);
   }

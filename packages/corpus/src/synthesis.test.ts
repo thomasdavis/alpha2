@@ -117,6 +117,13 @@ async function synthesisLedger(): Promise<Ledger> {
 }
 
 function completeHumanPacket(packet: HumanReviewPacket): HumanReviewPacket {
+  packet.sessionResponse.declaredCompetencies = ["conversation", "ontology"];
+  packet.sessionResponse.competenceNote = "Synthesis fixture reviewer scope.";
+  packet.sessionResponse.startedAt = "2026-07-31T00:00:00.000Z";
+  packet.sessionResponse.endedAt = "2026-07-31T00:30:00.000Z";
+  packet.sessionResponse.interruptionStatus = "none";
+  packet.sessionResponse.fatigueLevel = "none";
+  packet.sessionResponse.conditionsNote = "No material review-condition issue.";
   for (const assignment of packet.assignments) {
     assignment.response.outcome = packet.pass === "A" ? "acceptable_as_rendered" : "accept_as_positive";
     assignment.response.summaryUserAim = "The user asks whether identity survives a role change.";

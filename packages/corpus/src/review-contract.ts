@@ -3,6 +3,7 @@ import type {
   HumanReviewPacket,
   HumanReviewPass,
   HumanReviewResponse,
+  HumanReviewSessionResponse,
   JsonValue
 } from "./types.js";
 import { canonicalPacketEnvelopeJson } from "./packet-envelope-contract.js";
@@ -99,6 +100,31 @@ export const HUMAN_REVIEW_MISSING_CLARIFICATION: readonly HumanReviewChoice[] = 
   { value: "not_applicable", label: "Not applicable", description: "The item does not present a clarification decision." }
 ] as const;
 
+export const HUMAN_REVIEW_COMPETENCIES: readonly HumanReviewChoice[] = [
+  { value: "conversation", label: "Conversation", description: "Natural interaction, responsiveness, momentum, and appropriateness." },
+  { value: "linguistics", label: "Linguistics", description: "Language form, meaning, pragmatics, discourse, or metalinguistic analysis." },
+  { value: "ontology", label: "Ontology", description: "Categories, identity, dependence, parthood, roles, events, or representation choices." },
+  { value: "philosophy", label: "Philosophy", description: "Conceptual analysis, argument, counterexample, inference, or theory comparison." },
+  { value: "evidence", label: "Evidence", description: "Source, testimony, attribution, uncertainty, provenance, or belief revision." },
+  { value: "other", label: "Other", description: "Another relevant competence described in the accompanying note." }
+] as const;
+
+export const HUMAN_REVIEW_INTERRUPTION_STATUSES: readonly HumanReviewChoice[] = [
+  { value: "none", label: "No interruption", description: "The session was completed without a meaningful interruption." },
+  { value: "paused_once", label: "Paused once", description: "The reviewer took one meaningful break and then resumed." },
+  { value: "paused_multiple", label: "Paused multiple times", description: "The reviewer resumed after more than one break." },
+  { value: "technical_disruption", label: "Technical disruption", description: "A browser, network, device, or tooling problem interrupted review." },
+  { value: "other", label: "Other interruption", description: "Another interruption described in the conditions note." }
+] as const;
+
+export const HUMAN_REVIEW_FATIGUE_LEVELS: readonly HumanReviewChoice[] = [
+  { value: "none", label: "None", description: "No noticeable fatigue affected the session." },
+  { value: "mild", label: "Mild", description: "Some fatigue was present but did not noticeably impair judgment." },
+  { value: "moderate", label: "Moderate", description: "Fatigue may have affected attention or consistency." },
+  { value: "high", label: "High", description: "Fatigue materially threatens the reliability of later judgments." },
+  { value: "stopped_early", label: "Stopped early", description: "The reviewer stopped rather than forcing judgments under fatigue." }
+] as const;
+
 export function humanReviewDimensions(pass: HumanReviewPass): readonly HumanReviewDimension[] {
   return pass === "A" ? HUMAN_REVIEW_PASS_A_DIMENSIONS : HUMAN_REVIEW_PASS_B_DIMENSIONS;
 }
@@ -123,6 +149,18 @@ export function emptyHumanReviewResponse(pass: HumanReviewPass): HumanReviewResp
   };
 }
 
+export function emptyHumanReviewSessionResponse(): HumanReviewSessionResponse {
+  return {
+    declaredCompetencies: [],
+    competenceNote: "",
+    startedAt: "",
+    endedAt: "",
+    interruptionStatus: null,
+    fatigueLevel: null,
+    conditionsNote: ""
+  };
+}
+
 /**
  * Return the immutable, model-visible packet envelope. Reviewer responses are
  * the only mutable portion of a submitted packet, so they are reset to the
@@ -134,11 +172,52 @@ export function humanReviewPacketEnvelope(packet: HumanReviewPacket): HumanRevie
   return {
     ...packet,
     instructions: [...packet.instructions],
+    sessionResponse: emptyHumanReviewSessionResponse(),
     assignments: packet.assignments.map((assignment) => ({
       ...assignment,
       response: emptyHumanReviewResponse(packet.pass)
     }))
   };
+}
+
+function validIsoTimestamp(value: string): boolean {
+  return typeof value === "string" && value.trim().length > 0 && !Number.isNaN(Date.parse(value));
+}
+
+export function humanReviewSessionResponseErrors(
+  response: HumanReviewSessionResponse,
+  options: { requireEndedAt?: boolean } = {}
+): string[] {
+  const errors: string[] = [];
+  if (!isRecord(response)) return ["Session declaration is missing."];
+  const allowedCompetencies = new Set(HUMAN_REVIEW_COMPETENCIES.map((choice) => choice.value));
+  if (!Array.isArray(response.declaredCompetencies) || response.declaredCompetencies.length < 1
+    || response.declaredCompetencies.some((value) => typeof value !== "string" || !allowedCompetencies.has(value))
+    || new Set(response.declaredCompetencies).size !== response.declaredCompetencies.length) {
+    errors.push("Declare at least one valid reviewer competence without duplicates.");
+  }
+  if (response.declaredCompetencies?.includes("other")
+    && (typeof response.competenceNote !== "string" || response.competenceNote.trim().length < 1)) {
+    errors.push("Describe the other declared competence.");
+  }
+  if (!validIsoTimestamp(response.startedAt)) errors.push("Record a valid session start time.");
+  if (options.requireEndedAt && !validIsoTimestamp(response.endedAt)) {
+    errors.push("Record a valid session end time.");
+  }
+  if (validIsoTimestamp(response.startedAt) && validIsoTimestamp(response.endedAt)
+    && Date.parse(response.endedAt) < Date.parse(response.startedAt)) {
+    errors.push("Session end time cannot precede its start time.");
+  }
+  if (!allowedValue(response.interruptionStatus, HUMAN_REVIEW_INTERRUPTION_STATUSES)) {
+    errors.push("Record the session interruption status.");
+  }
+  if (!allowedValue(response.fatigueLevel, HUMAN_REVIEW_FATIGUE_LEVELS)) {
+    errors.push("Record the session fatigue level.");
+  }
+  if (typeof response.competenceNote !== "string" || typeof response.conditionsNote !== "string") {
+    errors.push("Session notes must be text.");
+  }
+  return errors;
 }
 
 /** Browser-safe canonical form; this module intentionally has no Node imports. */
@@ -236,6 +315,17 @@ export function parseHumanReviewPacketText(text: string): HumanReviewPacket {
     || typeof parsed.rubricVersion !== "number" || typeof parsed.seed !== "string"
     || typeof parsed.createdAt !== "string" || !Array.isArray(parsed.instructions)
     || !parsed.instructions.every((instruction) => typeof instruction === "string")
+    || !isRecord(parsed.sessionResponse)
+    || !Array.isArray(parsed.sessionResponse["declaredCompetencies"])
+    || !parsed.sessionResponse["declaredCompetencies"].every((value) => typeof value === "string")
+    || typeof parsed.sessionResponse["competenceNote"] !== "string"
+    || typeof parsed.sessionResponse["startedAt"] !== "string"
+    || typeof parsed.sessionResponse["endedAt"] !== "string"
+    || !(parsed.sessionResponse["interruptionStatus"] === null
+      || typeof parsed.sessionResponse["interruptionStatus"] === "string")
+    || !(parsed.sessionResponse["fatigueLevel"] === null
+      || typeof parsed.sessionResponse["fatigueLevel"] === "string")
+    || typeof parsed.sessionResponse["conditionsNote"] !== "string"
     || !Array.isArray(parsed.assignments)) {
     throw new Error("Human-review submission does not match packet schema version 1");
   }

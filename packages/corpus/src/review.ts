@@ -20,10 +20,12 @@ import {
   HUMAN_REVIEW_RUBRIC_SLUG,
   HUMAN_REVIEW_RUBRIC_VERSION,
   emptyHumanReviewResponse,
+  emptyHumanReviewSessionResponse,
   humanReviewDimensions,
   humanReviewOutcomes,
   humanReviewPacketEnvelopeJson,
   humanReviewResponseErrors,
+  humanReviewSessionResponseErrors,
   parseHumanReviewPacketText
 } from "./review-contract.js";
 
@@ -507,7 +509,11 @@ function renderMarkdown(packet: HumanReviewPacket): string {
     "",
     "## Instructions",
     "",
-    ...packet.instructions.map((instruction) => `- ${instruction}`)
+    ...packet.instructions.map((instruction) => `- ${instruction}`),
+    "",
+    "## Reviewer and session declaration",
+    "",
+    "Complete `sessionResponse` in the JSON packet with declared competence, start/end time, interruption status, and fatigue level. This is public review-condition evidence, not a credential claim."
   ];
   for (const [index, assignment] of packet.assignments.entries()) {
     lines.push("", `## ${index + 1}. ${assignment.opaqueItemId}`, "");
@@ -728,6 +734,7 @@ export async function prepareHumanReviewPacket(
     seed,
     createdAt,
     instructions: packetInstructions(options.pass),
+    sessionResponse: emptyHumanReviewSessionResponse(),
     assignments: packetAssignments
   };
   const directory = resolve(options.outputDirectory
@@ -766,6 +773,9 @@ export async function submitHumanReviewPacket(
   if (packet.assignments.length < 1) throw new Error("Human-review packet has no assignments");
   const actorId = await requireHumanActor(ledger, packet.reviewerAlias);
   const rubricVersionId = await requireHumanReviewRubric(ledger);
+  const resolvedCampaignId = await campaignId(ledger, packet.campaignSlug);
+  const sessionErrors = humanReviewSessionResponseErrors(packet.sessionResponse, { requireEndedAt: true });
+  if (sessionErrors.length > 0) throw new Error(sessionErrors[0]);
   const assignmentIds = new Set<string>();
   const validated: Array<{
     assignment: HumanReviewPacketAssignment;
@@ -876,11 +886,30 @@ export async function submitHumanReviewPacket(
   });
   const submissionSha256 = await putBlob(ledger, submissionBytes, "application/json");
   const ts = now();
+  const declarationId = stableId("review_session_declaration", `${packet.sessionId}:${submissionSha256}`);
   const statements: Array<{ sql: string; args: InValue[] }> = [{
     sql: "INSERT OR IGNORE INTO raw_artifact(id, task_id, kind, blob_sha256, created_at) VALUES (?, NULL, ?, ?, ?)",
     args: [stableId("artifact", `human-review:${packet.sessionId}:${submissionSha256}`),
       `human_review_submission_pass_${packet.pass.toLowerCase()}`, submissionSha256, ts]
-  }];
+  }, {
+    sql: `INSERT INTO human_review_session_declaration
+          (id, session_id, campaign_id, reviewer_actor_id, rubric_version_id, review_pass,
+           started_at, ended_at, interruption_status, fatigue_level, competence_note,
+           conditions_note, declared_competencies_json, packet_envelope_sha256,
+           submission_blob_sha256, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [declarationId, packet.sessionId, resolvedCampaignId, actorId, rubricVersionId, packet.pass,
+      packet.sessionResponse.startedAt, packet.sessionResponse.endedAt,
+      packet.sessionResponse.interruptionStatus!, packet.sessionResponse.fatigueLevel!,
+      packet.sessionResponse.competenceNote, packet.sessionResponse.conditionsNote,
+      canonicalJson(packet.sessionResponse.declaredCompetencies as unknown as JsonValue),
+      packetEnvelopeSha256, submissionSha256, ts]
+  }, ...packet.sessionResponse.declaredCompetencies.map((competence) => ({
+    sql: `INSERT INTO human_review_session_competence
+          (id, declaration_id, competence, created_at) VALUES (?, ?, ?, ?)`,
+    args: [stableId("review_session_competence", `${declarationId}:${competence}`),
+      declarationId, competence, ts]
+  }))];
   for (const entry of validated) {
     const response = entry.assignment.response;
     const createsReview = entry.presentationKind !== "hidden_repeat";

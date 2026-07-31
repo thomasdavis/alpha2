@@ -4,9 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   HumanReviewFinding,
   HumanReviewPacket,
-  HumanReviewResponse
+  HumanReviewResponse,
+  HumanReviewSessionResponse
 } from "@alpha/corpus";
 import {
+  HUMAN_REVIEW_COMPETENCIES,
+  HUMAN_REVIEW_FATIGUE_LEVELS,
+  HUMAN_REVIEW_INTERRUPTION_STATUSES,
   HUMAN_REVIEW_MISSING_CLARIFICATION,
   HUMAN_REVIEW_QUESTION_POLICIES,
   HUMAN_REVIEW_SCORE_ANCHORS,
@@ -14,6 +18,7 @@ import {
   humanReviewOutcomes,
   humanReviewPacketMatchesEnvelope,
   humanReviewResponseErrors,
+  humanReviewSessionResponseErrors,
   parseHumanReviewPacketText
 } from "@alpha/corpus/review-contract";
 
@@ -269,7 +274,7 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const candidateHeadingRef = useRef<HTMLHeadingElement>(null);
   const storageKey = `alpha-corpus-review:${sourcePacket.sessionId}:${packetSha256}`;
-  const positionStorageKey = `${storageKey}:active-index`;
+  const positionStorageKey = `${storageKey}:active-item`;
 
   useEffect(() => {
     try {
@@ -279,9 +284,11 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
           const parsed = parseHumanReviewPacketText(stored);
           if (humanReviewPacketMatchesEnvelope(parsed, sourcePacket)) {
             setDraft(parsed);
-            const savedPosition = window.localStorage.getItem(positionStorageKey);
-            const savedIndex = savedPosition === null ? Number.NaN : Number(savedPosition);
-            setActiveIndex(Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex < parsed.assignments.length
+            const savedOpaqueItemId = window.localStorage.getItem(positionStorageKey);
+            const savedIndex = savedOpaqueItemId === null
+              ? -1
+              : parsed.assignments.findIndex((assignment) => assignment.opaqueItemId === savedOpaqueItemId);
+            setActiveIndex(savedIndex >= 0
               ? savedIndex
               : firstIncompleteIndex(parsed));
           } else {
@@ -304,6 +311,14 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   }, [positionStorageKey, sourcePacket, storageKey]);
 
   useEffect(() => {
+    if (!restored || draft.sessionResponse.startedAt.length > 0) return;
+    setDraft((current) => ({
+      ...current,
+      sessionResponse: { ...current.sessionResponse, startedAt: new Date().toISOString() }
+    }));
+  }, [draft.sessionResponse.startedAt, restored]);
+
+  useEffect(() => {
     if (!restored || saveState === "memory-only") return;
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(draft));
@@ -316,18 +331,21 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
   useEffect(() => {
     if (!restored || saveState === "memory-only") return;
     try {
-      window.localStorage.setItem(positionStorageKey, String(activeIndex));
+      const activeOpaqueItemId = draft.assignments[activeIndex]?.opaqueItemId;
+      if (activeOpaqueItemId) window.localStorage.setItem(positionStorageKey, activeOpaqueItemId);
     } catch {
       setSaveState("memory-only");
     }
-  }, [activeIndex, positionStorageKey, restored, saveState]);
+  }, [activeIndex, draft.assignments, positionStorageKey, restored, saveState]);
 
   const errors = useMemo(
     () => draft.assignments.map((assignment) => humanReviewResponseErrors(draft.pass, assignment.response, assignment.opaqueItemId)),
     [draft]
   );
   const completedCount = errors.filter((itemErrors) => itemErrors.length === 0).length;
-  const allComplete = completedCount === draft.assignments.length;
+  const allAssignmentsComplete = completedCount === draft.assignments.length;
+  const sessionErrors = humanReviewSessionResponseErrors(draft.sessionResponse);
+  const readyToFinish = allAssignmentsComplete && sessionErrors.length === 0;
   const activeAssignment = draft.assignments[activeIndex]!;
   const activeErrors = errors[activeIndex] ?? [];
   const messages = visibleMessages(activeAssignment.candidate);
@@ -344,6 +362,27 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
       assignments: current.assignments.map((assignment, index) => index === activeIndex
         ? { ...assignment, response: update(assignment.response) }
         : assignment)
+    }));
+  }
+
+  function updateSessionResponse(update: (response: HumanReviewSessionResponse) => HumanReviewSessionResponse) {
+    setDraft((current) => ({ ...current, sessionResponse: update(current.sessionResponse) }));
+  }
+
+  function finishAndDownload() {
+    const completed = clonePacket(draft);
+    completed.sessionResponse.endedAt = new Date().toISOString();
+    if (humanReviewSessionResponseErrors(completed.sessionResponse, { requireEndedAt: true }).length > 0) return;
+    setDraft(completed);
+    downloadPacket(completed, "completed");
+  }
+
+  function toggleCompetence(competence: string, selected: boolean) {
+    updateSessionResponse((response) => ({
+      ...response,
+      declaredCompetencies: selected
+        ? [...response.declaredCompetencies, competence]
+        : response.declaredCompetencies.filter((value) => value !== competence)
     }));
   }
 
@@ -409,6 +448,83 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
           Browser storage is unavailable. Your answers exist only in this tab; download drafts frequently.
         </p>
       )}
+
+      <section aria-labelledby="session-declaration-heading" className="overflow-hidden rounded-lg border border-border bg-surface">
+        <header className="border-b border-border px-4 py-3">
+          <h2 id="session-declaration-heading" className="text-sm font-semibold text-text-primary">Reviewer and session declaration</h2>
+          <p className="mt-1 text-xs leading-5 text-text-muted">
+            Record the competence and conditions under which these judgments were made. This is public provenance, not a credential certification.
+          </p>
+        </header>
+        <div className="space-y-5 px-4 py-4">
+          <fieldset>
+            <legend className="text-xs font-semibold text-text-primary">Relevant competence</legend>
+            <p className="mt-1 text-xs leading-5 text-text-muted">Select every area you can responsibly judge in this session.</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {HUMAN_REVIEW_COMPETENCIES.map((choice) => (
+                <label key={choice.value} className="flex min-h-11 cursor-pointer items-start gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-primary hover:bg-surface-2">
+                  <input
+                    type="checkbox"
+                    checked={draft.sessionResponse.declaredCompetencies.includes(choice.value)}
+                    onChange={(event) => toggleCompetence(choice.value, event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  />
+                  <span><strong className="font-semibold">{choice.label}</strong><span className="mt-0.5 block leading-5 text-text-muted">{choice.description}</span></span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <TextAreaField
+            id="session-competence-note"
+            label="Competence scope or limitations"
+            value={draft.sessionResponse.competenceNote}
+            onChange={(competenceNote) => updateSessionResponse((response) => ({ ...response, competenceNote }))}
+            hint="Required when Other is selected; otherwise use it to state meaningful limits."
+            rows={2}
+          />
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <SelectField
+              id="session-interruption-status"
+              label="Interruption status"
+              value={draft.sessionResponse.interruptionStatus}
+              choices={HUMAN_REVIEW_INTERRUPTION_STATUSES}
+              onChange={(interruptionStatus) => updateSessionResponse((response) => ({ ...response, interruptionStatus }))}
+            />
+            <SelectField
+              id="session-fatigue-level"
+              label="Fatigue level"
+              value={draft.sessionResponse.fatigueLevel}
+              choices={HUMAN_REVIEW_FATIGUE_LEVELS}
+              onChange={(fatigueLevel) => updateSessionResponse((response) => ({ ...response, fatigueLevel }))}
+            />
+          </div>
+
+          <TextAreaField
+            id="session-conditions-note"
+            label="Interruption, fatigue, or review-condition note"
+            value={draft.sessionResponse.conditionsNote}
+            onChange={(conditionsNote) => updateSessionResponse((response) => ({ ...response, conditionsNote }))}
+            hint="Optional. Record anything that may affect interpretation of this session."
+            rows={2}
+          />
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-surface-2 px-3 py-2 text-xs">
+            <span className="text-text-muted">Session started locally</span>
+            <span className="font-mono text-text-secondary">{draft.sessionResponse.startedAt ? formatTimestamp(draft.sessionResponse.startedAt) : "Not recorded"}</span>
+          </div>
+
+          {sessionErrors.length > 0 && (
+            <details>
+              <summary className="cursor-pointer text-xs font-semibold text-accent">{sessionErrors.length} session declaration fields remain</summary>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-5 text-text-secondary">
+                {sessionErrors.map((error) => <li key={error}>{error}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      </section>
 
       <div className="grid min-w-0 gap-5 xl:grid-cols-[15rem_minmax(0,1fr)]">
         <section aria-labelledby="assignment-nav-heading" className="self-start overflow-hidden rounded-lg border border-border bg-surface xl:sticky xl:top-6 xl:flex xl:max-h-[calc(100vh-3rem)] xl:flex-col">
@@ -728,8 +844,8 @@ export function ReviewWorkspace({ sourcePacket, packetSha256, exportedAt }: Revi
           </button>
           <button
             type="button"
-            disabled={!allComplete}
-            onClick={() => downloadPacket(draft, "completed")}
+            disabled={!readyToFinish}
+            onClick={finishAndDownload}
             className="min-h-11 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-bg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             Download completed packet

@@ -1502,6 +1502,48 @@ const v7: string[] = [
   ...v7ImmutableTables.flatMap(immutabilityTriggers)
 ];
 
+const v8ImmutableTables = [
+  "human_review_session_declaration",
+  "human_review_session_competence"
+];
+
+const v8: string[] = [
+  `CREATE TABLE IF NOT EXISTS human_review_session_declaration (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL UNIQUE,
+    campaign_id TEXT NOT NULL REFERENCES generation_campaign(id),
+    reviewer_actor_id TEXT NOT NULL REFERENCES actor(id),
+    rubric_version_id TEXT NOT NULL REFERENCES rubric_version(id),
+    review_pass TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    interruption_status TEXT NOT NULL,
+    fatigue_level TEXT NOT NULL,
+    competence_note TEXT NOT NULL,
+    conditions_note TEXT NOT NULL,
+    declared_competencies_json TEXT NOT NULL,
+    packet_envelope_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    submission_blob_sha256 TEXT NOT NULL REFERENCES blob(sha256),
+    created_at TEXT NOT NULL,
+    CHECK(review_pass IN ('A', 'B')),
+    CHECK(json_valid(declared_competencies_json)),
+    CHECK(json_type(declared_competencies_json) = 'array'),
+    CHECK(julianday(ended_at) >= julianday(started_at))
+  ) STRICT`,
+  `CREATE TABLE IF NOT EXISTS human_review_session_competence (
+    id TEXT PRIMARY KEY,
+    declaration_id TEXT NOT NULL REFERENCES human_review_session_declaration(id),
+    competence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(declaration_id, competence)
+  ) STRICT`,
+  `CREATE INDEX IF NOT EXISTS idx_human_review_session_declaration_campaign
+     ON human_review_session_declaration(campaign_id, reviewer_actor_id, review_pass, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_human_review_session_competence_value
+     ON human_review_session_competence(competence, created_at)`,
+  ...v8ImmutableTables.flatMap(immutabilityTriggers)
+];
+
 export const migrations: Migration[] = [
   { version: 1, name: "initial_scientific_ledger", statements: v1 },
   { version: 2, name: "current_and_public_views", statements: v2 },
@@ -1509,7 +1551,8 @@ export const migrations: Migration[] = [
   { version: 4, name: "append_only_analysis_run_corrections", statements: v4 },
   { version: 5, name: "d5_family_synthesis_and_structural_disposition", statements: v5 },
   { version: 6, name: "d5_blinded_repeat_presentations", statements: v6 },
-  { version: 7, name: "d5_campaign_closeout", statements: v7 }
+  { version: 7, name: "d5_campaign_closeout", statements: v7 },
+  { version: 8, name: "d5_human_review_session_declarations", statements: v8 }
 ];
 
 export function migrationDigest(migration: Migration): string {
@@ -1552,6 +1595,8 @@ export const requiredTables = [
   "review_presentation_response",
   "review_presentation_score",
   "review_presentation_finding",
+  "human_review_session_declaration",
+  "human_review_session_competence",
   "campaign_closeout_assignment",
   "campaign_closeout",
   "campaign_closeout_state",

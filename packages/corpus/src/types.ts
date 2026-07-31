@@ -123,6 +123,16 @@ export interface HumanReviewResponse {
   expertiseNeeded: string;
 }
 
+export interface HumanReviewSessionResponse {
+  declaredCompetencies: string[];
+  competenceNote: string;
+  startedAt: string;
+  endedAt: string;
+  interruptionStatus: string | null;
+  fatigueLevel: string | null;
+  conditionsNote: string;
+}
+
 export interface HumanReviewPacketAssignment {
   assignmentId: string;
   presentationId?: string;
@@ -143,6 +153,7 @@ export interface HumanReviewPacket {
   seed: string;
   createdAt: string;
   instructions: string[];
+  sessionResponse: HumanReviewSessionResponse;
   assignments: HumanReviewPacketAssignment[];
 }
 

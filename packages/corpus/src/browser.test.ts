@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { CorpusReader } from "./browser.js";
 import { closeLedger, createCampaign, openLedger, seedLedger } from "./db.js";
 import { canonicalJson, sha256Bytes, stableId } from "./hash.js";
-import { emptyHumanReviewResponse } from "./review-contract.js";
+import { emptyHumanReviewResponse, emptyHumanReviewSessionResponse } from "./review-contract.js";
 import type { CampaignConfig, HumanReviewPacket, JsonValue } from "./types.js";
 
 const temporaryHomes: string[] = [];
@@ -56,6 +56,7 @@ function reviewFixture(): { databasePath: string; blobPath: string; packet: Huma
     seed: "fixture-seed",
     createdAt: "2026-07-31T00:00:00.000Z",
     instructions: ["Review only model-visible messages."],
+    sessionResponse: emptyHumanReviewSessionResponse(),
     assignments: [{
       assignmentId: "assignment_fixture",
       opaqueItemId: "opaque_fixture",
