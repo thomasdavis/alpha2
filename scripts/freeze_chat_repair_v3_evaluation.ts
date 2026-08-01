@@ -167,11 +167,13 @@ async function main(): Promise<void> {
     fileRecord(v2PromptsPath, v2Prompts.length),
     fileRecord(v2AnalysisPath),
   ]);
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const sourceCommitUtc = execFileSync("git", ["show", "-s", "--format=%cI", sourceCommit], { encoding: "utf8" }).trim();
   const contract = {
     schema: "alpha-chat-repair-v3-evaluation-contract-v1",
     status: "development-only-frozen; sealed-finals-excluded",
-    created_utc: new Date().toISOString(),
-    source_commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    source_commit: sourceCommit,
+    source_commit_utc: sourceCommitUtc,
     inputs: {
       freeze_manifest: freezeRecord,
       v2_full_suite: v2SuiteRecord,
@@ -181,7 +183,7 @@ async function main(): Promise<void> {
     suites: {
       fresh96: selectorRecord,
       qualitative24: panelRecord,
-      regression69: regressionRecord,
+      regression69: { ...regressionRecord, path: basename(regressionPath) },
     },
     generation: {
       deterministic_greedy: true,
