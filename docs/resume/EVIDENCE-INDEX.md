@@ -127,6 +127,8 @@ Implementation commits:
     8341dd0  train: implement matched rollout unlikelihood preflight
     5753ca9  research: bind v3 to native context
     b367f6b  research: accelerate v3 rollouts with native parity
+    957a02b  research: freeze v3 checkpoint evaluation
+    db7daed  research: make v3 evaluation freeze reproducible
 
 Canonical corrected freeze:
 
@@ -166,7 +168,30 @@ output text, and stop exactly. Maximum chosen-logit drift was `2.264976501464843
 Both smokes are partial diagnostic evidence, not the complete rollout ledger. The compiler requires this PASS
 report if the accelerated generator produces the complete ledger.
 
-Local result: 222 tests passed, 50 NVIDIA assertions skipped on non-NVIDIA llvmpipe, and 0 failed. The full
+Canonical development-only evaluation freeze:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/
+
+Independent byte-identical replay:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-replay-20260801/
+
+| Artifact | SHA-256 |
+|---|---|
+| evaluation contract | `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce` |
+| exact eligible-69 prompts | `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584` |
+
+The first r1 attempt is retained as negative provenance evidence: its 69 prompt bytes replayed exactly, but its
+contract hash included wall-clock/output-path variation. R2 removes those non-semantic inputs and `cmp` passes on
+both files. The eligible-69 set is disjoint from fresh96 by normalized prompt, preserves original v2 order, and
+ranges to 508 prompt tokens. Two partial reference-blinded CPU evaluator smokes are preserved at:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-hf-cpu-smoke-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-regression-hf-cpu-smoke-20260801/
+
+Local result: 223 tests passed, 50 NVIDIA assertions skipped on non-NVIDIA llvmpipe, and 0 failed. The full
 rollout ledger, compiled mask cohort, real 50/50 NVIDIA proof, and both training arms remain open. No improvement
 or candidate exists yet. The following r2 directories are retained but superseded because their 1,024-token
 freeze did not match the selected checkpoint's native context:

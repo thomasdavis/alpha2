@@ -52,6 +52,7 @@ async function writeEvaluation(
       checkpoint: { step, sha256: arm.toLocaleLowerCase().padEnd(64, "0") },
       evaluationContract: { sha256: contractHash },
       evaluatorCommit: "a".repeat(40),
+      trainingSourceCommit: arm === "I0" ? null : "b".repeat(40),
     },
     suites: {
       fresh96: { input: { sha256: "1".repeat(64) } },

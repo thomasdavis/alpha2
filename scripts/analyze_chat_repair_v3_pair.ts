@@ -120,6 +120,9 @@ async function main(): Promise<void> {
     assert(run.manifest.suites.regression69.input.sha256 === contract.suites.regression69.sha256, "regression69 suite drift");
   }
   assert(control.manifest.identity.checkpoint.step === unlikelihood.manifest.identity.checkpoint.step, "C0/U1 checkpoint steps differ");
+  assert(typeof control.manifest.identity.trainingSourceCommit === "string" &&
+    control.manifest.identity.trainingSourceCommit === unlikelihood.manifest.identity.trainingSourceCommit,
+    "C0/U1 training source commits differ");
   compareOrder("I0/C0 fresh96", initial.fresh, control.fresh);
   compareOrder("I0/U1 fresh96", initial.fresh, unlikelihood.fresh);
   compareOrder("I0/C0 regression69", initial.regression, control.regression);

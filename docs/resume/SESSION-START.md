@@ -8,6 +8,8 @@ resume request is not permission to spend money or start training.
 1. Confirm the working directory is /mnt/donto-data/workspace/alpha2.
 2. Read, in order:
    - docs/resume/README.md
+   - docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md
+   - docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md
    - docs/resume/CHAT-REPAIR-V2-2026-07-31.md
    - docs/resume/CHAT-REPAIR-2026-07-31.md
    - docs/resume/CURRENT-STATE.md
@@ -33,6 +35,14 @@ resume request is not permission to spend money or start training.
    The v2 hashes must be `fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4`
    and `1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8`. They are rejected recovery
    states, not selected models.
+
+   Also verify the current development-only v3 evaluation freeze:
+
+       sha256sum /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/*
+
+   Expected hashes are `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce` for the
+   evaluation contract and `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584` for the
+   exact eligible-69 prompt file.
 
        cd /mnt/donto-data/alpha-runs/alpha-60m-continuation-c333bf2-20260730
        sha256sum -c MANIFEST.sha256

@@ -408,6 +408,28 @@ At steps 50, 100, 200, and 400 for both arms:
 
 Do not evaluate undeclared intermediate checkpoints because a chart looks promising.
 
+### 12.1 Executable evaluation freeze
+
+The development-only evaluation contract was materialized after the implementation became clean and committed:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/
+
+Its independent replay is byte-identical. Canonical hashes are:
+
+- evaluation contract: `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce`;
+- exact v2 eligible-69 prompts: `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584`.
+
+The exact regression set preserves original v2 development order and ranges from 10 to 508 prompt tokens. Fresh
+selector rows retain the full 128-token reserve. Legacy regression rows above 384 tokens receive exactly
+`min(128, 512 - prompt_tokens)` positions, matching native evaluation. The accelerated evaluator groups such
+rows by exact prompt length so batch left-padding cannot shorten another row's available context.
+
+The per-checkpoint driver requires checkpoint-specific Alpha/Transformers logit and tokenizer parity, hashes all
+raw outputs, renders the frozen panel without adding reference text to the model prompt, and rejects sealed-final
+hashes. The paired analyzer validates I0/C0/U1 by ID and can emit only a mechanical development result while the
+human comparison remains pending. It never selects from loss or BGE.
+
 ## 13. Primary endpoint and admission gates
 
 ### 13.1 Primary causal endpoint

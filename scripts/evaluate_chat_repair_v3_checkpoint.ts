@@ -182,12 +182,17 @@ async function main(): Promise<void> {
     runContract = JSON.parse(await readFile(runContractPath, "utf8"));
     assert(runContract.schema === contract.candidate_contract.run_contract_schema, "unexpected candidate run-contract schema");
     assert(runContract.arm === arm, "candidate run-contract arm mismatch");
+    assert(runContract.sourceTreeDirty === false && typeof runContract.sourceCommit === "string", "candidate source provenance is not clean and committed");
     assert(runContract.initializedFrom?.sha256 === contract.candidate_contract.initial_checkpoint_sha256, "candidate initialization drift");
     assert(runContract.inputs?.freezeManifest?.sha256 === contract.inputs.freeze_manifest.sha256, "candidate freeze-manifest drift");
     assert(runContract.selection?.developmentSelector?.sha256 === contract.suites.fresh96.sha256, "candidate selector drift");
     assert(runContract.selection?.qualitativePanel?.sha256 === contract.suites.qualitative24.sha256, "candidate panel drift");
     assert(runContract.selection?.priorV2Regression === "eligible-69 only", "candidate v2 regression contract drift");
     assert(runContract.selection?.sealedFinalRemainsClosed === true, "candidate run contract permits sealed-final access");
+    assert(runContract.training?.steps === 400 && runContract.training?.blockSize === 512,
+      "candidate terminal-step or context contract drift");
+    assert(runContract.training?.matchedNegativeBranchAlwaysExecutes === true, "candidate did not execute the matched negative branch");
+    assert(runContract.training?.rcrUlWeight === (arm === "C0" ? 0 : 0.5), "candidate RCR-UL weight does not match its arm");
   }
 
   const dirty = await git("status", "--porcelain");
@@ -204,6 +209,7 @@ async function main(): Promise<void> {
     checkpoint: { path: checkpointPath, sha256: checkpointHash, step: checkpoint.step },
     evaluationContract: { path: evaluationContractPath, sha256: contractHash },
     runContract: runContractPath ? { path: runContractPath, sha256: runContractHash } : null,
+    trainingSourceCommit: runContract?.sourceCommit ?? null,
     evaluatorCommit,
   };
   if (resume) {

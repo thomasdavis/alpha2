@@ -15,6 +15,13 @@ opened; the public model remains the earlier step 1,200 with quality `FAIL`. All
 training-archive revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`. Alpha pod `omn3hktwqs7r5l` is removed;
 the other visible RunPod is unrelated and must not be touched.
 
+The finite repair-v3 intervention is locally implemented but still unexecuted. Read
+[the v3 contract](docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md) and
+[local preflight](docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md). The corrected train/development freeze
+is native to 512 tokens, the rollout accelerator has 946/946 native token parity, and the reproducible evaluation
+freeze binds fresh96, panel24, and exact eligible69. Local proof is 223 passing / 50 NVIDIA-gated / 0 failing.
+No full rollout, mask cohort, NVIDIA proof, C0/U1 training, candidate, or improvement exists yet.
+
 Do not start another training run or tune against the sealed evaluation without new explicit authorization and
 a genuinely new finite intervention aimed at semantic contingency or autoregressive stability. “Resume” means
 recover the evidence and continue the product/research reasoning; it does not authorize blind continuation of a

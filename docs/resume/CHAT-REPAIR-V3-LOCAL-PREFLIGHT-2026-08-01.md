@@ -11,7 +11,9 @@ candidate has trained. The public model remains the selected repair step 1,200 w
   telemetry, tests, cohort/rollout/compiler tools, and arm launcher;
 - `5753ca9` — bind cohort generation and training to the selected checkpoint's native 512-token context;
 - `b367f6b` — add batched fp32 Transformers rollout generation, fail-closed native trajectory parity, and require
-  the parity evidence during accelerated mask compilation.
+  the parity evidence during accelerated mask compilation;
+- `957a02b` and `db7daed` — add the development-only checkpoint evaluator, paired endpoint analyzer, exact
+  eligible-69 materialization, and byte-reproducible evaluation freeze.
 
 **Training authorization:** none is implied by this record. No paid pod was created and the sealed final remains
 unopened.
@@ -275,7 +277,65 @@ longer hypothetical: its token trajectories are exactly native on the frozen cro
 
 Both smoke directories remain partial by design and neither is the canonical complete rollout ledger.
 
-## 8. Local verification result
+## 8. Frozen checkpoint-evaluation path
+
+Checkpoint selection is now executable rather than an operator-only checklist. The canonical evaluation freeze
+is:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/
+
+Its independent replay is:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-replay-20260801/
+
+Both files in the two directories match byte-for-byte:
+
+| Artifact | Rows | SHA-256 |
+|---|---:|---|
+| `evaluation-contract.json` | — | `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce` |
+| `v2-eligible69-prompts.jsonl` | 69 | `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584` |
+
+The first r1 freeze and replay are preserved. Their eligible-69 bytes matched, but their contract hashes differed
+because the contract embedded wall-clock time and its output directory. That non-semantic provenance defect was
+caught before evaluation or GPU spend. The r2 contract binds source commit `db7daed`, uses its immutable commit
+time, and records the generated regression file by logical filename, so a replay is exactly reproducible.
+
+The exact eligible-69 file is the original v2 development-suite order restricted to the 69 IDs in the canonical
+transition analysis. It has no normalized-prompt overlap with the fresh 96-case selector. Its prompt lengths
+range from 10 to 508 tokens; 20 exceed the fresh selector's 384-token cap. The accelerated evaluator therefore
+batches full-reserve prompts normally but groups longer prompts by exact length, preserving each row's native
+`min(128, 512 - prompt_tokens)` generation allowance rather than letting left padding silently consume context.
+
+For each I0, C0, or U1 checkpoint, `evaluate_chat_repair_v3_checkpoint.ts` now fails closed unless it can prove:
+
+- I0 is the immutable selected checkpoint, or C0/U1 is step 50, 100, 200, or 400 with a same-directory v3 run
+  contract and the correct arm;
+- the checkpoint architecture, initialization, freeze, selector, panel, and regression hashes match;
+- the worktree is clean and the evaluator commit is recorded;
+- the exported stock `LlamaForCausalLM` passes native Alpha logit and tokenizer parity for that checkpoint;
+- the fresh 96 and exact regression 69 generations are complete, resumable, and hash-bound;
+- raw output rows contain no held-out reference text field;
+- the 24-case panel is rendered from the frozen subset, while its human verdict remains explicitly pending;
+- neither sealed final is passed, executed, or inspected.
+
+`analyze_chat_repair_v3_pair.ts` then validates matching I0/C0/U1 evidence and computes the declared loop and
+structural endpoints by prompt ID. Even a mechanical pass is emitted only as
+`MECHANICAL_PASS_HUMAN_PENDING`; the analyzer cannot select a candidate while the blinded qualitative comparison
+is missing. It does not collapse the 69-case regression panel to an invented scalar score and cannot use loss or
+BGE as the selector.
+
+Two bounded CPU smokes are preserved:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-hf-cpu-smoke-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-regression-hf-cpu-smoke-20260801/
+
+They cover two fresh prompts and the first two exact regression prompts, including a 391-token legacy prompt.
+Both are partial diagnostics, not baseline evaluations. The raw rows contain exact prompt/checkpoint identities
+and no reference-response field. No candidate was produced.
+
+## 9. Local verification result
 
 Commands executed after the implementation and resume-provenance repair:
 
@@ -290,6 +350,7 @@ Commands executed after the implementation and resume-provenance repair:
     python3 -m py_compile \
       scripts/build_chat_repair_v3_freeze.py \
       scripts/generate_chat_repair_v3_rollouts_hf.py \
+      scripts/generate_chat_repair_v3_eval_hf.py \
       scripts/verify_chat_repair_v3_rollout_parity.py
     bash -n scripts/run_chat_repair_v3_arm.sh
     git diff --check
@@ -301,15 +362,23 @@ Results:
 | TypeScript build | PASS |
 | Focused data/loss/trainer suite | 67 passed, 0 failed |
 | Local parity file | 29 NVIDIA-only assertions skipped as intended on llvmpipe |
-| Full suite | 222 passed, 50 NVIDIA-gated, 0 failed |
+| Full suite | 223 passed, 50 NVIDIA-gated, 0 failed |
 | Python syntax | PASS |
 | Native/accelerated 24-row trajectory parity | PASS, 946/946 selected tokens exact |
+| Evaluation freeze replay | PASS, contract and eligible-69 bytes exact |
+| Fresh/regression evaluator CPU smoke | PASS, resumable and reference-blinded |
 | Arm-launcher shell syntax | PASS |
 | Whitespace check | PASS |
 
 The skipped tests are not accepted as GPU proof. They are the exact assertions that must execute on NVIDIA.
 
-## 9. Operator-requested public baseline sample
+The root `npm test` Turbo wrapper still invokes `vitest run` inside workspace packages that intentionally contain
+no local test files, so it exits at `@alpha/core` with “No test files found.” The authoritative combined model
+suite remains `npx vitest run packages/tests/src`; it passed as recorded above. The marginal pre-existing frozen-
+eval subprocess test also received a 120-second test timeout after twice crossing its five-second default under
+parallel host load; its assertions were unchanged and it passed both focused and full reruns.
+
+## 10. Operator-requested public baseline sample
 
 On 2026-08-01 the operator explicitly requested the current public model's answer to `what is dna?` and asked
 that it be posted to Discord. The exact greedy output was:
@@ -323,7 +392,7 @@ an improvement. Four further operator-requested baseline examples were later pos
 stop reasons, repetition rates, and failure labels. These posts do not alter the improvement-only publication
 policy for unsolicited progress announcements.
 
-## 10. Artifact-size estimate
+## 11. Artifact-size estimate
 
 One prior optimizer-bearing checkpoint is approximately 692,528,815 bytes. Preserving a checkpoint every 50
 steps through 400 produces eight checkpoints per arm, or approximately 10.3 GiB for both arms before small logs,
@@ -334,7 +403,7 @@ project-owned additions cross it.
 No checkpoint may be deleted merely to make the run appear smaller. If measured headroom is inadequate, stop
 before training and revise the preservation schedule explicitly in a new contract.
 
-## 11. Exact remaining gates
+## 12. Exact remaining gates
 
 The following are still open, in order:
 
@@ -345,14 +414,15 @@ The following are still open, in order:
 4. execute and preserve the fail-closed 50/50 NVIDIA gate;
 5. prove one bounded paired step has finite telemetry and feasible memory;
 6. run C0 and U1 sequentially from the same checkpoint and source commit;
-7. evaluate only steps 50, 100, 200, and 400 on the fresh 96 prompts, while preserving intermediate checkpoints;
+7. run the I0 baseline once, then evaluate only C0/U1 steps 50, 100, 200, and 400 through the frozen evaluation
+   driver while preserving intermediate checkpoints;
 8. apply the declared automatic and blinded conversational gates;
 9. execute the sealed final only if a candidate first passes development admission;
 10. export and publish only if the public-promotion contract passes.
 
 Until steps 1–4 pass, training must not begin. Until steps 7–9 pass, no candidate may replace the public model.
 
-## 12. Recovery order
+## 13. Recovery order
 
 A future agent should:
 
@@ -362,8 +432,9 @@ A future agent should:
 4. read this preflight record;
 5. verify Git branch `agent/alpha-chat-repair-v2-closeout` and the latest pushed commit;
 6. verify the canonical r3 freeze hashes above;
-7. confirm no paid Alpha pod exists before creating one;
-8. continue from the first open gate rather than rerunning completed local work.
+7. verify the canonical r2 evaluation-contract and eligible-69 hashes above;
+8. confirm no paid Alpha pod exists before creating one;
+9. continue from the first open gate rather than rerunning completed local work.
 
 The scientific truth at this boundary is simple: the local experiment machinery is substantially stronger and
 more fail-closed than v2, but Alpha itself has not improved yet.

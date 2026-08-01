@@ -14,7 +14,8 @@ every v2 checkpoint created more new loops than it fixed, with median onset near
 3/68,964 supervised targets crossed the same repetition threshold, and a calibrated BGE diagnostic found no
 reliable semantic-contingency gain. The next intervention is a matched control of train-only,
 rollout-conditioned repetition unlikelihood. Its local implementation and corrected 512-token freeze are complete,
-but it remains unexecuted on NVIDIA and does not authorize a pod.
+and its development-only evaluation contract now replays byte-for-byte. It remains unexecuted on NVIDIA and does
+not authorize a pod.
 
 | Item | Current state |
 |---|---|
@@ -38,6 +39,8 @@ but it remains unexecuted on NVIDIA and does not authorize a pod.
 | V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched; final live list empty |
 | V2 mechanism analysis | complete; clean-target / self-amplifying-prefix hypothesis best supported |
 | Repair v3 | local code/freeze PASS; 24-row native/export parity 946/946 exact; full rollouts/GPU/training still open |
+| V3 evaluation freeze | fresh96 + panel24 + exact v2 eligible69 bound; contract SHA `c0270b2f`; canonical/replay exact |
+| V3 local tests | 223 passed / 50 NVIDIA-gated / 0 failed; TypeScript and Python syntax clean |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
 result is not structurally reliable and its semantic behavior is weak. Repair v2 did not improve it. Alpha is

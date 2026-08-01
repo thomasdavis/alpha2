@@ -1,4 +1,4 @@
-# HANDOFF — Alpha repair v3 locally implemented; NVIDIA/training gates open; best honest checkpoint unchanged, state as of 2026-08-01
+# HANDOFF — Alpha repair v3 implementation, data, and evaluation frozen; NVIDIA/training gates open; best honest checkpoint unchanged, state as of 2026-08-01
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -52,7 +52,8 @@ The 2026-08-01 local analysis advances that last item without authorizing comput
   compute-matched zero-weight control. CPU/autograd and Helios kernels, a hash-matched paired loader/trainer,
   resume checks, telemetry, deterministic cohort/rollout/mask tools, and an exact arm launcher are pushed in
   `8341dd0` and `5753ca9`. Commit `b367f6b` adds a batched fp32 Transformers accelerator and makes the mask
-  compiler require its native-parity proof.
+  compiler require its native-parity proof. Commits `957a02b` and `db7daed` add the fail-closed checkpoint
+  evaluator, paired I0/C0/U1 analyzer, and reproducible development-only evaluation freeze.
 - The corrected canonical freeze is
   `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-20260801/`: 4,096 train-only rollout
   candidates, 96 fresh development prompts, 24 frozen panel prompts, 0 train/development identity or normalized-
@@ -60,15 +61,21 @@ The 2026-08-01 local analysis advances that last item without authorizing comput
   reproduced every model-visible artifact byte-for-byte.
 - The earlier 1,024-token r2 freeze and smoke are preserved but superseded. Using them would either fail the
   selected checkpoint's native context or add a context-migration confound. Do not use them for training.
-- Local proof is 222 passing / 50 NVIDIA-gated / 0 failing with TypeScript clean. A corrected native smoke
+- The canonical evaluation freeze is
+  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/`.
+  Its contract SHA is `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce`; the exact eligible-69 prompt file SHA is
+  `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584`. Both files match the independent r2
+  replay byte-for-byte. The prior r1 contract-path/time drift is preserved as superseded evidence.
+- Local proof is 223 passing / 50 NVIDIA-gated / 0 failing with TypeScript clean. A corrected native smoke
   contains 24 cross-source rows and 946 generated decisions. The batched export reproduced all 946 selected
   tokens, all runner-up IDs, output text, and stops exactly; maximum chosen-logit drift was `2.265e-05`. The
   complete 4,096-rollout ledger and mask compilation remain open.
   No NVIDIA gate, GPU training, sealed-final execution, candidate selection, or public model change has occurred.
 - Read
   [the v3 local preflight](docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) before execution. The next
-  gates are complete rollout generation, mask compilation, and real 50/50 NVIDIA proof. Creating a paid pod
-  still requires renewed explicit authorization.
+  gates are complete rollout generation, mask compilation, and real 50/50 NVIDIA proof. Candidate evaluation is
+  already bound to I0 plus C0/U1 steps 50/100/200/400; it cannot select while the frozen human panel is pending
+  and cannot open either sealed final. Creating a paid pod still requires renewed explicit authorization.
 - At `2026-08-01T16:59:59Z`, the live RunPod list contained one unrelated WBV checkpoint-sentinel pod and no
   Alpha pod. It was not touched. Recheck the volatile list and exact ownership before any action.
 
