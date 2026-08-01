@@ -131,3 +131,18 @@ Success requires better meaning, not merely fewer loops or more words. A candida
 direct answers by becoming lecture-like, ignores user intent, introduces repetition, or loses ordinary social
 conversation. Hugging Face and the public Blah registration remain unchanged until an honestly superior
 checkpoint passes the release gate.
+
+## Finite training contract after corpus acceptance
+
+The first v4 run continues from the currently selected public step-1,200 native checkpoint with a fresh AdamW
+optimizer. It restores none of the rejected v3 unlikelihood machinery. The planned finite boundary is 800 steps,
+batch 16, block 512, learning rate `2e-5` decaying to `2e-6`, 50 warmup steps, and checkpoints every 100 steps.
+The answer-start and terminal-EOS weights remain 8x over four initial content tokens and 2x at the end, matching
+the selected checkpoint's successful response-initiation recipe. This isolates the intended intervention: the
+positive training distribution.
+
+The launcher fails closed on the exact selected checkpoint and tokenizer hashes, corpus hashes, clean source
+commit, and a v4 evaluation freeze. The freeze binds visible development suites while inheriting the still-unread
+v2 sealed final by hash. No validation-loss minimum can select a checkpoint. Every intermediate checkpoint is a
+candidate for matched free-generation comparison, and the run ends at the declared boundary even if no candidate
+improves.
