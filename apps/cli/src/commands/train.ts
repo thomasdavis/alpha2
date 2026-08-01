@@ -191,6 +191,30 @@ export async function trainCmd(args: string[]): Promise<void> {
   kv = await loadConfig(kv);
 
   const dataManifestPath = kv["dataManifest"];
+  const sft = boolArg(kv, "sft", false);
+  const hasRcrUlData = kv["rcrUlData"] !== undefined;
+  const hasRcrUlWeight = kv["rcrUlWeight"] !== undefined;
+  const hasRcrUlEpsilon = kv["rcrUlEpsilon"] !== undefined;
+  const hasAnyRcrUlFlag = hasRcrUlData || hasRcrUlWeight || hasRcrUlEpsilon;
+  if (hasAnyRcrUlFlag && (!hasRcrUlData || !hasRcrUlWeight)) {
+    throw new Error("RCR-UL requires both --rcrUlData=<frozen-jsonl> and --rcrUlWeight=<lambda>");
+  }
+  if (hasAnyRcrUlFlag && !sft) {
+    throw new Error("RCR-UL requires --sft=true");
+  }
+  const rcrUl = hasAnyRcrUlFlag
+    ? {
+        dataPath: requireArg(kv, "rcrUlData", "frozen RCR-UL JSONL"),
+        weight: floatArg(kv, "rcrUlWeight", Number.NaN),
+        epsilon: floatArg(kv, "rcrUlEpsilon", 1e-6),
+      }
+    : undefined;
+  if (rcrUl && (!Number.isFinite(rcrUl.weight) || rcrUl.weight < 0)) {
+    throw new Error(`--rcrUlWeight must be finite and non-negative: ${String(kv["rcrUlWeight"])}`);
+  }
+  if (rcrUl && (!Number.isFinite(rcrUl.epsilon) || rcrUl.epsilon <= 0 || rcrUl.epsilon > 1e-6)) {
+    throw new Error(`--rcrUlEpsilon must be finite and in (0,1e-6]: ${String(kv["rcrUlEpsilon"] ?? 1e-6)}`);
+  }
   if (kv["resume"] && kv["initCheckpoint"]) throw new Error("--resume and --initCheckpoint are mutually exclusive");
   if (dataManifestPath && kv["data"]) throw new Error("pass either --data or --dataManifest, not both");
   const loadedDataManifest = dataManifestPath ? await loadPretrainShardManifest(dataManifestPath) : null;
@@ -203,7 +227,7 @@ export async function trainCmd(args: string[]): Promise<void> {
   const dataPath = dataPaths?.[0] ?? requireArg(kv, "data", "path to training text");
   const valDataPath = kv["valData"];
   if (dataPaths && valDataPath) throw new Error("--valData cannot be combined with --dataManifest; every shard is split 90/10");
-  if (dataPaths && boolArg(kv, "sft", false)) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
+  if (dataPaths && sft) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
 
   // Look up domain config for defaults
   const domainId = kv["domain"];
@@ -507,7 +531,8 @@ export async function trainCmd(args: string[]): Promise<void> {
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
     mixedPrecision: mixedPrecisionEnabled,
-    sft: boolArg(kv, "sft", false),
+    sft,
+    rcrUl,
   });
 
   const coopStats = typeof backendAny.getMatmulCoopStats === "function"

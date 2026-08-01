@@ -6,9 +6,10 @@ export {
   DataLoader, ShardedDataLoader, loadPretrainShardManifest, verifyPretrainShardManifest,
   loadText, loadTextSample, loadAndTokenize, loadOrCacheTokens, getSplitByte, splitText,
   SftDataLoader, loadSftExamples, buildSftExample, resolveChatSpecialIds, splitSftExamples,
+  RcrUlDataLoader, loadRcrUlExamples, loadSftConversationSha256s,
   CHAT_USER_TOKEN, CHAT_ASSISTANT_TOKEN, CHAT_EOT_TOKEN,
   type DataBatch, type BatchSource, type PretrainShardManifest, type SftExample, type ChatSpecialIds,
-  type SftDataLoaderOptions,
+  type SftDataLoaderOptions, type RcrUlExample,
 } from "./data.js";
 export {
   FileCheckpoint, buildCheckpointState, releaseCheckpointSnapshotBuffers, restoreParams,
@@ -25,7 +26,8 @@ export {
 } from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";
 export {
-  formatFrozenChatPrompt, fourGramRepeatRate, normalizedAnswerTokens, normalizedAnswer,
+  formatFrozenChatPrompt, fourGramRepeatRate, repeatedFourGramCompletionPositions,
+  normalizedAnswerTokens, normalizedAnswer,
   answerTokenF1, answerIsContained, type FrozenChatMessage,
 } from "./frozen_eval.js";
 export { createRemoteReporter, type RemoteReporter, type RemoteReporterConfig, type SampleGeneration } from "./remote-reporter.js";

@@ -27,6 +27,7 @@ import {
   matmul, matmulTransposed, matmulTransposedGelu,
   sum, mean, exp, log, sqrt, relu, gelu, silu, siluMul, clamp, softCap,
   softmax, layerNorm, rmsNorm, rope, embedding, crossEntropy, crossEntropyMasked,
+  crossEntropyUnlikelihoodMasked,
   reshape, transpose, slice, sliceQkv, dropout, residualDropoutAdd,
   checkpoint,
 } from "@alpha/autograd";
@@ -515,6 +516,126 @@ describe("gradcheck: masked cross-entropy (assistant-only SFT)", () => {
     tape.backward(loss, B);
     const g = logits.grad!.data as Float32Array;
     for (let i = 0; i < N * C; i++) expect(g[i]).toBe(0);
+  });
+});
+
+// ── Masked token unlikelihood (rollout-conditioned negatives) ───────────────
+
+describe("gradcheck: masked token unlikelihood", () => {
+  it("crossEntropyUnlikelihoodMasked [3,4] fractional mask (finite diff)", () => {
+    const targets: TensorData = { shape: [3], dtype: "i32", data: Int32Array.from([1, 3, 0]) };
+    const mask: TensorData = { shape: [3], dtype: "f32", data: Float32Array.from([1, 0.5, 0]) };
+    checkGrad(
+      (ctx, mk) => crossEntropyUnlikelihoodMasked(ctx, mk(rnd(17, 12, -2, 2), [3, 4]), targets, mask),
+      { label: "crossEntropyUnlikelihoodMasked" },
+    );
+  });
+
+  it("forward equals manual masked unlikelihood mean", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(19, N * C, -2, 2);
+    const targetIdx = [1, 3, 0];
+    const maskVals = [1, 0.5, 0];
+    const epsilon = 1e-6;
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+    const logits = B.fromArray(logitData, [N, C]);
+    const loss = (B.crossEntropyUnlikelihoodMasked!(logits, targets, mask, epsilon).data as Float32Array)[0];
+    const probs = B.softmax(logits, 1).data as Float32Array;
+    let ref = 0, sumMask = 0;
+    for (let i = 0; i < N; i++) {
+      if (maskVals[i] === 0) continue;
+      ref -= Math.log(Math.max(1 - probs[i * C + targetIdx[i]], epsilon)) * maskVals[i];
+      sumMask += maskVals[i];
+    }
+    ref /= Math.max(sumMask, 1);
+    expect(loss).toBeCloseTo(ref, 6);
+    const stats = B.getLastCrossEntropyUnlikelihoodMaskedStats();
+    expect(stats).not.toBeNull();
+    expect(stats!.activeRows).toBe(2);
+    expect(stats!.maskMass).toBeCloseTo(1.5, 7);
+    expect(stats!.meanBadProbability).toBeCloseTo(
+      (probs[targetIdx[0]] + 0.5 * probs[C + targetIdx[1]]) / 1.5,
+      7,
+    );
+    expect(stats!.maxBadProbability).toBeCloseTo(
+      Math.max(probs[targetIdx[0]], probs[C + targetIdx[1]]),
+      7,
+    );
+  });
+
+  it("analytic gradient matches p_bad/(1-p_bad) * (onehot - softmax)", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitData = rnd(23, N * C, -2, 2);
+    const targetIdx = [1, 3, 0];
+    const maskVals = [1, 0.5, 0];
+    const denom = maskVals.reduce((a, b) => a + b, 0);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+    const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const logits = new Variable(B.fromArray(logitData, [N, C]), true);
+    tape.backward(crossEntropyUnlikelihoodMasked(ctx, logits, targets, mask), B);
+
+    const probs = B.softmax(B.fromArray(logitData, [N, C]), -1).data as Float32Array;
+    const ref = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      const pBad = probs[i * C + targetIdx[i]];
+      const rowScale = pBad / (1 - pBad) * maskVals[i] / Math.max(denom, 1);
+      for (let c = 0; c < C; c++) {
+        ref[i * C + c] = ((c === targetIdx[i] ? 1 : 0) - probs[i * C + c]) * rowScale;
+      }
+    }
+    const g = logits.grad!.data as Float32Array;
+    for (let i = 0; i < N * C; i++) expect(g[i]).toBeCloseTo(ref[i], 6);
+  });
+
+  it("mask-zero rows and an all-zero mask produce exact zeros", () => {
+    const B = new CpuRefBackend();
+    const N = 3, C = 4;
+    const logitsData = rnd(29, N * C, -2, 2);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0]) };
+
+    const partialMask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from([1, 0, 1]) };
+    const tape1 = new Tape();
+    const logits1 = new Variable(B.fromArray(logitsData, [N, C]), true);
+    tape1.backward(crossEntropyUnlikelihoodMasked({ tape: tape1, backend: B }, logits1, targets, partialMask), B);
+    const partialGrad = logits1.grad!.data as Float32Array;
+    for (let c = 0; c < C; c++) expect(partialGrad[C + c]).toBe(0);
+
+    const zeroMask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from([0, 0, 0]) };
+    const tape2 = new Tape();
+    const logits2 = new Variable(B.fromArray(logitsData, [N, C]), true);
+    const loss = crossEntropyUnlikelihoodMasked({ tape: tape2, backend: B }, logits2, targets, zeroMask);
+    expect((loss.data.data as Float32Array)[0]).toBe(0);
+    expect(B.getLastCrossEntropyUnlikelihoodMaskedStats()).toEqual({
+      activeRows: 0,
+      maskMass: 0,
+      meanBadProbability: 0,
+      maxBadProbability: 0,
+    });
+    tape2.backward(loss, B);
+    for (const value of logits2.grad!.data as Float32Array) expect(value).toBe(0);
+  });
+
+  it("epsilon clamp stays finite near p_bad=1 and upstream grad scales backward", () => {
+    const B = new CpuRefBackend();
+    const epsilon = 1e-6;
+    const targets: TensorData = { shape: [1], dtype: "i32", data: Int32Array.from([0]) };
+    const mask: TensorData = { shape: [1], dtype: "f32", data: Float32Array.from([1]) };
+    const tape = new Tape();
+    const logits = new Variable(B.fromArray([100, -100], [1, 2]), true);
+    const loss = crossEntropyUnlikelihoodMasked({ tape, backend: B }, logits, targets, mask, epsilon);
+    expect((loss.data.data as Float32Array)[0]).toBeCloseTo(-Math.log(epsilon), 5);
+    const upstream = B.fromArray([0.25], []);
+    tape.backward(loss, B, undefined, upstream);
+    const grad = logits.grad!.data as Float32Array;
+    expect(Number.isFinite(grad[0])).toBe(true);
+    expect(Number.isFinite(grad[1])).toBe(true);
+    expect(grad[0]).toBeGreaterThanOrEqual(0);
+    expect(grad[1]).toBeLessThanOrEqual(0);
   });
 });
 

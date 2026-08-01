@@ -4,6 +4,7 @@ import {
   answerTokenF1,
   formatFrozenChatPrompt,
   fourGramRepeatRate,
+  repeatedFourGramCompletionPositions,
   normalizedAnswer,
 } from "@alpha/train";
 
@@ -31,6 +32,8 @@ describe("frozen eval helpers", () => {
     expect(fourGramRepeatRate([1, 2, 3, 4])).toBe(0);
     // Six windows, of which the final two repeat the first two.
     expect(fourGramRepeatRate([1, 2, 3, 4, 1, 2, 3, 4, 1])).toBeCloseTo(2 / 6);
+    expect(repeatedFourGramCompletionPositions([1, 2, 3, 4, 1, 2, 3, 4, 1])).toEqual([7, 8]);
+    expect(repeatedFourGramCompletionPositions([1, 2, 3])).toEqual([]);
   });
 
   it("normalizes and scores closed-book answers", () => {

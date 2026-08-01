@@ -266,6 +266,71 @@ describeGpu("masked cross-entropy parity", () => {
   });
 });
 
+// ── 1.6 Masked token-unlikelihood parity (RCR-UL) ───────────────────────────
+
+describeGpu("masked token-unlikelihood parity", () => {
+  const N = 6, C = 10;
+  const logitData = rnd(151, N * C, -3, 3);
+  const targetIdx = [1, 3, 0, 9, 4, 7];
+  const maskVals = [1, 0, 0.5, 1, 0, 1];
+  const epsilon = 1e-6;
+  const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+  const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+
+  it("crossEntropyUnlikelihoodMasked forward matches cpu_ref", () => {
+    const c = cpu.crossEntropyUnlikelihoodMasked!(cpu.fromArray(logitData, [N, C]), targets, mask, epsilon);
+    const g = gpu.crossEntropyUnlikelihoodMasked!(gpu.fromArray(logitData, [N, C]), targets, mask, epsilon);
+    relCloseScalar("crossEntropyUnlikelihoodMasked", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
+    const cpuStats = cpu.getLastCrossEntropyUnlikelihoodMaskedStats!();
+    const gpuStats = gpu.getLastCrossEntropyUnlikelihoodMaskedStats!();
+    expect(gpuStats?.activeRows).toBe(cpuStats?.activeRows);
+    expect(gpuStats?.maskMass).toBeCloseTo(cpuStats!.maskMass, 6);
+    expect(gpuStats?.meanBadProbability).toBeCloseTo(cpuStats!.meanBadProbability, 5);
+    expect(gpuStats?.maxBadProbability).toBeCloseTo(cpuStats!.maxBadProbability, 5);
+  });
+
+  it("crossEntropyUnlikelihoodMaskedBackward matches analytic reference", () => {
+    const upstream = 0.75;
+    const grad: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([upstream]) };
+    const g = gpu.crossEntropyUnlikelihoodMaskedBackward!(
+      gpu.fromArray(logitData, [N, C]), targets, mask, grad, epsilon,
+    );
+    const probs = cpu.softmax(cpu.fromArray(logitData, [N, C]), -1).data as Float32Array;
+    const denom = maskVals.reduce((a, b) => a + b, 0);
+    const ref = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      const pBad = probs[i * C + targetIdx[i]];
+      const rowScale = pBad / Math.max(1 - pBad, epsilon) * maskVals[i] * upstream / Math.max(denom, 1);
+      for (let c = 0; c < C; c++) {
+        ref[i * C + c] = ((c === targetIdx[i] ? 1 : 0) - probs[i * C + c]) * rowScale;
+      }
+    }
+    assertClose("crossEntropyUnlikelihoodMaskedBackward", f32(g), ref, GRAD_REL_TOL, GRAD_ABS_TOL);
+    const gd = f32(g);
+    for (const r of [1, 4]) for (let c = 0; c < C; c++) expect(gd[r * C + c]).toBe(0);
+  });
+
+  it("all-zero mask and zero upstream gradient remain exact zero", () => {
+    const zeroMask: TensorData = { shape: [N], dtype: "f32", data: new Float32Array(N) };
+    const logits = gpu.fromArray(logitData, [N, C]);
+    const zeroLoss = gpu.crossEntropyUnlikelihoodMasked!(logits, targets, zeroMask, epsilon);
+    expect(f32(zeroLoss)[0]).toBe(0);
+    expect(gpu.getLastCrossEntropyUnlikelihoodMaskedStats!()).toEqual({
+      activeRows: 0,
+      maskMass: 0,
+      meanBadProbability: 0,
+      maxBadProbability: 0,
+    });
+    const unitUpstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([1]) };
+    const zeroMaskGrad = f32(gpu.crossEntropyUnlikelihoodMaskedBackward!(logits, targets, zeroMask, unitUpstream, epsilon));
+    for (const value of zeroMaskGrad) expect(value).toBe(0);
+
+    const zeroUpstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([0]) };
+    const zeroUpstreamGrad = f32(gpu.crossEntropyUnlikelihoodMaskedBackward!(logits, targets, mask, zeroUpstream, epsilon));
+    for (const value of zeroUpstreamGrad) expect(value).toBe(0);
+  });
+});
+
 // ── Tiny-GPT config shared by 2–5 ────────────────────────────────────────────
 const GPT_CONFIG: ModelConfig = {
   vocabSize: 32, blockSize: 16, nLayer: 2, nEmbd: 32, nHead: 4, dropout: 0, ffnActivation: "swiglu",
@@ -397,6 +462,55 @@ describeGpu("AdamW step parity", () => {
       assertClose(`adamw ${name}`, g, afterC.get(name)!, ADAMW_REL_TOL, ADAMW_ABS_TOL);
     }
   });
+
+  it("one paired CE plus RCR-UL step matches cpu_ref and replays deterministically", () => {
+    const positive = makeBatch(GPT_CONFIG, 199);
+    const negative = makeBatch(GPT_CONFIG, 299);
+    const positiveMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    const negativeMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    for (let i = 0; i < positiveMaskData.length; i++) positiveMaskData[i] = i % 3 === 0 ? 0 : 1;
+    for (let i = 0; i < negativeMaskData.length; i++) negativeMaskData[i] = i % 7 === 0 ? 1 : 0;
+    const positiveMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: positiveMaskData };
+    const negativeMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: negativeMaskData };
+    const cfg = { lr: 5e-5, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 };
+
+    const stepOnce = (backend: Backend) => {
+      const params = initGPT(GPT_CONFIG, backend, new SeededRng(GPT_SEED));
+      const tape = new Tape();
+      const release = releaser(backend);
+      const positiveResult = gptForward(
+        GPT_CONFIG, params, backend, tape, positive.tokens, positive.targets,
+        true, false, false, undefined, release, positiveMask,
+      );
+      tape.backward(positiveResult.loss!, backend, release);
+      tape.clear(release);
+      const negativeResult = gptForward(
+        GPT_CONFIG, params, backend, tape, negative.tokens, negative.targets,
+        true, false, false, undefined, release, negativeMask,
+        { kind: "unlikelihood", epsilon: 1e-6 },
+      );
+      const ulUpstream = backend.full([], 0.5, "f32");
+      tape.backward(negativeResult.loss!, backend, release, ulUpstream);
+      tape.clear(release);
+      const opt = new AdamW(backend, cfg);
+      const pmap = new Map<string, TensorData>();
+      const gmap = new Map<string, TensorData>();
+      for (const [name, variable] of collectParamEntries(params)) {
+        pmap.set(name, variable.data);
+        if (variable.grad) gmap.set(name, variable.grad);
+      }
+      opt.step(pmap, gmap);
+      return new Map([...pmap].map(([name, tensor]) => [name, Float32Array.from(f32(tensor))]));
+    };
+
+    const cpuAfter = stepOnce(cpu);
+    const gpuAfter = stepOnce(gpu);
+    const replayAfter = stepOnce(gpu);
+    for (const [name, expected] of cpuAfter) {
+      assertClose(`paired adamw ${name}`, gpuAfter.get(name)!, expected, ADAMW_REL_TOL, ADAMW_ABS_TOL);
+      expect(Array.from(replayAfter.get(name)!)).toEqual(Array.from(gpuAfter.get(name)!));
+    }
+  });
 });
 
 // ── 4.5 Mixed-precision f16 casts (Helios-only: cpu_ref has no castDtype) ────
@@ -460,6 +574,25 @@ describeGpu("mixed precision (f16 casts)", () => {
     expect(Number.isFinite(mpLoss), `mp loss non-finite (${mpLoss})`).toBe(true);
     expect(Math.abs(mpLoss - fpLoss) / Math.max(Math.abs(fpLoss), 1e-6),
       `mp loss ${mpLoss} vs fp32 ${fpLoss}`).toBeLessThan(0.05);
+
+    const ulMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    for (let i = 0; i < ulMaskData.length; i++) ulMaskData[i] = i % 5 === 0 ? 1 : 0;
+    const ulMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: ulMaskData };
+    const params = initGPT(GPT_CONFIG, gpu, new SeededRng(GPT_SEED));
+    const tape = new Tape();
+    const ulResult = gptForward(
+      GPT_CONFIG, params, gpu, tape, batch.tokens, batch.targets,
+      true, false, true, undefined, releaser(gpu), ulMask,
+      { kind: "unlikelihood", epsilon: 1e-6 },
+    );
+    expect(Number.isFinite(f32(ulResult.loss!.data)[0])).toBe(true);
+    tape.backward(ulResult.loss!, gpu, releaser(gpu));
+    for (const [name, variable] of collectParamEntries(params)) {
+      expect(variable.grad, `${name}: RCR-UL mixed-precision grad null`).not.toBeNull();
+      for (const value of f32(variable.grad!)) {
+        expect(Number.isFinite(value), `${name}: non-finite RCR-UL grad`).toBe(true);
+      }
+    }
   });
 });
 

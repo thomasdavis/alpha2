@@ -11,6 +11,7 @@ import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
+  crossEntropyUnlikelihoodMasked,
   sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
   castToF16, castToF32,
@@ -48,6 +49,13 @@ export interface GPTParams {
    *  the `wte` Variable (same object) so grads accumulate into one param. */
   lmHead: Variable;
 }
+
+/** Explicit loss selection for specialized training branches. Ordinary model
+ * training defaults to cross-entropy; RCR-UL must opt into unlikelihood and
+ * provide a mask identifying only frozen negative-token positions. */
+export type GPTLossObjective =
+  | { kind: "cross_entropy" }
+  | { kind: "unlikelihood"; epsilon: number };
 
 export interface LayerParams {
   ln1: { weight: Variable; bias?: Variable };
@@ -397,6 +405,9 @@ function transformerBlock(
  * @param lossMask - optional [B, T] f32 per-position loss weights (assistant-only
  *   SFT). When present, the loss is the masked mean crossEntropyMasked instead of
  *   the plain crossEntropy — no behavior change when absent (pretraining path).
+ * @param lossObjective - explicit specialized loss mode. The default is ordinary
+ *   cross-entropy. Unlikelihood requires `lossMask` and treats targets as tokens
+ *   whose probability should be reduced at mask-positive positions.
  */
 export function gptForward(
   config: ModelConfig,
@@ -411,6 +422,7 @@ export function gptForward(
   dropoutRng?: DropoutRng,
   release?: (td: TensorData) => void,
   lossMask?: TensorData,
+  lossObjective: GPTLossObjective = { kind: "cross_entropy" },
 ): GPTForwardResult {
   const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void } = { tape, backend, dropoutRng, release };
   const { nEmbd } = config;
@@ -485,7 +497,11 @@ export function gptForward(
   if (targets) {
     const targetsFlat: TensorData = { shape: [B * T], dtype: "i32", data: targets.data };
     const logitsVar = reshape(ctx, logits, [B * T, config.vocabSize]);
-    if (lossMask) {
+    if (lossObjective.kind === "unlikelihood") {
+      if (!lossMask) throw new Error("unlikelihood loss requires a per-position lossMask");
+      const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };
+      loss = crossEntropyUnlikelihoodMasked(ctx, logitsVar, targetsFlat, maskFlat, lossObjective.epsilon);
+    } else if (lossMask) {
       // Assistant-only SFT: masked mean over positions (padding + user tokens
       // carry weight 0, so they contribute neither loss nor gradient).
       const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };

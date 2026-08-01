@@ -4582,25 +4582,31 @@ export function kernelCrossEntropyForwardFused(wgSize = 256): Uint32Array {
  * Push constants: { N: u32, C: u32 }
  * Dispatch: (N, 1, 1) workgroups
  */
-export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
+export function kernelCrossEntropyForwardMasked(wgSize = 256, unlikelihood = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
 
   const bufLogits = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
   const bufMask = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
   const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
 
-  // Push constants: { N: u32, C: u32 }
+  // Push constants: CE { N: u32, C: u32 };
+  // unlikelihood variant additionally has { epsilon: f32 }.
   const tPCStruct = b.id();
-  b.typeStruct(tPCStruct, [p.tU32, p.tU32]);
+  b.typeStruct(tPCStruct, unlikelihood ? [p.tU32, p.tU32, p.tF32] : [p.tU32, p.tU32]);
   b.addDecorate(tPCStruct, Decoration.Block);
   b.addMemberDecorate(tPCStruct, 0, Decoration.Offset, 0);
   b.addMemberDecorate(tPCStruct, 1, Decoration.Offset, 4);
+  if (unlikelihood) b.addMemberDecorate(tPCStruct, 2, Decoration.Offset, 8);
   const tPtrPCStruct = b.id();
   b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
   const tPtrU32PC = b.id();
   b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const tPtrF32PC = b.id();
+  b.typePointer(tPtrF32PC, StorageClass.PushConstant, p.tF32);
   const pcVar = b.id();
   b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
 
@@ -4667,6 +4673,14 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   const totalN = b.id(); b.emit(Op.Load, [p.tU32, totalN, ptrPC0]);
   const ptrPC1 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC1, pcVar, p.const1u]);
   const vocabC = b.id(); b.emit(Op.Load, [p.tU32, vocabC, ptrPC1]);
+  let epsilonF = p.const0f;
+  if (unlikelihood) {
+    const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+    const ptrPCEpsilon = b.id();
+    b.emit(Op.AccessChain, [tPtrF32PC, ptrPCEpsilon, pcVar, const2u]);
+    epsilonF = b.id();
+    b.emit(Op.Load, [p.tF32, epsilonF, ptrPCEpsilon]);
+  }
 
   const rowOffset = b.id();
   b.emit(Op.IMul, [p.tU32, rowOffset, row, vocabC]);
@@ -4879,8 +4893,25 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   const logitTarget = b.id();
   b.emit(Op.Load, [p.tF32, logitTarget, ptrLogitTarget]);
 
-  const lossRaw = b.id();
-  b.emit(Op.FSub, [p.tF32, lossRaw, logSumExp, logitTarget]);
+  let lossRaw: number;
+  if (unlikelihood) {
+    // p_bad = exp(logit[target] - logSumExp)
+    const targetLogProb = b.id();
+    b.emit(Op.FSub, [p.tF32, targetLogProb, logitTarget, logSumExp]);
+    const pBad = b.id();
+    b.emit(Op.ExtInst, [p.tF32, pBad, p.glslStd, GLSLstd450.Exp, targetLogProb]);
+    const oneMinusPBad = b.id();
+    b.emit(Op.FSub, [p.tF32, oneMinusPBad, constOne, pBad]);
+    const safeOneMinus = b.id();
+    b.emit(Op.ExtInst, [p.tF32, safeOneMinus, p.glslStd, GLSLstd450.FMax, oneMinusPBad, epsilonF]);
+    const logSafe = b.id();
+    b.emit(Op.ExtInst, [p.tF32, logSafe, p.glslStd, GLSLstd450.Log, safeOneMinus]);
+    lossRaw = b.id();
+    b.emit(Op.FNegate, [p.tF32, lossRaw, logSafe]);
+  } else {
+    lossRaw = b.id();
+    b.emit(Op.FSub, [p.tF32, lossRaw, logSumExp, logitTarget]);
+  }
 
   // masked loss = lossRaw * mask[row]
   const ptrMask = b.id();
@@ -4901,6 +4932,11 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
 
   return b.build();
+}
+
+/** Fused masked token-unlikelihood forward; see the RCR-UL experiment contract. */
+export function kernelCrossEntropyForwardUnlikelihoodMasked(wgSize = 256): Uint32Array {
+  return kernelCrossEntropyForwardMasked(wgSize, true);
 }
 
 // ── Kernel: Cross-Entropy Forward Fused Vec4 (online 2-pass) ─────────────────
@@ -6220,7 +6256,7 @@ export function kernelCrossEntropyBackward(wgSize = 256): Uint32Array {
  * Out/Mask were swapped at bindings 2/3, silently zeroing masked GPU SFT grads.
  * Push: [totalElements (f32), C (u32 bits), invDenom (f32)]
  */
-export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
+export function kernelCrossEntropyBackwardMasked(wgSize = 256, unlikelihood = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
@@ -6228,7 +6264,7 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
   const bufMask    = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
   const bufOut     = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
-  const pc = declareParamsPushConstant(b, p.tF32, 3);
+  const pc = declareParamsPushConstant(b, p.tF32, unlikelihood ? 4 : 3);
 
   const constOne  = b.id(); b.constantF32(p.tF32, constOne, 1.0);
   const constZero = b.id(); b.constantF32(p.tF32, constZero, 0.0);
@@ -6266,6 +6302,15 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   const invN = b.id();
   b.emit(Op.Load, [p.tF32, invN, ptrPcInvN]);
 
+  let epsilonF = p.const0f;
+  if (unlikelihood) {
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const ptrPcEpsilon = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcEpsilon, pc.varId, const3u]);
+    epsilonF = b.id();
+    b.emit(Op.Load, [p.tF32, epsilonF, ptrPcEpsilon]);
+  }
+
   const row = b.id();
   b.emit(Op.UDiv, [p.tU32, row, gidX, cU]);
   const col = b.id();
@@ -6289,9 +6334,34 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.Load, [p.tF32, prob, ptrProb]);
 
   const diff = b.id();
-  b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
+  if (unlikelihood) {
+    b.emit(Op.FSub, [p.tF32, diff, isTarget, prob]);
+  } else {
+    b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
+  }
   const scaled = b.id();
-  b.emit(Op.FMul, [p.tF32, scaled, diff, invN]);
+  if (unlikelihood) {
+    // ratio = p_bad / max(1-p_bad, epsilon), shared by every class in the row.
+    const targetOffset = b.id();
+    b.emit(Op.IMul, [p.tU32, targetOffset, row, cU]);
+    const targetGlobalIdx = b.id();
+    b.emit(Op.IAdd, [p.tU32, targetGlobalIdx, targetOffset, targetU]);
+    const ptrPBad = b.id();
+    b.emit(Op.AccessChain, [bufProbs.tPtrF32, ptrPBad, bufProbs.varId, p.const0u, targetGlobalIdx]);
+    const pBad = b.id();
+    b.emit(Op.Load, [p.tF32, pBad, ptrPBad]);
+    const oneMinusPBad = b.id();
+    b.emit(Op.FSub, [p.tF32, oneMinusPBad, constOne, pBad]);
+    const safeDenom = b.id();
+    b.emit(Op.ExtInst, [p.tF32, safeDenom, p.glslStd, GLSLstd450.FMax, oneMinusPBad, epsilonF]);
+    const ratio = b.id();
+    b.emit(Op.FDiv, [p.tF32, ratio, pBad, safeDenom]);
+    const ratioScale = b.id();
+    b.emit(Op.FMul, [p.tF32, ratioScale, ratio, invN]);
+    b.emit(Op.FMul, [p.tF32, scaled, diff, ratioScale]);
+  } else {
+    b.emit(Op.FMul, [p.tF32, scaled, diff, invN]);
+  }
 
   // multiply by mask[row]
   const ptrMask = b.id();
@@ -6317,6 +6387,11 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
   return b.build();
+}
+
+/** Masked token-unlikelihood backward over already-computed softmax probabilities. */
+export function kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize = 256): Uint32Array {
+  return kernelCrossEntropyBackwardMasked(wgSize, true);
 }
 
 // ── Kernel: Embedding backward ─────────────────────────────────────────────

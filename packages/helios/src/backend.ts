@@ -16,6 +16,7 @@ import {
   type TensorData,
   type Dtype,
   type Shape,
+  type UnlikelihoodLossStats,
   shapeSize,
   shapeStrides,
   dtypeArray,
@@ -1278,6 +1279,7 @@ export class HeliosBackend implements Backend {
   private _flashCoop2BlockCols = parseFlashCoop2BlockCols();
   private _flashCoop2SkipLseWrite = parseFlashCoop2SkipLseWrite();
   private _flashCoop2DoubleBuf = parseFlashCoop2DoubleBuf();
+  private _lastUnlikelihoodStats: UnlikelihoodLossStats | null = null;
 
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
@@ -1291,6 +1293,10 @@ export class HeliosBackend implements Backend {
   getLastFlashDispatchDebug(): FlashDispatchDebug | null {
     if (!this._flashDispatchDebugEnabled) return null;
     return this._lastFlashDispatchDebug;
+  }
+
+  getLastCrossEntropyUnlikelihoodMaskedStats(): UnlikelihoodLossStats | null {
+    return this._lastUnlikelihoodStats;
   }
 
   getWaitTimelineCount(): number {
@@ -2900,6 +2906,78 @@ export class HeliosBackend implements Backend {
       const rowScale = invDenom * m;
       for (let j = 0; j < C; j++) {
         out[off + j] = (probsArr[off + j] - (j === target ? 1 : 0)) * rowScale;
+      }
+    }
+    return makeTensor(logits.shape, logits.dtype, out);
+  }
+
+  crossEntropyUnlikelihoodMaskedBackward(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    gradOutput: TensorData,
+    epsilon: number,
+  ): TensorData {
+    if (!(epsilon > 0 && epsilon <= 1)) {
+      throw new Error(`crossEntropyUnlikelihoodMaskedBackward epsilon must be in (0,1], got ${epsilon}`);
+    }
+    const vk = this.init();
+    const [N, C] = logits.shape;
+    const totalElements = N * C;
+    const gradScalar = (gradOutput.data as Float32Array)[0];
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const invDenom = gradScalar / Math.max(sumMask, 1);
+
+    // The probability tensor remains GPU-resident and feeds the fused
+    // unlikelihood derivative; no model-sized host readback occurs.
+    const probs = this.softmax(logits, -1);
+
+    if (totalElements >= this._minGpuSize) {
+      const bufProbs = ensureGpu(vk, probs);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ul_masked_backward", 4, 4 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(4);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;
+      pushU[1] = C;
+      push[2] = invDenom;
+      push[3] = epsilon;
+
+      graph.record({
+        kind: "backward",
+        kernel: "ul_masked_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 4 * 4,
+        shape: logits.shape,
+        allBufs: [bufProbs, bufTargets, bufMask, region.handle],
+      });
+
+      releaseGpuBufferFor(probs);
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
+    this.checkFallback("crossEntropyUnlikelihoodMaskedBackward");
+    const probsArr = probs.data as Float32Array;
+    const out = new Float32Array(totalElements);
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue;
+      const off = i * C;
+      const target = targets.data[i];
+      const pBad = probsArr[off + target];
+      const rowScale = pBad / Math.max(1 - pBad, epsilon) * invDenom * m;
+      for (let j = 0; j < C; j++) {
+        out[off + j] = ((j === target ? 1 : 0) - probsArr[off + j]) * rowScale;
       }
     }
     return makeTensor(logits.shape, logits.dtype, out);
@@ -4872,6 +4950,102 @@ export class HeliosBackend implements Backend {
     let loss = 0;
     for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]] * maskArr[i];
     loss /= denom;
+    return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
+  }
+
+  crossEntropyUnlikelihoodMasked(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    epsilon: number,
+  ): TensorData {
+    if (!(epsilon > 0 && epsilon <= 1)) {
+      throw new Error(`crossEntropyUnlikelihoodMasked epsilon must be in (0,1], got ${epsilon}`);
+    }
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const denom = Math.max(sumMask, 1);
+
+    if (N * C >= this._minGpuSize) {
+      const vk = this.init();
+      // One workgroup per row performs a stable log-sum-exp, converts the
+      // target log-probability to -log(max(1-p_bad,epsilon)), applies the mask,
+      // and writes one scalar. Only that N-wide result is reduced/read back.
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ul_fwd_masked", 4, 3 * 4);
+      const region = acquireOutputRegion(vk, N * 4);
+
+      const push = new Float32Array(3);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = N;
+      pushU[1] = C;
+      push[2] = epsilon;
+
+      graph.record({
+        kind: "unary",
+        kernel: "ul_fwd_masked",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: [N],
+        allBufs: [bufLogits, bufTargets, bufMask, region.handle],
+      });
+
+      const perRowLosses = graphLazyTensor(vk, [N], region);
+      const totalLoss = this.gpuReduceSum(perRowLosses, false);
+      const total = (totalLoss.data as Float32Array)[0];
+      // Read back only the N per-row scalar losses (not the N*C logits). Since
+      // loss_i = -log(1-p_bad_i)*mask_i, recover the clamped p_bad audit value.
+      const perRow = perRowLosses.data as Float32Array;
+      let activeRows = 0;
+      let weightedProbability = 0;
+      let maxBadProbability = 0;
+      for (let i = 0; i < N; i++) {
+        const m = maskArr[i];
+        if (m === 0) continue;
+        const pBad = 1 - Math.exp(-perRow[i] / m);
+        activeRows++;
+        weightedProbability += pBad * m;
+        maxBadProbability = Math.max(maxBadProbability, pBad);
+      }
+      this._lastUnlikelihoodStats = {
+        activeRows,
+        maskMass: sumMask,
+        meanBadProbability: weightedProbability / Math.max(sumMask, 1),
+        maxBadProbability,
+      };
+      return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / denom]));
+    }
+
+    const logProbs = this.cpuLogSoftmax(logits, 1);
+    let loss = 0;
+    let activeRows = 0;
+    let weightedProbability = 0;
+    let maxBadProbability = 0;
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue;
+      const pBad = Math.exp(logProbs.data[i * C + targets.data[i]]);
+      loss -= Math.log(Math.max(1 - pBad, epsilon)) * m;
+      activeRows++;
+      weightedProbability += pBad * m;
+      maxBadProbability = Math.max(maxBadProbability, pBad);
+    }
+    loss /= denom;
+    this._lastUnlikelihoodStats = {
+      activeRows,
+      maskMass: sumMask,
+      meanBadProbability: weightedProbability / Math.max(sumMask, 1),
+      maxBadProbability,
+    };
     return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
   }
 

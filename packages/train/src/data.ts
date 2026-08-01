@@ -696,6 +696,227 @@ export class SftDataLoader implements BatchSource {
   }
 }
 
+// ── RCR-UL rollout data pipeline ───────────────────────────────────────────
+
+/** One frozen failed-rollout training trajectory. `penaltyTargetPositions`
+ * indexes tokens (not input rows): position p penalizes prediction of tokens[p]
+ * from tokens[0..p). Position zero is therefore invalid. */
+export interface RcrUlExample {
+  stableId: string;
+  positiveConversationSha256: string;
+  tokens: Int32Array;
+  penaltyTargetPositions: Uint32Array;
+}
+
+interface RcrUlJsonRecord {
+  schema?: unknown;
+  stable_id?: unknown;
+  positive_conversation_sha256?: unknown;
+  token_ids?: unknown;
+  penalty_target_positions?: unknown;
+}
+
+/**
+ * Batch source for rollout-conditioned repetition unlikelihood.
+ *
+ * The file already fixes the exact token trajectory and mechanical penalty
+ * positions. This loader performs no semantic judgment and no truncation: a
+ * record longer than blockSize+1 is rejected, preserving the frozen exposure
+ * rather than silently changing its context. Its permutation is identical to
+ * SftDataLoader when both receive the same length, seed, batch size, and seek.
+ */
+export class RcrUlDataLoader implements BatchSource {
+  private examples: RcrUlExample[];
+  private batchSize: number;
+  private blockSize: number;
+  private shuffleSeed?: number;
+  private position = 0;
+  private batchRing: DataBatch[] = [];
+  private batchRingIdx = 0;
+  private permutationEpoch = -1;
+  private permutation: Int32Array | null = null;
+  private totalTokens: number;
+  private totalPenaltyPositions: number;
+
+  constructor(examples: RcrUlExample[], batchSize: number, blockSize: number, shuffleSeed?: number) {
+    if (examples.length === 0) throw new RangeError("RcrUlDataLoader needs at least one rollout");
+    if (!Number.isSafeInteger(batchSize) || batchSize <= 0) throw new RangeError(`invalid batchSize: ${batchSize}`);
+    if (!Number.isSafeInteger(blockSize) || blockSize <= 0) throw new RangeError(`invalid blockSize: ${blockSize}`);
+    for (const ex of examples) {
+      if (ex.tokens.length > blockSize + 1) {
+        throw new RangeError(
+          `RCR-UL rollout ${ex.stableId} has ${ex.tokens.length} tokens; maximum exact trajectory is ${blockSize + 1}`,
+        );
+      }
+    }
+    this.examples = examples;
+    this.batchSize = batchSize;
+    this.blockSize = blockSize;
+    this.shuffleSeed = shuffleSeed;
+    this.totalTokens = examples.reduce((sum, ex) => sum + ex.tokens.length, 0);
+    this.totalPenaltyPositions = examples.reduce((sum, ex) => sum + ex.penaltyTargetPositions.length, 0);
+
+    const elems = batchSize * blockSize;
+    for (let i = 0; i < 2; i++) {
+      this.batchRing.push({
+        inputs: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+        targets: { shape: [batchSize, blockSize], dtype: "i32", data: new Int32Array(elems) },
+        lossMask: { shape: [batchSize, blockSize], dtype: "f32", data: new Float32Array(elems) },
+      });
+    }
+  }
+
+  nextBatch(): DataBatch {
+    const B = this.batchSize;
+    const T = this.blockSize;
+    const batch = this.batchRing[this.batchRingIdx];
+    this.batchRingIdx = (this.batchRingIdx + 1) % this.batchRing.length;
+    const inputs = batch.inputs.data as Int32Array;
+    const targets = batch.targets.data as Int32Array;
+    const mask = batch.lossMask!.data as Float32Array;
+    inputs.fill(0);
+    targets.fill(0);
+    mask.fill(0);
+
+    for (let b = 0; b < B; b++) {
+      const ex = this.examples[this.exampleIndex(this.position + b)];
+      const dst = b * T;
+      const pairs = ex.tokens.length - 1;
+      for (let i = 0; i < pairs; i++) {
+        inputs[dst + i] = ex.tokens[i];
+        targets[dst + i] = ex.tokens[i + 1];
+      }
+      for (const targetPosition of ex.penaltyTargetPositions) {
+        mask[dst + targetPosition - 1] = 1;
+      }
+    }
+    this.position += B;
+    return {
+      inputs: { ...batch.inputs },
+      targets: { ...batch.targets },
+      lossMask: { ...batch.lossMask! },
+    };
+  }
+
+  seekBatches(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError(`batch count must be a non-negative integer: ${count}`);
+    const position = count * this.batchSize;
+    if (!Number.isSafeInteger(position)) throw new RangeError(`batch position exceeds safe integer range: ${position}`);
+    this.position = position;
+    this.batchRingIdx = count % this.batchRing.length;
+    this.permutationEpoch = -1;
+    this.permutation = null;
+  }
+
+  private exampleIndex(position: number): number {
+    const length = this.examples.length;
+    const offset = position % length;
+    if (this.shuffleSeed === undefined) return offset;
+    const epoch = Math.floor(position / length);
+    if (this.permutationEpoch !== epoch || this.permutation === null) {
+      this.permutation = epochPermutation(length, this.shuffleSeed, epoch);
+      this.permutationEpoch = epoch;
+    }
+    return this.permutation[offset];
+  }
+
+  get stepsPerEpoch(): number {
+    return Math.max(1, Math.ceil(this.examples.length / this.batchSize));
+  }
+
+  get length(): number {
+    return this.totalTokens;
+  }
+
+  get conversationCount(): number {
+    return this.examples.length;
+  }
+
+  get penaltyPositionCount(): number {
+    return this.totalPenaltyPositions;
+  }
+}
+
+/** Stream and fail-closed validate an immutable RCR-UL JSONL cohort. */
+export async function loadRcrUlExamples(path: string): Promise<RcrUlExample[]> {
+  const fs = await import("node:fs");
+  const readline = await import("node:readline");
+  const examples: RcrUlExample[] = [];
+  const stableIds = new Set<string>();
+  const rl = readline.createInterface({
+    input: fs.createReadStream(path, { encoding: "utf-8" }),
+    crlfDelay: Infinity,
+  });
+  let lineNumber = 0;
+  for await (const rawLine of rl) {
+    lineNumber++;
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    let record: RcrUlJsonRecord;
+    try {
+      record = JSON.parse(line) as RcrUlJsonRecord;
+    } catch (error) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} is not valid JSON: ${(error as Error).message}`);
+    }
+    if (record.schema !== "alpha-rcr-ul-example-v1") {
+      throw new Error(`RCR-UL ${path}:${lineNumber} has unexpected schema ${String(record.schema)}`);
+    }
+    if (typeof record.stable_id !== "string" || record.stable_id.length === 0) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} has invalid stable_id`);
+    }
+    if (stableIds.has(record.stable_id)) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} duplicates stable_id ${record.stable_id}`);
+    }
+    if (typeof record.positive_conversation_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.positive_conversation_sha256)) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} has invalid positive_conversation_sha256`);
+    }
+    if (!Array.isArray(record.token_ids) || record.token_ids.length < 2 ||
+        record.token_ids.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} has invalid token_ids`);
+    }
+    if (!Array.isArray(record.penalty_target_positions) ||
+        record.penalty_target_positions.some((value) => !Number.isSafeInteger(value) || value <= 0 || value >= (record.token_ids as unknown[]).length)) {
+      throw new Error(`RCR-UL ${path}:${lineNumber} has invalid penalty_target_positions`);
+    }
+    const positions = record.penalty_target_positions as number[];
+    for (let i = 1; i < positions.length; i++) {
+      if (positions[i] <= positions[i - 1]) {
+        throw new Error(`RCR-UL ${path}:${lineNumber} penalty_target_positions must be sorted and unique`);
+      }
+    }
+    stableIds.add(record.stable_id);
+    examples.push({
+      stableId: record.stable_id,
+      positiveConversationSha256: record.positive_conversation_sha256,
+      tokens: Int32Array.from(record.token_ids as number[]),
+      penaltyTargetPositions: Uint32Array.from(positions),
+    });
+  }
+  if (examples.length === 0) throw new Error(`RCR-UL cohort is empty: ${path}`);
+  return examples;
+}
+
+/** Hash the exact non-empty rendered conversations consumed by SFT, in file
+ * order. RCR-UL uses these identities to fail closed if a rollout trajectory
+ * is paired with anything other than the positive conversation from which it
+ * was frozen. */
+export async function loadSftConversationSha256s(path: string): Promise<string[]> {
+  const fs = await import("node:fs");
+  const readline = await import("node:readline");
+  const crypto = await import("node:crypto");
+  const hashes: string[] = [];
+  const rl = readline.createInterface({
+    input: fs.createReadStream(path, { encoding: "utf-8" }),
+    crlfDelay: Infinity,
+  });
+  for await (const rawLine of rl) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    hashes.push(crypto.createHash("sha256").update(line, "utf8").digest("hex"));
+  }
+  return hashes;
+}
+
 /**
  * Load conversations from a chat corpus file (one rendered conversation per
  * line) and tokenize each into an {@link SftExample}. Streams line-by-line so

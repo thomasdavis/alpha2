@@ -40,6 +40,16 @@ export interface TensorData {
   readonly data: TensorArray;
 }
 
+/** Tiny audit summary retained by the masked-unlikelihood primitive. It is
+ * derived from the N per-row loss outputs, never by reading the N*C model-logit
+ * tensor back to the host. */
+export interface UnlikelihoodLossStats {
+  readonly activeRows: number;
+  readonly maskMass: number;
+  readonly meanBadProbability: number;
+  readonly maxBadProbability: number;
+}
+
 // ── Backend ────────────────────────────────────────────────────────────────
 export interface Backend {
   readonly name: string;
@@ -88,6 +98,18 @@ export interface Backend {
    *  Returns scalar = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1). An all-zero
    *  mask yields exactly 0 (denominator floored at 1, no NaN). */
   crossEntropyMasked?(logits: TensorData, targets: TensorData, mask: TensorData): TensorData;
+  /** Masked token-unlikelihood loss for rollout-conditioned negative targets.
+   *  logits [N,C], targets [N] undesired class idx, mask [N] f32 per-row
+   *  weights. Returns sum_i(-log(max(1-p(target_i), epsilon)) * mask_i) /
+   *  max(sum_i mask_i, 1). An all-zero mask yields exactly 0. */
+  crossEntropyUnlikelihoodMasked?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    epsilon: number,
+  ): TensorData;
+  /** Statistics from the most recent masked-unlikelihood forward call. */
+  getLastCrossEntropyUnlikelihoodMaskedStats?(): UnlikelihoodLossStats | null;
 
   // reshape / slice
   reshape(a: TensorData, shape: Shape): TensorData;
@@ -127,6 +149,17 @@ export interface Backend {
    *  than N). dLogits[i,c] = (softmax(logits)[i,c] - 1{c==target_i}) * mask_i *
    *  gradOutput / max(sum(mask),1). Rows with mask 0 get exactly-zero grad. */
   crossEntropyMaskedBackward?(logits: TensorData, targets: TensorData, mask: TensorData, gradOutput: TensorData): TensorData;
+  /** Optional fused masked-unlikelihood backward hook. For a masked row i,
+   *  dLogits[i,c] = p_bad/max(1-p_bad,epsilon) *
+   *  (1{c==target_i}-p_c) * mask_i * gradOutput / max(sum(mask),1).
+   *  Rows with mask 0 get exactly-zero grad. */
+  crossEntropyUnlikelihoodMaskedBackward?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    gradOutput: TensorData,
+    epsilon: number,
+  ): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
   softCap?(input: TensorData, cap: number): TensorData;
   softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;

@@ -3,6 +3,7 @@ export {
   type GPTParams,
   type LayerParams,
   type GPTForwardResult,
+  type GPTLossObjective,
   initGPT,
   gptForward,
   collectParamEntries,

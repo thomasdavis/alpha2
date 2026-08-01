@@ -58,8 +58,9 @@ export {
   kernelRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
-  kernelCrossEntropyForwardMasked,
+  kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
@@ -72,8 +73,9 @@ import {
   kernelRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
-  kernelCrossEntropyForwardMasked,
+  kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
@@ -276,6 +278,8 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "cross_entropy_backward": spirv = kernelCrossEntropyBackward(wgSize); break;
     case "ce_fwd_masked": spirv = kernelCrossEntropyForwardMasked(wgSize); break;
     case "ce_masked_backward": spirv = kernelCrossEntropyBackwardMasked(wgSize); break;
+    case "ul_fwd_masked": spirv = kernelCrossEntropyForwardUnlikelihoodMasked(wgSize); break;
+    case "ul_masked_backward": spirv = kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
     case "embedding_forward_vec4": spirv = kernelEmbeddingForwardVec4(wgSize); break;

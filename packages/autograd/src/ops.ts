@@ -941,6 +941,85 @@ export function crossEntropyMasked(ctx: Ctx, logits: Variable, targets: TensorDa
   }, cleanup);
 }
 
+/**
+ * Masked token-unlikelihood for model-generated negative trajectories.
+ *
+ * Forward:  loss = sum_i(-log(max(1-p(t_i),epsilon)) * mask_i)
+ *                  / max(sum_i mask_i, 1)
+ * Backward: dLogits[i,c] = p_bad/max(1-p_bad,epsilon)
+ *                           * (1{c==t_i} - p_c) * mask_i * g
+ *                           / max(sum_i mask_i, 1)
+ *
+ * The epsilon clamp is used as a stable denominator in backward, matching the
+ * declared RCR-UL experiment contract. Targets and mask are fixed data; only
+ * logits receive gradients. Mask-zero rows remain bit-exactly zero.
+ */
+export function crossEntropyUnlikelihoodMasked(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  mask: TensorData,
+  epsilon = 1e-6,
+): Variable {
+  if (!(epsilon > 0 && epsilon <= 1)) {
+    throw new Error(`crossEntropyUnlikelihoodMasked epsilon must be in (0,1], got ${epsilon}`);
+  }
+  const logitsData = logits.data;
+  const B = ctx.backend;
+  if (!B.crossEntropyUnlikelihoodMasked) {
+    throw new Error("crossEntropyUnlikelihoodMasked requires a backend with crossEntropyUnlikelihoodMasked");
+  }
+  let targetsLive: TensorData | null = targets;
+  let maskLive: TensorData | null = mask;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (targetsLive) release(targetsLive);
+      if (maskLive) release(maskLive);
+    }
+    targetsLive = null;
+    maskLive = null;
+  };
+  return record(
+    ctx,
+    B.crossEntropyUnlikelihoodMasked(logitsData, targets, mask, epsilon),
+    [logits],
+    (g, Bk, release) => {
+      const tgt = targetsLive ?? targets;
+      const msk = maskLive ?? mask;
+      if (Bk.crossEntropyUnlikelihoodMaskedBackward) {
+        return [Bk.crossEntropyUnlikelihoodMaskedBackward(logitsData, tgt, msk, g, epsilon)];
+      }
+
+      const probs = Bk.softmax(logitsData, -1);
+      const probsArr = probs.data as Float32Array;
+      const maskArr = msk.data as Float32Array;
+      const tgtArr = tgt.data;
+      const [N, C] = logitsData.shape;
+      const gScalar = (g.data as Float32Array)[0];
+      let sumMask = 0;
+      for (let i = 0; i < N; i++) sumMask += maskArr[i];
+      const normalizedUpstream = gScalar / Math.max(sumMask, 1);
+      const out = new Float32Array(N * C);
+      for (let i = 0; i < N; i++) {
+        const m = maskArr[i];
+        if (m === 0) continue;
+        const off = i * C;
+        const t = tgtArr[i];
+        const pBad = probsArr[off + t];
+        const ratio = pBad / Math.max(1 - pBad, epsilon);
+        const rowScale = ratio * m * normalizedUpstream;
+        for (let c = 0; c < C; c++) {
+          out[off + c] = ((c === t ? 1 : 0) - probsArr[off + c]) * rowScale;
+        }
+      }
+      const result: TensorData = { shape: [...logitsData.shape], dtype: logitsData.dtype, data: out };
+      if (release) release(probs);
+      return [result];
+    },
+    cleanup,
+  );
+}
+
 // ── Flash Attention ────────────────────────────────────────────────────────
 
 /**

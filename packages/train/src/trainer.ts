@@ -17,7 +17,8 @@ import {
 } from "@alpha/symbiogenesis";
 import {
   DataLoader, ShardedDataLoader, loadText, loadAndTokenize, loadOrCacheTokens, getSplitByte,
-  SftDataLoader, loadSftExamples, splitSftExamples, type BatchSource,
+  SftDataLoader, loadSftExamples, splitSftExamples,
+  RcrUlDataLoader, loadRcrUlExamples, loadSftConversationSha256s, type BatchSource,
 } from "./data.js";
 import {
   FileCheckpoint,
@@ -205,6 +206,25 @@ export interface StepMetrics {
   elapsed_ms: number;
   tokens_per_sec: number;
   ms_per_iter: number;
+  /** Present only in the explicit RCR-UL experiment mode. */
+  positive_ce_loss?: number;
+  negative_ul_loss?: number;
+  ul_weight?: number;
+  positive_supervised_token_mass?: number;
+  negative_penalty_position_mass?: number;
+  negative_examples_with_penalty?: number;
+  negative_first_penalty_target_position?: number;
+  negative_last_penalty_target_position?: number;
+  negative_mean_bad_token_probability?: number;
+  negative_max_bad_token_probability?: number;
+  grad_norm_before_clip?: number;
+  grad_norm_after_clip?: number;
+  nan_count?: number;
+  inf_count?: number;
+  timing_positive_fwd_ms?: number;
+  timing_positive_bwd_ms?: number;
+  timing_negative_fwd_ms?: number;
+  timing_negative_bwd_ms?: number;
   gpu_util_pct?: number;
   gpu_vram_used_mb?: number;
   gpu_vram_total_mb?: number;
@@ -218,6 +238,8 @@ export interface StepMetrics {
   gpu_allocator_slab_fallbacks?: number;
   gpu_allocator_free_range_reuses?: number;
   gpu_allocator_free_range_overflows?: number;
+  gpu_peak_live_allocs?: number;
+  gpu_peak_mem_pool_mb?: number;
   host_rss_mb?: number;
   host_heap_used_mb?: number;
   host_external_mb?: number;
@@ -624,6 +646,14 @@ export interface TrainerDeps {
    * lossMask (user tokens + padding weight 0) threaded into the masked-CE loss.
    */
   sft?: boolean;
+  /** Explicit rollout-conditioned repetition-unlikelihood branch. The JSONL
+   * cohort must be row-matched to the positive SFT corpus. A weight of zero is
+   * valid and still executes forward+backward for the matched control arm. */
+  rcrUl?: {
+    dataPath: string;
+    weight: number;
+    epsilon: number;
+  };
 }
 
 export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; modelConfig: ModelConfig }> {
@@ -634,12 +664,30 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   if (resumePath && initCheckpointPath) throw new Error("resumePath and initCheckpointPath are mutually exclusive");
   const dataPaths = deps.dataPaths?.length ? [...deps.dataPaths] : [dataPath];
   if (deps.sft && dataPaths.length > 1) throw new Error("SFT does not support a pretraining shard manifest");
+  if (deps.rcrUl) {
+    if (!deps.sft) throw new Error("RCR-UL requires assistant-only SFT mode");
+    if (!deps.rcrUl.dataPath) throw new Error("RCR-UL requires a frozen rollout dataPath");
+    if (!Number.isFinite(deps.rcrUl.weight) || deps.rcrUl.weight < 0) {
+      throw new Error(`RCR-UL weight must be finite and non-negative: ${deps.rcrUl.weight}`);
+    }
+    if (!(deps.rcrUl.epsilon > 0 && deps.rcrUl.epsilon <= 1e-6)) {
+      throw new Error(`RCR-UL epsilon must be in (0,1e-6]: ${deps.rcrUl.epsilon}`);
+    }
+  }
 
   const dataTag = dataPath.split("/").pop()?.replace(/\.[^.]+$/, "").replace(/-/g, "_");
   // When resuming into an existing runDir, reuse the directory name as run ID
   // so that remote reporting appends to the same dashboard entry.
   const rid = deps.runDir ? deps.runDir.split("/").pop()! : makeRunId(dataTag);
-  const configHash = hashConfig({ ...modelConfig, ...trainConfig } as any);
+  const configHash = hashConfig({
+    ...modelConfig,
+    ...trainConfig,
+    ...(deps.rcrUl ? {
+      rcrUlDataPath: deps.rcrUl.dataPath,
+      rcrUlWeight: deps.rcrUl.weight,
+      rcrUlEpsilon: deps.rcrUl.epsilon,
+    } : {}),
+  } as any);
   const emitEvent = (event: TrainingEvent): void => {
     if (!onEvent) return;
     const normalized: TrainingEvent = {
@@ -670,12 +718,37 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     try {
       const existingConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as {
         initCheckpointPath?: unknown;
+        rcrUl?: unknown;
       };
       if (existingConfig.initCheckpointPath !== undefined) {
         if (typeof existingConfig.initCheckpointPath !== "string" || existingConfig.initCheckpointPath.length === 0) {
           throw new Error("existing run config has an invalid initCheckpointPath");
         }
         inheritedInitCheckpointPath = existingConfig.initCheckpointPath;
+      }
+      const existingRcrUl = existingConfig.rcrUl;
+      if (existingRcrUl !== undefined || deps.rcrUl !== undefined) {
+        if (
+          typeof existingRcrUl !== "object" || existingRcrUl === null ||
+          typeof (existingRcrUl as Record<string, unknown>).dataPath !== "string" ||
+          typeof (existingRcrUl as Record<string, unknown>).weight !== "number" ||
+          typeof (existingRcrUl as Record<string, unknown>).epsilon !== "number"
+        ) {
+          throw new Error("RCR-UL resume requires the existing run config to preserve a valid rcrUl contract");
+        }
+        if (!deps.rcrUl) {
+          throw new Error("RCR-UL resume cannot disable the existing run's paired objective");
+        }
+        const prior = existingRcrUl as { dataPath: string; weight: number; epsilon: number };
+        if (
+          prior.dataPath !== deps.rcrUl.dataPath ||
+          prior.weight !== deps.rcrUl.weight ||
+          prior.epsilon !== deps.rcrUl.epsilon
+        ) {
+          throw new Error(
+            "RCR-UL resume contract mismatch: dataPath, weight, and epsilon must exactly match the existing run",
+          );
+        }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -690,6 +763,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   else if (inheritedInitCheckpointPath) configObj.initCheckpointPath = inheritedInitCheckpointPath;
   if (resumePath) configObj.resumePath = resumePath;
   if (deps.domain) configObj.domain = deps.domain;
+  if (deps.rcrUl) configObj.rcrUl = { ...deps.rcrUl };
   async function writeConfig(): Promise<void> {
     const tmp = configPath + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(configObj, null, 2));
@@ -748,6 +822,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let valTokenShards: Int32Array[] = [];
   let sftTrain: SftDataLoader | null = null;
   let sftVal: SftDataLoader | null = null;
+  let sftShuffle = false;
+  let rcrUlTrain: RcrUlDataLoader | null = null;
   let valBucketLoaders: ValBucketLoader[] = [];
   const valBucketEvalEnabledRaw = (process.env.ALPHA_VAL_BUCKET_EVAL ?? "0").trim().toLowerCase();
   const valBucketEvalEnabled = (
@@ -766,7 +842,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // lossMask. Deterministic doc-aware train/val split when no valData given.
     console.log(`SFT mode: loading conversations from ${dataPath.split("/").pop()} (assistant-only masked loss)...`);
     const sftShuffleRaw = (process.env.ALPHA_SFT_SHUFFLE ?? "0").trim().toLowerCase();
-    const sftShuffle = sftShuffleRaw === "1" || sftShuffleRaw === "true" || sftShuffleRaw === "yes" || sftShuffleRaw === "on";
+    sftShuffle = sftShuffleRaw === "1" || sftShuffleRaw === "true" || sftShuffleRaw === "yes" || sftShuffleRaw === "on";
     const sftBalanceRaw = (process.env.ALPHA_SFT_BALANCE_CONVERSATIONS ?? "0").trim().toLowerCase();
     const sftBalance = sftBalanceRaw === "1" || sftBalanceRaw === "true" || sftBalanceRaw === "yes" || sftBalanceRaw === "on";
     const sftStartTokens = Math.max(0, Number.parseInt(process.env.ALPHA_SFT_START_TOKENS ?? "0", 10) || 0);
@@ -811,6 +887,51 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       `SFT conversations: train=${sftTrain.conversationCount} val=${sftVal?.conversationCount ?? 0} ` +
       `(${sftTrain.length.toLocaleString()} train tokens)`,
     );
+    if (deps.rcrUl) {
+      const negativeExamples = await loadRcrUlExamples(deps.rcrUl.dataPath);
+      const positiveConversationSha256s = await loadSftConversationSha256s(dataPath);
+      if (positiveConversationSha256s.length !== sftTrain.conversationCount) {
+        throw new Error(
+          `RCR-UL requires an unsplit positive cohort: ${positiveConversationSha256s.length} file rows != ` +
+          `${sftTrain.conversationCount} SFT training rows. Set ALPHA_SFT_VAL_FRACTION=0 or provide a separate --valData file.`,
+        );
+      }
+      if (negativeExamples.length !== positiveConversationSha256s.length) {
+        throw new Error(
+          `RCR-UL/positive cohort mismatch: ${negativeExamples.length} negative rows != ` +
+          `${positiveConversationSha256s.length} positive rows`,
+        );
+      }
+      for (let index = 0; index < negativeExamples.length; index++) {
+        const expected = positiveConversationSha256s[index];
+        const actual = negativeExamples[index].positiveConversationSha256;
+        if (actual !== expected) {
+          throw new Error(
+            `RCR-UL row ${index + 1} is paired with ${actual}, but positive conversation hashes to ${expected}`,
+          );
+        }
+      }
+      rcrUlTrain = new RcrUlDataLoader(
+        negativeExamples,
+        trainConfig.batchSize,
+        modelConfig.blockSize,
+        sftShuffle ? trainConfig.seed : undefined,
+      );
+      if (rcrUlTrain.conversationCount !== sftTrain.conversationCount) {
+        throw new Error(
+          `RCR-UL/positive cohort mismatch: ${rcrUlTrain.conversationCount} negative rows != ` +
+          `${sftTrain.conversationCount} positive rows`,
+        );
+      }
+      if (rcrUlTrain.penaltyPositionCount === 0) {
+        throw new Error("RCR-UL cohort has zero penalty positions");
+      }
+      console.log(
+        `RCR-UL mode: rows=${rcrUlTrain.conversationCount} ` +
+        `penalty_positions=${rcrUlTrain.penaltyPositionCount} ` +
+        `weight=${deps.rcrUl.weight} epsilon=${deps.rcrUl.epsilon}`,
+      );
+    }
   } else if (dataPaths.length > 1) {
     if (valDataPath) throw new Error("valDataPath cannot be combined with pretraining dataPaths");
     console.log(`Sharded dataset: ${dataPaths.length} files — tokenizing/caching each 90/10 split independently...`);
@@ -1098,6 +1219,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
             ? new ShardedDataLoader(valTokenShards, valDataRng, trainConfig.batchSize, modelConfig.blockSize)
             : new DataLoader(valTokenShards[0], valDataRng, trainConfig.batchSize, modelConfig.blockSize))
         : undefined);
+  const rcrUlLoader: BatchSource | undefined = rcrUlTrain ?? undefined;
   if (startStep > 0) {
     const trainBatches = startStep * trainConfig.gradAccumSteps;
     const completedEvals = trainConfig.evalInterval > 0
@@ -1105,8 +1227,12 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       : 0;
     const valBatches = completedEvals * trainConfig.evalIters;
     trainLoader.seekBatches(trainBatches);
+    rcrUlLoader?.seekBatches(trainBatches);
     valLoader?.seekBatches(valBatches);
-    console.log(`Data resume: train_batches=${trainBatches} val_batches=${valBatches}`);
+    console.log(
+      `Data resume: train_batches=${trainBatches} val_batches=${valBatches}` +
+      (rcrUlLoader ? ` rcr_ul_batches=${trainBatches}` : ""),
+    );
   }
   if (packed && !sftMode) {
     console.log(`Sequence packing: ON (${trainLoader.stepsPerEpoch} steps/epoch)`);
@@ -1325,7 +1451,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const checkpointInterval = Math.max(1, trainConfig.checkpointInterval ?? evalInterval);
   const sampleInterval = trainConfig.sampleInterval;
   let latestCheckpointPath: string | null = null;
-  const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * gradAccumSteps;
+  const branchCount = rcrUlLoader ? 2 : 1;
+  const tokensProcessedPerStep = trainConfig.batchSize * modelConfig.blockSize * gradAccumSteps * branchCount;
   const warmup = trainConfig.warmupIters > 0
     ? trainConfig.warmupIters
     : trainConfig.warmupIters < 0
@@ -1367,6 +1494,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let lastMemStatsProbeStep = 0;
   let lastAdaptiveSyncStep = 0;
   let lastAdaptivePurgeStep = 0;
+  let peakGpuLiveAllocs = 0;
+  let peakGpuMemPoolMb = 0;
   const spikeLrBackoff = readEnvFloat("ALPHA_SPIKE_LR_BACKOFF", 0.5, 0.01, 1.0);
   const spikeLrMinScale = readEnvFloat("ALPHA_SPIKE_LR_MIN_SCALE", 0.1, 0.001, 1.0);
   const spikeLrRecoverySteps = Math.round(readEnvFloat("ALPHA_SPIKE_LR_RECOVERY_STEPS", 200, 10, 10_000));
@@ -1494,6 +1623,22 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     let gradNanLogged = false;
     let gradNanCount = 0;
     let lossVal = 0;
+    let positiveCeLossVal = 0;
+    let negativeUlLossVal = 0;
+    let positiveSupervisedTokenMass = 0;
+    let negativePenaltyPositionMass = 0;
+    let negativeExamplesWithPenalty = 0;
+    let negativeFirstPenaltyTargetPosition = Number.POSITIVE_INFINITY;
+    let negativeLastPenaltyTargetPosition = Number.NEGATIVE_INFINITY;
+    let negativeBadProbabilityWeighted = 0;
+    let negativeBadProbabilityMaskMass = 0;
+    let negativeMaxBadProbability = 0;
+    let nanCount = 0;
+    let infCount = 0;
+    let positiveFwdMs = 0;
+    let positiveBwdMs = 0;
+    let negativeFwdMs = 0;
+    let negativeBwdMs = 0;
     let dataLoadMs = 0;
     let fwdMs = 0;
     let bwdMs = 0;
@@ -1505,12 +1650,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // For accumSteps=1, skip the no-op GPU scale/add path and read loss directly.
     const useGpuLossAccum = accumSteps > 1;
     let lossAccum: TensorData | null = null;
+    let ulLossAccum: TensorData | null = null;
 
     for (let microStep = 0; microStep < accumSteps; microStep++) {
       const _dl0 = capturePhaseTimings ? performance.now() : 0;
       const batch = trainLoader.nextBatch();
       const _dl1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) dataLoadMs += _dl1 - _dl0;
+      if (batch.lossMask) {
+        const positiveMask = batch.lossMask.data as Float32Array;
+        for (let i = 0; i < positiveMask.length; i++) positiveSupervisedTokenMass += positiveMask[i];
+      }
       const inputTokens = batch.inputs.data as Int32Array;
       const hashSampleCount = Math.min(64, inputTokens.length);
       for (let i = 0; i < hashSampleCount; i++) {
@@ -1521,7 +1671,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         if (tok > stepBatchTokMax) stepBatchTokMax = tok;
       }
       dropoutRng.reset(stepSeedBase + microStep, 0);
+      const _positiveFwd0 = deps.rcrUl ? performance.now() : 0;
       const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn, batch.lossMask);
+      if (deps.rcrUl) positiveFwdMs += performance.now() - _positiveFwd0;
       const _fwd1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
 
@@ -1555,26 +1707,28 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Loss scaling: pass scaled initial gradient for backward.
       // This scales all gradients by lossScale, preventing f16 underflow.
       // Gradients are unscaled back before the optimizer step.
+      const _positiveBwd0 = deps.rcrUl ? performance.now() : 0;
       if (useLossScaling && lossScale !== 1.0) {
         const scaledGrad = backend.full(loss.data.shape, lossScale, loss.data.dtype);
         trainTape.backward(loss, backend, releaseFn, scaledGrad);
       } else {
         trainTape.backward(loss, backend, releaseFn);
       }
+      if (deps.rcrUl) positiveBwdMs += performance.now() - _positiveBwd0;
       if (typeof backendAnyBw.coopMatmulPaused === "boolean") {
         backendAnyBw.coopMatmulPaused = false;
       }
       if (!useGpuLossAccum) {
-        lossVal = (lossDataRef!.data as Float32Array)[0];
-        if (!isFinite(lossVal)) {
-          console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
+        positiveCeLossVal = (lossDataRef!.data as Float32Array)[0];
+        if (!isFinite(positiveCeLossVal)) {
+          console.warn(`  [warn] positive CE loss=NaN at step ${stepNum} — skipping`);
           if (!lossNanLogged) {
             emitEvent({
               step: stepNum,
               level: "warn",
               kind: "loss_nan",
-              message: `loss became non-finite; skipping optimizer update (step ${stepNum})`,
-              payload: { microStep, accumSteps },
+              message: `positive CE loss became non-finite; skipping optimizer update (step ${stepNum})`,
+              payload: { microStep, accumSteps, branch: "positive_ce" },
             });
             lossNanLogged = true;
           }
@@ -1592,33 +1746,172 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         releaseFn(batch.targets);
         if (batch.lossMask) releaseFn(batch.lossMask);
       }
+
+      if (rcrUlLoader && deps.rcrUl) {
+        // Reclaim the positive branch before constructing an equally large
+        // negative graph. Both C0 and U1 take this exact execution path.
+        if (typeof (backend as any).syncGpu === "function") (backend as any).syncGpu();
+
+        const _ulDl0 = capturePhaseTimings ? performance.now() : 0;
+        const ulBatch = rcrUlLoader.nextBatch();
+        const _ulDl1 = capturePhaseTimings ? performance.now() : 0;
+        if (capturePhaseTimings) dataLoadMs += _ulDl1 - _ulDl0;
+        const ulMask = ulBatch.lossMask!.data as Float32Array;
+        const ulRowWidth = activeModelConfig.blockSize;
+        for (let b = 0; b < trainConfig.batchSize; b++) {
+          let rowHasPenalty = false;
+          for (let t = 0; t < ulRowWidth; t++) {
+            const maskValue = ulMask[b * ulRowWidth + t];
+            negativePenaltyPositionMass += maskValue;
+            if (maskValue > 0) {
+              rowHasPenalty = true;
+              const targetPosition = t + 1;
+              negativeFirstPenaltyTargetPosition = Math.min(negativeFirstPenaltyTargetPosition, targetPosition);
+              negativeLastPenaltyTargetPosition = Math.max(negativeLastPenaltyTargetPosition, targetPosition);
+            }
+          }
+          if (rowHasPenalty) negativeExamplesWithPenalty++;
+        }
+
+        // Bind the negative trajectory into the batch audit hash too, including
+        // its mask, so a changed rollout or penalty placement is observable.
+        const ulInputs = ulBatch.inputs.data as Int32Array;
+        const ulHashCount = Math.min(64, ulInputs.length);
+        for (let i = 0; i < ulHashCount; i++) {
+          stepBatchHash ^= ulInputs[i] | 0;
+          stepBatchHash = Math.imul(stepBatchHash, 0x01000193);
+          stepBatchHash ^= ulMask[i] > 0 ? 1 : 0;
+          stepBatchHash = Math.imul(stepBatchHash, 0x01000193);
+        }
+
+        const _negativeFwd0 = performance.now();
+        const { loss: ulLoss } = gptForward(
+          activeModelConfig,
+          params,
+          backend,
+          trainTape,
+          ulBatch.inputs,
+          ulBatch.targets,
+          true,
+          !!deps.activationCheckpointing,
+          !!deps.mixedPrecision,
+          dropoutRng,
+          releaseFn,
+          ulBatch.lossMask,
+          { kind: "unlikelihood", epsilon: deps.rcrUl.epsilon },
+        );
+        negativeFwdMs += performance.now() - _negativeFwd0;
+        const ulStats = backend.getLastCrossEntropyUnlikelihoodMaskedStats?.();
+        if (ulStats) {
+          negativeBadProbabilityWeighted += ulStats.meanBadProbability * ulStats.maskMass;
+          negativeBadProbabilityMaskMass += ulStats.maskMass;
+          negativeMaxBadProbability = Math.max(negativeMaxBadProbability, ulStats.maxBadProbability);
+        }
+        const _ulFwd1 = capturePhaseTimings ? performance.now() : 0;
+        if (capturePhaseTimings) fwdMs += _ulFwd1 - _ulDl1;
+        if (!ulLoss) throw new Error("RCR-UL loss is undefined");
+        const ulLossDataRef = !useGpuLossAccum ? ulLoss.data : null;
+
+        if (useGpuLossAccum) {
+          const scaledUlLoss = backend.scale(ulLoss.data, 1 / accumSteps);
+          if (ulLossAccum === null) {
+            ulLossAccum = scaledUlLoss;
+          } else if (backend.addInplace) {
+            backend.addInplace(ulLossAccum, scaledUlLoss);
+            if (releaseFn) releaseFn(scaledUlLoss);
+          } else {
+            const previous = ulLossAccum;
+            ulLossAccum = backend.add(ulLossAccum, scaledUlLoss);
+            if (releaseFn) { releaseFn(previous); releaseFn(scaledUlLoss); }
+          }
+        }
+
+        if (typeof backendAnyBw.coopMatmulPaused === "boolean") backendAnyBw.coopMatmulPaused = true;
+        // Always provide an explicit upstream gradient, including exact zero
+        // for C0. This is the matched-control invariant: no skipped branch.
+        const branchScale = deps.rcrUl.weight * lossScale;
+        const ulInitialGrad = backend.full(ulLoss.data.shape, branchScale, ulLoss.data.dtype);
+        const _negativeBwd0 = performance.now();
+        trainTape.backward(ulLoss, backend, releaseFn, ulInitialGrad);
+        negativeBwdMs += performance.now() - _negativeBwd0;
+        if (typeof backendAnyBw.coopMatmulPaused === "boolean") backendAnyBw.coopMatmulPaused = false;
+
+        if (!useGpuLossAccum) {
+          negativeUlLossVal = (ulLossDataRef!.data as Float32Array)[0];
+          if (!isFinite(negativeUlLossVal)) {
+            console.warn(`  [warn] negative UL loss=NaN at step ${stepNum} — skipping`);
+            if (!lossNanLogged) {
+              emitEvent({
+                step: stepNum,
+                level: "warn",
+                kind: "loss_nan",
+                message: `negative UL loss became non-finite; skipping optimizer update (step ${stepNum})`,
+                payload: { microStep, accumSteps, branch: "negative_ul" },
+              });
+              lossNanLogged = true;
+            }
+            nanDetected = true;
+          }
+        }
+        const _ulBwd1 = capturePhaseTimings ? performance.now() : 0;
+        if (capturePhaseTimings) bwdMs += _ulBwd1 - _ulFwd1;
+        trainTape.clear(releaseFn);
+        if (releaseFn) {
+          releaseFn(ulBatch.inputs);
+          releaseFn(ulBatch.targets);
+          releaseFn(ulBatch.lossMask!);
+        }
+      }
       // Sync GPU after each micro-step to fully reclaim deferred buffer releases.
       // Without this, backward-pass intermediates pile up across accumulation steps,
       // causing allocation count to grow unbounded and OOM on the driver side.
       // syncGpu() flushes, waits for completion, and processes pending destroys.
-      if (accumSteps > 1 && typeof (backend as any).syncGpu === "function") {
+      if ((accumSteps > 1 || !!rcrUlLoader) && typeof (backend as any).syncGpu === "function") {
         (backend as any).syncGpu();
       }
     }
 
     // Single CPU readback of accumulated loss (triggers one flush+wait)
     if (useGpuLossAccum && lossAccum) {
-      lossVal = (lossAccum.data as Float32Array)[0];
-      if (!isFinite(lossVal)) {
-        console.warn(`  [warn] loss=NaN at step ${stepNum} — skipping`);
+      positiveCeLossVal = (lossAccum.data as Float32Array)[0];
+      if (!isFinite(positiveCeLossVal)) {
+        console.warn(`  [warn] accumulated positive CE loss=NaN at step ${stepNum} — skipping`);
         if (!lossNanLogged) {
           emitEvent({
             step: stepNum,
             level: "warn",
             kind: "loss_nan",
-            message: `accumulated loss became non-finite; skipping optimizer update (step ${stepNum})`,
-            payload: { accumSteps },
+            message: `accumulated positive CE loss became non-finite; skipping optimizer update (step ${stepNum})`,
+            payload: { accumSteps, branch: "positive_ce" },
           });
           lossNanLogged = true;
         }
         nanDetected = true;
       }
       if (releaseFn) releaseFn(lossAccum);
+    }
+    if (useGpuLossAccum && ulLossAccum) {
+      negativeUlLossVal = (ulLossAccum.data as Float32Array)[0];
+      if (!isFinite(negativeUlLossVal)) {
+        console.warn(`  [warn] accumulated negative UL loss=NaN at step ${stepNum} — skipping`);
+        if (!lossNanLogged) {
+          emitEvent({
+            step: stepNum,
+            level: "warn",
+            kind: "loss_nan",
+            message: `accumulated negative UL loss became non-finite; skipping optimizer update (step ${stepNum})`,
+            payload: { accumSteps, branch: "negative_ul" },
+          });
+          lossNanLogged = true;
+        }
+        nanDetected = true;
+      }
+      if (releaseFn) releaseFn(ulLossAccum);
+    }
+    lossVal = positiveCeLossVal + (deps.rcrUl ? deps.rcrUl.weight * negativeUlLossVal : 0);
+    for (const value of [positiveCeLossVal, negativeUlLossVal, lossVal]) {
+      if (Number.isNaN(value)) nanCount++;
+      else if (!Number.isFinite(value)) infCount++;
     }
 
     // Keep gradients unmodified and fold scaling/clipping into optimizer update.
@@ -1953,6 +2246,8 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         prevSpikeNorm = Number.NaN;
       }
     }
+    if (Number.isNaN(gradNorm)) nanCount++;
+    else if (!Number.isFinite(gradNorm)) infCount++;
 
     // LR scale recovery: after enough steps without a spike, restore lr toward 1.0.
     // Note: NaN grad steps do NOT reset the counter — only actual gradient spikes
@@ -2276,6 +2571,31 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / stepNum) * 100,
     };
+    if (deps.rcrUl) {
+      metrics.positive_ce_loss = positiveCeLossVal;
+      metrics.negative_ul_loss = negativeUlLossVal;
+      metrics.ul_weight = deps.rcrUl.weight;
+      metrics.positive_supervised_token_mass = positiveSupervisedTokenMass;
+      metrics.negative_penalty_position_mass = negativePenaltyPositionMass;
+      metrics.negative_examples_with_penalty = negativeExamplesWithPenalty;
+      metrics.negative_first_penalty_target_position = Number.isFinite(negativeFirstPenaltyTargetPosition)
+        ? negativeFirstPenaltyTargetPosition
+        : undefined;
+      metrics.negative_last_penalty_target_position = Number.isFinite(negativeLastPenaltyTargetPosition)
+        ? negativeLastPenaltyTargetPosition
+        : undefined;
+      metrics.negative_mean_bad_token_probability = negativeBadProbabilityWeighted /
+        Math.max(negativeBadProbabilityMaskMass, 1);
+      metrics.negative_max_bad_token_probability = negativeMaxBadProbability;
+      metrics.grad_norm_before_clip = gradNorm;
+      metrics.grad_norm_after_clip = gradNorm * clipCoef;
+      metrics.nan_count = nanCount;
+      metrics.inf_count = infCount;
+      metrics.timing_positive_fwd_ms = positiveFwdMs;
+      metrics.timing_positive_bwd_ms = positiveBwdMs;
+      metrics.timing_negative_fwd_ms = negativeFwdMs;
+      metrics.timing_negative_bwd_ms = negativeBwdMs;
+    }
     const hostMemory = process.memoryUsage();
     metrics.host_rss_mb = Math.round(hostMemory.rss / 1024 / 1024);
     metrics.host_heap_used_mb = Math.round(hostMemory.heapUsed / 1024 / 1024);
@@ -2481,6 +2801,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
 
     const shouldSampleGpuMetrics =
+      !!deps.rcrUl ||
       traceEnabled ||
       metrics.step === 1 ||
       metrics.step === totalIters ||
@@ -2513,6 +2834,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_allocator_slab_fallbacks = memStats.slabFallbacks;
       metrics.gpu_allocator_free_range_reuses = memStats.slabFreeRangeReuses;
       metrics.gpu_allocator_free_range_overflows = memStats.slabFreeRangeOverflows;
+      peakGpuLiveAllocs = Math.max(peakGpuLiveAllocs, memStats.liveAllocs ?? 0);
+      const currentPoolMb = (memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024;
+      peakGpuMemPoolMb = Math.max(peakGpuMemPoolMb, currentPoolMb);
+      metrics.gpu_peak_live_allocs = peakGpuLiveAllocs;
+      metrics.gpu_peak_mem_pool_mb = Math.round(peakGpuMemPoolMb);
     }
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
@@ -2608,6 +2934,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     // Log
     const lossStr = metrics.loss.toFixed(4);
     const valStr = metrics.valLoss !== undefined ? ` val_loss=${metrics.valLoss.toFixed(4)}` : "";
+    const rcrUlStr = metrics.negative_ul_loss !== undefined
+      ? ` ce=${metrics.positive_ce_loss!.toFixed(4)} ul=${metrics.negative_ul_loss.toFixed(4)} λ=${metrics.ul_weight}`
+      : "";
     const toksStr = (metrics.tokens_per_sec).toFixed(0);
     const gpuStr = "gpuOpsThisStep" in backend ? ` | ${(backend as any).gpuOpsThisStep} gpu_ops` : "";
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
@@ -2619,7 +2948,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       (metrics.step % logEvery === 0);
     if (shouldLogStep) {
       console.log(
-        `step ${metrics.step}/${totalIters} | loss=${lossStr}${valStr} ` +
+        `step ${metrics.step}/${totalIters} | loss=${lossStr}${valStr}${rcrUlStr} ` +
         `| lr=${lr.toExponential(2)} | grad_norm=${gradNormStr}${clipStr} ` +
         `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
       );

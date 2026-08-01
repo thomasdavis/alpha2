@@ -120,7 +120,7 @@ scripts/run_nvidia_gates.sh /workspace/alpha2/runs/nvidia-gate-<commit>
 
 Do not use a bare successful Vitest exit as proof: Vitest exits zero when all GPU cases skip. The wrapper
 first requires Vulkan vendor `0x10de`, runs exactly `parity-helios.test.ts` + `gpu-perf.test.ts`, writes
-the JSON reporter output, and accepts only 46 unique assertion rows with 46 passed / 0 skipped / 0 failed.
+the JSON reporter output, and accepts only 50 unique assertion rows with 50 passed / 0 skipped / 0 failed.
 `gate-summary.json` binds the full git SHA, device record, exact filenames/counts, and report SHA-256.
 
 ## Get checkpoints OFF the pod continuously (community pods are disposable)
