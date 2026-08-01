@@ -11,6 +11,7 @@ interface Evidence {
   readonly path: string;
   readonly bytes: number;
   readonly sha256: string;
+  readonly rows?: number;
 }
 
 function parseArgs(argv: readonly string[]): Map<string, string> {
@@ -34,6 +35,14 @@ async function evidence(path: string): Promise<Evidence> {
   const resolved = resolve(path);
   const bytes = await readFile(resolved);
   return { path: resolved, bytes: bytes.byteLength, sha256: sha256(bytes) };
+}
+
+async function jsonlEvidence(path: string): Promise<Evidence> {
+  const result = await evidence(path);
+  const text = await readFile(result.path, "utf8");
+  const rows = text.split("\n").filter((line) => line.trim().length > 0).length;
+  if (rows === 0) throw new Error(`empty JSONL input: ${result.path}`);
+  return { ...result, rows };
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -81,10 +90,10 @@ async function main(): Promise<void> {
     throw new Error("sealed-final hash changed");
 
   const visible = {
-    selector: await evidence(required("selector")),
-    panel: await evidence(required("panel")),
-    regression: await evidence(required("regression")),
-    releaseProbes: await evidence(required("release-probes")),
+    selector: await jsonlEvidence(required("selector")),
+    panel: await jsonlEvidence(required("panel")),
+    regression: await jsonlEvidence(required("regression")),
+    releaseProbes: await jsonlEvidence(required("release-probes")),
   };
   const manifest = {
     schema: "alpha-chat-semantic-repair-v4-evaluation-freeze-v1",
