@@ -6378,9 +6378,17 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256, unlikelihood = fa
   const result = b.id();
   b.emit(Op.Select, [p.tF32, result, maskIsNonZero, maskedResult, constZero]);
 
+  // A zero upstream gradient can also produce -0 for an active row. Preserve
+  // NaNs, but canonicalize either sign of an exact-zero result to +0 so the
+  // primitive's exact-zero contract is backend-independent.
+  const resultIsZero = b.id();
+  b.emit(Op.FOrdEqual, [p.tBool, resultIsZero, result, constZero]);
+  const canonicalResult = b.id();
+  b.emit(Op.Select, [p.tF32, canonicalResult, resultIsZero, constZero, result]);
+
   const ptrOut = b.id();
   b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);
-  b.emit(Op.Store, [ptrOut, result]);
+  b.emit(Op.Store, [ptrOut, canonicalResult]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);

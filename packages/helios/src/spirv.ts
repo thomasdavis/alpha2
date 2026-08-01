@@ -79,6 +79,7 @@ export const Op = {
   SLessThan:            177,
   UGreaterThanEqual:    174,
   SGreaterThanEqual:    175,
+  FOrdEqual:            180,
   FOrdNotEqual:         182,
   FOrdLessThan:         184,
   FOrdGreaterThan:      186,
