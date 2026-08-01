@@ -20,6 +20,8 @@ export async function writeBundleMetadata(
   if (!/^[0-9a-f]{40}$/.test(identity.modelRevision)) throw new Error("modelRevision must be an immutable 40-character Hugging Face commit SHA");
   if (!/^[0-9a-f]{40}$/.test(identity.sourceRevision)) throw new Error("sourceRevision must be an immutable 40-character git commit SHA");
   const report = JSON.parse(await readFile(join(output, "fit-report.json"), "utf8")) as {
+    estimator_kind: "same_position" | "future_integrated";
+    estimator: string;
     corpus: { valid_prompt_count: number; maximum_sequence_length: number; published_artifact?: string | null };
     fitting: { exported_dtype: string; source_sites: string[]; skip_first_positions: number; target_position_policy: string };
   };
@@ -43,6 +45,27 @@ export async function writeBundleMetadata(
       tokenizer_fingerprint: description.tokenizerFingerprint,
       chat_template_fingerprint: description.chatTemplateFingerprint,
       hf_files: identity.hfFiles,
+    },
+    tokenizer: {
+      kind: adapter.tokenizerArtifacts.byteVocab === true
+        ? "native-byte-level-bpe"
+        : adapter.tokenizerArtifacts.type,
+      vocabulary_size: description.vocabularySize,
+      byte_vocab: adapter.tokenizerArtifacts.byteVocab === true,
+      token_text_policy: "Exact native vocabulary spelling in text; authoritative raw bytes in bytes_base64 for byte-BPE tokens.",
+      special_tokens: description.specialTokens,
+      fingerprint: description.tokenizerFingerprint,
+    },
+    chat: {
+      template_fingerprint: description.chatTemplateFingerprint,
+      supported_roles: ["system", "user", "assistant"],
+      system_message_policy: "At most one leading system message; folded verbatim into the first user turn as [Instructions: ...].",
+      beginning_of_sequence: "No BOS token is inserted.",
+      end_of_turn_tokens: [],
+      conversation_end_token: "<|end_of_text|>",
+      generation_prompt: "Append the atomic <|assistant|> token after the final user turn.",
+      thinking_mode: false,
+      assistant_prefill_supported: false,
     },
     execution: runtime ? {
       mode: "remote_http",
@@ -90,6 +113,7 @@ export async function writeBundleMetadata(
           representation: "dense",
           tensor_key: `transport.${index.toString().padStart(4, "0")}`,
           shape: [description.targetSite.width, site.width],
+          source_mean_key: `mean.source.${index.toString().padStart(4, "0")}`,
         },
         parent_stage: site.parentStage,
         component: site.component,
@@ -97,7 +121,12 @@ export async function writeBundleMetadata(
     }),
     lens: {
       method: "average-input-output-jacobian",
-      estimator: "Dimension-batched native causal VJP; valid target cotangents are summed over positions and source gradients are averaged over valid source positions and prompts.",
+      estimator: report.estimator,
+      estimator_kind: report.estimator_kind,
+      centering: {
+        mode: "affine",
+        target_mean_key: "mean.target",
+      },
       artifact: "transports.safetensors",
       dtype: report.fitting.exported_dtype === "F16" ? "float16" : "float32",
       n_prompts: report.corpus.valid_prompt_count,
@@ -142,7 +171,9 @@ This is a **blah-jacobian-lens v1** artifact consumed by [evals.blah.dev](https:
 
 Alpha is a custom TypeScript tensor/autograd model with a native Helios Vulkan backend. The adapter does not replace that implementation. It captures one token-aligned post-residual representation after each complete decoder block. The target is the final post-block representation immediately before the exact final RMSNorm and tied token-embedding projection. Every published site has the target width and basis, so ordinary Logit Lens decoding is valid.
 
-The bundle stores ${manifest.sites.length} dense matrices as \`J[output_dimension, input_dimension]\`. Application uses \`h @ transpose(J)\`, then Alpha's exact final decoding path. No low-rank approximation is used.
+The bundle stores ${manifest.sites.length} dense matrices as \`J[output_dimension, input_dimension]\`, plus a source mean for every site and one target mean. Application is affine: \`target_mean + (h - source_mean) @ transpose(J)\`, followed by Alpha's exact final decoding path. No low-rank approximation is used.
+
+This is a readout instrument, not a sparse autoencoder: it contains no learned sparse dictionary, sparsity objective, dead-feature handling, or feature interpretation. It also does not establish global-workspace, broadcast, ignition, persistence, or causal-necessity claims. Those require separate interventions and controls.
 
 ## Fit
 
@@ -155,21 +186,25 @@ The bundle stores ${manifest.sites.length} dense matrices as \`J[output_dimensio
 - Fitting dtype: float32; artifact dtype: ${manifest.lens.dtype}
 - Hugging Face model.safetensors SHA-256: ${identity.hfFiles["model.safetensors"]}
 - Estimator: ${manifest.lens.estimator}
+- Estimator kind: ${manifest.lens.estimator_kind}
+- Centering: affine source/target activation means
 
 See \`fit-report.json\` and \`validation.json\` for convergence, parity, and finite-difference measurements.
+
+The published same-position matrix is estimated with one deterministic Rademacher position probe per fitting prompt and output dimension. This gives an unbiased estimate of the mean diagonal position Jacobian while keeping the native fit tractable; it is not an exhaustive enumeration of every position's full Jacobian.
 
 ## Runtime
 
 Execution mode: \`${manifest.execution.mode}\`. ${manifest.execution.public_runtime_url ? `The public \`blah-lens-http/1\` runtime is ${manifest.execution.public_runtime_url}.` : "Live analysis is unavailable until the native runtime is deployed; precomputed fixtures remain inspectable."}
 
-The runtime uses the exact native tokenizer and chat template, preserves exact token IDs and unprettified vocabulary items (including byte-surrogate spelling), checks the checkpoint fingerprint before loading transports, and returns top-k readouts rather than full vocabulary logits. Full completion text is decoded only after the complete token sequence is assembled.
+The runtime uses the exact native tokenizer and chat template, preserves exact token IDs and unprettified vocabulary items, and includes authoritative \`bytes_base64\` for every byte-BPE token. That byte side channel preserves identity even when an isolated vocabulary item is not valid UTF-8; the visible GPT-2 surrogate spelling remains display-only. The runtime checks the checkpoint fingerprint before loading transports and returns top-k readouts rather than full vocabulary logits. Full completion text is decoded only after the complete token sequence is assembled.
 
 ## Reproduce
 
 From the Alpha source revision recorded in \`fit-report.json\`:
 
 \`\`\`bash
-alpha lens fit --checkpoint=<native-checkpoint> --prompts=${report.corpus.published_artifact ?? "<representative-jsonl>"} --samples=${report.corpus.prompt_count} --max-seq-len=${report.corpus.maximum_sequence_length} --skip-first=${manifest.lens.skip_first_positions} --dim-batch=${report.fitting.vjp_batch_size} --dtype=${manifest.lens.dtype} --checkpoint-every=5 --output=dist/blah-lens
+alpha lens fit --checkpoint=<native-checkpoint> --prompts=${report.corpus.published_artifact ?? "<representative-jsonl>"} --samples=${report.corpus.prompt_count} --max-seq-len=${report.corpus.maximum_sequence_length} --skip-first=${manifest.lens.skip_first_positions} --dim-batch=${report.fitting.vjp_batch_size} --estimator-kind=${manifest.lens.estimator_kind} --dtype=${manifest.lens.dtype} --checkpoint-every=5 --output=dist/blah-lens
 \`\`\`
 
 The model and this artifact use the ${identity.license} license. Fitting prompt provenance and visibility are recorded in \`fit-report.json\`. ${report.corpus.published_artifact ? `The license-safe synthetic fitting prompts are included as \`${report.corpus.published_artifact}\` for exact reproduction.` : "Private or proprietary fitting text is not included."}
@@ -190,7 +225,7 @@ function buildCapabilityReport(remote: boolean): string {
 | Token-position mapping | supported | One captured position per tokenizer position. |
 | Logit Lens | supported | All sites share the final target width/basis and use exact final decoding. |
 | Jacobian Lens fitting | supported | Dimension-batched native VJPs with resumable prompt-level accumulation. |
-| Jacobian Lens application | supported | Dense row-convention transports and exact final decoding. |
+| Jacobian Lens application | supported | Affine-centred dense row-convention transports and exact final decoding. |
 | Dense export | supported | Safetensors only. |
 | Low-rank export | unsupported | Dense storage is small; no approximation is justified. |
 | Remote HTTP serving | ${runtime} | Implements blah-lens-http/1. |

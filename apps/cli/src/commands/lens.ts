@@ -70,6 +70,8 @@ async function fit(kv: Record<string, string>): Promise<void> {
     maxSeqLen: intArg(kv, "max-seq-len", 128),
     skipFirst: intArg(kv, "skip-first", 16),
     dimBatch: intArg(kv, "dim-batch", 8),
+    estimatorKind: strArg(kv, "estimator-kind", "same_position") as LensFitOptions["estimatorKind"],
+    positionProbeSeed: intArg(kv, "position-probe-seed", 42),
     sourceSites: commaList(kv["source-sites"]),
     targetSite: strArg(kv, "target-site", "decoder.final.post") as "decoder.final.post",
     dtype: strArg(kv, "dtype", "float32") as "float32" | "float16",

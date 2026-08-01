@@ -1,7 +1,17 @@
 export { AlphaLensAdapter, type LoadAdapterOptions } from "./adapter.js";
 export { formatAlphaChat } from "./chat.js";
 export { fingerprintWeights, sha256Bytes, sha256File, stableJson } from "./fingerprint.js";
-export { fitJacobianLens, type LensFitOptions, type LensFitResult } from "./fit.js";
+export {
+  fitJacobianLens,
+  type LensFitOptions,
+  type LensFitResult,
+} from "./fit.js";
+export {
+  accumulateSamePositionRows,
+  buildSamePositionCotangent,
+  evaluateSamePositionEstimatorOracle,
+  samePositionSign,
+} from "./estimator.js";
 export { writeBundleMetadata, type BundleIdentity } from "./bundle.js";
 export { loadLensPrompts, type LoadedPrompts } from "./prompts.js";
 export { applyDenseTransport, greedyToken, rankLogitRow, siteReadout, tensorReadout, type RankedToken } from "./readout.js";

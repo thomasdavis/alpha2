@@ -12,10 +12,13 @@ interface RuntimeManifest {
   readonly format: "blah-jacobian-lens";
   readonly format_version: 1;
   readonly model: { readonly repo_id: string; readonly revision: string; readonly weights_fingerprint: string; readonly tokenizer_fingerprint: string };
+  readonly lens: {
+    readonly centering?: { readonly mode: "none" | "affine"; readonly target_mean_key?: string };
+  };
   readonly sites: readonly {
     readonly id: string;
     readonly logit_lens_supported: boolean;
-    readonly transport: { readonly representation: "dense"; readonly tensor_key: string };
+    readonly transport: { readonly representation: "dense"; readonly tensor_key: string; readonly source_mean_key?: string };
   }[];
 }
 
@@ -44,11 +47,21 @@ export class AlphaLensRuntime {
   readonly adapter: AlphaLensAdapter;
   readonly manifest: RuntimeManifest;
   readonly transports: ReadonlyMap<string, SafeTensorValue>;
+  readonly sourceMeans: ReadonlyMap<string, SafeTensorValue>;
+  readonly targetMean?: SafeTensorValue;
 
-  private constructor(adapter: AlphaLensAdapter, manifest: RuntimeManifest, transports: ReadonlyMap<string, SafeTensorValue>) {
+  private constructor(
+    adapter: AlphaLensAdapter,
+    manifest: RuntimeManifest,
+    transports: ReadonlyMap<string, SafeTensorValue>,
+    sourceMeans: ReadonlyMap<string, SafeTensorValue>,
+    targetMean?: SafeTensorValue,
+  ) {
     this.adapter = adapter;
     this.manifest = manifest;
     this.transports = transports;
+    this.sourceMeans = sourceMeans;
+    this.targetMean = targetMean;
   }
 
   static async load(options: LensRuntimeOptions): Promise<AlphaLensRuntime> {
@@ -63,13 +76,24 @@ export class AlphaLensRuntime {
     }
     const stored = await readLensSafetensors(join(options.bundle, "transports.safetensors"));
     const transports = new Map<string, SafeTensorValue>();
+    const sourceMeans = new Map<string, SafeTensorValue>();
+    const affine = manifest.lens.centering?.mode === "affine";
+    const targetMean = affine
+      ? requiredStoredTensor(stored.tensors, manifest.lens.centering?.target_mean_key, "target mean")
+      : undefined;
     for (const site of manifest.sites) {
       if (site.transport.representation !== "dense") throw new Error(`runtime does not support non-dense site ${site.id}`);
       const tensor = stored.tensors.get(site.transport.tensor_key);
       if (!tensor) throw new Error(`transport ${site.transport.tensor_key} for ${site.id} is missing`);
       transports.set(site.id, tensor);
+      if (affine) {
+        sourceMeans.set(
+          site.id,
+          requiredStoredTensor(stored.tensors, site.transport.source_mean_key, `source mean for ${site.id}`),
+        );
+      }
     }
-    return new AlphaLensRuntime(adapter, manifest, transports);
+    return new AlphaLensRuntime(adapter, manifest, transports, sourceMeans, targetMean);
   }
 
   createServer(): Server {
@@ -146,7 +170,10 @@ export class AlphaLensRuntime {
     });
     emit({
       kind: "prompt",
-      tokens: Array.from(promptIds, (id, position) => ({ position, id, text: this.adapter.tokenString(id) })),
+      tokens: Array.from(promptIds, (id, position) => ({
+        position,
+        ...this.adapter.tokenDescriptor(id),
+      })),
     });
 
     const promptResults = this.calculateReadouts(
@@ -162,8 +189,7 @@ export class AlphaLensRuntime {
     for (let position = 0; position < promptLength; position++) emit({
       kind: "token",
       position,
-      id: allIds[position],
-      text: this.adapter.tokenString(allIds[position]),
+      ...this.adapter.tokenDescriptor(allIds[position]),
       generated: false,
       results: promptResults[position],
     });
@@ -188,8 +214,7 @@ export class AlphaLensRuntime {
       emit({
         kind: "token",
         position,
-        id: next,
-        text: this.adapter.tokenString(next),
+        ...this.adapter.tokenDescriptor(next),
         generated: true,
         results: stepResults[0],
       });
@@ -224,7 +249,11 @@ export class AlphaLensRuntime {
       const site = declared.get(siteId)!;
       for (const mode of modes) {
         if (mode === "logit" && !site.logit_lens_supported) continue;
-        const logits = tensorReadout(this.adapter, tensor, mode === "jacobian" ? this.transports.get(siteId) : undefined);
+        const transport = mode === "jacobian" ? this.transports.get(siteId) : undefined;
+        const centering = transport && this.targetMean
+          ? { sourceMean: this.sourceMeans.get(siteId)!, targetMean: this.targetMean }
+          : undefined;
+        const logits = tensorReadout(this.adapter, tensor, transport, centering);
         for (let position = 0; position < time; position++) {
           const ranked = rankLogitRow(logits.data, position * vocab, vocab, this.adapter, topK, pinned, filterNonWordTokens);
           results[position].push({
@@ -255,6 +284,17 @@ export async function serveLensRuntime(options: LensRuntimeOptions): Promise<Ser
 function boundedInt(value: number, min: number, max: number, label: string): number {
   if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${label} must be an integer from ${min} to ${max}`);
   return value;
+}
+
+function requiredStoredTensor(
+  tensors: ReadonlyMap<string, SafeTensorValue>,
+  key: string | undefined,
+  label: string,
+): SafeTensorValue {
+  if (!key) throw new Error(`manifest does not declare ${label} tensor key`);
+  const tensor = tensors.get(key);
+  if (!tensor) throw new Error(`${label} tensor ${key} is missing`);
+  return tensor;
 }
 
 function classifyError(error: unknown): string {

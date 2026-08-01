@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import { Effect } from "effect";
 import type { TensorData } from "@alpha/core";
 import { createSession, decodeStep, prefill } from "@alpha/inference";
-import { buildChatTemplate } from "@alpha/tokenizers";
+import { buildChatTemplate, bytesToUnicode } from "@alpha/tokenizers";
 import { exportHfModel, FileCheckpoint, releaseCheckpointSnapshotBuffers } from "@alpha/train";
 import { AlphaLensAdapter } from "./adapter.js";
+import { evaluateSamePositionEstimatorOracle } from "./estimator.js";
 import { loadLensPrompts } from "./prompts.js";
 import { applyDenseTransport, greedyToken, rankLogitRow } from "./readout.js";
 import { sha256File } from "./fingerprint.js";
@@ -43,7 +44,9 @@ export async function validateLens(options: LensValidationOptions): Promise<Reco
   add(determinismTest(adapter));
   add(inferenceCaptureParityTest(adapter));
   add(vjpFiniteDifferenceTest(adapter));
+  add(samePositionEstimatorTest());
   add(matrixOrientationTest());
+  add(affineCenteringTest());
   add(finalSiteIdentityTest(adapter));
   add(await transportShapeTest(options.bundle, manifest));
   const dtype = await dtypeParityTest(options.bundle, manifest, adapter);
@@ -59,9 +62,11 @@ export async function validateLens(options: LensValidationOptions): Promise<Reco
     "tokenizer parity",
     "final logit parity",
     "matrix orientation",
+    "affine centering application",
     "transport shape validation",
     "golden fixture reproduction",
     "VJP finite-difference check",
+    "same-position estimator synthetic oracle",
   ]);
   const requiredFailure = failed.some((test) => required.has(test.name));
   const status = requiredFailure || failed.length > 0 ? "fail" : "pass";
@@ -82,6 +87,7 @@ export async function validateLens(options: LensValidationOptions): Promise<Reco
     tests,
     known_limitations: [
       "No low-rank artifacts are exported because dense transports are compact for this architecture.",
+      "The same-position transport uses one deterministic Rademacher position probe per fitting prompt and output dimension; it is an unbiased diagonal-Jacobian estimator, not an exhaustive per-position Jacobian enumeration.",
     ],
     created_at: new Date().toISOString(),
   };
@@ -259,9 +265,37 @@ async function tokenizerTest(adapter: AlphaLensAdapter, manifest: any): Promise<
   } catch (error) { hfError = error instanceof Error ? error.message : String(error); }
   const fingerprintMatch = manifest.model.tokenizer_fingerprint === adapter.description.tokenizerFingerprint
     && manifest.model.chat_template_fingerprint === adapter.description.chatTemplateFingerprint;
+  const byteMap = bytesToUnicode().byteToChar;
+  const specials = new Set(adapter.description.specialTokens);
+  let byteTokensChecked = 0;
+  let byteIdentityExact = true;
+  let byteIdentityError: string | null = null;
+  try {
+    for (let id = 0; id < adapter.tokenizerArtifacts.vocab.length; id++) {
+      const token = adapter.tokenizerArtifacts.vocab[id];
+      const bytesBase64 = adapter.tokenBytesBase64(id);
+      if (specials.has(token)) {
+        if (bytesBase64 !== undefined) throw new Error(`special token ${id} unexpectedly has byte payload`);
+        continue;
+      }
+      if (bytesBase64 === undefined) throw new Error(`byte token ${id} has no byte payload`);
+      const reconstructed = Array.from(Buffer.from(bytesBase64, "base64"), (byte) => byteMap[byte]).join("");
+      if (reconstructed !== token) throw new Error(`byte token ${id} did not reconstruct exactly`);
+      byteTokensChecked++;
+    }
+  } catch (error) {
+    byteIdentityExact = false;
+    byteIdentityError = error instanceof Error ? error.message : String(error);
+  }
   return {
     name: "tokenizer parity",
-    status: roundTrips.every((probe) => probe.exact) && fingerprintMatch && hfVocabMatch && hfTemplateMatch ? "pass" : "fail",
+    status: roundTrips.every((probe) => probe.exact)
+      && fingerprintMatch
+      && hfVocabMatch
+      && hfTemplateMatch
+      && byteIdentityExact
+      ? "pass"
+      : "fail",
     measurements: {
       round_trips: roundTrips,
       special_tokens: adapter.description.specialTokens,
@@ -270,6 +304,9 @@ async function tokenizerTest(adapter: AlphaLensAdapter, manifest: any): Promise<
       tokenizer_fingerprint_match: fingerprintMatch,
       hf_vocab_exact_match: hfVocabMatch,
       hf_chat_template_exact_match: hfTemplateMatch,
+      byte_vocab_raw_identity_exact: byteIdentityExact,
+      byte_vocab_tokens_checked: byteTokensChecked,
+      byte_vocab_identity_error: byteIdentityError,
       hf_error: hfError,
     },
   };
@@ -412,6 +449,44 @@ function matrixOrientationTest(): TestResult {
   };
 }
 
+function samePositionEstimatorTest(): TestResult {
+  const oracle = evaluateSamePositionEstimatorOracle();
+  return {
+    name: "same-position estimator synthetic oracle",
+    status: oracle.maximumAbsoluteError < 0.015 ? "pass" : "fail",
+    tolerance: { maximum_absolute_error: 0.015 },
+    measurements: {
+      synthetic_jacobian: "intentionally causal and position-coupled; diagonal target/source blocks are the oracle",
+      probes: oracle.probes,
+      expected_mean_diagonal: oracle.expected,
+      observed_estimate: oracle.observed,
+      maximum_absolute_error: oracle.maximumAbsoluteError,
+    },
+  };
+}
+
+function affineCenteringTest(): TestResult {
+  const source = { shape: [1, 1, 2], dtype: "f32" as const, data: new Float32Array([7, 11]) };
+  const matrix = { shape: [2, 2], data: new Float32Array([1, 2, 3, 5]) };
+  const sourceMean = { shape: [2], data: new Float32Array([2, 3]) };
+  const targetMean = { shape: [2], data: new Float32Array([13, 17]) };
+  const result = applyDenseTransport(source, matrix, { sourceMean, targetMean });
+  const expected = [34, 72];
+  const exact = result.data[0] === expected[0] && result.data[1] === expected[1];
+  return {
+    name: "affine centering application",
+    status: exact ? "pass" : "fail",
+    measurements: {
+      formula: "target_mean + (source - source_mean) @ transpose(J)",
+      source: [...source.data],
+      source_mean: [...sourceMean.data],
+      target_mean: [...targetMean.data],
+      observed: [...result.data],
+      expected,
+    },
+  };
+}
+
 function finalSiteIdentityTest(adapter: AlphaLensAdapter): TestResult {
   const ids = adapter.encode("The last site is the target site.").slice(0, adapter.description.blockSize);
   const finalSite = adapter.description.sites.at(-1)!.id;
@@ -434,16 +509,35 @@ function finalSiteIdentityTest(adapter: AlphaLensAdapter): TestResult {
 async function transportShapeTest(bundle: string, manifest: any): Promise<TestResult> {
   const stored = await readLensSafetensors(join(bundle, "transports.safetensors"));
   const problems: string[] = [];
+  const affine = manifest.lens.centering?.mode === "affine";
+  const targetMean = affine
+    ? stored.tensors.get(manifest.lens.centering.target_mean_key)
+    : undefined;
+  if (affine && (!targetMean || targetMean.shape.length !== 1 || targetMean.shape[0] !== manifest.target_site.width)) {
+    problems.push(`target mean: [${targetMean?.shape ?? "missing"}] != [${manifest.target_site.width}]`);
+  }
   for (const site of manifest.sites) {
     const tensor = stored.tensors.get(site.transport.tensor_key);
     const expected = site.transport.shape as number[];
     if (!tensor) problems.push(`${site.id}: missing ${site.transport.tensor_key}`);
     else if (tensor.shape.length !== expected.length || tensor.shape.some((value, index) => value !== expected[index])) problems.push(`${site.id}: [${tensor.shape}] != [${expected}]`);
+    if (affine) {
+      const sourceMean = stored.tensors.get(site.transport.source_mean_key);
+      if (!sourceMean || sourceMean.shape.length !== 1 || sourceMean.shape[0] !== site.width) {
+        problems.push(`${site.id}: source mean [${sourceMean?.shape ?? "missing"}] != [${site.width}]`);
+      }
+    }
   }
   return {
     name: "transport shape validation",
     status: problems.length === 0 ? "pass" : "fail",
-    measurements: { site_count: manifest.sites.length, tensor_count: stored.tensors.size, orientation: "[target_width,source_width]", problems },
+    measurements: {
+      site_count: manifest.sites.length,
+      tensor_count: stored.tensors.size,
+      orientation: "[target_width,source_width]",
+      centering: manifest.lens.centering,
+      problems,
+    },
   };
 }
 
@@ -451,6 +545,12 @@ async function dtypeParityTest(bundle: string, manifest: any, adapter: AlphaLens
   const exported = await readLensSafetensors(join(bundle, "transports.safetensors"));
   const fitState = await readLensSafetensors(join(bundle, "fit-state.safetensors"));
   const state = JSON.parse(await readFile(join(bundle, "fit-state.json"), "utf8"));
+  const fullTargetMeanSum = fitState.tensors.get("mean.all.target")!;
+  const fullTargetMean = {
+    shape: fullTargetMeanSum.shape,
+    data: Float32Array.from(fullTargetMeanSum.data, (value) => value / state.valid_positions),
+  };
+  const exportedTargetMean = exported.tensors.get(manifest.lens.centering.target_mean_key)!;
   const ids = adapter.encode("A short held-out sentence tests exported matrix precision.").slice(0, adapter.description.blockSize);
   const capture = adapter.forwardCapture(ids, manifest.sites.map((site: any) => site.id));
   let worstMatrixRelativeError = 0;
@@ -459,15 +559,39 @@ async function dtypeParityTest(bundle: string, manifest: any, adapter: AlphaLens
   let top5Overlap = 0;
   let comparisons = 0;
   let worstSite = "";
+  let worstMeanRelativeError = relativeError(fullTargetMean.data, exportedTargetMean.data);
   for (const [index, site] of manifest.sites.entries()) {
     const sum = fitState.tensors.get(`all.${site.id}`)!;
     const full = { shape: sum.shape, data: Float32Array.from(sum.data, (value) => value / state.valid_prompts) };
     const reduced = exported.tensors.get(site.transport.tensor_key)!;
+    const fullSourceMeanSum = fitState.tensors.get(`mean.all.source.${site.id}`)!;
+    const fullSourceMean = {
+      shape: fullSourceMeanSum.shape,
+      data: Float32Array.from(
+        fullSourceMeanSum.data,
+        (value) => value / state.valid_positions,
+      ),
+    };
+    const exportedSourceMean = exported.tensors.get(site.transport.source_mean_key)!;
+    worstMeanRelativeError = Math.max(
+      worstMeanRelativeError,
+      relativeError(fullSourceMean.data, exportedSourceMean.data),
+    );
     const relative = relativeError(full.data, reduced.data);
     if (relative > worstMatrixRelativeError) { worstMatrixRelativeError = relative; worstSite = site.id; }
     const source = finalPosition(adapter.copyTensor(capture.sites.get(site.id)!.data));
-    const f32Logits = adapter.exactFinalDecode(applyDenseTransport(source, full));
-    const exportedLogits = adapter.exactFinalDecode(applyDenseTransport(source, reduced));
+    const f32Logits = adapter.exactFinalDecode(
+      applyDenseTransport(source, full, {
+        sourceMean: fullSourceMean,
+        targetMean: fullTargetMean,
+      }),
+    );
+    const exportedLogits = adapter.exactFinalDecode(
+      applyDenseTransport(source, reduced, {
+        sourceMean: exportedSourceMean,
+        targetMean: exportedTargetMean,
+      }),
+    );
     const metrics = compareSingleRow(f32Logits.data, exportedLogits.data);
     worstLogitError = Math.max(worstLogitError, metrics.maxAbs);
     top1Same += metrics.top1Same ? 1 : 0;
@@ -479,6 +603,7 @@ async function dtypeParityTest(bundle: string, manifest: any, adapter: AlphaLens
     float32_reference: "fit-state sums divided by valid prompt count",
     exported_dtype: manifest.lens.dtype,
     relative_matrix_error: worstMatrixRelativeError,
+    relative_activation_mean_error: worstMeanRelativeError,
     heldout_top1_agreement: top1Same / comparisons,
     heldout_top5_overlap: top5Overlap / comparisons,
     maximum_logit_error: worstLogitError,
@@ -523,6 +648,22 @@ async function splitHalfTest(options: LensValidationOptions, manifest: any, adap
   if (!text) throw new Error("held-out prompt index is outside the supplied prompt corpus");
   const ids = adapter.encode(text).slice(0, manifest.lens.max_seq_len);
   const capture = adapter.forwardCapture(ids, manifest.sites.map((site: any) => site.id));
+  const evenTargetMeanSum = stored.tensors.get("mean.even.target")!;
+  const oddTargetMeanSum = stored.tensors.get("mean.odd.target")!;
+  const evenTargetMean = {
+    shape: evenTargetMeanSum.shape,
+    data: Float32Array.from(
+      evenTargetMeanSum.data,
+      (value) => value / state.valid_even_positions,
+    ),
+  };
+  const oddTargetMean = {
+    shape: oddTargetMeanSum.shape,
+    data: Float32Array.from(
+      oddTargetMeanSum.data,
+      (value) => value / state.valid_odd_positions,
+    ),
+  };
   let top1 = 0, top5 = 0, rankCorrelation = 0;
   const perSite: Record<string, unknown> = {};
   for (const site of manifest.sites) {
@@ -530,9 +671,35 @@ async function splitHalfTest(options: LensValidationOptions, manifest: any, adap
     const oddSum = stored.tensors.get(`odd.${site.id}`)!;
     const even = { shape: evenSum.shape, data: Float32Array.from(evenSum.data, (value) => value / state.valid_even_prompts) };
     const odd = { shape: oddSum.shape, data: Float32Array.from(oddSum.data, (value) => value / state.valid_odd_prompts) };
+    const evenSourceMeanSum = stored.tensors.get(`mean.even.source.${site.id}`)!;
+    const oddSourceMeanSum = stored.tensors.get(`mean.odd.source.${site.id}`)!;
+    const evenSourceMean = {
+      shape: evenSourceMeanSum.shape,
+      data: Float32Array.from(
+        evenSourceMeanSum.data,
+        (value) => value / state.valid_even_positions,
+      ),
+    };
+    const oddSourceMean = {
+      shape: oddSourceMeanSum.shape,
+      data: Float32Array.from(
+        oddSourceMeanSum.data,
+        (value) => value / state.valid_odd_positions,
+      ),
+    };
     const source = finalPosition(adapter.copyTensor(capture.sites.get(site.id)!.data));
-    const evenLogits = adapter.exactFinalDecode(applyDenseTransport(source, even)).data;
-    const oddLogits = adapter.exactFinalDecode(applyDenseTransport(source, odd)).data;
+    const evenLogits = adapter.exactFinalDecode(
+      applyDenseTransport(source, even, {
+        sourceMean: evenSourceMean,
+        targetMean: evenTargetMean,
+      }),
+    ).data;
+    const oddLogits = adapter.exactFinalDecode(
+      applyDenseTransport(source, odd, {
+        sourceMean: oddSourceMean,
+        targetMean: oddTargetMean,
+      }),
+    ).data;
     const readout = compareSingleRow(evenLogits, oddLogits);
     const corr = spearman(evenLogits, oddLogits);
     top1 += readout.top1Same ? 1 : 0;
@@ -571,13 +738,19 @@ async function writeGoldenFixture(bundle: string, manifest: any, adapter: AlphaL
   const selected = [manifest.sites[0], manifest.sites[Math.floor(manifest.sites.length / 2)], manifest.sites.at(-1)];
   const capture = adapter.forwardCapture(formatted.tokenIds, selected.map((site: any) => site.id));
   const stored = await readLensSafetensors(join(bundle, "transports.safetensors"));
+  const targetMean = stored.tensors.get(manifest.lens.centering.target_mean_key)!;
   const tensors = new Map<string, SafeTensorValue>();
   const results: Record<string, unknown> = {};
   for (const site of selected) {
     const source = adapter.copyTensor(capture.sites.get(site.id)!.data);
     tensors.set(`activation.${site.id}`, { shape: source.shape, data: source.data });
     const direct = adapter.exactFinalDecode(source);
-    const jacobian = adapter.exactFinalDecode(applyDenseTransport(source, stored.tensors.get(site.transport.tensor_key)!));
+    const jacobian = adapter.exactFinalDecode(
+      applyDenseTransport(source, stored.tensors.get(site.transport.tensor_key)!, {
+        sourceMean: stored.tensors.get(site.transport.source_mean_key)!,
+        targetMean,
+      }),
+    );
     results[site.id] = Array.from({ length: formatted.tokenIds.length }, (_, position) => ({
       position,
       logit: rankLogitRow(direct.data, position * adapter.description.vocabularySize, adapter.description.vocabularySize, adapter, 5, null, false).top,
@@ -608,6 +781,7 @@ async function writeGoldenFixture(bundle: string, manifest: any, adapter: AlphaL
     formatted_text: formatted.text,
     token_ids: [...formatted.tokenIds],
     token_strings: adapter.tokenStrings(formatted.tokenIds),
+    tokens: Array.from(formatted.tokenIds, (id) => adapter.tokenDescriptor(id)),
     model_revision: manifest.model.revision,
     weights_fingerprint: adapter.description.weightsFingerprint,
     tokenizer_fingerprint: adapter.description.tokenizerFingerprint,

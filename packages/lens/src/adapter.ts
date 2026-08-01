@@ -12,7 +12,7 @@ import {
   initGPT,
   type GPTParams,
 } from "@alpha/model";
-import { buildChatTemplate, tokenizerFromArtifacts } from "@alpha/tokenizers";
+import { buildChatTemplate, bytesToUnicode, tokenizerFromArtifacts } from "@alpha/tokenizers";
 import { FileCheckpoint, releaseCheckpointSnapshotBuffers, restoreParams } from "@alpha/train";
 import { prepareInferenceWeights, type InferenceWeights } from "@alpha/inference";
 import { formatAlphaChat } from "./chat.js";
@@ -43,6 +43,8 @@ export class AlphaLensAdapter {
   readonly description: NativeModelDescription;
   readonly inferenceWeights?: InferenceWeights;
   private readonly releaseTensor?: (tensor: TensorData) => void;
+  private readonly byteCharToByte?: ReadonlyMap<string, number>;
+  private readonly specialTokenIds: ReadonlySet<number>;
 
   private constructor(
     backend: Backend,
@@ -58,6 +60,13 @@ export class AlphaLensAdapter {
     this.tokenizerArtifacts = tokenizerArtifacts;
     this.description = description;
     this.inferenceWeights = inferenceWeights;
+    this.byteCharToByte = tokenizerArtifacts.byteVocab
+      ? bytesToUnicode().charToByte
+      : undefined;
+    const specialStrings = new Set(tokenizerArtifacts.specialTokens ?? []);
+    this.specialTokenIds = new Set(
+      tokenizerArtifacts.vocab.flatMap((token, id) => specialStrings.has(token) ? [id] : []),
+    );
     const candidate = backend as Backend & { releaseGpuTensor?: (tensor: TensorData) => void };
     this.releaseTensor = typeof candidate.releaseGpuTensor === "function"
       ? candidate.releaseGpuTensor.bind(candidate)
@@ -152,6 +161,35 @@ export class AlphaLensAdapter {
 
   tokenStrings(tokenIds: ArrayLike<number>): string[] {
     return Array.from(tokenIds, (id) => this.tokenString(id));
+  }
+
+  /**
+   * Authoritative raw bytes for byte-BPE vocabulary items. The visible token
+   * string is the tokenizer's printable GPT-2 surrogate spelling; it cannot
+   * faithfully represent an isolated non-UTF-8 byte in JSON. Special tokens
+   * are literal UTF-8 strings and therefore need no byte side channel.
+   */
+  tokenBytesBase64(tokenId: number): string | undefined {
+    const token = this.tokenString(tokenId);
+    if (!this.byteCharToByte || this.specialTokenIds.has(tokenId)) return undefined;
+    const bytes: number[] = [];
+    for (const character of token) {
+      const byte = this.byteCharToByte.get(character);
+      if (byte === undefined) {
+        throw new Error(`byte-BPE token ${tokenId} contains a non-byte surrogate character`);
+      }
+      bytes.push(byte);
+    }
+    return Buffer.from(bytes).toString("base64");
+  }
+
+  tokenDescriptor(tokenId: number): { id: number; text: string; bytes_base64?: string } {
+    const bytes = this.tokenBytesBase64(tokenId);
+    return {
+      id: tokenId,
+      text: this.tokenString(tokenId),
+      ...(bytes === undefined ? {} : { bytes_base64: bytes }),
+    };
   }
 
   formatChat(messages: readonly ChatMessage[]): { text: string; tokenIds: Int32Array } {
