@@ -52,6 +52,9 @@ const rcr = require(process.env.RCR_MANIFEST);
 const freeze = require(process.env.FREEZE_MANIFEST);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 assert(freeze.schema === "alpha-chat-repair-v3-freeze-v1", "unexpected v3 freeze schema");
+assert(freeze.contract?.block_size === 512, "freeze must preserve the native 512-token checkpoint context");
+assert(freeze.contract?.generation_reserve === 128, "freeze must preserve the 128-token generation reserve");
+assert(freeze.contract?.maximum_prompt_tokens === 384, "freeze must cap prompts at 384 tokens");
 assert(freeze.outputs?.positive_cohort?.sha256 === process.env.POSITIVE_SHA, "positive cohort differs from freeze");
 assert(freeze.counts?.rollout_selected === 4096, "freeze does not bind 4096 rollout identities");
 assert(freeze.counts?.development_selected === 96, "freeze does not bind the 96-case selector");
@@ -95,7 +98,7 @@ const contract = {
   },
   training: {
     steps: 400,
-    blockSize: 1024,
+    blockSize: 512,
     batchSize: 16,
     gradientAccumulationSteps: 1,
     optimizer: "AdamW reset from identical initial parameters",
@@ -133,7 +136,6 @@ export HELIOS_DISABLE_COOP_MAT=1
 export HELIOS_WG_SIZE=64
 export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512
 export ALPHA_FAIL_ON_SMOKE_TEST=1
-export ALPHA_ALLOW_RESUME_MISMATCH=1
 export ALPHA_SFT_SHUFFLE=1
 export ALPHA_SFT_BALANCE_CONVERSATIONS=1
 export ALPHA_SFT_START_TOKENS=4
@@ -154,7 +156,7 @@ exec nice -n 5 ionice -c2 -n7 node --expose-gc apps/cli/dist/main.js train \
   --tokenizerArtifacts="$tokenizer" \
   --initCheckpoint="$init_checkpoint" \
   --vocabSize=12288 \
-  --block=1024 \
+  --block=512 \
   --layers=16 \
   --dim=512 \
   --heads=8 \

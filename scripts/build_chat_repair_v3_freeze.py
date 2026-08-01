@@ -293,7 +293,10 @@ def main() -> int:
     parser.add_argument("--rollout-count", type=int, default=4096)
     parser.add_argument("--development-count", type=int, default=96)
     parser.add_argument("--panel-count", type=int, default=24)
-    parser.add_argument("--block-size", type=int, default=1024)
+    # The selected native checkpoint was trained and serialized with a 512-token
+    # context. Keep that as the default so a cohort cannot silently authorize a
+    # context migration merely because a later experiment used 1,024 tokens.
+    parser.add_argument("--block-size", type=int, default=512)
     parser.add_argument("--generation-reserve", type=int, default=128)
     args = parser.parse_args()
     if args.rollout_count <= 0 or args.development_count <= 0 or args.panel_count <= 0:
