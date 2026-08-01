@@ -102,6 +102,21 @@ treated as accepted count.
 The initial target is a few thousand accepted conversations, not a giant corpus. Scaling is conditional on a
 measured free-generation gain. This keeps Codex subscription use and GPU spend proportional to evidence.
 
+### Generation attempt 1 rejection and planned-v2 correction
+
+The first production attempt was stopped after 15 of 50 batches. Its rows were structurally valid and usually
+good in isolation, but cross-batch inspection found repeated canonical topics, including several substantially
+similar mirror explanations in corresponding positions. Per-batch uniqueness had prevented exact duplication
+inside one response, not semantic duplication across independent teacher calls. The attempt is preserved under
+the research root and is excluded from training.
+
+Planned-v2 makes semantic allocation an explicit orchestration stage. One `gpt-5.5` call creates a hash-addressed
+50-batch blueprint containing non-overlapping semantic territories, concrete coverage targets, batch-specific
+cliche exclusions, and variation requirements. `gpt-5.4` then realizes each blueprint. This follows the intended
+cost split: stronger reasoning is paid once for global corpus structure; bulk conversation wording uses the
+cheaper teacher. The final corpus still undergoes reviewer, exact-holdout, embedding-overlap, duplicate, tokenizer,
+loss-mask, and human sample audits. A teacher's acceptance decision is evidence, not ground truth.
+
 ## Evaluation and stop decision
 
 The candidate is compared with the public step-1,200 checkpoint at identical decoding settings on:

@@ -4,8 +4,8 @@
   "development_fraction": 0.05,
   "max_tokens": 512,
   "tokenizer": "/mnt/donto-data/alpha-corpora/tokenizers/bpe-byte-12k-20260722.json",
-  "generation_batches": "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/generation/batches",
-  "review_directory": "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/review",
+  "generation_batches": "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/generation/batches",
+  "review_directory": "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/review",
   "replay": {
     "catalog": "/mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/catalog.jsonl",
     "train": "/mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/train.txt",

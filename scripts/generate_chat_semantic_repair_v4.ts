@@ -32,6 +32,15 @@ interface BatchOutput {
   readonly items: readonly Candidate[];
 }
 
+interface BlueprintBatch {
+  readonly batch_id: string;
+  readonly focus: string;
+  readonly semantic_territory: string;
+  readonly coverage_targets: readonly string[];
+  readonly excluded_cliches: readonly string[];
+  readonly variation_notes: readonly string[];
+}
+
 interface Focus {
   readonly slug: string;
   readonly batches: number;
@@ -150,10 +159,44 @@ function plans(
   return all.slice(0, maximumBatches);
 }
 
-function batchPrompt(template: string, plan: BatchPlan): string {
+function batchPrompt(
+  template: string,
+  plan: BatchPlan,
+  blueprint: BlueprintBatch,
+): string {
   const singleIds = plan.candidateIds.slice(0, plan.singleCount);
   const doubleIds = plan.candidateIds.slice(plan.singleCount);
-  return `${template}\n\n## Batch specification\n\nBatch ID: ${plan.batchId}\nCapability focus: ${plan.focus.prompt}\n\nReturn exactly ${plan.candidateIds.length} items in this exact order:\n${plan.candidateIds.join(", ")}\n\nConversation allocation:\n- The following ${singleIds.length} items contain exactly one user/assistant exchange: ${singleIds.join(", ")}\n- The following ${doubleIds.length} items contain exactly two user/assistant exchanges: ${doubleIds.join(", ")}\n\nEvery item must use a different situation and a materially different user intent. Avoid neighboring paraphrases within the batch. ${RESERVED_LIVE_PROBE}\n`;
+  return `${template}\n\n## Batch specification\n\nBatch ID: ${plan.batchId}\nCapability focus: ${plan.focus.prompt}\nSemantic territory: ${blueprint.semantic_territory}\nCoverage targets (distribute the forty items across all of them):\n${blueprint.coverage_targets.map((target) => `- ${target}`).join("\n")}\nExcluded cliches for this batch:\n${blueprint.excluded_cliches.map((item) => `- ${item}`).join("\n")}\nVariation requirements:\n${blueprint.variation_notes.map((item) => `- ${item}`).join("\n")}\n\nReturn exactly ${plan.candidateIds.length} items in this exact order:\n${plan.candidateIds.join(", ")}\n\nConversation allocation:\n- The following ${singleIds.length} items contain exactly one user/assistant exchange: ${singleIds.join(", ")}\n- The following ${doubleIds.length} items contain exactly two user/assistant exchanges: ${doubleIds.join(", ")}\n\nEvery item must use a different situation and a materially different user intent. Avoid neighboring paraphrases within the batch. Stay inside the allocated territory instead of falling back to common textbook examples. ${RESERVED_LIVE_PROBE}\n`;
+}
+
+async function loadBlueprint(
+  path: string,
+  selectedPlans: readonly BatchPlan[],
+): Promise<{ bytes: Buffer; byId: ReadonlyMap<string, BlueprintBatch> }> {
+  const bytes = await readFile(path);
+  const raw = JSON.parse(bytes.toString("utf8")) as unknown;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    throw new Error("malformed semantic blueprint");
+  const batches = (raw as Record<string, unknown>).batches;
+  if (!Array.isArray(batches))
+    throw new Error("semantic blueprint lacks batches");
+  const byId = new Map<string, BlueprintBatch>();
+  for (const value of batches) {
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error("malformed semantic blueprint batch");
+    const batch = value as unknown as BlueprintBatch;
+    if (typeof batch.batch_id !== "string" || byId.has(batch.batch_id))
+      throw new Error(
+        `invalid or duplicate blueprint id ${String(batch.batch_id)}`,
+      );
+    byId.set(batch.batch_id, batch);
+  }
+  for (const plan of selectedPlans) {
+    const batch = byId.get(plan.batchId);
+    if (!batch || batch.focus !== plan.focus.slug)
+      throw new Error(`blueprint missing or mismatched for ${plan.batchId}`);
+  }
+  return { bytes, byId };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -329,6 +372,10 @@ async function main(): Promise<void> {
   const workers = positiveInteger(args.get("workers"), 2, "workers");
   const model = args.get("model") ?? "gpt-5.4";
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
+  const blueprintPath = resolve(
+    args.get("blueprint") ??
+      "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json",
+  );
   const schemaPath = resolve(
     repoRoot,
     "schemas/chat-semantic-repair-candidates.schema.json",
@@ -344,6 +391,7 @@ async function main(): Promise<void> {
       `requested ${maximumBatches} batches but the declared plan contains ${selectedPlans.length}`,
     );
   }
+  const blueprint = await loadBlueprint(blueprintPath, selectedPlans);
 
   const batchRoot = join(outputRoot, "batches");
   await mkdir(batchRoot, { recursive: true });
@@ -391,7 +439,11 @@ async function main(): Promise<void> {
       process.stdout.write(
         `[worker ${workerIndex}] ${plan.batchId}: generating with ${model}\n`,
       );
-      const prompt = batchPrompt(template, plan);
+      const prompt = batchPrompt(
+        template,
+        plan,
+        blueprint.byId.get(plan.batchId)!,
+      );
       await runCodex(
         plan,
         prompt,
@@ -442,6 +494,10 @@ async function main(): Promise<void> {
     output_schema: {
       path: schemaPath,
       sha256: sha256(await readFile(schemaPath)),
+    },
+    blueprint: {
+      path: blueprintPath,
+      sha256: sha256(blueprint.bytes),
     },
     requested_batches: maximumBatches,
     items_per_batch: itemsPerBatch,

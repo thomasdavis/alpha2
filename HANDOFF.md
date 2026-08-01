@@ -62,7 +62,11 @@ The active local preflight is now
 the 34,880-row corrective corpus was 86% SODA role-play and contained only 519 one-exchange conversations, while
 the existing SmolTalk source held 186,043 direct user/assistant pairs that the repair builder excluded by design.
 V4 tests a compact, structurally generated and reviewed `gpt-5.4` semantic-chat curriculum plus limited natural
-multi-turn replay. The structured generation smoke passed, but no v4 GPU run or public model change has occurred.
+multi-turn replay. The structured generation smoke passed. The first production attempt was stopped after 15/50
+batches because an embedding/manual audit exposed cross-batch paraphrase clusters that the per-batch validator
+could not see. Those attempts are preserved and excluded. Planned-v2 now uses one `gpt-5.5` global semantic
+blueprint before `gpt-5.4` realization, then performs stronger-model review, semantic-overlap, tokenizer, mask,
+and human-sample audits. No v4 GPU run or public model change has occurred.
 
 The selected checkpoint's earlier recovery record is
 [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
