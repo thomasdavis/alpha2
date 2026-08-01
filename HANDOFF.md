@@ -76,6 +76,10 @@ The 2026-08-01 local analysis advances that last item without authorizing comput
   gates are complete rollout generation, mask compilation, and real 50/50 NVIDIA proof. Candidate evaluation is
   already bound to I0 plus C0/U1 steps 50/100/200/400; it cannot select while the frozen human panel is pending
   and cannot open either sealed final. Creating a paid pod still requires renewed explicit authorization.
+- The exact disposable-pod sequence is now in
+  [the v3 one-GPU execution runbook](docs/resume/CHAT-REPAIR-V3-GPU-EXECUTION-RUNBOOK.md). It deploys through a
+  Git bundle because v3 requires a clean Git identity, reruns 24-row trajectory parity on the actual CUDA
+  runtime, and uses a selection-ineligible one-step paired probe before either full arm.
 - At `2026-08-01T16:59:59Z`, the live RunPod list contained one unrelated WBV checkpoint-sentinel pod and no
   Alpha pod. It was not touched. Recheck the volatile list and exact ownership before any action.
 

@@ -18,19 +18,20 @@ corrective experiment, and the evidence required before any further paid run.
 
 1. [CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md](CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) — current local implementation, frozen inputs, evaluation contract, and open gates.
 2. [CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md](CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md) — exact finite causal experiment; not execution authorization.
-3. [CHAT-REPAIR-V2-2026-07-31.md](CHAT-REPAIR-V2-2026-07-31.md) — latest completed bounded experiment, rejection, diagnosis, and recovery.
-4. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — selected corrective checkpoint and its failed final gate.
-5. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
-6. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, and authority state.
-7. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
+3. [CHAT-REPAIR-V3-GPU-EXECUTION-RUNBOOK.md](CHAT-REPAIR-V3-GPU-EXECUTION-RUNBOOK.md) — exact disposable one-GPU sequence after explicit authorization.
+4. [CHAT-REPAIR-V2-2026-07-31.md](CHAT-REPAIR-V2-2026-07-31.md) — latest completed bounded experiment, rejection, diagnosis, and recovery.
+5. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — selected corrective checkpoint and its failed final gate.
+6. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
+7. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, and authority state.
+8. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
    terminated immediately.
-8. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
-9. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
-10. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
-11. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
-12. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
-13. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
-14. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifact.
+9. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
+10. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
+11. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
+12. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
+13. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
+14. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
+15. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifact.
 
 Then read the repository-level [GOAL.md](../../GOAL.md), [HANDOFF.md](../../HANDOFF.md),
 [docs/RUNPOD.md](../RUNPOD.md), and [docs/FROZEN_EVAL.md](../FROZEN_EVAL.md). GOAL.md and HANDOFF.md

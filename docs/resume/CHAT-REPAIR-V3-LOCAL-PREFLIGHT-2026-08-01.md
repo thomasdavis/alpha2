@@ -412,7 +412,8 @@ The following are still open, in order:
 2. compile and independently audit the full negative cohort and mask manifest with the parity report bound;
 3. build the committed source on a real NVIDIA Vulkan host;
 4. execute and preserve the fail-closed 50/50 NVIDIA gate;
-5. prove one bounded paired step has finite telemetry and feasible memory;
+5. run `scripts/run_chat_repair_v3_probe.sh` and prove its selection-ineligible model-sized paired step has
+   finite telemetry and feasible memory;
 6. run C0 and U1 sequentially from the same checkpoint and source commit;
 7. run the I0 baseline once, then evaluate only C0/U1 steps 50, 100, 200, and 400 through the frozen evaluation
    driver while preserving intermediate checkpoints;

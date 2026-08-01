@@ -6,6 +6,10 @@
 #   scripts/run_chat_repair_v3_arm.sh \
 #     ARM RCR_WEIGHT POSITIVE_COHORT NEGATIVE_COHORT RCR_MANIFEST \
 #     FREEZE_MANIFEST DEV_SFT TOKENIZER INIT_CHECKPOINT RUN_DIR
+#
+# Set ALPHA_V3_PROBE_ONLY=1 only through run_chat_repair_v3_probe.sh to run
+# one model-sized U1 step before either selectable arm. Probe contracts are
+# explicitly selection-ineligible and are rejected by the v3 evaluator.
 
 set -euo pipefail
 
@@ -19,12 +23,28 @@ dev_data=${7:?teacher-forced development corpus required}
 tokenizer=${8:?Alpha tokenizer artifact required}
 init_checkpoint=${9:?initial checkpoint required}
 run_dir=${10:?new run directory required}
+probe_only=${ALPHA_V3_PROBE_ONLY:-0}
 
 [[ $arm == C0 || $arm == U1 ]] || { echo "ARM must be C0 or U1" >&2; exit 2; }
+[[ $probe_only == 0 || $probe_only == 1 ]] || { echo "ALPHA_V3_PROBE_ONLY must be 0 or 1" >&2; exit 2; }
+[[ $probe_only != 1 || $arm == U1 ]] || { echo "the paired probe must use the U1 branch" >&2; exit 2; }
 [[ $arm != C0 || $rcr_weight == 0 || $rcr_weight == 0.0 ]] || {
   echo "C0 requires RCR_WEIGHT=0.0" >&2; exit 2;
 }
 [[ $arm != U1 || $rcr_weight == 0.5 ]] || { echo "U1 requires RCR_WEIGHT=0.5" >&2; exit 2; }
+
+train_steps=400
+eval_interval=50
+checkpoint_interval=50
+eval_iters=10
+log_every=10
+if [[ $probe_only == 1 ]]; then
+  train_steps=1
+  eval_interval=1
+  checkpoint_interval=1
+  eval_iters=1
+  log_every=1
+fi
 for required in \
   "$positive_data" "$negative_data" "$rcr_manifest" "$freeze_manifest" \
   "$dev_data" "$tokenizer" "$init_checkpoint" apps/cli/dist/main.js; do
@@ -72,6 +92,7 @@ source_commit=$(git rev-parse HEAD)
 mkdir -p "$run_dir"
 contract_tmp="$run_dir/repair-contract.json.tmp"
 ARM="$arm" RCR_WEIGHT="$rcr_weight" SOURCE_COMMIT="$source_commit" \
+PROBE_ONLY="$probe_only" TRAIN_STEPS="$train_steps" \
 POSITIVE_DATA="$positive_data" POSITIVE_SHA="$positive_sha" \
 NEGATIVE_DATA="$negative_data" NEGATIVE_SHA="$negative_sha" \
 RCR_MANIFEST="$rcr_manifest" RCR_MANIFEST_SHA="$rcr_manifest_sha" \
@@ -81,9 +102,14 @@ INIT_CHECKPOINT="$init_checkpoint" CHECKPOINT_SHA="$checkpoint_sha" CONTRACT_TMP
 const fs = require("node:fs");
 const freeze = require(process.env.FREEZE_MANIFEST);
 const rcr = require(process.env.RCR_MANIFEST);
+const probeOnly = process.env.PROBE_ONLY === "1";
 const contract = {
   schema: "alpha-chat-repair-contract-v3",
-  purpose: "test rollout-conditioned repetition unlikelihood without changing the positive corpus or execution path",
+  purpose: probeOnly
+    ? "prove one model-sized paired RCR-UL step is finite and operational before either selectable arm"
+    : "test rollout-conditioned repetition unlikelihood without changing the positive corpus or execution path",
+  executionMode: probeOnly ? "one-step-paired-probe" : "selectable-development-arm",
+  eligibleForCheckpointSelection: !probeOnly,
   arm: process.env.ARM,
   sourceCommit: process.env.SOURCE_COMMIT,
   sourceTreeDirty: false,
@@ -97,7 +123,7 @@ const contract = {
     tokenizer: { path: process.env.TOKENIZER, sha256: process.env.TOKENIZER_SHA },
   },
   training: {
-    steps: 400,
+    steps: Number(process.env.TRAIN_STEPS),
     blockSize: 512,
     batchSize: 16,
     gradientAccumulationSteps: 1,
@@ -171,7 +197,7 @@ exec nice -n 5 ionice -c2 -n7 node --expose-gc apps/cli/dist/main.js train \
   --optim=adamw \
   --batch=16 \
   --accumSteps=1 \
-  --steps=400 \
+  --steps="$train_steps" \
   --lr=0.000005 \
   --lrMin=0.000001 \
   --warmupIters=50 \
@@ -181,11 +207,11 @@ exec nice -n 5 ionice -c2 -n7 node --expose-gc apps/cli/dist/main.js train \
   --weightDecay=0.1 \
   --gradClip=1.0 \
   --spikeThreshold=50 \
-  --evalInterval=50 \
-  --checkpointInterval=50 \
-  --evalIters=10 \
+  --evalInterval="$eval_interval" \
+  --checkpointInterval="$checkpoint_interval" \
+  --evalIters="$eval_iters" \
   --sampleInterval=0 \
-  --logEvery=10 \
+  --logEvery="$log_every" \
   --seed=42 \
   --strictPlanning=false \
   --remote=false \

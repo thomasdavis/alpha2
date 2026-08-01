@@ -181,6 +181,8 @@ async function main(): Promise<void> {
     runContractHash = await sha256File(runContractPath);
     runContract = JSON.parse(await readFile(runContractPath, "utf8"));
     assert(runContract.schema === contract.candidate_contract.run_contract_schema, "unexpected candidate run-contract schema");
+    assert(runContract.executionMode === "selectable-development-arm" && runContract.eligibleForCheckpointSelection === true,
+      "candidate run contract is not selection-eligible");
     assert(runContract.arm === arm, "candidate run-contract arm mismatch");
     assert(runContract.sourceTreeDirty === false && typeof runContract.sourceCommit === "string", "candidate source provenance is not clean and committed");
     assert(runContract.initializedFrom?.sha256 === contract.candidate_contract.initial_checkpoint_sha256, "candidate initialization drift");
