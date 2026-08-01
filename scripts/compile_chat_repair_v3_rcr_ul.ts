@@ -106,6 +106,7 @@ const freezeManifestPath = required("freeze-manifest");
 const rawRolloutsPath = required("raw-rollouts");
 const rolloutManifestPath = required("rollout-manifest");
 const outDir = required("out-dir");
+const parityReportPath = cli.get("parity-report") ? resolve(cli.get("parity-report")!) : null;
 const expectedCheckpointSha256 = cli.get("expected-checkpoint-sha256");
 if (!expectedCheckpointSha256 || !/^[0-9a-f]{64}$/.test(expectedCheckpointSha256)) {
   throw new Error("--expected-checkpoint-sha256 must be a lowercase SHA-256");
@@ -130,6 +131,46 @@ const [candidates, rawRows, freezeManifest, rolloutManifest] = await Promise.all
   readFile(freezeManifestPath, "utf8").then((value) => JSON.parse(value) as any),
   readFile(rolloutManifestPath, "utf8").then((value) => JSON.parse(value) as any),
 ]);
+let parityReport: any = null;
+let parityReportIdentity: FileIdentity | null = null;
+if (rolloutManifest.generation?.native_parity_required_before_admission === true) {
+  if (!parityReportPath) {
+    throw new Error("accelerated rollout manifest requires --parity-report=... before mask compilation");
+  }
+  parityReportIdentity = await fileIdentity(parityReportPath);
+  parityReport = JSON.parse(await readFile(parityReportPath, "utf8"));
+  if (parityReport.schema !== "alpha-rcr-ul-rollout-parity-v1" || parityReport.status !== "PASS") {
+    throw new Error("accelerated rollout parity report is not a PASS");
+  }
+  if (parityReport.checkpoint_sha256 !== expectedCheckpointSha256 ||
+      parityReport.hf_model_sha256 !== rolloutManifest.export?.model_sha256) {
+    throw new Error("accelerated rollout parity report checkpoint/export mismatch");
+  }
+  if (!Number.isSafeInteger(parityReport.native?.rows) || parityReport.native.rows < 24 ||
+      parityReport.native.rows !== parityReport.accelerated?.rows) {
+    throw new Error("accelerated rollout parity population must contain at least 24 matched rows");
+  }
+  const acceleratedParityPath = resolve(parityReport.accelerated.path);
+  if (await sha256File(acceleratedParityPath) !== parityReport.accelerated.sha256) {
+    throw new Error("accelerated rollout parity source hash mismatch");
+  }
+  const parityRows = await readJsonl<RawRollout>(acceleratedParityPath);
+  if (parityRows.length !== parityReport.accelerated.rows) {
+    throw new Error("accelerated rollout parity source row count mismatch");
+  }
+  for (let index = 0; index < parityRows.length; index++) {
+    const parityRow = parityRows[index];
+    const fullRow = rawRows[index];
+    if (parityRow.stable_id !== fullRow?.stable_id ||
+        !equalNumbers(parityRow.generated_token_ids, fullRow.generated_token_ids) ||
+        parityRow.stop_reason !== fullRow.stop_reason ||
+        parityRow.output_sha256 !== fullRow.output_sha256) {
+      throw new Error(`accelerated full rollout differs from parity trajectory at row ${index + 1}`);
+    }
+  }
+} else if (parityReportPath) {
+  throw new Error("--parity-report was supplied for a rollout manifest that does not declare accelerated parity");
+}
 const positiveLines = (await readFile(positivesPath, "utf8")).split(/\r?\n/).filter((line) => line.length > 0);
 if (freezeManifest.schema !== "alpha-chat-repair-v3-freeze-v1") throw new Error("unexpected freeze manifest schema");
 if (rolloutManifest.schema !== "alpha-rcr-ul-rollout-manifest-v1" || rolloutManifest.status !== "complete") {
@@ -271,6 +312,7 @@ const manifest = {
     positive_cohort: positiveIdentity,
     raw_rollouts: rawIdentity,
     checkpoint_sha256: expectedCheckpointSha256,
+    ...(parityReportIdentity ? { accelerated_parity_report: parityReportIdentity } : {}),
   },
   outputs: {
     negative_cohort: negativeIdentity,
