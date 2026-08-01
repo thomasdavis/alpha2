@@ -1,0 +1,6 @@
+{"id":"v4-live-explanation","messages":[{"role":"user","content":"What is DNA? Explain it simply, as if we were chatting."}],"capability":"plain accurate explanation"}
+{"id":"v4-live-self-knowledge","messages":[{"role":"user","content":"I keep changing my mind about what I want to do with my life. Is that a sign that I do not know myself?"}],"capability":"respond to the actual reflective question without generic advice"}
+{"id":"v4-live-distinction","messages":[{"role":"user","content":"What is the difference between a promise and a prediction?"}],"capability":"state the commitment versus forecast distinction and its consequence"}
+{"id":"v4-live-empathy","messages":[{"role":"user","content":"I had a terrible day and I do not really want advice. I just need someone to understand."}],"capability":"acknowledge the user without advice or interrogation"}
+{"id":"v4-live-identity","messages":[{"role":"user","content":"If a committee replaces every one of its members over time, is it still the same committee?"}],"capability":"identify institution versus membership and the relevant continuity criteria"}
+{"id":"v4-live-ambiguity","messages":[{"role":"user","content":"When someone says, I saw her duck, what makes that sentence ambiguous?"}],"capability":"identify the noun versus verb readings and explain the structural source"}
