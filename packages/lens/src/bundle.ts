@@ -9,6 +9,7 @@ export interface BundleIdentity {
   readonly publicRuntimeUrl?: string;
   readonly sourceRevision: string;
   readonly license: string;
+  readonly hfFiles: Readonly<Record<string, string>>;
 }
 
 export async function writeBundleMetadata(
@@ -41,6 +42,7 @@ export async function writeBundleMetadata(
       config_fingerprint: description.configFingerprint,
       tokenizer_fingerprint: description.tokenizerFingerprint,
       chat_template_fingerprint: description.chatTemplateFingerprint,
+      hf_files: identity.hfFiles,
     },
     execution: runtime ? {
       mode: "remote_http",
@@ -114,6 +116,7 @@ export async function writeBundleMetadata(
     model_hf_revision: identity.modelRevision,
     lens_hf_repo: identity.lensHfRepo,
     native_source_revision: identity.sourceRevision,
+    hf_files: identity.hfFiles,
   };
   await writeFile(join(output, "fit-report.json"), JSON.stringify(enriched, null, 2) + "\n");
   return manifest;
@@ -150,6 +153,7 @@ The bundle stores ${manifest.sites.length} dense matrices as \`J[output_dimensio
 - Leading positions excluded: ${manifest.lens.skip_first_positions}
 - Native fitting backend: ${report.fitting.device}
 - Fitting dtype: float32; artifact dtype: ${manifest.lens.dtype}
+- Hugging Face model.safetensors SHA-256: ${identity.hfFiles["model.safetensors"]}
 - Estimator: ${manifest.lens.estimator}
 
 See \`fit-report.json\` and \`validation.json\` for convergence, parity, and finite-difference measurements.

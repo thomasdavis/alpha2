@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   AlphaLensAdapter,
@@ -6,6 +7,7 @@ import {
   writeBundleMetadata,
   serveLensRuntime,
   validateLens,
+  sha256File,
   type LensFitOptions,
 } from "@alpha/lens";
 import { boolArg, intArg, parseKV, requireArg, strArg } from "../parse.js";
@@ -100,6 +102,16 @@ async function bundle(kv: Record<string, string>): Promise<void> {
 
 async function identityFromArgs(kv: Record<string, string>) {
   const sourceRevision = kv["source-revision"] ?? (await execFileAsync("git", ["rev-parse", "HEAD"])).stdout.trim();
+  const hfExportDir = requireValue(kv["hf-export-dir"] ?? process.env.HF_EXPORT_DIR, "--hf-export-dir or HF_EXPORT_DIR");
+  const hfFileNames = [
+    "model.safetensors",
+    "config.json",
+    "generation_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+  ];
+  const hfFiles = Object.fromEntries(await Promise.all(hfFileNames.map(async (name) => [name, await sha256File(join(hfExportDir, name))])));
   return {
     modelHfRepo: kv["model-hf-repo"] ?? process.env.MODEL_HF_REPO ?? "ajaxdavis/alpha-60m-chat",
     modelRevision: requireValue(kv["model-revision"] ?? process.env.MODEL_REVISION, "--model-revision or MODEL_REVISION"),
@@ -107,6 +119,7 @@ async function identityFromArgs(kv: Record<string, string>) {
     publicRuntimeUrl: kv["public-runtime-url"] ?? process.env.PUBLIC_RUNTIME_URL,
     sourceRevision,
     license: kv["license"] ?? "apache-2.0",
+    hfFiles,
   };
 }
 

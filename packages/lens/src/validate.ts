@@ -1,11 +1,15 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { Effect } from "effect";
 import type { TensorData } from "@alpha/core";
 import { createSession, decodeStep, prefill } from "@alpha/inference";
 import { buildChatTemplate } from "@alpha/tokenizers";
+import { exportHfModel, FileCheckpoint, releaseCheckpointSnapshotBuffers } from "@alpha/train";
 import { AlphaLensAdapter } from "./adapter.js";
 import { loadLensPrompts } from "./prompts.js";
 import { applyDenseTransport, greedyToken, rankLogitRow } from "./readout.js";
+import { sha256File } from "./fingerprint.js";
 import { readLensSafetensors, writeLensSafetensors, type SafeTensorValue } from "./safetensors.js";
 
 export interface LensValidationOptions {
@@ -33,7 +37,7 @@ export async function validateLens(options: LensValidationOptions): Promise<Reco
   const tests: TestResult[] = [];
   const add = (test: TestResult) => tests.push(test);
 
-  add(await checkpointTest(adapter, manifest));
+  add(await checkpointTest(adapter, manifest, options.checkpoint, options.bundle));
   add(await tokenizerTest(adapter, manifest));
   add(finalLogitParityTest(adapter));
   add(determinismTest(adapter));
@@ -160,20 +164,60 @@ function inferenceCaptureParityTest(adapter: AlphaLensAdapter): TestResult {
   };
 }
 
-async function checkpointTest(adapter: AlphaLensAdapter, manifest: any): Promise<TestResult> {
+async function checkpointTest(
+  adapter: AlphaLensAdapter,
+  manifest: any,
+  checkpoint: string,
+  bundle: string,
+): Promise<TestResult> {
   let hfResolved: string | null = null;
   let hfError: string | null = null;
+  const declaredFiles = manifest.model.hf_files as Record<string, string> | undefined;
+  const remoteFiles: Record<string, string | null> = {};
   try {
     const response = await fetch(`https://huggingface.co/api/models/${manifest.model.repo_id}/revision/${manifest.model.revision}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     hfResolved = String((await response.json() as { sha?: unknown }).sha ?? "");
+    if (declaredFiles) {
+      const base = `https://huggingface.co/${manifest.model.repo_id}/resolve/${manifest.model.revision}`;
+      for (const name of Object.keys(declaredFiles)) {
+        if (name === "model.safetensors") {
+          const head = await fetch(`${base}/${name}`, { method: "HEAD", redirect: "manual" });
+          if (!head.ok && head.status !== 302) throw new Error(`${name} HTTP ${head.status}`);
+          const etag = head.headers.get("x-linked-etag")?.replace(/^\"|\"$/g, "") ?? null;
+          remoteFiles[name] = etag ? `sha256:${etag}` : null;
+        } else {
+          const file = await fetch(`${base}/${name}`);
+          if (!file.ok) throw new Error(`${name} HTTP ${file.status}`);
+          remoteFiles[name] = `sha256:${createHash("sha256").update(Buffer.from(await file.arrayBuffer())).digest("hex")}`;
+        }
+      }
+    }
   } catch (error) { hfError = error instanceof Error ? error.message : String(error); }
   const localMatch = manifest.model.weights_fingerprint === adapter.description.weightsFingerprint
     && manifest.model.config_fingerprint === adapter.description.configFingerprint;
   const revisionMatch = hfResolved === manifest.model.revision;
+  const nativeFiles: Record<string, string> = {};
+  let nativeExportError: string | null = null;
+  if (declaredFiles) {
+    const temporary = await mkdtemp(join(dirname(bundle), ".native-hf-verify-"));
+    try {
+      const state = await Effect.runPromise(new FileCheckpoint().load(checkpoint));
+      releaseCheckpointSnapshotBuffers(state);
+      await exportHfModel(state, temporary);
+      for (const name of Object.keys(declaredFiles)) nativeFiles[name] = await sha256File(join(temporary, name));
+    } catch (error) {
+      nativeExportError = error instanceof Error ? error.message : String(error);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  }
+  const fileNames = Object.keys(declaredFiles ?? {});
+  const nativeFilesMatch = fileNames.length > 0 && fileNames.every((name) => nativeFiles[name] === declaredFiles![name]);
+  const remoteFilesMatch = fileNames.length > 0 && fileNames.every((name) => remoteFiles[name] === declaredFiles![name]);
   return {
     name: "checkpoint fingerprint verification",
-    status: localMatch && revisionMatch ? "pass" : "fail",
+    status: localMatch && revisionMatch && nativeFilesMatch && remoteFilesMatch ? "pass" : "fail",
     measurements: {
       checkpoint_sha256: adapter.description.checkpointSha256,
       manifest_weights_fingerprint: manifest.model.weights_fingerprint,
@@ -183,6 +227,12 @@ async function checkpointTest(adapter: AlphaLensAdapter, manifest: any): Promise
       requested_hf_revision: manifest.model.revision,
       resolved_hf_revision: hfResolved,
       hf_error: hfError,
+      declared_hf_files: declaredFiles ?? null,
+      native_reexport_files: nativeFiles,
+      remote_revision_files: remoteFiles,
+      native_reexport_exact_match: nativeFilesMatch,
+      remote_revision_exact_match: remoteFilesMatch,
+      native_export_error: nativeExportError,
     },
   };
 }
