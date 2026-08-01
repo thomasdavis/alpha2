@@ -98,6 +98,16 @@ export interface InferenceSession {
   _prefillMaxT?: number;      // max T these buffers were allocated for
 }
 
+/** Optional ordered post-block capture for lens/runtime consumers. */
+export interface InferenceCapture {
+  readonly requestedSites: ReadonlySet<string>;
+  readonly sites: Map<string, Float32Array>;
+}
+
+function postBlockSiteId(index: number): string {
+  return `block.${index.toString().padStart(3, "0")}.post`;
+}
+
 /** @deprecated Use InferenceWeights + InferenceSession instead. */
 export type InferenceModel = InferenceWeights & InferenceSession;
 
@@ -533,6 +543,7 @@ export function prefill(
   weightsOrModel: InferenceWeights | InferenceModel,
   sessionOrTokens: InferenceSession | Int32Array,
   maybeTokens?: Int32Array,
+  capture?: InferenceCapture,
 ): Float32Array {
   let weights: InferenceWeights;
   let session: InferenceSession;
@@ -686,6 +697,11 @@ export function prefill(
       tiledMatmul(proj, 0, mlpH, 0, mlp.fc2, 0, T, nEmbd, ffnDim);
     }
     for (let i = 0; i < T * nEmbd; i++) x[i] += proj[i];
+
+    const siteId = postBlockSiteId(l);
+    if (capture?.requestedSites.has(siteId)) {
+      capture.sites.set(siteId, new Float32Array(x.subarray(0, T * nEmbd)));
+    }
   }
 
   // Final layer norm — only for last position
@@ -713,6 +729,7 @@ export function decodeStep(
   sessionOrToken: InferenceSession | number,
   tokenOrPos: number,
   maybePos?: number,
+  capture?: InferenceCapture,
 ): Float32Array {
   let weights: InferenceWeights;
   let session: InferenceSession;
@@ -832,6 +849,9 @@ export function decodeStep(
     mlpForwardRow(mlpOut, 0, lnOut, 0, layer.mlp, nEmbd, mlpHidden, mlpUp);
 
     for (let i = 0; i < nEmbd; i++) x[i] += mlpOut[i];
+
+    const siteId = postBlockSiteId(l);
+    if (capture?.requestedSites.has(siteId)) capture.sites.set(siteId, new Float32Array(x));
   }
 
   applyNorm(lnOut, 0, x, 0, lnFW, lnFB, nEmbd, useRms);

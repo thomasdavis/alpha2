@@ -249,10 +249,53 @@ export function clearForwardCache(): void {
 export interface GPTForwardResult {
   logits: Variable;
   loss?: Variable;
+  /** Ordered post-block token representations requested by an adapter. */
+  sites?: ReadonlyMap<string, Variable>;
+  /** Final post-block representation immediately before final normalization. */
+  target?: Variable;
   diagnostics?: {
     maxLogitMagnitude: number;
     meanLogitMagnitude: number;
   };
+}
+
+export interface GPTCaptureOptions {
+  /** Stable post-block site IDs such as `block.000.post`. */
+  readonly requestedSites?: ReadonlySet<string>;
+  /** Capture the final post-block state used by exactFinalDecode. */
+  readonly captureTarget?: boolean;
+  /** Optional additive interventions at post-block sites (validation/steering). */
+  readonly sitePerturbations?: ReadonlyMap<string, TensorData>;
+}
+
+export function blockPostSiteId(index: number): string {
+  return `block.${index.toString().padStart(3, "0")}.post`;
+}
+
+/**
+ * Apply every operation between Alpha's final post-block representation and
+ * returned vocabulary logits. This is the model's exact native decoding path:
+ * final configured norm, followed by the (possibly tied) language-model head.
+ */
+export function exactFinalDecode(
+  config: ModelConfig,
+  params: GPTParams,
+  backend: Backend,
+  tape: Tape,
+  targetBasis: Variable,
+): Variable {
+  const ctx = { tape, backend };
+  const [B, T, width] = targetBasis.data.shape;
+  if (width !== config.nEmbd) {
+    throw new Error(`exactFinalDecode expected width ${config.nEmbd}, got ${width}`);
+  }
+  const normalized = applyNorm(ctx, targetBasis, params.lnF, config, 1e-5);
+  const flat = reshape(ctx, normalized, [B * T, config.nEmbd]);
+  return reshape(
+    ctx,
+    matmulTransposed(ctx, flat, params.lmHead),
+    [B, T, config.vocabSize],
+  );
 }
 
 /** Single transformer block: LN → Attention → Residual, LN → MLP → Residual. */
@@ -423,6 +466,7 @@ export function gptForward(
   release?: (td: TensorData) => void,
   lossMask?: TensorData,
   lossObjective: GPTLossObjective = { kind: "cross_entropy" },
+  capture?: GPTCaptureOptions,
 ): GPTForwardResult {
   const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void } = { tape, backend, dropoutRng, release };
   const { nEmbd } = config;
@@ -463,7 +507,9 @@ export function gptForward(
   }
 
   // Transformer blocks
-  for (const layer of params.layers) {
+  const sites = capture?.requestedSites ? new Map<string, Variable>() : undefined;
+  for (let layerIndex = 0; layerIndex < params.layers.length; layerIndex++) {
+    const layer = params.layers[layerIndex];
     // Mixed precision: cast inter-layer activations to f16 for VRAM savings
     if (mixedPrecision && training) x = castToF16(ctx, x);
 
@@ -483,14 +529,22 @@ export function gptForward(
       if (mixedPrecision && training) x = castToF32(ctx, x);
       x = transformerBlock(ctx, x, layer, config, B, T, mask, training);
     }
+    const siteId = blockPostSiteId(layerIndex);
+    const perturbation = capture?.sitePerturbations?.get(siteId);
+    if (perturbation) {
+      if (perturbation.shape.length !== 3
+        || perturbation.shape[0] !== B
+        || perturbation.shape[1] !== T
+        || perturbation.shape[2] !== nEmbd) {
+        throw new Error(`site perturbation ${siteId} must have shape [${B}, ${T}, ${nEmbd}]`);
+      }
+      x = add(ctx, x, new Variable(perturbation, false));
+    }
+    if (capture?.requestedSites?.has(siteId)) sites!.set(siteId, x);
   }
 
-  // Final norm (LayerNorm or RMSNorm per config)
-  x = applyNorm(ctx, x, params.lnF, config, 1e-5);
-
-  // Language model head: [B, T, nEmbd] → [B, T, vocabSize]
-  const flat = reshape(ctx, x, [B * T, nEmbd]);
-  const logits = reshape(ctx, matmulTransposed(ctx, flat, params.lmHead), [B, T, config.vocabSize]);
+  const target = capture?.captureTarget ? x : undefined;
+  const logits = exactFinalDecode(config, params, backend, tape, x);
 
   // Loss
   let loss: Variable | undefined;
@@ -511,7 +565,7 @@ export function gptForward(
     }
   }
 
-  return { logits, loss };
+  return { logits, loss, sites, target };
 }
 
 // ── Parameter collection helpers ───────────────────────────────────────────

@@ -186,4 +186,25 @@ describe("Autograd", () => {
     for (let i = 0; i < base.xGrad.length; i++) expect(chk.xGrad[i]).toBeCloseTo(base.xGrad[i], 6);
     for (let i = 0; i < base.wGrad.length; i++) expect(chk.wGrad[i]).toBeCloseTo(base.wGrad[i], 6);
   });
+
+  it("captures intermediate cotangents and reuses a retained graph", () => {
+    const tape = new Tape();
+    const ctx = { tape, backend: B };
+    const x = makeVar([2, 3], [2]);
+    const doubled = mul(ctx, x, makeVar([2, 2], [2]));
+    const out = mul(ctx, doubled, makeVar([3, 3], [2]));
+
+    const seen: number[][] = [];
+    for (const seed of [[1, 0], [0, 1]]) {
+      tape.backward(out, B, undefined, B.fromArray(seed, [2]), {
+        retainGraph: true,
+        onGradient: (variable, gradient) => {
+          if (variable.id === doubled.id) seen.push(Array.from(gradient.data));
+        },
+      });
+    }
+
+    expect(seen).toEqual([[3, 0], [0, 3]]);
+    expect(Array.from(x.grad!.data)).toEqual([6, 6]);
+  });
 });

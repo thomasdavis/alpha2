@@ -21,6 +21,7 @@
     "@alpha/effect-runtime": "*",
     "@alpha/bench": "*",
     "@alpha/datagen": "*",
+    "@alpha/lens": "*",
     "effect": "^3.22.0",
     "webgpu": "*"
   },

@@ -1,0 +1,27 @@
+{
+  "name": "@alpha/lens",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@alpha/core": "*",
+    "@alpha/tensor": "*",
+    "@alpha/helios": "*",
+    "@alpha/autograd": "*",
+    "@alpha/tokenizers": "*",
+    "@alpha/model": "*",
+    "@alpha/inference": "*",
+    "@alpha/train": "*",
+    "effect": "^3.22.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}

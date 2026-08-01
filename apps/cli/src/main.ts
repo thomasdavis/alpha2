@@ -32,6 +32,7 @@ import { benchCmd } from "./commands/bench.js";
 import { datagenCmd } from "./commands/datagen.js";
 import { fleetCmd } from "./commands/fleet.js";
 import { eventsCmd } from "./commands/events.js";
+import { lensCmd } from "./commands/lens.js";
 
 const USAGE = `
 alpha — a tiny, readable GPT training system
@@ -49,6 +50,7 @@ Commands:
   datagen          Generate synthetic training data
   fleet            Manage remote training instances
   events           Tail remote run event logs
+  lens             Describe, fit, validate, and serve a BLAH Jacobian Lens
 
 Options:
   --help, -h       Show this help
@@ -99,6 +101,8 @@ async function main() {
     await fleetCmd(args.slice(1));
   } else if (command === "events") {
     await eventsCmd(args.slice(1));
+  } else if (command === "lens") {
+    await lensCmd(args.slice(1));
   } else {
     console.error(`Unknown command: ${args.join(" ")}`);
     console.log(USAGE);

@@ -1,4 +1,4 @@
-export { Variable, Tape, type TapeEntry } from "./tape.js";
+export { Variable, Tape, type TapeEntry, type BackwardOptions } from "./tape.js";
 export {
   DropoutRng,
   add, sub, mul, div, neg, scale,

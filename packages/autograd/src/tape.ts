@@ -30,13 +30,34 @@ export class Variable {
   readonly id: number;
   data: TensorData;
   grad: TensorData | null = null;
-  readonly requiresGrad: boolean;
+  requiresGrad: boolean;
 
   constructor(data: TensorData, requiresGrad = false) {
     this.id = _nextId++;
     this.data = data;
     this.requiresGrad = requiresGrad;
   }
+
+  /** Enable or disable gradient accumulation for this leaf/parameter. */
+  setRequiresGrad(requiresGrad: boolean): this {
+    this.requiresGrad = requiresGrad;
+    if (!requiresGrad) this.grad = null;
+    return this;
+  }
+}
+
+export interface BackwardOptions {
+  /**
+   * Keep forward activations and op-owned auxiliary tensors alive so another
+   * VJP can be taken through the same deterministic forward graph.
+   */
+  readonly retainGraph?: boolean;
+  /**
+   * Observe the fully accumulated cotangent for an intermediate immediately
+   * before its producing operation consumes it. Callers that need the value
+   * after this callback must clone or copy it.
+   */
+  readonly onGradient?: (variable: Variable, gradient: TensorData) => void;
 }
 
 // ── Tape ───────────────────────────────────────────────────────────────────
@@ -57,7 +78,13 @@ export class Tape {
    * accumulate across steps (FinalizationRegistry is too slow to collect them),
    * causing OOM during subsequent backward passes.
    */
-  backward(loss: Variable, backend: Backend, releaseTensor?: (td: TensorData) => void, initialGrad?: TensorData): void {
+  backward(
+    loss: Variable,
+    backend: Backend,
+    releaseTensor?: (td: TensorData) => void,
+    initialGrad?: TensorData,
+    options: BackwardOptions = {},
+  ): void {
     // Initialize loss grad: use provided gradient or default to ones
     loss.grad = initialGrad ?? backend.ones(loss.data.shape, loss.data.dtype);
 
@@ -76,9 +103,11 @@ export class Tape {
       const entry = this.entries[i];
       const outGrad = entry.output.grad;
       if (!outGrad) {
-        if (entry.cleanup) entry.cleanup(releaseTensor);
+        if (!options.retainGraph && entry.cleanup) entry.cleanup(releaseTensor);
         continue;
       }
+
+      options.onGradient?.(entry.output, outGrad);
 
       // Compute needsGrad mask only when at least one input does not require grads.
       let needsGrad: boolean[] | undefined = undefined;
@@ -147,12 +176,12 @@ export class Tape {
       // will reference this output. This dramatically reduces peak GPU memory
       // during backward (from O(tape_size) to O(current_entry) activations).
       // Null out .data so clear() won't double-free.
-      if (releaseTensor) {
+      if (releaseTensor && !options.retainGraph) {
         releaseOnce(entry.output.data);
         (entry.output as { data: TensorData | null }).data = null!;
       }
 
-      if (entry.cleanup) entry.cleanup(releaseTensor);
+      if (!options.retainGraph && entry.cleanup) entry.cleanup(releaseTensor);
     }
   }
 

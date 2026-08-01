@@ -18,6 +18,7 @@
     { "path": "packages/historic-chat-gen" },
     { "path": "packages/corpus" },
     { "path": "packages/datagen" },
+    { "path": "packages/lens" },
     { "path": "apps/tui" },
     { "path": "apps/web" },
     { "path": "apps/cli" },

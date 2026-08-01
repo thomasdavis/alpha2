@@ -2,6 +2,7 @@ export {
   type InferenceWeights,
   type InferenceSession,
   type InferenceModel,
+  type InferenceCapture,
   prepareInferenceWeights,
   createSession,
   prepareInferenceModel,
