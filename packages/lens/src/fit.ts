@@ -146,8 +146,8 @@ export async function fitJacobianLens(options: LensFitOptions): Promise<LensFitR
   await saveFitState(options.output, state, sums, evenSums, oddSums);
 
   const transports = averaged(sums, state.valid_prompts);
-  const splitEven = averaged(evenSums, state.valid_even_prompts);
-  const splitOdd = averaged(oddSums, state.valid_odd_prompts);
+  const splitEven = state.valid_even_prompts > 0 ? averaged(evenSums, state.valid_even_prompts) : zeroed(evenSums);
+  const splitOdd = state.valid_odd_prompts > 0 ? averaged(oddSums, state.valid_odd_prompts) : zeroed(oddSums);
   const exportDtype: SafeDtype = options.dtype === "float16" ? "F16" : "F32";
   const artifactTensors = new Map<string, SafeTensorValue>();
   sourceSites.forEach((siteId, index) => artifactTensors.set(`transport.${index.toString().padStart(4, "0")}`, transports.get(siteId)!));
@@ -156,7 +156,7 @@ export async function fitJacobianLens(options: LensFitOptions): Promise<LensFitR
     orientation: "J[output_dimension,input_dimension]",
     model_weights_fingerprint: adapter.description.weightsFingerprint,
   });
-  const splitConvergence = splitMetrics(splitEven, splitOdd);
+  const splitConvergence = splitMetrics(splitEven, splitOdd, state.valid_even_prompts, state.valid_odd_prompts);
   const report: Record<string, unknown> = {
     format: "blah-jacobian-lens-fit-report",
     version: 1,
@@ -252,6 +252,13 @@ function averaged(sums: ReadonlyMap<string, SafeTensorValue>, count: number): Ma
   }]));
 }
 
+function zeroed(sums: ReadonlyMap<string, SafeTensorValue>): Map<string, SafeTensorValue> {
+  return new Map([...sums].map(([key, tensor]) => [key, {
+    shape: tensor.shape,
+    data: new Float32Array(tensor.data.length),
+  }]));
+}
+
 function fitOptionsFingerprint(options: LensFitOptions, sites: readonly string[], corpus: string, weights: string): string {
   const payload = JSON.stringify({
     checkpoint: options.checkpoint,
@@ -302,7 +309,22 @@ async function restoreFitState(
   return state;
 }
 
-function splitMetrics(even: ReadonlyMap<string, SafeTensorValue>, odd: ReadonlyMap<string, SafeTensorValue>): Record<string, unknown> {
+function splitMetrics(
+  even: ReadonlyMap<string, SafeTensorValue>,
+  odd: ReadonlyMap<string, SafeTensorValue>,
+  evenCount: number,
+  oddCount: number,
+): Record<string, unknown> {
+  if (evenCount === 0 || oddCount === 0) {
+    return {
+      split: "even-versus-odd valid fitting prompts",
+      status: "insufficient-valid-prompts",
+      valid_even_prompts: evenCount,
+      valid_odd_prompts: oddCount,
+      per_site: {},
+      heldout_readout_metrics: "requires at least one valid prompt in each split",
+    };
+  }
   const perSite: Record<string, unknown> = {};
   for (const [site, a] of even) {
     const b = odd.get(site)!;

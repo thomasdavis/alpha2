@@ -496,6 +496,24 @@ async function dtypeParityTest(bundle: string, manifest: any, adapter: AlphaLens
 async function splitHalfTest(options: LensValidationOptions, manifest: any, adapter: AlphaLensAdapter): Promise<{ test: TestResult; report: Record<string, unknown> }> {
   const stored = await readLensSafetensors(join(options.bundle, "fit-state.safetensors"));
   const state = JSON.parse(await readFile(join(options.bundle, "fit-state.json"), "utf8"));
+  if (state.valid_even_prompts < 1 || state.valid_odd_prompts < 1) {
+    const report = {
+      split: "even-versus-odd valid fitting prompts",
+      status: "insufficient-valid-prompts",
+      valid_even_prompts: state.valid_even_prompts,
+      valid_odd_prompts: state.valid_odd_prompts,
+      heldout_readout_metrics: "not measurable",
+    };
+    return {
+      test: {
+        name: "split-half convergence",
+        status: "fail",
+        measurements: report,
+        detail: "At least two valid fitting prompts are required to measure split-half convergence.",
+      },
+      report,
+    };
+  }
   const text = options.heldoutPrompts
     ? (await loadLensPrompts(options.heldoutPrompts)).prompts[options.heldoutIndex ?? state.completed_prompts]
     : "A genuinely held-out synthetic sentence asks whether evidence changes only dependent conclusions.";
