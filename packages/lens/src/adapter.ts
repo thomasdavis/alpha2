@@ -70,6 +70,13 @@ export class AlphaLensAdapter {
     releaseCheckpointSnapshotBuffers(state);
 
     const backendName = options.backend ?? "cpu_ref";
+    // Alpha's selected checkpoint was trained and certified through Helios'
+    // full-f32 matmul path.  The optional cooperative-matrix path performs
+    // f16-input products and is a materially different numerical runtime for
+    // this checkpoint: on the real model it changes activations, logits, and
+    // VJPs far beyond lens tolerances.  Lens fitting must therefore select the
+    // same exact backend mode before the Vulkan device is initialized.
+    if (backendName === "helios") process.env.HELIOS_DISABLE_COOP_MAT = "1";
     const backend = backendRegistry.get(backendName);
     const params = initGPT(state.modelConfig, backend, new SeededRng(state.rngState ?? 42));
     restoreParams(params, state.params);
