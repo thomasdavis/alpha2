@@ -115,6 +115,66 @@ The sealed-final suite SHA-256 is
 `8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d`; it was never executed or inspected.
 No v2 model-improvement Discord announcement was made.
 
+## 2026-08-01 chat repair v3 local preflight
+
+Authoritative records:
+
+    docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md
+    docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md
+
+Implementation commits:
+
+    8341dd0  train: implement matched rollout unlikelihood preflight
+    5753ca9  research: bind v3 to native context
+    b367f6b  research: accelerate v3 rollouts with native parity
+
+Canonical corrected freeze:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-20260801/
+
+Deterministic replay:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-replay-20260801/
+
+The canonical and replay builds contain identical bytes for all six selected/excluded artifacts. The freeze is
+native to the selected checkpoint's 512-token context, caps prompts at 384 tokens, reserves 128 generated tokens,
+and has zero over-limit rows.
+
+| Artifact | SHA-256 |
+|---|---|
+| rollout candidates | `c8df6ccd79c4eb813d87c48eee9d2462837a944d24aeba1263c87515282e670a` |
+| positive cohort | `3c9dcc8d44db15491dc94e0167e864da4fc436a49edbdbf9bac6b4b0652377da` |
+| rollout exclusions | `bbea8330f6730eba9e60f578c125bddd092537f6b1e82d67d5afdece39551e2d` |
+| fresh development selector | `0133dcda7d6ae3d5d7ed315e528e6cf566f332a355ed6189525f7a9f2b90c683` |
+| qualitative panel | `c4c869f6c1dc30a9fa644d5e45782683f200db4f80bc9c54995abf0dd0983000` |
+| development exclusions | `7e574f35703d80c1c0bca7a6599a079a29fd4729270854beff174e2d9e116557` |
+| canonical freeze manifest | `976ef6b37949c729a2abad77f50f46c685dcb63269af1a1963dca58428e11231` |
+
+Corrected native rollout smoke:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-smoke-r3-20260801/
+
+The 24-row, six-per-source native smoke contains 946 generated decisions. Its first output terminated at learned
+EOS but had 4-gram repeat rate `0.5102040816326531`, confirming a mechanically eligible failed trajectory. The
+batched fp32 Transformers export reproduced every one of the 946 selected tokens, every runner-up token ID,
+output text, and stop exactly. Maximum chosen-logit drift was `2.2649765014648438e-05`. Evidence:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-hf-cpu-smoke-r3-20260801/
+    raw-rollouts.jsonl SHA-256 f60c80f972ca5449689f7c440e36ef1e73828e351face5c2122d411cc5bf7317
+    native-parity-report.json SHA-256 04ecc1f3883e53a79cd3caa6b6cf3011a74b1492c3eddda19d796b587a3ce290
+
+Both smokes are partial diagnostic evidence, not the complete rollout ledger. The compiler requires this PASS
+report if the accelerated generator produces the complete ledger.
+
+Local result: 222 tests passed, 50 NVIDIA assertions skipped on non-NVIDIA llvmpipe, and 0 failed. The full
+rollout ledger, compiled mask cohort, real 50/50 NVIDIA proof, and both training arms remain open. No improvement
+or candidate exists yet. The following r2 directories are retained but superseded because their 1,024-token
+freeze did not match the selected checkpoint's native context:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r2-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r2-replay-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-smoke-20260801/
+
 ## Terminal run
 
 Root:

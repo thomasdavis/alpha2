@@ -176,9 +176,25 @@ Generate exactly one greedy rollout per selected prefix from the immutable publi
 
     399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec
 
+The reference generator is Alpha's native cached decoder. A batched stock-Transformers execution of Alpha's
+already parity-proven export may accelerate the complete ledger only after a frozen 24-row cross-source smoke
+passes all of the following against native output:
+
+- exact prompt, generated-content, stop-token, and complete token trajectories;
+- exact selected and runner-up token identities at every generation step;
+- chosen/runner-up logits and log-sum-exp within `1e-3`;
+- chosen-token probability within `1e-5`;
+- one native checkpoint SHA, one export weight SHA, deterministic fp32, TF32 disabled;
+- a hash-bound parity report that is required by the mask compiler and whose accelerated rows match the prefix
+  of the complete rollout ledger.
+
+If any parity condition fails, the accelerated ledger is inadmissible and generation falls back to the native
+path. Provider-generated text, API generation, quantized inference, stochastic decoding, and an unverified
+export are never substitutes.
+
 Generation contract:
 
-- native Alpha inference path;
+- native Alpha inference path or the admitted parity-proven fp32 Transformers acceleration above;
 - correct `<|assistant|>` boundary with no trailing standalone space;
 - greedy decoding;
 - maximum 128 completion tokens;
@@ -298,7 +314,7 @@ The implementation is expected to touch only the necessary engine and experiment
 - `packages/train/src/data.ts` for immutable paired batches;
 - `packages/train/src/trainer.ts` for the explicit two-branch step;
 - focused CPU, GPU, masking, finite-difference, and zero-weight tests;
-- a new v3 launcher and contract file.
+- native and accelerated rollout generators, a fail-closed parity verifier, a mask compiler, and a v3 launcher.
 
 Exact files may differ after code inspection. The implementation must not modify the v2 launcher or evidence.
 
@@ -492,6 +508,7 @@ Every arm directory must contain:
 - initialization checkpoint hash;
 - tokenizer and rendered-data hashes;
 - rollout cohort, exclusions, masks, and manifest hashes;
+- native/accelerated rollout parity report and source hashes when the batched export is used;
 - exact configuration and environment snapshot;
 - NVIDIA gate output;
 - metrics JSONL;
@@ -546,16 +563,17 @@ Requires renewed explicit authorization:
 ## 19. Pre-run checklist
 
 - [ ] Contract reviewed and hashed.
-- [ ] Fresh selector frozen before candidate generation.
-- [ ] Train/dev/final contamination audit passes.
-- [ ] Rollout cohort constructed deterministically from train assignments only.
+- [x] Fresh selector frozen before candidate generation.
+- [x] Train/dev/final contamination audit passes.
+- [x] Rollout cohort constructed deterministically from train assignments only.
 - [ ] Raw frozen-checkpoint rollouts preserved.
+- [x] If accelerated, 24-row native/accelerated token-trajectory parity passes and is hash-bound into compilation.
 - [ ] RCR-UL masks independently recomputed from token IDs.
-- [ ] CPU forward and finite-difference tests pass.
-- [ ] Zero-weight update-equivalence test passes.
-- [ ] Resume determinism test passes.
-- [ ] Expected NVIDIA gate count updated fail-closed.
-- [ ] One-GPU artifact-size estimate remains below the 15 GiB pause threshold.
+- [x] CPU forward and finite-difference tests pass.
+- [x] Zero-weight update-equivalence test passes.
+- [x] Resume determinism test passes.
+- [x] Expected NVIDIA gate count updated fail-closed.
+- [x] One-GPU artifact-size estimate remains below the 15 GiB pause threshold.
 - [ ] Pod termination command recorded before creation.
 - [ ] No other producer or evaluator will contend for the same inference path.
 

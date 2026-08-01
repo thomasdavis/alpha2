@@ -12,8 +12,9 @@ chat model remained unchanged, and the paid Alpha pod was removed after verified
 A prompt-level mechanism analysis completed locally on 2026-08-01. On the exact 69 generation-eligible prompts,
 every v2 checkpoint created more new loops than it fixed, with median onset near generated token 18–24. Only
 3/68,964 supervised targets crossed the same repetition threshold, and a calibrated BGE diagnostic found no
-reliable semantic-contingency gain. The next proposed intervention is a matched control of train-only,
-rollout-conditioned repetition unlikelihood. It is documented but unexecuted; it does not authorize a pod.
+reliable semantic-contingency gain. The next intervention is a matched control of train-only,
+rollout-conditioned repetition unlikelihood. Its local implementation and corrected 512-token freeze are complete,
+but it remains unexecuted on NVIDIA and does not authorize a pod.
 
 | Item | Current state |
 |---|---|
@@ -36,7 +37,7 @@ rollout-conditioned repetition unlikelihood. It is documented but unexecuted; it
 | V2 recovery archive | revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, 53 files |
 | V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched; final live list empty |
 | V2 mechanism analysis | complete; clean-target / self-amplifying-prefix hypothesis best supported |
-| Repair v3 | RCR-UL matched-control contract written; no code implementation or training yet |
+| Repair v3 | local code/freeze PASS; 24-row native/export parity 946/946 exact; full rollouts/GPU/training still open |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
 result is not structurally reliable and its semantic behavior is weak. Repair v2 did not improve it. Alpha is
@@ -52,6 +53,7 @@ Full account:
     docs/resume/CHAT-REPAIR-V2-2026-07-31.md
     docs/resume/CHAT-REPAIR-V2-MECHANISM-ANALYSIS-2026-08-01.md
     docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md
+    docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md
 
 ## Archived terminal baseline
 

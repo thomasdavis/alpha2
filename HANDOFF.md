@@ -1,4 +1,4 @@
-# HANDOFF — Alpha repair v2 diagnosed; repair v3 proposed; best honest checkpoint unchanged, state as of 2026-08-01
+# HANDOFF — Alpha repair v3 locally implemented; NVIDIA/training gates open; best honest checkpoint unchanged, state as of 2026-08-01
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -48,11 +48,29 @@ The 2026-08-01 local analysis advances that last item without authorizing comput
   `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v2-analysis-20260731/`.
 - The best-supported working mechanism is instability under Alpha's own generated prefixes, not direct replay of
   dirty looping targets. This does not imply that the corpus is perfect or that repetition is the only weakness.
-- Repair v3 proposes one causal change: train-only rollout-conditioned repetition unlikelihood, compared with a
-  compute-matched zero-weight control. It requires a fresh selector, exact leakage audit, CPU/GPU parity, and a
-  terminal 400-step cap per arm.
-- No v3 loss code, cohort, GPU run, sealed-final execution, or public model change has occurred. Next work is the
-  local implementation gate; creating a paid pod still requires renewed explicit authorization.
+- Repair v3 implements one causal change: train-only rollout-conditioned repetition unlikelihood, compared with a
+  compute-matched zero-weight control. CPU/autograd and Helios kernels, a hash-matched paired loader/trainer,
+  resume checks, telemetry, deterministic cohort/rollout/mask tools, and an exact arm launcher are pushed in
+  `8341dd0` and `5753ca9`. Commit `b367f6b` adds a batched fp32 Transformers accelerator and makes the mask
+  compiler require its native-parity proof.
+- The corrected canonical freeze is
+  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-20260801/`: 4,096 train-only rollout
+  candidates, 96 fresh development prompts, 24 frozen panel prompts, 0 train/development identity or normalized-
+  prompt overlap, and a native 512-token contract (384 prompt + 128 generation reserve). Its independent replay
+  reproduced every model-visible artifact byte-for-byte.
+- The earlier 1,024-token r2 freeze and smoke are preserved but superseded. Using them would either fail the
+  selected checkpoint's native context or add a context-migration confound. Do not use them for training.
+- Local proof is 222 passing / 50 NVIDIA-gated / 0 failing with TypeScript clean. A corrected native smoke
+  contains 24 cross-source rows and 946 generated decisions. The batched export reproduced all 946 selected
+  tokens, all runner-up IDs, output text, and stops exactly; maximum chosen-logit drift was `2.265e-05`. The
+  complete 4,096-rollout ledger and mask compilation remain open.
+  No NVIDIA gate, GPU training, sealed-final execution, candidate selection, or public model change has occurred.
+- Read
+  [the v3 local preflight](docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) before execution. The next
+  gates are complete rollout generation, mask compilation, and real 50/50 NVIDIA proof. Creating a paid pod
+  still requires renewed explicit authorization.
+- At `2026-08-01T16:59:59Z`, the live RunPod list contained one unrelated WBV checkpoint-sentinel pod and no
+  Alpha pod. It was not touched. Recheck the volatile list and exact ownership before any action.
 
 The selected checkpoint's earlier recovery record is
 [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
