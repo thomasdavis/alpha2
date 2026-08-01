@@ -319,12 +319,16 @@ async function main(): Promise<void> {
         );
         validateReview(existing, plan);
         const content = await readFile(outputPath);
+        const events = await readFile(eventPath);
         completed.push({
           review_batch_id: plan.reviewBatchId,
           status: "existing",
           path: outputPath,
           bytes: content.byteLength,
           sha256: sha256(content),
+          events_path: eventPath,
+          events_bytes: events.byteLength,
+          events_sha256: sha256(events),
         });
         process.stdout.write(
           `[reviewer ${index}] ${plan.reviewBatchId}: existing valid review\n`,
@@ -389,6 +393,15 @@ async function main(): Promise<void> {
     codex_version: execFileSync("codex", ["--version"], {
       encoding: "utf8",
     }).trim(),
+    source_commit: execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).trim(),
+    source_tree_dirty:
+      execFileSync("git", ["status", "--porcelain"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      }).trim().length > 0,
     prompt: { path: templatePath, sha256: sha256(template) },
     output_schema: {
       path: schemaPath,

@@ -3,6 +3,7 @@
 /** Build the reviewed semantic-chat pilot corpus plus declared natural replay. */
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,12 @@ interface AcceptedRow extends SourceRow {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function record(value: unknown, label: string): Record<string, any> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error(`${label} is malformed`);
+  return value as Record<string, any>;
 }
 
 function normalize(value: string): string {
@@ -347,6 +354,7 @@ async function writeAtomic(path: string, content: string): Promise<void> {
 async function main(): Promise<void> {
   const cli = parseArgs(process.argv.slice(2));
   if (!cli.config || !cli.out) throw new Error("required: --config and --out");
+  const repoRoot = resolve(cli.repo ?? process.cwd());
   const configPath = resolve(cli.config);
   const rawConfig = JSON.parse(await readFile(configPath, "utf8")) as Config;
   if (rawConfig.schema !== "alpha-chat-semantic-repair-v4-build-config-v1") {
@@ -374,6 +382,46 @@ async function main(): Promise<void> {
     throw new Error("development_fraction must be between zero and 0.5");
   }
   const outputRoot = resolve(cli.out);
+  const generationManifestPath = join(
+    dirname(config.generation_batches),
+    "generation-manifest.json",
+  );
+  const reviewManifestPath = join(
+    config.review_directory,
+    "review-manifest.json",
+  );
+  const generationManifest = record(
+    JSON.parse(await readFile(generationManifestPath, "utf8")) as unknown,
+    "generation manifest",
+  );
+  const reviewManifest = record(
+    JSON.parse(await readFile(reviewManifestPath, "utf8")) as unknown,
+    "review manifest",
+  );
+  if (
+    generationManifest.schema !==
+      "alpha-chat-semantic-repair-v4-generation-manifest-v1" ||
+    generationManifest.source_tree_dirty !== false ||
+    !Array.isArray(generationManifest.completed) ||
+    generationManifest.completed.length !== generationManifest.requested_batches
+  )
+    throw new Error(
+      "generation manifest is incomplete or lacks clean source provenance",
+    );
+  if (
+    reviewManifest.schema !==
+      "alpha-chat-semantic-repair-v4-review-manifest-v1" ||
+    reviewManifest.source_tree_dirty !== false ||
+    !Array.isArray(reviewManifest.completed) ||
+    reviewManifest.generation_batches !==
+      generationManifest.requested_batches ||
+    reviewManifest.completed.length !== reviewManifest.requested_review_groups
+  )
+    throw new Error(
+      "review manifest is incomplete or lacks clean source provenance",
+    );
+  if (reviewManifest.blueprint?.sha256 !== generationManifest.blueprint?.sha256)
+    throw new Error("generation and review used different semantic blueprints");
   const reviews = await loadReviews(config.review_directory);
   const rejected: unknown[] = [];
   const candidates = [
@@ -501,15 +549,20 @@ async function main(): Promise<void> {
   const manifest = {
     schema: "alpha-chat-semantic-repair-v4-corpus-manifest-v1",
     built_utc: new Date().toISOString(),
+    source_commit: execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).trim(),
+    source_tree_dirty:
+      execFileSync("git", ["status", "--porcelain"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      }).trim().length > 0,
     config: await fileEvidence(configPath),
     inputs: {
       tokenizer: await fileEvidence(config.tokenizer),
-      generation_manifest: await fileEvidence(
-        join(dirname(config.generation_batches), "generation-manifest.json"),
-      ),
-      review_manifest: await fileEvidence(
-        join(config.review_directory, "review-manifest.json"),
-      ),
+      generation_manifest: await fileEvidence(generationManifestPath),
+      review_manifest: await fileEvidence(reviewManifestPath),
       replay_catalog: await fileEvidence(config.replay.catalog),
       replay_train: await fileEvidence(config.replay.train),
       replay_development: await fileEvidence(config.replay.development),

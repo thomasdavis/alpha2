@@ -55,6 +55,7 @@ const corpus = require(process.env.CORPUS_MANIFEST);
 const freeze = require(process.env.EVAL_MANIFEST);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 assert(corpus.schema === "alpha-chat-semantic-repair-v4-corpus-manifest-v1", "unexpected corpus schema");
+assert(corpus.source_tree_dirty === false && typeof corpus.source_commit === "string", "corpus source provenance is not clean and committed");
 assert(corpus.outputs?.train?.sha256 === process.env.TRAIN_SHA, "training corpus hash mismatch");
 assert(corpus.outputs?.dev?.sha256 === process.env.DEV_SHA, "development corpus hash mismatch");
 assert(corpus.sources?.["gpt-5.4"] > 0, "corpus has no synthetic semantic-chat rows");

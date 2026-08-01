@@ -411,12 +411,16 @@ async function main(): Promise<void> {
         ) as unknown;
         validateBatch(existing, plan);
         const content = await readFile(outputPath);
+        const eventContent = await readFile(eventPath);
         completed.push({
           batch_id: plan.batchId,
           status: "existing",
           path: outputPath,
           bytes: content.byteLength,
           sha256: sha256(content),
+          events_path: eventPath,
+          events_bytes: eventContent.byteLength,
+          events_sha256: sha256(eventContent),
         });
         process.stdout.write(
           `[worker ${workerIndex}] ${plan.batchId}: existing valid batch\n`,
@@ -481,12 +485,23 @@ async function main(): Promise<void> {
   const codexVersion = execFileSync("codex", ["--version"], {
     encoding: "utf8",
   }).trim();
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
+  const sourceTreeDirty =
+    execFileSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).trim().length > 0;
   const manifest = {
     schema: "alpha-chat-semantic-repair-v4-generation-manifest-v1",
     generated_utc: new Date().toISOString(),
     model,
     reasoning_effort: reasoningEffort,
     codex_version: codexVersion,
+    source_commit: sourceCommit,
+    source_tree_dirty: sourceTreeDirty,
     prompt: {
       path: templatePath,
       sha256: sha256(template),
