@@ -62,20 +62,29 @@ dev_sha=$(sha256 "$dev_data")
 tokenizer_sha=$(sha256 "$tokenizer")
 checkpoint_sha=$(sha256 "$init_checkpoint")
 expected_checkpoint_sha=399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec
+expected_tokenizer_sha=c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24
 [[ $checkpoint_sha == "$expected_checkpoint_sha" ]] || {
   echo "initial checkpoint hash mismatch: $checkpoint_sha" >&2; exit 1;
 }
+[[ $tokenizer_sha == "$expected_tokenizer_sha" ]] || {
+  echo "native tokenizer artifact hash mismatch: $tokenizer_sha" >&2; exit 1;
+}
 
 POSITIVE_SHA="$positive_sha" NEGATIVE_SHA="$negative_sha" CHECKPOINT_SHA="$checkpoint_sha" \
+TOKENIZER="$tokenizer" TOKENIZER_SHA="$tokenizer_sha" \
 RCR_MANIFEST="$rcr_manifest" FREEZE_MANIFEST="$freeze_manifest" node - <<'NODE'
 const rcr = require(process.env.RCR_MANIFEST);
 const freeze = require(process.env.FREEZE_MANIFEST);
+const tokenizer = require(process.env.TOKENIZER);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 assert(freeze.schema === "alpha-chat-repair-v3-freeze-v1", "unexpected v3 freeze schema");
 assert(freeze.contract?.block_size === 512, "freeze must preserve the native 512-token checkpoint context");
 assert(freeze.contract?.generation_reserve === 128, "freeze must preserve the 128-token generation reserve");
 assert(freeze.contract?.maximum_prompt_tokens === 384, "freeze must cap prompts at 384 tokens");
 assert(freeze.outputs?.positive_cohort?.sha256 === process.env.POSITIVE_SHA, "positive cohort differs from freeze");
+assert(freeze.inputs?.tokenizer?.sha256 === "37372c9b1bdbf7d9655444e90247bef957018d0d7ff0b668d1330e28d97c44cf", "freeze HF tokenizer identity changed");
+assert(process.env.TOKENIZER_SHA === "c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24", "native tokenizer identity changed");
+assert(tokenizer.type === "byte_bpe" && tokenizer.vocabSize === 12288, "unexpected native tokenizer artifact");
 assert(freeze.counts?.rollout_selected === 4096, "freeze does not bind 4096 rollout identities");
 assert(freeze.counts?.development_selected === 96, "freeze does not bind the 96-case selector");
 assert(rcr.schema === "alpha-rcr-ul-cohort-manifest-v1", "unexpected RCR-UL manifest schema");

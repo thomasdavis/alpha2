@@ -56,6 +56,7 @@ The control box is authoritative. Before transfer, verify:
 |---|---|
 | selected checkpoint 1,200 | `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` |
 | HF `model.safetensors` | `a5214ebad501b8bd3b09f7552c0db67417d18c3b66432f66f847de0e723dd688` |
+| Native Alpha tokenizer artifact | `c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24` |
 | r3 freeze manifest | `976ef6b37949c729a2abad77f50f46c685dcb63269af1a1963dca58428e11231` |
 | rollout candidates | `c8df6ccd79c4eb813d87c48eee9d2462837a944d24aeba1263c87515282e670a` |
 | positive cohort | `3c9dcc8d44db15491dc94e0167e864da4fc436a49edbdbf9bac6b4b0652377da` |
@@ -74,8 +75,12 @@ Canonical roots:
 /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/full-end2/
 ```
 
-The tokenizer and teacher-forced development file are the exact paths recorded in the r3 freeze manifest. Do not
-substitute a convenient copy without verifying that its hash matches the manifest.
+The teacher-forced development file and HF tokenizer used to construct the freeze are the exact paths recorded
+in the r3 freeze manifest. The native trainer does not consume Hugging Face's `tokenizer.json`; it consumes the
+corresponding Alpha artifact at
+`/mnt/donto-data/alpha-corpora/tokenizers/bpe-byte-12k-20260722.json`, hash
+`c310343a185aecb572b8b6568b55179df248f4adec009d14a9496da354090b24`. This is the same artifact recorded by
+the selected v2 run. Transfer it as `$inputs/tokenizer-artifacts.json`; the launcher rejects every other hash.
 
 ## 4. Deploy a clean source commit
 
@@ -192,7 +197,7 @@ scripts/run_chat_repair_v3_probe.sh \
   "$artifacts/rcr-ul-cohort/negative-cohort.jsonl" \
   "$artifacts/rcr-ul-cohort/rcr-ul-manifest.json" \
   "$inputs/freeze/freeze-manifest.json" \
-  "$inputs/dev.txt" "$inputs/tokenizer.json" "$inputs/checkpoint-1200.json" \
+  "$inputs/dev.txt" "$inputs/tokenizer-artifacts.json" "$inputs/checkpoint-1200.json" \
   "$artifacts/paired-probe-u1"
 ```
 
@@ -209,12 +214,12 @@ Only after all earlier gates pass, run sequentially from the same clean commit a
 scripts/run_chat_repair_v3_arm.sh C0 0.0 \
   "$inputs/freeze/positive-cohort.txt" "$artifacts/rcr-ul-cohort/negative-cohort.jsonl" \
   "$artifacts/rcr-ul-cohort/rcr-ul-manifest.json" "$inputs/freeze/freeze-manifest.json" \
-  "$inputs/dev.txt" "$inputs/tokenizer.json" "$inputs/checkpoint-1200.json" "$artifacts/C0"
+  "$inputs/dev.txt" "$inputs/tokenizer-artifacts.json" "$inputs/checkpoint-1200.json" "$artifacts/C0"
 
 scripts/run_chat_repair_v3_arm.sh U1 0.5 \
   "$inputs/freeze/positive-cohort.txt" "$artifacts/rcr-ul-cohort/negative-cohort.jsonl" \
   "$artifacts/rcr-ul-cohort/rcr-ul-manifest.json" "$inputs/freeze/freeze-manifest.json" \
-  "$inputs/dev.txt" "$inputs/tokenizer.json" "$inputs/checkpoint-1200.json" "$artifacts/U1"
+  "$inputs/dev.txt" "$inputs/tokenizer-artifacts.json" "$inputs/checkpoint-1200.json" "$artifacts/U1"
 ```
 
 Preserve all checkpoints at 50, 100, 150, 200, 250, 300, 350, and 400; evaluate only the declared 50, 100, 200,
