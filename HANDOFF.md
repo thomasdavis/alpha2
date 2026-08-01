@@ -1,4 +1,4 @@
-# HANDOFF — Alpha repair v3 implementation, data, and evaluation frozen; NVIDIA/training gates open; best honest checkpoint unchanged, state as of 2026-08-01
+# HANDOFF — Alpha repair v3 executed and rejected semantically; v4 data repair in local preflight; best honest checkpoint unchanged, state as of 2026-08-01
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -36,52 +36,33 @@ The latest authoritative records are the
 - Do not continue either v2 branch blindly. A future paid run requires explicit authorization and a genuinely
   new finite intervention aimed at semantic contingency or autoregressive stability.
 
-The 2026-08-01 local analysis advances that last item without authorizing compute:
+Repair v3 was subsequently authorized, executed, recovered, and rejected for release:
 
-- On the exact 69 generation-eligible prompts, every v2 checkpoint created 11–17 new loops while fixing only
-  4–7 baseline loops. Median onset was generated token 18–24.
-- Only 3/68,964 supervised targets crossed the same repetition threshold. Of 214 dominant generated loop
-  phrases, 110 were absent from every supervised target.
-- A calibrated 68-prompt BGE diagnostic found no reliable semantic-contingency gain; every paired bootstrap
-  interval crossed zero. The diagnostic is supporting evidence, not a quality judge.
-- Both analyzers replay byte-identically. Canonical results are under
-  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v2-analysis-20260731/`.
-- The best-supported working mechanism is instability under Alpha's own generated prefixes, not direct replay of
-  dirty looping targets. This does not imply that the corpus is perfect or that repetition is the only weakness.
-- Repair v3 implements one causal change: train-only rollout-conditioned repetition unlikelihood, compared with a
-  compute-matched zero-weight control. CPU/autograd and Helios kernels, a hash-matched paired loader/trainer,
-  resume checks, telemetry, deterministic cohort/rollout/mask tools, and an exact arm launcher are pushed in
-  `8341dd0` and `5753ca9`. Commit `b367f6b` adds a batched fp32 Transformers accelerator and makes the mask
-  compiler require its native-parity proof. Commits `957a02b` and `db7daed` add the fail-closed checkpoint
-  evaluator, paired I0/C0/U1 analyzer, and reproducible development-only evaluation freeze.
-- The corrected canonical freeze is
-  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-20260801/`: 4,096 train-only rollout
-  candidates, 96 fresh development prompts, 24 frozen panel prompts, 0 train/development identity or normalized-
-  prompt overlap, and a native 512-token contract (384 prompt + 128 generation reserve). Its independent replay
-  reproduced every model-visible artifact byte-for-byte.
-- The earlier 1,024-token r2 freeze and smoke are preserved but superseded. Using them would either fail the
-  selected checkpoint's native context or add a context-migration confound. Do not use them for training.
-- The canonical evaluation freeze is
-  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/`.
-  Its contract SHA is `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce`; the exact eligible-69 prompt file SHA is
-  `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584`. Both files match the independent r2
-  replay byte-for-byte. The prior r1 contract-path/time drift is preserved as superseded evidence.
-- Local proof is 223 passing / 50 NVIDIA-gated / 0 failing with TypeScript clean. A corrected native smoke
-  contains 24 cross-source rows and 946 generated decisions. The batched export reproduced all 946 selected
-  tokens, all runner-up IDs, output text, and stops exactly; maximum chosen-logit drift was `2.265e-05`. The
-  complete 4,096-rollout ledger and mask compilation remain open.
-  No NVIDIA gate, GPU training, sealed-final execution, candidate selection, or public model change has occurred.
-- Read
-  [the v3 local preflight](docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) before execution. The next
-  gates are complete rollout generation, mask compilation, and real 50/50 NVIDIA proof. Candidate evaluation is
-  already bound to I0 plus C0/U1 steps 50/100/200/400; it cannot select while the frozen human panel is pending
-  and cannot open either sealed final. Creating a paid pod still requires renewed explicit authorization.
-- The exact disposable-pod sequence is now in
-  [the v3 one-GPU execution runbook](docs/resume/CHAT-REPAIR-V3-GPU-EXECUTION-RUNBOOK.md). It deploys through a
-  Git bundle because v3 requires a clean Git identity, reruns 24-row trajectory parity on the actual CUDA
-  runtime, and uses a selection-ineligible one-step paired probe before either full arm.
-- At `2026-08-01T16:59:59Z`, the live RunPod list contained one unrelated WBV checkpoint-sentinel pod and no
-  Alpha pod. It was not touched. Recheck the volatile list and exact ownership before any action.
+- The full 4,096-row CUDA rollout ledger, repetition mask, selection-ineligible paired probe, matched C0/U1 arms,
+  and declared development evaluations completed on one secure RTX 4090. The real NVIDIA suite passed 50/50 after
+  an exact-zero gradient-sign correction in `72079db`; native tokenizer binding was corrected in `8c0fe06` before
+  selectable training.
+- C0 and U1 each completed 400/400 finite steps from the same selected checkpoint with the same data order. U1
+  step 400 reduced fresh-development loops from 35 to 6, fixed 29 C0 loop cases, introduced zero new paired loops,
+  preserved 96/96 nonempty responses, and therefore passed the mechanical gate.
+- A 48-triad blinded human-review packet is preserved under
+  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-blind-review-20260801/`; its key remains sealed and
+  human review remains pending. The sealed final was not opened.
+- A matched live probe through `evals.blah.dev` was sufficient to reject promotion: U1 step 400 remained circular
+  or wrong on explanation and conceptual distinction, ignored pragmatic intent, and did not improve ambiguity or
+  identity reasoning. It fixed an autoregressive repetition symptom without adding the missing semantic ability.
+- The complete remote artifact tree was mirrored locally: 273/273 files, 13,896,740,932 bytes, and every SHA-256
+  matched. Pod `13ot2p3prx36th` was removed only after that proof. No Alpha RunPod is billing. Canonical execution
+  record: `/mnt/donto-data/alpha-runs/alpha-chat-repair-v3-20260801/RUN.md`.
+- The transient local U1 serving unit was stopped after the Blah probe. The public Hugging Face model, public
+  backend, Space, and Blah production registration remain on selected step 1,200.
+
+The active local preflight is now
+[semantic-chat repair v4](docs/resume/CHAT-SEMANTIC-REPAIR-V4-PREFLIGHT.md). It measures a concrete data mismatch:
+the 34,880-row corrective corpus was 86% SODA role-play and contained only 519 one-exchange conversations, while
+the existing SmolTalk source held 186,043 direct user/assistant pairs that the repair builder excluded by design.
+V4 tests a compact, structurally generated and reviewed `gpt-5.4` semantic-chat curriculum plus limited natural
+multi-turn replay. The structured generation smoke passed, but no v4 GPU run or public model change has occurred.
 
 The selected checkpoint's earlier recovery record is
 [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
@@ -2301,6 +2282,7 @@ more CPU training on the box).
 ## State of the repo (github.com/thomasdavis/alpha2, master, all pushed)
 
 Working tree CLEAN at `84c110c`. Key commits this program (chronological):
+
 - `9524598` GOAL.md + proven RunPod/Vulkan bootstrap (`scripts/runpod_bootstrap.sh`, `docs/RUNPOD.md`)
 - `59d79da` **G0 PASSED**: Helios trained on a RunPod 3090 (60 steps, loss 7.28→7.05, 0 NaN, ~40K tok/s
   at 1.33M params, DGC+BDA+coop active). Artifacts: `/mnt/donto-data/alpha-runs/g0-smoke-20260722/`
@@ -2316,6 +2298,7 @@ Working tree CLEAN at `84c110c`. Key commits this program (chronological):
 - `84c110c` e2e script self-containment fix + final-tree golden numbers
 
 ### Test/verification state (all on the FINAL committed tree)
+
 - `nice -n19 npx tsc -b` from root: clean. Full turbo build: 19/19.
 - `packages/tests`: **178 passed / 44 GPU-gated skips / 0 failed** (~80–150s wall on the loaded box).
   The 44 skips are `parity-helios.test.ts` (36) + `gpu-perf.test.ts` — they gate on NVIDIA vendorId
@@ -2328,7 +2311,9 @@ Working tree CLEAN at `84c110c`. Key commits this program (chronological):
 - Byte-BPE exporter cross-verified vs Python `tokenizers` on 9,822 real corpus docs: 100% id agreement.
 
 ### What Stages 3–4 added (commit `b3ffe90`)
+
 All config-gated; legacy GPT-2-style configs bit-for-bit unchanged.
+
 - **Arch**: `rmsNorm` (+fused backward) and `rope` ops — cpu_ref + autograd + Helios SPIR-V kernels.
   RoPE is EXACTLY HF `rotate_half` (half-split, `inv_freq=θ^(-2i/D)`) so export needs no permutation;
   backward = rotation by −angle (reuses forward kernel with negated sin). Tied embeddings via
@@ -2364,6 +2349,7 @@ All config-gated; legacy GPT-2-style configs bit-for-bit unchanged.
   - P3 (= the inference-engine fix above).
 
 ### Stage-1 harness (commit `9b63685`) — how correctness is enforced
+
 `packages/tests/src/`: `gradcheck-ops.test.ts` (central-difference FD checks for EVERY op the model
 uses; reusable `checkGrad`), `gradcheck-model.test.ts` (whole tiny-GPT gradchecks across
 swiglu/gelu/universal/kan_spline AND the Llama-form config; top-|grad| element sampling; dead-param +
