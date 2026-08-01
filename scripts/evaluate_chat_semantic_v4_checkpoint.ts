@@ -304,6 +304,12 @@ async function main(): Promise<void> {
       : null,
     evaluatorCommit: await git("rev-parse", "HEAD"),
   };
+  if (flags.has("preflight-only")) {
+    process.stdout.write(
+      `${JSON.stringify({ result: "PASS", mode: "preflight-only", identity }, null, 2)}\n`,
+    );
+    return;
+  }
   if (!resume) await mkdir(outDir, { recursive: false });
   else await stat(outDir);
   const statePath = join(outDir, "evaluation-state-started.json");
