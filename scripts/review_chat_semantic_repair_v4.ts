@@ -34,6 +34,7 @@ interface ReviewPlan {
   readonly sourcePaths: readonly string[];
   readonly candidateIds: readonly string[];
   readonly sourcePayloads: readonly unknown[];
+  readonly blueprintPayloads: readonly unknown[];
 }
 
 function sha256(value: string | Buffer): string {
@@ -144,7 +145,7 @@ function validateReview(
 }
 
 function promptFor(template: string, plan: ReviewPlan): string {
-  return `${template}\n\n## Review batch\n\nReview batch ID: ${plan.reviewBatchId}\nReturn reviews in this exact candidate order:\n${plan.candidateIds.join(", ")}\n\nCandidate batches:\n${JSON.stringify(plan.sourcePayloads)}\n`;
+  return `${template}\n\n## Review batch\n\nReview batch ID: ${plan.reviewBatchId}\nReturn reviews in this exact candidate order:\n${plan.candidateIds.join(", ")}\n\nResearcher-side semantic blueprints:\n${JSON.stringify(plan.blueprintPayloads)}\n\nCandidate batches:\n${JSON.stringify(plan.sourcePayloads)}\n`;
 }
 
 async function runCodex(
@@ -234,6 +235,10 @@ async function main(): Promise<void> {
   const workers = positiveInteger(args.get("workers"), 2, "workers");
   const model = args.get("model") ?? "gpt-5.5";
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
+  const blueprintPath = resolve(
+    args.get("blueprint") ??
+      "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json",
+  );
   const maximumReviews = positiveInteger(
     args.get("reviews"),
     Number.MAX_SAFE_INTEGER,
@@ -248,6 +253,18 @@ async function main(): Promise<void> {
     "schemas/chat-semantic-repair-reviews.schema.json",
   );
   const template = await readFile(templatePath, "utf8");
+  const blueprintBytes = await readFile(blueprintPath);
+  const blueprint = JSON.parse(blueprintBytes.toString("utf8")) as unknown;
+  if (!isObject(blueprint) || !Array.isArray(blueprint.batches))
+    throw new Error("malformed semantic blueprint");
+  const blueprintById = new Map<string, unknown>();
+  for (const raw of blueprint.batches) {
+    if (!isObject(raw) || typeof raw.batch_id !== "string")
+      throw new Error("semantic blueprint has malformed batch");
+    if (blueprintById.has(raw.batch_id))
+      throw new Error(`semantic blueprint duplicates ${raw.batch_id}`);
+    blueprintById.set(raw.batch_id, raw);
+  }
   const names = (await readdir(generationRoot))
     .filter((name) => name.endsWith(".json") && !name.includes(".tmp-"))
     .sort();
@@ -265,12 +282,23 @@ async function main(): Promise<void> {
     const ids = sourcePayloads.flatMap((value, index) =>
       candidateIds(value, sourcePaths[index]!),
     );
+    const blueprintPayloads = sourcePayloads.map((value, index) => {
+      if (!isObject(value) || typeof value.batch_id !== "string")
+        throw new Error(`${sourcePaths[index]} has no batch_id`);
+      const allocated = blueprintById.get(value.batch_id);
+      if (!allocated)
+        throw new Error(
+          `semantic blueprint does not contain ${value.batch_id}`,
+        );
+      return allocated;
+    });
     if (ids.length > 128)
       throw new Error(`review group exceeds schema maximum: ${ids.length}`);
     plans.push({
       reviewBatchId: `review-${String(plans.length).padStart(3, "0")}`,
       sourcePaths,
       sourcePayloads,
+      blueprintPayloads,
       candidateIds: ids,
     });
   }
@@ -366,6 +394,7 @@ async function main(): Promise<void> {
       path: schemaPath,
       sha256: sha256(await readFile(schemaPath)),
     },
+    blueprint: { path: blueprintPath, sha256: sha256(blueprintBytes) },
     generation_batches: names.length,
     batches_per_review: batchesPerReview,
     requested_review_groups: queue.length + completed.length,

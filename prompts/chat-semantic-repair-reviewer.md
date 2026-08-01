@@ -16,6 +16,11 @@ For every candidate, independently assess:
 For two-exchange candidates, verify that the final assistant turn uses the earlier common ground and the new user
 turn. Reject a candidate that restarts, contradicts the prior answer, or ignores the follow-up.
 
+The caller also supplies the researcher-side semantic blueprint for each candidate batch. Use it as a coverage
+contract, not as model-visible content. Reject candidates that ignore the allocated territory, recycle an excluded
+cliche, or merely paraphrase another candidate in the supplied review group. Do not reward an individually fluent
+row if it contributes no distinct learning signal to the planned batch.
+
 Reject factual errors, false distinctions, unsafe certainty, fabricated precision, non sequiturs, unearned
 therapy, irrelevant advice, formatting exercises, and synthetic conversations whose learning signal is unclear.
 Do not reject a correct answer simply because another phrasing is possible. Do not demand citations, technical
