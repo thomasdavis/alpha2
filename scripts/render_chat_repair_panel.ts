@@ -96,7 +96,7 @@ async function main(): Promise<void> {
     ].join("\n");
   });
   const content = [
-    "# Alpha chat repair v2 — frozen qualitative panel",
+    `# ${args.title ?? "Alpha chat repair v2 — frozen qualitative panel"}`,
     "",
     `Panel input SHA-256: \`${sha256(panelText)}\`  `,
     `Development results SHA-256: \`${sha256(resultsText)}\`  `,

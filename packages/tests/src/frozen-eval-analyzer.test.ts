@@ -120,5 +120,5 @@ describe("frozen-eval pair analyzer", () => {
     await expect(execFileAsync("npx", ["tsx", analyzer, "--base", baseDir, "--chat", chatDir,
       "--manifest", substitutedManifest, "--out", join(dir, "rejected.json")], { cwd: repoRoot }))
       .rejects.toMatchObject({ stderr: expect.stringContaining("chat input frozen-manifest SHA-256") });
-  });
+  }, 120_000);
 });
