@@ -9,6 +9,12 @@ Every v2 checkpoint answered every development prompt, but all regressed on repe
 qualitative contingency. No v2 checkpoint was selected, the sealed-final suite was never opened, the public
 chat model remained unchanged, and the paid Alpha pod was removed after verified recovery.
 
+A prompt-level mechanism analysis completed locally on 2026-08-01. On the exact 69 generation-eligible prompts,
+every v2 checkpoint created more new loops than it fixed, with median onset near generated token 18–24. Only
+3/68,964 supervised targets crossed the same repetition threshold, and a calibrated BGE diagnostic found no
+reliable semantic-contingency gain. The next proposed intervention is a matched control of train-only,
+rollout-conditioned repetition unlikelihood. It is documented but unexecuted; it does not authorize a pod.
+
 | Item | Current state |
 |---|---|
 | Active source | training `57c065e35c7564688726dafb404efaff952d860b`; prompt fix `cf4ad61` |
@@ -29,6 +35,8 @@ chat model remained unchanged, and the paid Alpha pod was removed after verified
 | V2 sealed final | never executed or inspected |
 | V2 recovery archive | revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, 53 files |
 | V2 Alpha pod | `omn3hktwqs7r5l` removed; unrelated pod left untouched; final live list empty |
+| V2 mechanism analysis | complete; clean-target / self-amplifying-prefix hypothesis best supported |
+| Repair v3 | RCR-UL matched-control contract written; no code implementation or training yet |
 
 The selected model is materially more conversational than the archived terminal checkpoint, but its untouched
 result is not structurally reliable and its semantic behavior is weak. Repair v2 did not improve it. Alpha is
@@ -42,6 +50,8 @@ Full account:
 
     docs/resume/CHAT-REPAIR-2026-07-31.md
     docs/resume/CHAT-REPAIR-V2-2026-07-31.md
+    docs/resume/CHAT-REPAIR-V2-MECHANISM-ANALYSIS-2026-08-01.md
+    docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md
 
 ## Archived terminal baseline
 

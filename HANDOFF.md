@@ -1,4 +1,4 @@
-# HANDOFF — Alpha repair v2 rejected; best honest checkpoint unchanged; AlphaCorpus paused, state as of 2026-07-31
+# HANDOFF — Alpha repair v2 diagnosed; repair v3 proposed; best honest checkpoint unchanged, state as of 2026-08-01
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
@@ -7,7 +7,9 @@ small, natural conversational model. AlphaCorpus remains a valuable side project
 paused and is not the active model-training objective. Do not restart corpus generation, human-review pipeline
 work, or public explorer work merely because the historical section below is detailed.
 
-The latest authoritative record is
+The latest authoritative records are the
+[v2 mechanism analysis](docs/resume/CHAT-REPAIR-V2-MECHANISM-ANALYSIS-2026-08-01.md) and the unexecuted
+[v3 experiment contract](docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md). The full v2 execution record remains
 [Chat Repair v2 2026-07-31](docs/resume/CHAT-REPAIR-V2-2026-07-31.md). Repair v2 is complete and negative:
 
 - Pilot A continued the published checkpoint for 800 bounded steps. Pilot B then ran the one predeclared
@@ -33,6 +35,24 @@ The latest authoritative record is
   sample and was clearly labelled as a test; it did not change the improvement-only rule.
 - Do not continue either v2 branch blindly. A future paid run requires explicit authorization and a genuinely
   new finite intervention aimed at semantic contingency or autoregressive stability.
+
+The 2026-08-01 local analysis advances that last item without authorizing compute:
+
+- On the exact 69 generation-eligible prompts, every v2 checkpoint created 11–17 new loops while fixing only
+  4–7 baseline loops. Median onset was generated token 18–24.
+- Only 3/68,964 supervised targets crossed the same repetition threshold. Of 214 dominant generated loop
+  phrases, 110 were absent from every supervised target.
+- A calibrated 68-prompt BGE diagnostic found no reliable semantic-contingency gain; every paired bootstrap
+  interval crossed zero. The diagnostic is supporting evidence, not a quality judge.
+- Both analyzers replay byte-identically. Canonical results are under
+  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v2-analysis-20260731/`.
+- The best-supported working mechanism is instability under Alpha's own generated prefixes, not direct replay of
+  dirty looping targets. This does not imply that the corpus is perfect or that repetition is the only weakness.
+- Repair v3 proposes one causal change: train-only rollout-conditioned repetition unlikelihood, compared with a
+  compute-matched zero-weight control. It requires a fresh selector, exact leakage audit, CPU/GPU parity, and a
+  terminal 400-step cap per arm.
+- No v3 loss code, cohort, GPU run, sealed-final execution, or public model change has occurred. Next work is the
+  local implementation gate; creating a paid pod still requires renewed explicit authorization.
 
 The selected checkpoint's earlier recovery record is
 [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
