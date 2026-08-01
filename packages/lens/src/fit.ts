@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { TensorData } from "@alpha/core";
@@ -157,6 +157,8 @@ export async function fitJacobianLens(options: LensFitOptions): Promise<LensFitR
     model_weights_fingerprint: adapter.description.weightsFingerprint,
   });
   const splitConvergence = splitMetrics(splitEven, splitOdd, state.valid_even_prompts, state.valid_odd_prompts);
+  const publishPrompts = options.corpusVisibility === "public" || options.corpusVisibility === "synthetic";
+  if (publishPrompts) await copyFile(options.prompts, join(options.output, "fit-prompts.jsonl"));
   const report: Record<string, unknown> = {
     format: "blah-jacobian-lens-fit-report",
     version: 1,
@@ -177,6 +179,7 @@ export async function fitJacobianLens(options: LensFitOptions): Promise<LensFitR
       maximum_sequence_length: options.maxSeqLen,
       corpus_fingerprint: loaded.fingerprint,
       visibility: options.corpusVisibility ?? "synthetic",
+      published_artifact: publishPrompts ? "fit-prompts.jsonl" : null,
     },
     fitting: {
       device: adapter.backend.name,

@@ -20,7 +20,7 @@ export async function writeBundleMetadata(
   if (!/^[0-9a-f]{40}$/.test(identity.modelRevision)) throw new Error("modelRevision must be an immutable 40-character Hugging Face commit SHA");
   if (!/^[0-9a-f]{40}$/.test(identity.sourceRevision)) throw new Error("sourceRevision must be an immutable 40-character git commit SHA");
   const report = JSON.parse(await readFile(join(output, "fit-report.json"), "utf8")) as {
-    corpus: { valid_prompt_count: number; maximum_sequence_length: number };
+    corpus: { valid_prompt_count: number; maximum_sequence_length: number; published_artifact?: string | null };
     fitting: { exported_dtype: string; source_sites: string[]; skip_first_positions: number; target_position_policy: string };
   };
   const description = adapter.describe();
@@ -169,10 +169,10 @@ The runtime uses the exact native tokenizer and chat template, preserves exact t
 From the Alpha source revision recorded in \`fit-report.json\`:
 
 \`\`\`bash
-alpha lens fit --checkpoint=<native-checkpoint> --prompts=<public-jsonl> --samples=${report.corpus.prompt_count} --max-seq-len=${report.corpus.maximum_sequence_length} --skip-first=${manifest.lens.skip_first_positions} --dim-batch=${report.fitting.vjp_batch_size} --dtype=${manifest.lens.dtype} --checkpoint-every=5 --output=dist/blah-lens
+alpha lens fit --checkpoint=<native-checkpoint> --prompts=${report.corpus.published_artifact ?? "<representative-jsonl>"} --samples=${report.corpus.prompt_count} --max-seq-len=${report.corpus.maximum_sequence_length} --skip-first=${manifest.lens.skip_first_positions} --dim-batch=${report.fitting.vjp_batch_size} --dtype=${manifest.lens.dtype} --checkpoint-every=5 --output=dist/blah-lens
 \`\`\`
 
-The model and this artifact use the ${identity.license} license. Fitting prompt provenance and visibility are recorded in \`fit-report.json\`; private prompt text is not included.
+The model and this artifact use the ${identity.license} license. Fitting prompt provenance and visibility are recorded in \`fit-report.json\`. ${report.corpus.published_artifact ? `The license-safe synthetic fitting prompts are included as \`${report.corpus.published_artifact}\` for exact reproduction.` : "Private or proprietary fitting text is not included."}
 `;
 }
 

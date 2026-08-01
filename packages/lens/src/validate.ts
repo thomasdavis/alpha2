@@ -375,7 +375,10 @@ function vjpFiniteDifferenceTest(adapter: AlphaLensAdapter): TestResult {
     const minus = targetScalar(adapter, ids, siteId, direction, -epsilon, targetDirection);
     return (plus - minus) / (2 * epsilon);
   });
-  const numeric = numerics.at(-1)!;
+  // At very small epsilons the float32 native graph can lose the perturbation
+  // to cancellation.  The median across the declared epsilon sweep is a robust
+  // finite-difference estimate while still recording every raw measurement.
+  const numeric = [...numerics].sort((a, b) => a - b)[Math.floor(numerics.length / 2)]!;
   const abs = Math.abs(analytic - numeric);
   const rel = abs / Math.max(Math.abs(analytic), Math.abs(numeric), 1e-12);
   const cosine = Math.sign(analytic * numeric);
@@ -383,7 +386,7 @@ function vjpFiniteDifferenceTest(adapter: AlphaLensAdapter): TestResult {
     name: "VJP finite-difference check",
     status: abs <= 2e-3 || rel <= 5e-2 ? "pass" : "fail",
     tolerance: { absolute_error: 2e-3, relative_error: 5e-2 },
-    measurements: { source_site: siteId, target_direction: "deterministic dense sinusoidal direction", dtype: "float32", device: adapter.backend.name, epsilon_values: epsilonValues, analytic, numeric_estimates: numerics, absolute_error: abs, relative_error: rel, cosine_agreement: cosine },
+    measurements: { source_site: siteId, target_direction: "deterministic dense sinusoidal direction", dtype: "float32", device: adapter.backend.name, epsilon_values: epsilonValues, numeric_estimator: "median of central differences across epsilon sweep", analytic, numeric_estimates: numerics, selected_numeric_estimate: numeric, absolute_error: abs, relative_error: rel, cosine_agreement: cosine },
   };
 }
 
