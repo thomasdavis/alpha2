@@ -114,7 +114,14 @@ async function runLogged(
     );
     const child = spawn(command, args, {
       cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        // PyTorch deterministic generation on CUDA >= 10.2 requires an
+        // explicit CuBLAS workspace configuration.  Bind it here so a fresh
+        // SSH process cannot silently depend on an operator's shell profile.
+        CUBLAS_WORKSPACE_CONFIG:
+          process.env.CUBLAS_WORKSPACE_CONFIG ?? ":4096:8",
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout.on("data", (chunk) => {
