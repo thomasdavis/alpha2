@@ -527,6 +527,13 @@ async function main(): Promise<void> {
   );
   const model = args.get("model") ?? "gpt-5.4";
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
+  const declaredSourceHistory = (args.get("source-commit-history") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (declaredSourceHistory.some((value) => !/^[0-9a-f]{40}$/.test(value))) {
+    throw new Error("source-commit-history must contain full Git SHAs");
+  }
   const blueprintPath = resolve(
     args.get("blueprint") ??
       (isV8
@@ -560,6 +567,20 @@ async function main(): Promise<void> {
   await mkdir(batchRoot, { recursive: true });
   await mkdir(rejectedRoot, { recursive: true });
   await mkdir(logRoot, { recursive: true });
+  const priorCampaignFailurePath = join(outputRoot, "generation-failures.json");
+  const priorCampaignFailure = await stat(priorCampaignFailurePath).catch(
+    () => null,
+  );
+  if (priorCampaignFailure?.isFile()) {
+    const content = await readFile(priorCampaignFailurePath);
+    await movePreserving(
+      priorCampaignFailurePath,
+      join(
+        rejectedRoot,
+        `campaign-failures-${sha256(content).slice(0, 16)}-pid-${process.pid}.json`,
+      ),
+    );
+  }
   const queue = [...selectedPlans];
   const completed: Array<Record<string, unknown>> = [];
   const rejectedAttempts: Array<Record<string, unknown>> = await Promise.all(
@@ -619,15 +640,21 @@ async function main(): Promise<void> {
         blueprint.byId.get(plan.batchId)!,
       );
       let acceptedAttempt = 0;
-      let lastError: unknown = null;
+      let lastError: unknown = [...rejectedAttempts]
+        .reverse()
+        .find((attempt) => attempt.batch_id === plan.batchId)?.error;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         process.stdout.write(
           `[worker ${workerIndex}] ${plan.batchId}: generating with ${model} (attempt ${attempt}/${maxAttempts})\n`,
         );
         try {
+          const validatorFeedback =
+            typeof lastError === "string" && lastError.length > 0
+              ? `\n\n## Validator feedback from the previous rejected attempt\n\nThe previous whole-batch output was rejected for this exact reason: ${lastError}\nRegenerate the complete batch from scratch. Correct that failure while preserving every requested candidate ID, turn count, semantic territory, and diversity requirement. Do not merely patch or omit the named candidate.`
+              : "";
           await runCodex(
             plan,
-            prompt,
+            `${prompt}${validatorFeedback}`,
             outputPath,
             eventPath,
             schemaPath,
@@ -721,6 +748,9 @@ async function main(): Promise<void> {
       cwd: repoRoot,
       encoding: "utf8",
     }).trim().length > 0;
+  const sourceCommitHistory = [
+    ...new Set([...declaredSourceHistory, sourceCommit]),
+  ];
   const manifest = {
     schema: isV8
       ? "alpha-chat-foundations-v8-generation-manifest-v1"
@@ -731,6 +761,7 @@ async function main(): Promise<void> {
     reasoning_effort: reasoningEffort,
     codex_version: codexVersion,
     source_commit: sourceCommit,
+    source_commit_history: sourceCommitHistory,
     source_tree_dirty: sourceTreeDirty,
     prompt: {
       path: templatePath,
