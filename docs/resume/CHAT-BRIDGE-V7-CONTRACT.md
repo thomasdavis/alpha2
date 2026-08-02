@@ -24,10 +24,16 @@ V7 combines:
 - 40,000 compact single-user/single-assistant conversations selected from the canonical SmolTalk source span;
 - a development set consisting of the 265 reviewed semantic rows plus 2,000 disjoint direct rows.
 
-Direct rows are eligible by provenance, two-turn conversational shape, and exact Alpha-tokenizer length at or
-below 384 tokens. Selection and interleaving use SHA-256 order. There is no topic-name, answer-key, programming,
-or hand-written semantic lookup. This is intentionally a broad direct-answer bridge; its residual domain mix is
-measured rather than silently described as philosophy-only data.
+Direct rows are eligible by provenance, two-turn conversational shape, absence of an exact fenced-code
+serialization, and exact Alpha-tokenizer length at or below 384 tokens. The fence exclusion is a bounded syntax
+test aligned with the product scope; it is not a topic-name classifier and does not claim to recognize every
+programming task. Selection and interleaving use SHA-256 order. There is no topic-name, answer-key, programming
+vocabulary, or hand-written semantic lookup. This is intentionally a broad direct-answer bridge; its residual
+domain mix is measured rather than silently described as philosophy-only data.
+
+The first completed build is preserved but rejected: 10,640/40,000 selected direct rows contained fenced code,
+and a deterministic 24-row audit visibly overrepresented Python, SQL, CSS, and JSON tasks. No checkpoint was
+exposed to those bytes. The accepted build must repeat the audit after applying the declared syntax exclusion.
 
 Every visible v4 evaluation user turn, every frozen 24-item BLAH prompt, and every semantic-development user turn
 is excluded by normalized exact match from the entire candidate conversation. This is stricter than v4's

@@ -342,6 +342,7 @@ async function main(): Promise<void> {
     outsideSmolTalkSpan: 0,
     notSingleExchange: 0,
     holdoutPrompt: 0,
+    fencedCode: 0,
     overTokenBound: 0,
     duplicate: 0,
   };
@@ -363,6 +364,13 @@ async function main(): Promise<void> {
     }
     if (heldout.has(normalize(turns[0]!.content))) {
       rejected.holdoutPrompt += 1;
+      continue;
+    }
+    // A fenced code block is an exact serialization feature, not an
+    // open-ended topic classifier. The product target does not need code yet,
+    // and the rejected population remains fully recoverable from source line.
+    if (line.includes("```")) {
+      rejected.fencedCode += 1;
       continue;
     }
     const tokens = tokenizer.encode(line).length;
@@ -468,13 +476,14 @@ async function main(): Promise<void> {
       seed,
       canonicalSourceSpan: smolSpan,
       directEligibility:
-        "one user turn, one assistant turn, exact tokenizer length within bound",
+        "one user turn, one assistant turn, no fenced-code serialization, exact tokenizer length within bound",
       directSelection:
         "lowest sha256(seed, direct-selection, conversation-sha256)",
       directTrainCount,
       directDevCount,
       maxDirectTokens,
       semanticTopicHeuristicApplied: false,
+      exactFencedCodeSyntaxExcluded: true,
       exactVisiblePromptExclusion: true,
       exactBlahPromptExclusion: true,
       semanticDevPromptExclusion: true,
