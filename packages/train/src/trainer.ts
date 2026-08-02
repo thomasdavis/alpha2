@@ -1455,6 +1455,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const totalIters = trainConfig.iters;
   const traceEnabled = trainConfig.trace;
   const capturePhaseTimings = traceEnabled;
+  const phaseSyncProfile = process.env.ALPHA_PROFILE_PHASE_SYNC === "1";
+  if (phaseSyncProfile && !traceEnabled) {
+    throw new Error("ALPHA_PROFILE_PHASE_SYNC=1 requires --trace=true");
+  }
   const gradAccumSteps = trainConfig.gradAccumSteps;
   const gradClip = trainConfig.gradClip;
   const embGradScale = trainConfig.embGradScale;
@@ -1686,6 +1690,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       dropoutRng.reset(stepSeedBase + microStep, 0);
       const _positiveFwd0 = deps.rcrUl ? performance.now() : 0;
       const { loss } = gptForward(activeModelConfig, params, backend, trainTape, batch.inputs, batch.targets, true, !!deps.activationCheckpointing, !!deps.mixedPrecision, dropoutRng, releaseFn, batch.lossMask);
+      if (phaseSyncProfile && syncGpuFn) syncGpuFn();
       if (deps.rcrUl) positiveFwdMs += performance.now() - _positiveFwd0;
       const _fwd1 = capturePhaseTimings ? performance.now() : 0;
       if (capturePhaseTimings) fwdMs += _fwd1 - _dl1;
@@ -1727,6 +1732,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       } else {
         trainTape.backward(loss, backend, releaseFn);
       }
+      if (phaseSyncProfile && syncGpuFn) syncGpuFn();
       if (deps.rcrUl) positiveBwdMs += performance.now() - _positiveBwd0;
       if (typeof backendAnyBw.coopMatmulPaused === "boolean") {
         backendAnyBw.coopMatmulPaused = false;
@@ -2406,6 +2412,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         }
         optimizer.step(paramDataMap, gradMap, effectiveGradScale);
       }
+      if (phaseSyncProfile && syncGpuFn) syncGpuFn();
     }
     const _t5 = capturePhaseTimings ? performance.now() : 0;
 
@@ -2550,7 +2557,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
 
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
-      console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
+      console.log(`  [trace] phase_mode=${phaseSyncProfile ? "gpu_sync" : "enqueue"} data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
       const gpuStepStats = getGpuStepStatsFn?.();
       if (gpuStepStats?.profilingEnabled) {
         const top = (rows: Array<{ name: string; count: number }>, limit: number): string =>

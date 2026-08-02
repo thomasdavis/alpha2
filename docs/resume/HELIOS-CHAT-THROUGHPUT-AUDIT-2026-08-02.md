@@ -144,17 +144,21 @@ trajectory and native checkpoint outputs.
 | B4 | Coop forward enabled, backward safety retained | Is tensor-core forward fast *and* numerically usable? |
 | B5 | Mixed precision with loss scaling | Can the true high-throughput path remain finite? |
 | B6 | Block 512, batch 32, FP32 | What is the context-length/product trade-off? |
+| B7 | B0 plus a GPU synchronization at each measured phase boundary | Which phase owns GPU wall time? This row is attribution-only, not a throughput contender. |
 
 For B4 and B5, the experiment stops immediately on non-finite loss, gradients,
 or a correctness mismatch. A fast-but-wrong kernel is a failed row.
 
-After the sweep, phase timing will divide each step into forward, backward,
-gradient norm, clipping, optimizer, flush, and data time. Opt-in backend
-instrumentation records operation kind, the dominant kernel names, command
-flushes, waited flushes, DGC flushes, and operations per flush. The profiler is
-disabled in ordinary training so its JavaScript map accounting cannot distort a
-long run. Kernel work should be optimized only after the bounded evidence
-identifies the dominant phase and operation mix.
+Helios normally evaluates lazily, so ordinary trace timers measure CPU graph
+construction and charge accumulated GPU waiting to the next readback; they are
+not honest kernel-phase timers. B7 deliberately synchronizes after forward,
+backward, and optimizer work to produce an attribution profile. Those barriers
+change batching and make B7 slower, so only B0-B6 may be compared for end-to-end
+throughput. Opt-in backend instrumentation records operation kind, the dominant
+kernel names, command flushes, waited flushes, DGC flushes, and operations per
+flush. Both profilers are disabled in ordinary training. Kernel work should be
+optimized only after the bounded evidence identifies the dominant phase and
+operation mix.
 
 ## Likely optimization order
 

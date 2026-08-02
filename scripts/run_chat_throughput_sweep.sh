@@ -33,12 +33,14 @@ mkdir "$OUT_ROOT"
 sha256sum "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" "$INIT_CHECKPOINT" > "$OUT_ROOT/INPUT-HASHES.sha256"
 
 run_row() {
-  local name=$1 wg=$2 coop=$3 fp16=$4 block=$5 batch=$6 pool=$7
+  local name=$1 wg=$2 coop=$3 fp16=$4 block=$5 batch=$6 pool=$7 phase_sync=$8
   local run_dir="$OUT_ROOT/$name"
   local log="$OUT_ROOT/$name.log"
+  local phase_sync_value=0
+  [[ "$phase_sync" == "on" ]] && phase_sync_value=1
   mkdir "$run_dir"
-  printf 'row=%s wg=%s coop=%s fp16=%s block=%s batch=%s pool=%s\n' \
-    "$name" "$wg" "$coop" "$fp16" "$block" "$batch" "$pool" | tee "$run_dir/row.txt"
+  printf 'row=%s wg=%s coop=%s fp16=%s block=%s batch=%s pool=%s phase_sync=%s\n' \
+    "$name" "$wg" "$coop" "$fp16" "$block" "$batch" "$pool" "$phase_sync" | tee "$run_dir/row.txt"
 
   local -a env_args=(
     "HELIOS_WG_SIZE=$wg"
@@ -47,6 +49,7 @@ run_row() {
     "ALPHA_SAMPLE_FROM_CHECKPOINT=0"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
     "HELIOS_PROFILE_GPU_OPS=1"
+    "ALPHA_PROFILE_PHASE_SYNC=$phase_sync_value"
   )
   if [[ "$coop" == "off" ]]; then
     env_args+=("HELIOS_DISABLE_COOP_MAT=1")
@@ -77,13 +80,14 @@ run_row() {
   printf '%s\n' "$status" > "$run_dir/exit-code.txt"
 }
 
-run_row b0_fp32_wg64          64  off false 1024 16  512
-run_row b1_fp32_wg128        128  off false 1024 16  512
-run_row b2_fp32_wg256        256  off false 1024 16  512
-run_row b3_fp32_wg128_pool768 128 off false 1024 16  768
-run_row b4_coop_wg128        128  on  false 1024 16  512
-run_row b5_mixed_wg128       128  on  true  1024 16  512
-run_row b6_fp32_block512     128  off false 512  32  512
+run_row b0_fp32_wg64           64  off false 1024 16  512 off
+run_row b1_fp32_wg128         128  off false 1024 16  512 off
+run_row b2_fp32_wg256         256  off false 1024 16  512 off
+run_row b3_fp32_wg128_pool768 128  off false 1024 16  768 off
+run_row b4_coop_wg128         128  on  false 1024 16  512 off
+run_row b5_mixed_wg128        128  on  true  1024 16  512 off
+run_row b6_fp32_block512      128  off false 512  32  512 off
+run_row b7_fp32_phase_sync     64  off false 1024 16  512 on
 
 python3 scripts/summarize_chat_throughput_sweep.py \
   --root "$OUT_ROOT" --skip-steps "$SKIP_STEPS" --exclude-final \

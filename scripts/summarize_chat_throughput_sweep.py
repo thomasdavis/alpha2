@@ -16,7 +16,8 @@ STEP_RE = re.compile(
     r"\| (?P<ms>\d+)ms/it \| (?P<tps>\d+) tok/s \| (?P<ops>\d+) gpu_ops"
 )
 TRACE_RE = re.compile(
-    r"\[trace\] data=(?P<data>\d+)ms fwd=(?P<fwd>\d+)ms bwd=(?P<bwd>\d+)ms "
+    r"\[trace\] phase_mode=(?P<phase_mode>\w+) data=(?P<data>\d+)ms "
+    r"fwd=(?P<fwd>\d+)ms bwd=(?P<bwd>\d+)ms "
     r"gradnorm=(?P<gradnorm>\d+)ms clip=(?P<clip>\d+)ms "
     r"optim=(?P<optim>\d+)ms flush=(?P<flush>\d+)ms"
 )
@@ -83,6 +84,7 @@ def main() -> None:
             "last_loss": losses[-1] if losses else None,
             "nonfinite": nonfinite,
             "phase_median_ms": phase_medians,
+            "phase_mode": accepted_traces[-1]["phase_mode"] if accepted_traces else None,
             "gpu_profile_median": profile_medians,
             "top_kinds": accepted_profiles[-1]["kinds"] if accepted_profiles else None,
             "top_kernels": accepted_profiles[-1]["kernels"] if accepted_profiles else None,
@@ -106,8 +108,8 @@ def main() -> None:
         )
 
     print("\n## Median step phases and dispatch shape\n")
-    print("| Row | Data ms | Fwd ms | Bwd ms | Grad ms | Optim ms | Flushes | Ops/flush | DGC flushes |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| Row | Mode | Data ms | Fwd ms | Bwd ms | Grad ms | Optim ms | Flushes | Ops/flush | DGC flushes |")
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for row in rows:
         phases = row["phase_median_ms"]
         profile = row["gpu_profile_median"]
@@ -117,7 +119,7 @@ def main() -> None:
             return "n/a" if value is None else f"{float(value):.{digits}f}"
 
         print(
-            f"| {row['name']} | {nested_number(phases, 'data')} | {nested_number(phases, 'fwd')} "
+            f"| {row['name']} | {row['phase_mode'] or 'n/a'} | {nested_number(phases, 'data')} | {nested_number(phases, 'fwd')} "
             f"| {nested_number(phases, 'bwd')} | {nested_number(phases, 'gradnorm')} "
             f"| {nested_number(phases, 'optim')} | {nested_number(profile, 'flushes')} "
             f"| {nested_number(profile, 'ops_per_flush', 1)} | {nested_number(profile, 'dgc')} |"
