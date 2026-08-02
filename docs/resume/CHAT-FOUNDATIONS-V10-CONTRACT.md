@@ -1,6 +1,6 @@
 # Alpha chat foundations v10 — independent-wave contract
 
-**Status:** generation and review in progress; no checkpoint selected or published  
+**Status:** completed and rejected; no checkpoint selected or published
 **Product:** a natural conversational model, not a benchmark-answer artifact  
 **Compute boundary:** one dedicated Alpha GPU; no unrelated pod may be touched
 
