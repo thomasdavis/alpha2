@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-/** Immutable free-generation evaluation for the public baseline or one v4 checkpoint. */
+/** Immutable free-generation evaluation for the public baseline or one v4/v5 checkpoint. */
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -237,7 +237,9 @@ async function main(): Promise<void> {
 
   const publicSha =
     "399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec";
-  const label = checkpointHash === publicSha ? "I0" : "V4";
+  const cleanBaseSha =
+    "08e14fa9604bf1b46ebcd5df37933c84d2496c1d05d9e4b32ebad98792cc6049";
+  let label = checkpointHash === publicSha ? "I0" : "CANDIDATE";
   let runContract: Record<string, any> | null = null;
   let runContractPath: string | null = null;
   let runContractHash: string | null = null;
@@ -247,7 +249,7 @@ async function main(): Promise<void> {
       "public baseline must not receive a run contract",
     );
   } else {
-    assert(args["run-contract"], "v4 candidate requires --run-contract");
+    assert(args["run-contract"], "semantic-repair candidate requires --run-contract");
     runContractPath = resolve(args["run-contract"]);
     runContractHash = await sha256File(runContractPath);
     runContract = JSON.parse(await readFile(runContractPath, "utf8")) as Record<
@@ -255,16 +257,21 @@ async function main(): Promise<void> {
       any
     >;
     assert(
-      runContract.schema === "alpha-chat-semantic-repair-contract-v4",
+      [
+        "alpha-chat-semantic-repair-contract-v4",
+        "alpha-chat-semantic-repair-contract-v5",
+      ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
+    label = runContract.schema.endsWith("v5") ? "V5" : "V4";
     assert(
       runContract.eligibleForCheckpointSelection === true,
       "candidate is selection-ineligible",
     );
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
+    const expectedInitialization = label === "V5" ? cleanBaseSha : publicSha;
     assert(
-      runContract.initializedFrom?.sha256 === publicSha,
+      runContract.initializedFrom?.sha256 === expectedInitialization,
       "candidate initialization drift",
     );
     assert(
@@ -290,7 +297,7 @@ async function main(): Promise<void> {
     "evaluation requires a clean worktree",
   );
   const identity = {
-    schema: "alpha-chat-semantic-repair-v4-evaluation-state-v1",
+    schema: "alpha-chat-semantic-repair-evaluation-state-v1",
     status: "running",
     label,
     checkpoint: {
@@ -432,7 +439,7 @@ async function main(): Promise<void> {
         "--out",
         panelRender,
         "--title",
-        `Alpha semantic repair v4 — ${label} step ${checkpoint.step}`,
+        `Alpha semantic repair — ${label} step ${checkpoint.step}`,
       ],
       join(outDir, "06-render-panel.log"),
       repo,
@@ -455,7 +462,7 @@ async function main(): Promise<void> {
     })),
   );
   const manifest = {
-    schema: "alpha-chat-semantic-repair-v4-checkpoint-evaluation-v1",
+    schema: "alpha-chat-semantic-repair-checkpoint-evaluation-v1",
     status:
       "machine-development-complete; semantic-human-review-pending; sealed-final-untouched",
     completedUtc: new Date().toISOString(),
