@@ -273,24 +273,41 @@ async function main(): Promise<void> {
         "alpha-chat-foundation-contract-v6",
         "alpha-chat-bridge-contract-v7",
         "alpha-chat-foundations-contract-v8",
+        "alpha-chat-foundations-v9-ipt-pilot-contract-v1",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
-    label = runContract.schema.endsWith("v8")
-      ? "V8"
-      : runContract.schema.endsWith("v7")
-        ? "V7"
-        : runContract.schema.endsWith("v6")
-          ? "V6"
-          : runContract.schema.endsWith("v5")
-            ? "V5"
-            : "V4";
-    assert(
-      runContract.eligibleForCheckpointSelection === true,
-      "candidate is selection-ineligible",
-    );
+    label =
+      runContract.schema === "alpha-chat-foundations-v9-ipt-pilot-contract-v1"
+        ? "V9-IPT"
+        : runContract.schema.endsWith("v8")
+          ? "V8"
+          : runContract.schema.endsWith("v7")
+            ? "V7"
+            : runContract.schema.endsWith("v6")
+              ? "V6"
+              : runContract.schema.endsWith("v5")
+                ? "V5"
+                : "V4";
+    if (label === "V9-IPT") {
+      assert(
+        runContract.eligibleForCheckpointSelection === false,
+        "V9 IPT pilot must remain release-selection-ineligible until a finishing stage",
+      );
+      assert(
+        runContract.training?.stage ===
+          "full-token instruction pretraining pilot" &&
+          runContract.training?.assistantOnlyMask === false,
+        "V9 IPT intervention drift",
+      );
+    } else {
+      assert(
+        runContract.eligibleForCheckpointSelection === true,
+        "candidate is selection-ineligible",
+      );
+    }
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization = ["V7", "V8"].includes(label)
+    const expectedInitialization = ["V7", "V8", "V9-IPT"].includes(label)
       ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
       : ["V5", "V6"].includes(label)
         ? cleanBaseSha
@@ -303,14 +320,28 @@ async function main(): Promise<void> {
       runContract.inputs?.evaluationFreeze?.sha256 === freezeHash,
       "candidate used another evaluation freeze",
     );
-    assert(
-      runContract.selection?.sealedFinalRemainsClosedUntilSelection === true,
-      "candidate contract permits premature sealed-final access",
-    );
-    assert(
-      runContract.selection?.checkpoints?.includes(checkpoint.step),
-      `checkpoint step ${checkpoint.step} was not declared selectable`,
-    );
+    if (label === "V9-IPT") {
+      assert(
+        runContract.gates?.sealedFinalRemainsClosed === true,
+        "V9 IPT contract permits premature sealed-final access",
+      );
+      assert(
+        Number.isSafeInteger(runContract.training?.steps) &&
+          checkpoint.step > 0 &&
+          checkpoint.step <= runContract.training.steps &&
+          checkpoint.step % runContract.training.checkpointInterval === 0,
+        `checkpoint step ${checkpoint.step} was not declared for the V9 IPT pilot`,
+      );
+    } else {
+      assert(
+        runContract.selection?.sealedFinalRemainsClosedUntilSelection === true,
+        "candidate contract permits premature sealed-final access",
+      );
+      assert(
+        runContract.selection?.checkpoints?.includes(checkpoint.step),
+        `checkpoint step ${checkpoint.step} was not declared selectable`,
+      );
+    }
     assert(
       dirname(runContractPath) === dirname(checkpointPath),
       "candidate checkpoint and run contract must share a directory",
