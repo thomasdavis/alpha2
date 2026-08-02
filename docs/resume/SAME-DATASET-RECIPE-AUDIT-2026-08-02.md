@@ -10,11 +10,10 @@ Smol-SmolTalk SFT pattern: packed full-sequence causal modeling over the complet
 existing Smol-SmolTalk source, with early free-generation checks and two
 identical-window learning-rate pilots before any full two-pass schedule.
 
-The `3e-4` pilot completed and was rejected. Its best mechanical window remained
-far behind the selected public Alpha baseline and produced circular, repetitive,
-semantically wrong answers. The predeclared `1e-3` public-recipe arm is now in
-progress. No checkpoint from either arm may justify a longer run until it passes
-the frozen free-generation viability gate.
+Both predeclared pilots completed and were rejected. Their best mechanical
+windows remained far behind the selected public Alpha baseline and produced
+circular, repetitive, semantically wrong answers. Neither arm passed the frozen
+free-generation viability gate, so the full two-pass schedule is not authorized.
 
 ## Why the plan changed
 
@@ -66,18 +65,18 @@ comparison, falsification conditions, runtime estimate, and artifact hashes.
    and tokenizer parity — **complete** (exact packed stream count is recorded by
    the native trainer cache at pilot launch);
 3. run a short identical-window packed full-sequence LR pilot from the clean
-   base — **`3e-4` complete and rejected; `1e-3` in progress**;
+   base — **both `3e-4` and `1e-3` complete and rejected**;
 4. evaluate every pilot checkpoint through free generation and the unchanged
-   held-out semantic panel — **complete for `3e-4`; pending for `1e-3`**;
-5. run two full corpus passes only for a viable learning rate;
-6. apply assistant-only response-policy recovery only if the full-sequence parent
-   shows a semantic gain;
-7. publish a new Alpha version only if it beats the current best model locally;
-8. resume bespoke synthetic data generation only if the existing-data recipe is
-   insufficient and the failure tells us what new distribution is required.
+   held-out semantic panel — **complete for all sixteen checkpoints**;
+5. do not run the two full corpus passes because no learning rate was viable;
+6. profile and optimize the native trainer without weakening numerical parity;
+7. pretrain a stronger small foundation on the sealed three-billion-token
+   corpus, then test teacher distillation plus conversational SFT;
+8. publish a new Alpha version only if it beats the current best model locally.
 
-The synthetic generator/reviewer drafts are retained as parked future work. They
-are not the active experiment. If both public-recipe learning-rate arms fail,
-the next research contract should test distillation or greater foundation
-exposure rather than assuming that more passes over the same SFT rows will
-create the missing semantic competence.
+The synthetic generator/reviewer drafts remain parked side work. The active
+model path is now greater foundation exposure plus teacher distillation, not an
+assumption that more passes over the same SFT rows will create missing semantic
+competence. Exact outcomes are recorded in
+`CHAT-RECIPE-V12-LR3E4-OUTCOME.md` and
+`CHAT-RECIPE-V12-LR1E3-OUTCOME.md`.

@@ -18,6 +18,19 @@ full-sequence causal loss for two epochs, whereas Alpha's flagship used one
 un-packed assistant-only pass. The proposed synthetic V12 generation is parked
 until the existing-data recipe is tested from the clean base.
 
+Both declared V12 learning-rate arms are now complete and rejected:
+
+    docs/resume/CHAT-RECIPE-V12-LR3E4-OUTCOME.md
+    docs/resume/CHAT-RECIPE-V12-LR1E3-OUTCOME.md
+
+The `1e-3` arm completed 2,000/2,000 finite steps and all eight frozen
+checkpoint evaluations. Its best regression window was step 1,000 at 34/69
+structural passes with 36 loops, versus the public Alpha baseline at 55/69 with
+24 loops. No checkpoint was selected or published. Native checkpoints and the
+compact evaluation mirror are preserved under:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-recipe-v12-20260802/
+
 Frozen V12 contract:
 
     docs/resume/CHAT-RECIPE-V12-CONTRACT.md

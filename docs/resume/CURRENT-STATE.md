@@ -2,6 +2,18 @@
 
 ## 2026-08-02 superseding update
 
+The V12 public-recipe control is now closed. Both packed full-sequence
+Smol-SmolTalk pilots (`3e-4` and `1e-3`) completed 2,000 finite steps and all
+declared frozen checkpoint evaluations, but neither approached the current
+public model. The `1e-3` arm's best regression window was 34/69 structural with
+36 loops; the public baseline remains 55/69 with 24 loops. No V12 checkpoint
+was selected, published, or posted to Discord. The result redirects the active
+model program toward a better-trained small foundation and teacher
+distillation. Before that long run, the live RTX 4090 is executing a
+correctness-gated Helios throughput/phase sweep. See
+`CHAT-RECIPE-V12-LR1E3-OUTCOME.md` and
+`HELIOS-CHAT-THROUGHPUT-AUDIT-2026-08-02.md`.
+
 V11 Phase M completed 300 finite all-token bridge steps from V8 step 200 over the unchanged 10,862 reviewed
 synthetic conversations. It improved response initiation to 615/615 nonempty, EOS-terminated development
 replies, but increased loops from V8's 5 to 12 and did not beat V8 in the reference-blinded 100-case review.
