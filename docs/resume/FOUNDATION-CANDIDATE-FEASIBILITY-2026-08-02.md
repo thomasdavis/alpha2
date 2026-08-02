@@ -109,7 +109,14 @@ The executable contracts are:
 scripts/freeze_pretrain_validation_slice.ts
 scripts/run_foundation_candidate_lr_pilot.sh
 scripts/analyze_foundation_candidate_lr_sweep.ts
+scripts/pretokenize_pretrain_shard.ts
 ```
+
+The pretokenizer builds the identical hash-keyed cache consumed by the trainer
+without allocating a model or touching the GPU. After the remaining training
+shards arrive, separate low-priority processes may prepare their caches in
+parallel; the paid long run then verifies and loads those exact caches instead
+of spending its first hour serially tokenizing four multi-gigabyte files.
 
 Each completed checkpoint is compressed losslessly only after the native run
 returns success. Both the raw digest and compressed digest are retained, and a
