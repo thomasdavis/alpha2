@@ -933,20 +933,32 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       );
     }
   } else if (dataPaths.length > 1) {
-    if (valDataPath) throw new Error("valDataPath cannot be combined with pretraining dataPaths");
-    console.log(`Sharded dataset: ${dataPaths.length} files — tokenizing/caching each 90/10 split independently...`);
+    const validationPolicy = valDataPath ? "external held-out validation" : "independent 90/10 splits";
+    console.log(`Sharded dataset: ${dataPaths.length} files — ${validationPolicy}...`);
     for (const [index, shardPath] of dataPaths.entries()) {
       const shardStat = await fs.stat(shardPath);
-      const splitByte = await getSplitByte(shardPath, 0.9);
       console.log(
         `  shard ${index + 1}/${dataPaths.length}: ${shardPath.split("/").pop()} ` +
         `(${(shardStat.size / 1024 / 1024).toFixed(0)}MB)`,
       );
-      trainTokenShards.push(await loadOrCacheTokens(
-        shardPath, tokenizer, { startByte: 0, endByte: splitByte }, tokenizerCacheIdentity,
-      ));
+      if (valDataPath) {
+        trainTokenShards.push(await loadOrCacheTokens(
+          shardPath, tokenizer, undefined, tokenizerCacheIdentity,
+        ));
+      } else {
+        const splitByte = await getSplitByte(shardPath, 0.9);
+        trainTokenShards.push(await loadOrCacheTokens(
+          shardPath, tokenizer, { startByte: 0, endByte: splitByte }, tokenizerCacheIdentity,
+        ));
+        valTokenShards.push(await loadOrCacheTokens(
+          shardPath, tokenizer, { startByte: splitByte, endByte: shardStat.size }, tokenizerCacheIdentity,
+        ));
+      }
+    }
+    if (valDataPath) {
+      console.log(`  validation: ${valDataPath.split("/").pop()} (wholly held out)`);
       valTokenShards.push(await loadOrCacheTokens(
-        shardPath, tokenizer, { startByte: splitByte, endByte: shardStat.size }, tokenizerCacheIdentity,
+        valDataPath, tokenizer, undefined, tokenizerCacheIdentity,
       ));
     }
   } else if (isLargeFile) {
@@ -1034,8 +1046,15 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         shards: trainTokenShards.map((shard, index) => ({
           path: dataPaths[index],
           trainTokens: shard.length,
-          valTokens: valTokenShards[index]?.length ?? 0,
+          valTokens: valDataPath ? 0 : (valTokenShards[index]?.length ?? 0),
         })),
+        ...(valDataPath ? {
+          validation: {
+            path: valDataPath,
+            valTokens: valTokenShards[0]?.length ?? 0,
+            whollyHeldOut: true,
+          },
+        } : {}),
       };
 
   // Initialize model

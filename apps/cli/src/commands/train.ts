@@ -192,8 +192,14 @@ export async function trainCmd(args: string[]): Promise<void> {
   }
   const dataPath = dataPaths?.[0] ?? requireArg(kv, "data", "path to training text");
   const valDataPath = kv["valData"];
-  if (dataPaths && valDataPath) throw new Error("--valData cannot be combined with --dataManifest; every shard is split 90/10");
   if (dataPaths && sft) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
+  if (dataPaths && valDataPath) {
+    const path = await import("node:path");
+    const resolvedVal = path.resolve(valDataPath);
+    if (dataPaths.includes(resolvedVal)) {
+      throw new Error("--valData must not name a training shard from --dataManifest");
+    }
+  }
 
   // Look up domain config for defaults
   const domainId = kv["domain"];
