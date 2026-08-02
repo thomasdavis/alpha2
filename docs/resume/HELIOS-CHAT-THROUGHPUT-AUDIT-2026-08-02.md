@@ -213,6 +213,12 @@ tokens per parameter, matching the project's declared minimum planning ratio
 without repeating data. The corpus manifest and every shard hash already live
 under `/mnt/donto-data/alpha-corpora/pretrain-text/`.
 
+The all-shard selection is now materialized as
+`foundation-3b-manifest.json`, SHA-256
+`e2a24b0ca48790bb68ca9f2a326f68c64bd92c3b568dcbcb5d4b262f7ca732a4`.
+It references, but does not duplicate, the six files sealed by the original
+`MANIFEST.sha256`.
+
 At a hypothetical 3x improvement to the current kernel path and naive inverse
 parameter-count scaling, this larger model would process roughly 6.7K tokens/sec
 and the 3B-token pass would take about 5.2 days or `$85` at `$0.69/hour`. This is
