@@ -10,7 +10,15 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 interface Turn {
@@ -416,6 +424,51 @@ async function runCodex(
   await rename(temporaryOutput, outputPath);
 }
 
+async function preserveRejectedAttempt(
+  plan: BatchPlan,
+  attempt: number,
+  outputPath: string,
+  eventPath: string,
+  rejectedRoot: string,
+  error: unknown,
+): Promise<Record<string, unknown>> {
+  await mkdir(rejectedRoot, { recursive: true });
+  const stem = `${plan.batchId}.pid-${process.pid}.attempt-${String(attempt).padStart(2, "0")}`;
+  const temporaryOutput = `${outputPath}.tmp-${process.pid}`;
+  const rejectedOutput = join(rejectedRoot, `${stem}.invalid.json`);
+  const rejectedEvents = join(rejectedRoot, `${stem}.events.jsonl`);
+  const rejectedReport = join(rejectedRoot, `${stem}.failure.json`);
+  const output = await stat(temporaryOutput).catch(() => null);
+  const events = await stat(eventPath).catch(() => null);
+  if (output?.isFile()) await rename(temporaryOutput, rejectedOutput);
+  if (events?.isFile()) await rename(eventPath, rejectedEvents);
+  const report = {
+    schema: "alpha-chat-generation-rejected-attempt-v1",
+    batch_id: plan.batchId,
+    attempt,
+    error: error instanceof Error ? error.message : String(error),
+    output: output?.isFile()
+      ? {
+          path: rejectedOutput,
+          bytes: output.size,
+          sha256: sha256(await readFile(rejectedOutput)),
+        }
+      : null,
+    events: events?.isFile()
+      ? {
+          path: rejectedEvents,
+          bytes: events.size,
+          sha256: sha256(await readFile(rejectedEvents)),
+        }
+      : null,
+    rejected_utc: new Date().toISOString(),
+  };
+  await writeFile(rejectedReport, `${JSON.stringify(report, null, 2)}\n`, {
+    flag: "wx",
+  });
+  return report;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = resolve(args.get("repo") ?? process.cwd());
@@ -442,6 +495,11 @@ async function main(): Promise<void> {
     throw new Error("items-per-batch cannot exceed schema maximum 64");
   const maximumBatches = positiveInteger(args.get("batches"), 50, "batches");
   const workers = positiveInteger(args.get("workers"), 2, "workers");
+  const maxAttempts = positiveInteger(
+    args.get("max-attempts"),
+    3,
+    "max-attempts",
+  );
   const model = args.get("model") ?? "gpt-5.4";
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
   const blueprintPath = resolve(
@@ -473,10 +531,21 @@ async function main(): Promise<void> {
   const blueprint = await loadBlueprint(blueprintPath, selectedPlans);
 
   const batchRoot = join(outputRoot, "batches");
+  const rejectedRoot = join(outputRoot, "rejected-attempts");
   await mkdir(batchRoot, { recursive: true });
+  await mkdir(rejectedRoot, { recursive: true });
   await mkdir(logRoot, { recursive: true });
   const queue = [...selectedPlans];
   const completed: Array<Record<string, unknown>> = [];
+  const rejectedAttempts: Array<Record<string, unknown>> = await Promise.all(
+    (await readdir(rejectedRoot))
+      .filter((name) => name.endsWith(".failure.json"))
+      .sort()
+      .map(async (name) =>
+        JSON.parse(await readFile(join(rejectedRoot, name), "utf8")),
+      ),
+  );
+  const failed: Array<Record<string, unknown>> = [];
 
   async function worker(workerIndex: number): Promise<void> {
     while (queue.length > 0) {
@@ -519,24 +588,59 @@ async function main(): Promise<void> {
           `generation output exceeded 15 GiB pause threshold: ${usedKiB} KiB`,
         );
       }
-      process.stdout.write(
-        `[worker ${workerIndex}] ${plan.batchId}: generating with ${model}\n`,
-      );
       const prompt = batchPrompt(
         template,
         plan,
         blueprint.byId.get(plan.batchId)!,
       );
-      await runCodex(
-        plan,
-        prompt,
-        outputPath,
-        eventPath,
-        schemaPath,
-        repoRoot,
-        model,
-        reasoningEffort,
-      );
+      let acceptedAttempt = 0;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        process.stdout.write(
+          `[worker ${workerIndex}] ${plan.batchId}: generating with ${model} (attempt ${attempt}/${maxAttempts})\n`,
+        );
+        try {
+          await runCodex(
+            plan,
+            prompt,
+            outputPath,
+            eventPath,
+            schemaPath,
+            repoRoot,
+            model,
+            reasoningEffort,
+          );
+          acceptedAttempt = attempt;
+          break;
+        } catch (error) {
+          lastError = error;
+          rejectedAttempts.push(
+            await preserveRejectedAttempt(
+              plan,
+              attempt,
+              outputPath,
+              eventPath,
+              rejectedRoot,
+              error,
+            ),
+          );
+          process.stderr.write(
+            `[worker ${workerIndex}] ${plan.batchId}: rejected attempt ${attempt}/${maxAttempts}: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        }
+      }
+      if (acceptedAttempt === 0) {
+        failed.push({
+          batch_id: plan.batchId,
+          attempts: maxAttempts,
+          error:
+            lastError instanceof Error ? lastError.message : String(lastError),
+        });
+        process.stderr.write(
+          `[worker ${workerIndex}] ${plan.batchId}: exhausted ${maxAttempts} attempts; continuing remaining queue\n`,
+        );
+        continue;
+      }
       const content = await readFile(outputPath);
       const eventContent = await readFile(eventPath);
       completed.push({
@@ -548,6 +652,7 @@ async function main(): Promise<void> {
         events_path: eventPath,
         events_bytes: eventContent.byteLength,
         events_sha256: sha256(eventContent),
+        accepted_attempt: acceptedAttempt,
       });
       process.stdout.write(
         `[worker ${workerIndex}] ${plan.batchId}: accepted structured batch\n`,
@@ -558,6 +663,24 @@ async function main(): Promise<void> {
   await Promise.all(
     Array.from({ length: workers }, (_, index) => worker(index + 1)),
   );
+  if (failed.length > 0) {
+    const failurePath = join(outputRoot, "generation-failures.json");
+    await writeFile(
+      failurePath,
+      `${JSON.stringify(
+        {
+          schema: "alpha-chat-generation-failures-v1",
+          failed,
+          rejected_attempts: rejectedAttempts,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    throw new Error(
+      `${failed.length} batches exhausted ${maxAttempts} attempts; see ${failurePath}`,
+    );
+  }
   completed.sort((left, right) =>
     String(left.batch_id).localeCompare(String(right.batch_id)),
   );
@@ -600,6 +723,8 @@ async function main(): Promise<void> {
     items_per_batch: itemsPerBatch,
     expected_candidates: maximumBatches * itemsPerBatch,
     workers,
+    max_attempts: maxAttempts,
+    rejected_attempts: rejectedAttempts,
     completed,
   };
   const manifestPath = join(outputRoot, "generation-manifest.json");
