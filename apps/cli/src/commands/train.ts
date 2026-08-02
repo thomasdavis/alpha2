@@ -11,6 +11,7 @@ import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
 import { loadArtifacts, saveArtifacts } from "@alpha/tokenizers";
+import { estimateGPTParamCount } from "@alpha/model";
 import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deserializeGraph } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
@@ -29,41 +30,6 @@ interface TrainingPlanningOptions {
   minTokensPerParam: number;
   warnDatasetPasses: number;
   maxDatasetPasses: number;
-}
-
-function estimateFfnDim(config: ModelConfig): number {
-  if (config.ffnDim && config.ffnDim > 0) return config.ffnDim;
-  if ((config.ffnActivation ?? "gelu") === "swiglu") {
-    return Math.ceil((8 / 3) * config.nEmbd / 64) * 64;
-  }
-  return 4 * config.nEmbd;
-}
-
-function estimateModelParams(config: ModelConfig): number {
-  const n = config.nEmbd;
-  const l = config.nLayer;
-  const v = config.vocabSize;
-  const f = estimateFfnDim(config);
-  const activation = config.ffnActivation ?? "gelu";
-
-  // Global parameters (untied embeddings + final LN + lmHead).
-  let total = 2 * v * n + (config.blockSize * n) + (2 * n);
-
-  // Per-layer: attn weights + layer norms + MLP weights (+ activation extras).
-  let perLayer = (4 * n * n) + (4 * n);
-  if (activation === "swiglu") {
-    perLayer += 3 * n * f;
-  } else {
-    perLayer += 2 * n * f;
-  }
-  if (activation === "universal") {
-    perLayer += 2 * f;
-  } else if (activation === "kan_spline") {
-    perLayer += 5 * f;
-  }
-
-  total += l * perLayer;
-  return total;
 }
 
 function estimateCharsPerToken(tokenizerName: string): number {
@@ -110,7 +76,7 @@ async function emitTrainingPlanningWarnings(args: {
   const { dataPath, dataPaths, valDataPath, trainConfig, modelConfig, backendName, tokenizerName, planning } = args;
   const accum = Math.max(1, trainConfig.gradAccumSteps);
   const plannedTokens = trainConfig.iters * trainConfig.batchSize * modelConfig.blockSize * accum;
-  const params = Math.max(1, estimateModelParams(modelConfig));
+  const params = Math.max(1, estimateGPTParamCount(modelConfig));
   const tokensPerParam = plannedTokens / params;
   const estDatasetTokens = await estimateDatasetTokens(dataPaths ?? [dataPath], tokenizerName);
   const issues: PlanningIssue[] = [];

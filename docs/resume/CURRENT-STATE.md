@@ -9,10 +9,18 @@ public model. The `1e-3` arm's best regression window was 34/69 structural with
 36 loops; the public baseline remains 55/69 with 24 loops. No V12 checkpoint
 was selected, published, or posted to Discord. The result redirects the active
 model program toward a better-trained small foundation and teacher
-distillation. Before that long run, the live RTX 4090 is executing a
-correctness-gated Helios throughput/phase sweep. See
+distillation. The correctness-gated Helios throughput/phase sweep is now also
+complete. It found no safe 3x flag-level improvement: the full-context FP32
+reference averaged 5,333.6 tok/s, workgroups 128/256 were slower, pool growth
+was neutral, and cooperative/mixed-precision paths failed correctness. A
+synchronized row attributed roughly 84% of forward-plus-backward time to
+backward propagation. The full-context feasibility probe then rejected the
+136.9M configuration on measured cost and selected a 97,098,880-parameter
+candidate at batch 24 for a bounded three-way LR pilot. It sustained 3,563.7
+tok/s; batch 32 failed before step one. No long pretraining run has begun. See
 `CHAT-RECIPE-V12-LR1E3-OUTCOME.md` and
-`HELIOS-CHAT-THROUGHPUT-AUDIT-2026-08-02.md`.
+`HELIOS-CHAT-THROUGHPUT-SWEEP-OUTCOME-2026-08-02.md` and
+`FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md`.
 
 V11 Phase M completed 300 finite all-token bridge steps from V8 step 200 over the unchanged 10,862 reviewed
 synthetic conversations. It improved response initiation to 615/615 nonempty, EOS-terminated development

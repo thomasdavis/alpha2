@@ -4,6 +4,14 @@ Date: 2026-08-02
 
 ## Decision
 
+> **Superseding outcome:** the complete sweep is recorded in
+> `HELIOS-CHAT-THROUGHPUT-SWEEP-OUTCOME-2026-08-02.md`. No safe 3x setting was
+> found. The full-context FP32 reference averaged 5,333.6 tok/s; workgroups 128
+> and 256 were slower, a larger pool was neutral, the 512-token row was only
+> 2.34% faster by mean, and both cooperative/mixed-precision rows failed
+> correctness. Synchronized measurement attributed approximately 84% of
+> forward-plus-backward wall time to backward propagation.
+
 Alpha's current chat work has two separable bottlenecks:
 
 1. **model/data capacity:** the clean base is too weak for ordinary SFT to
@@ -191,7 +199,7 @@ models can remain poor when undertrained. Alpha's evidence now says the current
 combination—present size, approximately one billion foundation tokens, then
 ordinary SFT—is insufficient.
 
-The primary next-foundation candidate is now concrete:
+The first next-foundation candidate was:
 
 ```text
 layers:          18
@@ -205,7 +213,7 @@ parameters:      136,867,584
 The exact count follows Alpha's implemented tied Llama-form parameterization:
 `vocab*d + layers*(4*d*d + 3*d*ffn + 2*d) + d`.
 
-This candidate is not an arbitrary scaling exercise. The staged pretraining
+The staged pretraining
 corpus already contains six sealed shards, 11,700,002,843 characters and an
 estimated 3.0B tokens. The previous minimum run's manifest selected only the
 first three. Using all six once gives the proposed model approximately 21.9
@@ -219,11 +227,13 @@ The all-shard selection is now materialized as
 It references, but does not duplicate, the six files sealed by the original
 `MANIFEST.sha256`.
 
-At a hypothetical 3x improvement to the current kernel path and naive inverse
-parameter-count scaling, this larger model would process roughly 6.7K tokens/sec
-and the 3B-token pass would take about 5.2 days or `$85` at `$0.69/hour`. This is
-only capacity planning—the real architecture must be benchmarked because larger
-matrix shapes may use the GPU more efficiently than linear scaling predicts.
+The real full-context measurement superseded that hypothetical estimate. The
+136,867,584-parameter configuration sustained 2,613.1 tok/s at batch 16 and
+would consume about $146.70 for 2B tokens before post-training. It is therefore
+rejected for the present envelope. A measured 97,098,880-parameter candidate at
+batch 24 sustained 3,563.7 tok/s; batch 32 OOMed before step one. Its exact
+feasibility result and bounded LR-pilot contract are in
+`FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md`.
 
 After foundation pretraining, the comparison should include conversational
 sequence-level distillation from a strong teacher as well as ordinary SFT. A
@@ -239,9 +249,9 @@ instructions is not progress.
 
 No long larger-model run begins until:
 
-- the V12 control has an honest free-generation outcome;
-- the throughput sweep has a reproducible winner;
-- that winner passes the NVIDIA kernel/parity suite;
+- the V12 control has an honest free-generation outcome (**complete; both arms rejected**);
+- the throughput sweep has a reproducible winner (**complete; no new full-context winner**);
+- any future optimized kernel path passes the NVIDIA kernel/parity suite;
 - expected retained artifacts remain below the 15 GiB review threshold;
 - and the larger/distillation run has an immutable token, compute, evaluation,
-  and stop contract.
+  and stop contract (**LR pilot frozen; multi-day contract remains open**).

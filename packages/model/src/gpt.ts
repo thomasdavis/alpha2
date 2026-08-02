@@ -96,6 +96,40 @@ function initFull(backend: Backend, shape: number[], value: number): Variable {
   return new Variable(backend.full(shape, value, "f32"), true);
 }
 
+/**
+ * Return the exact number of unique trainable scalar parameters that initGPT
+ * creates for a configuration. Keep planning code on this architecture-aware
+ * path: tied embeddings, RoPE, and RMSNorm materially change the total.
+ */
+export function estimateGPTParamCount(config: ModelConfig): number {
+  const { vocabSize, blockSize, nLayer, nEmbd } = config;
+  const activation = config.ffnActivation ?? "gelu";
+  const normType = config.normType ?? "layernorm";
+  const posEnc = config.posEnc ?? "learned";
+  const tieEmbeddings = config.tieEmbeddings ?? false;
+  const ffnDim = config.ffnDim ?? (activation === "swiglu"
+    ? Math.ceil((8 / 3) * nEmbd / 64) * 64
+    : 4 * nEmbd);
+
+  const normParams = normType === "rmsnorm" ? nEmbd : 2 * nEmbd;
+  const embeddingParams = vocabSize * nEmbd;
+  let total = embeddingParams;
+  if (posEnc !== "rope") total += blockSize * nEmbd;
+  total += normParams; // final norm
+  if (!tieEmbeddings) total += embeddingParams;
+
+  let mlpParams = activation === "swiglu"
+    ? 3 * nEmbd * ffnDim
+    : 2 * nEmbd * ffnDim;
+  if (activation === "universal") mlpParams += 2 * ffnDim;
+  else if (activation === "kan_spline") mlpParams += 5 * ffnDim;
+
+  const attentionParams = 4 * nEmbd * nEmbd;
+  const perLayerNormParams = 2 * normParams;
+  total += nLayer * (attentionParams + mlpParams + perLayerNormParams);
+  return total;
+}
+
 export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): GPTParams {
   const { vocabSize, blockSize, nLayer, nEmbd, nHead } = config;
   const activation = config.ffnActivation ?? "gelu";

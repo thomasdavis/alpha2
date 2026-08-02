@@ -3,6 +3,50 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+## 2026-08-02 Helios chat-throughput sweep
+
+Authoritative outcome:
+
+    docs/resume/HELIOS-CHAT-THROUGHPUT-SWEEP-OUTCOME-2026-08-02.md
+
+Canonical mounted-drive evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-chat-throughput-20260802/
+
+The eight-row, identical-window RTX 4090 sweep found no safe full-context
+improvement over the 5,333.6 tok/s FP32 reference. Both cooperative/mixed
+precision paths failed correctness. The synchronized attribution row measured
+502 ms forward versus 2,682.5 ms backward. All six successful compressed
+checkpoints pass `zstd -t` and their per-row digest ledgers.
+
+| Artifact | SHA-256 |
+|---|---|
+| `SUMMARY.md` | `84f52591b97e9542a5f9988517da6730d5cc766df1ef0b4a9990481be58e2663` |
+| `summary.json` | `a28c9c53799d3054bd8947f6cdffa0b6f27c1f0fbffedb42bd6f8a8d1feb1c3f` |
+| `ARTIFACTS.sha256` | `4ed1c05cee21aca81f9710b03c00477b0d6a11d8d60cc8475bedc15f90dcbcb5` |
+
+## 2026-08-02 foundation-candidate feasibility and LR pilot
+
+Decision and exact pilot contract:
+
+    docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md
+
+Canonical measured evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-foundation-feasibility-20260802/
+
+Frozen corpus controls:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `foundation-2b-manifest.json` | `be6975e2ffe327beafdc35174321c79a778b3ac33e248eba28ab591081dcb2e0` |
+| `foundation-val-005-64m.txt` | `17e30fa2e50e1a1f116cceed95381b76edd1be595d402c4dd053bd55a7eafd60` |
+| `foundation-val-005-64m.manifest.json` | `f010da477d29189211d04ee05253906310658e0b61aac06069d48c84be24f384` |
+
+The 136.9M row was rejected on measured cost. The 97,098,880-parameter row at
+batch 24 is authorized only for the three 384-step LR arms. No foundation
+checkpoint, HF/BLAH version, or Discord improvement exists yet.
+
 ## 2026-08-02 same-dataset recipe audit
 
 Canonical audit:

@@ -5,6 +5,7 @@ export {
   type GPTForwardResult,
   type GPTLossObjective,
   initGPT,
+  estimateGPTParamCount,
   gptForward,
   collectParamEntries,
   collectParams,
