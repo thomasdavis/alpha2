@@ -22,6 +22,8 @@ export async function writeBundleMetadata(
   const report = JSON.parse(await readFile(join(output, "fit-report.json"), "utf8")) as {
     estimator_kind: "same_position" | "future_integrated";
     estimator: string;
+    fit_execution_source_revision?: string;
+    native_source_revision?: string;
     corpus: { valid_prompt_count: number; maximum_sequence_length: number; published_artifact?: string | null };
     fitting: { exported_dtype: string; source_sites: string[]; skip_first_positions: number; target_position_policy: string };
   };
@@ -53,7 +55,10 @@ export async function writeBundleMetadata(
       vocabulary_size: description.vocabularySize,
       byte_vocab: adapter.tokenizerArtifacts.byteVocab === true,
       token_text_policy: "Exact native vocabulary spelling in text; authoritative raw bytes in bytes_base64 for byte-BPE tokens.",
-      special_tokens: description.specialTokens,
+      special_tokens: description.specialTokens.map((token) => ({
+        id: adapter.tokenizerArtifacts.vocab.indexOf(token),
+        text_base64: Buffer.from(token, "utf8").toString("base64"),
+      })),
       fingerprint: description.tokenizerFingerprint,
     },
     chat: {
@@ -62,8 +67,9 @@ export async function writeBundleMetadata(
       system_message_policy: "At most one leading system message; folded verbatim into the first user turn as [Instructions: ...].",
       beginning_of_sequence: "No BOS token is inserted.",
       end_of_turn_tokens: [],
-      conversation_end_token: "<|end_of_text|>",
-      generation_prompt: "Append the atomic <|assistant|> token after the final user turn.",
+      conversation_end_token_id: adapter.tokenizerArtifacts.vocab.indexOf("<|end_of_text|>"),
+      conversation_end_token_text_base64: Buffer.from("<|end_of_text|>", "utf8").toString("base64"),
+      generation_prompt: `Append the atomic assistant marker token (ID ${adapter.tokenizerArtifacts.vocab.indexOf("<|assistant|>")}) after the final user turn.`,
       thinking_mode: false,
       assistant_prefill_supported: false,
     },
@@ -141,6 +147,10 @@ export async function writeBundleMetadata(
   await writeFile(join(output, "CAPABILITY_REPORT.md"), buildCapabilityReport(runtime !== null));
   const enriched = {
     ...report,
+    fit_execution_source_revision:
+      report.fit_execution_source_revision
+      ?? report.native_source_revision
+      ?? identity.sourceRevision,
     model_hf_repo: identity.modelHfRepo,
     model_hf_revision: identity.modelRevision,
     lens_hf_repo: identity.lensHfRepo,
