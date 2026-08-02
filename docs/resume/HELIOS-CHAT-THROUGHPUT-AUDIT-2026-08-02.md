@@ -61,6 +61,12 @@ The Node process used roughly 57% of one CPU core on a 256-vCPU host, so input
 tokenization and CPU availability are not the primary limiter. Data is already
 token-cached and packed.
 
+As a rough transformer-training utilization proxy, `6 * parameters * tokens`
+is about 5.67 teraFLOP per current step, or only about 1.84 effective TFLOP/sec
+at the measured 3.0765 seconds. This proxy omits architecture-specific attention
+and kernel work, so it is not a hardware-profiler result, but it confirms that
+the observed step rate is nowhere near the device's arithmetic ceiling.
+
 ## Why the historical 50K-60K numbers do not transfer
 
 An older Helios dossier reports approximately 59K tokens/sec, but that workload
@@ -157,6 +163,13 @@ optimized only after that evidence identifies the dominant phase.
 The target is at least 3x whole-step throughput, but it is a target rather than
 an invented promise. Only median end-to-end tokens/sec with matching numerical
 behavior counts.
+
+The economic difference is material. At 5,330.8 tokens/sec, exposing a model to
+5 billion tokens would take about 10.86 uninterrupted days and cost about
+`$179.77` at the active pod's `$0.69/hour`. At exactly 3x throughput it would
+take about 3.62 days and cost about `$59.92`, before evaluation and failures.
+This is why throughput work belongs before the larger foundation run rather
+than after it.
 
 ## Capacity decision
 
