@@ -229,8 +229,12 @@ def main() -> int:
     assistant_id = special_id("<|assistant|>")
     tokenizer.pad_token_id = eos_id
     block_size = int(model.config.max_position_embeddings)
-    if block_size != 512:
-        raise ValueError(f"export context is {block_size}, expected 512")
+    supported_block_sizes = {512, 1024}
+    if block_size not in supported_block_sizes:
+        raise ValueError(
+            f"export context is {block_size}, expected one of "
+            f"{sorted(supported_block_sizes)}"
+        )
     prompt_ids: list[list[int]] = []
     for index, rendered in enumerate(rendered_prompts, start=1):
         ids = tokenizer.encode(rendered, add_special_tokens=False)
@@ -240,7 +244,10 @@ def main() -> int:
         if recorded_count is not None and abs(int(recorded_count) - len(ids)) > 1:
             raise ValueError(f"prompt {index} token count drift: stored={recorded_count} runtime={len(ids)}")
         if len(ids) >= block_size:
-            raise ValueError(f"prompt {index} leaves no generation position in the 512-token context")
+            raise ValueError(
+                f"prompt {index} leaves no generation position in the "
+                f"{block_size}-token context"
+            )
         prompt_ids.append([int(token) for token in ids])
     validate_existing(existing, prompts, checkpoint_sha256, model_sha256)
 
