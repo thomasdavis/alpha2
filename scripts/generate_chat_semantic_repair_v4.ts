@@ -10,7 +10,9 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import {
+  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -424,6 +426,29 @@ async function runCodex(
   await rename(temporaryOutput, outputPath);
 }
 
+async function movePreserving(
+  source: string,
+  destination: string,
+): Promise<void> {
+  try {
+    await rename(source, destination);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+  }
+  await copyFile(source, destination, constants.COPYFILE_EXCL);
+  const [sourceContent, destinationContent] = await Promise.all([
+    readFile(source),
+    readFile(destination),
+  ]);
+  if (sha256(sourceContent) !== sha256(destinationContent)) {
+    throw new Error(
+      `cross-filesystem preservation hash mismatch: ${source} -> ${destination}`,
+    );
+  }
+  await rm(source);
+}
+
 async function preserveRejectedAttempt(
   plan: BatchPlan,
   attempt: number,
@@ -440,8 +465,8 @@ async function preserveRejectedAttempt(
   const rejectedReport = join(rejectedRoot, `${stem}.failure.json`);
   const output = await stat(temporaryOutput).catch(() => null);
   const events = await stat(eventPath).catch(() => null);
-  if (output?.isFile()) await rename(temporaryOutput, rejectedOutput);
-  if (events?.isFile()) await rename(eventPath, rejectedEvents);
+  if (output?.isFile()) await movePreserving(temporaryOutput, rejectedOutput);
+  if (events?.isFile()) await movePreserving(eventPath, rejectedEvents);
   const report = {
     schema: "alpha-chat-generation-rejected-attempt-v1",
     batch_id: plan.batchId,
