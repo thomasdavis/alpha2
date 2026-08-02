@@ -199,7 +199,7 @@ hidden width:    768
 attention heads: 12 (64 dimensions/head)
 SwiGLU FFN:      2048
 vocabulary:      12,288, tied embeddings
-parameters:      136,868,352
+parameters:      136,867,584
 ```
 
 The exact count follows Alpha's implemented tied Llama-form parameterization:
