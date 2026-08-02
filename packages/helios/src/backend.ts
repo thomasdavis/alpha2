@@ -49,6 +49,10 @@ let WG_SIZE = 128;  // stable default on L4; can be overridden by env/auto-tunin
 let wgAutoTuned = false;
 const ENABLE_WG_AUTOTUNE = process.env.HELIOS_WG_AUTOTUNE === "1";
 const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MANY === "1";
+// Detailed operation accounting is deliberately opt-in: it adds Map updates to
+// every recorded GPU operation and is intended for bounded performance sweeps,
+// not production training runs.
+const PROFILE_GPU_OPS = process.env.HELIOS_PROFILE_GPU_OPS === "1";
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 !== "0";
@@ -894,6 +898,17 @@ interface PendingOp {
   elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
 }
 
+export interface GpuStepStats {
+  profilingEnabled: boolean;
+  operations: number;
+  flushes: number;
+  waitedFlushes: number;
+  dgcFlushes: number;
+  operationsPerFlush: number;
+  byKind: Array<{ name: string; count: number }>;
+  byKernel: Array<{ name: string; count: number }>;
+}
+
 /**
  * The compute graph accumulates GPU operations and flushes them as a
  * single batch (one command buffer submit) when results are needed.
@@ -909,6 +924,11 @@ class ComputeGraph {
   totalOpsRecorded = 0;
   get deferredReleaseCount(): number { return this.deferredReleases.length; }
   opsThisStep = 0;
+  flushesThisStep = 0;
+  waitedFlushesThisStep = 0;
+  dgcFlushesThisStep = 0;
+  private opsByKindThisStep = new Map<PendingOpKind, number>();
+  private opsByKernelThisStep = new Map<string, number>();
 
   // DGC state: pipeline slot for the BDA binary op kernel, -1 if not set up
   private dgcBinaryPipeSlot = -1;
@@ -980,7 +1000,37 @@ class ComputeGraph {
     this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
     this.opsThisStep++;
+    if (PROFILE_GPU_OPS) {
+      this.opsByKindThisStep.set(op.kind, (this.opsByKindThisStep.get(op.kind) ?? 0) + 1);
+      this.opsByKernelThisStep.set(op.kernel, (this.opsByKernelThisStep.get(op.kernel) ?? 0) + 1);
+    }
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
+  }
+
+  resetStepStats(): void {
+    this.opsThisStep = 0;
+    this.flushesThisStep = 0;
+    this.waitedFlushesThisStep = 0;
+    this.dgcFlushesThisStep = 0;
+    this.opsByKindThisStep.clear();
+    this.opsByKernelThisStep.clear();
+  }
+
+  getStepStats(): GpuStepStats {
+    const sortCounts = (counts: Map<string, number>): Array<{ name: string; count: number }> =>
+      [...counts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    return {
+      profilingEnabled: PROFILE_GPU_OPS,
+      operations: this.opsThisStep,
+      flushes: this.flushesThisStep,
+      waitedFlushes: this.waitedFlushesThisStep,
+      dgcFlushes: this.dgcFlushesThisStep,
+      operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
+      byKind: sortCounts(this.opsByKindThisStep),
+      byKernel: sortCounts(this.opsByKernelThisStep),
+    };
   }
 
   /** Schedule an intermediate output region for release after the next flush.
@@ -1023,6 +1073,8 @@ class ComputeGraph {
     this.pending = [];
     const packedTotalBytes = this.pendingPackedBytes;
     this.pendingPackedBytes = 0;
+    this.flushesThisStep++;
+    if (withWait) this.waitedFlushesThisStep++;
 
     // ── DGC fast path: when all ops are DGC-eligible binary ops ──
     // Uses device-generated commands (single GPU submit, no per-op descriptor sets).
@@ -1038,6 +1090,7 @@ class ComputeGraph {
       }
 
       if (allEligible) {
+        this.dgcFlushesThisStep++;
         // Pack DGC format: per op [bufA(i32), bufB(i32), bufC(i32), count(u32), gX(u32), gY(u32), gZ(u32)] = 28 bytes
         // The BDA kernel is SCALAR (processes 1 element/thread), so we use the actual
         // element count and recompute dispatch groups, regardless of whether the original
@@ -1572,7 +1625,8 @@ export class HeliosBackend implements Backend {
   /** Get count of GPU ops dispatched this step (reset with resetStepOps). */
   get gpuOpsThisStep(): number { return graph.opsThisStep; }
   get gpuOpsTotal(): number { return graph.totalOpsRecorded; }
-  resetStepOps(): void { graph.opsThisStep = 0; }
+  resetStepOps(): void { graph.resetStepStats(); }
+  getGpuStepStats(): GpuStepStats { return graph.getStepStats(); }
 
   // ── GPU binary ops ──────────────────────────────────────────────────────
 

@@ -1370,6 +1370,19 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     typeof backendAny.resetStepOps === "function"
       ? backendAny.resetStepOps.bind(backendAny)
       : undefined;
+  const getGpuStepStatsFn: (() => {
+    profilingEnabled: boolean;
+    operations: number;
+    flushes: number;
+    waitedFlushes: number;
+    dgcFlushes: number;
+    operationsPerFlush: number;
+    byKind: Array<{ name: string; count: number }>;
+    byKernel: Array<{ name: string; count: number }>;
+  }) | undefined =
+    typeof backendAny.getGpuStepStats === "function"
+      ? backendAny.getGpuStepStats.bind(backendAny)
+      : undefined;
   // Explicit GPU buffer release function — deterministic cleanup instead of
   // relying on FinalizationRegistry which is unreliable for timely VRAM reclaim.
   const releaseFn: ((td: TensorData) => void) | undefined =
@@ -2538,6 +2551,16 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
       console.log(`  [trace] data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
+      const gpuStepStats = getGpuStepStatsFn?.();
+      if (gpuStepStats?.profilingEnabled) {
+        const top = (rows: Array<{ name: string; count: number }>, limit: number): string =>
+          rows.slice(0, limit).map(({ name, count }) => `${name}:${count}`).join(",");
+        console.log(
+          `  [gpu_ops] flushes=${gpuStepStats.flushes} waited=${gpuStepStats.waitedFlushes}` +
+          ` dgc=${gpuStepStats.dgcFlushes} ops_per_flush=${gpuStepStats.operationsPerFlush.toFixed(1)}` +
+          ` kinds=${top(gpuStepStats.byKind, 12)} kernels=${top(gpuStepStats.byKernel, 16)}`,
+        );
+      }
     }
 
     if (shouldLogGpuMem) {

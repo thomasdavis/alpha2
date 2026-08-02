@@ -46,6 +46,7 @@ run_row() {
     "ALPHA_FAIL_ON_SMOKE_TEST=1"
     "ALPHA_SAMPLE_FROM_CHECKPOINT=0"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
+    "HELIOS_PROFILE_GPU_OPS=1"
   )
   if [[ "$coop" == "off" ]]; then
     env_args+=("HELIOS_DISABLE_COOP_MAT=1")
@@ -87,4 +88,3 @@ run_row b6_fp32_block512     128  off false 512  32  512
 python3 scripts/summarize_chat_throughput_sweep.py \
   --root "$OUT_ROOT" --skip-steps "$SKIP_STEPS" --exclude-final \
   | tee "$OUT_ROOT/SUMMARY.md"
-
