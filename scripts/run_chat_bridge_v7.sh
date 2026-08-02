@@ -41,7 +41,7 @@ assert(corpus.schema === "alpha-chat-bridge-v7-corpus-v1", "unexpected corpus sc
 assert(corpus.sourceTreeDirty === false, "corpus was not built from a clean committed tree");
 assert(corpus.outputs?.train?.sha256 === process.env.TRAIN_SHA, "training corpus hash mismatch");
 assert(corpus.outputs?.dev?.sha256 === process.env.DEV_SHA, "development corpus hash mismatch");
-assert(corpus.rows?.bySplitAndOrigin?.train?.reviewedSemantic === 5104, "reviewed semantic train count drift");
+assert(corpus.rows?.bySplitAndOrigin?.train?.reviewedSemantic >= 5000, "reviewed semantic train count unexpectedly low");
 assert(corpus.rows?.bySplitAndOrigin?.train?.canonicalDirect === 40000, "direct train count drift");
 assert(corpus.invariants?.semanticOrTopicStringFilterApplied === false, "unexpected semantic string filter");
 assert(corpus.invariants?.sealedFinalInspected === false, "sealed final was inspected");

@@ -294,16 +294,19 @@ async function main(): Promise<void> {
   );
   const seen = new Set<string>();
   const semanticTrain: Candidate[] = [];
+  let semanticTrainHoldoutRejected = 0;
   for (const [index, line] of nonemptyLines(
     await readFile(semanticTrainPath, "utf8"),
   ).entries()) {
     const turns = parseRendered(line, `semantic-train:${index + 1}`);
-    assert(
-      !turns.some(
+    if (
+      turns.some(
         (turn) => turn.role === "user" && heldout.has(normalize(turn.content)),
-      ),
-      `semantic-train:${index + 1}: holdout collision`,
-    );
+      )
+    ) {
+      semanticTrainHoldoutRejected += 1;
+      continue;
+    }
     const digest = sha256(line);
     assert(!seen.has(digest), `semantic-train:${index + 1}: duplicate`);
     seen.add(digest);
@@ -481,6 +484,7 @@ async function main(): Promise<void> {
       canonicalRows: sourceRows,
       eligibleDirectPool: directPool.length,
       holdoutNormalizedPrompts: heldout.size,
+      semanticTrainHoldoutRejected,
       rejected,
     },
     rows: {

@@ -19,7 +19,8 @@ semantic supervision without changing its architecture or adding more repetition
 
 V7 combines:
 
-- all 5,104 reviewed v4 semantic-chat training conversations;
+- the reviewed v4 semantic-chat training conversations that survive the stricter whole-conversation holdout
+  check (from 5,104 source rows);
 - 40,000 compact single-user/single-assistant conversations selected from the canonical SmolTalk source span;
 - a development set consisting of the 265 reviewed semantic rows plus 2,000 disjoint direct rows.
 
@@ -29,7 +30,9 @@ or hand-written semantic lookup. This is intentionally a broad direct-answer bri
 measured rather than silently described as philosophy-only data.
 
 Every visible v4 evaluation user turn, every frozen 24-item BLAH prompt, and every semantic-development user turn
-is excluded by normalized exact match. The inherited sealed final is not opened. Train and development rows are
+is excluded by normalized exact match from the entire candidate conversation. This is stricter than v4's
+final-user-only check, and excluded semantic rows are counted rather than silently retained. The inherited
+sealed final is not opened. Train and development rows are
 disjoint by full conversation hash, and every selected row retains origin, source line where available, exact
 token count, split, and deterministic order in the catalog.
 
