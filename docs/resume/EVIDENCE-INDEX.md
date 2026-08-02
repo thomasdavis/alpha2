@@ -3,6 +3,31 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+## 2026-08-02 chat foundations v11
+
+Authoritative outcome:
+
+    docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md
+
+Run root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-foundations-v11-20260802/
+
+Research and evaluation mirror:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-foundations-v11-20260802/
+
+The step-300 native checkpoint SHA-256 is
+`6226c1443741058089f110b89dfa341e0325851098d3aaf049a501c1ca3393f9`. The reference-blinded GPT-5.5
+review SHA-256 is `29355fb8a4e8093472b08f0bb4438964383749c00dd2be8faf625ea468a40a1a`; it ranked V8 first and selected
+`NONE`. V11 is a rejected negative result.
+
+The operator-requested experimental publication is Hugging Face revision
+`29f0372fb94c1d249421daca50c3fbd263dc1309` and BLAH model `Mq5PrXS1MUk2yl0eSKUXwA`. BLAH run
+`XEDqvFu4Adbj86rKEVUqEg` completed all 24 eval definitions with mean `0.3625`, below the earlier Alpha
+run's `0.395833`. The exact model, run, results, logs, and eval definitions are preserved under
+`blah-evaluation/` with hashes recorded in the outcome document.
+
 ## 2026-07-31 chat repair
 
 Root:

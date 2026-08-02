@@ -2,6 +2,10 @@
 
 Date: 2026-08-02
 
+Execution status: **complete and rejected as an improvement**. Phase S was not run. See
+[CHAT-FOUNDATIONS-V11-OUTCOME.md](CHAT-FOUNDATIONS-V11-OUTCOME.md) for the exact evidence and the separately
+versioned negative-result publication requested after rejection.
+
 ## Product boundary
 
 Alpha remains a small, one-GPU conversational model. The product target is a
@@ -153,4 +157,3 @@ All research metadata, outputs, and reviews live on the mounted research drive.
 Unselected weights remain on the dedicated GPU pod. Only a selected native
 checkpoint is mirrored locally. Retained local project artifacts are checked
 against the operator's 15 GiB pause threshold before any weight copy.
-

@@ -1,4 +1,4 @@
-export const MODEL_ID = "ajaxdavis/alpha-60m-chat";
+export const MODEL_ID = process.env.MODEL_ID?.trim() || "ajaxdavis/alpha-60m-chat";
 export const END_TOKEN = "<|end_of_text|>";
 
 export type ChatRole = "system" | "user" | "assistant";

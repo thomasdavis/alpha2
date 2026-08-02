@@ -1,5 +1,31 @@
 # Current state
 
+## 2026-08-02 superseding update
+
+V11 Phase M completed 300 finite all-token bridge steps from V8 step 200 over the unchanged 10,862 reviewed
+synthetic conversations. It improved response initiation to 615/615 nonempty, EOS-terminated development
+replies, but increased loops from V8's 5 to 12 and did not beat V8 in the reference-blinded 100-case review.
+GPT-5.5 ranked the hidden V8 reference first and selected `NONE`, so Phase S was not run.
+
+At the operator's request, the rejected step-300 checkpoint was preserved as a separate, versioned negative
+result rather than replacing the earlier Alpha:
+
+| Item | Current exact state |
+|---|---|
+| V11 decision | rejected as an improvement; quality `FAIL` |
+| Native checkpoint | step 300, SHA `6226c1443741058089f110b89dfa341e0325851098d3aaf049a501c1ca3393f9` |
+| HF repository | `ajaxdavis/alpha-chat-v11-m300-experimental` |
+| HF revision | `29f0372fb94c1d249421daca50c3fbd263dc1309` |
+| Runtime | `https://donto.org/alpha-v11-m300` |
+| BLAH model | `Mq5PrXS1MUk2yl0eSKUXwA`, alias `alpha-v11-m300` |
+| BLAH run | `XEDqvFu4Adbj86rKEVUqEg`, completed 24/24 with one errored eval |
+| BLAH comparison | 0.3625 versus earlier Alpha 0.395833; 4 wins / 12 ties / 8 losses |
+| Next training intervention | V12 linked contrast-family synthetic curriculum, not V11 continuation |
+
+Every future publication must increment the public version and create a new BLAH model record. Existing model
+records remain immutable historical comparisons. Full evidence and output examples are in
+`CHAT-FOUNDATIONS-V11-OUTCOME.md`.
+
 ## Active result
 
 The operator reopened Alpha training on 2026-07-31 to recover the original chatty-model goal. The first

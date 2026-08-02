@@ -16,7 +16,7 @@ import {
 import { BpeTokenizer, ByteBpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import { Hono } from "hono";
 import { END_TOKEN, finiteNumber, formatChatPrompt, MODEL_ID, parseMessages, positiveInteger } from "./protocol.js";
-import { renderUi, SELECTED_EVIDENCE } from "./ui.js";
+import { renderUi, SELECTED_EVIDENCE, type UiEvidence } from "./ui.js";
 
 interface LoadedCheckpoint {
   readonly modelConfig: ModelConfig;
@@ -89,6 +89,24 @@ const PORT = Number.parseInt(process.env.PORT ?? "7860", 10);
 const HOST = process.env.HOST ?? "127.0.0.1";
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65_535) throw new Error(`invalid PORT: ${process.env.PORT}`);
 
+function loadEvidence(path: string | undefined): UiEvidence {
+  if (!path) return SELECTED_EVIDENCE;
+  const value = JSON.parse(fs.readFileSync(path, "utf8")) as Partial<UiEvidence>;
+  for (const field of ["totalChat", "structuralPass", "emptyReplies", "degenerateLoops", "qaExact", "qaTotal"] as const) {
+    if (!Number.isSafeInteger(value[field]) || Number(value[field]) < 0) throw new Error(`invalid evidence field: ${field}`);
+  }
+  for (const field of ["meanRepeat", "maxRepeat", "exportTop1", "checkpointSha256"] as const) {
+    if (typeof value[field] !== "string" || value[field]!.length === 0) throw new Error(`invalid evidence field: ${field}`);
+  }
+  if (!Number.isFinite(value.exportMaxLogitDifference) || Number(value.exportMaxLogitDifference) < 0) {
+    throw new Error("invalid evidence field: exportMaxLogitDifference");
+  }
+  if (value.qualityGate !== "PASS" && value.qualityGate !== "FAIL") throw new Error("invalid evidence qualityGate");
+  return value as UiEvidence;
+}
+
+const RUNTIME_EVIDENCE = loadEvidence(process.env.EVIDENCE_PATH);
+
 console.log(`Loading checkpoint from ${CHECKPOINT_PATH}...`);
 const loadStarted = Date.now();
 const checkpoint = loadCheckpoint(CHECKPOINT_PATH);
@@ -110,7 +128,7 @@ app.use("*", async (context, next) => {
   context.header("Access-Control-Allow-Origin", "*");
   context.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   context.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  context.header("X-Alpha-Quality-Gate", SELECTED_EVIDENCE.qualityGate);
+  context.header("X-Alpha-Quality-Gate", RUNTIME_EVIDENCE.qualityGate);
 });
 app.options("*", (context) => context.body(null, 204));
 app.onError((error, context) => {
@@ -118,29 +136,33 @@ app.onError((error, context) => {
   return context.json({ error: { message: "inference request failed", type: "server_error" } }, 500);
 });
 
-app.get("/", (context) => context.html(renderUi(paramCount, checkpoint.step)));
+app.get("/", (context) => context.html(renderUi(paramCount, checkpoint.step, "", RUNTIME_EVIDENCE)));
 app.get("/health", (context) => context.json({
   status: "ok",
   model: MODEL_ID,
   parameters: paramCount,
   checkpoint_step: checkpoint.step,
-  quality_gate: SELECTED_EVIDENCE.qualityGate,
+  quality_gate: RUNTIME_EVIDENCE.qualityGate,
   started_at: startedAt,
 }));
 app.get("/evidence", (context) => context.json({
   model: MODEL_ID,
-  quality_gate: SELECTED_EVIDENCE.qualityGate,
+  quality_gate: RUNTIME_EVIDENCE.qualityGate,
   frozen_chat: {
-    structural_pass: SELECTED_EVIDENCE.structuralPass,
-    total: SELECTED_EVIDENCE.totalChat,
-    empty: SELECTED_EVIDENCE.emptyReplies,
-    degenerate_loops: SELECTED_EVIDENCE.degenerateLoops,
-    mean_four_gram_repeat_rate: SELECTED_EVIDENCE.meanRepeat,
-    max_four_gram_repeat_rate: SELECTED_EVIDENCE.maxRepeat,
+    structural_pass: RUNTIME_EVIDENCE.structuralPass,
+    total: RUNTIME_EVIDENCE.totalChat,
+    empty: RUNTIME_EVIDENCE.emptyReplies,
+    degenerate_loops: RUNTIME_EVIDENCE.degenerateLoops,
+    mean_four_gram_repeat_rate: RUNTIME_EVIDENCE.meanRepeat,
+    max_four_gram_repeat_rate: RUNTIME_EVIDENCE.maxRepeat,
   },
-  frozen_qa: { exact_match: SELECTED_EVIDENCE.qaExact, total: SELECTED_EVIDENCE.qaTotal },
-  export_parity: { result: "PASS", top1: "87/87", max_logit_difference: 5.531e-5 },
-  checkpoint_sha256: SELECTED_EVIDENCE.checkpointSha256,
+  frozen_qa: { exact_match: RUNTIME_EVIDENCE.qaExact, total: RUNTIME_EVIDENCE.qaTotal },
+  export_parity: {
+    result: "PASS",
+    top1: RUNTIME_EVIDENCE.exportTop1,
+    max_logit_difference: RUNTIME_EVIDENCE.exportMaxLogitDifference,
+  },
+  checkpoint_sha256: RUNTIME_EVIDENCE.checkpointSha256,
 }));
 app.get("/v1/models", (context) => context.json({
   object: "list",
@@ -308,7 +330,7 @@ app.post("/v1/chat/completions", async (context) => {
     model: MODEL_ID,
     choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: finishReason }],
     usage: { prompt_tokens: promptTokens.length, completion_tokens: generated.length, total_tokens: promptTokens.length + generated.length },
-    alpha: { quality_gate: "FAIL", empty_eos: finishReason === "stop" && generated.length === 0 },
+    alpha: { quality_gate: RUNTIME_EVIDENCE.qualityGate, empty_eos: finishReason === "stop" && generated.length === 0 },
   });
 });
 

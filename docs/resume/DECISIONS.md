@@ -198,6 +198,19 @@ It was labelled as a test, identified step 1,600 as rejected, included the exact
 that response initiation passed while semantic contingency failed. It was not an improvement announcement and
 does not authorize routine training posts.
 
+## 2026-08-02 — Public Alpha checkpoints and runtimes are append-only versions
+
+The operator requires every Alpha publication on BLAH to increase the version. A new checkpoint, changed
+runtime behavior, tokenizer, chat template, or decoding policy must receive a new version label, immutable
+Hugging Face revision, versioned inference path, BLAH model record, and BLAH evaluation run. Existing BLAH
+entries are never repointed or silently mutated after evaluation. Runtime-only repairs also increment the
+version because they can change measured behavior.
+
+V11 step 300 was published under this rule as `Alpha v11-m300 experimental`, BLAH model
+`Mq5PrXS1MUk2yl0eSKUXwA`, while retaining `quality_gate=FAIL`. This was an explicit operator-requested
+negative-result publication, not a selection decision. Its 24-eval mean of `0.3625` was below the earlier
+Alpha run's `0.395833`; Phase S remains prohibited and the earlier model remains separately available.
+
 ## Future supersession requirements
 
 A future decision to train again must record:
