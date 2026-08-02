@@ -274,21 +274,24 @@ async function main(): Promise<void> {
         "alpha-chat-bridge-contract-v7",
         "alpha-chat-foundations-contract-v8",
         "alpha-chat-foundations-v9-ipt-pilot-contract-v1",
+        "alpha-chat-foundations-contract-v10",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
     label =
       runContract.schema === "alpha-chat-foundations-v9-ipt-pilot-contract-v1"
         ? "V9-IPT"
-        : runContract.schema.endsWith("v8")
-          ? "V8"
-          : runContract.schema.endsWith("v7")
-            ? "V7"
-            : runContract.schema.endsWith("v6")
-              ? "V6"
-              : runContract.schema.endsWith("v5")
-                ? "V5"
-                : "V4";
+        : runContract.schema.endsWith("v10")
+          ? "V10"
+          : runContract.schema.endsWith("v8")
+            ? "V8"
+            : runContract.schema.endsWith("v7")
+              ? "V7"
+              : runContract.schema.endsWith("v6")
+                ? "V6"
+                : runContract.schema.endsWith("v5")
+                  ? "V5"
+                  : "V4";
     if (label === "V9-IPT") {
       assert(
         runContract.eligibleForCheckpointSelection === false,
@@ -307,7 +310,7 @@ async function main(): Promise<void> {
       );
     }
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization = ["V7", "V8", "V9-IPT"].includes(label)
+    const expectedInitialization = ["V7", "V8", "V9-IPT", "V10"].includes(label)
       ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
       : ["V5", "V6"].includes(label)
         ? cleanBaseSha

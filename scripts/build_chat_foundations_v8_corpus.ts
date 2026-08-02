@@ -457,10 +457,21 @@ async function main(): Promise<void> {
     for (const [index, attempt] of (
       manifest.rejected_attempts ?? []
     ).entries()) {
-      await verifyEvidence(
-        attempt.output,
-        `${family} rejected output ${index}`,
-      );
+      if (attempt.output === null) {
+        assert(
+          typeof attempt.error === "string" && attempt.error.length > 0,
+          `${family} rejected output ${index}: null output has no recorded error`,
+        );
+      } else {
+        assert(
+          typeof attempt.output === "object" && !Array.isArray(attempt.output),
+          `${family} rejected output ${index}: malformed evidence`,
+        );
+        await verifyEvidence(
+          attempt.output,
+          `${family} rejected output ${index}`,
+        );
+      }
       await verifyEvidence(
         attempt.events,
         `${family} rejected events ${index}`,
