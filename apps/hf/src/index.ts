@@ -15,7 +15,7 @@ import {
 } from "@alpha/inference";
 import { BpeTokenizer, ByteBpeTokenizer, CharTokenizer, WordTokenizer } from "@alpha/tokenizers";
 import { Hono } from "hono";
-import { END_TOKEN, finiteNumber, formatChatPrompt, MODEL_ID, parseMessages, positiveInteger } from "./protocol.js";
+import { finiteNumber, formatChatPrompt, MODEL_ID, parseMessages, positiveInteger, resolveChatStopTokenIds } from "./protocol.js";
 import { renderUi, SELECTED_EVIDENCE, type UiEvidence } from "./ui.js";
 
 interface LoadedCheckpoint {
@@ -112,9 +112,8 @@ const loadStarted = Date.now();
 const checkpoint = loadCheckpoint(CHECKPOINT_PATH);
 if (!checkpoint.tokenizerArtifacts) throw new Error("checkpoint has no tokenizer artifacts");
 const tokenizer = buildTokenizer(checkpoint.tokenizerArtifacts);
-const eosIds = tokenizer.encode(END_TOKEN);
-if (eosIds.length !== 1) throw new Error(`${END_TOKEN} is not an atomic tokenizer token`);
-const eosId = eosIds[0]!;
+const chatStopTokenIds = resolveChatStopTokenIds((text) => tokenizer.encode(text));
+const eosId = chatStopTokenIds.eos;
 const paramCount = countModelParams(checkpoint.params);
 const inferenceWeights = prepareInferenceWeights(checkpoint.modelConfig, checkpoint.params);
 const sessionPool = new SessionPool(inferenceWeights);
@@ -273,7 +272,7 @@ app.post("/v1/chat/completions", async (context) => {
               return;
             }
             const token = sampleFromLogits(session, logits, temperature, topK, rng, topP);
-            if (token === eosId) {
+            if (chatStopTokenIds.all.has(token)) {
               finish("stop");
               return;
             }
@@ -310,7 +309,7 @@ app.post("/v1/chat/completions", async (context) => {
   try {
     for (let index = 0; index < maxTokens && currentPosition < inferenceWeights.config.blockSize; index++) {
       const token = sampleFromLogits(session, logits, temperature, topK, rng, topP);
-      if (token === eosId) {
+      if (chatStopTokenIds.all.has(token)) {
         finishReason = "stop";
         break;
       }
