@@ -4,12 +4,15 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import {
+  copyFile,
   mkdir,
   readFile,
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -212,6 +215,74 @@ async function runCodex(
   await rename(temporaryOutput, outputPath);
 }
 
+async function movePreserving(
+  source: string,
+  destination: string,
+): Promise<void> {
+  try {
+    await rename(source, destination);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+  }
+  await copyFile(source, destination, constants.COPYFILE_EXCL);
+  const [sourceContent, destinationContent] = await Promise.all([
+    readFile(source),
+    readFile(destination),
+  ]);
+  if (sha256(sourceContent) !== sha256(destinationContent)) {
+    throw new Error(
+      `cross-filesystem preservation hash mismatch: ${source} -> ${destination}`,
+    );
+  }
+  await rm(source);
+}
+
+async function preserveRejectedAttempt(
+  plan: ReviewPlan,
+  attempt: number,
+  outputPath: string,
+  eventPath: string,
+  rejectedRoot: string,
+  error: unknown,
+): Promise<Record<string, unknown>> {
+  await mkdir(rejectedRoot, { recursive: true });
+  const stem = `${plan.reviewBatchId}.pid-${process.pid}.attempt-${String(attempt).padStart(2, "0")}`;
+  const temporaryOutput = `${outputPath}.tmp-${process.pid}`;
+  const rejectedOutput = join(rejectedRoot, `${stem}.invalid.json`);
+  const rejectedEvents = join(rejectedRoot, `${stem}.events.jsonl`);
+  const rejectedReport = join(rejectedRoot, `${stem}.failure.json`);
+  const output = await stat(temporaryOutput).catch(() => null);
+  const events = await stat(eventPath).catch(() => null);
+  if (output?.isFile()) await movePreserving(temporaryOutput, rejectedOutput);
+  if (events?.isFile()) await movePreserving(eventPath, rejectedEvents);
+  const report = {
+    schema: "alpha-chat-review-rejected-attempt-v1",
+    review_batch_id: plan.reviewBatchId,
+    attempt,
+    error: error instanceof Error ? error.message : String(error),
+    output: output?.isFile()
+      ? {
+          path: rejectedOutput,
+          bytes: output.size,
+          sha256: sha256(await readFile(rejectedOutput)),
+        }
+      : null,
+    events: events?.isFile()
+      ? {
+          path: rejectedEvents,
+          bytes: events.size,
+          sha256: sha256(await readFile(rejectedEvents)),
+        }
+      : null,
+    rejected_utc: new Date().toISOString(),
+  };
+  await writeFile(rejectedReport, `${JSON.stringify(report, null, 2)}\n`, {
+    flag: "wx",
+  });
+  return report;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = resolve(args.get("repo") ?? process.cwd());
@@ -233,8 +304,20 @@ async function main(): Promise<void> {
     "batches-per-review",
   );
   const workers = positiveInteger(args.get("workers"), 2, "workers");
+  const maxAttempts = positiveInteger(
+    args.get("max-attempts"),
+    3,
+    "max-attempts",
+  );
   const model = args.get("model") ?? "gpt-5.5";
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
+  const declaredSourceHistory = (args.get("source-commit-history") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (declaredSourceHistory.some((value) => !/^[0-9a-f]{40}$/.test(value))) {
+    throw new Error("source-commit-history must contain full Git SHAs");
+  }
   const blueprintPath = resolve(
     args.get("blueprint") ??
       "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json",
@@ -302,10 +385,37 @@ async function main(): Promise<void> {
       candidateIds: ids,
     });
   }
-  const queue = plans.slice(0, maximumReviews);
+  const selectedPlans = plans.slice(0, maximumReviews);
+  const requestedReviewGroups = selectedPlans.length;
+  const queue = [...selectedPlans];
   await mkdir(reviewRoot, { recursive: true });
+  const rejectedRoot = join(reviewRoot, "rejected-attempts");
+  await mkdir(rejectedRoot, { recursive: true });
   await mkdir(logRoot, { recursive: true });
+  const priorCampaignFailurePath = join(reviewRoot, "review-failures.json");
+  const priorCampaignFailure = await stat(priorCampaignFailurePath).catch(
+    () => null,
+  );
+  if (priorCampaignFailure?.isFile()) {
+    const content = await readFile(priorCampaignFailurePath);
+    await movePreserving(
+      priorCampaignFailurePath,
+      join(
+        rejectedRoot,
+        `campaign-failures-${sha256(content).slice(0, 16)}-pid-${process.pid}.json`,
+      ),
+    );
+  }
   const completed: Array<Record<string, unknown>> = [];
+  const rejectedAttempts: Array<Record<string, unknown>> = await Promise.all(
+    (await readdir(rejectedRoot))
+      .filter((name) => name.endsWith(".failure.json"))
+      .sort()
+      .map(async (name) =>
+        JSON.parse(await readFile(join(rejectedRoot, name), "utf8")),
+      ),
+  );
+  const failed: Array<Record<string, unknown>> = [];
 
   async function worker(index: number): Promise<void> {
     while (queue.length > 0) {
@@ -341,19 +451,63 @@ async function main(): Promise<void> {
           );
         }
       }
-      process.stdout.write(
-        `[reviewer ${index}] ${plan.reviewBatchId}: reviewing with ${model}\n`,
-      );
-      await runCodex(
-        plan,
-        promptFor(template, plan),
-        outputPath,
-        eventPath,
-        schemaPath,
-        repoRoot,
-        model,
-        reasoningEffort,
-      );
+      const prompt = promptFor(template, plan);
+      let acceptedAttempt = 0;
+      let lastError: unknown = [...rejectedAttempts]
+        .reverse()
+        .find(
+          (attempt) => attempt.review_batch_id === plan.reviewBatchId,
+        )?.error;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        process.stdout.write(
+          `[reviewer ${index}] ${plan.reviewBatchId}: reviewing with ${model} (attempt ${attempt}/${maxAttempts})\n`,
+        );
+        try {
+          const validatorFeedback =
+            typeof lastError === "string" && lastError.length > 0
+              ? `\n\n## Validator feedback from the previous rejected attempt\n\nThe previous review output was rejected for this exact reason: ${lastError}\nReview the complete group again from scratch and correct that structural or scoring-contract failure. Return every candidate in the required order.`
+              : "";
+          await runCodex(
+            plan,
+            `${prompt}${validatorFeedback}`,
+            outputPath,
+            eventPath,
+            schemaPath,
+            repoRoot,
+            model,
+            reasoningEffort,
+          );
+          acceptedAttempt = attempt;
+          break;
+        } catch (error) {
+          lastError = error;
+          rejectedAttempts.push(
+            await preserveRejectedAttempt(
+              plan,
+              attempt,
+              outputPath,
+              eventPath,
+              rejectedRoot,
+              error,
+            ),
+          );
+          process.stderr.write(
+            `[reviewer ${index}] ${plan.reviewBatchId}: rejected attempt ${attempt}/${maxAttempts}: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        }
+      }
+      if (acceptedAttempt === 0) {
+        failed.push({
+          review_batch_id: plan.reviewBatchId,
+          attempts: maxAttempts,
+          error:
+            lastError instanceof Error ? lastError.message : String(lastError),
+        });
+        process.stderr.write(
+          `[reviewer ${index}] ${plan.reviewBatchId}: exhausted ${maxAttempts} attempts; continuing remaining queue\n`,
+        );
+        continue;
+      }
       const content = await readFile(outputPath);
       const events = await readFile(eventPath);
       const parsed = JSON.parse(content.toString("utf8")) as ReviewOutput;
@@ -372,6 +526,7 @@ async function main(): Promise<void> {
         rejected: parsed.reviews.filter(
           (review) => review.decision === "reject",
         ).length,
+        accepted_attempt: acceptedAttempt,
       });
       process.stdout.write(
         `[reviewer ${index}] ${plan.reviewBatchId}: accepted structured review\n`,
@@ -382,9 +537,34 @@ async function main(): Promise<void> {
   await Promise.all(
     Array.from({ length: workers }, (_, index) => worker(index + 1)),
   );
+  if (failed.length > 0) {
+    const failurePath = join(reviewRoot, "review-failures.json");
+    await writeFile(
+      failurePath,
+      `${JSON.stringify(
+        {
+          schema: "alpha-chat-review-failures-v1",
+          failed,
+          rejected_attempts: rejectedAttempts,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    throw new Error(
+      `${failed.length} review groups exhausted ${maxAttempts} attempts; see ${failurePath}`,
+    );
+  }
   completed.sort((a, b) =>
     String(a.review_batch_id).localeCompare(String(b.review_batch_id)),
   );
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
+  const sourceCommitHistory = [
+    ...new Set([...declaredSourceHistory, sourceCommit]),
+  ];
   const manifest = {
     schema:
       args.get("manifest-schema") ??
@@ -395,10 +575,8 @@ async function main(): Promise<void> {
     codex_version: execFileSync("codex", ["--version"], {
       encoding: "utf8",
     }).trim(),
-    source_commit: execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    }).trim(),
+    source_commit: sourceCommit,
+    source_commit_history: sourceCommitHistory,
     source_tree_dirty:
       execFileSync("git", ["status", "--porcelain"], {
         cwd: repoRoot,
@@ -412,7 +590,9 @@ async function main(): Promise<void> {
     blueprint: { path: blueprintPath, sha256: sha256(blueprintBytes) },
     generation_batches: names.length,
     batches_per_review: batchesPerReview,
-    requested_review_groups: queue.length + completed.length,
+    requested_review_groups: requestedReviewGroups,
+    max_attempts: maxAttempts,
+    rejected_attempts: rejectedAttempts,
     completed,
   };
   const manifestPath = join(reviewRoot, "review-manifest.json");
