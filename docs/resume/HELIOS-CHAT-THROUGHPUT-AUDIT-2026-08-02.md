@@ -179,12 +179,39 @@ models can remain poor when undertrained. Alpha's evidence now says the current
 combination—present size, approximately one billion foundation tokens, then
 ordinary SFT—is insufficient.
 
-The next model decision should compare:
+The primary next-foundation candidate is now concrete:
 
-- a larger one-GPU foundation in roughly the 135M-300M class;
-- a distilled student trained from a strong teacher;
-- and, if compute permits, the present architecture with materially greater
-  pretraining exposure as a causal control.
+```text
+layers:          18
+hidden width:    768
+attention heads: 12 (64 dimensions/head)
+SwiGLU FFN:      2048
+vocabulary:      12,288, tied embeddings
+parameters:      136,868,352
+```
+
+The exact count follows Alpha's implemented tied Llama-form parameterization:
+`vocab*d + layers*(4*d*d + 3*d*ffn + 2*d) + d`.
+
+This candidate is not an arbitrary scaling exercise. The staged pretraining
+corpus already contains six sealed shards, 11,700,002,843 characters and an
+estimated 3.0B tokens. The previous minimum run's manifest selected only the
+first three. Using all six once gives the proposed model approximately 21.9
+tokens per parameter, matching the project's declared minimum planning ratio
+without repeating data. The corpus manifest and every shard hash already live
+under `/mnt/donto-data/alpha-corpora/pretrain-text/`.
+
+At a hypothetical 3x improvement to the current kernel path and naive inverse
+parameter-count scaling, this larger model would process roughly 6.7K tokens/sec
+and the 3B-token pass would take about 5.2 days or `$85` at `$0.69/hour`. This is
+only capacity planning—the real architecture must be benchmarked because larger
+matrix shapes may use the GPU more efficiently than linear scaling predicts.
+
+After foundation pretraining, the comparison should include conversational
+sequence-level distillation from a strong teacher as well as ordinary SFT. A
+roughly 295M positive-control architecture remains scientifically useful, but a
+full 20-token/parameter run is unlikely to fit the current paid-compute envelope
+unless the measured speedup materially exceeds 3x.
 
 Selection remains behavioral. A larger checkpoint that lowers validation loss
 but still cannot answer, stop, preserve a conversational role, or follow short
