@@ -95,6 +95,35 @@ After step 1,000, role-marker leakage and failure to stop increased sharply.
 This is another direct demonstration that validation loss cannot select a
 chatty Alpha checkpoint.
 
+### Strict model gate versus correct live turn boundary
+
+Inspection of the generated token IDs found a separate deployment defect.
+Alpha's multi-turn serialization is:
+
+```text
+<|user|> question <|assistant|> answer <|user|> follow-up ... <|end_of_text|>
+```
+
+There is no dedicated end-of-turn token after `answer`. The next `<|user|>` is
+therefore a valid assistant-turn boundary, while `<|end_of_text|>` ends the
+entire serialized conversation. The live HF runtime had stopped only on
+`<|end_of_text|>`, causing it to stream a model-generated next user turn.
+Commit `4f704c7` now stops before any atomic user, assistant, or whole-dialogue
+boundary in both streaming and non-streaming generation. The helper fails
+closed if the tokenizer does not encode all three markers as distinct atomic
+tokens; the runtime build, TypeScript build, and 224 tests pass.
+
+The frozen strict-EOS evaluation above was **not** rewritten after seeing the
+result. It remains a useful identical-decoding comparison with the public
+baseline and measures whether the model itself chooses whole-dialogue EOS. A
+separate post-hoc runtime-boundary diagnostic truncated each existing rollout
+at the first role marker without regenerating it. At step 1,000 this changed the
+selector clean-stop count from 55 to 59 and loops from 61 to 60; regression
+clean stops remained 41 and loops changed from 37 to 36. Release probes still
+had five loops in six prompts. The correct runtime fixes simulated-role leakage
+but does not rescue the arm's repetition or semantic failures, so the rejection
+decision is unchanged.
+
 ## What the model actually did
 
 The arm removed immediate silence but did not install reliable single-turn
