@@ -272,27 +272,29 @@ async function main(): Promise<void> {
         "alpha-chat-semantic-repair-contract-v5",
         "alpha-chat-foundation-contract-v6",
         "alpha-chat-bridge-contract-v7",
+        "alpha-chat-foundations-contract-v8",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
-    label = runContract.schema.endsWith("v7")
-      ? "V7"
-      : runContract.schema.endsWith("v6")
-        ? "V6"
-        : runContract.schema.endsWith("v5")
-          ? "V5"
-          : "V4";
+    label = runContract.schema.endsWith("v8")
+      ? "V8"
+      : runContract.schema.endsWith("v7")
+        ? "V7"
+        : runContract.schema.endsWith("v6")
+          ? "V6"
+          : runContract.schema.endsWith("v5")
+            ? "V5"
+            : "V4";
     assert(
       runContract.eligibleForCheckpointSelection === true,
       "candidate is selection-ineligible",
     );
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization =
-      label === "V7"
-        ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
-        : ["V5", "V6"].includes(label)
-          ? cleanBaseSha
-          : publicSha;
+    const expectedInitialization = ["V7", "V8"].includes(label)
+      ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
+      : ["V5", "V6"].includes(label)
+        ? cleanBaseSha
+        : publicSha;
     assert(
       runContract.initializedFrom?.sha256 === expectedInitialization,
       "candidate initialization drift",
