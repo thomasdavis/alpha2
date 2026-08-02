@@ -1,0 +1,16 @@
+{
+  "schema": "alpha-chat-foundations-v10-merge-config-v1",
+  "seed": "alpha-chat-foundations-v10-20260802",
+  "base": {
+    "name": "v8-base",
+    "manifest": "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/corpus/manifest.json"
+  },
+  "waves": [
+    {
+      "name": "wave-a",
+      "manifest": "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v10-20260802/wave-a/corpus/manifest.json"
+    }
+  ],
+  "required_train_minimum": 9000,
+  "required_dev_minimum": 400
+}

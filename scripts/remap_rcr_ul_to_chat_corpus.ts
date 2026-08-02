@@ -98,9 +98,12 @@ async function main(): Promise<void> {
     await readFile(sourceManifestPath, "utf8"),
   ) as Record<string, any>;
   assert(
-    corpus.schema === "alpha-chat-foundations-v8-corpus-v1",
-    "unexpected v8 corpus manifest",
+    corpus.schema === "alpha-chat-foundations-v8-corpus-v1" ||
+      corpus.schema === "alpha-chat-foundations-v10-corpus-v1",
+    "unexpected chat-foundations corpus manifest",
   );
+  const corpusVersion =
+    corpus.schema === "alpha-chat-foundations-v10-corpus-v1" ? "v10" : "v8";
   assert(
     sourceManifest.schema === "alpha-rcr-ul-cohort-manifest-v1",
     "unexpected source RCR-UL manifest",
@@ -186,7 +189,10 @@ async function main(): Promise<void> {
   );
 
   const manifest = {
-    schema: "alpha-chat-foundations-v8-rcr-ul-remap-v1",
+    schema:
+      corpusVersion === "v10"
+        ? "alpha-chat-foundations-v10-rcr-ul-remap-v1"
+        : "alpha-chat-foundations-v8-rcr-ul-remap-v1",
     status: "complete-and-immutable",
     createdUtc: new Date().toISOString(),
     sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], {
@@ -198,8 +204,7 @@ async function main(): Promise<void> {
         cwd: process.cwd(),
         encoding: "utf8",
       }).trim().length > 0,
-    purpose:
-      "retain U1-derived repetition-unlikelihood trajectories while pairing them exactly with the v8 positive corpus",
+    purpose: `retain U1-derived repetition-unlikelihood trajectories while pairing them exactly with the ${corpusVersion} positive corpus`,
     seed: args.seed,
     inputs: {
       positive: await evidence(positivePath, positives.length),
