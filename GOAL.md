@@ -1,13 +1,39 @@
 # CURRENT GOAL — recover the original Alpha chat model
 
-**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE PRODUCT GOAL; REPAIR V2 COMPLETE AND REJECTED; BEST HONEST PUBLIC CHECKPOINT UNCHANGED; NO ALPHA POD LIVE
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE PRODUCT GOAL; V11 COMPLETE AND REJECTED; SAME-DATASET RECIPE AUDIT COMPLETE; DEDICATED ALPHA GPU LIVE; V12 RECIPE REPLICATION NEXT
+
+## 2026-08-02 superseding state
+
+The authoritative current correction is
+[docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md](docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md).
+Public models using Alpha's pretraining composition, exact shuffled pretraining
+dataset, and exact Smol-SmolTalk SFT source were inspected and directly sampled.
+The one-billion-token base comparator repeats like Alpha; the successful public
+same-Smoltalk SFT recipe instead used packed full-sequence causal loss for two
+epochs. Alpha used one un-packed assistant-only pass. V11's all-token probe was
+only 2.46 million positions over 10,862 rows and initialized from an already
+post-trained model, so it did not test that recipe.
+
+The proposed synthetic contrast-family V12 generation is parked before any API
+generation or GPU training. V12 now means a clean-base, packed, full-sequence,
+two-pass Smol-SmolTalk recipe replication, preceded by an identical-window
+learning-rate pilot and selected only through held-out free conversation. The
+dedicated Alpha pod is live and available; the operator has authorized continued
+bounded training without repeated approval prompts.
+
+The exact V12 train/test renderings are now built and validation-PASS under
+`/mnt/donto-data/alpha-corpora/chat-recipe-v12/`: 450,402 training conversations,
+23,710 held-out test conversations, zero structural issues, zero remaining exact
+train/test overlaps, and 4,096/4,096 sampled conversations with identical native
+Alpha and Hugging Face token IDs. The frozen training contract is
+[docs/resume/CHAT-RECIPE-V12-CONTRACT.md](docs/resume/CHAT-RECIPE-V12-CONTRACT.md).
 
 The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
 effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
 the active training objective.
 
-The authoritative latest execution record is
-[docs/resume/CHAT-REPAIR-V2-2026-07-31.md](docs/resume/CHAT-REPAIR-V2-2026-07-31.md). The earlier selected repair
+The latest completed training record is
+[docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md](docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md). The earlier selected repair
 is recorded in [docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). Checkpoint 1,200
 remains selected at SHA-256
 `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` because no v2 candidate beat it on
@@ -28,9 +54,9 @@ sealed-final suite remains unexecuted and uninspected.
 
 All v2 evidence is local at `/mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/` and public at training
 archive revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`. Alpha pod `omn3hktwqs7r5l` was removed after
-verified recovery; the remaining RunPod is unrelated. The next paid run is not a continuation of either failed
-trajectory: it requires a new explicit authorization and a finite intervention aimed at semantic contingency or
-autoregressive stability, with selection by generated conversation rather than loss.
+verified recovery. A newer dedicated Alpha pod is now live. The next paid run is not a continuation of either
+failed trajectory: it is the finite same-dataset recipe replication above, with selection by generated
+conversation rather than loss.
 
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.

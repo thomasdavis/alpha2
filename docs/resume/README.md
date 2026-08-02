@@ -2,8 +2,8 @@
 
 > **Current-project note (2026-08-02):** the original chatty-model goal is active. V11 completed and was
 > rejected as an improvement. Its step-300 checkpoint is public only as a separately versioned negative result.
-> Start with the V11 outcome and current state. The next training intervention is a V12 linked contrast-family
-> synthetic curriculum; do not continue V11 or run its Phase S.
+> Start with the V11 outcome, same-dataset recipe audit, and current state. The next training intervention is a
+> V12 clean-base packed full-sequence Smol-SmolTalk recipe replication; do not continue V11 or run its Phase S.
 
 - **Corrective run:** complete
 - **Selected checkpoint:** step 1,200, SHA `399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`
@@ -19,23 +19,25 @@ corrective experiment, and the evidence required before any further paid run.
 
 ## Read order
 
-1. [CHAT-FOUNDATIONS-V11-OUTCOME.md](CHAT-FOUNDATIONS-V11-OUTCOME.md) — latest completed training, semantic rejection, versioned publication, and BLAH evidence.
-2. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, BLAH, and authority state.
-3. [CHAT-FOUNDATIONS-V11-CONTRACT.md](CHAT-FOUNDATIONS-V11-CONTRACT.md) — the predeclared V11 hypothesis and stop gate.
-4. [CHAT-FOUNDATIONS-V10-OUTCOME.md](CHAT-FOUNDATIONS-V10-OUTCOME.md) — corpus-generation and assistant-only precursor evidence.
-5. [CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md](CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) — earlier local RCR-UL intervention and frozen inputs.
-6. [CHAT-REPAIR-V2-2026-07-31.md](CHAT-REPAIR-V2-2026-07-31.md) — rejected continuation and clean-base controls.
-7. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — corrective checkpoint and failed final gate.
-8. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
-9. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
+1. [SAME-DATASET-RECIPE-AUDIT-2026-08-02.md](SAME-DATASET-RECIPE-AUDIT-2026-08-02.md) — correction from public same-corpus and same-Smoltalk training evidence.
+2. [CHAT-RECIPE-V12-CONTRACT.md](CHAT-RECIPE-V12-CONTRACT.md) — frozen clean-base packed full-sequence replication contract.
+3. [CHAT-FOUNDATIONS-V11-OUTCOME.md](CHAT-FOUNDATIONS-V11-OUTCOME.md) — latest completed training, semantic rejection, versioned publication, and BLAH evidence.
+4. [CURRENT-STATE.md](CURRENT-STATE.md) — current repository, runtime, Hub, BLAH, and authority state.
+5. [CHAT-FOUNDATIONS-V11-CONTRACT.md](CHAT-FOUNDATIONS-V11-CONTRACT.md) — the predeclared V11 hypothesis and stop gate.
+6. [CHAT-FOUNDATIONS-V10-OUTCOME.md](CHAT-FOUNDATIONS-V10-OUTCOME.md) — corpus-generation and assistant-only precursor evidence.
+7. [CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md](CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md) — earlier local RCR-UL intervention and frozen inputs.
+8. [CHAT-REPAIR-V2-2026-07-31.md](CHAT-REPAIR-V2-2026-07-31.md) — rejected continuation and clean-base controls.
+9. [CHAT-REPAIR-2026-07-31.md](CHAT-REPAIR-2026-07-31.md) — corrective checkpoint and failed final gate.
+10. [SESSION-START.md](SESSION-START.md) — the first-session checklist and hard stops.
+11. [FAILURE-ANALYSIS.md](FAILURE-ANALYSIS.md) — why outputs sometimes looked conversational but mostly
    terminated immediately.
-10. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
-11. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
-12. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
-13. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
-14. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
-15. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
-16. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifacts.
+12. [CHECKPOINT-CATALOG.md](CHECKPOINT-CATALOG.md) — exact recoverable native checkpoints and hashes.
+13. [EVIDENCE-INDEX.md](EVIDENCE-INDEX.md) — canonical reports, samples, manifests, and screenshots.
+14. [DECISIONS.md](DECISIONS.md) — binding operator decisions that must not be silently reversed.
+15. [EXPERIMENT-BACKLOG.md](EXPERIMENT-BACKLOG.md) — later experiments, not automatic authorization.
+16. [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md) — proof required before spending, continuing, or publishing.
+17. [RUNPOD-RECOVERY.md](RUNPOD-RECOVERY.md) — future recovery only after renewed authorization.
+18. [SERVING-OPERATIONS.md](SERVING-OPERATIONS.md) — operation of the public model artifacts.
 
 Then read the repository-level [GOAL.md](../../GOAL.md), [HANDOFF.md](../../HANDOFF.md),
 [docs/RUNPOD.md](../RUNPOD.md), and [docs/FROZEN_EVAL.md](../FROZEN_EVAL.md). GOAL.md and HANDOFF.md

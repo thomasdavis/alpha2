@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-/** Immutable free-generation evaluation for the public baseline or one v4-v7 checkpoint. */
+/** Immutable free-generation evaluation for the public baseline or a declared Alpha checkpoint. */
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -230,17 +230,21 @@ async function main(): Promise<void> {
   const checkpoint = await Effect.runPromise(
     new FileCheckpoint().load(checkpointPath),
   );
+  const checkpointModelConfig = checkpoint.modelConfig as unknown as Record<string, unknown>;
   for (const [key, expected] of Object.entries({
-    blockSize: 512,
     nLayer: 16,
     nEmbd: 512,
     nHead: 8,
     vocabSize: 12288,
   }))
     assert(
-      (checkpoint.modelConfig as Record<string, unknown>)[key] === expected,
+      checkpointModelConfig[key] === expected,
       `checkpoint modelConfig.${key} drift`,
     );
+  assert(
+    [512, 1024].includes(checkpoint.modelConfig.blockSize),
+    "checkpoint modelConfig.blockSize drift",
+  );
 
   const publicSha =
     "399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec";
@@ -276,11 +280,14 @@ async function main(): Promise<void> {
         "alpha-chat-foundations-v9-ipt-pilot-contract-v1",
         "alpha-chat-foundations-contract-v10",
         "alpha-chat-foundations-midtrain-contract-v11",
+        "alpha-chat-recipe-v12-pilot-contract-v1",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
     label =
-      runContract.schema === "alpha-chat-foundations-midtrain-contract-v11"
+      runContract.schema === "alpha-chat-recipe-v12-pilot-contract-v1"
+        ? "V12-RECIPE"
+      : runContract.schema === "alpha-chat-foundations-midtrain-contract-v11"
         ? "V11-M"
         : runContract.schema === "alpha-chat-foundations-v9-ipt-pilot-contract-v1"
         ? "V9-IPT"
@@ -295,7 +302,22 @@ async function main(): Promise<void> {
                 : runContract.schema.endsWith("v5")
                   ? "V5"
                   : "V4";
-    if (label === "V11-M") {
+    if (label === "V12-RECIPE") {
+      assert(
+        checkpoint.modelConfig.blockSize === 1024,
+        "V12 recipe checkpoint must retain the clean parent's 1,024-token context",
+      );
+      assert(
+        runContract.training?.objective === "full-sequence next-token cross entropy" &&
+          runContract.training?.packed === true &&
+          runContract.training?.symbio === false,
+        "V12 recipe intervention drift",
+      );
+      assert(
+        runContract.selection?.publishOnlyGenuineLocalWinner === true,
+        "V12 publication gate drift",
+      );
+    } else if (label === "V11-M") {
       assert(
         runContract.eligibleForDirectPublication === false &&
           runContract.selection?.directPublicationForbidden === true,
@@ -329,7 +351,7 @@ async function main(): Promise<void> {
       ? "acae25cf38ab0ac7fbc621fad0d817c187514d27c792d5586ac722e54cb8254a"
       : ["V7", "V8", "V9-IPT", "V10"].includes(label)
       ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
-      : ["V5", "V6"].includes(label)
+      : ["V5", "V6", "V12-RECIPE"].includes(label)
         ? cleanBaseSha
         : publicSha;
     assert(

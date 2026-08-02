@@ -3,6 +3,38 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+## 2026-08-02 same-dataset recipe audit
+
+Canonical audit:
+
+    docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md
+
+Mounted evidence:
+
+    /mnt/donto-data/donto-resources/research/alpha-same-dataset-recipe-audit-20260802/
+
+The audit found that the successful public same-Smoltalk SFT recipe used packed
+full-sequence causal loss for two epochs, whereas Alpha's flagship used one
+un-packed assistant-only pass. The proposed synthetic V12 generation is parked
+until the existing-data recipe is tested from the clean base.
+
+Frozen V12 contract:
+
+    docs/resume/CHAT-RECIPE-V12-CONTRACT.md
+
+Validated corpus:
+
+    /mnt/donto-data/alpha-corpora/chat-recipe-v12/
+
+| Artifact | SHA-256 / result |
+|---|---|
+| train text, 450,402 rows | `e15e19f100040565faac1ed0381ed6e3db2a06c2b9a197b756fc0dd7c20b8f2a` |
+| test text, 23,710 rows | `0b6e240d5ffcbb3a26d961bcd81f37787830ff9ebfe37d4e0faa528fcdcd701c` |
+| corpus manifest | `68365ae0e2e6c4289a5ab1fd4458fd67b92085dd15475f4ccbe6723448046617` |
+| structure | 474,112 / 474,112 clean |
+| exact train/test overlap | zero after nine held-out exclusions |
+| tokenizer parity | 4,096 / 4,096 sampled rows exact |
+
 ## 2026-08-02 chat foundations v11
 
 Authoritative outcome:

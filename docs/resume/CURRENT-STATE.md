@@ -20,11 +20,22 @@ result rather than replacing the earlier Alpha:
 | BLAH model | `Mq5PrXS1MUk2yl0eSKUXwA`, alias `alpha-v11-m300` |
 | BLAH run | `XEDqvFu4Adbj86rKEVUqEg`, completed 24/24 with one errored eval |
 | BLAH comparison | 0.3625 versus earlier Alpha 0.395833; 4 wins / 12 ties / 8 losses |
-| Next training intervention | V12 linked contrast-family synthetic curriculum, not V11 continuation |
+| Next training intervention | V12 clean-base packed full-sequence Smol-SmolTalk recipe replication; synthetic contrast-family generation is parked |
 
 Every future publication must increment the public version and create a new BLAH model record. Existing model
 records remain immutable historical comparisons. Full evidence and output examples are in
 `CHAT-FOUNDATIONS-V11-OUTCOME.md`.
+
+The same-dataset audit and frozen V12 contract now supersede the earlier proposal
+for new synthetic generation. The V12 corpus build is complete at
+`/mnt/donto-data/alpha-corpora/chat-recipe-v12/`: 450,402 train rows and 23,710
+test rows, both 100% structurally clean; nine exact test/train overlaps were
+excluded and none remain; a systematic 4,096-row sample has exact native/HF
+token-ID parity. Train SHA-256 is `e15e19f1...`, test SHA-256 is `0b6e240d...`,
+and manifest SHA-256 is `68365ae0...`. The dedicated Alpha RTX 4090 pod
+`wtupxv15debnvh` was verified live and idle before launch. No V12 training claim
+exists until the declared pilot produces finite checkpoints and free-generation
+evidence.
 
 ## Active result
 

@@ -155,13 +155,14 @@ public version because it can change observed behavior.
 
 ## Next intervention
 
-Do not extend V11 and do not run Phase S. The evidence supports V12 as a new
-synthetic-data intervention organized into linked contrast families: a base
-dialogue, paraphrase, minimal meaning-changing edit, update, hard negative,
-required invariant, and natural response variants. GPT-5.4 should generate the
-families and GPT-5.5 should review boundaries and hard negatives. Selection must
-remain on untouched families and free multi-turn behavior, not loss or output
-non-emptiness.
+Do not extend V11 and do not run Phase S. A subsequent same-dataset recipe audit
+supersedes the initial proposal to generate V12 contrast families. The historical
+public SmolLM2 recipe used packed full-sequence loss over the complete
+Smol-SmolTalk corpus for two epochs; Alpha used one un-packed assistant-only pass,
+while V11 exposed only 2.46 million all-token positions from an already
+post-trained parent. The next controlled intervention therefore starts from the
+clean base and tests the known full-corpus recipe before generating more data.
+See `SAME-DATASET-RECIPE-AUDIT-2026-08-02.md`.
 
 ## Evidence locations
 
