@@ -78,6 +78,28 @@ run_row() {
   local status=${PIPESTATUS[0]}
   set -e
   printf '%s\n' "$status" > "$run_dir/exit-code.txt"
+
+  # A 30-step row produces the same ~660 MiB optimizer-bearing checkpoint as a
+  # long run. Preserve it losslessly for parity/debugging without allowing eight
+  # disposable sweep rows to exhaust the pod overlay. The decompressed digest
+  # remains the native-checkpoint identity.
+  local checkpoint="$run_dir/checkpoint-$STEPS.json"
+  if [[ -f "$checkpoint" ]]; then
+    (
+      cd "$run_dir"
+      sha256sum "checkpoint-$STEPS.json" > checkpoint-raw.sha256
+      zstd -T0 -6 --rm "checkpoint-$STEPS.json"
+      zstd -t "checkpoint-$STEPS.json.zst"
+      sha256sum "checkpoint-$STEPS.json.zst" > checkpoint-zst.sha256
+      local expected_raw actual_raw
+      expected_raw=$(cut -d' ' -f1 checkpoint-raw.sha256)
+      actual_raw=$(zstd -dc "checkpoint-$STEPS.json.zst" | sha256sum | cut -d' ' -f1)
+      [[ "$actual_raw" == "$expected_raw" ]] || {
+        echo "decompressed checkpoint hash mismatch for $name" >&2
+        exit 1
+      }
+    )
+  fi
 }
 
 run_row b0_fp32_wg64           64  off false 1024 16  512 off
