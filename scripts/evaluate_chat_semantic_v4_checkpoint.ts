@@ -267,16 +267,23 @@ async function main(): Promise<void> {
       [
         "alpha-chat-semantic-repair-contract-v4",
         "alpha-chat-semantic-repair-contract-v5",
+        "alpha-chat-foundation-contract-v6",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
-    label = runContract.schema.endsWith("v5") ? "V5" : "V4";
+    label = runContract.schema.endsWith("v6")
+      ? "V6"
+      : runContract.schema.endsWith("v5")
+        ? "V5"
+        : "V4";
     assert(
       runContract.eligibleForCheckpointSelection === true,
       "candidate is selection-ineligible",
     );
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization = label === "V5" ? cleanBaseSha : publicSha;
+    const expectedInitialization = ["V5", "V6"].includes(label)
+      ? cleanBaseSha
+      : publicSha;
     assert(
       runContract.initializedFrom?.sha256 === expectedInitialization,
       "candidate initialization drift",
