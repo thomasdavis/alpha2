@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-/** Immutable free-generation evaluation for the public baseline or one v4/v5 checkpoint. */
+/** Immutable free-generation evaluation for the public baseline or one v4-v7 checkpoint. */
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -256,7 +256,10 @@ async function main(): Promise<void> {
       "public baseline must not receive a run contract",
     );
   } else {
-    assert(args["run-contract"], "semantic-repair candidate requires --run-contract");
+    assert(
+      args["run-contract"],
+      "semantic-repair candidate requires --run-contract",
+    );
     runContractPath = resolve(args["run-contract"]);
     runContractHash = await sha256File(runContractPath);
     runContract = JSON.parse(await readFile(runContractPath, "utf8")) as Record<
@@ -268,22 +271,28 @@ async function main(): Promise<void> {
         "alpha-chat-semantic-repair-contract-v4",
         "alpha-chat-semantic-repair-contract-v5",
         "alpha-chat-foundation-contract-v6",
+        "alpha-chat-bridge-contract-v7",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
-    label = runContract.schema.endsWith("v6")
-      ? "V6"
-      : runContract.schema.endsWith("v5")
-        ? "V5"
-        : "V4";
+    label = runContract.schema.endsWith("v7")
+      ? "V7"
+      : runContract.schema.endsWith("v6")
+        ? "V6"
+        : runContract.schema.endsWith("v5")
+          ? "V5"
+          : "V4";
     assert(
       runContract.eligibleForCheckpointSelection === true,
       "candidate is selection-ineligible",
     );
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization = ["V5", "V6"].includes(label)
-      ? cleanBaseSha
-      : publicSha;
+    const expectedInitialization =
+      label === "V7"
+        ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
+        : ["V5", "V6"].includes(label)
+          ? cleanBaseSha
+          : publicSha;
     assert(
       runContract.initializedFrom?.sha256 === expectedInitialization,
       "candidate initialization drift",
