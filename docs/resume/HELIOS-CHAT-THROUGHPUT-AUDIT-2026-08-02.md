@@ -49,13 +49,17 @@ Across 27 non-evaluation steady-state log samples from steps 100 through 825:
 | GPU operations per ordinary step | 1,934 |
 | GPU operations at an eval checkpoint | 3,409-3,637 |
 
-This is a measured baseline, not an estimate. At one live sample the device
-reported 100% GPU utilization but drew only 185.67 W from a 450 W power limit,
-with 16% memory-controller utilization. Later samples varied as evaluation and
-checkpoint buffers were released. The combination—nominally busy GPU, low
-power, low memory utilization, and 1,934 operations per step—strongly suggests
-latency, occupancy, dispatch, and unfused-memory-traffic limits rather than full
-math saturation.
+This is a measured baseline, not an estimate. A 20-second `nvidia-smi dmon`
+sample during ordinary training averaged 42.5% SM utilization, 6.15%
+memory-controller utilization, and 196.05 W from a 450 W power limit. Individual
+one-second samples ranged from 0% to 100% SM use while framebuffer allocation
+swung from 16,158 MiB to 48,526 MiB. This
+sawtooth is more informative than a single utilization snapshot: the device is
+alternating between useful kernels and underfilled/idle periods while temporary
+storage turns over. The combination—low average power, low memory utilization,
+intermittent SM idleness, and 1,934 operations per step—strongly suggests
+latency, occupancy, dispatch, allocation-lifetime, and unfused-memory-traffic
+limits rather than full math saturation.
 
 The Node process used roughly 57% of one CPU core on a 256-vCPU host, so input
 tokenization and CPU availability are not the primary limiter. Data is already
@@ -145,8 +149,12 @@ For B4 and B5, the experiment stops immediately on non-finite loss, gradients,
 or a correctness mismatch. A fast-but-wrong kernel is a failed row.
 
 After the sweep, phase timing will divide each step into forward, backward,
-gradient norm, clipping, optimizer, flush, and data time. Kernel work should be
-optimized only after that evidence identifies the dominant phase.
+gradient norm, clipping, optimizer, flush, and data time. Opt-in backend
+instrumentation records operation kind, the dominant kernel names, command
+flushes, waited flushes, DGC flushes, and operations per flush. The profiler is
+disabled in ordinary training so its JavaScript map accounting cannot distort a
+long run. Kernel work should be optimized only after the bounded evidence
+identifies the dominant phase and operation mix.
 
 ## Likely optimization order
 
