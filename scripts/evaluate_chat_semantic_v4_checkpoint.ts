@@ -275,11 +275,14 @@ async function main(): Promise<void> {
         "alpha-chat-foundations-contract-v8",
         "alpha-chat-foundations-v9-ipt-pilot-contract-v1",
         "alpha-chat-foundations-contract-v10",
+        "alpha-chat-foundations-midtrain-contract-v11",
       ].includes(runContract.schema),
       "unexpected candidate run contract",
     );
     label =
-      runContract.schema === "alpha-chat-foundations-v9-ipt-pilot-contract-v1"
+      runContract.schema === "alpha-chat-foundations-midtrain-contract-v11"
+        ? "V11-M"
+        : runContract.schema === "alpha-chat-foundations-v9-ipt-pilot-contract-v1"
         ? "V9-IPT"
         : runContract.schema.endsWith("v10")
           ? "V10"
@@ -292,7 +295,19 @@ async function main(): Promise<void> {
                 : runContract.schema.endsWith("v5")
                   ? "V5"
                   : "V4";
-    if (label === "V9-IPT") {
+    if (label === "V11-M") {
+      assert(
+        runContract.eligibleForDirectPublication === false &&
+          runContract.selection?.directPublicationForbidden === true,
+        "V11 midtrain checkpoint must remain publication-ineligible",
+      );
+      assert(
+        runContract.training?.objective === "all-token causal language modeling" &&
+          runContract.intervention?.changed ===
+            "all model-visible tokens receive causal next-token supervision",
+        "V11 all-token intervention drift",
+      );
+    } else if (label === "V9-IPT") {
       assert(
         runContract.eligibleForCheckpointSelection === false,
         "V9 IPT pilot must remain release-selection-ineligible until a finishing stage",
@@ -310,7 +325,9 @@ async function main(): Promise<void> {
       );
     }
     assert(runContract.sourceTreeDirty === false, "candidate source was dirty");
-    const expectedInitialization = ["V7", "V8", "V9-IPT", "V10"].includes(label)
+    const expectedInitialization = label === "V11-M"
+      ? "acae25cf38ab0ac7fbc621fad0d817c187514d27c792d5586ac722e54cb8254a"
+      : ["V7", "V8", "V9-IPT", "V10"].includes(label)
       ? "0453a842b264c80c3578bc419c3dc94b46420aca30cad93593d62c812f5710fb"
       : ["V5", "V6"].includes(label)
         ? cleanBaseSha
@@ -323,7 +340,19 @@ async function main(): Promise<void> {
       runContract.inputs?.evaluationFreeze?.sha256 === freezeHash,
       "candidate used another evaluation freeze",
     );
-    if (label === "V9-IPT") {
+    if (label === "V11-M") {
+      assert(
+        runContract.selection?.sealedFinalRemainsClosed === true,
+        "V11 midtrain contract permits premature sealed-final access",
+      );
+      assert(
+        Number.isSafeInteger(runContract.training?.steps) &&
+          checkpoint.step > 0 &&
+          checkpoint.step <= runContract.training.steps &&
+          runContract.selection?.checkpoints?.includes(checkpoint.step),
+        `checkpoint step ${checkpoint.step} was not declared for V11 midtrain`,
+      );
+    } else if (label === "V9-IPT") {
       assert(
         runContract.gates?.sealedFinalRemainsClosed === true,
         "V9 IPT contract permits premature sealed-final access",
