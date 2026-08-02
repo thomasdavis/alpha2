@@ -158,6 +158,10 @@ def main() -> int:
         identities.add(identity)
         rendered.append(render_prompt(row.get("messages"), f"prompt {index}"))
 
+    # Required by deterministic CUDA matmul. This must be set before torch first
+    # initializes cuBLAS in this process.
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
