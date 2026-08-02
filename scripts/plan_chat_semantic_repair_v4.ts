@@ -27,7 +27,7 @@ interface Blueprint {
   readonly batches: readonly BlueprintBatch[];
 }
 
-const FOCUSES: readonly Focus[] = [
+const V4_FOCUSES: readonly Focus[] = [
   {
     slug: "explanation",
     batches: 10,
@@ -68,6 +68,69 @@ const FOCUSES: readonly Focus[] = [
   },
 ] as const;
 
+const V8_FOCUSES: readonly Focus[] = [
+  {
+    slug: "foundational-answer",
+    batches: 10,
+    prompt:
+      "short direct answers about stable, broadly useful everyday knowledge",
+  },
+  {
+    slug: "quantitative-reasoning",
+    batches: 10,
+    prompt:
+      "small arithmetic, counting, comparison, and one- or two-step word problems",
+  },
+  {
+    slug: "instruction-control",
+    batches: 10,
+    prompt:
+      "literal compliance with concise constraints on wording, count, order, or layout",
+  },
+  {
+    slug: "context-grounding",
+    batches: 10,
+    prompt:
+      "answering from supplied fictional context instead of prior associations",
+  },
+  {
+    slug: "negation-contrast",
+    batches: 10,
+    prompt:
+      "negation, opposites, exclusions, corrections, and contrastive category boundaries",
+  },
+  {
+    slug: "uncertainty-honesty",
+    batches: 10,
+    prompt:
+      "unknown personal facts, missing evidence, tool limits, and calibrated uncertainty",
+  },
+  {
+    slug: "language-pragmatics",
+    batches: 10,
+    prompt:
+      "idioms, implicature, reference, ambiguity, tone, and intended conversational meaning",
+  },
+  {
+    slug: "multi-turn-update",
+    batches: 10,
+    prompt:
+      "follow-ups that correct, narrow, challenge, or apply earlier common ground",
+  },
+  {
+    slug: "premise-resistance",
+    batches: 10,
+    prompt:
+      "false premises, pressure to abandon a correct answer, and polite factual correction",
+  },
+  {
+    slug: "ordinary-conversation",
+    batches: 10,
+    prompt:
+      "natural greetings, reactions, opinions, creative continuations, and social exchanges",
+  },
+] as const;
+
 const RESERVED =
   "DNA; promises versus predictions; uncertainty about one's life direction; a terrible-day disclosure that explicitly refuses advice; replacing every committee member; the sentence 'I saw her duck'.";
 
@@ -89,7 +152,10 @@ function parseArgs(argv: readonly string[]): Map<string, string> {
   return parsed;
 }
 
-function expectedBatches(): Array<{
+function expectedBatches(
+  prefix: string,
+  focuses: readonly Focus[],
+): Array<{
   batch_id: string;
   focus: string;
   purpose: string;
@@ -97,10 +163,10 @@ function expectedBatches(): Array<{
   const batches: Array<{ batch_id: string; focus: string; purpose: string }> =
     [];
   let index = 0;
-  for (const focus of FOCUSES) {
+  for (const focus of focuses) {
     for (let within = 0; within < focus.batches; within += 1) {
       batches.push({
-        batch_id: `v4-${String(index).padStart(3, "0")}-${focus.slug}`,
+        batch_id: `${prefix}-${String(index).padStart(3, "0")}-${focus.slug}`,
         focus: focus.slug,
         purpose: focus.prompt,
       });
@@ -110,15 +176,18 @@ function expectedBatches(): Array<{
   return batches;
 }
 
-function validate(value: unknown): asserts value is Blueprint {
+function validate(
+  value: unknown,
+  planId: string,
+  expected: readonly { batch_id: string; focus: string; purpose: string }[],
+): asserts value is Blueprint {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error("malformed blueprint envelope");
   const record = value as Record<string, unknown>;
-  if (record.plan_id !== "alpha-chat-semantic-repair-v4-planned-v2")
+  if (record.plan_id !== planId)
     throw new Error(`unexpected plan_id ${String(record.plan_id)}`);
   if (!Array.isArray(record.batches))
     throw new Error("blueprint batches missing");
-  const expected = expectedBatches();
   if (record.batches.length !== expected.length)
     throw new Error(
       `expected ${expected.length} batches, got ${record.batches.length}`,
@@ -147,23 +216,49 @@ function validate(value: unknown): asserts value is Blueprint {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const repo = resolve(args.get("repo") ?? process.cwd());
+  const variant = args.get("variant") ?? "v4";
+  if (variant !== "v4" && variant !== "v8")
+    throw new Error(`unsupported variant: ${variant}`);
+  const isV8 = variant === "v8";
+  const focuses = isV8 ? V8_FOCUSES : V4_FOCUSES;
+  const planId = isV8
+    ? "alpha-chat-foundations-v8-planned-v1"
+    : "alpha-chat-semantic-repair-v4-planned-v2";
+  const expected = expectedBatches(variant, focuses);
   const out = resolve(
     args.get("out") ??
-      "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json",
+      (isV8
+        ? "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/planned/blueprint.json"
+        : "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json"),
   );
   const events = resolve(
     args.get("events") ??
-      "/opencode/logs/alpha-chat-semantic-repair-v4/planned-v2/blueprint.events.jsonl",
+      (isV8
+        ? "/opencode/logs/alpha-chat-foundations-v8/planned/blueprint.events.jsonl"
+        : "/opencode/logs/alpha-chat-semantic-repair-v4/planned-v2/blueprint.events.jsonl"),
   );
   const model = args.get("model") ?? "gpt-5.5";
   const reasoning = args.get("reasoning-effort") ?? "high";
-  const promptPath = resolve(repo, "prompts/chat-semantic-repair-planner.md");
+  const promptPath = resolve(
+    args.get("prompt") ??
+      resolve(
+        repo,
+        isV8
+          ? "prompts/chat-foundations-v8-planner.md"
+          : "prompts/chat-semantic-repair-planner.md",
+      ),
+  );
   const schemaPath = resolve(
-    repo,
-    "schemas/chat-semantic-repair-blueprint.schema.json",
+    args.get("schema") ??
+      resolve(
+        repo,
+        isV8
+          ? "schemas/chat-foundations-v8-blueprint.schema.json"
+          : "schemas/chat-semantic-repair-blueprint.schema.json",
+      ),
   );
   const promptTemplate = await readFile(promptPath, "utf8");
-  const prompt = `${promptTemplate}\n\n## Required plan\n\nPlan ID: alpha-chat-semantic-repair-v4-planned-v2\nReserved release probes: ${RESERVED}\n\nBatches in required order:\n${expectedBatches()
+  const prompt = `${promptTemplate}\n\n## Required plan\n\nPlan ID: ${planId}\nReserved release probes: ${RESERVED}\n\nBatches in required order:\n${expected
     .map((batch) => `${batch.batch_id} | ${batch.focus} | ${batch.purpose}`)
     .join("\n")}\n`;
   await mkdir(dirname(out), { recursive: true });
@@ -213,10 +308,13 @@ async function main(): Promise<void> {
     child.stdin.end(prompt);
   });
   const parsed: unknown = JSON.parse(await readFile(temporaryOut, "utf8"));
-  validate(parsed);
+  validate(parsed, planId, expected);
   await rename(temporaryOut, out);
   const manifest = {
-    schema: "alpha-chat-semantic-repair-v4-blueprint-manifest-v1",
+    schema: isV8
+      ? "alpha-chat-foundations-v8-blueprint-manifest-v1"
+      : "alpha-chat-semantic-repair-v4-blueprint-manifest-v1",
+    variant,
     created_utc: new Date().toISOString(),
     model,
     reasoning_effort: reasoning,

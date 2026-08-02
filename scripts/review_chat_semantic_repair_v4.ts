@@ -245,12 +245,12 @@ async function main(): Promise<void> {
     "reviews",
   );
   const templatePath = resolve(
-    repoRoot,
-    "prompts/chat-semantic-repair-reviewer.md",
+    args.get("prompt") ??
+      resolve(repoRoot, "prompts/chat-semantic-repair-reviewer.md"),
   );
   const schemaPath = resolve(
-    repoRoot,
-    "schemas/chat-semantic-repair-reviews.schema.json",
+    args.get("schema") ??
+      resolve(repoRoot, "schemas/chat-semantic-repair-reviews.schema.json"),
   );
   const template = await readFile(templatePath, "utf8");
   const blueprintBytes = await readFile(blueprintPath);
@@ -386,7 +386,9 @@ async function main(): Promise<void> {
     String(a.review_batch_id).localeCompare(String(b.review_batch_id)),
   );
   const manifest = {
-    schema: "alpha-chat-semantic-repair-v4-review-manifest-v1",
+    schema:
+      args.get("manifest-schema") ??
+      "alpha-chat-semantic-repair-v4-review-manifest-v1",
     reviewed_utc: new Date().toISOString(),
     model,
     reasoning_effort: reasoningEffort,

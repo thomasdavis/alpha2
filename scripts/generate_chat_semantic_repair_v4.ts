@@ -55,7 +55,7 @@ interface BatchPlan {
   readonly singleCount: number;
 }
 
-const FOCUSES: readonly Focus[] = [
+const V4_FOCUSES: readonly Focus[] = [
   {
     slug: "explanation",
     batches: 10,
@@ -100,6 +100,69 @@ const FOCUSES: readonly Focus[] = [
   },
 ] as const;
 
+const V8_FOCUSES: readonly Focus[] = [
+  {
+    slug: "foundational-answer",
+    batches: 10,
+    prompt:
+      "Give short direct answers about stable, broadly useful everyday knowledge. Cover many unrelated domains; answer first and explain only when it helps.",
+  },
+  {
+    slug: "quantitative-reasoning",
+    batches: 10,
+    prompt:
+      "Solve small arithmetic, counting, comparison, and one- or two-step word problems. State the result clearly and keep any working compact.",
+  },
+  {
+    slug: "instruction-control",
+    batches: 10,
+    prompt:
+      "Follow concise literal constraints on wording, count, order, copying, or line layout. Make the requested content ordinary rather than code-oriented.",
+  },
+  {
+    slug: "context-grounding",
+    batches: 10,
+    prompt:
+      "Answer from short supplied fictional context. Preserve names, relations, negation, time, and quantities even when they differ from familiar associations.",
+  },
+  {
+    slug: "negation-contrast",
+    batches: 10,
+    prompt:
+      "Handle negation, opposites, exclusions, corrections, and contrastive category boundaries. Do not echo the prohibited category as the answer.",
+  },
+  {
+    slug: "uncertainty-honesty",
+    batches: 10,
+    prompt:
+      "Respond honestly when personal facts, current evidence, or tool access are missing. Distinguish what is known, inferable, and unavailable without canned disclaimers.",
+  },
+  {
+    slug: "language-pragmatics",
+    batches: 10,
+    prompt:
+      "Explain idioms, implicature, reference, ambiguity, tone, and intended meaning with compact natural examples and attention to context.",
+  },
+  {
+    slug: "multi-turn-update",
+    batches: 10,
+    prompt:
+      "Create two-exchange trajectories whose follow-up corrects, narrows, challenges, or applies earlier common ground. The final reply must actually update.",
+  },
+  {
+    slug: "premise-resistance",
+    batches: 10,
+    prompt:
+      "Correct false premises and resist polite pressure to abandon a correct answer. Be direct, brief, and non-combative.",
+  },
+  {
+    slug: "ordinary-conversation",
+    batches: 10,
+    prompt:
+      "Write natural greetings, reactions, opinions, creative continuations, and social exchanges. Preserve warmth and momentum without canned counseling or automatic questions.",
+  },
+] as const;
+
 const RESERVED_LIVE_PROBE =
   "Do not generate conversations about DNA, the contrast between promises and predictions, uncertainty about one's life direction, a user reporting a terrible day while explicitly refusing advice, replacement of every committee member, or the sentence 'I saw her duck'. These are held-out release probes.";
 
@@ -136,12 +199,14 @@ function positiveInteger(
 function plans(
   itemsPerBatch: number,
   maximumBatches: number,
+  prefix: string,
+  focuses: readonly Focus[],
 ): readonly BatchPlan[] {
   const all: BatchPlan[] = [];
   let index = 0;
-  for (const focus of FOCUSES) {
+  for (const focus of focuses) {
     for (let within = 0; within < focus.batches; within += 1) {
-      const batchId = `v4-${String(index).padStart(3, "0")}-${focus.slug}`;
+      const batchId = `${prefix}-${String(index).padStart(3, "0")}-${focus.slug}`;
       const candidateIds = Array.from(
         { length: itemsPerBatch },
         (_, item) => `${batchId}-${String(item).padStart(2, "0")}`,
@@ -166,7 +231,7 @@ function batchPrompt(
 ): string {
   const singleIds = plan.candidateIds.slice(0, plan.singleCount);
   const doubleIds = plan.candidateIds.slice(plan.singleCount);
-  return `${template}\n\n## Batch specification\n\nBatch ID: ${plan.batchId}\nCapability focus: ${plan.focus.prompt}\nSemantic territory: ${blueprint.semantic_territory}\nCoverage targets (distribute the forty items across all of them):\n${blueprint.coverage_targets.map((target) => `- ${target}`).join("\n")}\nExcluded cliches for this batch:\n${blueprint.excluded_cliches.map((item) => `- ${item}`).join("\n")}\nVariation requirements:\n${blueprint.variation_notes.map((item) => `- ${item}`).join("\n")}\n\nReturn exactly ${plan.candidateIds.length} items in this exact order:\n${plan.candidateIds.join(", ")}\n\nConversation allocation:\n- The following ${singleIds.length} items contain exactly one user/assistant exchange: ${singleIds.join(", ")}\n- The following ${doubleIds.length} items contain exactly two user/assistant exchanges: ${doubleIds.join(", ")}\n\nEvery item must use a different situation and a materially different user intent. Avoid neighboring paraphrases within the batch. Stay inside the allocated territory instead of falling back to common textbook examples. ${RESERVED_LIVE_PROBE}\n`;
+  return `${template}\n\n## Batch specification\n\nBatch ID: ${plan.batchId}\nCapability focus: ${plan.focus.prompt}\nSemantic territory: ${blueprint.semantic_territory}\nCoverage targets (distribute the ${plan.candidateIds.length} items across all of them):\n${blueprint.coverage_targets.map((target) => `- ${target}`).join("\n")}\nExcluded cliches for this batch:\n${blueprint.excluded_cliches.map((item) => `- ${item}`).join("\n")}\nVariation requirements:\n${blueprint.variation_notes.map((item) => `- ${item}`).join("\n")}\n\nReturn exactly ${plan.candidateIds.length} items in this exact order:\n${plan.candidateIds.join(", ")}\n\nConversation allocation:\n- The following ${singleIds.length} items contain exactly one user/assistant exchange: ${singleIds.join(", ")}\n- The following ${doubleIds.length} items contain exactly two user/assistant exchanges: ${doubleIds.join(", ")}\n\nEvery item must use a different situation and a materially different user intent. Avoid neighboring paraphrases within the batch. Stay inside the allocated territory instead of falling back to common textbook examples. ${RESERVED_LIVE_PROBE}\n`;
 }
 
 async function loadBlueprint(
@@ -354,9 +419,16 @@ async function runCodex(
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = resolve(args.get("repo") ?? process.cwd());
+  const variant = args.get("variant") ?? "v4";
+  if (variant !== "v4" && variant !== "v8")
+    throw new Error(`unsupported variant: ${variant}`);
+  const isV8 = variant === "v8";
+  const focuses = isV8 ? V8_FOCUSES : V4_FOCUSES;
   const outputRoot = resolve(
     args.get("out-dir") ??
-      "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/generation",
+      (isV8
+        ? "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/generation"
+        : "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/generation"),
   );
   const logRoot = resolve(
     args.get("log-dir") ?? "/opencode/logs/alpha-chat-semantic-repair-v4",
@@ -374,18 +446,25 @@ async function main(): Promise<void> {
   const reasoningEffort = args.get("reasoning-effort") ?? "medium";
   const blueprintPath = resolve(
     args.get("blueprint") ??
-      "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json",
+      (isV8
+        ? "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/planned/blueprint.json"
+        : "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/blueprint.json"),
   );
   const schemaPath = resolve(
-    repoRoot,
-    "schemas/chat-semantic-repair-candidates.schema.json",
+    args.get("schema") ??
+      resolve(repoRoot, "schemas/chat-semantic-repair-candidates.schema.json"),
   );
   const templatePath = resolve(
-    repoRoot,
-    "prompts/chat-semantic-repair-generator.md",
+    args.get("prompt") ??
+      resolve(
+        repoRoot,
+        isV8
+          ? "prompts/chat-foundations-v8-generator.md"
+          : "prompts/chat-semantic-repair-generator.md",
+      ),
   );
   const template = await readFile(templatePath, "utf8");
-  const selectedPlans = plans(itemsPerBatch, maximumBatches);
+  const selectedPlans = plans(itemsPerBatch, maximumBatches, variant, focuses);
   if (selectedPlans.length !== maximumBatches) {
     throw new Error(
       `requested ${maximumBatches} batches but the declared plan contains ${selectedPlans.length}`,
@@ -495,7 +574,10 @@ async function main(): Promise<void> {
       encoding: "utf8",
     }).trim().length > 0;
   const manifest = {
-    schema: "alpha-chat-semantic-repair-v4-generation-manifest-v1",
+    schema: isV8
+      ? "alpha-chat-foundations-v8-generation-manifest-v1"
+      : "alpha-chat-semantic-repair-v4-generation-manifest-v1",
+    variant,
     generated_utc: new Date().toISOString(),
     model,
     reasoning_effort: reasoningEffort,
