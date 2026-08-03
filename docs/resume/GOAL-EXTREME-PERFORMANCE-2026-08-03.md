@@ -38,6 +38,20 @@ is compute-bound by 3.6x so bandwidth is not an excuse, and **51% of the product
 step is unattributed to any measured kernel**. Against that, the campaign has been
 contesting 2-4% kernel candidates. The unit of progress was wrong.
 
+## Sub-goal: throughput
+
+A dedicated throughput goal derived from the measured kernel ladder is at
+[GOAL-THROUGHPUT-2026-08-03.md](GOAL-THROUGHPUT-2026-08-03.md): raise sustained
+tokens/s on the exact foundation shape from **7,254 to 30,000 committed**
+(45,000 stretch), taking the 1.942B-token run from 74.4 GPU-hours / $51.31 to
+**18.0 hours / $12.41**. The committed target is reached in pure FP32 with no
+tensor cores and no change to the arithmetic.
+
+It carries one decisive unknown: if GeForce Ada's FP32-accumulate
+cooperative-matrix path runs at half rate on this die, BF16 tensor cores are
+*slower* than well-tiled FP32 and the mixed-precision effort should be cancelled
+outright. A ~$0.70 microbenchmark settles it and must precede implementation.
+
 ## Gates
 
 | Gate | Definition | State |
