@@ -9,6 +9,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 output_dir="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-split-${timestamp}}"
 steps="${HOST_SPLIT_STEPS:-3}"
+cpu_profile="${HOST_SPLIT_CPU_PROFILE:-0}"
 
 if [[ ! "$steps" =~ ^[0-9]+$ ]] || (( steps < 2 )); then
   echo "HOST_SPLIT_STEPS must be an integer >= 2" >&2
@@ -35,6 +36,7 @@ sha256sum \
   packages/train/src/trainer.ts \
   apps/cli/dist/main.js \
   scripts/summarize_helios_profile.mjs \
+  scripts/summarize_node_cpu_profile.mjs \
   scripts/run_helios_host_split_probe.sh \
   package-lock.json > "$output_dir/SOURCE-HASHES.sha256"
 
@@ -79,9 +81,20 @@ controlled_env=(
 )
 printf '%s\n' "${controlled_env[@]}" > "$output_dir/CONTROLLED-ENVIRONMENT.txt"
 
+node_args=(--expose-gc)
+if [[ "$cpu_profile" == "1" ]]; then
+  node_args+=(
+    --cpu-prof
+    --cpu-prof-interval=1000
+    --cpu-prof-dir="$output_dir"
+    --cpu-prof-name=cpu.cpuprofile
+  )
+fi
+printf 'HOST_SPLIT_CPU_PROFILE=%s\n' "$cpu_profile" > "$output_dir/PROFILE-MODE.txt"
+
 set +e
 env "${controlled_env[@]}" nice -n 5 ionice -c 2 -n 7 \
-  node --expose-gc apps/cli/dist/main.js train \
+  node "${node_args[@]}" apps/cli/dist/main.js train \
     --data="$TRAIN_DATA" \
     --valData="$VAL_DATA" \
     --requireValData=true \
@@ -137,6 +150,17 @@ printf '%s\n' "$train_status" > "$output_dir/exit-code.txt"
 if (( train_status != 0 )); then
   tail -100 "$output_dir/console.log" >&2
   exit "$train_status"
+fi
+
+if [[ "$cpu_profile" == "1" ]]; then
+  [[ -s "$output_dir/cpu.cpuprofile" ]] || {
+    echo "CPU profiling requested but cpu.cpuprofile is missing or empty" >&2
+    exit 1
+  }
+  node scripts/summarize_node_cpu_profile.mjs --format json "$output_dir/cpu.cpuprofile" \
+    > "$output_dir/cpu-profile-summary.json"
+  node scripts/summarize_node_cpu_profile.mjs "$output_dir/cpu.cpuprofile" \
+    > "$output_dir/cpu-profile-summary.md"
 fi
 
 node scripts/summarize_helios_profile.mjs --format json "$output_dir/console.log" \
