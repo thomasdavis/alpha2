@@ -76,10 +76,34 @@ Two changes to the **training contract** — no kernel work, no new mathematics:
    total arithmetic**: ~29 GPU-hours and ~$20 off the run. Batch 24 was chosen
    because 32 exhausted the allocator; the allocator has no opinion about
    convergence.
-2. **The minibatch gradient is accurate to only ~130% relative Frobenius error.**
-   Computing weight gradients from 12.5% of batch tokens adds less error than is
-   already present and removes 88% of that arithmetic — **1.35x** overall, gated
-   on staying above the critical batch size (which measurement 1 confirms).
+2. ~~Weight gradients from 12.5% of batch tokens → **1.35x**~~ **RETRACTED
+   2026-08-03 (X12).** X5 measured the noise floor with a *symmetric* relative
+   error while X9/X11 measured theirs *asymmetrically* against the exact
+   gradient, and the two were compared. A noisy estimate has the larger norm, so
+   the symmetric denominator flattered every approximation. On one consistent
+   metric the floor is **0.844** — the error from simply halving the batch — and
+   **no sampling rate stays under it** (uniform @0.5 = 1.41x the floor;
+   importance-sampled @0.5 = 1.13x). Sampling `dW` is dominated by using a
+   smaller batch, which also saves the forward pass and `dX`.
+   *General lesson:* before proposing a cheaper estimator, check it against the
+   trivial estimator that uses less data.
+
+5. **Low precision survives that correction and is strengthened (X9/X12).** On
+   the corrected metric, stochastic-rounded **int4 block floating point adds
+   0.269x the error of halving the batch** (bf16 0.007x, int8 0.016x, fp8-e4m3
+   0.106x, int3 0.584x). And the key objection — that quantisation bias may not
+   average away over 79,020 steps where sampling noise does — was measured:
+   across all nine formats, the residual after averaging 16 stochastic-rounding
+   draws divided by the single-draw error is **0.2479–0.2502** against a
+   theoretical 1/sqrt(16) = 0.2500. **Stochastic rounding leaves no detectable
+   systematic component, down to int2.** Round-to-nearest is smaller per step but
+   has no such decay — which is exactly the trap. Open-loop only; closed-loop
+   drift over a real run remains the decisive test.
+
+6. **Norm-importance sampling of `dW` confirmed (X11).** `p_t` proportional to
+   `||delta_t|| * ||x_t||` (the Frobenius norm of an outer product factorises)
+   gives a clean, rate-independent **1.57x variance reduction**. Correct and
+   useful; does not rescue result 2.
 
 4. **Muon reaches the same held-out loss with 2.24x fewer tokens** (X7/X7b).
    Matched-token, matched-data-order comparison at an 8M-parameter proxy scale,
@@ -112,6 +136,12 @@ to a measured constant, with the four closed directions stated as boundary condi
 crossover conditions — is public at:
 
 **https://alpha.donto.org/research/alpha-open-problems-2026-08-03.html**
+
+An external critique from the Harmonic GPT research program prompted the retraction above,
+three new measurements, and accepted reformulations of Q10, Q20, Q21, Q23, Q31, Q36-37 and
+Q44. Reply published at:
+
+**https://alpha.donto.org/research/alpha-response-to-harmonic-2026-08-03.html**
 
 Source markdown is linked from the page and mirrored in the research tree. Served from
 `/srv/alpha-research` via a `handle_path /research*` block in the `alpha.donto.org` vhost, ahead of the
