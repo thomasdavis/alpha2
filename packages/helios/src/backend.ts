@@ -535,10 +535,17 @@ function waitTimelineTracked(vk: NativeAddon, timelineValue: number): void {
 // Adaptive pool cap: allow more entries for small buffers (cheap), fewer for large.
 // Prevents both vk.destroyBuffer thrashing (small) and VRAM hoarding (large).
 function poolMaxForSize(byteSize: number): number {
-  if (byteSize <= 262_144) return 256;   // ≤256KB: up to 256 entries (64MB max)
-  if (byteSize <= 4_194_304) return 32;  // ≤4MB: up to 32 entries (128MB max)
-  return 8;                               // >4MB: 8 entries (conservative)
+  if (byteSize <= 262_144) return OUTPUT_POOL_SMALL_PER_CLASS;
+  if (byteSize <= 4_194_304) return OUTPUT_POOL_MEDIUM_PER_CLASS;
+  return OUTPUT_POOL_LARGE_PER_CLASS;
 }
+function nonNegativeEnvInt(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+const OUTPUT_POOL_SMALL_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_SMALL_PER_CLASS", 256);
+const OUTPUT_POOL_MEDIUM_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_MEDIUM_PER_CLASS", 32);
+const OUTPUT_POOL_LARGE_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_LARGE_PER_CLASS", 8);
 const bufferPool = new Map<number, number[]>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
@@ -1720,6 +1727,9 @@ export class HeliosBackend implements Backend {
       deferredReleases: graph.deferredReleaseCount,
       pendingDestroys: pendingDestroys.length,
       outputPoolSizeClasses: outputPool.size,
+      outputPoolSmallPerClass: OUTPUT_POOL_SMALL_PER_CLASS,
+      outputPoolMediumPerClass: OUTPUT_POOL_MEDIUM_PER_CLASS,
+      outputPoolLargePerClass: OUTPUT_POOL_LARGE_PER_CLASS,
       totalAllocs: _totalAllocCount,
       totalAllocMB: Math.round(_totalAllocBytes / 1024 / 1024),
       liveAllocs: _liveAllocCount,

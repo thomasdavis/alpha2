@@ -1001,9 +1001,9 @@ static PFN_vkGetQueryPoolResults                  fp_vkGetQueryPoolResults;
 
 #define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)    // 64 MB per slab
 #define SLAB_MAX_SIZE       (256 * 1024 * 1024)   // 256 MB max per slab (limit fragmentation waste)
-#define MAX_SLABS           64
+#define MAX_SLABS           128
 #define MAX_SLAB_FREE_RANGES 4096
-#define SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)  // 8 GB max total per pool
+#define DEFAULT_SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)
 
 typedef struct {
   VkDeviceSize offset;
@@ -1033,6 +1033,7 @@ static SlabPool devicePool = {0};      // device-local (persistent/param buffers
 static SlabPool deviceTempPool = {0};  // device-local (temporary/intermediate buffers)
 static SlabPool hostPool = {0};        // host-visible + coherent
 static VkDeviceSize slabAlignment = 256;  // queried at init from a probe buffer
+static VkDeviceSize tempSlabPoolMaxBytes = DEFAULT_SLAB_POOL_MAX_BYTES;
 
 static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
@@ -1151,10 +1152,17 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize require
   // Need a new slab
   if (pool->slabCount >= MAX_SLABS) return 0;
 
-  // Check total pool bytes cap to prevent unbounded VRAM growth from fragmentation
+  // Check total pool bytes cap to prevent unbounded VRAM growth from fragmentation.
+  // The temporary pool is configurable because the right tradeoff depends on
+  // device VRAM: a larger arena avoids thousands of driver allocations per
+  // static training step, while constrained cards need the conservative 8 GiB
+  // default. Persistent and host pools retain that default.
   VkDeviceSize totalPoolBytes = 0;
   for (uint32_t i = 0; i < pool->slabCount; i++) totalPoolBytes += pool->slabs[i].capacity;
-  if (totalPoolBytes >= SLAB_POOL_MAX_BYTES) return 0;
+  VkDeviceSize poolMaxBytes = pool == &deviceTempPool
+    ? tempSlabPoolMaxBytes
+    : DEFAULT_SLAB_POOL_MAX_BYTES;
+  if (totalPoolBytes >= poolMaxBytes) return 0;
 
   VkDeviceSize slabSize = SLAB_INITIAL_SIZE;
   // Make slab big enough for this allocation
@@ -1438,8 +1446,21 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   if (spinEnv) spinWaitIters = atoi(spinEnv);
   const char* disableTempSlabsEnv = getenv("HELIOS_DISABLE_TEMP_SLABS");
   disableTempSlabs = (disableTempSlabsEnv && disableTempSlabsEnv[0] == '1') ? 1 : 0;
+  const char* tempSlabPoolMbEnv = getenv("HELIOS_TEMP_SLAB_POOL_MB");
+  if (tempSlabPoolMbEnv) {
+    char* end = NULL;
+    unsigned long long requestedMb = strtoull(tempSlabPoolMbEnv, &end, 10);
+    if (end != tempSlabPoolMbEnv && *end == '\0' && requestedMb >= 64 && requestedMb <= 65536) {
+      tempSlabPoolMaxBytes = (VkDeviceSize)requestedMb * 1024 * 1024;
+    } else {
+      fprintf(stderr, "[helios:native] ignoring invalid HELIOS_TEMP_SLAB_POOL_MB=%s (expected 64..65536)\n", tempSlabPoolMbEnv);
+    }
+  }
   if (disableTempSlabs) {
     fprintf(stderr, "[helios:native] temporary slab allocation disabled\n");
+  } else {
+    fprintf(stderr, "[helios:native] temporary slab pool cap=%lluMB\n",
+      (unsigned long long)(tempSlabPoolMaxBytes / 1024 / 1024));
   }
 
   // Load Vulkan loader. Try common absolute paths first so nix-based shells
@@ -3005,6 +3026,7 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
   setNumberProperty(env, result, "deviceSlabLiveBytes", (double)deviceLive);
   setNumberProperty(env, result, "deviceSlabLiveRefs", (double)deviceRefs);
   setNumberProperty(env, result, "tempSlabCount", (double)deviceTempPool.slabCount);
+  setNumberProperty(env, result, "tempSlabPoolMaxBytes", (double)tempSlabPoolMaxBytes);
   setNumberProperty(env, result, "tempSlabCapacityBytes", (double)tempCapacity);
   setNumberProperty(env, result, "tempSlabUsedBytes", (double)tempUsed);
   setNumberProperty(env, result, "tempSlabLiveBytes", (double)tempLive);

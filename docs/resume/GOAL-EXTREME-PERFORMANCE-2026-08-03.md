@@ -81,6 +81,15 @@ localized the actionable self-time to repeated Vulkan buffer creation and
 destruction. The immediate experiment is allocator-policy elimination; static
 graph replay remains the structural R1 destination.
 
+The first 2x2 allocator experiment recovered **1.244x end to end** without
+changing computation: 5,234 to 6,509 warm-median tokens/s on the exact L40S
+graph. Native temp slabs removed about 903 ms of host time per step, while GPU
+blocking remained unchanged. Size-class rounding had no material effect once
+slabs were active. This validates allocator lifecycle as a causal part of G2
+and opens a narrower capacity sweep: the 8 GiB arena still fell back 6,471
+temporary requests and the static graph still created/destroyed thousands of
+buffer handles per run.
+
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):
 

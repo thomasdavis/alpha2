@@ -105,11 +105,23 @@ next discriminator is therefore a 2x2 physical allocator experiment (coarse
 versus exact size classes; temp slabs versus individual allocations), before
 attempting full static graph replay.
 
+The first allocator factorial has now banked an end-to-end gain. On the exact
+L40S graph, native temporary slabs raised the warm median from **5,234 to 6,509
+tokens/s (1.244x)** relative to exact-size individual allocations. Host build
+fell from 3,210.9 to 2,307.9 ms while GPU blocking stayed flat at roughly 1,480
+ms. With slabs enabled, coarse and exact size classes were effectively tied
+(6,509 versus 6,497 tokens/s), so the gain is not padding or arithmetic—it is
+driver-memory lifecycle avoidance. The remaining run still created/destroyed
+roughly eight to ten thousand `VkBuffer` objects, and 6,471 temporary requests
+fell back outside the 8 GiB slab arena. The next bounded sweep increases arena
+coverage and retained output capacity before implementing graph replay.
+
 Evidence:
 
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-split-physical-l40s-20260803-r1/`;
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r1/`;
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r2/`.
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-factorial-l40s-20260803-r1/`.
 
 ## Parity gates — how a rung is earned
 

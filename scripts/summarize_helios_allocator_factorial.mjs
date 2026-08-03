@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 function usage() {
-  console.error("usage: summarize_helios_allocator_factorial.mjs <experiment-dir> [--warmup N] [--format json|markdown]");
+  console.error("usage: summarize_helios_allocator_factorial.mjs <experiment-dir> [--warmup N] [--baseline MODE] [--format json|markdown]");
   process.exit(2);
 }
 
@@ -13,13 +13,15 @@ if (args.length === 0) usage();
 const root = path.resolve(args.shift());
 let warmup = 3;
 let format = "markdown";
+let baselineMode = "exact_individual";
 while (args.length > 0) {
   const arg = args.shift();
   if (arg === "--warmup") warmup = Number.parseInt(args.shift() ?? "", 10);
+  else if (arg === "--baseline") baselineMode = args.shift() ?? "";
   else if (arg === "--format") format = args.shift() ?? "";
   else usage();
 }
-if (!Number.isInteger(warmup) || warmup < 0 || !["json", "markdown"].includes(format)) usage();
+if (!Number.isInteger(warmup) || warmup < 0 || baselineMode.length === 0 || !["json", "markdown"].includes(format)) usage();
 
 function quantile(values, q) {
   if (values.length === 0) return null;
@@ -115,9 +117,9 @@ for (const mode of modeNames) {
   });
 }
 
-const baseline = rows.find((row) => row.mode === "exact_individual" && row.status === "pass");
+const baseline = rows.find((row) => row.mode === baselineMode && row.status === "pass");
 for (const row of rows) {
-  row.speedupVsExactIndividual = row.status === "pass" && baseline
+  row.speedupVsBaseline = row.status === "pass" && baseline
     ? row.tokensPerSecond.median / baseline.tokensPerSecond.median
     : null;
 }
@@ -125,6 +127,7 @@ const result = {
   schemaVersion: 1,
   experimentRoot: root,
   warmupExcluded: warmup,
+  baselineMode,
   rows: rows.sort((a, b) => {
     if (a.status !== b.status) return a.status === "pass" ? -1 : 1;
     return (b.tokensPerSecond?.median ?? -1) - (a.tokensPerSecond?.median ?? -1);
@@ -147,6 +150,6 @@ for (const row of result.rows) {
     continue;
   }
   const a = row.finalAllocatorState;
-  console.log(`| ${row.mode} | ${f(row.tokensPerSecond.median, 0)} | ${f(row.tokensPerSecond.mean, 0)} | ${f(row.tokensPerSecond.p10, 0)}–${f(row.tokensPerSecond.p90, 0)} | ${f(row.speedupVsExactIndividual, 3)}x | ${f(row.timing.hostBuildMsMean)} | ${f(row.timing.gpuBlockingMsMean)} | ${row.flowTotals.new} | ${row.flowTotals.dest} | ${row.flowTotals.oHit}/${row.flowTotals.oMiss} | ${a.trackedVkMemoryAllocations ?? "n/a"} (${a.individualBuffers ?? "?"} individual + ${a.slabBuffers ?? "?"} slab) |`);
+  console.log(`| ${row.mode} | ${f(row.tokensPerSecond.median, 0)} | ${f(row.tokensPerSecond.mean, 0)} | ${f(row.tokensPerSecond.p10, 0)}–${f(row.tokensPerSecond.p90, 0)} | ${f(row.speedupVsBaseline, 3)}x | ${f(row.timing.hostBuildMsMean)} | ${f(row.timing.gpuBlockingMsMean)} | ${row.flowTotals.new} | ${row.flowTotals.dest} | ${row.flowTotals.oHit}/${row.flowTotals.oMiss} | ${a.trackedVkMemoryAllocations ?? "n/a"} (${a.individualBuffers ?? "?"} individual + ${a.slabBuffers ?? "?"} slab-backed buffers) |`);
 }
 console.log("\n`flush` contains synchronous GPU wait time; host and GPU-blocking means come from the direct wall-clock partition in Helios. Flow totals include setup and all measured steps because the backend counters are cumulative within each fresh process.");

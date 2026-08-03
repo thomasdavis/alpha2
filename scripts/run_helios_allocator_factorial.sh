@@ -10,6 +10,7 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 output_dir="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-factorial-${timestamp}}"
 steps="${ALLOCATOR_FACTORIAL_STEPS:-12}"
 warmup="${ALLOCATOR_FACTORIAL_WARMUP:-3}"
+baseline="${ALLOCATOR_FACTORIAL_BASELINE:-exact_individual}"
 
 if [[ ! "$steps" =~ ^[0-9]+$ ]] || (( steps < 4 )); then
   echo "ALLOCATOR_FACTORIAL_STEPS must be an integer >= 4" >&2
@@ -61,31 +62,40 @@ printf '%s\n' \
   "The first ${warmup} steps are excluded from summary statistics." \
   > "$cat_description"
 
-modes=(coarse_slabs exact_slabs coarse_individual exact_individual)
+read -r -a modes <<< "${ALLOCATOR_FACTORIAL_MODES:-coarse_slabs exact_slabs coarse_individual exact_individual}"
 overall_status=0
 for mode in "${modes[@]}"; do
   mode_dir="$output_dir/modes/$mode"
   mkdir -p "$mode_dir/run"
   case "$mode" in
-    coarse_slabs) exact=0; disable_slabs=0 ;;
-    exact_slabs) exact=1; disable_slabs=0 ;;
-    coarse_individual) exact=0; disable_slabs=1 ;;
-    exact_individual) exact=1; disable_slabs=1 ;;
+    coarse_slabs) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
+    exact_slabs) exact=1; disable_slabs=0; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
+    coarse_individual) exact=0; disable_slabs=1; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
+    exact_individual) exact=1; disable_slabs=1; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
+    slab8_pool8) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
+    slab16_pool8) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=8; pool_entries=512 ;;
+    slab8_pool32) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=32; pool_entries=1024 ;;
+    slab16_pool32) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=32; pool_entries=1024 ;;
+    slab16_pool64) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=64; pool_entries=2048 ;;
     *) echo "unknown mode: $mode" >&2; exit 2 ;;
   esac
   jq -n \
     --arg mode "$mode" \
     --argjson exact "$exact" \
     --argjson disableSlabs "$disable_slabs" \
+    --argjson slabMb "$slab_mb" \
+    --argjson largePerClass "$large_per_class" \
+    --argjson poolEntries "$pool_entries" \
     --argjson steps "$steps" \
     --argjson warmup "$warmup" \
-    '{mode:$mode, exact_buffer_sizes:($exact == 1), temporary_slabs:($disableSlabs == 0), steps:$steps, warmup_excluded:$warmup}' \
+    '{mode:$mode, exact_buffer_sizes:($exact == 1), temporary_slabs:($disableSlabs == 0), temp_slab_pool_mb:$slabMb, output_pool_large_per_class:$largePerClass, output_pool_entries:$poolEntries, steps:$steps, warmup_excluded:$warmup}' \
     > "$mode_dir/MODE.json"
 
   controlled_env=(
     "VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}"
     "HELIOS_DISABLE_DGC=1"
     "HELIOS_DISABLE_TEMP_SLABS=$disable_slabs"
+    "HELIOS_TEMP_SLAB_POOL_MB=$slab_mb"
     "HELIOS_EXACT_BUFFER_SIZES=$exact"
     "HELIOS_DISABLE_COOP_MAT=1"
     "HELIOS_FLASH_FWD_PREFER_COOP2=0"
@@ -95,7 +105,8 @@ for mode in "${modes[@]}"; do
     "HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1"
     "HELIOS_MATMUL_TRANSPOSED_A_COALESCED=1"
     "HELIOS_MATMUL_REG2X2=1"
-    "HELIOS_MAX_OUTPUT_POOL_ENTRIES=512"
+    "HELIOS_OUTPUT_POOL_LARGE_PER_CLASS=$large_per_class"
+    "HELIOS_MAX_OUTPUT_POOL_ENTRIES=$pool_entries"
     "HELIOS_PROFILE_GPU_OPS=1"
     "HELIOS_PROFILE_GPU_TIMESTAMPS=0"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
@@ -166,8 +177,8 @@ for mode in "${modes[@]}"; do
   fi
 done
 
-node scripts/summarize_helios_allocator_factorial.mjs "$output_dir" --warmup "$warmup" --format json > "$output_dir/summary.json"
-node scripts/summarize_helios_allocator_factorial.mjs "$output_dir" --warmup "$warmup" > "$output_dir/README.md"
+node scripts/summarize_helios_allocator_factorial.mjs "$output_dir" --warmup "$warmup" --baseline "$baseline" --format json > "$output_dir/summary.json"
+node scripts/summarize_helios_allocator_factorial.mjs "$output_dir" --warmup "$warmup" --baseline "$baseline" > "$output_dir/README.md"
 
 (
   cd "$output_dir"
