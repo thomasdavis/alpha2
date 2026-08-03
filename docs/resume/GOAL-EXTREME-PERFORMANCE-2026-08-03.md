@@ -81,6 +81,16 @@ Two changes to the **training contract** — no kernel work, no new mathematics:
    already present and removes 88% of that arithmetic — **1.35x** overall, gated
    on staying above the critical batch size (which measurement 1 confirms).
 
+4. **Muon reaches the same held-out loss with 2.24x fewer tokens** (X7/X7b).
+   Matched-token, matched-data-order comparison at an 8M-parameter proxy scale,
+   with the learning rate swept on **both** arms until each optimum was interior
+   (6 AdamW arms, 3 Muon arms). Every Muon arm beat every AdamW arm; Muon's loss
+   was flat across a 10x LR range, which also removes the per-shape LR pilot this
+   project currently pays for. Proxy scale — a direction and a sign, not a
+   transferable multiplier. **Do not multiply this with result 1**: both act on
+   tokens-to-target and may share a mechanism. F2 is worth 2.2x–3.7x; one
+   matched-token pilot varying both together resolves where.
+
 ## Directions closed by measurement — do not re-propose
 
 Each was tested against the real trained checkpoint on held-out text.
@@ -94,6 +104,18 @@ Each was tested against the real trained checkpoint on held-out text.
 
 The same measurement that closes low-rank weights **opens** mixture-of-experts:
 a capacity-saturated model wants more parameters at constant FLOPs per token.
+
+## Published
+
+The open mathematical problem space — 54 precisely posed questions across ten families, each anchored
+to a measured constant, with the four closed directions stated as boundary conditions carrying their
+crossover conditions — is public at:
+
+**https://alpha.donto.org/research/alpha-open-problems-2026-08-03.html**
+
+Source markdown is linked from the page and mirrored in the research tree. Served from
+`/srv/alpha-research` via a `handle_path /research*` block in the `alpha.donto.org` vhost, ahead of the
+`:3104` app proxy so reports stay up independently of the workbench.
 
 ## Working rules
 
