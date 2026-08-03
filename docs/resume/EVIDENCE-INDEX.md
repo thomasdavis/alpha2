@@ -138,8 +138,10 @@ Canonical mounted evidence:
 The legacy cooperative path is now known to have two distinct correctness failures: cooperative forward changed
 the first loss from 2.7419 to 6.9667 even with FP16/loss scaling disabled, while the later experimental
 cooperative backward separately produced extreme gradients and memory/cast pressure. Three new closed-form
-rank-one tests exercise ordinary, transposed-B, and transposed-A GEMMs at `[128,512,1408]` production-pattern
-dimensions, require direct cooperative-dispatch telemetry, and check every output to `1e-4`. The full local suite
+rank-one tests exercise ordinary and transposed-B products at `[1024,512,1408]`, plus the transposed-A
+`[1024,512]^T @ [1024,1408]` weight-gradient shape. They require the production `s2x2_r4x4` forward tile,
+the selected `s2x2_r2x2` weight-gradient tile, direct cooperative-dispatch telemetry, and check every output to
+`1e-4`. The full local suite
 passes 233 tests with 53 GPU-gated and zero failures. These three cases remain explicitly unproven on physical
 cooperative-matrix hardware; no speed claim exists yet.
 

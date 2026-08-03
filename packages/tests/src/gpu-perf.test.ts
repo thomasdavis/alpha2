@@ -365,13 +365,13 @@ describeGpu("Matmul correctness", () => {
 // reference. Dispatch counters and kernel identity prevent a fallback from
 // masquerading as cooperative-matrix coverage.
 describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
-  const rows = 128;
+  const tokenRows = 1024;
   const hidden = 512;
   const ffn = 1408;
 
   it("validates ordinary forward orientation and proves direct cooperative dispatch", () => {
     const a = Array.from(
-      { length: rows * hidden },
+      { length: tokenRows * hidden },
       (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
     );
     const b = Array.from(
@@ -379,21 +379,25 @@ describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
       (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
     );
     const before = gpu.getMatmulCoopStats();
-    const output = gpu.matmul(gpu.fromArray(a, [rows, hidden]), gpu.fromArray(b, [hidden, ffn]));
+    const output = gpu.matmul(
+      gpu.fromArray(a, [tokenRows, hidden]),
+      gpu.fromArray(b, [hidden, ffn]),
+    );
     const values = output.data as Float32Array;
     const after = gpu.getMatmulCoopStats();
 
     expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
     expect(after.lastCoopKernel).toContain("matmul_coop_basic_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
     expect(after.lastCoopShape).toEqual({
-      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: false,
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: false,
     });
-    assertRankOneProduct(values, rows, ffn, hidden);
+    assertRankOneProduct(values, tokenRows, ffn, hidden);
   });
 
   it("validates transposed-B forward orientation and proves direct cooperative dispatch", () => {
     const a = Array.from(
-      { length: rows * hidden },
+      { length: tokenRows * hidden },
       (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
     );
     const b = Array.from(
@@ -402,7 +406,7 @@ describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
     );
     const before = gpu.getMatmulCoopStats();
     const output = gpu.matmulTransposed(
-      gpu.fromArray(a, [rows, hidden]),
+      gpu.fromArray(a, [tokenRows, hidden]),
       gpu.fromArray(b, [ffn, hidden]),
     );
     const values = output.data as Float32Array;
@@ -410,35 +414,37 @@ describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
 
     expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
     expect(after.lastCoopKernel).toContain("matmul_coop_transposed_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
     expect(after.lastCoopShape).toEqual({
-      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
     });
-    assertRankOneProduct(values, rows, ffn, hidden);
+    assertRankOneProduct(values, tokenRows, ffn, hidden);
   });
 
   it("validates transposed-A weight-gradient orientation and proves direct cooperative dispatch", () => {
     const a = Array.from(
-      { length: hidden * rows },
-      (_, index) => rankOneBasis(Math.floor(index / rows)) * rankOneFactor(index % rows),
+      { length: tokenRows * hidden },
+      (_, index) => rankOneBasis(Math.floor(index / hidden)) * rankOneFactor(index % hidden),
     );
     const b = Array.from(
-      { length: hidden * ffn },
+      { length: tokenRows * ffn },
       (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
     );
     const before = gpu.getMatmulCoopStats();
     const output = gpu.matmulTransposedA(
-      gpu.fromArray(a, [hidden, rows]),
-      gpu.fromArray(b, [hidden, ffn]),
+      gpu.fromArray(a, [tokenRows, hidden]),
+      gpu.fromArray(b, [tokenRows, ffn]),
     );
     const values = output.data as Float32Array;
     const after = gpu.getMatmulCoopStats();
 
     expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
     expect(after.lastCoopKernel).toContain("matmul_coop_transposed_a_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r2x2_");
     expect(after.lastCoopShape).toEqual({
-      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: true, transposedB: false,
+      M: hidden, N: ffn, K: tokenRows, batchSize: 1, transposedA: true, transposedB: false,
     });
-    assertRankOneProduct(values, rows, ffn, hidden);
+    assertRankOneProduct(values, hidden, ffn, tokenRows);
   });
 });
 
