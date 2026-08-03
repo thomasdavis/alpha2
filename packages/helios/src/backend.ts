@@ -72,10 +72,12 @@ const LOG_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG ===
 const ENABLE_MATMUL_REG2X2 = process.env.HELIOS_MATMUL_REG2X2 === "1";
 const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
 // R4x2 is not universally better across physical layouts. Keep transposed-B
-// separately selectable so an evidence-derived portfolio can use R4x2 for
-// basic/transposed-A while retaining R2 for this family.
+// separately selectable so a measured portfolio can retain R2 or select the
+// IO-remapped R42C path independently of basic/transposed-A.
 const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
   process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
+const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
 const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
 let MATMUL_TILE_OVERRIDE: 16 | 32 | null = null;
 if (MATMUL_TILE_OVERRIDE_ENV) {
@@ -3803,7 +3805,11 @@ export class HeliosBackend implements Backend {
     const TILE = useReg4x2 || useReg2x2
       ? 32
       : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
-    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
+    const suffix = useReg4x2
+      ? ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R42C" : "_R42"
+      : useReg2x2
+        ? ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R2C" : "_R2"
+        : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(M / TILE);
     const push = push4Memo(M, N, K, 0);

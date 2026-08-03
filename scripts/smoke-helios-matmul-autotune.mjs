@@ -11,12 +11,12 @@
 process.env.HELIOS_DISABLE_COOP_MAT = "1";
 process.env.HELIOS_PROFILE_GPU_OPS = "1";
 const requestedVariant = process.env.HELIOS_MATMUL_SMOKE_VARIANT;
-const variant = requestedVariant === "reg2x2" || requestedVariant === "reg4x2"
+const variant = ["reg2x2", "reg4x2", "reg2x2c", "reg4x2c"].includes(requestedVariant)
   ? requestedVariant
   : "autotune";
-if (variant === "reg2x2") {
+if (variant === "reg2x2" || variant === "reg2x2c") {
   process.env.HELIOS_MATMUL_REG2X2 = "1";
-} else if (variant === "reg4x2") {
+} else if (variant === "reg4x2" || variant === "reg4x2c") {
   process.env.HELIOS_MATMUL_REG4X2 = "1";
   // This smoke validates all three R4x2 shader layouts. Production keeps the
   // transposed-B family independently selectable because the measured Alpha
@@ -25,6 +25,9 @@ if (variant === "reg2x2") {
 } else {
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE = "1";
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG ??= "1";
+}
+if (variant.endsWith("c")) {
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED = "1";
 }
 
 const { HeliosBackend, destroyDevice, getDeviceInfo } = await import("@alpha/helios");
@@ -140,10 +143,11 @@ if (variant === "autotune") {
     throw new Error(`expected measured decisions: ${JSON.stringify(decisions)}`);
   }
 } else {
-  const suffix = variant === "reg4x2" ? "R42" : "R2";
+  const suffix = variant.startsWith("reg4x2") ? "R42" : "R2";
+  const transposedSuffix = `${suffix}${variant.endsWith("c") ? "C" : ""}`;
   const expectedKernels = new Set([
     `matmul_${suffix}`,
-    `matmul_transposed_${suffix}`,
+    `matmul_transposed_${transposedSuffix}`,
     `matmul_transposed_a_${suffix}`,
   ]);
   for (const row of stats.byKernel) expectedKernels.delete(row.name);

@@ -62,9 +62,26 @@ gradient-norm differences were `9.537e-7` and `4.308e-8`; terminal held-out loss
 coefficients matched. The full RTX 4090 suite passed 29 files / 283 tests. The artifact README and digest ledger
 cover the all-R4x2 profile, selected hybrid profile, sustained run, physical/software smokes, and full test output.
 
-The full foundation launcher now binds this exact environment as kernel policy
-`layout-portfolio-r42-r2-v1`. At the measured median, the frozen token contract estimates to 78.9 device-hours or
+The first portfolio was bound as kernel policy `layout-portfolio-r42-r2-v1` before the coalesced follow-up below
+superseded it. At the measured median, the frozen token contract estimated to 78.9 device-hours or
 USD 54.44 at USD 0.69/hour before run overhead. This is engine evidence only, not a new model version.
+
+### Coalesced transposed-B follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/
+
+R42C remaps physical B loads so adjacent X invocations traverse contiguous K elements and transpose only into
+shared memory. The paired R2C control was correct but neutral. R42C reduced transposed-B time from 570,078.2 to
+467,672.1 us (-17.96%), exact full-graph dispatch time from 1,759,004.2 to 1,640,182.0 us (-6.75%), and raised
+the 18-warm-step median from 6,836.8 to 7,048.9 tokens/s (+3.10%). Its p10/p90 was 6,844.8 / 7,200.8.
+
+Maximum loss and gradient-norm differences were `9.537e-7` and `3.681e-8`; terminal held-out loss, learning rate,
+and clipping coefficients matched. The full RTX 4090 suite passed 29 files / 283 tests. The foundation launcher
+supersedes the prior policy with `layout-portfolio-r42c-r2-v2`, binding the coalesced flag and transposed-B R4x2
+selection. At the measured median, the frozen contract estimates to 76.5 device-hours or USD 52.80 at USD
+0.69/hour before overhead.
 
 ## 2026-08-02 Helios chat-throughput sweep
 

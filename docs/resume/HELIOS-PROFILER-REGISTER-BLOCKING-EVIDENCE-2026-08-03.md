@@ -7,7 +7,7 @@
 
 ## 1. Outcome
 
-Helios now has an exact, opt-in per-dispatch GPU timestamp profiler and portable scalar-FP32 register-blocked GEMM families. The first R2 kernel reduced the measured GPU time of the three dominant generic GEMM families by approximately 45–50%, reduced total measured dispatch time for the exact one-step training graph by 36.9%, and increased matched steady-state training throughput by 26.1%. A later layout-aware R4x2/R2 portfolio, documented in Section 15, adds another 4.10% sustained median gain over the ownership-optimized R2 path.
+Helios now has an exact, opt-in per-dispatch GPU timestamp profiler and portable scalar-FP32 register-blocked GEMM families. The first R2 kernel reduced the measured GPU time of the three dominant generic GEMM families by approximately 45–50%, reduced total measured dispatch time for the exact one-step training graph by 36.9%, and increased matched steady-state training throughput by 26.1%. A later layout-aware R4x2/R2 portfolio, documented in Section 15, added another 4.10% sustained median gain over the ownership-optimized R2 path. Section 16 then adds an IO-aware R42C transposed-B mapping and another 3.10% median gain.
 
 The six-step training trajectory was identical at the precision printed by the trainer:
 
@@ -286,7 +286,7 @@ Local mounted-disk headroom is currently much lower than the older handbook snap
 
 ## 11. Next gates
 
-1. Preserve the R4x2/R2 layout portfolio as the exact foundation engine recipe, not a universal device default.
+1. Preserve the R42C/R2 capability portfolio as the exact foundation engine recipe, not a universal device default.
 2. Obtain physical AMD hardware from a provider that actually exposes Radeon Vulkan or implement the ROCm/HIP lowering for an available Instinct rental.
 3. Generalize the layout portfolio into a persistent, device-fingerprinted selector only after physical cross-device results.
 4. Profile the new graph again and move to the next time-ranked operations:
@@ -477,3 +477,57 @@ output, README, and verified digest ledger, is:
 This is a stronger basis for AMD work than a single hardcoded kernel. The portable R2 and R4x2 implementations
 form correctness references; future Vulkan and HIP/ROCm candidates should compete per layout and device
 fingerprint. Physical AMD validation remains open.
+
+## 16. Selected coalesced transposed-B R42C mapping
+
+The Section 15 profile left transposed-B as the slowest GEMM family. For `A[M,K] x B[N,K]^T`, B is physically
+contiguous in K, but the earlier shared-tile loader assigned adjacent X invocations to different B columns. Each
+neighbor therefore jumped by the full K stride.
+
+R42C assigns adjacent X invocations to neighboring reduction elements of the same physical B column, then writes
+those values transposed into the shared `[K,32]` tile expected by the unchanged accumulation loop. This is
+subgroup-independent and changes neither output ownership nor accumulation order.
+
+### 16.1 Paired work-partition control
+
+The same coalesced mapping was implemented for R2 and R42:
+
+| Candidate | Transposed-B GPU time across 91 calls | Decision |
+|---|---:|---|
+| Selected R2 reference | 570,078.2 us | prior control |
+| R2C | 570,888.2 us | reject as neutral |
+| Uncoalesced R42 | 577,259.5 us | prior reject for this layout |
+| R42C | 467,672.1 us | select |
+
+The R2C result rules out the simplistic claim that any syntactically coalesced load is faster. The gain depends on
+the interaction between physical layout, workgroup geometry, per-thread output ownership, and shared-tile mapping.
+
+### 16.2 Exact and sustained results
+
+R42C reduced exact full-graph dispatch time from 1,759,004.2 to 1,640,182.0 us (-6.75%) and generic-matmul time
+from 1,173,653.9 to 1,073,868.2 us (-8.50%). Its one-step loss, gradient norm, and held-out loss exactly matched
+the adjacent selected profile at recorded precision.
+
+Across matched warm steps 2-19:
+
+| Statistic | R42/R2 | R42C |
+|---|---:|---:|
+| Minimum | 6,616.7 | 6,813.8 |
+| p10 | 6,638.4 | 6,844.8 |
+| Median | 6,836.8 | 7,048.9 |
+| p90 | 6,970.6 | 7,200.8 |
+| Maximum | 6,992.6 | 7,313.5 |
+| Mean | 6,820.2 | 7,037.5 |
+
+Median gain is 3.1029%. Maximum loss and gradient-norm differences were `9.537e-7` and `3.681e-8`; learning
+rate, clipping coefficient, and terminal validation loss were exact. The full RTX 4090 suite passed 29 files /
+283 tests. At the measured median, the frozen token contract estimates to 76.5 device-hours or USD 52.80 before
+run overhead.
+
+The selected foundation policy is `layout-portfolio-r42c-r2-v2`; its exact flags are embedded in the launcher and
+foundation contract. Complete evidence is at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/
+
+Physical AMD performance remains open. The R42C shader is a portable correctness candidate, not an AMD speed
+claim.

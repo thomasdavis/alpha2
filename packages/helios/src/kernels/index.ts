@@ -91,9 +91,9 @@ export {
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
   kernelMatmulTransposedA, kernelMatmulTransposedABatched,
   kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
-  kernelMatmulTransposedAReg2x2,
+  kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
-  kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
 } from "./matmul.js";
 
 import {
@@ -101,9 +101,9 @@ import {
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
   kernelMatmulTransposedA, kernelMatmulTransposedABatched,
   kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
-  kernelMatmulTransposedAReg2x2,
+  kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
-  kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
 } from "./matmul.js";
 
 // Optimizer / utility kernels
@@ -265,10 +265,12 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     // Portable 2x2 register blocking: 256 threads compute a 32x32 output tile.
     case "matmul_R2": spirv = kernelMatmulReg2x2(); break;
     case "matmul_transposed_R2": spirv = kernelMatmulTransposedReg2x2(); break;
+    case "matmul_transposed_R2C": spirv = kernelMatmulTransposedReg2x2Coalesced(); break;
     case "matmul_transposed_a_R2": spirv = kernelMatmulTransposedAReg2x2(); break;
     // Portable 4x2 register blocking: 128 threads compute a 32x32 output tile.
     case "matmul_R42": spirv = kernelMatmulReg4x2(); break;
     case "matmul_transposed_R42": spirv = kernelMatmulTransposedReg4x2(); break;
+    case "matmul_transposed_R42C": spirv = kernelMatmulTransposedReg4x2Coalesced(); break;
     case "matmul_transposed_a_R42": spirv = kernelMatmulTransposedAReg4x2(); break;
     case "add_inplace": spirv = kernelAddInplace(wgSize); break;
     case "add_inplace_vec4": spirv = kernelAddInplaceVec4(wgSize); break;

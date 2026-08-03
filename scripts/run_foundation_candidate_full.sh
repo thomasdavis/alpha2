@@ -62,7 +62,8 @@ export HELIOS_DISABLE_COOP_MAT=1
 export HELIOS_FLASH_FWD_PREFER_COOP2=0
 export HELIOS_WG_SIZE=64
 export HELIOS_MATMUL_REG4X2=1
-export HELIOS_MATMUL_REG4X2_TRANSPOSED_B=0
+export HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1
+export HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1
 export HELIOS_MATMUL_REG2X2=1
 export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512
 export ALPHA_GPU_METRICS_SAMPLE_EVERY=100
@@ -94,13 +95,14 @@ if [[ -n "$resume_checkpoint" ]]; then
       engine: {
         backend: "helios",
         accelerator_api: "vulkan",
-        kernel_policy: "layout-portfolio-r42-r2-v1",
+        kernel_policy: "layout-portfolio-r42c-r2-v2",
         environment: {
           HELIOS_DISABLE_COOP_MAT: "1",
           HELIOS_FLASH_FWD_PREFER_COOP2: "0",
           HELIOS_WG_SIZE: "64",
           HELIOS_MATMUL_REG4X2: "1",
-          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "0",
+          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "1",
+          HELIOS_MATMUL_TRANSPOSED_B_COALESCED: "1",
           HELIOS_MATMUL_REG2X2: "1",
           HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
         },
@@ -156,13 +158,14 @@ else
       engine: {
         backend: "helios",
         accelerator_api: "vulkan",
-        kernel_policy: "layout-portfolio-r42-r2-v1",
+        kernel_policy: "layout-portfolio-r42c-r2-v2",
         environment: {
           HELIOS_DISABLE_COOP_MAT: "1",
           HELIOS_FLASH_FWD_PREFER_COOP2: "0",
           HELIOS_WG_SIZE: "64",
           HELIOS_MATMUL_REG4X2: "1",
-          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "0",
+          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "1",
+          HELIOS_MATMUL_TRANSPOSED_B_COALESCED: "1",
           HELIOS_MATMUL_REG2X2: "1",
           HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
         },

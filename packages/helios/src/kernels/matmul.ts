@@ -1682,7 +1682,10 @@ type RegisterBlockMode = "basic" | "transposed-b" | "transposed-a";
  * portable baseline for NVIDIA and AMD; cooperative-matrix kernels are a
  * separate capability-selected family.
  */
-function kernelMatmulReg2x2Impl(mode: RegisterBlockMode): Uint32Array {
+function kernelMatmulReg2x2Impl(
+  mode: RegisterBlockMode,
+  coalescedTransposedB = false,
+): Uint32Array {
   const WG = 16;
   const OUT_TILE = 32;
   const b = new SpirVBuilder();
@@ -1831,11 +1834,25 @@ function kernelMatmulReg2x2Impl(mode: RegisterBlockMode): Uint32Array {
   b.emit(Op.Label, [loopBody]);
 
   const aCol = b.id(); b.emit(Op.IAdd, [p.tU32, aCol, t, tx]);
-  const bRow = b.id(); b.emit(Op.IAdd, [p.tU32, bRow, t, ty]);
   storeShared(tileA, localA0, loadA(row0, aCol));
   storeShared(tileA, localA1, loadA(row1, aCol));
-  storeShared(tileB, localB0, loadB(bRow, col0));
-  storeShared(tileB, localB1, loadB(bRow, col1));
+  if (mode === "transposed-b" && coalescedTransposedB) {
+    // B is physically [N,K]. Consecutive X invocations therefore walk K for
+    // one column, then transpose into the shared [K,32] tile. The ordinary
+    // loader instead makes adjacent invocations jump by the full K stride.
+    const bReduction = b.id(); b.emit(Op.IAdd, [p.tU32, bReduction, t, tx]);
+    const bCol0 = b.id(); b.emit(Op.IAdd, [p.tU32, bCol0, bx32, ty]);
+    const bCol1 = b.id(); b.emit(Op.IAdd, [p.tU32, bCol1, bCol0, c16]);
+    const tx32 = b.id(); b.emit(Op.IMul, [p.tU32, tx32, tx, c32]);
+    const sharedB0 = b.id(); b.emit(Op.IAdd, [p.tU32, sharedB0, tx32, ty]);
+    const sharedB1 = b.id(); b.emit(Op.IAdd, [p.tU32, sharedB1, sharedB0, c16]);
+    storeShared(tileB, sharedB0, loadB(bReduction, bCol0));
+    storeShared(tileB, sharedB1, loadB(bReduction, bCol1));
+  } else {
+    const bRow = b.id(); b.emit(Op.IAdd, [p.tU32, bRow, t, ty]);
+    storeShared(tileB, localB0, loadB(bRow, col0));
+    storeShared(tileB, localB1, loadB(bRow, col1));
+  }
   b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
   const accumulate = (acc: number, av: number, bv: number): void => {
@@ -1913,6 +1930,10 @@ export function kernelMatmulTransposedReg2x2(): Uint32Array {
   return kernelMatmulReg2x2Impl("transposed-b");
 }
 
+export function kernelMatmulTransposedReg2x2Coalesced(): Uint32Array {
+  return kernelMatmulReg2x2Impl("transposed-b", true);
+}
+
 export function kernelMatmulTransposedAReg2x2(): Uint32Array {
   return kernelMatmulReg2x2Impl("transposed-a");
 }
@@ -1926,7 +1947,10 @@ export function kernelMatmulTransposedAReg2x2(): Uint32Array {
  * tile.  The exact Alpha shape profile decides whether the added register
  * pressure is worthwhile; this generator makes no vendor assumption.
  */
-function kernelMatmulReg4x2Impl(mode: RegisterBlockMode): Uint32Array {
+function kernelMatmulReg4x2Impl(
+  mode: RegisterBlockMode,
+  coalescedTransposedB = false,
+): Uint32Array {
   const WG_X = 16;
   const WG_Y = 8;
   const OUT_TILE = 32;
@@ -2091,15 +2115,27 @@ function kernelMatmulReg4x2Impl(mode: RegisterBlockMode): Uint32Array {
     b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
     storeShared(tileA, sharedIndex, loadA(rows[r], aCol));
   }
-  for (let i = 0; i < 4; i++) {
-    const sharedIndex = b.id();
-    const offset = b.id(); b.constant(p.tU32, offset, i * WG_X * WG_Y);
-    b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
-    const tileRow = b.id(); b.emit(Op.UDiv, [p.tU32, tileRow, sharedIndex, c32]);
-    const tileCol = b.id(); b.emit(Op.UMod, [p.tU32, tileCol, sharedIndex, c32]);
-    const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tileRow]);
-    const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
-    storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+  if (mode === "transposed-b" && coalescedTransposedB) {
+    const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tx]);
+    const tx32 = b.id(); b.emit(Op.IMul, [p.tU32, tx32, tx, c32]);
+    for (let i = 0; i < 4; i++) {
+      const offset = b.id(); b.constant(p.tU32, offset, i * WG_Y);
+      const tileCol = b.id(); b.emit(Op.IAdd, [p.tU32, tileCol, ty, offset]);
+      const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
+      const sharedIndex = b.id(); b.emit(Op.IAdd, [p.tU32, sharedIndex, tx32, tileCol]);
+      storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+    }
+  } else {
+    for (let i = 0; i < 4; i++) {
+      const sharedIndex = b.id();
+      const offset = b.id(); b.constant(p.tU32, offset, i * WG_X * WG_Y);
+      b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
+      const tileRow = b.id(); b.emit(Op.UDiv, [p.tU32, tileRow, sharedIndex, c32]);
+      const tileCol = b.id(); b.emit(Op.UMod, [p.tU32, tileCol, sharedIndex, c32]);
+      const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tileRow]);
+      const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
+      storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+    }
   }
   b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
@@ -2179,6 +2215,10 @@ export function kernelMatmulReg4x2(): Uint32Array {
 
 export function kernelMatmulTransposedReg4x2(): Uint32Array {
   return kernelMatmulReg4x2Impl("transposed-b");
+}
+
+export function kernelMatmulTransposedReg4x2Coalesced(): Uint32Array {
+  return kernelMatmulReg4x2Impl("transposed-b", true);
 }
 
 export function kernelMatmulTransposedAReg4x2(): Uint32Array {
