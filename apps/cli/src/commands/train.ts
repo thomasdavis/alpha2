@@ -519,6 +519,9 @@ export async function trainCmd(args: string[]): Promise<void> {
       ` padded_batched=${coopStats.coopPaddedBatchedDispatches}` +
       ` transposed_a_rewrite=${coopStats.coopTransposedARewriteDispatches}`,
     );
+    if (process.env.HELIOS_COOP_REPORT_SHAPES === "1") {
+      console.log(`coop_shapes: ${JSON.stringify(coopStats.shapeCounts ?? [])}`);
+    }
   }
 
   // Post-training sample generation

@@ -137,6 +137,34 @@ if (MATMUL_TILE_OVERRIDE_ENV) {
 }
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
+// Diagnostic shape gates for cooperative-matrix training parity work.  Each
+// entry is a logical MxNxK triple (for example "10240x1920x640").  ALLOW is
+// an optional positive list; DENY is applied after it.  These gates are
+// intentionally generic and opt-in: they let a physical run bisect a bad
+// production graph without baking model-specific dimensions into Helios.
+function parseCoopShapeSet(name: string): ReadonlySet<string> {
+  const raw = process.env[name]?.trim() ?? "";
+  if (!raw) return new Set<string>();
+  const parsed = new Set<string>();
+  for (const entry of raw.split(",")) {
+    const key = entry.trim().toLowerCase();
+    if (!/^\d+x\d+x\d+$/.test(key)) {
+      console.warn(`[helios] ignoring invalid ${name} entry ${JSON.stringify(entry)}; expected MxNxK`);
+      continue;
+    }
+    parsed.add(key);
+  }
+  return parsed;
+}
+const COOP_SHAPE_ALLOW = parseCoopShapeSet("HELIOS_COOP_SHAPE_ALLOW");
+const COOP_SHAPE_DENY = parseCoopShapeSet("HELIOS_COOP_SHAPE_DENY");
+function coopShapeKey(M: number, N: number, K: number): string {
+  return `${M}x${N}x${K}`;
+}
+function coopShapeIsEnabled(M: number, N: number, K: number): boolean {
+  const key = coopShapeKey(M, N, K);
+  return (COOP_SHAPE_ALLOW.size === 0 || COOP_SHAPE_ALLOW.has(key)) && !COOP_SHAPE_DENY.has(key);
+}
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 !== "0";
 const COOP_F16IN_S2X2_MIN_FLOPS = 20_000_000;
 const COOP_SUBGROUP_TILES_ENV = process.env.HELIOS_COOP_F16IN_SUBGROUP_TILES?.trim() ?? "";
@@ -1770,6 +1798,17 @@ export interface CoopMatmulStats {
     transposedA: boolean;
     transposedB: boolean;
   } | null;
+  shapeCounts: Array<{
+    key: string;
+    kernel: string;
+    M: number;
+    N: number;
+    K: number;
+    batchSize: number;
+    transposedA: boolean;
+    transposedB: boolean;
+    count: number;
+  }>;
 }
 
 type MatmulTile = 16 | 32;
@@ -1815,6 +1854,7 @@ export class HeliosBackend implements Backend {
   private _coopTransposedARewriteDispatches = 0;
   private _lastCoopKernel: string | null = null;
   private _lastCoopShape: CoopMatmulStats["lastCoopShape"] = null;
+  private _coopShapeCounts = new Map<string, CoopMatmulStats["shapeCounts"][number]>();
   private _coopF16InputCache = new Map<TensorData, TensorData>();
   private _coopF16InputCacheLastFlushTimeline = -1;
   private _matmulTileCache = new Map<string, MatmulTile>();
@@ -2164,7 +2204,39 @@ export class HeliosBackend implements Backend {
       coopHitRate: hit,
       lastCoopKernel: this._lastCoopKernel,
       lastCoopShape: this._lastCoopShape ? { ...this._lastCoopShape } : null,
+      shapeCounts: [...this._coopShapeCounts.values()]
+        .map((entry) => ({ ...entry }))
+        .sort((a, b) => a.key.localeCompare(b.key)),
     };
+  }
+
+  private recordCoopShape(
+    kernel: string,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+    transposedA: boolean,
+    transposedB: boolean,
+  ): void {
+    const key = `${transposedA ? "ta" : transposedB ? "tb" : "nn"}:${coopShapeKey(M, N, K)}:b${batchSize}`;
+    const existing = this._coopShapeCounts.get(key);
+    if (existing) {
+      existing.count++;
+      existing.kernel = kernel;
+      return;
+    }
+    this._coopShapeCounts.set(key, {
+      key,
+      kernel,
+      M,
+      N,
+      K,
+      batchSize,
+      transposedA,
+      transposedB,
+      count: 1,
+    });
   }
 
   /**
@@ -4104,7 +4176,7 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -4231,7 +4303,7 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -4326,11 +4398,10 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
-
     // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
     const outM = K;
     const loopK = M;
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(outM, N, loopK);
 
     // Direct cooperative path for aligned transposed-A GEMMs.
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -4581,6 +4652,7 @@ export class HeliosBackend implements Backend {
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
+    this.recordCoopShape(kernelName, M, N, K, batchSize, false, transposed);
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed} splitK=${splitK}`,
@@ -4820,6 +4892,7 @@ export class HeliosBackend implements Backend {
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
+    this.recordCoopShape(kernelName, outM, N, loopK, batchSize, true, false);
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true splitK=${splitK} kMulti=${localKMulti}`,
