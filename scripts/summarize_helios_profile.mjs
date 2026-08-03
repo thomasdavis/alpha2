@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -192,7 +192,7 @@ function formatMarkdown(summary, top) {
 
 function usage() {
   return [
-    "Usage: node scripts/summarize_helios_profile.mjs [--format markdown|json] [--top N] LOG...",
+    "Usage: node scripts/summarize_helios_profile.mjs [--format markdown|json] [--top N] [--skip-first N] [--output FILE] LOG...",
     "",
     "Reads every [gpu_ops] line from each log and averages the dynamic kind and kernel series.",
     "It does not invent higher-level categories; the profiler's recorded operation kinds remain authoritative.",
@@ -202,6 +202,8 @@ function usage() {
 function run(argv) {
   let format = "markdown";
   let top = 20;
+  let skipFirst = 0;
+  let outputPath = null;
   const paths = [];
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -217,10 +219,19 @@ function run(argv) {
       top = Number(argv[++index]);
       continue;
     }
+    if (argument === "--skip-first") {
+      skipFirst = Number(argv[++index]);
+      continue;
+    }
+    if (argument === "--output") {
+      outputPath = resolve(argv[++index]);
+      continue;
+    }
     paths.push(resolve(argument));
   }
   if (!['markdown', 'json'].includes(format)) throw new Error(`unsupported format ${format}`);
   if (!Number.isInteger(top) || top < 1) throw new Error(`invalid --top value ${top}`);
+  if (!Number.isInteger(skipFirst) || skipFirst < 0) throw new Error(`invalid --skip-first value ${skipFirst}`);
   if (paths.length === 0) throw new Error(usage());
 
   const samples = [];
@@ -229,23 +240,27 @@ function run(argv) {
     const bytes = readFileSync(path);
     const text = bytes.toString("utf8");
     let count = 0;
+    const pathSamples = [];
     text.split(/\r?\n/).forEach((line, lineIndex) => {
       if (!line.includes(GPU_OPS_MARKER)) return;
-      samples.push(parseGpuOpsLine(line, `${path}:${lineIndex + 1}`));
+      pathSamples.push(parseGpuOpsLine(line, `${path}:${lineIndex + 1}`));
       count++;
     });
+    samples.push(...pathSamples.slice(skipFirst));
     sources.push({
       path,
       sha256: createHash("sha256").update(bytes).digest("hex"),
-      samples: count,
+      samples: Math.max(0, count - skipFirst),
+      skipped: Math.min(count, skipFirst),
     });
   }
   const summary = summarizeGpuOps(samples, sources);
-  process.stdout.write(
+  const rendered =
     format === "json"
       ? `${JSON.stringify(summary, null, 2)}\n`
-      : formatMarkdown(summary, top),
-  );
+      : formatMarkdown(summary, top);
+  if (outputPath) writeFileSync(outputPath, rendered);
+  else process.stdout.write(rendered);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

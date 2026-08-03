@@ -5589,7 +5589,11 @@ export class HeliosBackend implements Backend {
     });
 
     // Step 2: dKV kernel reads D_precomp written by dQ kernel
-    const dkvKernel = `flash_attn_bwd_dkv${scSuffix}_${BrDKV}_${BcDKV}_${D}`;
+    // Experimental ILP variant: each invocation processes several query rows
+    // per loop body. Keep it opt-in until a physical device profile proves
+    // that the extra registers/code size beat the selected scalar kernel.
+    const dkvVariant = process.env.HELIOS_FLASH_BWD_DKV_V2 === "1" ? "_v2" : "";
+    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}`;
     const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
     const dkBytes = BH * T * D * 4;
     const dkRegion = acquireOutputRegion(vk, dkBytes);

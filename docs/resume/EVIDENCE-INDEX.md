@@ -655,3 +655,20 @@ payload for the public training-checkpoint repository.
 
 Do not use an old HANDOFF live endpoint or pod ID as current truth. The historical section is retained
 only to reconstruct the paid trajectory.
+
+## RTX 3090 critical path and dKV tile correctness — 2026-08-03
+
+Canonical engine note:
+
+    docs/resume/HELIOS-RTX3090-CRITICAL-PATH-EVIDENCE-2026-08-03.md
+
+Artifact root:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-3090-kernel-profile-20260803-r7/
+
+The warmed 97.1M-parameter batch-10 profile attributes 84.69% of dispatch time to three GEMM kernels and flash
+attention dKV backward. Physical tests reject R42CK32 as neutral/slightly slower and reject dKV-v2 as 4.50x
+slower. A non-square dKV sweep found an apparent 118-148 ms speedup that was actually skipped causal work and
+`NaN` gradients. Correct causal block indexing plus complete cooperative staging restored finite, reference-matched
+training; the corrected non-square candidates were slower than selected 32 x 32. All false-positive and repaired
+runs are retained. The pod was deleted and the post-delete RunPod list was empty.

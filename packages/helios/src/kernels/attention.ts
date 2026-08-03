@@ -1482,6 +1482,9 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
 // Dispatch: (ceil(T/Bc), B*H, 1)  Workgroup: (Bc, 1, 1)
 
 export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
+  if (Br % Bc !== 0) {
+    throw new Error(`dKV query tile Br=${Br} must be an integer multiple of key tile Bc=${Bc}`);
+  }
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Bc, 1, 1);
@@ -1630,7 +1633,15 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const numQBlocks = b.id(); b.emit(Op.UDiv, [p.tU32, numQBlocks, TplusBrm1, constBr]);
 
   // ── Outer loop: qBlockIdx = kBlockIdx..numQBlocks ─────────────────────────
-  b.emit(Op.Store, [varQBlockIdx, kBlockIdx]);
+  // A key tile and query tile may have different widths.  The first causal
+  // query block contributing to this key tile is floor(kBlockOff / Br), not
+  // the key-tile ordinal.  The old identity happened to be correct only when
+  // Bc == Br and silently skipped/duplicated causal regions otherwise.
+  let firstQBlockIdx = kBlockIdx;
+  if (Br !== Bc) {
+    firstQBlockIdx = b.id(); b.emit(Op.UDiv, [p.tU32, firstQBlockIdx, kBlockOff, constBr]);
+  }
+  b.emit(Op.Store, [varQBlockIdx, firstQBlockIdx]);
   const labelLoopHead = b.id(); const labelLoopBody = b.id();
   const labelLoopMerge = b.id(); const labelLoopCont = b.id();
 
@@ -1642,44 +1653,53 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   b.emit(Op.BranchConditional, [loopCmp, labelLoopBody, labelLoopMerge]);
   b.emit(Op.Label, [labelLoopBody]);
 
-  // Cooperative load Q, dO into shared as vec4 + LSE, D_precomp as scalar
+  // Cooperative load Q, dO into shared as vec4 + LSE, D_precomp as scalar.
+  // Each Bc-wide workgroup may need to stage multiple rows when Br > Bc.
+  // The original one-row-per-invocation mapping silently left Br-Bc rows
+  // uninitialized and made every non-square tile numerically invalid.
   const qBlockBase = b.id(); b.emit(Op.IMul, [p.tU32, qBlockBase, qBlockIdx, constBr]);
-  const qRow = b.id(); b.emit(Op.IAdd, [p.tU32, qRow, qBlockBase, threadIdx]);
-  const qRowInBounds = b.id(); b.emit(Op.ULessThan, [p.tBool, qRowInBounds, qRow, T]);
-  const inBoundsF = b.id(); b.emit(Op.Select, [p.tF32, inBoundsF, qRowInBounds, const1f, p.const0f]);
-  const qRowD4 = b.id(); b.emit(Op.IMul, [p.tU32, qRowD4, qRow, constD4]);
-  const qGlobalBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qGlobalBase4, baseOff4, qRowD4]);
-  const sharedRowOff4 = b.id(); b.emit(Op.IMul, [p.tU32, sharedRowOff4, threadIdx, constD4]);
+  for (let loadPass = 0; loadPass < Br / Bc; loadPass++) {
+    let sharedRow = threadIdx;
+    if (loadPass > 0) {
+      const rowOffset = b.id(); b.constant(p.tU32, rowOffset, loadPass * Bc);
+      sharedRow = b.id(); b.emit(Op.IAdd, [p.tU32, sharedRow, threadIdx, rowOffset]);
+    }
+    const qRow = b.id(); b.emit(Op.IAdd, [p.tU32, qRow, qBlockBase, sharedRow]);
+    const qRowInBounds = b.id(); b.emit(Op.ULessThan, [p.tBool, qRowInBounds, qRow, T]);
+    const inBoundsF = b.id(); b.emit(Op.Select, [p.tF32, inBoundsF, qRowInBounds, const1f, p.const0f]);
+    const qRowD4 = b.id(); b.emit(Op.IMul, [p.tU32, qRowD4, qRow, constD4]);
+    const qGlobalBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qGlobalBase4, baseOff4, qRowD4]);
+    const sharedRowOff4 = b.id(); b.emit(Op.IMul, [p.tU32, sharedRowOff4, sharedRow, constD4]);
 
-  for (let d4 = 0; d4 < D4; d4++) {
-    const gIdx = b.id(); b.emit(Op.IAdd, [p.tU32, gIdx, qGlobalBase4, constD4Idx[d4]]);
-    const ptrQElem = b.id(); b.emit(Op.AccessChain, [bufQ.tPtrVec4, ptrQElem, bufQ.varId, p.const0u, gIdx]);
-    const qRaw = b.id(); b.emit(Op.Load, [tVec4F32, qRaw, ptrQElem]);
-    const qVal = b.id(); b.emit(Op.VectorTimesScalar, [tVec4F32, qVal, qRaw, inBoundsF]);
-    const sQIdx = b.id(); b.emit(Op.IAdd, [p.tU32, sQIdx, sharedRowOff4, constD4Idx[d4]]);
-    const ptrSQ = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSQ, sQ, sQIdx]);
-    b.emit(Op.Store, [ptrSQ, qVal]);
+    for (let d4 = 0; d4 < D4; d4++) {
+      const gIdx = b.id(); b.emit(Op.IAdd, [p.tU32, gIdx, qGlobalBase4, constD4Idx[d4]]);
+      const ptrQElem = b.id(); b.emit(Op.AccessChain, [bufQ.tPtrVec4, ptrQElem, bufQ.varId, p.const0u, gIdx]);
+      const qRaw = b.id(); b.emit(Op.Load, [tVec4F32, qRaw, ptrQElem]);
+      const qVal = b.id(); b.emit(Op.VectorTimesScalar, [tVec4F32, qVal, qRaw, inBoundsF]);
+      const sQIdx = b.id(); b.emit(Op.IAdd, [p.tU32, sQIdx, sharedRowOff4, constD4Idx[d4]]);
+      const ptrSQ = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSQ, sQ, sQIdx]);
+      b.emit(Op.Store, [ptrSQ, qVal]);
 
-    const ptrDOElem = b.id(); b.emit(Op.AccessChain, [bufDO.tPtrVec4, ptrDOElem, bufDO.varId, p.const0u, gIdx]);
-    const doRaw = b.id(); b.emit(Op.Load, [tVec4F32, doRaw, ptrDOElem]);
-    const doVal = b.id(); b.emit(Op.VectorTimesScalar, [tVec4F32, doVal, doRaw, inBoundsF]);
-    const ptrSDO = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSDO, sDO, sQIdx]);
-    b.emit(Op.Store, [ptrSDO, doVal]);
+      const ptrDOElem = b.id(); b.emit(Op.AccessChain, [bufDO.tPtrVec4, ptrDOElem, bufDO.varId, p.const0u, gIdx]);
+      const doRaw = b.id(); b.emit(Op.Load, [tVec4F32, doRaw, ptrDOElem]);
+      const doVal = b.id(); b.emit(Op.VectorTimesScalar, [tVec4F32, doVal, doRaw, inBoundsF]);
+      const ptrSDO = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSDO, sDO, sQIdx]);
+      b.emit(Op.Store, [ptrSDO, doVal]);
+    }
+
+    const lseQRowIdx = b.id(); b.emit(Op.IAdd, [p.tU32, lseQRowIdx, lseBaseOff, qRow]);
+    const ptrLSEi = b.id(); b.emit(Op.AccessChain, [bufLSE.tPtrF32, ptrLSEi, bufLSE.varId, p.const0u, lseQRowIdx]);
+    const lseRaw = b.id(); b.emit(Op.Load, [p.tF32, lseRaw, ptrLSEi]);
+    const lseVal = b.id(); b.emit(Op.Select, [p.tF32, lseVal, qRowInBounds, lseRaw, p.const0f]);
+    const ptrSLSE = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSLSE, sLSE, sharedRow]);
+    b.emit(Op.Store, [ptrSLSE, lseVal]);
+
+    const ptrDpreI = b.id(); b.emit(Op.AccessChain, [bufDpre.tPtrF32, ptrDpreI, bufDpre.varId, p.const0u, lseQRowIdx]);
+    const dpreRaw = b.id(); b.emit(Op.Load, [p.tF32, dpreRaw, ptrDpreI]);
+    const dpreVal = b.id(); b.emit(Op.Select, [p.tF32, dpreVal, qRowInBounds, dpreRaw, p.const0f]);
+    const ptrSDpre = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSDpre, sDpre, sharedRow]);
+    b.emit(Op.Store, [ptrSDpre, dpreVal]);
   }
-
-  // Load LSE and D_precomp for this thread's query row
-  const lseQRowIdx = b.id(); b.emit(Op.IAdd, [p.tU32, lseQRowIdx, lseBaseOff, qRow]);
-  const ptrLSEi = b.id(); b.emit(Op.AccessChain, [bufLSE.tPtrF32, ptrLSEi, bufLSE.varId, p.const0u, lseQRowIdx]);
-  const lseRaw = b.id(); b.emit(Op.Load, [p.tF32, lseRaw, ptrLSEi]);
-  const lseVal = b.id(); b.emit(Op.Select, [p.tF32, lseVal, qRowInBounds, lseRaw, p.const0f]);
-  const ptrSLSE = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSLSE, sLSE, threadIdx]);
-  b.emit(Op.Store, [ptrSLSE, lseVal]);
-
-  const ptrDpreI = b.id(); b.emit(Op.AccessChain, [bufDpre.tPtrF32, ptrDpreI, bufDpre.varId, p.const0u, lseQRowIdx]);
-  const dpreRaw = b.id(); b.emit(Op.Load, [p.tF32, dpreRaw, ptrDpreI]);
-  const dpreVal = b.id(); b.emit(Op.Select, [p.tF32, dpreVal, qRowInBounds, dpreRaw, p.const0f]);
-  const ptrSDpre = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrSDpre, sDpre, threadIdx]);
-  b.emit(Op.Store, [ptrSDpre, dpreVal]);
 
   b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
 
@@ -2157,6 +2177,7 @@ export function kernelFlashAttentionBackwardDKVV2(
   Br: number, Bc: number, D: number, BI: number = 4
 ): Uint32Array {
   if (Br % BI !== 0) throw new Error(`Br=${Br} must be divisible by BI=${BI}`);
+  if (Br !== Bc) throw new Error(`dKV-v2 currently requires square query/key tiles; got Br=${Br}, Bc=${Bc}`);
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Bc, 1, 1);
@@ -2458,4 +2479,3 @@ export function kernelFlashAttentionBackwardDKVV2(
   b.emit(Op.FunctionEnd, []);
   return b.build();
 }
-

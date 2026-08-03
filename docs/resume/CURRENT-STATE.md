@@ -51,7 +51,18 @@ tile from 16 to 32, increasing shared memory from 4 KiB to 8 KiB and halving loa
 commit `2ca869249da901763b7f4a69db939226753b198f`, Mesa llvmpipe dispatched the intended shader on the awkward
 `113 x 157 x 93` edge shape and matched the CPU reference to `3.338e-6` maximum absolute error. The complete
 local suite passed 233 tests with 50 physical-GPU gates skipped and 0 failures. This does not establish speed;
-the K32 flag is absent from the selected launcher pending an alternating physical K16/K32 comparison.
+the K32 flag is absent from the selected launcher. The required RTX 3090 comparison is now complete and rejects
+K32: warmed target-kernel time was 315.9571 ms versus 312.7565 ms for K16, while 21 steady samples per arm showed
+only +0.4975% mean and +0.1740% median throughput. Maximum loss and gradient-norm differences were `4.3392e-5`
+and `3.3260e-3`, so the candidate also failed exact trajectory parity.
+
+The first RTX 3090 critical-path profile attributes 84.69% of warmed dispatch time to the three selected GEMM
+layouts plus attention dKV backward. A wired four-query dKV-v2 candidate was 4.50x slower and was rejected.
+Non-square dKV tile experiments initially appeared much faster but produced `NaN` gradients; the kernel assumed
+equal query/key tile ordinals and loaded too few query rows. Correct causal indexing and cooperative staging
+restore the exact trajectory, after which `(64,32)` and `(32,16)` are 12.90% and 43.12% slower than selected
+`(32,32)`. The correctness repair remains; the square 32 x 32 path remains selected. See
+`HELIOS-RTX3090-CRITICAL-PATH-EVIDENCE-2026-08-03.md`.
 
 The optimized portfolio remains selected through `HELIOS_MATMUL_REG4X2=1`,
 `HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1`, `HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1`,
