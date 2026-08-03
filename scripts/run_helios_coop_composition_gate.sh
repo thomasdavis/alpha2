@@ -113,9 +113,11 @@ run_row() {
 
 run_row baseline_fp32 off "" default
 run_row profitable_four_default on "$PROFITABLE_SHAPES" default
-run_row cooperative_all_default on "" default
-run_row cooperative_all_forced_reclaim on "" forced
-run_row profitable_four_forced_reclaim on "$PROFITABLE_SHAPES" forced
+if [[ "${SOAK_ONLY:-0}" != "1" ]]; then
+  run_row cooperative_all_default on "" default
+  run_row cooperative_all_forced_reclaim on "" forced
+  run_row profitable_four_forced_reclaim on "$PROFITABLE_SHAPES" forced
+fi
 
 node scripts/summarize_helios_coop_bisect.mjs --root "$output_root"
 
