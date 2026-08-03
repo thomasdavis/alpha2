@@ -1468,6 +1468,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     gpuBlockingTimeMs: number;
     operationsPerFlush: number;
     graphSignature: string | null;
+    graphTrace: Array<Record<string, unknown>> | null;
     byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
     byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
   }) | undefined =
@@ -2674,6 +2675,17 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const hostBuildMs = capturePhaseTimings
       ? Math.max(0, coreStepElapsedMs - gpuBlockingMs)
       : 0;
+
+    if (gpuStepStats?.graphTrace && process.env.ALPHA_WRITE_GRAPH_TRACE === "1") {
+      await fs.appendFile(
+        path.join(runDir, "gpu-graph-trace.jsonl"),
+        `${JSON.stringify({
+          step: stepNum,
+          graphSignature: gpuStepStats.graphSignature,
+          events: gpuStepStats.graphTrace,
+        })}\n`,
+      );
+    }
 
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";

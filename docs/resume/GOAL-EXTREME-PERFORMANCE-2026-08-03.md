@@ -109,6 +109,16 @@ mechanism on the operator-selected cheap device. All four arms exited cleanly,
 but twelve steps are not a stability promotion. Evidence is mounted at
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-3090-portfolio-20260803/`.
 
+**AOT prerequisite correction (RTX 3090 r3).** The earlier static-graph diagnosis
+was based on identical aggregate op counts. An opt-in ordered signature now hashes
+operation kind/kernel, buffer arity, write mask, dispatch groups, push size,
+shape, element count, and flush boundaries while excluding values and physical
+buffer handles. Eight batch-10 steps each had 1,703 ops and seven flushes—but
+all eight signatures differed. The graph is therefore histogram-stable, not yet
+proven topology-stable. A full per-operation trace and first-divergence analyzer
+are implemented; naïve replay is not promoted until the divergence is explained
+or canonicalized.
+
 The cost model has also been widened beyond optimizing SGD as given. X17 in the
 mounted research tree reduces the task to behavioral construction, surveys 100
 external mechanisms, and makes the closed-loop Behavioral Constraint Compiler
@@ -121,7 +131,11 @@ Every direction receives a mechanism/prior-art audit and a direction-appropriate
 cheap discriminator; only survivors advance to bounded RTX 3090 tests. A proof,
 trace, offline replay, or controlled proxy may faithfully close a direction when
 it reaches the mechanism's risky prediction. Discussion alone never counts as an
-attempt. Current generated state begins at **100 queued / 0 claimed complete** at
+attempt. The operator-supplied X19 atlas adds a separate 100-item contract and
+state namespace for concrete Autonomic Dataflow mechanisms. X17 and X19 therefore
+form 200 traceable research objects: they may reuse an instrument or physical run,
+but each retains its own evidence and verdict. Current generated state is at
+**X17: 96 queued / 4 cheap tests complete; X19: 100 queued** at
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/PORTFOLIO-STATUS.md`.
 
 **Third result already banked** — from preserved logs, no new runs
@@ -129,9 +143,11 @@ attempt. Current generated state begins at **100 queued / 0 claimed complete** a
 
 3. **Helios appears host-bound and unoverlapped.** Only 5–7 command submissions
    and 1–3 waits per step, so the missing half is *not* submission overhead. The
-   step's op graph is **static** (1,444 identical ops on 17 of 20 steps) yet
-   rebuilt in TypeScript every iteration, with 687 allocator slab fallbacks per
-   step. Step time looks like `host_build + gpu_execute`, not `max(...)`.
+   step's aggregate op histogram is highly stable but ordered r3 signatures were
+   distinct on all eight measured steps; per-operation tracing is now locating
+   the divergence before any replay claim. The graph is still rebuilt in
+   TypeScript every iteration, with 687 allocator slab fallbacks per step. Step
+   time looks like `host_build + gpu_execute`, not `max(...)`.
    **This caps kernel-only work at roughly 2x** and explains why kernel swaps win
    2–4% while gradient-ownership forwarding — the one change that removed
    *operations* rather than kernel time — won 48.6%.

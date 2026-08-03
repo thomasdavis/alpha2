@@ -8,14 +8,16 @@ import { DatabaseSync } from "node:sqlite";
 const DEFAULT_RESEARCH_ROOT =
   "/mnt/donto-data/donto-resources/research/alpha-helios-reimagined";
 const DEFAULT_SOURCE = `${DEFAULT_RESEARCH_ROOT}/X17-ONE-HUNDRED-WAYS-TO-REIMAGINE-TRAINING.md`;
+const DEFAULT_ATLAS = `${DEFAULT_RESEARCH_ROOT}/X19-ONE-HUNDRED-LENS-ALPHA-RESEARCH-ATLAS.md`;
 const DEFAULT_DB = `${DEFAULT_RESEARCH_ROOT}/helios-100-directions.sqlite`;
 const DEFAULT_REPORT = `${DEFAULT_RESEARCH_ROOT}/PORTFOLIO-STATUS.md`;
 
 function usage() {
   console.error(`Usage:
-  node scripts/helios_direction_portfolio.mjs init [--source PATH] [--db PATH] [--report PATH]
+  node scripts/helios_direction_portfolio.mjs init [--source PATH] [--atlas PATH] [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs report [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs status --direction N --to STATUS --reason TEXT [--evidence PATH] [--db PATH] [--report PATH]
+  node scripts/helios_direction_portfolio.mjs atlas-status --idea N --to STATUS --reason TEXT [--evidence PATH] [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs run --direction N --run-id ID --stage STAGE --status STATUS --artifact PATH --metrics PATH [--revision SHA] [--checkpoint HASH] [--workload HASH] [--hardware TEXT] [--accelerator-seconds N] [--cost N] [--started ISO] [--finished ISO] [--db PATH] [--report PATH]
 
 Statuses are descriptive research states, not automatic promotion decisions:
@@ -82,6 +84,31 @@ function parseDirections(sourceText) {
   return directions;
 }
 
+function parseAtlasIdeas(sourceText) {
+  const ideas = [];
+  for (const line of sourceText.split(/\r?\n/)) {
+    const row = line.match(
+      /^\|\s*(\d{1,3})\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$/,
+    );
+    if (!row) continue;
+    const sourceIndex = Number.parseInt(row[1], 10);
+    if (sourceIndex < 1 || sourceIndex > 100) continue;
+    ideas.push({
+      sourceIndex,
+      domain: row[2].trim(),
+      lens: row[3].trim(),
+      cheapestTest: row[4].trim(),
+      levers: row[5].trim(),
+    });
+  }
+  const ids = ideas.map(({ sourceIndex }) => sourceIndex);
+  const expected = Array.from({ length: 100 }, (_, index) => index + 1);
+  if (JSON.stringify(ids) !== JSON.stringify(expected)) {
+    throw new Error(`Expected exactly the ordered X19 atlas IDs 1..100; parsed ${ids.length}: ${ids.join(",")}`);
+  }
+  return ideas;
+}
+
 function firstStage(direction) {
   if (direction.familyCode === "E") return "trace_simulation_then_3090";
   if (direction.id >= 91 && direction.id <= 94) return "profile_or_schedule_simulation";
@@ -122,6 +149,53 @@ function schema(db) {
       source_document TEXT NOT NULL,
       source_sha256 TEXT NOT NULL,
       imported_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS atlas_idea (
+      atlas_idea_id TEXT PRIMARY KEY,
+      source_index INTEGER NOT NULL CHECK (source_index BETWEEN 1 AND 100),
+      domain TEXT NOT NULL,
+      lens_and_mechanism TEXT NOT NULL,
+      cheapest_faithful_test TEXT NOT NULL,
+      levers TEXT NOT NULL,
+      source_document TEXT NOT NULL,
+      source_sha256 TEXT NOT NULL,
+      imported_at TEXT NOT NULL,
+      UNIQUE(source_document, source_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS atlas_experiment_contract (
+      contract_id TEXT PRIMARY KEY,
+      atlas_idea_id TEXT NOT NULL REFERENCES atlas_idea(atlas_idea_id),
+      contract_version INTEGER NOT NULL,
+      hypothesis TEXT NOT NULL,
+      null_condition TEXT NOT NULL,
+      cheapest_faithful_test TEXT NOT NULL,
+      required_control TEXT NOT NULL,
+      primary_metric TEXT NOT NULL,
+      first_stage TEXT NOT NULL,
+      promotion_stage TEXT NOT NULL,
+      initial_gpu_ceiling_minutes INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(atlas_idea_id, contract_version)
+    );
+
+    CREATE TABLE IF NOT EXISTS atlas_state (
+      atlas_idea_id TEXT PRIMARY KEY REFERENCES atlas_idea(atlas_idea_id),
+      status TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      latest_reason TEXT NOT NULL,
+      latest_evidence_path TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS atlas_state_event (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      atlas_idea_id TEXT NOT NULL REFERENCES atlas_idea(atlas_idea_id),
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      evidence_path TEXT,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS experiment_contract (
@@ -231,10 +305,13 @@ function schema(db) {
   `);
 }
 
-function initialize(dbPath, sourcePath) {
+function initialize(dbPath, sourcePath, atlasPath) {
   const sourceText = readFileSync(sourcePath, "utf8");
   const sourceHash = sha256(sourceText);
   const directions = parseDirections(sourceText);
+  const atlasText = readFileSync(atlasPath, "utf8");
+  const atlasHash = sha256(atlasText);
+  const atlasIdeas = parseAtlasIdeas(atlasText);
   const importedAt = new Date().toISOString();
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -262,6 +339,38 @@ function initialize(dbPath, sourcePath) {
       cheapest_faithful_test, required_control, primary_metric, first_stage,
       promotion_stage, initial_gpu_ceiling_minutes, created_at
     ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAtlasIdea = db.prepare(`
+    INSERT INTO atlas_idea (
+      atlas_idea_id, source_index, domain, lens_and_mechanism,
+      cheapest_faithful_test, levers, source_document, source_sha256, imported_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(atlas_idea_id) DO UPDATE SET
+      source_index = excluded.source_index,
+      domain = excluded.domain,
+      lens_and_mechanism = excluded.lens_and_mechanism,
+      cheapest_faithful_test = excluded.cheapest_faithful_test,
+      levers = excluded.levers,
+      source_document = excluded.source_document,
+      source_sha256 = excluded.source_sha256,
+      imported_at = excluded.imported_at
+  `);
+  const insertAtlasContract = db.prepare(`
+    INSERT OR IGNORE INTO atlas_experiment_contract (
+      contract_id, atlas_idea_id, contract_version, hypothesis, null_condition,
+      cheapest_faithful_test, required_control, primary_metric, first_stage,
+      promotion_stage, initial_gpu_ceiling_minutes, created_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAtlasState = db.prepare(`
+    INSERT OR IGNORE INTO atlas_state (
+      atlas_idea_id, status, updated_at, latest_reason, latest_evidence_path
+    ) VALUES (?, 'queued', ?, 'Imported from X19; faithful experiment not yet claimed.', NULL)
+  `);
+  const insertAtlasEvent = db.prepare(`
+    INSERT INTO atlas_state_event (
+      atlas_idea_id, from_status, to_status, reason, evidence_path, created_at
+    ) VALUES (?, NULL, 'queued', 'Imported from X19; faithful experiment not yet claimed.', NULL, ?)
   `);
   const insertState = db.prepare(`
     INSERT OR IGNORE INTO direction_state (
@@ -309,10 +418,44 @@ function initialize(dbPath, sourcePath) {
       const stateResult = insertState.run(direction.id, importedAt);
       if (stateResult.changes === 1) insertEvent.run(direction.id, importedAt);
     }
+    for (const idea of atlasIdeas) {
+      const atlasIdeaId = `X19-${String(idea.sourceIndex).padStart(3, "0")}`;
+      insertAtlasIdea.run(
+        atlasIdeaId,
+        idea.sourceIndex,
+        idea.domain,
+        idea.lens,
+        idea.cheapestTest,
+        idea.levers,
+        resolve(atlasPath),
+        atlasHash,
+        importedAt,
+      );
+      insertAtlasContract.run(
+        `${atlasIdeaId}-V1`,
+        atlasIdeaId,
+        `Applying ${idea.lens} to Alpha or Helios can improve the declared fixed target more efficiently than the matched baseline.`,
+        "At matched tokens, accelerator time, and quality constraints, the mechanism does not beat its baseline or introduces an unacceptable parity or behavior regression.",
+        idea.cheapestTest,
+        "Matched-cost baseline plus a mechanism-corrupted or mechanism-ablated control wherever one can be constructed.",
+        idea.levers.includes("R") || idea.levers.includes("M")
+          ? "exact_step_wall_time_at_parity"
+          : "held_out_behavior_per_model_visible_token_and_gpu_second",
+        "analytical_or_cpu_discriminator_before_gpu",
+        "Bounded RTX 3090 discriminator before any long matched-loss run.",
+        30,
+        importedAt,
+      );
+      const atlasStateResult = insertAtlasState.run(atlasIdeaId, importedAt);
+      if (atlasStateResult.changes === 1) insertAtlasEvent.run(atlasIdeaId, importedAt);
+    }
     upsertMeta.run("program", "Alpha Helios 100-direction faithful experiment portfolio");
     upsertMeta.run("source_sha256", sourceHash);
     upsertMeta.run("source_document", resolve(sourcePath));
     upsertMeta.run("direction_count", String(directions.length));
+    upsertMeta.run("atlas_source_sha256", atlasHash);
+    upsertMeta.run("atlas_source_document", resolve(atlasPath));
+    upsertMeta.run("atlas_idea_count", String(atlasIdeas.length));
     upsertMeta.run("last_imported_at", importedAt);
     db.exec("COMMIT");
   } catch (error) {
@@ -341,6 +484,34 @@ function updateStatus(dbPath, directionId, toStatus, reason, evidencePath) {
       SET status = ?, updated_at = ?, latest_reason = ?, latest_evidence_path = ?
       WHERE direction_id = ?
     `).run(toStatus, now, reason, evidencePath ?? null, directionId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
+function updateAtlasStatus(dbPath, sourceIndex, toStatus, reason, evidencePath) {
+  const db = new DatabaseSync(dbPath);
+  schema(db);
+  const atlasIdeaId = `X19-${String(sourceIndex).padStart(3, "0")}`;
+  const current = db.prepare("SELECT status FROM atlas_state WHERE atlas_idea_id = ?").get(atlasIdeaId);
+  if (!current) throw new Error(`X19 atlas idea ${sourceIndex} is not in the portfolio`);
+  const now = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare(`
+      INSERT INTO atlas_state_event (
+        atlas_idea_id, from_status, to_status, reason, evidence_path, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(atlasIdeaId, current.status, toStatus, reason, evidencePath ?? null, now);
+    db.prepare(`
+      UPDATE atlas_state
+      SET status = ?, updated_at = ?, latest_reason = ?, latest_evidence_path = ?
+      WHERE atlas_idea_id = ?
+    `).run(toStatus, now, reason, evidencePath ?? null, atlasIdeaId);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -467,15 +638,24 @@ function writeReport(dbPath, reportPath) {
   const directionsWithRuns = db.prepare(`
     SELECT COUNT(DISTINCT direction_id) AS count FROM direction_run
   `).get().count;
+  const atlasIdeaCount = db.prepare("SELECT COUNT(*) AS count FROM atlas_idea").get().count;
+  const atlasCounts = db.prepare(`
+    SELECT status, COUNT(*) AS count
+    FROM atlas_state
+    GROUP BY status
+    ORDER BY status
+  `).all();
   db.close();
 
   const statusSummary = counts.map(({ status, count }) => `${status}: ${count}`).join(" · ");
+  const atlasStatusSummary = atlasCounts.map(({ status, count }) => `${status}: ${count}`).join(" · ");
   const lines = [
     "# Helios 100-direction portfolio status",
     "",
     `**Generated:** ${new Date().toISOString()}  `,
     `**Source SHA-256:** \`${meta.source_sha256}\`  `,
     `**Directions:** ${rows.length}  `,
+    `**Companion X19 atlas ideas:** ${atlasIdeaCount} (source SHA-256: \`${meta.atlas_source_sha256 ?? "not imported"}\`; state: ${atlasStatusSummary})  `,
     `**State:** ${statusSummary}  `,
     `**Recorded physical runs:** ${runCounts.runs}, linked to ${directionsWithRuns} directions; accelerator time recorded for ${runCounts.runs_with_accelerator_seconds}/${runCounts.runs} runs (${Number(runCounts.accelerator_seconds).toFixed(1)} s total); cost recorded for ${runCounts.runs_with_estimated_cost}/${runCounts.runs} runs ($${Number(runCounts.estimated_cost_usd).toFixed(4)} total).`,
     "",
@@ -497,11 +677,12 @@ function writeReport(dbPath, reportPath) {
 try {
   const { command, options } = parseArgs(process.argv);
   const sourcePath = resolve(String(options.get("source") ?? DEFAULT_SOURCE));
+  const atlasPath = resolve(String(options.get("atlas") ?? DEFAULT_ATLAS));
   const dbPath = resolve(String(options.get("db") ?? DEFAULT_DB));
   const reportPath = resolve(String(options.get("report") ?? DEFAULT_REPORT));
 
   if (command === "init") {
-    initialize(dbPath, sourcePath);
+    initialize(dbPath, sourcePath, atlasPath);
     writeReport(dbPath, reportPath);
   } else if (command === "report") {
     writeReport(dbPath, reportPath);
@@ -516,6 +697,23 @@ try {
       updateStatus(
         dbPath,
         directionId,
+        String(toStatus),
+        String(reason),
+        options.has("evidence") ? resolve(String(options.get("evidence"))) : null,
+      );
+      writeReport(dbPath, reportPath);
+    }
+  } else if (command === "atlas-status") {
+    const sourceIndex = Number.parseInt(String(options.get("idea")), 10);
+    const toStatus = options.get("to");
+    const reason = options.get("reason");
+    if (!Number.isInteger(sourceIndex) || sourceIndex < 1 || sourceIndex > 100 || !toStatus || !reason) {
+      usage();
+      process.exitCode = 2;
+    } else {
+      updateAtlasStatus(
+        dbPath,
+        sourceIndex,
         String(toStatus),
         String(reason),
         options.has("evidence") ? resolve(String(options.get("evidence"))) : null,

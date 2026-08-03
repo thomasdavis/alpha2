@@ -67,6 +67,7 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 // It is diagnostic-only: stable signatures across steps are the prerequisite
 // for ahead-of-time graph compilation and command replay.
 const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
+const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
 // Generic FP32 GEMMs have multiple portable Vulkan implementations.  The old
 // size threshold is retained as the zero-overhead default, while this opt-in
 // path measures the real device/driver/shape combination once and caches the
@@ -981,6 +982,26 @@ interface PendingOp {
   elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
 }
 
+export type GraphTraceEvent =
+  | {
+      event: "op";
+      order: number;
+      kind: PendingOpKind;
+      kernel: string;
+      bufferCount: number;
+      writeMask: number;
+      groups: [number, number, number];
+      pushSize: number;
+      shape: number[];
+      elementCount: number | null;
+    }
+  | {
+      event: "flush";
+      order: number;
+      operationCount: number;
+      withWait: boolean;
+    };
+
 export interface GpuStepStats {
   profilingEnabled: boolean;
   timingEnabled: boolean;
@@ -995,6 +1016,7 @@ export interface GpuStepStats {
   gpuBlockingTimeMs: number;
   operationsPerFlush: number;
   graphSignature: string | null;
+  graphTrace: GraphTraceEvent[] | null;
   byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
   byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
 }
@@ -1026,6 +1048,7 @@ class ComputeGraph {
   private gpuTimeByKernelThisStep = new Map<string, number>();
   private graphHashA = 0x811c9dc5;
   private graphHashB = 0x9e3779b9;
+  private graphTraceThisStep: GraphTraceEvent[] = [];
 
   private mixGraphWord(value: number): void {
     if (!PROFILE_GRAPH_SIGNATURE) return;
@@ -1125,6 +1148,20 @@ class ComputeGraph {
       for (const dimension of op.shape) this.mixGraphWord(dimension);
       this.mixGraphWord(op.elementCount ?? 0xffffffff);
     }
+    if (PROFILE_GRAPH_TRACE) {
+      this.graphTraceThisStep.push({
+        event: "op",
+        order: this.graphTraceThisStep.length,
+        kind: op.kind,
+        kernel: op.kernel,
+        bufferCount: bufCount,
+        writeMask: op.writeMask,
+        groups: [...op.groups],
+        pushSize: op.pushSize,
+        shape: [...op.shape],
+        elementCount: op.elementCount ?? null,
+      });
+    }
 
     this.pending.push(op);
     this.pendingPackedBytes += op.packedBytes;
@@ -1152,6 +1189,7 @@ class ComputeGraph {
     this.gpuTimeByKernelThisStep.clear();
     this.graphHashA = 0x811c9dc5;
     this.graphHashB = 0x9e3779b9;
+    this.graphTraceThisStep = [];
   }
 
   getStepStats(): GpuStepStats {
@@ -1179,6 +1217,7 @@ class ComputeGraph {
       gpuBlockingTimeMs: gpuBlockingTimeMsThisStep,
       operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
       graphSignature: this.graphSignature(),
+      graphTrace: PROFILE_GRAPH_TRACE ? this.graphTraceThisStep : null,
       byKind: rows(this.opsByKindThisStep, this.gpuTimeByKindThisStep),
       byKernel: rows(this.opsByKernelThisStep, this.gpuTimeByKernelThisStep),
     };
@@ -1230,6 +1269,14 @@ class ComputeGraph {
       this.mixGraphWord(0x464c5553);
       this.mixGraphWord(ops.length);
       this.mixGraphWord(withWait ? 1 : 0);
+    }
+    if (PROFILE_GRAPH_TRACE) {
+      this.graphTraceThisStep.push({
+        event: "flush",
+        order: this.graphTraceThisStep.length,
+        operationCount: ops.length,
+        withWait,
+      });
     }
 
     // ── DGC fast path: when all ops are DGC-eligible binary ops ──

@@ -59,6 +59,7 @@ sha256sum \
   packages/train/src/trainer.ts \
   apps/cli/dist/main.js \
   scripts/summarize_helios_allocator_factorial.mjs \
+  scripts/summarize_helios_graph_trace.mjs \
   scripts/run_helios_allocator_factorial.sh \
   package-lock.json > "$output_dir/SOURCE-HASHES.sha256"
 
@@ -145,8 +146,10 @@ for mode in "${modes[@]}"; do
     "HELIOS_MAX_OUTPUT_POOL_ENTRIES=$pool_entries"
     "HELIOS_PROFILE_GPU_OPS=1"
     "HELIOS_PROFILE_GRAPH_SIGNATURE=1"
+    "HELIOS_PROFILE_GRAPH_TRACE=${HELIOS_PROFILE_GRAPH_TRACE:-0}"
     "HELIOS_PROFILE_GPU_TIMESTAMPS=0"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
+    "ALPHA_WRITE_GRAPH_TRACE=${ALPHA_WRITE_GRAPH_TRACE:-0}"
     "ALPHA_DISABLE_CHECKPOINTS=1"
     "ALPHA_FAIL_ON_SMOKE_TEST=1"
     "ALPHA_SAMPLE_FROM_CHECKPOINT=0"
@@ -208,6 +211,14 @@ for mode in "${modes[@]}"; do
   status=$?
   set -e
   printf '%s\n' "$status" > "$mode_dir/exit-code.txt"
+  if [[ -s "$mode_dir/run/gpu-graph-trace.jsonl" ]]; then
+    node scripts/summarize_helios_graph_trace.mjs \
+      "$mode_dir/run/gpu-graph-trace.jsonl" --json \
+      > "$mode_dir/graph-trace-summary.json"
+    node scripts/summarize_helios_graph_trace.mjs \
+      "$mode_dir/run/gpu-graph-trace.jsonl" \
+      > "$mode_dir/GRAPH-TRACE.md"
+  fi
   if (( status != 0 )); then
     overall_status=1
     tail -100 "$mode_dir/console.log" >&2
