@@ -11,7 +11,7 @@
 process.env.HELIOS_DISABLE_COOP_MAT = "1";
 process.env.HELIOS_PROFILE_GPU_OPS = "1";
 const requestedVariant = process.env.HELIOS_MATMUL_SMOKE_VARIANT;
-const variant = ["reg2x2", "reg4x2", "reg2x2c", "reg4x2c", "reg4x2ca"].includes(requestedVariant)
+const variant = ["reg2x2", "reg4x2", "reg2x2c", "reg4x2c", "reg4x2ca", "reg4x2ck32"].includes(requestedVariant)
   ? requestedVariant
   : "autotune";
 if (variant === "reg2x2" || variant === "reg2x2c") {
@@ -26,8 +26,11 @@ if (variant === "reg2x2" || variant === "reg2x2c") {
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE = "1";
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG ??= "1";
 }
-if (variant === "reg2x2c" || variant === "reg4x2c") {
+if (variant === "reg2x2c" || variant === "reg4x2c" || variant === "reg4x2ck32") {
   process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED = "1";
+}
+if (variant === "reg4x2ck32") {
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 = "1";
 }
 if (variant === "reg4x2ca") {
   process.env.HELIOS_MATMUL_TRANSPOSED_A_COALESCED = "1";
@@ -147,7 +150,9 @@ if (variant === "autotune") {
   }
 } else {
   const suffix = variant.startsWith("reg4x2") ? "R42" : "R2";
-  const transposedSuffix = `${suffix}${variant === "reg2x2c" || variant === "reg4x2c" ? "C" : ""}`;
+  const transposedSuffix = variant === "reg4x2ck32"
+    ? "R42CK32"
+    : `${suffix}${variant === "reg2x2c" || variant === "reg4x2c" ? "C" : ""}`;
   const transposedASuffix = `${suffix}${variant === "reg4x2ca" ? "C" : ""}`;
   const expectedKernels = new Set([
     `matmul_${suffix}`,

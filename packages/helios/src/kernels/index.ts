@@ -93,7 +93,8 @@ export {
   kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
   kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
-  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedReg4x2CoalescedK32,
+  kernelMatmulTransposedAReg4x2,
   kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
@@ -104,7 +105,8 @@ import {
   kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
   kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
-  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedReg4x2CoalescedK32,
+  kernelMatmulTransposedAReg4x2,
   kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
@@ -273,6 +275,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "matmul_R42": spirv = kernelMatmulReg4x2(); break;
     case "matmul_transposed_R42": spirv = kernelMatmulTransposedReg4x2(); break;
     case "matmul_transposed_R42C": spirv = kernelMatmulTransposedReg4x2Coalesced(); break;
+    case "matmul_transposed_R42CK32": spirv = kernelMatmulTransposedReg4x2CoalescedK32(); break;
     case "matmul_transposed_a_R42": spirv = kernelMatmulTransposedAReg4x2(); break;
     case "matmul_transposed_a_R42C": spirv = kernelMatmulTransposedAReg4x2Coalesced(); break;
     case "add_inplace": spirv = kernelAddInplace(wgSize); break;

@@ -79,6 +79,8 @@ const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
   process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
 const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
   process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
+const ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 =
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 === "1";
 const ENABLE_MATMUL_TRANSPOSED_A_COALESCED =
   process.env.HELIOS_MATMUL_TRANSPOSED_A_COALESCED === "1";
 const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
@@ -1425,6 +1427,7 @@ export class HeliosBackend implements Backend {
   private _matmulTileDecisions = new Map<string, MatmulTileAutotuneDecision>();
   private _matmulReg2x2WarningEmitted = false;
   private _matmulReg4x2WarningEmitted = false;
+  private _matmulReg4x2K32WarningEmitted = false;
   private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
   private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
@@ -1555,6 +1558,18 @@ export class HeliosBackend implements Backend {
       console.warn(
         "[helios] HELIOS_MATMUL_REG4X2=1 requested, but this dispatch/device lacks " +
         "the current non-batched 128-invocation/4KiB-shared-memory contract; using another GEMM path",
+      );
+    }
+    return supported;
+  }
+
+  private shouldUseMatmulReg4x2K32(): boolean {
+    const supported = (this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0) >= 8192;
+    if (!supported && !this._matmulReg4x2K32WarningEmitted) {
+      this._matmulReg4x2K32WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32=1 requested, but " +
+        "the device exposes less than the candidate's 8KiB shared-memory contract; using R42C K16",
       );
     }
     return supported;
@@ -3808,8 +3823,15 @@ export class HeliosBackend implements Backend {
     const TILE = useReg4x2 || useReg2x2
       ? 32
       : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
+    const useReg4x2K32 =
+      useReg4x2 &&
+      ENABLE_MATMUL_TRANSPOSED_B_COALESCED &&
+      ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 &&
+      this.shouldUseMatmulReg4x2K32();
     const suffix = useReg4x2
-      ? ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R42C" : "_R42"
+      ? useReg4x2K32
+        ? "_R42CK32"
+        : ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R42C" : "_R42"
       : useReg2x2
         ? ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R2C" : "_R2"
         : TILE === 32 ? "_T32" : "";

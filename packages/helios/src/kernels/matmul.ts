@@ -1951,6 +1951,7 @@ function kernelMatmulReg4x2Impl(
   mode: RegisterBlockMode,
   coalescedTransposedB = false,
   coalescedTransposedA = false,
+  reductionTile: 16 | 32 = 16,
 ): Uint32Array {
   const WG_X = 16;
   const WG_Y = 8;
@@ -1967,10 +1968,12 @@ function kernelMatmulReg4x2Impl(
   const c16 = b.id(); b.constant(p.tU32, c16, 16);
   const c32 = b.id(); b.constant(p.tU32, c32, OUT_TILE);
   const c128 = b.id(); b.constant(p.tU32, c128, WG_X * WG_Y);
-  const c512 = b.id(); b.constant(p.tU32, c512, OUT_TILE * WG_X);
+  const cReductionTile = b.id(); b.constant(p.tU32, cReductionTile, reductionTile);
+  const sharedElements = OUT_TILE * reductionTile;
+  const cSharedElements = b.id(); b.constant(p.tU32, cSharedElements, sharedElements);
 
   const tSharedArray = b.id();
-  b.typeArray(tSharedArray, p.tF32, c512);
+  b.typeArray(tSharedArray, p.tF32, cSharedElements);
   const tPtrSharedArray = b.id();
   b.typePointer(tPtrSharedArray, StorageClass.Workgroup, tSharedArray);
   const tPtrSharedF32 = b.id();
@@ -2049,6 +2052,8 @@ function kernelMatmulReg4x2Impl(
 
   const ty16 = b.id(); b.emit(Op.IMul, [p.tU32, ty16, ty, c16]);
   const localLinear = b.id(); b.emit(Op.IAdd, [p.tU32, localLinear, ty16, tx]);
+  const tyReductionTile = b.id();
+  b.emit(Op.IMul, [p.tU32, tyReductionTile, ty, cReductionTile]);
 
   const loadA = (row: number, reductionCol: number): number => {
     const rowOk = b.id(); b.emit(Op.ULessThan, [p.tBool, rowOk, row, M]);
@@ -2112,14 +2117,16 @@ function kernelMatmulReg4x2Impl(
   if (mode === "transposed-a" && coalescedTransposedA) {
     // A is physically [K,M]. Map adjacent X invocations to adjacent M
     // elements for a fixed reduction row, then transpose the values into the
-    // shared [32,16] A tile consumed by the unchanged register block. Each
-    // 16x8 workgroup invocation loads two output rows x two reduction rows.
+    // shared [32,reductionTile] A tile consumed by the unchanged register
+    // block. Each 16x8 workgroup invocation loads two output rows across the
+    // complete reduction tile while preserving contiguous global M reads.
     for (let rowHalf = 0; rowHalf < 2; rowHalf++) {
       const rowOffset = b.id(); b.constant(p.tU32, rowOffset, rowHalf * WG_X);
       const tileRow = b.id(); b.emit(Op.IAdd, [p.tU32, tileRow, tx, rowOffset]);
       const globalRow = b.id(); b.emit(Op.IAdd, [p.tU32, globalRow, by32, tileRow]);
-      const sharedRowBase = b.id(); b.emit(Op.IMul, [p.tU32, sharedRowBase, tileRow, c16]);
-      for (let reductionHalf = 0; reductionHalf < 2; reductionHalf++) {
+      const sharedRowBase = b.id();
+      b.emit(Op.IMul, [p.tU32, sharedRowBase, tileRow, cReductionTile]);
+      for (let reductionHalf = 0; reductionHalf < reductionTile / WG_Y; reductionHalf++) {
         const reductionOffset = b.id();
         b.constant(p.tU32, reductionOffset, reductionHalf * WG_Y);
         const tileReduction = b.id();
@@ -2132,26 +2139,45 @@ function kernelMatmulReg4x2Impl(
       }
     }
   } else {
-    const aCol = b.id(); b.emit(Op.IAdd, [p.tU32, aCol, t, tx]);
     for (let r = 0; r < 4; r++) {
-      const sharedIndex = b.id();
-      const offset = b.id(); b.constant(p.tU32, offset, r * WG_X * WG_Y);
-      b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
-      storeShared(tileA, sharedIndex, loadA(rows[r], aCol));
+      const tileRowOffset = b.id(); b.constant(p.tU32, tileRowOffset, r * WG_Y);
+      const tileRow = b.id(); b.emit(Op.IAdd, [p.tU32, tileRow, ty, tileRowOffset]);
+      const sharedRowBase = b.id();
+      b.emit(Op.IMul, [p.tU32, sharedRowBase, tileRow, cReductionTile]);
+      for (let reductionHalf = 0; reductionHalf < reductionTile / WG_X; reductionHalf++) {
+        const reductionOffset = b.id();
+        b.constant(p.tU32, reductionOffset, reductionHalf * WG_X);
+        const tileReduction = b.id();
+        b.emit(Op.IAdd, [p.tU32, tileReduction, tx, reductionOffset]);
+        const globalReduction = b.id();
+        b.emit(Op.IAdd, [p.tU32, globalReduction, t, tileReduction]);
+        const sharedIndex = b.id();
+        b.emit(Op.IAdd, [p.tU32, sharedIndex, sharedRowBase, tileReduction]);
+        storeShared(tileA, sharedIndex, loadA(rows[r], globalReduction));
+      }
     }
   }
   if (mode === "transposed-b" && coalescedTransposedB) {
-    const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tx]);
-    const tx32 = b.id(); b.emit(Op.IMul, [p.tU32, tx32, tx, c32]);
-    for (let i = 0; i < 4; i++) {
-      const offset = b.id(); b.constant(p.tU32, offset, i * WG_Y);
-      const tileCol = b.id(); b.emit(Op.IAdd, [p.tU32, tileCol, ty, offset]);
-      const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
-      const sharedIndex = b.id(); b.emit(Op.IAdd, [p.tU32, sharedIndex, tx32, tileCol]);
-      storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+    for (let reductionHalf = 0; reductionHalf < reductionTile / WG_X; reductionHalf++) {
+      const reductionOffset = b.id();
+      b.constant(p.tU32, reductionOffset, reductionHalf * WG_X);
+      const tileReduction = b.id();
+      b.emit(Op.IAdd, [p.tU32, tileReduction, tx, reductionOffset]);
+      const reductionRow = b.id();
+      b.emit(Op.IAdd, [p.tU32, reductionRow, t, tileReduction]);
+      const sharedRowBase = b.id();
+      b.emit(Op.IMul, [p.tU32, sharedRowBase, tileReduction, c32]);
+      for (let i = 0; i < 4; i++) {
+        const offset = b.id(); b.constant(p.tU32, offset, i * WG_Y);
+        const tileCol = b.id(); b.emit(Op.IAdd, [p.tU32, tileCol, ty, offset]);
+        const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
+        const sharedIndex = b.id();
+        b.emit(Op.IAdd, [p.tU32, sharedIndex, sharedRowBase, tileCol]);
+        storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+      }
     }
   } else {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < sharedElements / (WG_X * WG_Y); i++) {
       const sharedIndex = b.id();
       const offset = b.id(); b.constant(p.tU32, offset, i * WG_X * WG_Y);
       b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
@@ -2171,13 +2197,14 @@ function kernelMatmulReg4x2Impl(
     b.emit(Op.Store, [acc, next]);
   };
 
-  for (let k = 0; k < WG_X; k++) {
+  for (let k = 0; k < reductionTile; k++) {
     const ck = b.id(); b.constant(p.tU32, ck, k);
     const aValues: number[] = [];
     for (let r = 0; r < 4; r++) {
       const rowBase = b.id();
-      const rowOffset = b.id(); b.constant(p.tU32, rowOffset, r * WG_Y * WG_X);
-      b.emit(Op.IAdd, [p.tU32, rowBase, ty16, rowOffset]);
+      const rowOffset = b.id();
+      b.constant(p.tU32, rowOffset, r * WG_Y * reductionTile);
+      b.emit(Op.IAdd, [p.tU32, rowBase, tyReductionTile, rowOffset]);
       const aIndex = b.id(); b.emit(Op.IAdd, [p.tU32, aIndex, rowBase, ck]);
       const ptr = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptr, tileA, aIndex]);
       const value = b.id(); b.emit(Op.Load, [p.tF32, value, ptr]);
@@ -2200,7 +2227,7 @@ function kernelMatmulReg4x2Impl(
   b.emit(Op.Branch, [loopContinue]);
   b.emit(Op.Label, [loopContinue]);
   const oldT = b.id(); b.emit(Op.Load, [p.tU32, oldT, varT]);
-  const nextT = b.id(); b.emit(Op.IAdd, [p.tU32, nextT, oldT, c16]);
+  const nextT = b.id(); b.emit(Op.IAdd, [p.tU32, nextT, oldT, cReductionTile]);
   b.emit(Op.Store, [varT, nextT]);
   b.emit(Op.Branch, [loopHead]);
   b.emit(Op.Label, [loopMerge]);
@@ -2244,6 +2271,19 @@ export function kernelMatmulTransposedReg4x2(): Uint32Array {
 
 export function kernelMatmulTransposedReg4x2Coalesced(): Uint32Array {
   return kernelMatmulReg4x2Impl("transposed-b", true);
+}
+
+/**
+ * Experimental R42C variant with an 8 KiB shared-memory footprint.
+ *
+ * A 32-wide K tile halves the number of load/barrier rounds relative to R42C
+ * while retaining the same 32x32 output tile and coalesced transposed-B loads.
+ * Dispatch remains opt-in until a physical-device A/B establishes whether the
+ * lower synchronization overhead outweighs the larger generated shader and
+ * shared-memory residency cost.
+ */
+export function kernelMatmulTransposedReg4x2CoalescedK32(): Uint32Array {
+  return kernelMatmulReg4x2Impl("transposed-b", true, false, 32);
 }
 
 export function kernelMatmulTransposedAReg4x2(): Uint32Array {
