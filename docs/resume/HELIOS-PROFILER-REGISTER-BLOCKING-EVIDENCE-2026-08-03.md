@@ -531,3 +531,60 @@ foundation contract. Complete evidence is at:
 
 Physical AMD performance remains open. The R42C shader is a portable correctness candidate, not an AMD speed
 claim.
+
+## 17. Selected coalesced transposed-A R42C mapping
+
+After Section 16, transposed-A remained the largest generic GEMM subfamily at approximately 337 milliseconds per
+exact step. Its A tensor is physically `[K,M]`, but the earlier loader made adjacent X invocations advance through
+K and therefore jump by the full M stride.
+
+R42C-A changes only the global-to-shared mapping. Adjacent X invocations now load adjacent M elements for a fixed
+reduction row; each 16 x 8 invocation loads two output rows by two reduction rows and writes them transposed into
+the unchanged shared `[32,16]` tile. Accumulation order, register ownership, output writes, and FP32 arithmetic are
+unchanged.
+
+### 17.1 Repeated exact control
+
+The hypothesis was tested with five timestamped one-step profiles from the same checkout:
+
+| Run | Transposed-A GPU time across 91 calls |
+|---|---:|
+| R42 control 1 | 336,395.8 us |
+| R42 control 2 | 338,954.0 us |
+| R42C-A candidate 1 | 290,239.8 us |
+| R42C-A candidate 2 | 292,475.6 us |
+| R42C-A candidate 3 | 291,701.2 us |
+
+Candidate median is 291,701.2 us, 13.6148% below the 337,674.9 us control midpoint. Every run produced identical
+displayed loss, gradient norm, and held-out loss. Unrelated kernels varied across timestamped processes, so the
+promotion decision was made on the uninstrumented comparison below rather than total profiled dispatch time.
+
+### 17.2 Candidate-first production comparison
+
+The candidate ran before the matched control to avoid attributing later device warm-up to the new loader. Warm
+steps 2-19 measured:
+
+| Statistic | R42 control | R42C-A candidate |
+|---|---:|---:|
+| Minimum | 6,818.9 | 6,940.0 |
+| p10 | 6,939.5 | 7,052.7 |
+| Median | 7,085.0 | 7,253.8 |
+| p90 | 7,300.4 | 7,360.2 |
+| Maximum | 7,337.4 | 7,367.8 |
+| Mean | 7,097.0 | 7,220.1 |
+
+Median gain is 2.3832%; candidate mean improves 1.7345%, and summed recorded step time improves 1.5420%. Loss is
+exact across all 20 steps. Maximum gradient-norm difference is `2.154e-8`; learning rate, clipping coefficient,
+and terminal held-out loss are exact.
+
+The awkward-shape RTX 4090 smoke passed with transposed-A maximum error `1.937e-7`, and Mesa llvmpipe passed at
+`1.788e-7`. The selected physical environment passed 29 test files / 283 tests / 0 failures. A clean detached
+checkout contract-only smoke binds commit `028e9b31524e6d89b2caee76dad2ae47b8896e03`, policy
+`layout-portfolio-r42c-r42ca-r2-v3`, and `HELIOS_MATMUL_TRANSPOSED_A_COALESCED=1`.
+
+Complete evidence and checksums are at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/
+
+At 7,253.8 tokens/s, the frozen foundation contract estimates to 74.37 device-hours or USD 51.31 at USD
+0.69/hour before overhead. Physical AMD performance remains an open measurement gate.

@@ -11,7 +11,7 @@ verified, a matched three-arm pilot selected peak learning rate `0.002`, and the
 training tokens. Symbiogenesis is disabled for this run. Do not describe the verified caches or LR pilot as a
 trained foundation model.
 
-Helios optimization now has four selected, numerically validated results. The exact per-dispatch Vulkan profiler
+Helios optimization now has five selected, numerically validated results. The exact per-dispatch Vulkan profiler
 first guided a portable 2 x 2 register-blocked GEMM that reduced one-step dispatch time by 36.9% and raised
 matched steady median throughput from the historical 3,579 to 4,513 tokens/s. Corrected physical-kernel labels
 then exposed 637 `scale_vec4x2` calls as autograd gradient copies rather than useful arithmetic. The tape now
@@ -36,6 +36,15 @@ time from 1,759,004.2 to 1,640,182.0 us (-6.75%). Its 18-warm-step p10/median/p9
 were `9.537e-7` and `3.681e-8`; terminal validation, learning rate, and clipping coefficients matched. The full
 physical suite again passed 29 files / 283 tests.
 
+The transposed-A path now has the matching physical-layout remap. R42C-A makes adjacent X invocations read
+contiguous M elements from physical `[K,M]` A and transposes only into the shared `[32,16]` tile. Across five
+matched exact profiles, the original R42 controls took 336,395.8 and 338,954.0 us while three R42C-A samples took
+290,239.8-292,475.6 us; candidate median is 13.61% below the control midpoint. In a conservative candidate-first
+20-step production comparison, warm median throughput rose from 7,085.0 to 7,253.8 tokens/s (+2.38%). Loss was
+exact across all steps and maximum gradient-norm drift was `2.154e-8`. The physical suite passed 29 files / 283
+tests. Selected source commit is `028e9b31524e6d89b2caee76dad2ae47b8896e03`; complete evidence is under
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`.
+
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
 `6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
 embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,
@@ -46,7 +55,8 @@ are engine gains, not behavioral model gains, so they have not triggered Discord
 publication.
 
 The register-blocked portfolio remains explicitly selected with `HELIOS_MATMUL_REG4X2=1`,
-`HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1`, `HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1`, and
+`HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1`, `HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1`,
+`HELIOS_MATMUL_TRANSPOSED_A_COALESCED=1`, and
 `HELIOS_MATMUL_REG2X2=1` while more devices are measured. R4x2 needs only
 ordinary scalar FP32 Vulkan compute, a 16 x 8 workgroup, 128 invocations, and 4 KiB of shared memory; the R2
 fallback needs a 16 x 16 workgroup and 256 invocations. Their awkward-dimension numerical smokes also pass Mesa llvmpipe. That is useful portability
@@ -55,9 +65,9 @@ only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-ne
 Instinct rentals that do not expose production Vulkan.
 
 The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle after
-the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 7,048.9
-tokens/s, the current full-token contract would take about 76.5 hours before validation/checkpoint overhead and
-cost about USD 52.80 at that price. This is materially better but still not the accepted engine endpoint. The
+the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 7,253.8
+tokens/s, the current full-token contract would take about 74.37 hours before validation/checkpoint overhead and
+cost about USD 51.31 at that price. This is materially better but still not the accepted engine endpoint. The
 next exact targets are a CODA-controlled GEMM-epilogue slice, correct reduced-precision matrix acceleration, a
 real attention-backward redesign, column-sum/reductions, transposes, and operation-graph quotienting. Finish the
 correctness-gated optimization/accelerator decision before starting the multi-day run.

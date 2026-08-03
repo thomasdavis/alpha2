@@ -3,7 +3,7 @@
 **Status:** active execution plan; exact profiler, portable IO-aware GEMM portfolio, and gradient-ownership forwarding validated, 2026-08-03
 **Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU
 **Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware
-**Immediate decision:** token caches are verified and four measured optimizations are selected; continue through the time-ranked graph and accelerator decision before beginning the multi-day Alpha foundation run
+**Immediate decision:** token caches are verified and five measured optimizations are selected; continue through the time-ranked graph and accelerator decision before beginning the multi-day Alpha foundation run
 
 **First implementation result:** the new 16 × 16-workgroup, 2 × 2-per-thread scalar-FP32 GEMM reduced exact graph dispatch time by 36.9% and raised matched steady median training throughput from 3,579 to 4,513 tokens/s (+26.1%) with an identical six-step printed trajectory. Full evidence, rejected measurements, and AMD limitations are in `HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md`.
 
@@ -32,6 +32,14 @@ us (-6.75%). Across 18 warm production steps it raised median throughput from 6,
 (+3.10%), with p10/p90 6,844.8 / 7,200.8. The full suite passed 29 files / 283 tests. Evidence is preserved at
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/`.
 
+**Fifth implementation result:** transposed-A profiling exposed the symmetric physical-layout problem in A.
+R42C-A coalesces adjacent M loads from physical `[K,M]` A and transposes into the unchanged shared tile. Three
+exact candidates measured 290,239.8-292,475.6 us across 91 calls versus controls at 336,395.8 and 338,954.0 us.
+In candidate-first/control-second production runs, warm median improved from 7,085.0 to 7,253.8 tokens/s
+(+2.38%), with exact loss and maximum gradient-norm drift `2.154e-8`. The full suite passed 29 files / 283 tests.
+Evidence is preserved at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`.
+
 **Rejected follow-up:** a portable vec4 RMSNorm column-sum kernel preserved the exact one-step trajectory but took
 `64,568.7 us` across 37 calls versus `59,631.3 us` for the scalar reference, about 8.3% slower. It was reverted.
 The failed candidate and an earlier invalid cooperative-path-confounded run are retained at
@@ -49,7 +57,7 @@ unrolling is ruled out for this exact head-dimension-64 graph.
 
 ## 1. Why this program exists
 
-The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected IO-aware-layout-plus-ownership recipe measures a sustained 18-warm-step median of 7,048.9 tokens/s, implying about 76.5 device-hours and USD 52.80 before validation/checkpoint overhead. These remain bounded estimates, not a completed full-run result.
+The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected IO-aware-layout-plus-ownership recipe measures a sustained 18-warm-step median of 7,253.8 tokens/s, implying about 74.37 device-hours and USD 51.31 before validation/checkpoint overhead. These remain bounded estimates, not a completed full-run result.
 
 That is a baseline, not an accepted final runtime. A prior synchronized Helios profile showed that backward computation consumes about 84% of forward-plus-backward wall time and that one ordinary step launches more than two thousand GPU operations. Optimizer and host overhead are small. The current opportunity is therefore algorithmic: fewer materialized intermediates, fewer reductions and transposes, fewer dispatches, more arithmetic intensity, better device-specific tiling, and correct reduced-precision matrix paths.
 
@@ -670,6 +678,9 @@ Existing evidence:
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-column-sum-vec4-rejected-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-flash-dkv-v2-rejected-20260803/`
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/`
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/`
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`
 
 New optimization evidence should be stored under:
 

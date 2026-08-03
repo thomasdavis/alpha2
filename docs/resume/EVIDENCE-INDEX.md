@@ -83,6 +83,23 @@ supersedes the prior policy with `layout-portfolio-r42c-r2-v2`, binding the coal
 selection. At the measured median, the frozen contract estimates to 76.5 device-hours or USD 52.80 at USD
 0.69/hour before overhead.
 
+### Coalesced transposed-A follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/
+
+R42C-A remaps physical `[K,M]` A loads so adjacent X invocations traverse contiguous M values and transpose only
+into the shared `[32,16]` tile. Two exact controls measured 336,395.8 and 338,954.0 us across 91 transposed-A
+calls; three candidates measured 290,239.8-292,475.6 us. Candidate median is 13.61% below the control midpoint.
+
+In a candidate-first 20-step production run followed by its control, warm median throughput rose from 7,085.0
+to 7,253.8 tokens/s (+2.38%). Loss was exact across all steps, maximum gradient-norm difference was `2.154e-8`,
+and terminal validation, learning rate, and clipping coefficients matched. The full RTX 4090 suite passed 29
+files / 283 tests. The launcher now binds `layout-portfolio-r42c-r42ca-r2-v3` at selected source commit
+`028e9b31524e6d89b2caee76dad2ae47b8896e03`. At the measured median, the frozen contract estimates to 74.37
+device-hours or USD 51.31 at USD 0.69/hour before overhead.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:
