@@ -109,15 +109,15 @@ mechanism on the operator-selected cheap device. All four arms exited cleanly,
 but twelve steps are not a stability promotion. Evidence is mounted at
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-3090-portfolio-20260803/`.
 
-**AOT prerequisite correction (RTX 3090 r3).** The earlier static-graph diagnosis
-was based on identical aggregate op counts. An opt-in ordered signature now hashes
-operation kind/kernel, buffer arity, write mask, dispatch groups, push size,
-shape, element count, and flush boundaries while excluding values and physical
-buffer handles. Eight batch-10 steps each had 1,703 ops and seven flushes—but
-all eight signatures differed. The graph is therefore histogram-stable, not yet
-proven topology-stable. A full per-operation trace and first-divergence analyzer
-are implemented; naïve replay is not promoted until the divergence is explained
-or canonicalized.
+**AOT prerequisite refined (RTX 3090 r3/r4).** The r3 ordered signature correctly
+showed that complete event streams differed, but r4 localized every first mismatch
+to a flush boundary. After removing flush events and their shifted order counters,
+all four traced steps contain the exact same ordered 1,703-operation sequence.
+The operation topology is static in this bounded batch-10 test; the flush schedule
+is dynamic because allocation pressure inserts waited submissions at different
+points. Replay therefore remains viable, but it must separate a compiled operation
+blueprint from allocator-dependent submission partitioning, or first replace the
+dynamic lifetime system with a deterministic arena plan.
 
 The cost model has also been widened beyond optimizing SGD as given. X17 in the
 mounted research tree reduces the task to behavioral construction, surveys 100
@@ -143,11 +143,10 @@ but each retains its own evidence and verdict. Current generated state is at
 
 3. **Helios appears host-bound and unoverlapped.** Only 5–7 command submissions
    and 1–3 waits per step, so the missing half is *not* submission overhead. The
-   step's aggregate op histogram is highly stable but ordered r3 signatures were
-   distinct on all eight measured steps; per-operation tracing is now locating
-   the divergence before any replay claim. The graph is still rebuilt in
-   TypeScript every iteration, with 687 allocator slab fallbacks per step. Step
-   time looks like `host_build + gpu_execute`, not `max(...)`.
+   step's operation topology is now directly observed as stable over the four r4
+   traces, although memory-pressure flush placement remains dynamic. The graph is
+   still rebuilt in TypeScript every iteration, with 687 allocator slab fallbacks
+   per step. Step time looks like `host_build + gpu_execute`, not `max(...)`.
    **This caps kernel-only work at roughly 2x** and explains why kernel swaps win
    2–4% while gradient-ownership forwarding — the one change that removed
    *operations* rather than kernel time — won 48.6%.

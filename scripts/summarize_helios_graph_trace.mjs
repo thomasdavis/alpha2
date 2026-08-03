@@ -52,12 +52,45 @@ const comparisons = rows.slice(1).map((row) => ({
   candidateSignature: row.graphSignature,
   ...firstDifference(reference.events, row.events),
 }));
+function operationEvents(row) {
+  return row.events
+    .filter((event) => event.event === "op")
+    .map(({ order: _order, ...operation }) => operation);
+}
+
+function flushSchedule(row) {
+  let completedOperations = 0;
+  const schedule = [];
+  for (const event of row.events) {
+    if (event.event === "op") {
+      completedOperations += 1;
+    } else if (event.event === "flush") {
+      schedule.push({
+        afterOperation: completedOperations,
+        operationCount: event.operationCount,
+        withWait: event.withWait,
+      });
+    }
+  }
+  return schedule;
+}
+
+const referenceOperations = operationEvents(reference);
+const operationComparisons = rows.slice(1).map((row) => ({
+  referenceStep: reference.step,
+  candidateStep: row.step,
+  ...firstDifference(referenceOperations, operationEvents(row)),
+}));
+const flushSchedules = rows.map((row) => ({ step: row.step, flushes: flushSchedule(row) }));
+const serializedReferenceFlushes = JSON.stringify(flushSchedules[0].flushes);
 const result = {
   schemaVersion: 1,
   tracePath,
   steps: rows.length,
   uniqueSignatures: [...new Set(rows.map((row) => row.graphSignature))],
-  exactTopologyStable: comparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
+  exactEventStreamStable: comparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
+  operationTopologyStable: operationComparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
+  flushScheduleStable: flushSchedules.every(({ flushes }) => JSON.stringify(flushes) === serializedReferenceFlushes),
   eventsPerStep: rows.map((row) => ({
     step: row.step,
     total: row.events.length,
@@ -65,6 +98,8 @@ const result = {
     flushes: row.events.filter((event) => event.event === "flush").length,
   })),
   comparisons,
+  operationComparisons,
+  flushSchedules,
 };
 
 if (jsonOutput) {
@@ -76,7 +111,9 @@ console.log("# Helios ordered graph-trace comparison\n");
 console.log(`Trace: \`${tracePath}\``);
 console.log(`Steps: ${result.steps}`);
 console.log(`Unique structural signatures: ${result.uniqueSignatures.length}`);
-console.log(`Exact ordered topology stable: **${result.exactTopologyStable ? "yes" : "no"}**\n`);
+console.log(`Exact event stream stable: **${result.exactEventStreamStable ? "yes" : "no"}**`);
+console.log(`Operation-only topology stable: **${result.operationTopologyStable ? "yes" : "no"}**`);
+console.log(`Flush schedule stable: **${result.flushScheduleStable ? "yes" : "no"}**\n`);
 console.log("| Reference | Candidate | First difference | Common prefix | Common suffix | Reference event | Candidate event |");
 console.log("|---:|---:|---:|---:|---:|---|---|");
 for (const comparison of comparisons) {
@@ -85,4 +122,11 @@ for (const comparison of comparisons) {
     `${comparison.commonPrefixEvents} | ${comparison.commonSuffixEvents} | ` +
     `\`${JSON.stringify(comparison.referenceEvent)}\` | \`${JSON.stringify(comparison.candidateEvent)}\` |`,
   );
+}
+console.log("\n## Flush schedules\n");
+console.log("| Step | Flush after operation | Operations in submitted batch | Waited |\n|---:|---:|---:|:---:|");
+for (const row of flushSchedules) {
+  for (const flush of row.flushes) {
+    console.log(`| ${row.step} | ${flush.afterOperation} | ${flush.operationCount} | ${flush.withWait ? "yes" : "no"} |`);
+  }
 }

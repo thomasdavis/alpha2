@@ -30,7 +30,9 @@ test("identical traces are reported as exact topology stability", () => {
     { step: 1, graphSignature: "aaaa", events: baseEvents },
     { step: 2, graphSignature: "aaaa", events: baseEvents },
   ]);
-  assert.equal(result.exactTopologyStable, true);
+  assert.equal(result.exactEventStreamStable, true);
+  assert.equal(result.operationTopologyStable, true);
+  assert.equal(result.flushScheduleStable, true);
   assert.equal(result.comparisons[0].firstDifferenceIndex, null);
   assert.equal(result.uniqueSignatures.length, 1);
 });
@@ -44,8 +46,32 @@ test("first changed operation is localized with common suffix", () => {
     { step: 1, graphSignature: "aaaa", events: baseEvents },
     { step: 2, graphSignature: "bbbb", events: changed },
   ]);
-  assert.equal(result.exactTopologyStable, false);
+  assert.equal(result.exactEventStreamStable, false);
+  assert.equal(result.operationTopologyStable, false);
   assert.equal(result.comparisons[0].firstDifferenceIndex, 0);
   assert.equal(result.comparisons[0].commonSuffixEvents, 1);
   assert.equal(result.comparisons[0].candidateEvent.kernel, "matmul_transposed_R42C");
+});
+
+test("dynamic flush placement does not falsely imply dynamic operation topology", () => {
+  const first = [
+    { event: "op", order: 0, kind: "matmul", kernel: "a", bufferCount: 3 },
+    { event: "op", order: 1, kind: "unary", kernel: "b", bufferCount: 2 },
+    { event: "flush", order: 2, operationCount: 2, withWait: true },
+  ];
+  const second = [
+    { event: "op", order: 0, kind: "matmul", kernel: "a", bufferCount: 3 },
+    { event: "flush", order: 1, operationCount: 1, withWait: true },
+    { event: "op", order: 2, kind: "unary", kernel: "b", bufferCount: 2 },
+    { event: "flush", order: 3, operationCount: 1, withWait: false },
+  ];
+  const result = run([
+    { step: 1, graphSignature: "aaaa", events: first },
+    { step: 2, graphSignature: "bbbb", events: second },
+  ]);
+  assert.equal(result.exactEventStreamStable, false);
+  assert.equal(result.operationTopologyStable, true);
+  assert.equal(result.flushScheduleStable, false);
+  assert.equal(result.operationComparisons[0].firstDifferenceIndex, null);
+  assert.deepEqual(result.flushSchedules[1].flushes.map((flush) => flush.afterOperation), [1, 2]);
 });
