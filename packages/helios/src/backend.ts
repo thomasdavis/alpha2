@@ -43,6 +43,11 @@ const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core 
 const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
 const LARGE_TILE_THRESHOLD_DEFAULT = 65_536; // prefer tile=32 once output plane reaches this size
 const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
+// The fixed-order embedding-gradient gather is bitwise deterministic but does
+// O(outputElements * tokenPositions) work. Keep it for bounded replay and
+// correctness workloads; production training retains the linear-work atomic
+// scatter. This is a work budget, not a model- or vendor-specific special case.
+const DETERMINISTIC_EMBEDDING_BACKWARD_MAX_WORK = 50_000_000;
 
 const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
 let WG_SIZE = 128;  // stable default on L4; can be overridden by env/auto-tuning
@@ -1839,7 +1844,11 @@ export class HeliosBackend implements Backend {
     // Record to compute graph — deferred execution
     graph.record({
       kind: "unary",
-      kernel: kernelName,
+      // Keep the profiler tied to the pipeline that actually executes.  The
+      // previous logical-op label collapsed scalar, vec4, and vec4x2 variants
+      // into one row, which made operation-level tuning impossible and could
+      // falsely attribute a regression to the whole scale family.
+      kernel: actualKernel,
       pipeline,
       inputBufs: [bufA],
       outputRegion: region,
@@ -3170,29 +3179,37 @@ export class HeliosBackend implements Backend {
       const bufIndices = ensureGpuRawBits(vk, indices);
       const bufGradOut = ensureGpu(vk, gradOutput);
 
-      // Allocate output via output pool and zero it on GPU (avoids CPU→GPU upload)
+      const useDeterministicGather = outputSize * nIdx <= DETERMINISTIC_EMBEDDING_BACKWARD_MAX_WORK;
+      const kernelName = useDeterministicGather
+        ? "embedding_backward_deterministic"
+        : "embedding_backward";
+
+      // The scatter path accumulates into a zeroed output. The deterministic
+      // gather writes every output element once and therefore needs no fill.
       const outByteSize = outputSize * 4;
       const region = acquireOutputRegion(vk, outByteSize);
-      vk.fillBuffer(region.handle, outByteSize, 0);
+      if (!useDeterministicGather) vk.fillBuffer(region.handle, outByteSize, 0);
 
-      // Dispatch the scatter-add kernel
-      const pipeline = getPipeline(vk, "embedding_backward", 3, 2 * 4);
-      const groups = Math.ceil(totalElements / WG_SIZE);
+      const pushSize = useDeterministicGather ? 3 * 4 : 2 * 4;
+      const pipeline = getPipeline(vk, kernelName, 3, pushSize);
+      const dispatchElements = useDeterministicGather ? outputSize : totalElements;
+      const groups = Math.ceil(dispatchElements / WG_SIZE);
 
-      const push = new Float32Array(2);
+      const push = new Float32Array(useDeterministicGather ? 3 : 2);
       const pushU = new Uint32Array(push.buffer);
-      push[0] = totalElements;  // float value for bounds check
+      push[0] = dispatchElements;  // float value for bounds check
       pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+      if (useDeterministicGather) pushU[2] = nIdx;
 
       graph.record({
         kind: "backward",
-        kernel: "embedding_backward",
+        kernel: kernelName,
         pipeline,
         inputBufs: [],
         outputRegion: region,
         groups: [groups, 1, 1],
         push,
-        pushSize: 2 * 4,
+        pushSize,
         shape: [vocabSize, dim],
         allBufs: [bufIndices, bufGradOut, region.handle],
       });

@@ -62,6 +62,7 @@ export {
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
   kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
+  kernelEmbeddingBackwardDeterministic,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
@@ -77,6 +78,7 @@ import {
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
   kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
+  kernelEmbeddingBackwardDeterministic,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
@@ -289,6 +291,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "ul_fwd_masked": spirv = kernelCrossEntropyForwardUnlikelihoodMasked(wgSize); break;
     case "ul_masked_backward": spirv = kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;
+    case "embedding_backward_deterministic": spirv = kernelEmbeddingBackwardDeterministic(wgSize); break;
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
     case "embedding_forward_vec4": spirv = kernelEmbeddingForwardVec4(wgSize); break;
     case "slice_2d": spirv = kernelSlice2D(wgSize); break;

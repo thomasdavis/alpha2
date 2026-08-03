@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
+import type { TensorData } from "@alpha/core";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu, checkpoint } from "@alpha/autograd";
+import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu, checkpoint, scale } from "@alpha/autograd";
 
 describe("Autograd", () => {
   const B = new CpuRefBackend();
@@ -23,6 +24,34 @@ describe("Autograd", () => {
     expect(a.grad).not.toBeNull();
     const ga = Array.from(a.grad!.data);
     expect(ga).toEqual([1, 1, 1]);
+  });
+
+  it("moves single-owner gradients and clones only genuine aliases", () => {
+    class CountingBackend extends CpuRefBackend {
+      cloneCalls = 0;
+      override clone(a: TensorData): TensorData {
+        this.cloneCalls++;
+        return super.clone(a);
+      }
+    }
+
+    const backend = new CountingBackend();
+    const tape = new Tape();
+    const ctx = { tape, backend };
+    const a = new Variable(backend.fromArray([1, 2, 3], [3]), true);
+    const b = new Variable(backend.fromArray([4, 5, 6], [3]), true);
+    const scaled = scale(ctx, add(ctx, a, b), 2);
+    const loss = sum(ctx, scaled);
+
+    tape.backward(loss, backend);
+
+    // sum and scale each have one gradient consumer, so their buffers move.
+    // add aliases its upstream gradient across two inputs: one clone remains
+    // necessary and the last consumer takes ownership of the original.
+    expect(backend.cloneCalls).toBe(1);
+    expect(a.grad).not.toBe(b.grad);
+    expect(Array.from(a.grad!.data)).toEqual([2, 2, 2]);
+    expect(Array.from(b.grad!.data)).toEqual([2, 2, 2]);
   });
 
   it("mul backward", () => {

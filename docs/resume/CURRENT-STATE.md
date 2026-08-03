@@ -6,13 +6,23 @@ The three-arm foundation learning-rate pilot is complete and selected peak learn
 train cache contains 2,058,181,632 verified tokens and the planned foundation contract consumes 1,941,995,520
 tokens over 79,020 steps. No full foundation run has begun and no new model checkpoint has been published.
 
-Helios now has exact per-dispatch Vulkan timestamp attribution. On the selected 97,098,880-parameter recipe,
-generic FP32 GEMMs consumed about 80.2% of measured dispatch time. A portable 16 x 16-workgroup, 2 x 2-output
-register-blocked GEMM reduced exact one-step dispatch time by 36.9% and generic-matmul time by 46.5%. Matched
-steady median throughput rose from the historical 3,579 to 4,513 tokens/s (+26.1%). The six-step loss,
-gradient-norm, clipping, learning-rate, and validation trajectory matched at trainer precision, and both the
-default and optimized paths passed 105 real NVIDIA parity/gradient tests. This is an engine improvement only;
-there is no new Discord sample, Hugging Face model, runtime, or BLAH version.
+Helios now has exact per-dispatch Vulkan timestamp attribution and two selected engine improvements. A portable
+16 x 16-workgroup, 2 x 2-output register-blocked GEMM first reduced exact one-step dispatch time by 36.9%,
+generic-matmul time by 46.5%, and raised matched steady median throughput from the historical 3,579 to 4,513
+tokens/s. Corrected physical-kernel labels then exposed 637 `scale_vec4x2` calls that were actually autograd
+gradient clones. Ownership-aware buffer forwarding clones only genuine aliases and moves the final consumer's
+buffer. On a same-source trace-on ablation it removed 728 operations and raised median throughput from 4,121.0
+to 6,123.2 tokens/s (+48.6%). A longer trace-off production run measured 18 warm steps at p10/median/p90
+6,432.6 / 6,567.7 / 6,666.5 tokens/s. Its median is +45.5% over the selected register-blocked baseline and
++83.5% over the historical recipe.
+
+Matched six-step losses and held-out validation loss are exact; the maximum gradient-norm difference was
+`6.913e-7`. An intermittent one-ulp replay difference from repeated-token embedding-gradient atomic order was
+fixed with a bounded fixed-order gather; the production model retains the efficient scatter. The replay case
+passed in 10 fresh GPU processes and the default-on ownership path passed the complete physical RTX 4090 suite:
+29 files and 283 tests, including operation/model gradients and 20/100-step training trajectories. A proposed four-query dKV unroll was
+also measured and rejected: it made dKV 74.7% slower and the full dispatch graph 15.6% slower. This is an engine
+improvement only; there is no new Discord sample, Hugging Face model, runtime, or BLAH version.
 
 The optimized kernel remains opt-in through `HELIOS_MATMUL_REG2X2=1` pending broader hardware evidence. Its
 scalar Vulkan contract is vendor-neutral and passes an awkward-shape compiler/numerical smoke through Mesa
@@ -20,9 +30,12 @@ llvmpipe, but physical AMD validation is still open. The current RunPod catalog 
 account, so Radeon Vulkan and Instinct ROCm/HIP validation require another provider or machine. The dedicated
 Alpha pod `wtupxv15debnvh` was live and idle at the audit; its state and USD 0.69/hour price are volatile.
 
-At 4,513 tokens/s the current token contract is about 119.5 hours before evaluation/checkpoint overhead, rather
-than the earlier roughly 158-hour estimate. Optimization continues against exact GPU time before the multi-day
-run. The next measured hotspots are flash-attention backward DKV, elementwise scale/fusion, and reductions. See
+At the sustained median 6,567.7 tokens/s the current 1,941,995,520-token contract is about 82.1 hours before
+evaluation/checkpoint overhead, or approximately USD 56.67 at the observed USD 0.69/hour price. Optimization
+continues against exact GPU time before the multi-day run. With naive dKV unrolling and clone-scale materialization
+now closed, the next measured targets are a CODA-controlled GEMM-epilogue slice, correct operation-specific
+low precision, real attention-backward redesign, column-sum/reductions, transposes, and deeper operation-graph
+quotienting. See
 `HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md` and
 `HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md`.
 

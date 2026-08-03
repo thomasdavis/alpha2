@@ -30,6 +30,25 @@ Implementation and executable checks:
 The odd-dimension test covers all three GEMM layouts at `M=113`, `N=157`, `K=93`; it passes on RTX 4090 and
 Mesa llvmpipe. Physical AMD validation remains open and is not implied by software Vulkan evidence.
 
+### Gradient-buffer ownership follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/
+
+Corrected profiler labels showed that 637 `scale_vec4x2` dispatches were autograd gradient clones. The selected
+ownership-aware tape transfers the final consumer's buffer and clones only true aliases. In the exact graph it
+removed 728 operations (2,431 to 1,703) and reduced dispatch time from 2,186,644.2 to 1,926,446.8 microseconds.
+A current-source, trace-on control toggled by `ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1` measured 4,121.0 tokens/s;
+the candidate measured 6,123.2 (+48.6%). The longer selected trace-off run measured 18 warm steps at
+p10/median/p90 6,432.6 / 6,567.7 / 6,666.5 tokens/s, with a minimum of 6,411.7 and maximum of 6,677.8. Matched
+losses and validation loss were exact and maximum gradient-norm difference was `6.913e-7`. A fixed-order bounded
+embedding-gradient gather closed an intermittent one-ulp atomic-order replay mismatch without replacing the fast
+production scatter; the case passed in 10 fresh GPU processes and the physical suite passed 29 files / 283 tests.
+
+The same evidence record preserves the rejected dKV V2 experiment: +74.7% dKV GPU time, +15.6% full-graph
+dispatch time, and -2.8% steady throughput. It is not selected.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

@@ -291,10 +291,10 @@ Local mounted-disk headroom is currently much lower than the older handbook snap
 3. Obtain physical AMD hardware from a provider that actually exposes Radeon Vulkan or implement the ROCm/HIP lowering for an available Instinct rental.
 4. Add the register-blocked family as a third autotuner candidate only after physical cross-device results; do not make it a universal hardcoded default from one NVIDIA device.
 5. Profile the new graph again and move to the next time-ranked operations:
-   - flash-attention backward DKV;
-   - scale/materialized unary graph;
+   - flash-attention backward DKV redesign (the simple V2 unroll is rejected below);
    - column-sum/reduction path;
-   - transposes and backward quotienting.
+   - transposes and deeper backward quotienting;
+   - broader ownership/liveness forwarding beyond the selected clone-scale case.
 6. Preserve one strong published baseline and one falsifiable Helios-specific hypothesis for every operation family.
 7. Freeze the fastest numerically valid one-GPU recipe, recalculate full-run time/cost, then resume Alpha foundation training and conversational post-training.
 
@@ -334,3 +334,81 @@ test files shared the process-global Vulkan singleton concurrently. The same cas
 serialized 105-test gate passed. The test configuration now serializes files because device destruction,
 allocator state, timelines, and pipeline caches are global. This removes a test-harness race rather than relaxing
 any numerical tolerance.
+
+## 14. Selected gradient-buffer ownership forwarding
+
+The unary profiler originally recorded the logical operation name instead of the physical pipeline name. After
+correcting that attribution, the selected graph reported 637 `scale_vec4x2` dispatches consuming 107,001.8
+microseconds. Source-level tracing established that these were primarily `clone()` calls from the autograd tape:
+when a variable received its first gradient, the tape multiplied the new tensor by `1.0` into a second buffer and
+then released the original.
+
+Helios now treats this as an ownership problem. Each backward entry counts aliases of its returned gradient
+tensors. Independent mutable consumers still receive clones, but the final consumer takes ownership of the
+original buffer. If that buffer is also the entry's output gradient, generic output-gradient cleanup defers to the
+new owner. The default path can be disabled for a matched ablation with
+`ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1`.
+
+### 14.1 Exact graph evidence
+
+| Metric | Clone control | Ownership forwarding | Change |
+|---|---:|---:|---:|
+| Recorded operations | 2,431 | 1,703 | -728 (-29.9%) |
+| Unary operations | 1,054 | 326 | -728 (-69.1%) |
+| Profiled flushes | 9 | 7 | -2 |
+| Exact dispatch time (us) | 2,186,644.2 | 1,926,446.8 | -11.9% |
+
+The candidate eliminates allocation, dispatch, barriers, and eventual release together. Downstream timings can
+also change because memory residency and allocator pressure change, so the full graph—not the 107-millisecond
+scale row alone—is the appropriate performance object.
+
+### 14.2 Matched throughput evidence
+
+| Path | Trace | Steps 2-5 tokens/s | Median |
+|---|---|---|---:|
+| Earlier register-blocked baseline | off | 4,512.4, 4,447.0, 4,541.0, 4,513.7 | 4,513.0 |
+| Same-source clone control | on | 4,119.7, 4,122.2, 4,143.3, 4,068.3 | 4,121.0 |
+| Ownership forwarding | on | 5,996.1, 6,050.9, 6,206.5, 6,195.5 | 6,123.2 |
+| Ownership forwarding production | off | 6,637.9, 6,617.1, 6,206.5, 6,577.5 | 6,597.3 |
+| Ownership forwarding sustained production | off | 18-step warm window: p10 6,432.6; p50 6,567.7; p90 6,666.5 | 6,567.7 |
+
+The causal trace-on comparison is +48.6%. The longer production run reports 18 warm steps rather than a
+four-step point estimate: minimum 6,411.7, p10 6,432.6, median 6,567.7, p90 6,666.5, maximum 6,677.8, and
+mean 6,559.3 tokens/s. Its median is +45.5% over the prior selected register-blocked path and +83.5% over
+the historical 3,579-token/s recipe. At this measured rate, the 1,941,995,520-token contract is approximately
+82.1 device-hours before evaluation and checkpoint overhead.
+
+### 14.3 Correctness and recovery
+
+- matched six-step losses are exactly equal;
+- held-out validation loss is exactly equal;
+- maximum gradient-norm difference is `6.913e-7`;
+- the local suite passes 27 files / 233 tests, with 50 physical-GPU gates skipped;
+- the RTX 4090 suite passes 29 files / 283 tests;
+- the formerly intermittent exact replay case passes in 10 fresh GPU processes and again in the full suite;
+- a focused ownership test proves a single-owner chain performs no clone and a two-way alias retains one clone;
+- no diagnostic checkpoint was written;
+- copied configs, metric ledgers, logs, summary, and hashes live under
+  `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/`.
+
+This is operation-graph quotienting at the autograd ownership boundary, not a claim to have invented buffer
+forwarding generally. The Helios contribution is the profiler-guided identification, explicit alias contract,
+same-source ablation, and full learning-trajectory gate inside the custom engine.
+
+### 14.4 Deterministic embedding-gradient replay
+
+One later full-suite execution exposed a `2.91e-11` replay difference at a repeated-token embedding-gradient
+element. The production scatter-add was race-free: it used a portable f32 compare-exchange loop. It was not
+bitwise deterministic because legal invocation orders changed the order of floating-point addition.
+
+Helios now has two explicit algorithms:
+
+- bounded correctness/replay shapes use a deterministic gather: one invocation owns one output weight element,
+  walks token positions in a fixed order, and writes exactly once;
+- production training shapes retain the O(number of token-gradient elements) CAS scatter rather than paying the
+  gather's O(vocabulary width x token positions) work.
+
+Selection depends on declared work, not vendor identity. The deterministic kernel needs ordinary Vulkan compute
+only and is valid for wave32 and wave64 devices. The previously failing test passed in ten separate GPU processes,
+then the complete serialized RTX 4090 suite passed 29 files / 283 tests. No epsilon was relaxed. The final suite
+output and current-source sustained run are archived in the mounted evidence directory.

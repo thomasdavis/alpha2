@@ -1,15 +1,24 @@
 # Helios optimization and AMD compatibility program
 
-**Status:** active execution plan; first exact profiler and portable GEMM optimization validated, 2026-08-03
+**Status:** active execution plan; exact profiler, portable GEMM, and gradient-ownership forwarding validated, 2026-08-03
 **Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU
 **Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware
-**Immediate decision:** token caches are verified and the first measured optimization is complete; finish default-path regression and accelerator selection before beginning the multi-day Alpha foundation run
+**Immediate decision:** token caches are verified and two measured optimizations are selected; continue through the time-ranked graph and accelerator decision before beginning the multi-day Alpha foundation run
 
 **First implementation result:** the new 16 × 16-workgroup, 2 × 2-per-thread scalar-FP32 GEMM reduced exact graph dispatch time by 36.9% and raised matched steady median training throughput from 3,579 to 4,513 tokens/s (+26.1%) with an identical six-step printed trajectory. Full evidence, rejected measurements, and AMD limitations are in `HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md`.
 
+**Second implementation result:** physical-kernel attribution exposed hundreds of identity-scale gradient clones.
+The autograd tape now moves a single-owner gradient buffer and clones only real aliases. It removed 728 operations
+from the measured graph. A same-source trace-on ablation improved from 4,121.0 to 6,123.2 tokens/s (+48.6%); the
+longer selected trace-off path measured p10/median/p90 of 6,432.6 / 6,567.7 / 6,666.5 tokens/s across 18 warm
+steps. Matched losses and validation loss were exact, maximum gradient-norm difference was `6.913e-7`, and the
+RTX 4090 suite passed 29 files / 283 tests. A separate fixed-order embedding-gradient kernel closed an intermittent
+one-ulp replay failure without slowing the production scatter path. The mounted evidence is
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/`.
+
 ## 1. Why this program exists
 
-The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. On the present RTX 4090 Vulkan implementation, the selected arm sustained about 3,410 tokens/s after warmup. A complete run at that measured rate would take about 158 hours and cost roughly USD 109 at the current USD 0.69/hour pod price.
+The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected GEMM-plus-ownership recipe measures 6,597.3 tokens/s, implying about 81.8 device-hours and USD 56.42 before validation/checkpoint overhead. These remain bounded estimates, not a sustained full-run result.
 
 That is a baseline, not an accepted final runtime. A prior synchronized Helios profile showed that backward computation consumes about 84% of forward-plus-backward wall time and that one ordinary step launches more than two thousand GPU operations. Optimizer and host overhead are small. The current opportunity is therefore algorithmic: fewer materialized intermediates, fewer reductions and transposes, fewer dispatches, more arithmetic intensity, better device-specific tiling, and correct reduced-precision matrix paths.
 
@@ -271,11 +280,14 @@ For every material operation family, the ledger must identify the strongest rele
 | FlashAttention 1/2 IO-aware exact tiling and work partitioning | Can the exact forward/backward algorithm be expressed efficiently in portable SPIR-V for both wave32 and wave64 without reproducing the old layout bug? |
 | FlashAttention-3 asynchronous pipelines, warp specialization, GEMM/softmax interleaving, block-scaled low precision | Which principles transfer to Vulkan cooperative matrices and AMD asynchronous facilities, and which are inseparable from Hopper TMA/WGMMA? |
 | FlashAttention-4 asymmetric pipeline co-design, software exponentials, larger tiles, and backward shared-memory/atomic reduction | Which bottleneck-shift ideas survive on scalar Vulkan, cooperative Vulkan, Radeon wave32, and Instinct wave64 when tensor throughput grows faster than non-matmul hardware? |
-| ThunderKittens tile, block, and grid-level abstractions | Can Helios introduce a small backend-neutral tile algebra that emits SPIR-V and HIP while keeping tensor layouts explicit and inspectable? |
+| CODA GEMM-plus-epilogue programs | Can Helios retain the selected GEMM mainloop while keeping residual, RMSNorm, SwiGLU, RoPE, cross-entropy partial reductions, and backward accumulation on chip instead of materializing hundreds of memory-bound operations? |
+| ThunderKittens / HipKittens tile, block, and grid-level abstractions | Can Helios introduce a small backend-neutral tile algebra that emits SPIR-V and HIP while keeping tensor layouts explicit and inspectable across NVIDIA and AMD? |
+| cuTile Rust ownership-safe tile kernels and asynchronous launch contracts | Can the ownership proof that removed gradient clones become a compile-time disjoint-tile and buffer-lifetime discipline for the future Helios IR rather than a collection of runtime conventions? |
 | Mirage multi-level superoptimization | Can Helios search algebraic, workgroup, and kernel-fusion transformations jointly over its own typed operation graph, with equivalence tests as the verifier? |
 | Cut Cross-Entropy on-the-fly classifier/loss computation | Does fusing the tied output projection, log-sum-exp, target logit, and backward remove a material logits allocation or HBM round-trip for Alpha's 12,288-token vocabulary? |
 | BF16 stochastic rounding and muNit/FP8 scaling | Can operation-specific unbiased rounding and principled scaling rescue Helios's previously incorrect broad mixed-precision path while preserving a fixed-token trajectory? |
 | AMD AITER and Composable Kernel portfolios | Which shape-specialized GEMM, attention, RMSNorm, and fusion policies should inform the HIP lowering without importing an opaque runtime as Helios itself? |
+| GEAK v4, Kernel-Smith, and harness-governed LLM kernel search | Can a retained population of compiled candidates plus profiler/correctness/trajectory feedback turn Codex-assisted optimization into a reproducible local improver, while certificates and physical measurements prevent reward hacking? |
 | Deep Kernel Fusion / megakernels | Which complete transformer forward/backward slices become faster when intermediates remain on-chip, and where do register pressure and lost occupancy make fusion harmful? |
 | Persistent kernels and on-device schedulers | Can repeated training-step subgraphs remain resident or device-scheduled without losing fairness, watchdog safety, checkpoint observability, or cross-vendor support? |
 | Communication-avoiding and recomputation algorithms | At one-GPU scale, which saved tensors should be recomputed to reduce HBM traffic and peak liveness rather than retained by conventional autograd? |
@@ -368,6 +380,32 @@ localized compiler/undefined-behavior investigation rather than an unexplained m
 
 This is not an assumption that performance transfers. The cross-vendor performance divergence becomes training
 data for H9, while semantics must remain equal. The control mutates and validates each backend independently.
+
+#### H13 — Epilogue residency synthesis
+
+Treat each high-cost GEMM not as a terminal operation but as an on-chip residency opportunity. Starting from the
+selected register-blocked mainloop, synthesize typed epilogue programs that may consume auxiliary tensors,
+transform accumulators, emit compact reduction state, and hand off a still-resident tile to the next semantic
+operation. Search the joint boundary between GEMM schedule, epilogue program, saved backward state, and later
+recomputation rather than greedily fusing whichever operations are adjacent.
+
+CODA is the nearest direct prior art and therefore the mandatory control. The proposed Helios difference is a
+cross-vendor SPIR-V/HIP lowering, integration with the backward quotient and liveness planner, and trajectory
+equivalence as a promotion constraint. The first falsifiable slice is selected from the exact Alpha graph—not a
+square toy GEMM—and must beat both unfused Helios and a direct CODA-style fixed epilogue at identical semantics.
+
+#### H14 — Evidence-distilled kernel scientist
+
+Every physical-device experiment becomes a structured episode: bottleneck evidence, proposed mechanism, source
+patch, compiler diagnostics, adversarial parity, resource measurements, trajectory result, and promotion or
+rejection. An agent retrieves the most relevant successful and failed episodes for a new shape/device, proposes
+a bounded candidate population, and updates a reusable transformation skill only from verified deltas.
+
+Kernel-Smith, GEAK, and current harness-engineering work already establish agentic/evolutionary kernel search;
+that is not the novelty claim. The Helios hypothesis is that preserved negative evidence, cross-backend
+differential execution, certificate-generated tests, and training-trajectory equivalence produce better useful
+candidates per physical-GPU minute than speed-only evolutionary search. A non-agentic autotuner and an agent
+without the retained evidence ledger are required controls.
 
 ### 6.14 Novelty discipline
 
@@ -492,11 +530,12 @@ The operator may select raw time, cost, or broader Helios research value. The ev
 
 Expected starting targets, subject to the new profile:
 
-1. elementwise expression/gradient fusion;
-2. subgroup-portable hierarchical reductions;
-3. fused norm and gated-MLP backward paths;
-4. layout-aware backward matmuls with fewer transposes;
-5. exact fused masked cross-entropy backward.
+1. prototype one CODA-controlled GEMM epilogue on an exact Alpha shape;
+2. elementwise expression/gradient fusion;
+3. subgroup-portable hierarchical reductions;
+4. fused norm and gated-MLP backward paths;
+5. layout-aware backward matmuls with fewer transposes;
+6. exact fused masked cross-entropy backward.
 
 Each lands separately with parity and end-to-end evidence.
 
@@ -557,7 +596,9 @@ Primary sources guiding the first implementation pass:
 - [FlashAttention-2](https://arxiv.org/abs/2307.08691): improve work partitioning and sequence parallelism rather than assuming the first tiled mapping is optimal.
 - [FlashAttention-3](https://arxiv.org/abs/2407.08608): study asynchronous overlap, GEMM/softmax interleaving, and block-scaled low precision while separating Hopper-specific mechanisms from portable principles.
 - [FlashAttention-4](https://arxiv.org/abs/2603.05451): account for asymmetric hardware scaling, non-matmul bottlenecks, software exponential/rescaling, larger asynchronous tiles, and reduced shared-memory/atomic traffic in backward.
+- [CODA](https://arxiv.org/abs/2605.19269): use GEMM-plus-epilogue programs as the direct control for keeping Transformer residual, normalization, activation, RoPE, loss, and backward work on chip.
 - [ThunderKittens](https://arxiv.org/abs/2410.20399): study a compact hierarchy of tile, block, and grid primitives as inspiration for a cross-backend Helios kernel algebra.
+- [Fearless Concurrency on the GPU](https://arxiv.org/abs/2606.15991): study ownership-safe disjoint tiles and asynchronous launch contracts as prior art for a future Rust-first Helios kernel IR.
 - [Mirage](https://arxiv.org/abs/2405.05751): study multi-level algebra/schedule/kernel superoptimization with explicit verification.
 - [Cut Cross-Entropy](https://arxiv.org/abs/2411.09009): test an on-the-fly tied classifier/loss path rather than materializing the complete token-by-vocabulary logits matrix.
 - [Stochastic Rounding for LLM Training](https://arxiv.org/abs/2502.20566): evaluate unbiased low-precision rounding as a trajectory-level intervention, not a local cast benchmark.
@@ -567,6 +608,9 @@ Primary sources guiding the first implementation pass:
 - [Dr. Kernel](https://arxiv.org/abs/2602.05885): use profiling-based rejection and reward-hacking controls when an LLM proposes kernels.
 - [GPU Forecasters](https://arxiv.org/abs/2605.31464): treat selective performance prediction as prior-art for H9; the physical device remains the final authority.
 - [ROCm AITER optimization guide](https://rocm.docs.amd.com/en/docs-7.2.4/how-to/rocm-for-ai/inference-optimization/vllm-optimization.html): inventory AMD's current fused attention, GEMM, RMSNorm, and online-tuning portfolio for the HIP backend.
+- [AMD GEAK v4](https://www.amd.com/en/developer/resources/technical-articles/2026/geak-v4.html): treat current agentic AMD kernel optimization as an engineering baseline, including its real-device feedback loop.
+- [Kernel-Smith](https://arxiv.org/abs/2603.28342): use retained executable populations and structured execution feedback as the nearest evolutionary-agent control for H14.
+- [Harness Engineering for LLM-Driven GPU Kernel Generation](https://arxiv.org/abs/2607.17979): separate the correctness/timing/archive harness from the agent controller, and prefer expert/evidence-assisted proposals over unconstrained full-agent search.
 - [Composable Kernel MI300 block GEMM](https://rocm.docs.amd.com/projects/composable_kernel/en/latest/conceptual/ck_tile/hardware/gemm_optimization.html): use LDS, MFMA, occupancy, and shape-tuning guidance as the Instinct baseline.
 - [Vulkan cooperative matrices](https://github.khronos.org/Vulkan-Site/tutorial/latest/Advanced_Vulkan_Compute/09_Specialized_Math/02_cooperative_matrices.html): enumerate implementation-supported shapes; Vulkan 1.4 exposure does not make any fixed tile universal.
 - [Vulkan maximal reconvergence](https://github.khronos.org/Vulkan-Site/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html): make divergent subgroup behavior explicit before relying on portable tangled operations.

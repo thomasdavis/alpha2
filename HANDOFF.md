@@ -11,14 +11,24 @@ verified, a matched three-arm pilot selected peak learning rate `0.002`, and the
 training tokens. Symbiogenesis is disabled for this run. Do not describe the verified caches or LR pilot as a
 trained foundation model.
 
-Helios optimization now has its first measured, numerically validated result. An exact per-dispatch Vulkan GPU
-timestamp profiler showed that generic FP32 GEMMs consumed about 80.2% of the selected recipe's measured
-dispatch time. A new portable 2 x 2 register-blocked GEMM family reduced exact one-step dispatch time from
-3,216,809.1 to 2,030,423.3 microseconds (-36.9%), reduced generic-matmul time by 46.5%, and raised matched
-steady median throughput from the historical 3,579 to 4,513 tokens/s (+26.1%). The complete six-step loss,
-gradient-norm, clipping, learning-rate, and validation trajectory matched at trainer precision. Both the default
-and register-blocked paths passed the 105-test NVIDIA parity/gradient suite. This is an engine gain, not a
-behavioral model gain, so it has not triggered Discord, Hugging Face, or BLAH publication.
+Helios optimization now has two selected, numerically validated results. The exact per-dispatch Vulkan profiler
+first guided a portable 2 x 2 register-blocked GEMM that reduced one-step dispatch time by 36.9% and raised
+matched steady median throughput from the historical 3,579 to 4,513 tokens/s. Corrected physical-kernel labels
+then exposed 637 `scale_vec4x2` calls as autograd gradient copies rather than useful arithmetic. The tape now
+moves the final consumer's gradient buffer and clones only genuine aliases. A same-source trace-on control is
+available with `ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1`; it measured 4,121.0 tokens/s versus 6,123.2 with ownership
+forwarding (+48.6%). A longer trace-off production run measured 18 warm steps at p10/median/p90 6,432.6 /
+6,567.7 / 6,666.5 tokens/s. Its median is +45.5% over the prior register-blocked baseline and +83.5% over the
+historical path.
+
+Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
+`6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
+embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,
+while real training retains the fast scatter. The failing case passed in 10 fresh GPU processes and the
+default-on path then passed all 29 physical-GPU test files and 283 tests. A simple four-query dKV
+unroll was separately rejected after making dKV 74.7% slower and the complete dispatch graph 15.6% slower. These
+are engine gains, not behavioral model gains, so they have not triggered Discord, Hugging Face, or BLAH
+publication.
 
 The register-blocked path remains explicitly selected with `HELIOS_MATMUL_REG2X2=1` while more devices are
 measured. It needs only ordinary scalar FP32 Vulkan compute, a 16 x 16 workgroup, 256 invocations, and 4 KiB of
@@ -27,11 +37,12 @@ evidence but **not** physical AMD proof. The current RunPod catalog visible to t
 only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-neutral HIP/ROCm lowering for
 Instinct rentals that do not expose production Vulkan.
 
-The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle at
-the 2026-08-03 audit; pod state and price are volatile and must be rechecked. At the measured 4,513 tokens/s,
-the current full-token contract would take about 119.5 hours before validation/checkpoint overhead and cost
-about USD 82.45 at that price. This is materially better but still not the accepted engine endpoint. The next
-exact hotspots are flash-attention backward DKV, elementwise scale/fusion, and reductions. Finish the
+The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle after
+the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 6,567.7
+tokens/s, the current full-token contract would take about 82.1 hours before validation/checkpoint overhead and
+cost about USD 56.67 at that price. This is materially better but still not the accepted engine endpoint. The
+next exact targets are a CODA-controlled GEMM-epilogue slice, correct reduced-precision matrix acceleration, a
+real attention-backward redesign, column-sum/reductions, transposes, and operation-graph quotienting. Finish the
 correctness-gated optimization/accelerator decision before starting the multi-day run.
 
 Read these first:

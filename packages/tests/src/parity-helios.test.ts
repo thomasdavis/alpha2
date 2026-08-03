@@ -214,13 +214,14 @@ describeGpu("per-op forward parity", () => {
     assertClose("embedding", f32(g), f32(c), FWD_REL_TOL, FWD_ABS_TOL);
 
     const gradValues = rnd(52, 6 * 8, -1, 1);
-    const grad = gpu.fromArray(gradValues, [6, 8]);
-    const backward = gpu.embeddingBackward!(indices, grad, 12);
+    const backward = gpu.embeddingBackward!(indices, gpu.fromArray(gradValues, [6, 8]), 12);
+    const replay = gpu.embeddingBackward!(indices, gpu.fromArray(gradValues, [6, 8]), 12);
     const reference = new Float32Array(12 * 8);
     for (let row = 0; row < indexValues.length; row++) {
       for (let d = 0; d < 8; d++) reference[indexValues[row] * 8 + d] += gradValues[row * 8 + d];
     }
     assertClose("embeddingBackward", f32(backward), reference, FWD_REL_TOL, FWD_ABS_TOL);
+    expect(Array.from(f32(replay))).toEqual(Array.from(f32(backward)));
   });
 
   it("softCap cap=30 [64]", () => {

@@ -6538,6 +6538,150 @@ export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
 }
 
 /**
+ * Deterministic embedding backward for bounded workloads.
+ *
+ * The scatter-add kernel above is the efficient production path, but repeated
+ * token IDs can reach a weight element in different orders.  Because f32
+ * addition is not associative, a portable CAS loop is race-free without being
+ * bitwise deterministic.  This gather formulation assigns exactly one shader
+ * invocation to each output weight element and visits source positions in a
+ * fixed order.  It needs no atomics and writes every output element exactly
+ * once.
+ *
+ * Work is O(vocabSize * dim * nIdx), so the backend selects it only for bounded
+ * correctness/replay workloads.  Large training shapes retain the O(nIdx *
+ * dim) atomic scatter path.
+ *
+ * Bindings: 0=indices (i32 as f32 bits, in), 1=gradOutput (f32, in),
+ * 2=gradWeight (f32, out)
+ * Push: [outputElements (as f32), dim (as f32 bits of u32),
+ *        nIdx (as f32 bits of u32)]
+ */
+export function kernelEmbeddingBackwardDeterministic(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufIndices = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufGradOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufGradW = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const varSample = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varSample, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const outputElementsF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, outputElementsF, gidX, labelEnd);
+
+  const ptrPcDim = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcDim, pc.varId, p.const1u]);
+  const dimF = b.id();
+  b.emit(Op.Load, [p.tF32, dimF, ptrPcDim]);
+  const dimU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, dimU, dimF]);
+
+  const ptrPcNIdx = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcNIdx, pc.varId, p.const2u]);
+  const nIdxF = b.id();
+  b.emit(Op.Load, [p.tF32, nIdxF, ptrPcNIdx]);
+  const nIdxU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, nIdxU, nIdxF]);
+
+  const vocabRow = b.id();
+  b.emit(Op.UDiv, [p.tU32, vocabRow, gidX, dimU]);
+  const dimIdx = b.id();
+  b.emit(Op.UMod, [p.tU32, dimIdx, gidX, dimU]);
+
+  b.emit(Op.Store, [varSample, p.const0u]);
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  const labelLoopHead = b.id();
+  const labelLoopBody = b.id();
+  const labelLoopContinue = b.id();
+  const labelLoopMerge = b.id();
+  b.emit(Op.Branch, [labelLoopHead]);
+  b.emit(Op.Label, [labelLoopHead]);
+  const sample = b.id();
+  b.emit(Op.Load, [p.tU32, sample, varSample]);
+  const sampleInRange = b.id();
+  b.emit(Op.ULessThan, [p.tBool, sampleInRange, sample, nIdxU]);
+  b.emit(Op.LoopMerge, [labelLoopMerge, labelLoopContinue, 0]);
+  b.emit(Op.BranchConditional, [sampleInRange, labelLoopBody, labelLoopMerge]);
+
+  b.emit(Op.Label, [labelLoopBody]);
+  const ptrIdx = b.id();
+  b.emit(Op.AccessChain, [bufIndices.tPtrF32, ptrIdx, bufIndices.varId, p.const0u, sample]);
+  const idxF = b.id();
+  b.emit(Op.Load, [p.tF32, idxF, ptrIdx]);
+  const idxU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, idxU, idxF]);
+  const rowMatches = b.id();
+  b.emit(Op.IEqual, [p.tBool, rowMatches, idxU, vocabRow]);
+
+  const labelMatch = b.id();
+  const labelAfterMatch = b.id();
+  b.emit(Op.SelectionMerge, [labelAfterMatch, 0]);
+  b.emit(Op.BranchConditional, [rowMatches, labelMatch, labelAfterMatch]);
+
+  b.emit(Op.Label, [labelMatch]);
+  const sampleOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, sampleOffset, sample, dimU]);
+  const gradOffset = b.id();
+  b.emit(Op.IAdd, [p.tU32, gradOffset, sampleOffset, dimIdx]);
+  const ptrGrad = b.id();
+  b.emit(Op.AccessChain, [bufGradOut.tPtrF32, ptrGrad, bufGradOut.varId, p.const0u, gradOffset]);
+  const gradValue = b.id();
+  b.emit(Op.Load, [p.tF32, gradValue, ptrGrad]);
+  const acc = b.id();
+  b.emit(Op.Load, [p.tF32, acc, varAcc]);
+  const updatedAcc = b.id();
+  b.emit(Op.FAdd, [p.tF32, updatedAcc, acc, gradValue]);
+  b.emit(Op.Store, [varAcc, updatedAcc]);
+  b.emit(Op.Branch, [labelAfterMatch]);
+
+  b.emit(Op.Label, [labelAfterMatch]);
+  b.emit(Op.Branch, [labelLoopContinue]);
+  b.emit(Op.Label, [labelLoopContinue]);
+  const nextSample = b.id();
+  b.emit(Op.IAdd, [p.tU32, nextSample, sample, p.const1u]);
+  b.emit(Op.Store, [varSample, nextSample]);
+  b.emit(Op.Branch, [labelLoopHead]);
+
+  b.emit(Op.Label, [labelLoopMerge]);
+  const result = b.id();
+  b.emit(Op.Load, [p.tF32, result, varAcc]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufGradW.tPtrF32, ptrOut, bufGradW.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrOut, result]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+/**
  * GPU embedding forward: out[gid] = weight[indices[gid / dim] * dim + gid % dim]
  *
  * Bindings: 0=weight (f32), 1=indices (i32 as f32 bits), 2=output (f32)
