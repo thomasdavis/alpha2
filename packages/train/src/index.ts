@@ -21,8 +21,10 @@ export {
 } from "./hf_export.js";
 export { sample } from "./sample.js";
 export {
-  repairTerminalValidationMetric, train, shouldEvaluateStep, validateCheckpointModelCompatibility,
-  type TrainerDeps, type StepMetrics,
+  assessHeliosTrainingDevice, gpuVendorName, repairTerminalValidationMetric, train,
+  shouldEvaluateStep, validateCheckpointModelCompatibility,
+  type TrainerDeps, type StepMetrics, type HeliosTrainingDeviceAssessment,
+  type HeliosTrainingDeviceCapabilities,
 } from "./trainer.js";
 export { evaluate, type EvalResult } from "./eval.js";
 export {

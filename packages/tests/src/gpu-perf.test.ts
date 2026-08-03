@@ -10,31 +10,31 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { HeliosBackend, destroyDevice, getDeviceInfo } from "@alpha/helios";
 import { CpuRefBackend } from "@alpha/tensor";
+import { assessHeliosTrainingDevice } from "@alpha/train";
 
-// Skip the whole suite unless a real NVIDIA GPU is present (vendorId 0x10de).
-// Software Vulkan (llvmpipe) initializes but rejects the coop-matmul pipelines
-// these tests exercise, so anything else — including no Vulkan at all — skips.
-let hasNvidiaGpu = false;
+// Skip unless a physical Vulkan GPU satisfies the current Helios kernel
+// capability contract. This intentionally admits AMD RDNA wave32 devices.
+let hasSupportedGpu = false;
 try {
-  hasNvidiaGpu = getDeviceInfo().vendorId === 0x10de;
+  hasSupportedGpu = assessHeliosTrainingDevice(getDeviceInfo()).supported;
 } catch {
-  hasNvidiaGpu = false;
+  hasSupportedGpu = false;
 }
-if (!hasNvidiaGpu) {
-  console.log("[gpu-perf] no NVIDIA GPU detected — suite skipped");
+if (!hasSupportedGpu) {
+  console.log("[gpu-perf] no capability-compatible physical GPU detected — suite skipped");
 }
 
-const gpu = hasNvidiaGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
+const gpu = hasSupportedGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
 const cpu = new CpuRefBackend();
 
 // Force GPU dispatch for small tensors in tests
-if (hasNvidiaGpu) gpu.setMinGpuSize(1);
+if (hasSupportedGpu) gpu.setMinGpuSize(1);
 
 afterAll(() => {
-  if (hasNvidiaGpu) destroyDevice();
+  if (hasSupportedGpu) destroyDevice();
 });
 
-const describeGpu = describe.skipIf(!hasNvidiaGpu);
+const describeGpu = describe.skipIf(!hasSupportedGpu);
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 

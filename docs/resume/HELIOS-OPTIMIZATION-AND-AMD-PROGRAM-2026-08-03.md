@@ -1,0 +1,568 @@
+# Helios optimization and AMD compatibility program
+
+**Status:** active execution plan, 2026-08-03  
+**Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU  
+**Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware  
+**Immediate decision:** do not begin the multi-day Alpha foundation run until the current token caches are verified and the first measured Helios optimization/accelerator bake-off is complete
+
+## 1. Why this program exists
+
+The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. On the present RTX 4090 Vulkan implementation, the selected arm sustained about 3,410 tokens/s after warmup. A complete run at that measured rate would take about 158 hours and cost roughly USD 109 at the current USD 0.69/hour pod price.
+
+That is a baseline, not an accepted final runtime. A prior synchronized Helios profile showed that backward computation consumes about 84% of forward-plus-backward wall time and that one ordinary step launches more than two thousand GPU operations. Optimizer and host overhead are small. The current opportunity is therefore algorithmic: fewer materialized intermediates, fewer reductions and transposes, fewer dispatches, more arithmetic intensity, better device-specific tiling, and correct reduced-precision matrix paths.
+
+AMD compatibility is required even if the first Alpha run ultimately remains on NVIDIA. Helios already uses a cross-vendor API, SPIR-V, and a mostly portable kernel generator, but the current trainer rejects every non-NVIDIA device and several kernels silently assume a 32-lane subgroup. Those assumptions must become explicit capabilities, portable algorithms, or selected device-specialized variants.
+
+This document is not permission to trade away mathematical correctness for attractive throughput. Every optimized path retains a portable reference path and must be checked against it. There is deliberately no arbitrary performance threshold: end-to-end measurements and tokens per dollar decide which path is useful.
+
+## 2. Boundaries and non-goals
+
+This program serves the Alpha model; it does not replace the model objective with an engine benchmark.
+
+- Alpha must become conversationally effective, not merely nonempty or low-loss.
+- The foundation run, distillation, chat post-training, and untouched behavioral selection remain required after engine work.
+- Helios remains the native tensor/autograd engine. It is not replaced with PyTorch, CUDA, or ROCm libraries merely to report a familiar benchmark.
+- Vendor-specific fast paths are welcome, but every one is behind capability discovery and has a correct portable fallback.
+- AMD support means more than deleting the trainer guard. Unsupported subgroup, matrix, device-generated-command, memory, or precision behavior must be detected before training.
+- The current full run remains paused. Accelerator-independent tokenization may finish because it is reusable on every device.
+- Discord receives model samples only after a genuine same-prompt behavioral improvement. Kernel speedups are recorded in repository evidence, not presented as model improvement.
+- New checkpoints are published as new versions on Hugging Face and blah.dev only after honest behavioral gains.
+
+## 3. Frozen evidence at the start of optimization
+
+### 3.1 Foundation candidate
+
+| Field | Value |
+|---|---:|
+| Parameters | 97,098,880 |
+| Planned tokens | 1,941,995,520 |
+| Optimizer steps | 79,020 |
+| Block size | 1,024 |
+| Batch size | 24 |
+| Selected peak learning rate | 0.002 |
+| Minimum learning rate | 0.0002 |
+| Warmup steps | 790 |
+| Evaluation interval | 500 |
+| Checkpoint interval | 1,000 |
+| Symbiogenesis | disabled |
+| Contract source revision | `f394159d1259f4b1447c411a17afdea481bcdce2` |
+
+The learning-rate pilot completed 384 steps and 9,437,184 tokens per arm. All three arms passed checkpoint, allocator, source, and metric-contract validation. The selected `0.002` arm had a final-three validation-loss mean of `6.010144432385762`, compared with `6.045725544293721` for `0.001` and `6.30454417069753` for `0.003`.
+
+### 3.2 Measured engine profile
+
+The synchronized 60M audit is the best current operation-level evidence:
+
+- baseline throughput: about 5,334 tokens/s for that smaller benchmark;
+- forward: about 502 ms;
+- backward: about 2,683 ms;
+- gradient norm: about 15 ms;
+- AdamW: about 2 ms;
+- ordinary step: 2,162 GPU operations;
+- dominant operation families: unary 938, reductions 459, matmuls 259, binary 161, backward nodes 116, optimizer 114, in-place operations 81, layer normalization 33, softmax 1;
+- dominant named kernels: scale 680, sum-reduce 231, strided sum-of-squares 162, transpose 128, AdamW step 114, add 113.
+
+The evidence says to optimize the backward graph and memory traffic first. Optimizer micro-optimization cannot materially rescue this run.
+
+### 3.3 Existing failed shortcuts
+
+Several tempting settings were already tested and must not be rediscovered as folklore:
+
+- larger workgroups were slower on the measured NVIDIA workload;
+- block size 512 produced only a small throughput change and would alter the product/training contract;
+- an earlier cooperative forward path was numerically wrong or non-finite;
+- earlier mixed-precision paths were wrong, slower, or out of memory;
+- increasing allocator-pool size alone did not materially improve throughput.
+
+These are diagnoses of specific implementations, not proof that cooperative matrix or mixed-precision algorithms are inherently unsuitable. Their numerical and liveness defects should be repaired under controlled tests.
+
+## 4. AMD means two backend tracks
+
+### 4.1 Vulkan AMD: Radeon and Radeon Pro
+
+This is the nearest compatibility target because it preserves the present native backend. AMD documents current Linux Radeon families with Mesa Vulkan support. AMD's architecture tables describe RDNA2/RDNA3 Radeon devices as 32-lane wavefront machines, which aligns with some existing Helios kernels, but Helios must query rather than infer that property from a vendor ID.
+
+The Vulkan AMD track will:
+
+1. enumerate Vulkan version, device type, memory heaps, subgroup size and supported subgroup stages/operations;
+2. query `VK_EXT_subgroup_size_control`, its minimum/maximum subgroup sizes, and required-subgroup-size stages;
+3. expose cooperative-matrix shapes, scalar types, scopes, and accumulation types rather than a single boolean;
+4. expose buffer-device-address, push-descriptor, timeline-semaphore, device-generated-command, memory-budget, and timestamp capabilities;
+5. admit a device on capability and smoke-test evidence, not vendor name;
+6. select subgroup-agnostic kernels unless a required size has been requested and validated;
+7. use Mesa RADV as the primary Linux Vulkan target, while recording driver ID and version in every benchmark;
+8. add AMD telemetry through sysfs/DRM and, where available, `rocm-smi` or `amd-smi`, without making telemetry a training dependency.
+
+### 4.2 ROCm/HIP AMD: Instinct accelerators
+
+AMD Instinct MI300X is a CDNA3 compute accelerator with a documented 64-lane wavefront. AMD's official support and tuning material is centered on ROCm/HIP. It must not be assumed to expose a production Vulkan device merely because Radeon does.
+
+If an available Instinct rental cannot initialize the Vulkan backend, Helios will gain a second native lowering target rather than pretending the device is unsupported forever:
+
+- preserve the Helios tensor, operation, autograd, graph, allocator, checkpoint, and model APIs;
+- introduce a backend-neutral operation/kernel intermediate representation where current SPIR-V construction is too tightly coupled;
+- lower the same operation contracts to SPIR-V/Vulkan and HIP/ROCm;
+- use HIP libraries only as optional leaf implementations behind Helios operation semantics, not as a replacement model runtime;
+- share golden operation fixtures and model-step parity tests across both lowerings;
+- specialize wave64 reductions and matrix tiles for CDNA while retaining the portable algorithm;
+- fingerprint compiler, ROCm, driver, firmware, device architecture, and kernel variant in benchmark artifacts.
+
+This is a larger engineering program than Vulkan-on-Radeon. It is nevertheless part of the compatibility goal because it opens the AMD data-center market instead of limiting “AMD support” to consumer graphics devices.
+
+## 5. Device capability model
+
+The current `GpuDeviceInfo` is too shallow. It reports a device name, vendor ID, a few booleans, and one cooperative-matrix shape. Replace it with a versioned capability record containing at least:
+
+- API/backend and API version;
+- vendor ID, device ID, device type, driver ID, driver name, driver version;
+- total and budgeted device-local memory;
+- maximum workgroup invocations and per-axis dimensions;
+- maximum shared/workgroup memory;
+- subgroup size, supported stages, supported operations, quad operations, and subgroup-size-control range;
+- shader float16/int8/float64 capabilities and storage/buffer precision features;
+- timestamp support and period;
+- buffer device address, push descriptors, descriptor limits, timeline semaphores, synchronization version;
+- cooperative-matrix feature set and every usable matrix shape/type/scope tuple;
+- device-generated-command feature/property set;
+- memory-budget and memory-priority support;
+- a stable capability fingerprint.
+
+Training admission becomes a report with three outcomes:
+
+- **supported:** required operation suite and model-step smoke tests pass;
+- **degraded:** correct portable path works, but one or more optional accelerators are unavailable;
+- **unsupported:** a named required capability or correctness test fails.
+
+No device is rejected merely for being AMD, Intel, or unknown. No device is accepted merely because its vendor is NVIDIA.
+
+## 6. Operation-by-operation research program
+
+Helios needs an inventory that maps every model operation to its forward kernel, backward construction, materialized intermediates, dispatch count, bytes moved, arithmetic work, supported dtypes, device requirements, and parity coverage. “Optimize all operations” means every row is measured and assigned one of: retain, fuse, specialize, replace, or retire.
+
+### 6.1 Elementwise and broadcast operations
+
+Current scale/add/unary dispatch counts suggest excess graph fragmentation.
+
+Research and implementation candidates:
+
+- lazy expression fusion over pure elementwise subgraphs;
+- generated multi-output epilogues so residual writes, bias, activation, dropout-disabled identity, and scaling can share a traversal;
+- vector-width selection from alignment and device capabilities;
+- destination aliasing when liveness proves the input dead;
+- direct gradient accumulation into an existing buffer where dependencies allow;
+- specialization constants rather than compiling nearly identical shaders;
+- fusion profitability based on measured memory traffic and register pressure, not operation count alone.
+
+### 6.2 Reductions
+
+Reductions are a major source of dispatch and memory traffic.
+
+Research and implementation candidates:
+
+- subgroup-size-agnostic reductions using SPIR-V subgroup built-ins;
+- hierarchical reductions parameterized by the queried subgroup size;
+- online/one-pass algorithms for mean, variance, max, sum, sum-of-squares, and log-sum-exp;
+- fused reduction plus normalization/writeback;
+- persistent multi-row reductions where workload shape permits;
+- two-stage reduction only when a single workgroup cannot cover the logical row efficiently;
+- wave32 and wave64 variants selected by capabilities and benchmark evidence;
+- deterministic modes where atomic ordering would materially change validation.
+
+### 6.3 LayerNorm and RMSNorm
+
+- use numerically stable one-pass statistics where validated;
+- fuse residual addition and normalization when the graph exposes that pattern;
+- fuse backward statistics and input-gradient writeback;
+- avoid materializing repeated scale, centered input, and inverse-standard-deviation tensors when a compact saved state is sufficient;
+- compare recomputation with saved activations according to bytes, flops, and live-memory pressure.
+
+### 6.4 Activations and gated MLPs
+
+- fuse SwiGLU/GeGLU forward halves and output multiplication;
+- implement a single backward kernel that consumes the saved or recomputed gate state and writes both input gradients;
+- fuse bias and residual epilogues where present;
+- benchmark approximation variants only if the exact model contract permits them—never silently change the activation.
+
+### 6.5 Matrix multiplication
+
+Matmul is computationally central even though graph fragmentation dominates dispatch count.
+
+- maintain a portable tiled f32 implementation;
+- enumerate device-reported cooperative-matrix shapes rather than assuming NVIDIA tiles;
+- support f16/bf16 input with f32 accumulation and f32 master weights;
+- repair overflow/underflow through explicit scaling and validate full model-step trajectories;
+- autotune tile shape, register tiling, split-K, workgroup shape, double buffering, transposition strategy, and epilogues by exact matrix-shape families;
+- cache autotuning by capability fingerprint and kernel revision;
+- remove redundant physical transposes through layout-aware matmul variants;
+- fuse gradient accumulation and bias reduction into backward matmul epilogues where safe;
+- compare dense, cooperative, and vendor-specialized paths end to end, not only on square microbenchmarks.
+
+### 6.6 Attention
+
+The current portable attention path and cooperative experimental paths need separate correctness and performance treatment.
+
+- retain an exact reference implementation;
+- implement IO-aware tiled forward and backward paths based on the principles of FlashAttention and FlashAttention-2;
+- specialize work partitioning for head dimension, sequence length, subgroup size, and on-chip memory;
+- avoid storing the full attention matrix when exact recomputation is cheaper;
+- combine causal masking, scale, row max, exponential sum, normalization, and value accumulation in the tiled algorithm;
+- validate layout/token parity aggressively because a prior flash-attention layout scramble existed in this repository;
+- keep NVIDIA `VK_NV_cooperative_matrix2` as an optional NVIDIA-only experiment, never the portable definition;
+- explore KHR cooperative matrices on devices that report suitable shapes;
+- build native wave32 and wave64 scalar/subgroup variants when cooperative matrices are absent.
+
+### 6.7 Embedding, gather, scatter, and cross-entropy
+
+- coalesce embedding gathers and tied-output access;
+- fuse masked cross-entropy log-sum-exp, target-logit extraction, loss reduction, and gradient production;
+- preserve the proven binding parity that caught the earlier swapped masked-cross-entropy kernels;
+- use sparse/indexed gradient accumulation only where it is faster and numerically equivalent for the vocabulary shape;
+- benchmark atomics against sorted/segmented reductions per device.
+
+### 6.8 Optimizer and gradient norm
+
+These are currently small portions of wall time, so work follows higher-yield graph changes.
+
+- combine finite check, norm accumulation, clipping scale, and optimizer update where dependency structure permits;
+- batch parameter tensors into fewer launches using stable metadata tables;
+- preserve f32 optimizer state and checkpoint exactness;
+- avoid optimizing AdamW in isolation unless a new profile shows it has become material after other fusions.
+
+### 6.9 Graph execution and device-generated commands
+
+The Khronos device-generated-command specification warns that trivial single-command uses may be slower than ordinary indirect dispatch. Helios will therefore measure DGC rather than treating it as automatically beneficial.
+
+- timestamp and count every dispatch and barrier;
+- construct repeatable static training-step command rails;
+- use DGC for sequences where device-side selection or reduced host work is measurable;
+- compare preprocessed and implicit preprocessing modes;
+- retain ordinary command-buffer and indirect-dispatch paths;
+- collapse barriers using precise read/write dependency information;
+- consider persistent graph executors only after watchdog, fairness, and portability implications are understood.
+
+### 6.10 Memory allocation and liveness
+
+- replace opportunistic pool growth with a static or semi-static liveness plan for the repeated training graph;
+- reuse memory across non-overlapping activations and gradients;
+- separate long-lived parameters/optimizer state from step arenas and temporary workspaces;
+- exploit buffer device address only when available;
+- record peak live bytes by operation and graph phase;
+- validate aliasing with poisoned-buffer and delayed-use tests;
+- overlap checkpoint transfer/compression only after compute correctness and memory headroom are proven.
+
+### 6.11 Token and data path
+
+Pretokenized immutable shards remove tokenizer work from the training loop. Remaining work is lower priority because synchronized measurements show GPU computation dominates.
+
+- asynchronous shard reads and pinned/staged batches;
+- deterministic shuffle/replay metadata;
+- double-buffered upload where host-device transfer is visible;
+- checkpoint writes outside the critical path when memory and durability permit;
+- exact token accounting and cache fingerprints independent of accelerator.
+
+### 6.12 State-of-the-art adoption lane
+
+For every material operation family, the ledger must identify the strongest relevant published technique and explain whether Helios adopts it, adapts it, or rejects it on measured grounds. The initial adoption map is:
+
+| Research idea | Helios adaptation question |
+|---|---|
+| FlashAttention 1/2 IO-aware exact tiling and work partitioning | Can the exact forward/backward algorithm be expressed efficiently in portable SPIR-V for both wave32 and wave64 without reproducing the old layout bug? |
+| FlashAttention-3 asynchronous pipelines, warp specialization, GEMM/softmax interleaving, block-scaled low precision | Which principles transfer to Vulkan cooperative matrices and AMD asynchronous facilities, and which are inseparable from Hopper TMA/WGMMA? |
+| ThunderKittens tile, block, and grid-level abstractions | Can Helios introduce a small backend-neutral tile algebra that emits SPIR-V and HIP while keeping tensor layouts explicit and inspectable? |
+| Mirage multi-level superoptimization | Can Helios search algebraic, workgroup, and kernel-fusion transformations jointly over its own typed operation graph, with equivalence tests as the verifier? |
+| Deep Kernel Fusion / megakernels | Which complete transformer forward/backward slices become faster when intermediates remain on-chip, and where do register pressure and lost occupancy make fusion harmful? |
+| Persistent kernels and on-device schedulers | Can repeated training-step subgraphs remain resident or device-scheduled without losing fairness, watchdog safety, checkpoint observability, or cross-vendor support? |
+| Communication-avoiding and recomputation algorithms | At one-GPU scale, which saved tensors should be recomputed to reduce HBM traffic and peak liveness rather than retained by conventional autograd? |
+| Automated shape-specific scheduling | Can a capability-fingerprinted portfolio beat one global tile/workgroup choice across Alpha's actual matrix and reduction shape ecology? |
+
+“State of the art” is established by current primary literature plus reproducible comparison. A CUDA-specific paper is a source of algorithms, not permission to call an unmeasured Vulkan imitation equivalent.
+
+### 6.13 Original Helios research hypotheses
+
+Helios should also try ideas that are not merely ports. These are hypotheses, not pre-announced successes. Each receives a reference implementation, counterfactual control, and a retirement record if it loses.
+
+#### H1 — Kernel ecology and cross-device evolutionary search
+
+Represent a kernel family as a typed genome containing algorithm, tile geometry, subgroup policy, vector width, staging depth, memory layout, fusion boundary, precision policy, and dispatch strategy. Generate legal mutations from device capabilities; reject candidates through operation and trajectory parity; select on a Pareto frontier of latency, throughput, memory, compilation cost, dollars/token, and portability.
+
+Unlike ordinary autotuning over a fixed template, mutations may change the algorithm and fusion boundary. A winning Radeon wave32 genome can seed—but never dictate—the search on NVIDIA or CDNA wave64. The ledger preserves every candidate and failure so the system learns which transformations transfer between architectures.
+
+#### H2 — Backward quotient compiler
+
+Canonical autograd expands a compact forward expression into many repeated scales, reductions, broadcasts, transposes, and additions. Construct an algebraic quotient graph that identifies gradient expressions equivalent under associativity, distributivity, broadcasting, and layout transforms. Emit one fused producer for shared subexpressions and accumulate gradients at the latest safe point.
+
+The falsifiable claim is not “fusion helps.” It is that quotienting the backward graph eliminates a measurable fraction of the 680 scale, 459 reduction, and 128 transpose operations without changing the deterministic update trajectory beyond declared numerical tolerance.
+
+#### H3 — Sensitivity-budgeted precision cartography
+
+Instead of one global mixed-precision switch, estimate each operation family's output/gradient sensitivity using directional derivatives, calibration trajectories, dynamic range, and downstream amplification. Allocate a bounded numerical-error budget across the graph. Select f32, f16, bf16, block-scaled low precision, or recomputation per operation and shape, with f32 master state and automatic fallback when the observed budget is exceeded.
+
+This is especially relevant to the earlier Helios result where a broad mixed-precision mode was wrong. The hypothesis is that precision should follow measured sensitivity topology, not tensor category alone.
+
+#### H4 — Temporal memory coloring with recomputation edges
+
+Treat storage planning as a weighted interval-coloring problem over the repeated forward/backward graph, extended with optional recomputation edges. Jointly choose aliasing, layout, workspace, and recomputation so that peak live bytes and HBM traffic are optimized together. Feed actual timestamp and byte measurements back into the plan after each compiled graph revision.
+
+The control is the current allocator plus conventional activation retention. Poisoned-region tests and exact delayed-use fixtures detect illegal aliases.
+
+#### H5 — Subgroup-polyvariant kernel algebra
+
+Generate the same semantic kernel from subgroup-neutral primitives, then specialize into wave32, wave64, and explicitly required subgroup variants. Use subgroup built-ins rather than deriving lanes from local IDs. Make cross-subgroup combination depend on the runtime-reported subgroup count. Cooperative-matrix tiles are separate capability-selected leaves, not assumptions embedded in semantic code.
+
+The research question is whether one inspectable algebra can approach vendor-specific performance across NVIDIA and AMD without a forked library of unrelated kernels.
+
+#### H6 — Semantic training megakernels
+
+Fuse at model-semantic boundaries rather than arbitrary adjacent operators: residual-plus-norm-plus-projection, gated-MLP backward, attention backward, masked-loss backward, or gradient-check-plus-clip-plus-update. A semantic megakernel knows which intermediates are needed for exact backward and can keep them in registers/shared memory or recompute them deliberately.
+
+Compare against both unfused Helios and surface-level elementwise fusion. This tests whether knowledge of transformer/autograd structure produces benefits beyond generic compiler fusion.
+
+#### H7 — Counterfactual roofline profiler
+
+Augment measured timestamps with executable counterfactuals: estimate and then test what happens if one materialization, transpose, barrier, or dispatch boundary disappears. Rank changes by expected end-to-end gain, uncertainty, and implementation cost. Update the estimator from every landed or rejected optimization.
+
+This creates a closed research loop where profiling proposes falsifiable interventions rather than producing a static flame graph.
+
+#### H8 — Verified on-device graph evolution
+
+Use device-generated commands or a persistent scheduler to choose among prevalidated kernel variants from runtime shape, memory-pressure, and numerical-state signals. The device may select only from an immutable signed/hashed portfolio whose members already passed parity. It cannot synthesize unverified shader code during a training run.
+
+The experiment compares host-selected static graphs, host autotuning, and device-selected portfolios at identical semantics. This is particularly interesting where Vulkan dispatch overhead and repeated optimizer/autograd structure dominate.
+
+#### H9 — Cross-vendor performance transfer model
+
+Learn which kernel and graph features predict performance from the accumulated benchmark ledger, while retaining active exploration on each new capability fingerprint. The model recommends the first benchmark population for an unseen device; direct measurement remains authority.
+
+The useful result would be faster convergence to good AMD configurations from NVIDIA history without assuming equal subgroup, cache, register, or matrix hardware.
+
+#### H10 — Trajectory equivalence as a compiler objective
+
+Most kernel systems validate isolated outputs. Helios will make short deterministic training-trajectory agreement a first-class compiler/search constraint. Candidate transforms are ranked not only by local error but by their effect on loss, gradient direction, parameter update, and checkpoint continuation across several steps.
+
+This may reject locally plausible fast kernels that systematically bias training, and may identify operation-specific error patterns that ordinary max-absolute-error tests miss.
+
+### 6.14 Novelty discipline
+
+Every original hypothesis receives:
+
+- a dated claim statement before implementation;
+- nearest known prior art and the exact proposed difference;
+- a control implementation using identical model/data tokens;
+- operation, block, model-step, and trajectory correctness evidence as applicable;
+- synchronized end-to-end measurements;
+- negative and null results preserved in the ledger;
+- no “novel” label in public claims until a bounded prior-art audit and empirical result support it.
+
+This keeps creative work ambitious without turning Alpha's compute budget into undiagnosable experimentation.
+
+## 7. Profiler and evidence format
+
+Optimization without device timestamps is guesswork. Add an opt-in profiler that records:
+
+- CPU record/submit/wait time;
+- GPU timestamps for every dispatch or bounded dispatch group;
+- kernel stable ID, source revision, specialization constants, workgroup shape, grid shape, dtype, input/output shapes;
+- bytes read/written and estimated arithmetic operations where derivable;
+- barriers and dependency reason;
+- allocations, aliases, temporary workspace, and peak live memory;
+- forward/backward/optimizer phase and autograd node;
+- device capability fingerprint, driver, price snapshot, and environment;
+- warmup-excluded p10, median, p90, and dispersion;
+- operation count and percentage of end-to-end step wall time.
+
+The profiler must be bounded and optionally sample only selected steps so it does not become the default runtime. Its JSON output will feed a generated Markdown/CSV operation ledger. Every optimization proposal must point at a measured row; every completed change must attach before/after parity and performance evidence.
+
+## 8. Validation ladder
+
+Each new kernel or graph rewrite moves through the same ladder:
+
+1. **Shader/build validation:** SPIR-V validation and extension/capability declaration.
+2. **Operation fixtures:** adversarial shapes, non-contiguous/layout variants, short/long reductions, masked positions, special values, and multiple dtypes.
+3. **Finite difference:** forward/backward agreement where autograd is involved.
+4. **Reference parity:** outputs and gradients against the retained portable implementation.
+5. **Composed block parity:** complete transformer block forward and backward.
+6. **Model-step parity:** loss, gradients, norm, update, and checkpoint after one and several deterministic steps.
+7. **Short trajectory:** fixed-token training trajectory, allocator health, non-finite checks, and loss comparison.
+8. **End-to-end throughput:** only after correctness, with warmup and synchronized timestamps.
+9. **Cross-device replay:** identical fixture corpus and model contract on NVIDIA and AMD.
+
+Tolerance is operation- and dtype-specific and reported, not hidden behind a single permissive epsilon. Fast reduced-precision paths must also report checkpoint trajectory behavior because a one-step close result can still diverge during training.
+
+## 9. Accelerator bake-off
+
+### 9.1 Workload
+
+Every candidate device runs the same frozen sequence:
+
+- Helios operation conformance suite;
+- complete transformer-block forward/backward fixtures;
+- 97M candidate memory preflight;
+- synchronized fixed-step training benchmark on the same pretokenized shard windows;
+- a bounded trajectory long enough to expose compilation, allocator, thermal, and stability behavior;
+- checkpoint save/load and continuation parity.
+
+The comparison records tokens/s, tokens/USD, peak memory, power/thermal telemetry when available, failures, and which fast paths were actually active.
+
+### 9.2 Current RunPod price snapshot
+
+The live price snapshot observed on 2026-08-03 includes the following single-GPU rates. Prices and availability can change, so the benchmark artifact records the price actually offered at provisioning time.
+
+| GPU | USD/hour | Throughput needed to match the current 4090 dollars/token |
+|---|---:|---:|
+| RTX 4090 | 0.69 | 3,564 tok/s baseline |
+| RTX 5090 | 0.99 | 5,113 tok/s |
+| L40S | 0.99 | 5,113 tok/s |
+| RTX 6000 Ada | 0.84 | 4,339 tok/s |
+| A40 | 0.44 | 2,272 tok/s |
+| A6000 | 0.53 | 2,738 tok/s |
+| A100 PCIe | 1.39 | 7,181 tok/s |
+| A100 SXM | 1.49 | 7,698 tok/s |
+| H100 SXM | 2.99 | 15,447 tok/s |
+| MI300X, last official RunPod price found | 3.99 | 20,614 tok/s |
+
+The break-even values are arithmetic, not forecasts. A cheaper A40 or A6000 could win dollars/token while losing raw throughput; a 5090 could win both if the implementation exploits it; an H100 or MI300X is poor value unless Helios reaches substantially higher utilization. Live `runpodctl gpu list` currently exposes no AMD type for this account, so Radeon/Instinct benchmarking may require another provider or a temporarily attached test machine.
+
+### 9.3 Decision record
+
+The selected device/backend contract reports:
+
+- fastest correct end-to-end configuration;
+- cheapest correct tokens per dollar;
+- expected full-run time and cost with confidence interval;
+- memory headroom and checkpoint footprint;
+- active kernel variants and capabilities;
+- exact code, driver, model, tokenizer, and data fingerprints;
+- any portability or numerical limitations.
+
+The operator may select raw time, cost, or broader Helios research value. The evidence remains even when a device loses.
+
+## 10. Execution order
+
+### Phase O0 — preserve reusable work
+
+1. Finish and verify the three active pretokenization caches.
+2. Record token counts, cache hashes, elapsed time, and tokenizer fingerprint.
+3. Keep the complete Alpha full-run contract paused.
+
+### Phase O1 — capability truth
+
+1. Expand native Vulkan physical-device/property queries.
+2. Replace the NVIDIA trainer rejection with capability-based admission.
+3. Add a human-readable and JSON device report.
+4. Add subgroup-agnostic implementations or explicit required-size selection for every existing hard-coded subgroup kernel.
+5. Disable NVIDIA-only cooperative-matrix2 automatically outside its declared capability.
+6. Prove the ordinary NVIDIA path is unchanged.
+
+### Phase O2 — profiler and operation ledger
+
+1. Add bounded per-dispatch GPU timestamps and graph metadata.
+2. Reproduce the 97M benchmark on the current 4090.
+3. Generate a complete operation ranking.
+4. Select optimization work from measured cumulative wall time.
+
+### Phase O3 — first high-yield portable rewrite
+
+Expected starting targets, subject to the new profile:
+
+1. elementwise expression/gradient fusion;
+2. subgroup-portable hierarchical reductions;
+3. fused norm and gated-MLP backward paths;
+4. layout-aware backward matmuls with fewer transposes;
+5. exact fused masked cross-entropy backward.
+
+Each lands separately with parity and end-to-end evidence.
+
+### Phase O4 — matrix and attention research paths
+
+1. repair f16/bf16 cooperative matmul with f32 accumulation;
+2. enumerate/autotune cooperative shapes per device;
+3. implement and validate portable IO-aware attention forward/backward;
+4. retain device-specialized NVIDIA and AMD variants behind capability checks.
+
+### Phase O5 — AMD proof
+
+1. run build/device/conformance tests on a Linux RDNA2/RDNA3 Vulkan device;
+2. run a complete deterministic training step and short trajectory;
+3. benchmark and record the Radeon result;
+4. provision an Instinct device when available and test Vulkan truthfully;
+5. if Vulkan is absent or unsuitable, begin the shared-IR HIP/ROCm lowering and prove the first operation slice before expanding it.
+
+### Phase O6 — hardware bake-off and frozen launch
+
+1. compare the optimized 4090 against credible NVIDIA rentals and any available AMD device;
+2. choose the one-GPU contract from correct end-to-end evidence;
+3. update the immutable full-run contract with backend/device fingerprints;
+4. launch the foundation run;
+5. monitor real token progress, VRAM, host pressure, checkpoint validity, and training health.
+
+### Phase O7 — finish Alpha
+
+1. select foundation checkpoints without opening sealed chat evaluation;
+2. distill and post-train for response initiation, semantic contingency, stable stopping, length control, and natural dialogue;
+3. evaluate on the baseline-eligible frozen prompt set and untouched final suite only under its selection contract;
+4. publish only a behavioral winner to a new Hugging Face and blah.dev version;
+5. generate and validate the matching Jacobian Lens artifacts after the exact published checkpoint is immutable.
+
+## 11. Storage, recoverability, and cost control
+
+The operator asked for a pause if this work creates more than roughly 15 GiB of new retained project data. Track new profiler traces, binaries, comparison checkpoints, and benchmark outputs explicitly. Raw transient build caches do not become research claims, but evidence required to reproduce a decision is retained on `/mnt/donto-data`.
+
+- preserve source and artifact hashes;
+- compress losslessly where practical;
+- delete a remote checkpoint only after local recovery verification;
+- keep benchmark traces bounded by sampled steps;
+- avoid duplicating the same immutable caches per device;
+- terminate idle rental devices promptly after evidence is copied and verified;
+- never sacrifice the selected Alpha checkpoint or tokenizer lineage to save space.
+
+## 12. Research sources and implementation implications
+
+Primary sources guiding the first implementation pass:
+
+- [Vulkan subgroup-size control](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_subgroup_size_control.html): query and, where supported, request subgroup size instead of assuming 32.
+- [Vulkan subgroup properties](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDeviceSubgroupProperties.html): record native size, stages, and operations.
+- [Vulkan device-generated commands](https://docs.vulkan.org/spec/latest/chapters/device_generated_commands/generatedcommands.html): use DGC only where sequence-level measurement justifies its preprocessing and execution overhead.
+- [AMD accelerator and GPU architecture specifications](https://rocm.docs.amd.com/en/docs-6.1.5/reference/gpu-arch-specs.html): RDNA wave32 and CDNA wave64 require genuinely different reduction and tiling assumptions.
+- [AMD Radeon Software for Linux 25.10.2 notes](https://www.amd.com/en/resources/support-articles/release-notes/RN-AMDGPU-UNIFIED-LINUX-25-10-2.html): Mesa Vulkan is the forward Linux Radeon target.
+- [AMD ROCm system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-6.1.5/reference/system-requirements.html): Instinct and Radeon compute support is a ROCm compatibility question separate from Vulkan graphics support.
+- [FlashAttention](https://arxiv.org/abs/2205.14135): make attention exact and IO-aware rather than materializing avoidable HBM traffic.
+- [FlashAttention-2](https://arxiv.org/abs/2307.08691): improve work partitioning and sequence parallelism rather than assuming the first tiled mapping is optimal.
+- [FlashAttention-3](https://arxiv.org/abs/2407.08608): study asynchronous overlap, GEMM/softmax interleaving, and block-scaled low precision while separating Hopper-specific mechanisms from portable principles.
+- [ThunderKittens](https://arxiv.org/abs/2410.20399): study a compact hierarchy of tile, block, and grid primitives as inspiration for a cross-backend Helios kernel algebra.
+- [Mirage](https://arxiv.org/abs/2405.05751): study multi-level algebra/schedule/kernel superoptimization with explicit verification.
+- [Deep Kernel Fusion for Transformers](https://arxiv.org/abs/2602.11808): investigate deep fusion as a research direction, but validate its numerical and register-pressure tradeoffs in Helios rather than copying headline results.
+- [RunPod pricing](https://www.runpod.io/pricing) and [RunPod GPU types](https://docs.runpod.io/references/gpu-types): record volatile price/availability at benchmark time.
+
+## 13. Evidence locations
+
+Existing evidence:
+
+- `docs/resume/HELIOS-CHAT-THROUGHPUT-AUDIT-2026-08-02.md`
+- `docs/resume/HELIOS-CHAT-THROUGHPUT-SWEEP-OUTCOME-2026-08-02.md`
+- `docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md`
+- `docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md`
+- `/mnt/donto-data/alpha-runs/alpha-foundation-lr-pilot-20260803/`
+- `/mnt/donto-data/donto-resources/research/alpha-rejected-foundation-probes-v9-v11-20260803/`
+
+New optimization evidence should be stored under:
+
+- repository summaries: `docs/resume/`;
+- bounded machine-readable benchmarks: `perf/helios-optimization/`;
+- larger research artifacts: `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-optimization-20260803/`.
+
+## 14. Completion definition
+
+This program is not complete when AMD is allowed past one `if` statement, when one microkernel is faster, or when a model starts training.
+
+It is complete when:
+
+1. Helios describes and admits devices by capabilities rather than NVIDIA identity;
+2. the full portable operation suite has no hidden subgroup-32 dependency;
+3. a real AMD device passes operation, autograd, checkpoint, and bounded training-trajectory validation;
+4. an Instinct path is either proven through Vulkan or supported through a native HIP/ROCm lowering with the same semantics;
+5. every material training operation is present in the measured operation ledger;
+6. the highest-cost operation families have validated portable or device-specialized optimization decisions;
+7. the Alpha accelerator contract is chosen from end-to-end correctness, time, and cost evidence;
+8. the full Alpha training, conversational post-training, untouched behavioral selection, and versioned publication are completed.
+
+The engine work is successful only if it helps finish the model—and leaves behind a faster, more portable Helios rather than a one-off benchmark branch.

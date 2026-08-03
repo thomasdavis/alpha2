@@ -13,7 +13,7 @@
  */
 
 export { HeliosBackend, type GpuDeviceInfo } from "./backend.js";
-export { initDevice, destroyDevice, getDeviceInfo, getNative, type NativeAddon } from "./device.js";
+export { initDevice, destroyDevice, getDeviceInfo, getNative, type NativeAddon, type NativeDeviceInfo } from "./device.js";
 export { SpirVBuilder } from "./spirv.js";
 export { getKernelSpirv } from "./kernels.js";
 

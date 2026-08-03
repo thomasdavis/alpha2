@@ -1,9 +1,9 @@
 /**
  * parity-helios — CPU (cpu_ref) vs GPU (Helios) numerical parity.
  *
- * The whole suite lives inside `describeGpu` and SKIPS unless a real NVIDIA
- * GPU is present (same detection as gpu-perf.test.ts), so it is a no-op on the
- * dev box and runs for real on the GPU pods.
+ * The whole suite lives inside `describeGpu` and skips unless a physical GPU
+ * satisfies the current Helios training capabilities. Vendor identity is not
+ * part of the decision, so the same suite validates NVIDIA and AMD RDNA.
  *
  * Coverage, in order of trust:
  *   1. per-op forward parity (matmul/softmax/layerNorm/gelu/silu/siluMul/
@@ -25,7 +25,7 @@ import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type TensorData, type Backend } from "@alpha/core";
 import { Tape, Variable, castToF16, castToF32, sum, rmsNorm, rope } from "@alpha/autograd";
 import { initGPT, gptForward, collectParamEntries } from "@alpha/model";
-import { AdamW } from "@alpha/train";
+import { AdamW, assessHeliosTrainingDevice } from "@alpha/train";
 
 // ── Tolerances (edit here) ───────────────────────────────────────────────────
 const FWD_REL_TOL = 1e-3;
@@ -40,26 +40,26 @@ const ADAMW_ABS_TOL = 1e-5;
 const TRAIN_STEPS = 100;
 const TRAIN_LOSS_PCT = 0.05; // final helios loss must be within 5% of cpu_ref
 
-// ── GPU detection (identical to gpu-perf.test.ts) ────────────────────────────
-let hasNvidiaGpu = false;
+// ── Capability-based GPU detection ──────────────────────────────────────────
+let hasSupportedGpu = false;
 try {
-  hasNvidiaGpu = getDeviceInfo().vendorId === 0x10de;
+  hasSupportedGpu = assessHeliosTrainingDevice(getDeviceInfo()).supported;
 } catch {
-  hasNvidiaGpu = false;
+  hasSupportedGpu = false;
 }
-if (!hasNvidiaGpu) {
-  console.log("[parity-helios] no NVIDIA GPU detected — suite skipped");
+if (!hasSupportedGpu) {
+  console.log("[parity-helios] no capability-compatible physical GPU detected — suite skipped");
 }
 
-const gpu = hasNvidiaGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
+const gpu = hasSupportedGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
 const cpu = new CpuRefBackend();
-if (hasNvidiaGpu) gpu.setMinGpuSize(1);
+if (hasSupportedGpu) gpu.setMinGpuSize(1);
 
 afterAll(() => {
-  if (hasNvidiaGpu) destroyDevice();
+  if (hasSupportedGpu) destroyDevice();
 });
 
-const describeGpu = describe.skipIf(!hasNvidiaGpu);
+const describeGpu = describe.skipIf(!hasSupportedGpu);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

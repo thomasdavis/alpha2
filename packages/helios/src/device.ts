@@ -14,8 +14,48 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Native addon interface ──────────────────────────────────────────────────
 
+/**
+ * Capability snapshot returned by the native Vulkan bridge.
+ *
+ * Values describe the loaded physical device and driver, not an inferred
+ * vendor profile. Keep this record additive and fingerprintable: training
+ * admission and kernel selection must depend on capabilities rather than a
+ * hard-coded NVIDIA/AMD allow-list.
+ */
+export interface NativeDeviceInfo {
+  deviceName: string;
+  vendorId: number;
+  deviceId: number;
+  deviceType: number;
+  apiVersion: number;
+  driverVersion: number;
+  deviceLocalMemoryBytes: number;
+  subgroupSize: number;
+  subgroupSupportedStages: number;
+  subgroupSupportedOperations: number;
+  subgroupQuadOperationsInAllStages: boolean;
+  subgroupSizeControlSupported: boolean;
+  computeFullSubgroupsSupported: boolean;
+  minSubgroupSize: number;
+  maxSubgroupSize: number;
+  maxComputeWorkgroupSubgroups: number;
+  requiredSubgroupSizeStages: number;
+  timestampValidBits: number;
+  timestampPeriodNs: number;
+  f16Supported: boolean;
+  hasAsyncTransfer: boolean;
+  coopMatSupported: boolean;
+  coopMat2Supported: boolean;
+  coopMatM: number;
+  coopMatN: number;
+  coopMatK: number;
+  hasPushDescriptors: boolean;
+  hasBDA: boolean;
+  hasDGC: boolean;
+}
+
 export interface NativeAddon {
-  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean };
+  initDevice(): NativeDeviceInfo;
   createBuffer(byteLength: number, hostVisible?: number, temporary?: number): number;
   getAllocatorStats?(): {
     activeBuffers: number;
@@ -62,7 +102,7 @@ export interface NativeAddon {
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 let _native: NativeAddon | null = null;
-let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } | null = null;
+let _deviceInfo: NativeDeviceInfo | null = null;
 
 function findNativeAddon(): string {
   const envOverride = process.env.HELIOS_NATIVE_ADDON;
@@ -96,7 +136,7 @@ function findNativeAddon(): string {
 }
 
 /** Load the native addon and initialize the Vulkan device. */
-export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } {
+export function initDevice(): NativeDeviceInfo {
   if (_deviceInfo) return _deviceInfo;
 
   const addonPath = findNativeAddon();
@@ -116,7 +156,7 @@ export function getNative(): NativeAddon {
 }
 
 /** Get device info. */
-export function getDeviceInfo(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } {
+export function getDeviceInfo(): NativeDeviceInfo {
   if (!_deviceInfo) initDevice();
   return _deviceInfo!;
 }

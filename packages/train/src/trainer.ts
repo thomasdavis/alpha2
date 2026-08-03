@@ -48,6 +48,64 @@ let _gpuStatsDisabled = false;
 let _gpuStatsInFlight: Promise<void> | null = null;
 const GPU_STATS_INTERVAL_MS = 5000; // query nvidia-smi at most every 5s
 
+export function gpuVendorName(vendorId: number): string {
+  return vendorId === 0x10de ? "NVIDIA"
+    : vendorId === 0x1002 ? "AMD"
+    : vendorId === 0x8086 ? "Intel"
+    : `0x${vendorId.toString(16)}`;
+}
+
+export interface HeliosTrainingDeviceCapabilities {
+  deviceName: string;
+  vendorId: number;
+  deviceType?: number;
+  subgroupSize?: number;
+  subgroupSupportedStages?: number;
+  subgroupSupportedOperations?: number;
+  computeSubgroupArithmeticSupported?: boolean;
+}
+
+export interface HeliosTrainingDeviceAssessment {
+  supported: boolean;
+  mode: "portable" | "unsupported";
+  reasons: string[];
+}
+
+/**
+ * Decide whether the current Helios kernel set can train on a physical device.
+ *
+ * This intentionally contains no vendor allow-list. The first portable kernel
+ * generation uses subgroup arithmetic and still has several 32-lane layout
+ * assumptions, so wave64 is reported precisely rather than being allowed to
+ * corrupt training. AMD RDNA wave32 devices are admitted; CDNA wave64 will move
+ * to supported as the wave-size-independent kernels / HIP lowering land.
+ */
+export function assessHeliosTrainingDevice(
+  gpu: HeliosTrainingDeviceCapabilities,
+): HeliosTrainingDeviceAssessment {
+  const reasons: string[] = [];
+  if (gpu.deviceType !== undefined && gpu.deviceType !== 1 && gpu.deviceType !== 2) {
+    reasons.push(`device type ${gpu.deviceType} is not an integrated or discrete Vulkan GPU`);
+  }
+  const computeArithmetic = gpu.computeSubgroupArithmeticSupported ?? (
+    ((gpu.subgroupSupportedStages ?? 0) & 0x00000020) !== 0 &&
+    ((gpu.subgroupSupportedOperations ?? 0) & 0x00000004) !== 0
+  );
+  if (!computeArithmetic) {
+    reasons.push("compute-stage subgroup arithmetic is unavailable");
+  }
+  if ((gpu.subgroupSize ?? 0) !== 32) {
+    reasons.push(
+      `native subgroup size ${gpu.subgroupSize ?? 0} is not yet supported by the current 32-lane kernel layouts`,
+    );
+  }
+  return {
+    supported: reasons.length === 0,
+    mode: reasons.length === 0 ? "portable" : "unsupported",
+    reasons,
+  };
+}
+
 async function readGpuStatsOnce(): Promise<GpuStats | null> {
   try {
     const { execFile } = await import("node:child_process");
@@ -1114,10 +1172,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     try {
       const os = await import("node:os");
       const gpu = (backend as any).getDeviceInfo();
-      const vendorName = gpu.vendorId === 0x10de ? "NVIDIA"
-        : gpu.vendorId === 0x1002 ? "AMD"
-        : gpu.vendorId === 0x8086 ? "Intel"
-        : `0x${gpu.vendorId.toString(16)}`;
+      const vendorName = gpuVendorName(gpu.vendorId);
       if (gpu.vendorId !== 0x10de) {
         // nvidia-smi is NVIDIA-only; disable probe path on other vendors.
         _gpuStatsDisabled = true;
@@ -1166,18 +1221,23 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   // GPU proof: log device info and run smoke test
   if ("getDeviceInfo" in backend && "smokeTest" in backend) {
     const gpu = (backend as any).getDeviceInfo();
-    const vendorName = gpu.vendorId === 0x10de ? "NVIDIA"
-      : gpu.vendorId === 0x1002 ? "AMD"
-      : gpu.vendorId === 0x8086 ? "Intel"
-      : `0x${gpu.vendorId.toString(16)}`;
+    const vendorName = gpuVendorName(gpu.vendorId);
     console.log(`gpu: ${gpu.deviceName} (${vendorName})`);
     console.log(`  f16: ${gpu.f16Supported} | async_transfer: ${gpu.hasAsyncTransfer} | wg_size: ${gpu.workgroupSize} | min_gpu: ${gpu.minGpuSize}`);
+    console.log(
+      `  vulkan_api: 0x${(gpu.apiVersion ?? 0).toString(16)} | device_id: 0x${(gpu.deviceId ?? 0).toString(16)} | ` +
+      `subgroup: ${gpu.subgroupSize ?? "unknown"} [${gpu.minSubgroupSize ?? "?"},${gpu.maxSubgroupSize ?? "?"}] | ` +
+      `subgroup_control: ${gpu.subgroupSizeControlSupported ?? false}`,
+    );
 
-    // Fail-fast if running on software/wrong GPU when a real GPU is expected
-    if (vendorName !== "NVIDIA") {
+    // Fail fast on missing capabilities, not vendor identity. This admits AMD
+    // RDNA wave32 Vulkan devices while rejecting software ICDs and wave-size
+    // combinations whose current kernels cannot execute correctly.
+    const deviceAssessment = assessHeliosTrainingDevice(gpu);
+    if (!deviceAssessment.supported) {
       throw new Error(
-        `GPU guard: expected NVIDIA GPU but found ${gpu.deviceName} (vendor=${vendorName}). ` +
-        `Check VK_ICD_FILENAMES and Vulkan driver installation.`
+        `Helios GPU capability guard rejected ${gpu.deviceName} (vendor=${vendorName}): ` +
+        `${deviceAssessment.reasons.join("; ")}. Check the Vulkan driver and device capability report.`
       );
     }
 

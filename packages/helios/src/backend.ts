@@ -26,7 +26,7 @@ import {
   broadcastStrides,
 } from "@alpha/core";
 
-import { getNative, initDevice, getDeviceInfo, type NativeAddon } from "./device.js";
+import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo } from "./device.js";
 import { getKernelSpirv } from "./kernels.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -1269,19 +1269,11 @@ function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion)
 
 // ── HeliosBackend ───────────────────────────────────────────────────────────
 
-export interface GpuDeviceInfo {
-  deviceName: string;
-  vendorId: number;
-  f16Supported: boolean;
-  hasAsyncTransfer: boolean;
-  coopMatSupported: boolean;
-  coopMat2Supported: boolean;
-  coopMatM: number;
-  coopMatN: number;
-  coopMatK: number;
-  hasPushDescriptors: boolean;
+export interface GpuDeviceInfo extends NativeDeviceInfo {
   workgroupSize: number;
   minGpuSize: number;
+  computeSubgroupArithmeticSupported: boolean;
+  nativeSubgroup32: boolean;
 }
 
 export interface CoopMatmulStats {
@@ -1302,6 +1294,7 @@ export class HeliosBackend implements Backend {
   private _f16Supported = false;
   private _deviceName = "";
   private _vendorId = 0;
+  private _nativeDeviceInfo: NativeDeviceInfo | null = null;
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
   private _coopMatPaused = false; // Temporarily disable coop matmul (e.g. during backward)
@@ -1359,6 +1352,7 @@ export class HeliosBackend implements Backend {
   private init(): NativeAddon {
     if (!this.initialized) {
       const info = initDevice();
+      this._nativeDeviceInfo = info;
       this._f16Supported = info.f16Supported;
       this._deviceName = info.deviceName;
       this._vendorId = info.vendorId;
@@ -1546,7 +1540,12 @@ export class HeliosBackend implements Backend {
   /** Get GPU device info. Forces init if not already done. */
   getDeviceInfo(): GpuDeviceInfo {
     this.init();
+    const native = this._nativeDeviceInfo!;
+    const computeSubgroupArithmeticSupported =
+      (native.subgroupSupportedStages & 0x00000020) !== 0 &&
+      (native.subgroupSupportedOperations & 0x00000004) !== 0;
     return {
+      ...native,
       deviceName: this._deviceName,
       vendorId: this._vendorId,
       f16Supported: this._f16Supported,
@@ -1559,6 +1558,8 @@ export class HeliosBackend implements Backend {
       hasPushDescriptors: this._hasPushDescriptors,
       workgroupSize: WG_SIZE,
       minGpuSize: this._minGpuSize,
+      computeSubgroupArithmeticSupported,
+      nativeSubgroup32: native.subgroupSize === 32,
     };
   }
 

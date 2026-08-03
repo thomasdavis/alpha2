@@ -77,6 +77,8 @@ typedef enum {
   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 0x00000004,
 } VkMemoryPropertyFlagBits;
 
+#define VK_MEMORY_HEAP_DEVICE_LOCAL_BIT 0x00000001
+
 typedef enum {
   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
 } VkDescriptorType;
@@ -139,6 +141,44 @@ typedef struct {
   uint8_t  pipelineCacheUUID[16];
   uint8_t  _padding[1024]; // covers VkPhysicalDeviceLimits + VkPhysicalDeviceSparseProperties
 } VkPhysicalDeviceProperties_partial;
+
+// Core Vulkan 1.1 subgroup properties and Vulkan 1.3 / EXT subgroup-size
+// control. Helios emits subgroup arithmetic in several kernels, so these are
+// correctness capabilities rather than vendor-tuning trivia.
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES 1000094000
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES 1000225000
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES 1000225002
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t subgroupSize;
+  VkFlags supportedStages;
+  VkFlags supportedOperations;
+  VkBool32 quadOperationsInAllStages;
+} VkPhysicalDeviceSubgroupProperties;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkBool32 subgroupSizeControl;
+  VkBool32 computeFullSubgroups;
+} VkPhysicalDeviceSubgroupSizeControlFeatures;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t minSubgroupSize;
+  uint32_t maxSubgroupSize;
+  uint32_t maxComputeWorkgroupSubgroups;
+  VkFlags requiredSubgroupSizeStages;
+} VkPhysicalDeviceSubgroupSizeControlProperties;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkPhysicalDeviceProperties_partial properties;
+} VkPhysicalDeviceProperties2_full;
 
 typedef struct { VkFlags queueFlags; uint32_t queueCount; uint32_t timestampValidBits; uint32_t minImageTransferGranularity[3]; } VkQueueFamilyProperties;
 
@@ -694,6 +734,22 @@ static int stagingRingInited = 0;
 static VkPhysicalDeviceMemoryProperties memProps;
 static char deviceNameStr[256] = {0};
 static uint32_t vendorId = 0;
+static uint32_t deviceId = 0;
+static uint32_t deviceType = 0;
+static uint32_t deviceApiVersion = 0;
+static uint32_t deviceDriverVersion = 0;
+static double deviceLocalMemoryBytes = 0.0;
+static uint32_t subgroupSize = 0;
+static VkFlags subgroupSupportedStages = 0;
+static VkFlags subgroupSupportedOperations = 0;
+static int subgroupQuadOperationsInAllStages = 0;
+static int subgroupSizeControlSupported = 0;
+static int computeFullSubgroupsSupported = 0;
+static uint32_t minSubgroupSize = 0;
+static uint32_t maxSubgroupSize = 0;
+static uint32_t maxComputeWorkgroupSubgroups = 0;
+static VkFlags requiredSubgroupSizeStages = 0;
+static uint32_t computeTimestampValidBits = 0;
 static VkQueryPool timestampPool = 0;
 static int timestampsSupported = 0;
 static float timestampPeriodNs = 1.0f;  // ns per tick (most GPUs = 1.0)
@@ -1387,10 +1443,21 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   free(devs);
 
   strncpy(deviceNameStr, bestProps.deviceName, 255);
+  deviceNameStr[255] = '\0';
   vendorId = bestProps.vendorID;
+  deviceId = bestProps.deviceID;
+  deviceType = bestProps.deviceType;
+  deviceApiVersion = bestProps.apiVersion;
+  deviceDriverVersion = bestProps.driverVersion;
 
   // Get memory properties
   fp_vkGetPhysicalDeviceMemoryProperties(physDevice, &memProps);
+  deviceLocalMemoryBytes = 0.0;
+  for (uint32_t i = 0; i < memProps.memoryHeapCount; i++) {
+    if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+      deviceLocalMemoryBytes += (double)memProps.memoryHeaps[i].size;
+    }
+  }
 
   // Find compute queue family
   uint32_t qfCount = 0;
@@ -1423,6 +1490,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
   free(qfProps);
+  computeTimestampValidBits = timestampValidBits;
 
   if (computeQueueFamily == UINT32_MAX) {
     napi_throw_error(env, NULL, "No compute queue family found");
@@ -1450,13 +1518,17 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
 
-  // Probe device extensions (cooperative matrix, push descriptors, DGC)
+  // Probe device extensions (cooperative matrix, push descriptors, DGC,
+  // subgroup-size control). Subgroup arithmetic is cross-vendor, but the
+  // native width is not universally 32 (AMD CDNA, for example, is wave64).
   coopMatSupported = 0;
   coopMat2Supported = 0;
   int hasCoopMatExt = 0;
   int hasCoopMat2Ext = 0;
   hasPushDescriptors = 0;
   int hasDGCExt = 0;
+  int hasSubgroupSizeControlExt = 0;
+  uint32_t subgroupSizeControlSpecVersion = 0;
   if (fp_vkEnumerateDeviceExtensionProperties) {
     uint32_t extCount = 0;
     fp_vkEnumerateDeviceExtensionProperties(physDevice, NULL, &extCount, NULL);
@@ -1476,8 +1548,80 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
         if (strcmp(exts[i].extensionName, "VK_EXT_device_generated_commands") == 0) {
           hasDGCExt = 1;
         }
+        if (strcmp(exts[i].extensionName, "VK_EXT_subgroup_size_control") == 0) {
+          hasSubgroupSizeControlExt = 1;
+          subgroupSizeControlSpecVersion = exts[i].specVersion;
+        }
       }
       free(exts);
+    }
+  }
+
+  // Query base subgroup properties on every Vulkan 1.1+ implementation. Query
+  // size-control properties only when exposed by the EXT path or Vulkan 1.3.
+  subgroupSize = 0;
+  subgroupSupportedStages = 0;
+  subgroupSupportedOperations = 0;
+  subgroupQuadOperationsInAllStages = 0;
+  subgroupSizeControlSupported = 0;
+  computeFullSubgroupsSupported = 0;
+  minSubgroupSize = 0;
+  maxSubgroupSize = 0;
+  maxComputeWorkgroupSubgroups = 0;
+  requiredSubgroupSizeStages = 0;
+
+  typedef void (*PFN_vkGetPhysicalDeviceProperties2_full)(VkPhysicalDevice, VkPhysicalDeviceProperties2_full*);
+  PFN_vkGetPhysicalDeviceProperties2_full fp_getProps2 =
+    (PFN_vkGetPhysicalDeviceProperties2_full)dlsym(vk_lib, "vkGetPhysicalDeviceProperties2");
+  const uint32_t apiMajor = deviceApiVersion >> 22;
+  const uint32_t apiMinor = (deviceApiVersion >> 12) & 0x3ff;
+  const int hasCoreSubgroupSizeControl = apiMajor > 1 || (apiMajor == 1 && apiMinor >= 3);
+  if (fp_getProps2) {
+    VkPhysicalDeviceSubgroupProperties subgroupProps = {0};
+    subgroupProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroupControlProps = {0};
+    if (hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) {
+      subgroupControlProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+      subgroupProps.pNext = &subgroupControlProps;
+    }
+
+    VkPhysicalDeviceProperties2_full props2 = {0};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &subgroupProps;
+    fp_getProps2(physDevice, &props2);
+
+    subgroupSize = subgroupProps.subgroupSize;
+    subgroupSupportedStages = subgroupProps.supportedStages;
+    subgroupSupportedOperations = subgroupProps.supportedOperations;
+    subgroupQuadOperationsInAllStages = subgroupProps.quadOperationsInAllStages ? 1 : 0;
+    if (hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) {
+      minSubgroupSize = subgroupControlProps.minSubgroupSize;
+      maxSubgroupSize = subgroupControlProps.maxSubgroupSize;
+      maxComputeWorkgroupSubgroups = subgroupControlProps.maxComputeWorkgroupSubgroups;
+      requiredSubgroupSizeStages = subgroupControlProps.requiredSubgroupSizeStages;
+    } else {
+      minSubgroupSize = subgroupSize;
+      maxSubgroupSize = subgroupSize;
+    }
+  }
+
+  // Version 2 of VK_EXT_subgroup_size_control added the feature structure.
+  // Version 1 explicitly permits applications to assume both features. Vulkan
+  // 1.3 exposes the same feature structure in core.
+  if ((hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) && fp_vkGetPhysicalDeviceFeatures2) {
+    if (hasSubgroupSizeControlExt && subgroupSizeControlSpecVersion == 1 && !hasCoreSubgroupSizeControl) {
+      subgroupSizeControlSupported = 1;
+      computeFullSubgroupsSupported = 1;
+    } else {
+      VkPhysicalDeviceSubgroupSizeControlFeatures subgroupControlFeatures = {0};
+      subgroupControlFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+      VkPhysicalDeviceFeatures2 features2sg = {0};
+      features2sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+      features2sg.pNext = &subgroupControlFeatures;
+      fp_vkGetPhysicalDeviceFeatures2(physDevice, &features2sg);
+      subgroupSizeControlSupported = subgroupControlFeatures.subgroupSizeControl ? 1 : 0;
+      computeFullSubgroupsSupported = subgroupControlFeatures.computeFullSubgroups ? 1 : 0;
     }
   }
 
@@ -1549,13 +1693,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     memset(&dgcProperties, 0, sizeof(dgcProperties));
     dgcProperties.sType = VK_STRUCTURE_TYPE_DGC_PROPERTIES_EXT;
     // Chain DGC properties into a properties2 query
-    typedef struct { VkStructureType sType; void* pNext; uint8_t _pad[512]; } VkPhysicalDeviceProperties2_generic;
-    VkPhysicalDeviceProperties2_generic props2 = {0};
+    VkPhysicalDeviceProperties2_full props2 = {0};
     props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props2.pNext = &dgcProperties;
-    typedef void (*PFN_vkGetPhysicalDeviceProperties2)(VkPhysicalDevice, void*);
-    PFN_vkGetPhysicalDeviceProperties2 fp_getProps2 =
-      (PFN_vkGetPhysicalDeviceProperties2)dlsym(vk_lib, "vkGetPhysicalDeviceProperties2");
     if (fp_getProps2) {
       fp_getProps2(physDevice, &props2);
       fprintf(stderr, "[helios:native] DGC properties: maxSequences=%u maxTokens=%u maxStride=%u computeStages=0x%x\n",
@@ -2089,6 +2229,57 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_create_uint32(env, vendorId, &val);
   napi_set_named_property(env, result, "vendorId", val);
+
+  napi_create_uint32(env, deviceId, &val);
+  napi_set_named_property(env, result, "deviceId", val);
+
+  napi_create_uint32(env, deviceType, &val);
+  napi_set_named_property(env, result, "deviceType", val);
+
+  napi_create_uint32(env, deviceApiVersion, &val);
+  napi_set_named_property(env, result, "apiVersion", val);
+
+  napi_create_uint32(env, deviceDriverVersion, &val);
+  napi_set_named_property(env, result, "driverVersion", val);
+
+  napi_create_double(env, deviceLocalMemoryBytes, &val);
+  napi_set_named_property(env, result, "deviceLocalMemoryBytes", val);
+
+  napi_create_uint32(env, subgroupSize, &val);
+  napi_set_named_property(env, result, "subgroupSize", val);
+
+  napi_create_uint32(env, subgroupSupportedStages, &val);
+  napi_set_named_property(env, result, "subgroupSupportedStages", val);
+
+  napi_create_uint32(env, subgroupSupportedOperations, &val);
+  napi_set_named_property(env, result, "subgroupSupportedOperations", val);
+
+  napi_get_boolean(env, subgroupQuadOperationsInAllStages, &val);
+  napi_set_named_property(env, result, "subgroupQuadOperationsInAllStages", val);
+
+  napi_get_boolean(env, subgroupSizeControlSupported, &val);
+  napi_set_named_property(env, result, "subgroupSizeControlSupported", val);
+
+  napi_get_boolean(env, computeFullSubgroupsSupported, &val);
+  napi_set_named_property(env, result, "computeFullSubgroupsSupported", val);
+
+  napi_create_uint32(env, minSubgroupSize, &val);
+  napi_set_named_property(env, result, "minSubgroupSize", val);
+
+  napi_create_uint32(env, maxSubgroupSize, &val);
+  napi_set_named_property(env, result, "maxSubgroupSize", val);
+
+  napi_create_uint32(env, maxComputeWorkgroupSubgroups, &val);
+  napi_set_named_property(env, result, "maxComputeWorkgroupSubgroups", val);
+
+  napi_create_uint32(env, requiredSubgroupSizeStages, &val);
+  napi_set_named_property(env, result, "requiredSubgroupSizeStages", val);
+
+  napi_create_uint32(env, computeTimestampValidBits, &val);
+  napi_set_named_property(env, result, "timestampValidBits", val);
+
+  napi_create_double(env, timestampPeriodNs, &val);
+  napi_set_named_property(env, result, "timestampPeriodNs", val);
 
   napi_get_boolean(env, f16Supported, &val);
   napi_set_named_property(env, result, "f16Supported", val);
