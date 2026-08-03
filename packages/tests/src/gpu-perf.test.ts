@@ -100,6 +100,43 @@ function assertRankOneProduct(
   ).toBeLessThanOrEqual(1e-4);
 }
 
+/**
+ * A deterministic, dense value field whose entries and pairwise products are
+ * exactly representable in both f16 and f32.  With the production K=512, the
+ * integer numerator of every dot product stays below 2^24, so the complete
+ * result is exactly representable in f32 regardless of accumulation order.
+ * This gives the cooperative kernel no tolerance in which to hide a lane,
+ * shared-memory, or output-tile mapping error.
+ */
+function denseDyadic(index: number, salt: number, range: number, denominator: number): number {
+  let mixed = Math.imul((index + salt) | 0, 0x45d9f3b);
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x45d9f3b);
+  mixed ^= mixed >>> 16;
+  return ((mixed >>> 0) % range - Math.floor(range / 2)) / denominator;
+}
+
+function assertExactDenseProduct(actual: Float32Array, expected: Float32Array): void {
+  expect(actual.length).toBe(expected.length);
+  let mismatchCount = 0;
+  let worstIndex = -1;
+  let worstError = 0;
+  for (let index = 0; index < actual.length; index++) {
+    const error = Math.abs(actual[index] - expected[index]);
+    if (error !== 0) mismatchCount++;
+    if (error > worstError) {
+      worstError = error;
+      worstIndex = index;
+    }
+  }
+  expect(
+    mismatchCount,
+    `dense dyadic oracle: mismatches=${mismatchCount}/${actual.length} ` +
+      `worstIndex=${worstIndex} actual=${actual[worstIndex]} ` +
+      `expected=${expected[worstIndex]} maxAbs=${worstError}`,
+  ).toBe(0);
+}
+
 // ── Barrier correctness tests ────────────────────────────────────────────────
 
 describeGpu("Barrier correctness", () => {
@@ -419,6 +456,43 @@ describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
       M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
     });
     assertRankOneProduct(values, tokenRows, ffn, hidden);
+  });
+
+  it("matches the generic FP32 path exactly on a dense production transposed-B workload", () => {
+    const a = Array.from(
+      { length: tokenRows * hidden },
+      (_, index) => denseDyadic(index, 17, 256, 128),
+    );
+    const b = Array.from(
+      { length: ffn * hidden },
+      (_, index) => denseDyadic(index, 101, 64, 512),
+    );
+    const aTensor = gpu.fromArray(a, [tokenRows, hidden]);
+    const bTensor = gpu.fromArray(b, [ffn, hidden]);
+
+    // These dyadic inputs survive f16 conversion exactly.  Pausing cooperative
+    // dispatch therefore yields an exact FP32 reference for the same values the
+    // cooperative kernel receives, without an O(MNK) host implementation.
+    gpu.coopMatmulPaused = true;
+    let expected: Float32Array;
+    try {
+      expected = new Float32Array(gpu.matmulTransposed(aTensor, bTensor).data as Float32Array);
+    } finally {
+      gpu.coopMatmulPaused = false;
+    }
+
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposed(aTensor, bTensor);
+    const actual = new Float32Array(output.data as Float32Array);
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
+    expect(after.lastCoopShape).toEqual({
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
+    });
+    assertExactDenseProduct(actual, expected);
   });
 
   it("validates transposed-A weight-gradient orientation and proves direct cooperative dispatch", () => {

@@ -32,6 +32,27 @@ done
 mkdir "$OUT_ROOT"
 sha256sum "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" "$INIT_CHECKPOINT" > "$OUT_ROOT/INPUT-HASHES.sha256"
 
+# Bind every sweep to the exact executable source state.  A commit alone is
+# insufficient when kernel experiments are intentionally benchmarked before
+# selection, so preserve the porcelain status and the complete tracked diff as
+# first-class evidence instead of silently treating HEAD as the executed tree.
+git rev-parse HEAD > "$OUT_ROOT/SOURCE-COMMIT.txt"
+git status --porcelain=v1 --untracked-files=all > "$OUT_ROOT/SOURCE-STATUS.txt"
+git diff --binary HEAD > "$OUT_ROOT/SOURCE-DIFF.patch"
+{
+  "$NODE_BIN" --version
+  npm --version
+  uname -a
+} > "$OUT_ROOT/RUNTIME.txt"
+sha256sum \
+  packages/helios/src/backend.ts \
+  packages/helios/src/kernels/matmul-coop.ts \
+  packages/helios/src/kernels/matmul.ts \
+  packages/train/src/trainer.ts \
+  apps/cli/dist/main.js \
+  package-lock.json \
+  > "$OUT_ROOT/SOURCE-FILES.sha256"
+
 run_row() {
   local name=$1 wg=$2 coop=$3 fp16=$4 block=$5 batch=$6 pool=$7 phase_sync=$8
   local run_dir="$OUT_ROOT/$name"
@@ -59,6 +80,7 @@ run_row() {
   if [[ "$block" != "1024" ]]; then
     env_args+=("ALPHA_ALLOW_RESUME_MISMATCH=1")
   fi
+  printf '%s\n' "${env_args[@]}" > "$run_dir/controlled-environment.txt"
 
   set +e
   env "${env_args[@]}" \

@@ -54,6 +54,18 @@ did the full local suite at 233 pass / 50 GPU-gated / 0 fail. This is correctnes
 launcher does not enable `HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32`, and no speed claim exists until an
 alternating physical-GPU K16/K32 comparison passes the complete parity and sustained-throughput gates.
 
+The old cooperative-matrix failure has a stronger discriminator but is not yet repaired or selected. The B4
+forward-only row dispatched 81 production `transposed-B s2x2 r4x4 km4` kernels and changed first loss from
+2.7419 to 6.9667 before backward. A streaming audit of the exact base checkpoint found maximum parameter
+absolute value 4.6417856 and zero of 57,688,576 stored parameters outside f16 range, so stored-weight clamping
+cannot explain the failure. In addition to the three production-shape rank-one gates, the test suite now has a
+dense non-low-rank dyadic transposed-B oracle whose exact f16/f32-representable result must match the generic
+FP32 path with zero tolerance while telemetry proves direct `s2x2_r4x4` dispatch. The local package suite passes
+233 tests with 54 GPU-gated and zero failures; physical execution remains open, so there is no new speed claim.
+The historical B4 sweep lacked an exact source/dirty-patch binding; the launcher now captures both plus source
+hashes, runtime, and the controlled per-row environment. Canonical audit:
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/`.
+
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
 `6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
 embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,

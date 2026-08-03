@@ -141,9 +141,17 @@ cooperative backward separately produced extreme gradients and memory/cast press
 rank-one tests exercise ordinary and transposed-B products at `[1024,512,1408]`, plus the transposed-A
 `[1024,512]^T @ [1024,1408]` weight-gradient shape. They require the production `s2x2_r4x4` forward tile,
 the selected `s2x2_r2x2` weight-gradient tile, direct cooperative-dispatch telemetry, and check every output to
-`1e-4`. The full local suite
-passes 233 tests with 53 GPU-gated and zero failures. These three cases remain explicitly unproven on physical
-cooperative-matrix hardware; no speed claim exists yet.
+`1e-4`. A fourth dense, non-low-rank dyadic test compares the suspect production transposed-B tile to the
+generic FP32 path with **zero tolerance**: its f16 inputs, pairwise products, and complete K=512 dot products are
+exactly representable in f32. The full local package suite passes 233 tests with 54 GPU-gated and zero failures.
+These four cases remain explicitly unproven on physical cooperative-matrix hardware; no speed claim exists yet.
+
+The follow-up contract audit also streamed all 57,688,576 parameters from the exact base checkpoint. Maximum
+absolute value was 4.6417856 and zero stored values exceeded f16's 65,504 maximum, falsifying stored-weight
+overflow as the B4 cause. It records the historical sweep's missing exact source binding and the launcher repair
+that now preserves commit, dirty status, tracked patch, source hashes, runtime, and controlled environment:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/
 
 ## 2026-08-02 Helios chat-throughput sweep
 
