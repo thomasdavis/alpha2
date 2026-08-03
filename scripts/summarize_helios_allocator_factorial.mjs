@@ -72,6 +72,10 @@ function parseFinalAllocatorState(consoleText) {
 }
 
 const modesDir = path.join(root, "modes");
+const workloadPath = path.join(root, "WORKLOAD.json");
+const workload = fs.existsSync(workloadPath)
+  ? JSON.parse(fs.readFileSync(workloadPath, "utf8"))
+  : null;
 const modeNames = fs.existsSync(modesDir)
   ? fs.readdirSync(modesDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()
   : [];
@@ -126,6 +130,7 @@ for (const row of rows) {
 const result = {
   schemaVersion: 1,
   experimentRoot: root,
+  workload,
   warmupExcluded: warmup,
   baselineMode,
   rows: rows.sort((a, b) => {
@@ -141,6 +146,13 @@ if (format === "json") {
 
 const f = (value, digits = 1) => value == null ? "n/a" : Number(value).toFixed(digits);
 console.log("# Helios allocator factorial\n");
+if (workload) {
+  console.log(
+    `Workload: ${workload.layers} layers, d=${workload.dim}, FFN=${workload.ffn_dim}, ` +
+    `context=${workload.block}, batch=${workload.batch}; ` +
+    `exact foundation shape: ${workload.exact_foundation_shape ? "yes" : "no (proxy)"}.\n`,
+  );
+}
 console.log(`Warm-up steps excluded per mode: ${warmup}\n`);
 console.log("| Mode | Median tok/s | Mean tok/s | p10–p90 tok/s | Speedup | Host ms | GPU block ms | New buffers | Destroys | Output hits/misses | Final Vk allocations |");
 console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");

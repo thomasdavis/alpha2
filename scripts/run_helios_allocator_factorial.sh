@@ -11,6 +11,12 @@ output_dir="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocat
 steps="${ALLOCATOR_FACTORIAL_STEPS:-12}"
 warmup="${ALLOCATOR_FACTORIAL_WARMUP:-3}"
 baseline="${ALLOCATOR_FACTORIAL_BASELINE:-exact_individual}"
+workload_batch="${ALLOCATOR_FACTORIAL_BATCH:-24}"
+workload_block="${ALLOCATOR_FACTORIAL_BLOCK:-1024}"
+workload_layers="${ALLOCATOR_FACTORIAL_LAYERS:-18}"
+workload_dim="${ALLOCATOR_FACTORIAL_DIM:-640}"
+workload_heads="${ALLOCATOR_FACTORIAL_HEADS:-10}"
+workload_ffn_dim="${ALLOCATOR_FACTORIAL_FFN_DIM:-1728}"
 
 if [[ ! "$steps" =~ ^[0-9]+$ ]] || (( steps < 4 )); then
   echo "ALLOCATOR_FACTORIAL_STEPS must be an integer >= 4" >&2
@@ -18,6 +24,18 @@ if [[ ! "$steps" =~ ^[0-9]+$ ]] || (( steps < 4 )); then
 fi
 if [[ ! "$warmup" =~ ^[0-9]+$ ]] || (( warmup < 0 || warmup >= steps )); then
   echo "ALLOCATOR_FACTORIAL_WARMUP must be an integer in [0, steps)" >&2
+  exit 2
+fi
+for workload_value in \
+  "$workload_batch" "$workload_block" "$workload_layers" \
+  "$workload_dim" "$workload_heads" "$workload_ffn_dim"; do
+  if [[ ! "$workload_value" =~ ^[0-9]+$ ]] || (( workload_value < 1 )); then
+    echo "allocator workload dimensions must be positive integers" >&2
+    exit 2
+  fi
+done
+if (( workload_dim % workload_heads != 0 )); then
+  echo "ALLOCATOR_FACTORIAL_DIM must be divisible by ALLOCATOR_FACTORIAL_HEADS" >&2
   exit 2
 fi
 for required in "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER"; do
@@ -54,9 +72,25 @@ sha256sum \
   command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,uuid,driver_version,memory.total,power.limit,clocks.max.sm,clocks.max.memory --format=csv,noheader
 } > "$output_dir/HOST.txt" 2>&1
 
+foundation_shape=false
+if (( workload_batch == 24 && workload_block == 1024 && workload_layers == 18 &&
+      workload_dim == 640 && workload_heads == 10 && workload_ffn_dim == 1728 )); then
+  foundation_shape=true
+fi
+jq -n \
+  --argjson batch "$workload_batch" \
+  --argjson block "$workload_block" \
+  --argjson layers "$workload_layers" \
+  --argjson dim "$workload_dim" \
+  --argjson heads "$workload_heads" \
+  --argjson ffnDim "$workload_ffn_dim" \
+  --argjson foundationShape "$foundation_shape" \
+  '{batch:$batch, block:$block, layers:$layers, dim:$dim, heads:$heads, ffn_dim:$ffnDim, exact_foundation_shape:$foundationShape}' \
+  > "$output_dir/WORKLOAD.json"
+
 cat_description="$output_dir/EXPERIMENT.txt"
 printf '%s\n' \
-  "Exact foundation graph: 18 layers, d=640, FFN=1728, context=1024, batch=24." \
+  "Workload: ${workload_layers} layers, d=${workload_dim}, FFN=${workload_ffn_dim}, context=${workload_block}, batch=${workload_batch}; exact_foundation_shape=${foundation_shape}." \
   "Factorial variables: coarse versus exact allocation classes; native temporary slabs versus individual VkDeviceMemory allocations." \
   "Every mode runs in a fresh Node process. GPU timestamp queries are disabled so the outcome is sustained end-to-end token throughput." \
   "The first ${warmup} steps are excluded from summary statistics." \
@@ -127,18 +161,18 @@ for mode in "${modes[@]}"; do
       --domain=alpha_llama \
       --tokenizerArtifacts="$TOKENIZER" \
       --vocabSize=12288 \
-      --block=1024 \
-      --layers=18 \
-      --dim=640 \
-      --heads=10 \
+      --block="$workload_block" \
+      --layers="$workload_layers" \
+      --dim="$workload_dim" \
+      --heads="$workload_heads" \
       --dropout=0 \
       --activation=swiglu \
-      --ffnDim=1728 \
+      --ffnDim="$workload_ffn_dim" \
       --normType=rmsnorm \
       --posEnc=rope \
       --ropeTheta=10000 \
       --tieEmbeddings=true \
-      --batch=24 \
+      --batch="$workload_batch" \
       --accumSteps=1 \
       --steps="$steps" \
       --lr=0.002 \
