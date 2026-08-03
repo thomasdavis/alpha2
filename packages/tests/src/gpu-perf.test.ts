@@ -246,6 +246,54 @@ describeGpu("checkFinite GPU kernel", () => {
   });
 });
 
+describeGpu("Row-parallel column reduction", () => {
+  it("matches RMSNorm weight gradients on an awkward dense shape", () => {
+    const rows = 257;
+    const columns = 96;
+    const xValues = Array.from(
+      { length: rows * columns },
+      (_, index) => denseDyadic(index, 211, 256, 128),
+    );
+    const gradValues = Array.from(
+      { length: rows * columns },
+      (_, index) => denseDyadic(index, 307, 128, 256),
+    );
+    const weightValues = Array.from(
+      { length: columns },
+      (_, index) => 0.75 + denseDyadic(index, 401, 64, 256),
+    );
+    const expectedDw = new Float32Array(columns);
+    for (let row = 0; row < rows; row++) {
+      const offset = row * columns;
+      let meanSquare = 0;
+      for (let column = 0; column < columns; column++) {
+        meanSquare += xValues[offset + column] ** 2;
+      }
+      const inverseRms = 1 / Math.sqrt(meanSquare / columns + 1e-5);
+      for (let column = 0; column < columns; column++) {
+        expectedDw[column] += gradValues[offset + column] * xValues[offset + column] * inverseRms;
+      }
+    }
+
+    gpu.columnSumRowLanes = true;
+    try {
+      const actual = gpu.rmsNormBackward!(
+        gpu.fromArray(xValues, [rows, columns]),
+        gpu.fromArray(weightValues, [columns]),
+        gpu.fromArray(gradValues, [rows, columns]),
+        1e-5,
+      );
+      expect(gpu.lastColumnSumKernel).toBe("column_sum_row_lanes");
+      expect(maxDiff(
+        new Float32Array(actual.dw.data as Float32Array),
+        expectedDw,
+      )).toBeLessThanOrEqual(2e-4);
+    } finally {
+      gpu.columnSumRowLanes = false;
+    }
+  });
+});
+
 // ── Matmul correctness tests (GPU vs CPU reference) ──────────────────────────
 
 describeGpu("Matmul correctness", () => {

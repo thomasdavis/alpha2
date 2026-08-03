@@ -66,6 +66,15 @@ The historical B4 sweep lacked an exact source/dirty-patch binding; the launcher
 hashes, runtime, and the controlled per-row environment. Canonical audit:
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/`.
 
+An additional **unselected** row-parallel `column_sum` candidate addresses the next measured reduction hotspot.
+The selected kernel gives one thread each of roughly 512 columns and makes it walk all 24,576 token rows; the
+candidate uses a portable 32-column x 8-row-lane workgroup, coalesced reads, shared-memory reduction, and no
+atomics or subgroup-size assumption. It executed on the independent llvmpipe Vulkan stack with subgroup size 8
+and matched an awkward dense 257 x 96 RMSNorm weight gradient to `4.2915e-6` maximum absolute error. The local
+package suite passes 233 tests with 55 physical-GPU-gated and zero failures. It remains opt-in through
+`HELIOS_COLUMN_SUM_ROW_LANES=1`; no speed claim or production selection exists until an alternating RTX profile
+and sustained trajectory pass the same parity and provenance gates as the selected GEMM portfolio.
+
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
 `6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
 embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,
@@ -91,8 +100,9 @@ returned empty after deletion, so no Alpha RunPod is billing. Recovery is at
 `/mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/`. At the sustained median 7,253.8
 tokens/s, the current full-token contract would take about 74.37 hours before validation/checkpoint overhead and
 cost about USD 51.31 at that price. This is materially better but still not the accepted engine endpoint. The
-next exact targets are a CODA-controlled GEMM-epilogue slice, correct reduced-precision matrix acceleration, a
-real attention-backward redesign, column-sum/reductions, transposes, and operation-graph quotienting. Finish the
+next exact targets are the physical row-parallel column-sum discriminator, a CODA-controlled GEMM-epilogue
+slice, correct reduced-precision matrix acceleration, a real attention-backward redesign, transposes, and
+operation-graph quotienting. Finish the
 correctness-gated optimization/accelerator decision before starting the multi-day run.
 
 Read these first:

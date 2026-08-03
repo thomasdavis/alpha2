@@ -55,6 +55,15 @@ The failed candidate and an earlier invalid cooperative-path-confounded run are 
 this line of work toward eliminating or hierarchically shrinking the full-sized RMSNorm partial tensor rather than
 merely widening its second traversal.
 
+**New unselected discriminator:** the failure mechanism of the vec4 attempt is now separated from the reduction
+itself. Vec4 reduced an already small active population; the selected production reduction exposes only one
+thread per roughly 512 columns while each thread walks 24,576 rows. The new `column_sum_row_lanes` candidate uses
+32 adjacent columns x 8 row lanes, keeping global reads coalesced and combining row partials through 1 KiB of
+workgroup memory without atomics or a subgroup-size assumption. It compiled and executed on llvmpipe subgroup 8,
+matching an awkward 257 x 96 RMSNorm weight-gradient reference to `4.2915e-6` maximum absolute error. The local
+suite is 233 pass / 55 physical-GPU-gated / 0 fail. It remains opt-in and unmeasured on a physical accelerator;
+selection requires exact per-kernel profiling plus an alternating sustained trajectory comparison.
+
 **Rejected attention follow-up:** the repository's previously unwired batched-unroll FlashAttention dKV V2 kernel
 passed 29/29 physical-GPU parity tests and reproduced the exact one-step trajectory, but took `449,023.0 us`
 across 18 calls versus `261,738.5 us` for the selected runtime-loop kernel, about 71.6% slower. The diagnostic

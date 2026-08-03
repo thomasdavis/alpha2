@@ -153,6 +153,21 @@ that now preserves commit, dirty status, tracked patch, source hashes, runtime, 
 
     /mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/
 
+## 2026-08-03 row-parallel column-sum preflight
+
+The selected RMSNorm weight-gradient reduction launches one useful thread per model column and makes it serially
+walk every token row. In the 97M foundation contract that means roughly 512 useful threads each walking 24,576
+rows, and the exact RTX profile attributes 37 calls / 59,809.7 us to `column_sum`. The opt-in
+`column_sum_row_lanes` candidate instead uses a `[32,8,1]` workgroup: eight row lanes collaborate on each column,
+then reduce through 1 KiB of workgroup memory. Adjacent column lanes retain contiguous reads, and the shader uses
+no atomics or subgroup-size assumption.
+
+The candidate compiled and executed on llvmpipe with subgroup size 8. On an awkward dense 257 x 96 RMSNorm
+backward fixture its maximum weight-gradient error against the host reference was `4.2915e-6`. The local package
+suite passes 233 tests with 55 physical-GPU-gated and zero failures. This is portability and correctness
+preflight only: the candidate is disabled unless `HELIOS_COLUMN_SUM_ROW_LANES=1`, and it has no speed claim or
+production status before a provenance-bound physical-GPU profile and sustained trajectory comparison.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

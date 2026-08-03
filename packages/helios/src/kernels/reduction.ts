@@ -1083,3 +1083,182 @@ export function kernelSumAxis(wgSize = 256): Uint32Array {
 
   return b.build();
 }
+
+/**
+ * Row-parallel column sum for tall RMSNorm partial-gradient matrices.
+ *
+ * The original column_sum assigns one thread to one column. At Alpha's
+ * [24576, 512] shape that exposes only 512 useful threads while each walks all
+ * rows. This kernel assigns eight row lanes to each of 32 adjacent columns,
+ * preserving coalesced reads while exposing eight times more row parallelism.
+ * Shared-memory reduction combines the row-lane partials without atomics or a
+ * subgroup-size assumption, so the algorithm remains wave32/wave64 portable.
+ *
+ * Bindings: 0=A(in), 1=C(out)
+ * Push constants: { dim: f32, numRows: f32 }
+ * Dispatch: (ceil(dim/32), 1, 1), local size [32,8,1]
+ */
+export function kernelColumnSumRowLanes(
+  columnsPerGroup = 32,
+  rowLanes = 8,
+): Uint32Array {
+  if (rowLanes <= 0 || (rowLanes & (rowLanes - 1)) !== 0) {
+    throw new Error("column-sum rowLanes must be a positive power of two");
+  }
+
+  const b = new SpirVBuilder();
+  const p = preamble(b, columnsPerGroup, rowLanes, 1);
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 2);
+
+  const constColumns = b.id(); b.constant(p.tU32, constColumns, columnsPerGroup);
+  const constRowLanes = b.id(); b.constant(p.tU32, constRowLanes, rowLanes);
+  const constSharedSize = b.id();
+  b.constant(p.tU32, constSharedSize, columnsPerGroup * rowLanes);
+  const tArrayShared = b.id(); b.typeArray(tArrayShared, p.tF32, constSharedSize);
+  const tPtrShared = b.id();
+  b.typePointer(tPtrShared, StorageClass.Workgroup, tArrayShared);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const shared = b.id(); b.variable(tPtrShared, shared, StorageClass.Workgroup);
+
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id(); b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(
+    p.tU32,
+    semAcqRelWg,
+    MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory,
+  );
+  const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id(); b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, columnsPerGroup, rowLanes, 1);
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const labelEntry = b.id(); b.emit(Op.Label, [labelEntry]);
+
+  const varRow = b.id(); b.emit(Op.Variable, [tPtrFnU32, varRow, StorageClass.Function]);
+  const varAcc = b.id(); b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const localIdVec = b.id(); b.emit(Op.Load, [p.tVec3U32, localIdVec, vLocalId]);
+  const columnLane = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, columnLane, localIdVec, 0]);
+  const rowLane = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, rowLane, localIdVec, 1]);
+  const workgroupIdVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, workgroupIdVec, vWorkgroupId]);
+  const workgroupX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, workgroupX, workgroupIdVec, 0]);
+  const groupColumnBase = b.id();
+  b.emit(Op.IMul, [p.tU32, groupColumnBase, workgroupX, constColumns]);
+  const column = b.id();
+  b.emit(Op.IAdd, [p.tU32, column, groupColumnBase, columnLane]);
+
+  const dimF = loadPushLen(b, p, pc);
+  const dim = b.id(); b.emit(Op.ConvertFToU, [p.tU32, dim, dimF]);
+  const numRowsF = loadPushScalar(b, p, pc);
+  const numRows = b.id(); b.emit(Op.ConvertFToU, [p.tU32, numRows, numRowsF]);
+  const columnInBounds = b.id();
+  b.emit(Op.ULessThan, [p.tBool, columnInBounds, column, dim]);
+
+  b.emit(Op.Store, [varAcc, p.const0f]);
+  b.emit(Op.Store, [varRow, rowLane]);
+  const loopHead = b.id(), loopBody = b.id(), loopMerge = b.id(), loopContinue = b.id();
+  b.emit(Op.Branch, [loopHead]);
+  b.emit(Op.Label, [loopHead]);
+  const currentRow = b.id(); b.emit(Op.Load, [p.tU32, currentRow, varRow]);
+  const rowInBounds = b.id();
+  b.emit(Op.ULessThan, [p.tBool, rowInBounds, currentRow, numRows]);
+  const loadInBounds = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, loadInBounds, rowInBounds, columnInBounds]);
+  b.emit(Op.LoopMerge, [loopMerge, loopContinue, 0]);
+  b.emit(Op.BranchConditional, [loadInBounds, loopBody, loopMerge]);
+
+  b.emit(Op.Label, [loopBody]);
+  const rowOffset = b.id(); b.emit(Op.IMul, [p.tU32, rowOffset, currentRow, dim]);
+  const inputIndex = b.id(); b.emit(Op.IAdd, [p.tU32, inputIndex, rowOffset, column]);
+  const ptrA = b.id();
+  b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, inputIndex]);
+  const value = b.id(); b.emit(Op.Load, [p.tF32, value, ptrA]);
+  const accumulator = b.id(); b.emit(Op.Load, [p.tF32, accumulator, varAcc]);
+  const nextAccumulator = b.id();
+  b.emit(Op.FAdd, [p.tF32, nextAccumulator, accumulator, value]);
+  b.emit(Op.Store, [varAcc, nextAccumulator]);
+  b.emit(Op.Branch, [loopContinue]);
+
+  b.emit(Op.Label, [loopContinue]);
+  const previousRow = b.id(); b.emit(Op.Load, [p.tU32, previousRow, varRow]);
+  const nextRow = b.id();
+  b.emit(Op.IAdd, [p.tU32, nextRow, previousRow, constRowLanes]);
+  b.emit(Op.Store, [varRow, nextRow]);
+  b.emit(Op.Branch, [loopHead]);
+
+  b.emit(Op.Label, [loopMerge]);
+  const rowSharedBase = b.id();
+  b.emit(Op.IMul, [p.tU32, rowSharedBase, rowLane, constColumns]);
+  const sharedIndex = b.id();
+  b.emit(Op.IAdd, [p.tU32, sharedIndex, rowSharedBase, columnLane]);
+  const ptrShared = b.id();
+  b.emit(Op.AccessChain, [tPtrSharedF32, ptrShared, shared, sharedIndex]);
+  const finalAccumulator = b.id(); b.emit(Op.Load, [p.tF32, finalAccumulator, varAcc]);
+  b.emit(Op.Store, [ptrShared, finalAccumulator]);
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  // Reduce along the row-lane dimension. Every invocation participates in
+  // every barrier, including out-of-bounds columns in the final workgroup.
+  for (let stride = rowLanes >> 1; stride > 0; stride >>= 1) {
+    const constStride = b.id(); b.constant(p.tU32, constStride, stride);
+    const isReducingLane = b.id();
+    b.emit(Op.ULessThan, [p.tBool, isReducingLane, rowLane, constStride]);
+    const reduceLabel = b.id(), reduceMerge = b.id();
+    b.emit(Op.SelectionMerge, [reduceMerge, 0]);
+    b.emit(Op.BranchConditional, [isReducingLane, reduceLabel, reduceMerge]);
+    b.emit(Op.Label, [reduceLabel]);
+    const otherLane = b.id();
+    b.emit(Op.IAdd, [p.tU32, otherLane, rowLane, constStride]);
+    const otherBase = b.id();
+    b.emit(Op.IMul, [p.tU32, otherBase, otherLane, constColumns]);
+    const otherIndex = b.id();
+    b.emit(Op.IAdd, [p.tU32, otherIndex, otherBase, columnLane]);
+    const ptrMine = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrMine, shared, sharedIndex]);
+    const ptrOther = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptrOther, shared, otherIndex]);
+    const mine = b.id(); b.emit(Op.Load, [p.tF32, mine, ptrMine]);
+    const other = b.id(); b.emit(Op.Load, [p.tF32, other, ptrOther]);
+    const combined = b.id(); b.emit(Op.FAdd, [p.tF32, combined, mine, other]);
+    b.emit(Op.Store, [ptrMine, combined]);
+    b.emit(Op.Branch, [reduceMerge]);
+    b.emit(Op.Label, [reduceMerge]);
+    b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+  }
+
+  const rowLaneIsZero = b.id();
+  b.emit(Op.IEqual, [p.tBool, rowLaneIsZero, rowLane, p.const0u]);
+  const shouldWrite = b.id();
+  b.emit(Op.LogicalAnd, [p.tBool, shouldWrite, rowLaneIsZero, columnInBounds]);
+  const writeLabel = b.id(), endLabel = b.id();
+  b.emit(Op.SelectionMerge, [endLabel, 0]);
+  b.emit(Op.BranchConditional, [shouldWrite, writeLabel, endLabel]);
+  b.emit(Op.Label, [writeLabel]);
+  const ptrResult = b.id();
+  b.emit(Op.AccessChain, [bufC.tPtrF32, ptrResult, bufC.varId, p.const0u, column]);
+  const reduced = b.id(); b.emit(Op.Load, [p.tF32, reduced, ptrShared]);
+  b.emit(Op.Store, [ptrResult, reduced]);
+  b.emit(Op.Branch, [endLabel]);
+  b.emit(Op.Label, [endLabel]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}

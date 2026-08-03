@@ -77,6 +77,7 @@ const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
 // physical tensor layout.
 const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
   process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
+const ENABLE_COLUMN_SUM_ROW_LANES = process.env.HELIOS_COLUMN_SUM_ROW_LANES === "1";
 const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
   process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
 const ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 =
@@ -1417,6 +1418,8 @@ export class HeliosBackend implements Backend {
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
   private _coopMatPaused = false; // Temporarily disable coop matmul (e.g. during backward)
+  private _columnSumRowLanes = ENABLE_COLUMN_SUM_ROW_LANES;
+  private _lastColumnSumKernel: string | null = null;
   private _coopMat2Supported = false;
   private _coopM = 0;
   private _coopN = 0;
@@ -1750,6 +1753,11 @@ export class HeliosBackend implements Backend {
    *  Use during backward pass to avoid f16 precision loss on large gradients. */
   set coopMatmulPaused(v: boolean) { this._coopMatPaused = v; }
   get coopMatmulPaused(): boolean { return this._coopMatPaused; }
+
+  /** Opt-in row-parallel RMSNorm weight-gradient reduction. */
+  set columnSumRowLanes(v: boolean) { this._columnSumRowLanes = v; }
+  get columnSumRowLanes(): boolean { return this._columnSumRowLanes; }
+  get lastColumnSumKernel(): string | null { return this._lastColumnSumKernel; }
 
   getMatmulCoopStats(): CoopMatmulStats {
     const hit = this._matmulDispatches > 0 ? this._coopDispatches / this._matmulDispatches : 0;
@@ -3435,12 +3443,18 @@ export class HeliosBackend implements Backend {
         writeMask: 0b11000, // dx and dw_partial are both written
       });
 
-      const pipeline2 = getPipeline(vk, "column_sum", 2);
+      const columnSumKernel = this._columnSumRowLanes
+        ? "column_sum_row_lanes"
+        : "column_sum";
+      this._lastColumnSumKernel = columnSumKernel;
+      const pipeline2 = getPipeline(vk, columnSumKernel, 2);
       const push2 = push2Memo(dim, numRows);
-      const groups = Math.ceil(dim / WG_SIZE);
+      const groups = this._columnSumRowLanes
+        ? Math.ceil(dim / 32)
+        : Math.ceil(dim / WG_SIZE);
       graph.record({
         kind: "backward",
-        kernel: "column_sum",
+        kernel: columnSumKernel,
         pipeline: pipeline2,
         inputBufs: [],
         outputRegion: dwRegion,

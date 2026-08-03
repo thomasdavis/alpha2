@@ -45,11 +45,11 @@ import {
 
 // Reduction kernels
 export {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 import {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
@@ -291,6 +291,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;
     case "layernorm_backward_vec4": spirv = kernelLayerNormBackwardVec4(wgSize); break;
     case "column_sum": spirv = kernelColumnSum(wgSize); break;
+    case "column_sum_row_lanes": spirv = kernelColumnSumRowLanes(); break;
     case "column_sum_dual": spirv = kernelColumnSumDual(wgSize); break;
     case "adamw_step": spirv = kernelAdamW(wgSize); break;
     case "transpose":  spirv = kernelTranspose(wgSize); break;
