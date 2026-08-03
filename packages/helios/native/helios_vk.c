@@ -1034,6 +1034,7 @@ static SlabPool deviceTempPool = {0};  // device-local (temporary/intermediate b
 static SlabPool hostPool = {0};        // host-visible + coherent
 static VkDeviceSize slabAlignment = 256;  // queried at init from a probe buffer
 static VkDeviceSize tempSlabPoolMaxBytes = DEFAULT_SLAB_POOL_MAX_BYTES;
+static int tempSlabPoolCapExplicit = 0;
 
 static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
@@ -1452,17 +1453,11 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     unsigned long long requestedMb = strtoull(tempSlabPoolMbEnv, &end, 10);
     if (end != tempSlabPoolMbEnv && *end == '\0' && requestedMb >= 64 && requestedMb <= 65536) {
       tempSlabPoolMaxBytes = (VkDeviceSize)requestedMb * 1024 * 1024;
+      tempSlabPoolCapExplicit = 1;
     } else {
       fprintf(stderr, "[helios:native] ignoring invalid HELIOS_TEMP_SLAB_POOL_MB=%s (expected 64..65536)\n", tempSlabPoolMbEnv);
     }
   }
-  if (disableTempSlabs) {
-    fprintf(stderr, "[helios:native] temporary slab allocation disabled\n");
-  } else {
-    fprintf(stderr, "[helios:native] temporary slab pool cap=%lluMB\n",
-      (unsigned long long)(tempSlabPoolMaxBytes / 1024 / 1024));
-  }
-
   // Load Vulkan loader. Try common absolute paths first so nix-based shells
   // can still find the host driver without mutating LD_LIBRARY_PATH.
   vk_lib = dlopen("/usr/lib/x86_64-linux-gnu/libvulkan.so.1", RTLD_NOW);
@@ -1614,6 +1609,23 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
       deviceLocalMemoryBytes += (double)memProps.memoryHeaps[i].size;
     }
+  }
+  if (!tempSlabPoolCapExplicit && deviceLocalMemoryBytes > 0.0) {
+    // The original fixed 8 GiB cap left substantial reusable-intermediate
+    // pressure on 24 GiB devices. Use at most half of device-local memory for
+    // transient slabs while retaining at least half for parameters, optimizer
+    // state, output pools, and driver allocations. Cap the automatic policy at
+    // 12 GiB; larger experiments can still opt in explicitly.
+    const VkDeviceSize autoCap = (VkDeviceSize)(deviceLocalMemoryBytes * 0.5);
+    const VkDeviceSize autoMax = (VkDeviceSize)12 * 1024 * 1024 * 1024;
+    tempSlabPoolMaxBytes = autoCap < autoMax ? autoCap : autoMax;
+  }
+  if (disableTempSlabs) {
+    fprintf(stderr, "[helios:native] temporary slab allocation disabled\n");
+  } else {
+    fprintf(stderr, "[helios:native] temporary slab pool cap=%lluMB (%s)\n",
+      (unsigned long long)(tempSlabPoolMaxBytes / 1024 / 1024),
+      tempSlabPoolCapExplicit ? "explicit" : "device-adaptive");
   }
 
   // Find compute queue family
@@ -1970,6 +1982,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     .ppEnabledExtensionNames = enabledExtCount > 0 ? enabledExtensions : NULL,
   };
   res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+  VkResult initialCreateResult = res;
+  VkResult optionalFreeCreateResult = VK_SUCCESS;
+  VkResult computeOnlyCreateResult = VK_SUCCESS;
   if (res != VK_SUCCESS) {
     // Retry without optional features
     f16Supported = 0;
@@ -1983,8 +1998,31 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     devCreate.enabledExtensionCount = 0;
     devCreate.ppEnabledExtensionNames = NULL;
     res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+    optionalFreeCreateResult = res;
+    // Some containerized NVIDIA runtimes enumerate a dedicated transfer queue
+    // but refuse logical-device creation when that queue family is requested.
+    // Preserve compute instead of making an optional DMA queue fatal.
+    if (res != VK_SUCCESS && queueCreateCount > 1) {
+      transferQueueFamily = UINT32_MAX;
+      queueCreateCount = 1;
+      devCreate.queueCreateInfoCount = queueCreateCount;
+      res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+      computeOnlyCreateResult = res;
+    }
     if (res != VK_SUCCESS) {
-      napi_throw_error(env, NULL, "vkCreateDevice failed");
+      char errorMessage[256];
+      snprintf(
+        errorMessage,
+        sizeof(errorMessage),
+        "vkCreateDevice failed (initial=%d optionalFree=%d computeOnly=%d computeQueueFamily=%u transferQueueFamily=%u queueCreateCount=%u)",
+        (int)initialCreateResult,
+        (int)optionalFreeCreateResult,
+        (int)computeOnlyCreateResult,
+        computeQueueFamily,
+        transferQueueFamily,
+        queueCreateCount
+      );
+      napi_throw_error(env, NULL, errorMessage);
       return NULL;
     }
   }

@@ -27,7 +27,7 @@ function planFile(overrides: Record<string, unknown> = {}): string {
     },
     ...overrides,
   };
-  writeFileSync(path, JSON.stringify({ schemaVersion: 1, planStable: true, analyses: [analysis, analysis] }));
+  writeFileSync(path, JSON.stringify({ schemaVersion: 2, planStable: true, analyses: [analysis, analysis] }));
   return path;
 }
 

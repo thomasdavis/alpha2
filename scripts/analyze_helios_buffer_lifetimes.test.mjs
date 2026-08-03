@@ -10,7 +10,7 @@ const script = new URL("./analyze_helios_buffer_lifetimes.mjs", import.meta.url)
 function analyze(rows, args = []) {
   const directory = mkdtempSync(join(tmpdir(), "helios-lifetime-"));
   const trace = join(directory, "trace.jsonl");
-  writeFileSync(trace, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+  writeFileSync(trace, `${rows.map((row) => JSON.stringify({ traceSchemaVersion: 2, ...row })).join("\n")}\n`);
   try {
     const result = spawnSync(process.execPath, [script, trace, ...args, "--json"], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -26,6 +26,10 @@ function op(order, bufferIds, bufferBytes, writeMask, kernel = `k${order}`) {
     bufferCount: bufferIds.length, bufferIds, bufferBytes, writeMask,
     groups: [1, 1, 1], pushSize: 0, shape: [1], elementCount: null,
   };
+}
+
+function hostRead(order, operationCount, bufferId, bufferBytes) {
+  return { event: "host_read", order, operationCount, bufferId, bufferBytes };
 }
 
 test("versions a reused physical buffer and computes conservative peak liveness", () => {
@@ -72,6 +76,25 @@ test("emits a deterministic producer-to-slot plan and reuses only non-overlappin
     ],
   );
   assert.equal(row.staticSlotPlan.slots[0].assignmentCount, 2);
+});
+
+test("keeps a produced value live through a host readback boundary", () => {
+  const result = analyze([{
+    step: 1,
+    events: [
+      op(0, [0, 1, 2], [256, 256, 256], 4, "first"),
+      hostRead(1, 1, 2, 256),
+      op(2, [0, 1, 3], [256, 256, 256], 4, "second"),
+    ],
+  }], ["--emit-plan"]);
+  const row = result.analyses[0];
+  assert.equal(row.hostReadEvents, 1);
+  assert.equal(row.hostReadValues, 1);
+  assert.equal(row.staticBufferSlots, 2);
+  assert.notEqual(
+    row.staticSlotPlan.assignments[0].slotId,
+    row.staticSlotPlan.assignments[1].slotId,
+  );
 });
 
 test("rejects legacy traces without buffer identities", () => {

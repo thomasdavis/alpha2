@@ -70,9 +70,18 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
 const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
 // An offline, warmup-excluded lifetime trace can be compiled into a fixed set
-// of reusable VkBuffer handles. The path is opt-in because the plan is tied to
-// one exact graph; strict runtime validation fails before a mismatched write.
+// of reusable VkBuffer handles. Physical r6 testing found that a complete plan
+// can preserve loss while corrupting backward gradients before structural
+// validation can observe the error. Keep the research implementation
+// reproducible, but require an explicit unsafe acknowledgement until the
+// missing alias/dependency semantics are understood.
 const STATIC_SLOT_PLAN_PATH = process.env.HELIOS_STATIC_SLOT_PLAN?.trim() ?? "";
+if (STATIC_SLOT_PLAN_PATH && process.env.HELIOS_STATIC_SLOT_PLAN_UNSAFE !== "1") {
+  throw new Error(
+    "HELIOS_STATIC_SLOT_PLAN is experimental and failed full-step numerical parity; " +
+      "set HELIOS_STATIC_SLOT_PLAN_UNSAFE=1 only for bounded research reproduction",
+  );
+}
 const STATIC_SLOT_PLAN: StaticSlotPlan | null = STATIC_SLOT_PLAN_PATH
   ? loadStaticSlotPlan(STATIC_SLOT_PLAN_PATH)
   : null;
@@ -862,6 +871,7 @@ function invalidateCache(td: TensorData): void {
         // does not set per-buffer lastWriteTimeline, so readBuffer alone
         // won't wait for in-place ops like AdamW on mapped/coherent memory).
         waitTimelineTracked(vk, tv);
+        graph.traceHostRead(handle);
         const raw = vk.readBuffer(handle);
         cached = raw.length > expected ? raw.subarray(0, expected) : raw;
       }
@@ -995,7 +1005,10 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
     shape: [...shape],
     dtype: "f32",
     get data(): Float32Array {
-      if (!cached) cached = vk.readBuffer(region.handle);
+      if (!cached) {
+        graph.traceHostRead(region.handle);
+        cached = vk.readBuffer(region.handle);
+      }
       return cached;
     },
   };
@@ -1040,12 +1053,7 @@ class StaticSlotRuntime {
 
   beginStep(): { activated: boolean } {
     if (this.active) {
-      if (this.bindingsThisStep !== this.plan.assignmentCount) {
-        throw new Error(
-          `[helios static slots] prior step bound ${this.bindingsThisStep}/${this.plan.assignmentCount} planned values`,
-        );
-      }
-      this.completedActiveSteps++;
+      throw new Error("[helios static slots] prior training phase was not explicitly finished");
     }
     this.step++;
     this.bindingsThisStep = 0;
@@ -1053,6 +1061,22 @@ class StaticSlotRuntime {
     const activated = nextActive && !this.active;
     this.active = nextActive;
     return { activated };
+  }
+
+  finishStep(operationCount: number): void {
+    if (!this.active) return;
+    if (operationCount !== this.plan.operationCount) {
+      throw new Error(
+        `[helios static slots] training phase recorded ${operationCount}/${this.plan.operationCount} planned operations`,
+      );
+    }
+    if (this.bindingsThisStep !== this.plan.assignmentCount) {
+      throw new Error(
+        `[helios static slots] training phase bound ${this.bindingsThisStep}/${this.plan.assignmentCount} planned values`,
+      );
+    }
+    this.completedActiveSteps++;
+    this.active = false;
   }
 
   bindOperation(vk: NativeAddon, operationIndex: number, op: PendingOp): void {
@@ -1165,6 +1189,13 @@ export type GraphTraceEvent =
       order: number;
       operationCount: number;
       withWait: boolean;
+    }
+  | {
+      event: "host_read";
+      order: number;
+      operationCount: number;
+      bufferId: number;
+      bufferBytes: number;
     };
 
 export interface GpuStepStats {
@@ -1223,6 +1254,17 @@ class ComputeGraph {
     const id = this.graphTraceNextBufferId++;
     this.graphTraceBufferIds.set(handle, id);
     return id;
+  }
+
+  traceHostRead(handle: number): void {
+    if (!PROFILE_GRAPH_TRACE) return;
+    this.graphTraceThisStep.push({
+      event: "host_read",
+      order: this.graphTraceThisStep.length,
+      operationCount: this.opsThisStep,
+      bufferId: this.graphTraceBufferId(handle),
+      bufferBytes: traceBufferSizeByHandle.get(handle) ?? 0,
+    });
   }
 
   private mixGraphWord(value: number): void {
@@ -1658,6 +1700,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
         const tv = graph.flush();
         // Wait for the batch to complete on GPU before reading
         waitTimelineTracked(vk, tv);
+        graph.traceHostRead(region.handle);
         const raw = vk.readBuffer(region.handle);
         // Buffer may be larger than shape (4MB pool rounding) — truncate
         const expected = shapeSize(shape);
@@ -1691,6 +1734,7 @@ function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion)
       const tv = graph.flush();
       waitTimelineTracked(vk, tv);
       // readBuffer returns Float32Array; reinterpret as Uint16Array
+      graph.traceHostRead(region.handle);
       const f32 = vk.readBuffer(region.handle);
       return new Uint16Array(f32.buffer, f32.byteOffset, size);
     },
@@ -2193,6 +2237,7 @@ export class HeliosBackend implements Backend {
     }
     graph.resetStepStats();
   }
+  finishStepOps(): void { staticSlotRuntime?.finishStep(graph.opsThisStep); }
   getGpuStepStats(): GpuStepStats { return graph.getStepStats(); }
 
   // ── GPU binary ops ──────────────────────────────────────────────────────

@@ -298,6 +298,12 @@ export interface StepMetrics {
   gpu_allocator_free_range_overflows?: number;
   gpu_peak_live_allocs?: number;
   gpu_peak_mem_pool_mb?: number;
+  gpu_static_slot_plan_active?: number;
+  gpu_static_slot_plan_step?: number;
+  gpu_static_slot_slots_allocated?: number;
+  gpu_static_slot_bytes_allocated_mb?: number;
+  gpu_static_slot_bindings?: number;
+  gpu_static_slot_completed_steps?: number;
   host_rss_mb?: number;
   host_heap_used_mb?: number;
   host_external_mb?: number;
@@ -1454,6 +1460,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   const resetStepOpsFn: (() => void) | undefined =
     typeof backendAny.resetStepOps === "function"
       ? backendAny.resetStepOps.bind(backendAny)
+      : undefined;
+  const finishStepOpsFn: (() => void) | undefined =
+    typeof backendAny.finishStepOps === "function"
+      ? backendAny.finishStepOps.bind(backendAny)
       : undefined;
   const getGpuStepStatsFn: (() => {
     profilingEnabled: boolean;
@@ -2680,13 +2690,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       await fs.appendFile(
         path.join(runDir, "gpu-graph-trace.jsonl"),
         `${JSON.stringify({
+          traceSchemaVersion: 2,
           step: stepNum,
           graphSignature: gpuStepStats.graphSignature,
           events: gpuStepStats.graphTrace,
         })}\n`,
       );
     }
-
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
       console.log(`  [trace] phase_mode=${phaseSyncProfile ? "gpu_sync" : "enqueue"} data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
@@ -2998,7 +3008,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.gpu_vram_total_mb = gpuStats.vramTotalMb;
     }
     if (gpuMemStatsFn && shouldSampleGpuMetrics) {
-      const memStats = memStatsStep ?? gpuMemStatsFn();
+      // A requested sample is an observation boundary, not permission to
+      // replay the prior adaptive-control cache. Static-plan activation and
+      // allocator deltas must describe this step.
+      const memStats = gpuMemStatsFn();
+      memStatsStep = memStats;
+      memStatsCache = memStats;
+      lastMemStatsProbeStep = stepNum;
       metrics.gpu_mem_pool_mb = Math.round((memStats.bufferPoolBytes + memStats.outputPoolBytes) / 1024 / 1024);
       metrics.gpu_live_allocs = memStats.liveAllocs;
       metrics.gpu_vk_memory_allocations = memStats.trackedVkMemoryAllocations;
@@ -3018,7 +3034,20 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       peakGpuMemPoolMb = Math.max(peakGpuMemPoolMb, currentPoolMb);
       metrics.gpu_peak_live_allocs = peakGpuLiveAllocs;
       metrics.gpu_peak_mem_pool_mb = Math.round(peakGpuMemPoolMb);
+      metrics.gpu_static_slot_plan_active = memStats.staticSlotPlanActive;
+      metrics.gpu_static_slot_plan_step = memStats.staticSlotPlanStep;
+      metrics.gpu_static_slot_slots_allocated = memStats.staticSlotPlanSlotsAllocated;
+      metrics.gpu_static_slot_bytes_allocated_mb = memStats.staticSlotPlanBytesAllocated == null
+        ? undefined
+        : Math.round(memStats.staticSlotPlanBytesAllocated / 1024 / 1024);
+      metrics.gpu_static_slot_bindings = memStats.staticSlotBindingsThisStep;
+      metrics.gpu_static_slot_completed_steps = memStats.staticSlotCompletedSteps;
     }
+
+    // Mark the training graph boundary before evaluation, sampling, or
+    // checkpoint readback adds a different operation sequence. Static plans
+    // are validated against this exact phase rather than the entire loop tail.
+    finishStepOpsFn?.();
 
     // Eval — flush GPU and wait for completion first to maximize free VRAM
     if (valLoader && shouldEvaluateStep(stepNum, evalInterval, totalIters)) {

@@ -54,7 +54,7 @@ export function loadStaticSlotPlan(path: string): StaticSlotPlan {
   const raw = readFileSync(path);
   const sourceSha256 = createHash("sha256").update(raw).digest("hex");
   const envelope = JSON.parse(raw.toString("utf8")) as AnalyzerEnvelope;
-  if (envelope.schemaVersion !== 1) throw new Error(`unsupported static-slot plan schema: ${String(envelope.schemaVersion)}`);
+  if (envelope.schemaVersion !== 2) throw new Error(`unsupported static-slot plan schema: ${String(envelope.schemaVersion)}`);
   if (envelope.planStable !== true) throw new Error("static-slot plan must come from a stable warmup-excluded trace");
   if (!Array.isArray(envelope.analyses) || envelope.analyses.length === 0) {
     throw new Error("static-slot plan has no analyses");
