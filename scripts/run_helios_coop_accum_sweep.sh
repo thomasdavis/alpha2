@@ -25,7 +25,7 @@ sha256sum \
   uname -a
   node --version
   npm --version
-  df -h / /mnt/donto-data
+  df -h / /workspace
   free -h
   command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,uuid,driver_version,memory.total,power.limit,clocks.max.sm,clocks.max.memory --format=csv,noheader
 } > "$output_dir/HOST.txt" 2>&1
