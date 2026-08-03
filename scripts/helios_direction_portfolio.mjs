@@ -16,6 +16,7 @@ function usage() {
   node scripts/helios_direction_portfolio.mjs init [--source PATH] [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs report [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs status --direction N --to STATUS --reason TEXT [--evidence PATH] [--db PATH] [--report PATH]
+  node scripts/helios_direction_portfolio.mjs run --direction N --run-id ID --stage STAGE --status STATUS --artifact PATH --metrics PATH [--revision SHA] [--checkpoint HASH] [--workload HASH] [--hardware TEXT] [--accelerator-seconds N] [--cost N] [--started ISO] [--finished ISO] [--db PATH] [--report PATH]
 
 Statuses are descriptive research states, not automatic promotion decisions:
   queued, designed, cheap_test_running, cheap_test_complete,
@@ -185,6 +186,32 @@ function schema(db) {
       finished_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS physical_run (
+      run_id TEXT PRIMARY KEY,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      repository_revision TEXT,
+      checkpoint_fingerprint TEXT,
+      workload_fingerprint TEXT,
+      hardware TEXT,
+      accelerator_seconds REAL,
+      estimated_cost_usd REAL,
+      metrics_json TEXT NOT NULL,
+      artifact_path TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS direction_run (
+      run_id TEXT NOT NULL REFERENCES physical_run(run_id),
+      direction_id INTEGER NOT NULL REFERENCES direction(direction_id),
+      contract_id TEXT NOT NULL REFERENCES experiment_contract(contract_id),
+      relation TEXT NOT NULL,
+      status TEXT NOT NULL,
+      linked_at TEXT NOT NULL,
+      PRIMARY KEY(run_id, direction_id)
+    );
+
     CREATE TABLE IF NOT EXISTS verdict (
       verdict_id INTEGER PRIMARY KEY AUTOINCREMENT,
       direction_id INTEGER NOT NULL REFERENCES direction(direction_id),
@@ -197,6 +224,8 @@ function schema(db) {
 
     CREATE INDEX IF NOT EXISTS experiment_run_direction_idx
       ON experiment_run(direction_id, started_at);
+    CREATE INDEX IF NOT EXISTS direction_run_direction_idx
+      ON direction_run(direction_id, linked_at);
     CREATE INDEX IF NOT EXISTS state_event_direction_idx
       ON state_event(direction_id, created_at);
   `);
@@ -321,6 +350,88 @@ function updateStatus(dbPath, directionId, toStatus, reason, evidencePath) {
   }
 }
 
+function recordRun(dbPath, options) {
+  const directionId = Number.parseInt(String(options.get("direction")), 10);
+  const runId = options.get("run-id");
+  const stage = options.get("stage");
+  const status = options.get("status");
+  const artifact = options.get("artifact");
+  const metricsPath = options.get("metrics");
+  if (!Number.isInteger(directionId) || directionId < 1 || directionId > 100 ||
+      !runId || !stage || !status || !artifact || !metricsPath) {
+    throw new Error("run requires --direction 1..100, --run-id, --stage, --status, --artifact, and --metrics");
+  }
+  const metricsText = readFileSync(resolve(String(metricsPath)), "utf8");
+  JSON.parse(metricsText);
+  const optionalNumber = (name) => {
+    if (!options.has(name)) return null;
+    const value = Number(options.get(name));
+    if (!Number.isFinite(value) || value < 0) throw new Error(`--${name} must be a finite non-negative number`);
+    return value;
+  };
+  const startedAt = String(options.get("started") ?? new Date().toISOString());
+  const finishedAt = options.has("finished") ? String(options.get("finished")) : null;
+  const relation = String(options.get("relation") ?? "direct_test");
+  const db = new DatabaseSync(dbPath);
+  schema(db);
+  const contractId = `D${String(directionId).padStart(3, "0")}-V1`;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO physical_run (
+        run_id, stage, status, repository_revision,
+        checkpoint_fingerprint, workload_fingerprint, hardware,
+        accelerator_seconds, estimated_cost_usd, metrics_json, artifact_path,
+        started_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      String(runId),
+      String(stage),
+      String(status),
+      options.has("revision") ? String(options.get("revision")) : null,
+      options.has("checkpoint") ? String(options.get("checkpoint")) : null,
+      options.has("workload") ? String(options.get("workload")) : null,
+      options.has("hardware") ? String(options.get("hardware")) : null,
+      optionalNumber("accelerator-seconds"),
+      optionalNumber("cost"),
+      metricsText,
+      resolve(String(artifact)),
+      startedAt,
+      finishedAt,
+    );
+    const existing = db.prepare(`
+      SELECT stage, status, repository_revision, workload_fingerprint,
+             checkpoint_fingerprint, hardware, accelerator_seconds,
+             estimated_cost_usd, metrics_json, artifact_path, started_at, finished_at
+      FROM physical_run WHERE run_id = ?
+    `).get(String(runId));
+    if (!existing || existing.stage !== String(stage) ||
+        existing.status !== String(status) ||
+        existing.repository_revision !== (options.has("revision") ? String(options.get("revision")) : null) ||
+        existing.workload_fingerprint !== (options.has("workload") ? String(options.get("workload")) : null) ||
+        existing.checkpoint_fingerprint !== (options.has("checkpoint") ? String(options.get("checkpoint")) : null) ||
+        existing.hardware !== (options.has("hardware") ? String(options.get("hardware")) : null) ||
+        existing.accelerator_seconds !== optionalNumber("accelerator-seconds") ||
+        existing.estimated_cost_usd !== optionalNumber("cost") ||
+        existing.metrics_json !== metricsText ||
+        existing.artifact_path !== resolve(String(artifact)) ||
+        existing.started_at !== startedAt ||
+        existing.finished_at !== finishedAt) {
+      throw new Error(`Physical run ${String(runId)} already exists with different immutable evidence`);
+    }
+    db.prepare(`
+      INSERT INTO direction_run (
+        run_id, direction_id, contract_id, relation, status, linked_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(String(runId), directionId, contractId, relation, String(status), new Date().toISOString());
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  db.close();
+}
+
 function markdownCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
 }
@@ -347,11 +458,15 @@ function writeReport(dbPath, reportPath) {
   `).all();
   const runCounts = db.prepare(`
     SELECT COUNT(*) AS runs,
-           COUNT(DISTINCT direction_id) AS directions_with_runs,
+           COUNT(accelerator_seconds) AS runs_with_accelerator_seconds,
            COALESCE(SUM(accelerator_seconds), 0) AS accelerator_seconds,
+           COUNT(estimated_cost_usd) AS runs_with_estimated_cost,
            COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd
-    FROM experiment_run
+    FROM physical_run
   `).get();
+  const directionsWithRuns = db.prepare(`
+    SELECT COUNT(DISTINCT direction_id) AS count FROM direction_run
+  `).get().count;
   db.close();
 
   const statusSummary = counts.map(({ status, count }) => `${status}: ${count}`).join(" · ");
@@ -362,7 +477,7 @@ function writeReport(dbPath, reportPath) {
     `**Source SHA-256:** \`${meta.source_sha256}\`  `,
     `**Directions:** ${rows.length}  `,
     `**State:** ${statusSummary}  `,
-    `**Recorded runs:** ${runCounts.runs} across ${runCounts.directions_with_runs} directions; ${Number(runCounts.accelerator_seconds).toFixed(1)} accelerator-seconds; $${Number(runCounts.estimated_cost_usd).toFixed(4)} estimated cost.`,
+    `**Recorded physical runs:** ${runCounts.runs}, linked to ${directionsWithRuns} directions; accelerator time recorded for ${runCounts.runs_with_accelerator_seconds}/${runCounts.runs} runs (${Number(runCounts.accelerator_seconds).toFixed(1)} s total); cost recorded for ${runCounts.runs_with_estimated_cost}/${runCounts.runs} runs ($${Number(runCounts.estimated_cost_usd).toFixed(4)} total).`,
     "",
     "A direction is not counted as attempted merely because it appeared in X17. Its state changes only when an evidence artifact is attached. The first experiment is deliberately cheap; survivors progress to a bounded RTX 3090 discriminator and only then to matched-loss training.",
     "",
@@ -407,6 +522,9 @@ try {
       );
       writeReport(dbPath, reportPath);
     }
+  } else if (command === "run") {
+    recordRun(dbPath, options);
+    writeReport(dbPath, reportPath);
   } else {
     usage();
     process.exitCode = 2;

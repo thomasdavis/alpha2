@@ -62,6 +62,11 @@ const PROFILE_GPU_OPS = process.env.HELIOS_PROFILE_GPU_OPS === "1";
 // synchronous and deliberately diagnostic-only: it changes scheduling enough
 // that its aggregate throughput must not be reported as the production rate.
 const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1";
+// A structural signature records the exact ordered operation topology and flush
+// boundaries while deliberately excluding buffer handles and tensor values.
+// It is diagnostic-only: stable signatures across steps are the prerequisite
+// for ahead-of-time graph compilation and command replay.
+const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
 // Generic FP32 GEMMs have multiple portable Vulkan implementations.  The old
 // size threshold is retained as the zero-overhead default, while this opt-in
 // path measures the real device/driver/shape combination once and caches the
@@ -989,6 +994,7 @@ export interface GpuStepStats {
   /** Host wall time spent inside synchronous GPU-completion calls. */
   gpuBlockingTimeMs: number;
   operationsPerFlush: number;
+  graphSignature: string | null;
   byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
   byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
 }
@@ -1018,6 +1024,26 @@ class ComputeGraph {
   private opsByKernelThisStep = new Map<string, number>();
   private gpuTimeByKindThisStep = new Map<PendingOpKind, number>();
   private gpuTimeByKernelThisStep = new Map<string, number>();
+  private graphHashA = 0x811c9dc5;
+  private graphHashB = 0x9e3779b9;
+
+  private mixGraphWord(value: number): void {
+    if (!PROFILE_GRAPH_SIGNATURE) return;
+    const word = value >>> 0;
+    this.graphHashA = Math.imul(this.graphHashA ^ word, 0x01000193) >>> 0;
+    this.graphHashB = Math.imul((this.graphHashB + word + 0x7f4a7c15) >>> 0, 0x85ebca6b) >>> 0;
+  }
+
+  private mixGraphText(value: string): void {
+    if (!PROFILE_GRAPH_SIGNATURE) return;
+    for (let i = 0; i < value.length; i++) this.mixGraphWord(value.charCodeAt(i));
+    this.mixGraphWord(0xff);
+  }
+
+  private graphSignature(): string | null {
+    if (!PROFILE_GRAPH_SIGNATURE) return null;
+    return `${this.graphHashA.toString(16).padStart(8, "0")}${this.graphHashB.toString(16).padStart(8, "0")}`;
+  }
 
   // DGC state: pipeline slot for the BDA binary op kernel, -1 if not set up
   private dgcBinaryPipeSlot = -1;
@@ -1085,6 +1111,21 @@ class ComputeGraph {
         op.pushSize;                    // push constants bytes
     }
 
+    if (PROFILE_GRAPH_SIGNATURE) {
+      this.mixGraphWord(0x4f500001);
+      this.mixGraphText(op.kind);
+      this.mixGraphText(op.kernel);
+      this.mixGraphWord(bufCount);
+      this.mixGraphWord(op.writeMask);
+      this.mixGraphWord(op.groups[0]);
+      this.mixGraphWord(op.groups[1]);
+      this.mixGraphWord(op.groups[2]);
+      this.mixGraphWord(op.pushSize);
+      this.mixGraphWord(op.shape.length);
+      for (const dimension of op.shape) this.mixGraphWord(dimension);
+      this.mixGraphWord(op.elementCount ?? 0xffffffff);
+    }
+
     this.pending.push(op);
     this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
@@ -1109,6 +1150,8 @@ class ComputeGraph {
     this.opsByKernelThisStep.clear();
     this.gpuTimeByKindThisStep.clear();
     this.gpuTimeByKernelThisStep.clear();
+    this.graphHashA = 0x811c9dc5;
+    this.graphHashB = 0x9e3779b9;
   }
 
   getStepStats(): GpuStepStats {
@@ -1135,6 +1178,7 @@ class ComputeGraph {
       dispatchGpuTimeUs: this.dispatchGpuTimeUsThisStep,
       gpuBlockingTimeMs: gpuBlockingTimeMsThisStep,
       operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
+      graphSignature: this.graphSignature(),
       byKind: rows(this.opsByKindThisStep, this.gpuTimeByKindThisStep),
       byKernel: rows(this.opsByKernelThisStep, this.gpuTimeByKernelThisStep),
     };
@@ -1182,6 +1226,11 @@ class ComputeGraph {
     this.pendingPackedBytes = 0;
     this.flushesThisStep++;
     if (withWait) this.waitedFlushesThisStep++;
+    if (PROFILE_GRAPH_SIGNATURE) {
+      this.mixGraphWord(0x464c5553);
+      this.mixGraphWord(ops.length);
+      this.mixGraphWord(withWait ? 1 : 0);
+    }
 
     // ── DGC fast path: when all ops are DGC-eligible binary ops ──
     // Uses device-generated commands (single GPU submit, no per-op descriptor sets).

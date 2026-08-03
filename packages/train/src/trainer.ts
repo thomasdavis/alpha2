@@ -1467,6 +1467,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     dispatchGpuTimeUs: number;
     gpuBlockingTimeMs: number;
     operationsPerFlush: number;
+    graphSignature: string | null;
     byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
     byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
   }) | undefined =
@@ -2697,6 +2698,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         console.log(
           `  [gpu_ops] flushes=${gpuStepStats.flushes} waited=${gpuStepStats.waitedFlushes}` +
           ` dgc=${gpuStepStats.dgcFlushes} ops_per_flush=${gpuStepStats.operationsPerFlush.toFixed(1)}` +
+          (gpuStepStats.graphSignature ? ` graph_sig=${gpuStepStats.graphSignature}` : "") +
           timing + ` kinds=${top(gpuStepStats.byKind, 12)} kernels=${top(gpuStepStats.byKernel, 16)}`,
         );
       }

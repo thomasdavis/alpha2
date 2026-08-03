@@ -97,6 +97,18 @@ warm-median tokens/s on L40S; the 8 GiB / 64-output policy exited cleanly at
 eligible. The L40S pod was terminated. Further algorithm tests should use an
 RTX 3090 when one is available; raw rates remain device-labelled.
 
+**RTX 3090 reproduction, batch-10 proxy (2026-08-03).** A community 3090 at
+$0.22/hour became available and was bound to a three-hour auto-termination.
+The same 18-layer, d=640, FFN=1728, context-1024 graph was run at batch 10 so it
+fit the card's 24 GiB; this is not labelled as the exact batch-24 foundation
+shape. Exact individual allocation achieved 3,711 warm-median tok/s. An 8 GiB
+temporary slab plus 64 large outputs per size class achieved **5,807 tok/s
+(1.565x)**. GPU blocking stayed nearly fixed (1,185.3 vs 1,205.9 ms) while host
+build/lifecycle fell from 1,573.3 to 562.7 ms, reproducing the allocator's causal
+mechanism on the operator-selected cheap device. All four arms exited cleanly,
+but twelve steps are not a stability promotion. Evidence is mounted at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-3090-portfolio-20260803/`.
+
 The cost model has also been widened beyond optimizing SGD as given. X17 in the
 mounted research tree reduces the task to behavioral construction, surveys 100
 external mechanisms, and makes the closed-loop Behavioral Constraint Compiler
