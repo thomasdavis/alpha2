@@ -2724,6 +2724,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           timing + ` kinds=${top(gpuStepStats.byKind, 12)} kernels=${top(gpuStepStats.byKernel, 16)}`,
         );
       }
+      if (process.env.HELIOS_COOP_REPORT_SHAPES === "1") {
+        const backendWithCoopStats = backend as any;
+        if (typeof backendWithCoopStats.getMatmulCoopStats === "function") {
+          const coopStats = backendWithCoopStats.getMatmulCoopStats();
+          console.log(`  [coop_shapes] ${JSON.stringify(coopStats.shapeCounts ?? [])}`);
+        }
+      }
     }
 
     if (shouldLogGpuMem) {

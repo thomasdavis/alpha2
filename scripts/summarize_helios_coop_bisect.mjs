@@ -38,7 +38,7 @@ function parseRow(root, name) {
       tokensPerSecond: Number(match[5]),
     });
   }
-  const shapeLines = [...log.matchAll(/^coop_shapes: (.+)$/mg)];
+  const shapeLines = [...log.matchAll(/^(?:\s*\[coop_shapes\]\s+|coop_shapes:\s+)(.+)$/mg)];
   let coopShapes = [];
   if (shapeLines.length > 0) {
     coopShapes = JSON.parse(shapeLines.at(-1)[1]);
@@ -125,4 +125,3 @@ for (const row of rows) {
 }
 lines.push("", `Machine-readable report: \`${basename(jsonOutput)}\``, "");
 writeFileSync(markdownOutput, lines.join("\n"));
-

@@ -108,7 +108,7 @@ run_row cooperative_all on
 mapfile -t shapes < <(node - "$output_root/cooperative_all/console.log" <<'NODE'
 const fs = require("node:fs");
 const log = fs.readFileSync(process.argv[2], "utf8");
-const lines = [...log.matchAll(/^coop_shapes: (.+)$/mg)];
+const lines = [...log.matchAll(/^(?:\s*\[coop_shapes\]\s+|coop_shapes:\s+)(.+)$/mg)];
 if (lines.length === 0) process.exit(0);
 const rows = JSON.parse(lines.at(-1)[1]);
 const shapes = [...new Set(rows.map((row) => `${row.M}x${row.N}x${row.K}`))].sort();
