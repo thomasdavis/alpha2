@@ -4,6 +4,14 @@
 > [comprehensive Alpha and Helios handoff](HANDOFF-TO-NEXT-AGENT-2026-08-03.md) first. It is the current
 > self-contained transfer package; the rest of this directory supplies its deeper contracts and evidence.
 
+> **Performance program (2026-08-03):** a standing goal to cut training cost by >=10x is recorded in
+> [GOAL-EXTREME-PERFORMANCE-2026-08-03.md](GOAL-EXTREME-PERFORMANCE-2026-08-03.md), with the research at
+> `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/`. Read it before proposing any kernel
+> candidate: it measures Helios at **5.74% of the 4090's FP32 peak** (a 12–22x gap), diagnoses the
+> unattributed half of the step as **host-bound and unoverlapped**, shows the contracted batch size is
+> **2.3x above the gradient noise scale**, and closes four directions by measurement — linear/oscillator
+> attention, FMM attention at S=1024, any attention replacement at S=1024, and low-rank weights.
+
 > **Current-project note (2026-08-03):** the original chatty-model goal is active. V11 and V12 remain rejected
 > negative results. The foundation LR pilot completed and selected `0.002`; no full foundation run has begun.
 > Exact Helios profiling then identified generic GEMM as the immediate bottleneck, and the first portable
