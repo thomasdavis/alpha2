@@ -75,6 +75,8 @@ for mode in "${modes[@]}"; do
     slab8_pool8) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=8; pool_entries=512 ;;
     slab16_pool8) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=8; pool_entries=512 ;;
     slab8_pool32) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=32; pool_entries=1024 ;;
+    slab8_pool64) exact=0; disable_slabs=0; slab_mb=8192; large_per_class=64; pool_entries=2048 ;;
+    slab12_pool48) exact=0; disable_slabs=0; slab_mb=12288; large_per_class=48; pool_entries=1536 ;;
     slab16_pool32) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=32; pool_entries=1024 ;;
     slab16_pool64) exact=0; disable_slabs=0; slab_mb=16384; large_per_class=64; pool_entries=2048 ;;
     *) echo "unknown mode: $mode" >&2; exit 2 ;;
