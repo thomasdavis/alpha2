@@ -1,5 +1,11 @@
 # HANDOFF — Alpha foundation and Helios acceleration active; best honest chat checkpoint unchanged, state as of 2026-08-03
 
+> **Latest self-contained agent transfer:**
+> [`docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md`](docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md).
+> It freezes the current product north star, repository/runtime state, public artifact identities, selected Helios
+> baseline, open and rejected experiments, mounted evidence map, downstream obligations, and exact next-action
+> order. Use it before the older chronological record below.
+
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
 
 ### 2026-08-03 superseding execution state

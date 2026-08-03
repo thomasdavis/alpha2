@@ -1,5 +1,9 @@
 # Alpha chat-model resume dossier
 
+> **New agent entry point (2026-08-03):** read the
+> [comprehensive Alpha and Helios handoff](HANDOFF-TO-NEXT-AGENT-2026-08-03.md) first. It is the current
+> self-contained transfer package; the rest of this directory supplies its deeper contracts and evidence.
+
 > **Current-project note (2026-08-03):** the original chatty-model goal is active. V11 and V12 remain rejected
 > negative results. The foundation LR pilot completed and selected `0.002`; no full foundation run has begun.
 > Exact Helios profiling then identified generic GEMM as the immediate bottleneck, and the first portable

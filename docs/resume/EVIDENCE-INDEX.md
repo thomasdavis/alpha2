@@ -3,6 +3,14 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+The current self-contained transfer package is:
+
+    docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md
+
+It records the exact repository/runtime/publication snapshot, product boundary, selected throughput baseline,
+open and rejected experiments, evidence map, and next-action order. The mounted records below remain the
+authority for raw measurements.
+
 The mandatory mounted-disk preservation policy and cross-experiment register are:
 
     /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
