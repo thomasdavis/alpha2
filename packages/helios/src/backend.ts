@@ -1810,39 +1810,54 @@ export class HeliosBackend implements Backend {
   smokeTest(): { verified: boolean; throughputGBps: number } {
     this.init();
     graph.flush();
+    const tensors: TensorData[] = [];
+    try {
+      const size = 65536;
+      const a = this.full([size], 1.0);
+      const b = this.full([size], 2.0);
+      const c = this.add(a, b);
+      tensors.push(a, b, c);
+      graph.flush();
 
-    const size = 65536;
-    const a = this.full([size], 1.0);
-    const b = this.full([size], 2.0);
-    const c = this.add(a, b);
-    graph.flush();
+      // Verify result
+      const data = c.data as Float32Array;
+      let correct = 0;
+      for (let i = 0; i < Math.min(64, data.length); i++) {
+        if (Math.abs(data[i] - 3.0) < 1e-6) correct++;
+      }
+      const verified = correct === Math.min(64, data.length);
 
-    // Verify result
-    const data = c.data as Float32Array;
-    let correct = 0;
-    for (let i = 0; i < Math.min(64, data.length); i++) {
-      if (Math.abs(data[i] - 3.0) < 1e-6) correct++;
+      // Quick throughput benchmark: 1M element add
+      const benchSize = 1_048_576;
+      const ba = this.full([benchSize], 1.0);
+      const bb = this.full([benchSize], 2.0);
+      tensors.push(ba, bb);
+      const start = performance.now();
+      for (let i = 0; i < 10; i++) {
+        const output = this.add(ba, bb);
+        tensors.push(output);
+      }
+      graph.flush();
+      // Force readback to include full round-trip
+      const last = this.add(ba, bb);
+      tensors.push(last);
+      graph.flush();
+      void (last.data as Float32Array)[0];
+      const elapsed = performance.now() - start;
+      const bytesPerOp = benchSize * 4 * 3; // 2 reads + 1 write
+      const throughputGBps = (11 * bytesPerOp) / (elapsed * 1e6);
+
+      return { verified, throughputGBps };
+    } finally {
+      // The smoke test runs before model initialization. Explicitly retire every
+      // temporary tensor and destroy its pools so this preflight cannot consume
+      // the small amount of VRAM headroom needed by the exact training shape.
+      // FinalizationRegistry is intentionally not relied on for timely cleanup.
+      for (let i = tensors.length - 1; i >= 0; i--) {
+        this.releaseGpuTensor(tensors[i]);
+      }
+      this.purgeBufferPools();
     }
-    const verified = correct === Math.min(64, data.length);
-
-    // Quick throughput benchmark: 1M element add
-    const benchSize = 1_048_576;
-    const ba = this.full([benchSize], 1.0);
-    const bb = this.full([benchSize], 2.0);
-    const start = performance.now();
-    for (let i = 0; i < 10; i++) {
-      this.add(ba, bb);
-    }
-    graph.flush();
-    // Force readback to include full round-trip
-    const last = this.add(ba, bb);
-    graph.flush();
-    void (last.data as Float32Array)[0];
-    const elapsed = performance.now() - start;
-    const bytesPerOp = benchSize * 4 * 3; // 2 reads + 1 write
-    const throughputGBps = (11 * bytesPerOp) / (elapsed * 1e6);
-
-    return { verified, throughputGBps };
   }
 
   /** Get count of GPU ops dispatched this step (reset with resetStepOps). */
