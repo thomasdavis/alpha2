@@ -4,13 +4,14 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-if (process.argv.length < 3 || process.argv.length > 6) {
-  console.error("usage: analyze_helios_buffer_lifetimes.mjs TRACE.jsonl [--step N] [--json]");
+if (process.argv.length < 3 || process.argv.length > 8) {
+  console.error("usage: analyze_helios_buffer_lifetimes.mjs TRACE.jsonl [--step N] [--skip-first N] [--json]");
   process.exit(2);
 }
 
 const tracePath = resolve(process.argv[2]);
 let selectedStep = null;
+let skipFirst = 0;
 let jsonOutput = false;
 for (let index = 3; index < process.argv.length; index += 1) {
   if (process.argv[index] === "--json") {
@@ -18,17 +19,21 @@ for (let index = 3; index < process.argv.length; index += 1) {
   } else if (process.argv[index] === "--step") {
     selectedStep = Number.parseInt(process.argv[++index] ?? "", 10);
     if (!Number.isInteger(selectedStep)) throw new Error("--step requires an integer");
+  } else if (process.argv[index] === "--skip-first") {
+    skipFirst = Number.parseInt(process.argv[++index] ?? "", 10);
+    if (!Number.isInteger(skipFirst) || skipFirst < 0) throw new Error("--skip-first requires a non-negative integer");
   } else {
     throw new Error(`Unknown argument: ${process.argv[index]}`);
   }
 }
 
-const rows = readFileSync(tracePath, "utf8")
+const capturedRows = readFileSync(tracePath, "utf8")
   .trim()
   .split("\n")
   .filter(Boolean)
   .map((line) => JSON.parse(line))
   .filter((row) => selectedStep === null || row.step === selectedStep);
+const rows = capturedRows.slice(skipFirst);
 if (rows.length === 0) throw new Error(`No selected traces in ${tracePath}`);
 
 function align(value, alignment = 256) {
@@ -179,6 +184,8 @@ const uniquePlanFingerprints = [...new Set(analyses.map((row) => row.planFingerp
 const result = {
   schemaVersion: 1,
   tracePath,
+  capturedSteps: capturedRows.length,
+  skippedLeadingSteps: skipFirst,
   steps: analyses.length,
   planStable: uniquePlanFingerprints.length === 1,
   uniquePlanFingerprints,
@@ -197,7 +204,7 @@ if (jsonOutput) {
 
 console.log("# Helios buffer-lifetime and static-arena analysis\n");
 console.log(`Trace: \`${tracePath}\``);
-console.log(`Steps: ${result.steps}`);
+console.log(`Steps analyzed: ${result.steps} (${result.skippedLeadingSteps} leading captured step(s) excluded)`);
 console.log(`Logical lifetime plan stable: **${result.planStable ? "yes" : "no"}**\n`);
 console.log("| Step | Ops | Physical buffers | Physical GiB observed | Transient values | Transient GiB created | Peak live GiB | Greedy arena GiB | Temporal reuse | Plan fingerprint |");
 console.log("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");

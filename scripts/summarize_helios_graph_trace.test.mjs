@@ -32,6 +32,7 @@ test("identical traces are reported as exact topology stability", () => {
   ]);
   assert.equal(result.exactEventStreamStable, true);
   assert.equal(result.operationTopologyStable, true);
+  assert.equal(result.bufferBindingTopologyStable, true);
   assert.equal(result.flushScheduleStable, true);
   assert.equal(result.comparisons[0].firstDifferenceIndex, null);
   assert.equal(result.uniqueSignatures.length, 1);
@@ -74,4 +75,21 @@ test("dynamic flush placement does not falsely imply dynamic operation topology"
   assert.equal(result.flushScheduleStable, false);
   assert.equal(result.operationComparisons[0].firstDifferenceIndex, null);
   assert.deepEqual(result.flushSchedules[1].flushes.map((flush) => flush.afterOperation), [1, 2]);
+});
+
+test("changing physical buffer bindings do not change semantic operation topology", () => {
+  const first = [
+    { event: "op", order: 0, kind: "matmul", kernel: "a", bufferCount: 3, bufferIds: [0, 1, 2], bufferBytes: [64, 64, 64], writeMask: 4 },
+  ];
+  const second = [
+    { event: "op", order: 0, kind: "matmul", kernel: "a", bufferCount: 3, bufferIds: [0, 1, 9], bufferBytes: [64, 64, 64], writeMask: 4 },
+  ];
+  const result = run([
+    { step: 1, graphSignature: "aaaa", events: first },
+    { step: 2, graphSignature: "bbbb", events: second },
+  ]);
+  assert.equal(result.operationTopologyStable, true);
+  assert.equal(result.bufferBindingTopologyStable, false);
+  assert.equal(result.operationComparisons[0].firstDifferenceIndex, null);
+  assert.equal(result.bufferBindingComparisons[0].firstDifferenceIndex, 0);
 });

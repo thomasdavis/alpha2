@@ -7,12 +7,12 @@ import test from "node:test";
 
 const script = new URL("./analyze_helios_buffer_lifetimes.mjs", import.meta.url).pathname;
 
-function analyze(rows) {
+function analyze(rows, args = []) {
   const directory = mkdtempSync(join(tmpdir(), "helios-lifetime-"));
   const trace = join(directory, "trace.jsonl");
   writeFileSync(trace, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
   try {
-    const result = spawnSync(process.execPath, [script, trace, "--json"], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [script, trace, ...args, "--json"], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   } finally {
@@ -62,4 +62,18 @@ test("rejects legacy traces without buffer identities", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("excludes allocation warm-up before checking plan stability", () => {
+  const warmup = [op(0, [0, 1, 2], [100, 100, 128], 4)];
+  const steady = [op(0, [0, 1, 2], [100, 100, 64], 4)];
+  const result = analyze([
+    { step: 1, events: warmup },
+    { step: 2, events: steady },
+    { step: 3, events: steady },
+  ], ["--skip-first", "1"]);
+  assert.equal(result.capturedSteps, 3);
+  assert.equal(result.skippedLeadingSteps, 1);
+  assert.equal(result.steps, 2);
+  assert.equal(result.planStable, true);
 });

@@ -220,10 +220,10 @@ for mode in "${modes[@]}"; do
       "$mode_dir/run/gpu-graph-trace.jsonl" \
       > "$mode_dir/GRAPH-TRACE.md"
     node scripts/analyze_helios_buffer_lifetimes.mjs \
-      "$mode_dir/run/gpu-graph-trace.jsonl" --json \
+      "$mode_dir/run/gpu-graph-trace.jsonl" --skip-first "$warmup" --json \
       > "$mode_dir/buffer-lifetime-analysis.json"
     node scripts/analyze_helios_buffer_lifetimes.mjs \
-      "$mode_dir/run/gpu-graph-trace.jsonl" \
+      "$mode_dir/run/gpu-graph-trace.jsonl" --skip-first "$warmup" \
       > "$mode_dir/BUFFER-LIFETIME-ANALYSIS.md"
   fi
   if (( status != 0 )); then

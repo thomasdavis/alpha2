@@ -52,10 +52,12 @@ const comparisons = rows.slice(1).map((row) => ({
   candidateSignature: row.graphSignature,
   ...firstDifference(reference.events, row.events),
 }));
-function operationEvents(row) {
+function operationEvents(row, includeBindings) {
   return row.events
     .filter((event) => event.event === "op")
-    .map(({ order: _order, ...operation }) => operation);
+    .map(({ order: _order, bufferIds, ...operation }) => (
+      includeBindings ? { ...operation, ...(bufferIds === undefined ? {} : { bufferIds }) } : operation
+    ));
 }
 
 function flushSchedule(row) {
@@ -75,11 +77,17 @@ function flushSchedule(row) {
   return schedule;
 }
 
-const referenceOperations = operationEvents(reference);
+const referenceOperations = operationEvents(reference, false);
 const operationComparisons = rows.slice(1).map((row) => ({
   referenceStep: reference.step,
   candidateStep: row.step,
-  ...firstDifference(referenceOperations, operationEvents(row)),
+  ...firstDifference(referenceOperations, operationEvents(row, false)),
+}));
+const referenceBufferBindings = operationEvents(reference, true);
+const bufferBindingComparisons = rows.slice(1).map((row) => ({
+  referenceStep: reference.step,
+  candidateStep: row.step,
+  ...firstDifference(referenceBufferBindings, operationEvents(row, true)),
 }));
 const flushSchedules = rows.map((row) => ({ step: row.step, flushes: flushSchedule(row) }));
 const serializedReferenceFlushes = JSON.stringify(flushSchedules[0].flushes);
@@ -90,6 +98,7 @@ const result = {
   uniqueSignatures: [...new Set(rows.map((row) => row.graphSignature))],
   exactEventStreamStable: comparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
   operationTopologyStable: operationComparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
+  bufferBindingTopologyStable: bufferBindingComparisons.every(({ firstDifferenceIndex }) => firstDifferenceIndex === null),
   flushScheduleStable: flushSchedules.every(({ flushes }) => JSON.stringify(flushes) === serializedReferenceFlushes),
   eventsPerStep: rows.map((row) => ({
     step: row.step,
@@ -99,6 +108,7 @@ const result = {
   })),
   comparisons,
   operationComparisons,
+  bufferBindingComparisons,
   flushSchedules,
 };
 
@@ -113,6 +123,7 @@ console.log(`Steps: ${result.steps}`);
 console.log(`Unique structural signatures: ${result.uniqueSignatures.length}`);
 console.log(`Exact event stream stable: **${result.exactEventStreamStable ? "yes" : "no"}**`);
 console.log(`Operation-only topology stable: **${result.operationTopologyStable ? "yes" : "no"}**`);
+console.log(`Physical buffer-binding topology stable: **${result.bufferBindingTopologyStable ? "yes" : "no"}**`);
 console.log(`Flush schedule stable: **${result.flushScheduleStable ? "yes" : "no"}**\n`);
 console.log("| Reference | Candidate | First difference | Common prefix | Common suffix | Reference event | Candidate event |");
 console.log("|---:|---:|---:|---:|---:|---|---|");
