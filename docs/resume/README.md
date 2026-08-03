@@ -4,6 +4,12 @@
 > [comprehensive Alpha and Helios handoff](HANDOFF-TO-NEXT-AGENT-2026-08-03.md) first. It is the current
 > self-contained transfer package; the rest of this directory supplies its deeper contracts and evidence.
 
+> **HANDOFF (2026-08-03):** the performance research index is
+> [alpha-handoff-2026-08-03.md](alpha-handoff-2026-08-03.md), also at
+> https://alpha.donto.org/research/alpha-handoff-2026-08-03.html — every document, every result
+> with its status, every experiment script, reproduction instructions with data hashes, and the
+> ordered next actions. Read it before proposing any performance work.
+
 > **Performance program (2026-08-03):** a standing goal to cut training cost by >=10x is recorded in
 > [GOAL-EXTREME-PERFORMANCE-2026-08-03.md](GOAL-EXTREME-PERFORMANCE-2026-08-03.md), with the research at
 > `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/`. Read it before proposing any kernel
