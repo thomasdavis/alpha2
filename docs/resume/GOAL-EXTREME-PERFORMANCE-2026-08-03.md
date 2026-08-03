@@ -97,8 +97,24 @@ Two changes to the **training contract** — no kernel work, no new mathematics:
    draws divided by the single-draw error is **0.2479–0.2502** against a
    theoretical 1/sqrt(16) = 0.2500. **Stochastic rounding leaves no detectable
    systematic component, down to int2.** Round-to-nearest is smaller per step but
-   has no such decay — which is exactly the trap. Open-loop only; closed-loop
-   drift over a real run remains the decisive test.
+   has no such decay — which is exactly the trap.
+
+   **CLOSED-LOOP CONFIRMED 2026-08-03 (X13).** Trained at proxy scale with
+   forward and `dX` exact and only `dW` from quantised operands, matched tokens
+   and data order: fp32 7.0567 · bf16 +0.0031 · int8 +0.0003 · **int4 -0.0005**
+   · int3 +0.0066. **All four arms within 0.007 nats of FP32**; int4 is
+   indistinguishable. Per-step error did not compound. The FP32 control
+   reproduced X7's independent run to four decimals, validating the harness.
+   Remaining risk is horizon: 250 steps against a 79,020-step contract (316x).
+
+7. **Curvature-aware precision allocation beats uniform (X14).** Testing an
+   external proposal that damaging error is `e^T H e` not `||e||_2`, via the
+   K-FAC factorisation `H ~ A (x) B` (so `||E||^2_H = tr(B E A E^T)` is exact):
+   asymmetric 8/3 bits on the top 12.5% of coefficients by curvature gives
+   curvature error 0.0092 at 3.62 avg bits, versus uniform int4's 0.0254 at 4.00
+   bits — better, at fewer bits. Wins both valid matched-budget comparisons.
+   The quantisation error is itself roughly isotropic (1.124), so the case rests
+   on the *gradient's* anisotropy, which the stable-rank measurement confirms.
 
 6. **Norm-importance sampling of `dW` confirmed (X11).** `p_t` proportional to
    `||delta_t|| * ||x_t||` (the Frobenius norm of an outer product factorises)
