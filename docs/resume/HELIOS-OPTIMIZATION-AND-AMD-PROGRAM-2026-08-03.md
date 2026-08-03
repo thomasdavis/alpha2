@@ -696,6 +696,9 @@ Existing evidence:
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-production-oracle-preflight-20260803/`
+- `/mnt/donto-data/donto-resources/research/alpha-helios/CURRENT-BOTTLENECK-LEDGER-2026-08-03.md`
+- `/mnt/donto-data/donto-resources/research/alpha-helios/PERFORMANCE-PRIOR-ART-AND-OPPORTUNITY-AUDIT-2026-08-03.md`
 
 New optimization evidence should be stored under:
 

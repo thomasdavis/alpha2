@@ -15,8 +15,10 @@ import { assessHeliosTrainingDevice } from "@alpha/train";
 // Skip unless a physical Vulkan GPU satisfies the current Helios kernel
 // capability contract. This intentionally admits AMD RDNA wave32 devices.
 let hasSupportedGpu = false;
+let deviceInfo: ReturnType<typeof getDeviceInfo> | null = null;
 try {
-  hasSupportedGpu = assessHeliosTrainingDevice(getDeviceInfo()).supported;
+  deviceInfo = getDeviceInfo();
+  hasSupportedGpu = assessHeliosTrainingDevice(deviceInfo).supported;
 } catch {
   hasSupportedGpu = false;
 }
@@ -35,6 +37,7 @@ afterAll(() => {
 });
 
 const describeGpu = describe.skipIf(!hasSupportedGpu);
+const describeCoopGpu = describe.skipIf(!hasSupportedGpu || deviceInfo?.coopMatSupported !== true);
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,49 @@ function maxDiff(a: Float32Array, b: Float32Array): number {
     max = Math.max(max, Math.abs(a[i] - b[i]));
   }
   return max;
+}
+
+const RANK_ONE_FACTORS = [1, -1, 0.5, -0.5] as const;
+const RANK_ONE_BASIS = [0.25, -0.25, 0.125, -0.125] as const;
+
+function rankOneFactor(i: number): number {
+  return RANK_ONE_FACTORS[i % RANK_ONE_FACTORS.length];
+}
+
+function rankOneBasis(i: number): number {
+  return RANK_ONE_BASIS[i % RANK_ONE_BASIS.length];
+}
+
+function rankOneNorm(inner: number): number {
+  let norm = 0;
+  for (let k = 0; k < inner; k++) norm += rankOneBasis(k) ** 2;
+  return norm;
+}
+
+function assertRankOneProduct(
+  actual: Float32Array,
+  rows: number,
+  columns: number,
+  inner: number,
+): void {
+  const norm = rankOneNorm(inner);
+  let worstIndex = -1;
+  let worstError = 0;
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const index = row * columns + column;
+      const expected = rankOneFactor(row) * rankOneFactor(column + 1) * norm;
+      const error = Math.abs(actual[index] - expected);
+      if (error > worstError) {
+        worstError = error;
+        worstIndex = index;
+      }
+    }
+  }
+  expect(
+    worstError,
+    `rank-one oracle: index=${worstIndex} actual=${actual[worstIndex]} maxAbs=${worstError}`,
+  ).toBeLessThanOrEqual(1e-4);
 }
 
 // ── Barrier correctness tests ────────────────────────────────────────────────
@@ -310,6 +356,89 @@ describeGpu("Matmul correctness", () => {
       if (!isFinite(result[i])) { allFinite = false; break; }
     }
     expect(allFinite).toBe(true);
+  });
+});
+
+// These shapes deliberately cross the 20M-FLOP cooperative super-tile gate and
+// use Alpha's hidden/FFN widths. The rank-one construction has a closed-form,
+// binary-exact result, so the oracle checks every output without an O(MNK) CPU
+// reference. Dispatch counters and kernel identity prevent a fallback from
+// masquerading as cooperative-matrix coverage.
+describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
+  const rows = 128;
+  const hidden = 512;
+  const ffn = 1408;
+
+  it("validates ordinary forward orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: rows * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
+    );
+    const b = Array.from(
+      { length: hidden * ffn },
+      (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmul(gpu.fromArray(a, [rows, hidden]), gpu.fromArray(b, [hidden, ffn]));
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_basic_");
+    expect(after.lastCoopShape).toEqual({
+      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: false,
+    });
+    assertRankOneProduct(values, rows, ffn, hidden);
+  });
+
+  it("validates transposed-B forward orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: rows * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
+    );
+    const b = Array.from(
+      { length: ffn * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden) + 1) * rankOneBasis(index % hidden),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposed(
+      gpu.fromArray(a, [rows, hidden]),
+      gpu.fromArray(b, [ffn, hidden]),
+    );
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_");
+    expect(after.lastCoopShape).toEqual({
+      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
+    });
+    assertRankOneProduct(values, rows, ffn, hidden);
+  });
+
+  it("validates transposed-A weight-gradient orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: hidden * rows },
+      (_, index) => rankOneBasis(Math.floor(index / rows)) * rankOneFactor(index % rows),
+    );
+    const b = Array.from(
+      { length: hidden * ffn },
+      (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposedA(
+      gpu.fromArray(a, [hidden, rows]),
+      gpu.fromArray(b, [hidden, ffn]),
+    );
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_a_");
+    expect(after.lastCoopShape).toEqual({
+      M: rows, N: ffn, K: hidden, batchSize: 1, transposedA: true, transposedB: false,
+    });
+    assertRankOneProduct(values, rows, ffn, hidden);
   });
 });
 

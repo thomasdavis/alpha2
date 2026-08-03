@@ -7,6 +7,8 @@ The mandatory mounted-disk preservation policy and cross-experiment register are
 
     /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
     /mnt/donto-data/donto-resources/research/alpha-helios/EVIDENCE-REGISTER.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/CURRENT-BOTTLENECK-LEDGER-2026-08-03.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/PERFORMANCE-PRIOR-ART-AND-OPPORTUNITY-AUDIT-2026-08-03.md
 
 Raw research, controls, failures, rejected candidates, machine metadata, and checksums must remain on the mounted
 drive; repository prose is an index, not a substitute for those artifacts.
@@ -126,6 +128,20 @@ dirty worktree, untracked scripts, all stashes, and small root artifacts were pr
 at:
 
     /mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/
+
+### Cooperative GEMM production-pattern oracle preflight
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-production-oracle-preflight-20260803/
+
+The legacy cooperative path is now known to have two distinct correctness failures: cooperative forward changed
+the first loss from 2.7419 to 6.9667 even with FP16/loss scaling disabled, while the later experimental
+cooperative backward separately produced extreme gradients and memory/cast pressure. Three new closed-form
+rank-one tests exercise ordinary, transposed-B, and transposed-A GEMMs at `[128,512,1408]` production-pattern
+dimensions, require direct cooperative-dispatch telemetry, and check every output to `1e-4`. The full local suite
+passes 233 tests with 53 GPU-gated and zero failures. These three cases remain explicitly unproven on physical
+cooperative-matrix hardware; no speed claim exists yet.
 
 ## 2026-08-02 Helios chat-throughput sweep
 

@@ -1380,6 +1380,15 @@ export interface CoopMatmulStats {
   coopPaddedBatchedDispatches: number;
   coopTransposedARewriteDispatches: number;
   coopHitRate: number;
+  lastCoopKernel: string | null;
+  lastCoopShape: {
+    M: number;
+    N: number;
+    K: number;
+    batchSize: number;
+    transposedA: boolean;
+    transposedB: boolean;
+  } | null;
 }
 
 type MatmulTile = 16 | 32;
@@ -1421,6 +1430,8 @@ export class HeliosBackend implements Backend {
   private _coopPadded2DDispatches = 0;
   private _coopPaddedBatchedDispatches = 0;
   private _coopTransposedARewriteDispatches = 0;
+  private _lastCoopKernel: string | null = null;
+  private _lastCoopShape: CoopMatmulStats["lastCoopShape"] = null;
   private _coopF16InputCache = new Map<TensorData, TensorData>();
   private _coopF16InputCacheLastFlushTimeline = -1;
   private _matmulTileCache = new Map<string, MatmulTile>();
@@ -1750,6 +1761,8 @@ export class HeliosBackend implements Backend {
       coopPaddedBatchedDispatches: this._coopPaddedBatchedDispatches,
       coopTransposedARewriteDispatches: this._coopTransposedARewriteDispatches,
       coopHitRate: hit,
+      lastCoopKernel: this._lastCoopKernel,
+      lastCoopShape: this._lastCoopShape ? { ...this._lastCoopShape } : null,
     };
   }
 
@@ -4168,6 +4181,12 @@ export class HeliosBackend implements Backend {
         pushSize: 16,
         shape: [splitK, M, N],
       });
+      this._lastCoopKernel = kernelName;
+      this._lastCoopShape = {
+        M, N, K, batchSize,
+        transposedA: false,
+        transposedB: transposed,
+      };
       if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
 
       // Reduction: sum across split dimension using sum_axis kernel
@@ -4222,6 +4241,12 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, M, N],
     });
+    this._lastCoopKernel = kernelName;
+    this._lastCoopShape = {
+      M, N, K, batchSize,
+      transposedA: false,
+      transposedB: transposed,
+    };
     if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, M, N], region);
@@ -4390,6 +4415,12 @@ export class HeliosBackend implements Backend {
         pushSize: 16,
         shape: [splitK, outM, N],
       });
+      this._lastCoopKernel = kernelName;
+      this._lastCoopShape = {
+        M: outM, N, K: loopK, batchSize,
+        transposedA: true,
+        transposedB: false,
+      };
       if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK transA kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
 
       const totalOutput = outM * N;
@@ -4437,6 +4468,12 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, outM, N],
     });
+    this._lastCoopKernel = kernelName;
+    this._lastCoopShape = {
+      M: outM, N, K: loopK, batchSize,
+      transposedA: true,
+      transposedB: false,
+    };
     if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, outM, N], region);
