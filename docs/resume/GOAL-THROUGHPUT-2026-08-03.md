@@ -41,18 +41,27 @@ They are the output of the measured ladder, not an aspiration. The step decompos
 
 **The committed target is reached at R4, in pure FP32, with no tensor cores and no change to the arithmetic.** That is deliberate: it does not depend on the one fact nobody has measured.
 
-## The single unmeasured fact that changes everything
+## The cooperative-accumulation gate is now measured
 
-R5′ is *slower than R4*. If GeForce Ada's FP32-accumulate cooperative-matrix path runs at half rate on this die, BF16 tensor cores deliver 52.0 TFLOP/s attainable against well-tiled FP32's 57.8 — **tensor cores would not be worth using at all**, and the entire mixed-precision effort should be cancelled in favour of better FP32 tiling.
+The physical RTX 4090 result rejects the ladder's binary full-rate/half-rate
+model. FP32 accumulation is shape-dependent: 0.901x the F16-accumulate rate on
+the foundation FFN-up shape, 0.613x on square 4096, and 0.791x on the foundation
+LM head. The useful engineering comparison is nevertheless decisive: the
+FP32-accumulate cooperative path delivered 101.6–118.7 TFLOP/s versus
+20.4–20.8 TFLOP/s for selected portable FP32, or 4.99–5.81x per GEMM. Including
+the current F32-to-F16 cast still delivered 84.7–101.0 TFLOP/s.
 
-That inverts the usual advice, and it is settled by a **~$0.70, one-hour microbenchmark**. It must run before any cooperative-matrix implementation work, not after.
+All four modes passed exact production-pattern oracles with maximum error zero.
+Mixed precision therefore remains open and worth engineering; it is not
+promoted to training until whole-step and trajectory parity clear. Evidence:
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-accum-physical-20260803-r3/`.
 
 ## Order of work
 
 | # | Action | Cost | Why first |
 |---:|---|---|---|
 | 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | **instrumentation complete 2026-08-03; physical value open** | Confirms or refutes the host-bound model that the whole ladder rests on |
-| 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | **harness complete 2026-08-03; ~$0.70 physical run open** | Decides whether R5 is worth 2× or worth nothing |
+| 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | **complete 2026-08-03 on RTX 4090** | Shape-dependent 0.61–0.90x of F16 accumulation; 4.99–5.81x selected FP32, so mixed precision stays open |
 | 3 | R1 — static-graph record and replay | days | Largest single rung (1.84×), and it makes every later kernel gain actually visible |
 | 4 | R2 → R3 → R4 | — | Reprofile after each; the ordering may change once R1 lands |
 | 5 | R5 / R6 | — | Only if step 2 says yes |
@@ -67,18 +76,22 @@ guard. Helios measures synchronous completion wall time and the trainer emits
 `dispatch_gpu_us`. Historical profile logs remain parseable. Local validation
 is 109 suites / 233 executed tests passed / 55 physical-gated / 0 failed.
 
-The paid discriminator is also ready. It first requires all three
-production-pattern cooperative GEMM oracles to execute with no skips, then
-compares resident-F16 FP32 accumulation, resident-F16 F16 accumulation,
-cast-inclusive cooperative execution, and selected tiled FP32 on exact
-foundation matrix shapes. Evidence and the runner live at:
+The paid discriminator has run. It required all production-pattern cooperative
+GEMM oracles to execute with no skips, then compared resident-F16 FP32
+accumulation, resident-F16 F16 accumulation, cast-inclusive cooperative
+execution, and selected tiled FP32 on exact foundation matrix shapes. Evidence
+and the runner live at:
 
 - `scripts/bench-helios-coop-accum.mjs`;
 - `scripts/run_helios_coop_accum_sweep.sh`;
-- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-build-instrumentation-preflight-20260803/`.
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-accum-physical-20260803-r3/`.
 
-No host-bound or mixed-precision conclusion has been promoted yet. Both require
-the next physical run.
+The host split is still open. Five exact-shape attempts on one RTX 4090 host
+failed before step one because the driver's usable device budget is below the
+full FP32 graph peak. Those failures diagnosed and removed a 53 MiB smoke-test
+leak, exposed 704 MiB of temp-slab tail waste, and added exact buffer classes;
+none changed the shape or arithmetic. The next probe moves the unchanged graph
+to a higher-memory one-GPU device rather than weakening the measurement.
 
 ## Parity gates — how a rung is earned
 

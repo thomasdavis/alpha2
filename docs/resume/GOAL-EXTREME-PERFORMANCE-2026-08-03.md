@@ -47,10 +47,11 @@ tokens/s on the exact foundation shape from **7,254 to 30,000 committed**
 **18.0 hours / $12.41**. The committed target is reached in pure FP32 with no
 tensor cores and no change to the arithmetic.
 
-It carries one decisive unknown: if GeForce Ada's FP32-accumulate
-cooperative-matrix path runs at half rate on this die, BF16 tensor cores are
-*slower* than well-tiled FP32 and the mixed-precision effort should be cancelled
-outright. A ~$0.70 microbenchmark settles it and must precede implementation.
+The cooperative-matrix discriminator is now physically measured. GeForce Ada's
+FP32-accumulate rate is shape-dependent (0.61–0.90x the F16-accumulate rate),
+but the current path is already 4.99–5.81x selected portable FP32 per GEMM and
+4.16–4.94x including casts. Mixed precision therefore remains an active path,
+subject to whole-step and training-trajectory parity.
 
 ## Gates
 
@@ -69,12 +70,14 @@ experiments in the program, and together they price every Tier-1 item. Kernel wo
 resumes only after both, and then against a known target instead of against the
 previous kernel.
 
-The G1a implementation and the cooperative-accumulation discriminator are now
-locally complete. The physical runner fails if the production-pattern
-cooperative tests skip, records the exact device and source, and separates the
-die accumulation-rate ratio from cast-inclusive implementation efficiency.
-Local proof: 109 suites, 233 executed tests passed, 55 physical-gated, zero
-failed. No physical throughput conclusion is claimed yet.
+The G1a implementation is locally complete and the cooperative-accumulation
+discriminator is physically complete on an RTX 4090. The physical runner fails
+if production-pattern cooperative tests skip, records the exact device and
+source, and separates accumulation-rate ratio from cast-inclusive efficiency.
+All production oracles passed with maximum error zero. G1a's host/GPU split
+remains open because the first 4090 host exposed less usable VRAM than the exact
+FP32 graph peak; the allocator failure sequence is preserved rather than
+silently changing the batch.
 
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):
