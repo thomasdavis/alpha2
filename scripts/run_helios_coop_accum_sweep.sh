@@ -30,7 +30,14 @@ sha256sum \
   command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,uuid,driver_version,memory.total,power.limit,clocks.max.sm,clocks.max.memory --format=csv,noheader
 } > "$output_dir/HOST.txt" 2>&1
 
-npm run build > "$output_dir/build.log" 2>&1
+# Build only the native adapter and the aggregate test graph.  The unrelated
+# Next.js application has its own Node/Turbopack compatibility surface and is
+# not part of this physical kernel claim.  Force the native addon to bind the
+# paid host's compiler/runtime instead of trusting a copied mtime.
+HELIOS_NATIVE_FORCE_REBUILD=1 npm run build -w @alpha/helios \
+  > "$output_dir/build.log" 2>&1
+npx tsc -b packages/tests --pretty false \
+  >> "$output_dir/build.log" 2>&1
 
 # This must execute, not skip, on the paid device.  The JSON report is checked
 # explicitly so a capability-gated test cannot masquerade as physical proof.
