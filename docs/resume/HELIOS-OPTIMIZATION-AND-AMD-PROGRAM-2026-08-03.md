@@ -23,6 +23,14 @@ The failed candidate and an earlier invalid cooperative-path-confounded run are 
 this line of work toward eliminating or hierarchically shrinking the full-sized RMSNorm partial tensor rather than
 merely widening its second traversal.
 
+**Rejected attention follow-up:** the repository's previously unwired batched-unroll FlashAttention dKV V2 kernel
+passed 29/29 physical-GPU parity tests and reproduced the exact one-step trajectory, but took `449,023.0 us`
+across 18 calls versus `261,738.5 us` for the selected runtime-loop kernel, about 71.6% slower. The diagnostic
+selector was reverted. Evidence is retained at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-flash-dkv-v2-rejected-20260803/`. Future dKV work must
+change IO or work partitioning and explicitly measure register-pressure/occupancy effects; blind inner-loop
+unrolling is ruled out for this exact head-dimension-64 graph.
+
 ## 1. Why this program exists
 
 The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected GEMM-plus-ownership recipe measures 6,597.3 tokens/s, implying about 81.8 device-hours and USD 56.42 before validation/checkpoint overhead. These remain bounded estimates, not a sustained full-run result.
@@ -635,6 +643,7 @@ Existing evidence:
 - `/mnt/donto-data/donto-resources/research/alpha-rejected-foundation-probes-v9-v11-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/`
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-column-sum-vec4-rejected-20260803/`
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-flash-dkv-v2-rejected-20260803/`
 
 New optimization evidence should be stored under:
 
