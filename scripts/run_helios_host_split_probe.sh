@@ -50,6 +50,10 @@ sha256sum \
 
 controlled_env=(
   "VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}"
+  # DGC is not selected by this 1,444-op training graph (the profiler reports
+  # dgc=0), so do not reserve its preprocess buffer during this tight-VRAM
+  # measurement. This changes setup memory only, not the dispatched graph.
+  "HELIOS_DISABLE_DGC=1"
   "HELIOS_DISABLE_COOP_MAT=1"
   "HELIOS_FLASH_FWD_PREFER_COOP2=0"
   "HELIOS_WG_SIZE=64"

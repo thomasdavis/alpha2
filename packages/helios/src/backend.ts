@@ -653,6 +653,11 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
     let outPoolBytes = 0, outPoolCount = 0;
       for (const [sz, regs] of outputPool) { outPoolCount += regs.length; outPoolBytes += sz * regs.length; }
     console.error(`[helios OOM] output pool: ${outPoolCount} regions, ${(outPoolBytes / 1048576).toFixed(1)}MB`);
+      try {
+        console.error(`[helios OOM] native allocator: ${JSON.stringify(vk.getAllocatorStats?.() ?? {})}`);
+      } catch (statsError) {
+        console.error(`[helios OOM] native allocator stats unavailable: ${String(statsError)}`);
+      }
       throw e;
     }
   }
