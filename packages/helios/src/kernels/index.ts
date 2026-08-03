@@ -94,6 +94,7 @@ export {
   kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
   kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
 import {
@@ -104,6 +105,7 @@ import {
   kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
   kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
   kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
 // Optimizer / utility kernels
@@ -272,6 +274,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "matmul_transposed_R42": spirv = kernelMatmulTransposedReg4x2(); break;
     case "matmul_transposed_R42C": spirv = kernelMatmulTransposedReg4x2Coalesced(); break;
     case "matmul_transposed_a_R42": spirv = kernelMatmulTransposedAReg4x2(); break;
+    case "matmul_transposed_a_R42C": spirv = kernelMatmulTransposedAReg4x2Coalesced(); break;
     case "add_inplace": spirv = kernelAddInplace(wgSize); break;
     case "add_inplace_vec4": spirv = kernelAddInplaceVec4(wgSize); break;
     case "scale_inplace": spirv = kernelScaleInplace(wgSize); break;

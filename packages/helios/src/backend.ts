@@ -72,12 +72,15 @@ const LOG_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG ===
 const ENABLE_MATMUL_REG2X2 = process.env.HELIOS_MATMUL_REG2X2 === "1";
 const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
 // R4x2 is not universally better across physical layouts. Keep transposed-B
-// separately selectable so a measured portfolio can retain R2 or select the
-// IO-remapped R42C path independently of basic/transposed-A.
+// separately selectable, and keep both transposed input remaps independently
+// gated, so the measured portfolio does not assume one loader fits every
+// physical tensor layout.
 const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
   process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
 const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
   process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
+const ENABLE_MATMUL_TRANSPOSED_A_COALESCED =
+  process.env.HELIOS_MATMUL_TRANSPOSED_A_COALESCED === "1";
 const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
 let MATMUL_TILE_OVERRIDE: 16 | 32 | null = null;
 if (MATMUL_TILE_OVERRIDE_ENV) {
@@ -3906,7 +3909,9 @@ export class HeliosBackend implements Backend {
           loopK,
           batchSize,
         );
-    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
+    const suffix = useReg4x2
+      ? ENABLE_MATMUL_TRANSPOSED_A_COALESCED ? "_R42C" : "_R42"
+      : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(outM / TILE);
     const push = push4Memo(outM, N, loopK, 0);

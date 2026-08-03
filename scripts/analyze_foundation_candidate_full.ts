@@ -207,7 +207,7 @@ async function main(): Promise<void> {
   const expectedEngine = {
     backend: "helios",
     accelerator_api: "vulkan",
-    kernel_policy: "layout-portfolio-r42c-r2-v2",
+    kernel_policy: "layout-portfolio-r42c-r42ca-r2-v3",
     environment: {
       HELIOS_DISABLE_COOP_MAT: "1",
       HELIOS_FLASH_FWD_PREFER_COOP2: "0",
@@ -215,6 +215,7 @@ async function main(): Promise<void> {
       HELIOS_MATMUL_REG4X2: "1",
       HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "1",
       HELIOS_MATMUL_TRANSPOSED_B_COALESCED: "1",
+      HELIOS_MATMUL_TRANSPOSED_A_COALESCED: "1",
       HELIOS_MATMUL_REG2X2: "1",
       HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
     },

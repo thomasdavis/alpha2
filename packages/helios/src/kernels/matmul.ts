@@ -1950,6 +1950,7 @@ export function kernelMatmulTransposedAReg2x2(): Uint32Array {
 function kernelMatmulReg4x2Impl(
   mode: RegisterBlockMode,
   coalescedTransposedB = false,
+  coalescedTransposedA = false,
 ): Uint32Array {
   const WG_X = 16;
   const WG_Y = 8;
@@ -2108,12 +2109,36 @@ function kernelMatmulReg4x2Impl(
   b.emit(Op.BranchConditional, [keepGoing, loopBody, loopMerge]);
   b.emit(Op.Label, [loopBody]);
 
-  const aCol = b.id(); b.emit(Op.IAdd, [p.tU32, aCol, t, tx]);
-  for (let r = 0; r < 4; r++) {
-    const sharedIndex = b.id();
-    const offset = b.id(); b.constant(p.tU32, offset, r * WG_X * WG_Y);
-    b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
-    storeShared(tileA, sharedIndex, loadA(rows[r], aCol));
+  if (mode === "transposed-a" && coalescedTransposedA) {
+    // A is physically [K,M]. Map adjacent X invocations to adjacent M
+    // elements for a fixed reduction row, then transpose the values into the
+    // shared [32,16] A tile consumed by the unchanged register block. Each
+    // 16x8 workgroup invocation loads two output rows x two reduction rows.
+    for (let rowHalf = 0; rowHalf < 2; rowHalf++) {
+      const rowOffset = b.id(); b.constant(p.tU32, rowOffset, rowHalf * WG_X);
+      const tileRow = b.id(); b.emit(Op.IAdd, [p.tU32, tileRow, tx, rowOffset]);
+      const globalRow = b.id(); b.emit(Op.IAdd, [p.tU32, globalRow, by32, tileRow]);
+      const sharedRowBase = b.id(); b.emit(Op.IMul, [p.tU32, sharedRowBase, tileRow, c16]);
+      for (let reductionHalf = 0; reductionHalf < 2; reductionHalf++) {
+        const reductionOffset = b.id();
+        b.constant(p.tU32, reductionOffset, reductionHalf * WG_Y);
+        const tileReduction = b.id();
+        b.emit(Op.IAdd, [p.tU32, tileReduction, ty, reductionOffset]);
+        const globalReduction = b.id();
+        b.emit(Op.IAdd, [p.tU32, globalReduction, t, tileReduction]);
+        const sharedIndex = b.id();
+        b.emit(Op.IAdd, [p.tU32, sharedIndex, sharedRowBase, tileReduction]);
+        storeShared(tileA, sharedIndex, loadA(globalRow, globalReduction));
+      }
+    }
+  } else {
+    const aCol = b.id(); b.emit(Op.IAdd, [p.tU32, aCol, t, tx]);
+    for (let r = 0; r < 4; r++) {
+      const sharedIndex = b.id();
+      const offset = b.id(); b.constant(p.tU32, offset, r * WG_X * WG_Y);
+      b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
+      storeShared(tileA, sharedIndex, loadA(rows[r], aCol));
+    }
   }
   if (mode === "transposed-b" && coalescedTransposedB) {
     const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tx]);
@@ -2223,4 +2248,8 @@ export function kernelMatmulTransposedReg4x2Coalesced(): Uint32Array {
 
 export function kernelMatmulTransposedAReg4x2(): Uint32Array {
   return kernelMatmulReg4x2Impl("transposed-a");
+}
+
+export function kernelMatmulTransposedAReg4x2Coalesced(): Uint32Array {
+  return kernelMatmulReg4x2Impl("transposed-a", false, true);
 }
