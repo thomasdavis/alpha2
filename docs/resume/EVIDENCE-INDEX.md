@@ -179,6 +179,11 @@ The generated reference report is preserved at:
 
     /mnt/donto-data/donto-resources/benchmarks/alpha-helios-profile-summary-tool-20260803/
 
+The corresponding physical experiment is encoded in
+`scripts/run_helios_column_sum_sweep.sh`. It uses mirrored order for both exact timestamp and sustained phases,
+captures source/input/runtime provenance before execution, and disables checkpoint writes. It remains unexecuted;
+the presence of the script is not physical timing evidence.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

@@ -113,6 +113,13 @@ by SHA-256. Against the two selected R42C/R42C-A profiles it reproduces the ledg
 1,670,607.05 us and emits the requested readable Markdown tables plus a JSON mode. It deliberately does not use a
 hand-maintained kernel-category map.
 
+The physical reduction experiment is also scripted as
+`npm run perf:sweep:column-sum`. It requires `TRAIN_DATA`, `VAL_DATA`, and `TOKENIZER`, rejects a pre-existing
+output directory, captures input/source/runtime hashes plus the full dirty patch, disables checkpoints, and runs
+mirrored control/4/8/16/16/8/4/control orders for both exact timestamp profiles and sustained 20-step
+trajectories. Each timestamped row gets its own Markdown and JSON profile report. This script is prepared but has
+not been executed on a physical GPU.
+
 Read these first:
 
 - [Helios exact profiler and register-blocking evidence](docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md)

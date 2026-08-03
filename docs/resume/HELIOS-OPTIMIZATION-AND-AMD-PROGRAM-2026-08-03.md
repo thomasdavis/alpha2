@@ -65,6 +65,11 @@ within `4.2915e-6` maximum absolute error. The local
 suite is 233 pass / 55 physical-GPU-gated / 0 fail. It remains opt-in and unmeasured on a physical accelerator;
 selection requires exact per-kernel profiling plus an alternating sustained trajectory comparison.
 
+`scripts/run_helios_column_sum_sweep.sh` makes that comparison executable. Its exact and sustained phases both
+use a mirrored control/4/8/16/16/8/4/control order, bind the run to source and input hashes, preserve a dirty
+patch when present, disable checkpoints, and emit one generated profile report per timestamped row. Preparing
+the harness is not a performance result; promotion remains blocked on physical execution.
+
 **Rejected attention follow-up:** the repository's previously unwired batched-unroll FlashAttention dKV V2 kernel
 passed 29/29 physical-GPU parity tests and reproduced the exact one-step trajectory, but took `449,023.0 us`
 across 18 calls versus `261,738.5 us` for the selected runtime-loop kernel, about 71.6% slower. The diagnostic
