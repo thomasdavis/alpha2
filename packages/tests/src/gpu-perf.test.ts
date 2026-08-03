@@ -275,21 +275,23 @@ describeGpu("Row-parallel column reduction", () => {
       }
     }
 
-    gpu.columnSumRowLanes = true;
     try {
-      const actual = gpu.rmsNormBackward!(
-        gpu.fromArray(xValues, [rows, columns]),
-        gpu.fromArray(weightValues, [columns]),
-        gpu.fromArray(gradValues, [rows, columns]),
-        1e-5,
-      );
-      expect(gpu.lastColumnSumKernel).toBe("column_sum_row_lanes");
-      expect(maxDiff(
-        new Float32Array(actual.dw.data as Float32Array),
-        expectedDw,
-      )).toBeLessThanOrEqual(2e-4);
+      for (const rowLanes of [4, 8, 16] as const) {
+        gpu.setColumnSumRowLanes(rowLanes);
+        const actual = gpu.rmsNormBackward!(
+          gpu.fromArray(xValues, [rows, columns]),
+          gpu.fromArray(weightValues, [columns]),
+          gpu.fromArray(gradValues, [rows, columns]),
+          1e-5,
+        );
+        expect(gpu.lastColumnSumKernel).toBe(`column_sum_row_lanes_${rowLanes}`);
+        expect(maxDiff(
+          new Float32Array(actual.dw.data as Float32Array),
+          expectedDw,
+        )).toBeLessThanOrEqual(2e-4);
+      }
     } finally {
-      gpu.columnSumRowLanes = false;
+      gpu.setColumnSumRowLanes(0);
     }
   });
 });

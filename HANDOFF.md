@@ -68,11 +68,12 @@ hashes, runtime, and the controlled per-row environment. Canonical audit:
 
 An additional **unselected** row-parallel `column_sum` candidate addresses the next measured reduction hotspot.
 The selected kernel gives one thread each of roughly 512 columns and makes it walk all 24,576 token rows; the
-candidate uses a portable 32-column x 8-row-lane workgroup, coalesced reads, shared-memory reduction, and no
-atomics or subgroup-size assumption. It executed on the independent llvmpipe Vulkan stack with subgroup size 8
-and matched an awkward dense 257 x 96 RMSNorm weight gradient to `4.2915e-6` maximum absolute error. The local
+candidate family uses portable 32-column x {4,8,16}-row-lane workgroups, coalesced reads, shared-memory reduction,
+and no atomics or subgroup-size assumption. All three executed on the independent llvmpipe Vulkan stack with
+subgroup size 8 and matched an awkward dense 257 x 96 RMSNorm weight gradient within `4.2915e-6` maximum absolute
+error. The local
 package suite passes 233 tests with 55 physical-GPU-gated and zero failures. It remains opt-in through
-`HELIOS_COLUMN_SUM_ROW_LANES=1`; no speed claim or production selection exists until an alternating RTX profile
+`HELIOS_COLUMN_SUM_ROW_LANES=4|8|16`; no speed claim or production selection exists until an alternating RTX profile
 and sustained trajectory pass the same parity and provenance gates as the selected GEMM portfolio.
 
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was

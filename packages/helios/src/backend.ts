@@ -77,7 +77,19 @@ const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
 // physical tensor layout.
 const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
   process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
-const ENABLE_COLUMN_SUM_ROW_LANES = process.env.HELIOS_COLUMN_SUM_ROW_LANES === "1";
+type ColumnSumRowLanes = 0 | 4 | 8 | 16;
+function parseColumnSumRowLanes(): ColumnSumRowLanes {
+  const raw = process.env.HELIOS_COLUMN_SUM_ROW_LANES?.trim() ?? "0";
+  if (raw === "" || raw === "0") return 0;
+  if (raw === "1" || raw === "8") return 8;
+  if (raw === "4" || raw === "16") return Number(raw) as ColumnSumRowLanes;
+  console.warn(
+    `[helios] ignoring invalid HELIOS_COLUMN_SUM_ROW_LANES=${JSON.stringify(raw)}; ` +
+      "expected 0, 4, 8, or 16",
+  );
+  return 0;
+}
+const COLUMN_SUM_ROW_LANES = parseColumnSumRowLanes();
 const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
   process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
 const ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 =
@@ -1418,7 +1430,7 @@ export class HeliosBackend implements Backend {
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
   private _coopMatPaused = false; // Temporarily disable coop matmul (e.g. during backward)
-  private _columnSumRowLanes = ENABLE_COLUMN_SUM_ROW_LANES;
+  private _columnSumRowLanes: ColumnSumRowLanes = COLUMN_SUM_ROW_LANES;
   private _lastColumnSumKernel: string | null = null;
   private _coopMat2Supported = false;
   private _coopM = 0;
@@ -1755,8 +1767,10 @@ export class HeliosBackend implements Backend {
   get coopMatmulPaused(): boolean { return this._coopMatPaused; }
 
   /** Opt-in row-parallel RMSNorm weight-gradient reduction. */
-  set columnSumRowLanes(v: boolean) { this._columnSumRowLanes = v; }
-  get columnSumRowLanes(): boolean { return this._columnSumRowLanes; }
+  set columnSumRowLanes(v: boolean) { this._columnSumRowLanes = v ? 8 : 0; }
+  get columnSumRowLanes(): boolean { return this._columnSumRowLanes !== 0; }
+  setColumnSumRowLanes(v: ColumnSumRowLanes): void { this._columnSumRowLanes = v; }
+  getColumnSumRowLanes(): ColumnSumRowLanes { return this._columnSumRowLanes; }
   get lastColumnSumKernel(): string | null { return this._lastColumnSumKernel; }
 
   getMatmulCoopStats(): CoopMatmulStats {
@@ -3443,13 +3457,13 @@ export class HeliosBackend implements Backend {
         writeMask: 0b11000, // dx and dw_partial are both written
       });
 
-      const columnSumKernel = this._columnSumRowLanes
-        ? "column_sum_row_lanes"
+      const columnSumKernel = this._columnSumRowLanes !== 0
+        ? `column_sum_row_lanes_${this._columnSumRowLanes}`
         : "column_sum";
       this._lastColumnSumKernel = columnSumKernel;
       const pipeline2 = getPipeline(vk, columnSumKernel, 2);
       const push2 = push2Memo(dim, numRows);
-      const groups = this._columnSumRowLanes
+      const groups = this._columnSumRowLanes !== 0
         ? Math.ceil(dim / 32)
         : Math.ceil(dim / WG_SIZE);
       graph.record({
