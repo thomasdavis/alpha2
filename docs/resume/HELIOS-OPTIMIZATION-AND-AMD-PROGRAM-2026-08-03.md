@@ -1,9 +1,11 @@
 # Helios optimization and AMD compatibility program
 
-**Status:** active execution plan, 2026-08-03  
-**Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU  
-**Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware  
-**Immediate decision:** do not begin the multi-day Alpha foundation run until the current token caches are verified and the first measured Helios optimization/accelerator bake-off is complete
+**Status:** active execution plan; first exact profiler and portable GEMM optimization validated, 2026-08-03
+**Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU
+**Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware
+**Immediate decision:** token caches are verified and the first measured optimization is complete; finish default-path regression and accelerator selection before beginning the multi-day Alpha foundation run
+
+**First implementation result:** the new 16 × 16-workgroup, 2 × 2-per-thread scalar-FP32 GEMM reduced exact graph dispatch time by 36.9% and raised matched steady median training throughput from 3,579 to 4,513 tokens/s (+26.1%) with an identical six-step printed trajectory. Full evidence, rejected measurements, and AMD limitations are in `HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md`.
 
 ## 1. Why this program exists
 

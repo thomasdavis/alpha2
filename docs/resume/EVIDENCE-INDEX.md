@@ -3,6 +3,33 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+## 2026-08-03 Helios exact profiler and register-blocked GEMM
+
+Authoritative evidence and rejected-measurement record:
+
+    docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md
+
+Program and AMD compatibility contract:
+
+    docs/resume/HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md
+
+The exact RTX 4090 profile found generic FP32 GEMMs consumed about 80.2% of measured dispatch time. The new
+portable 2 x 2 register-blocked kernel reduced exact one-step dispatch time from 3,216,809.1 to 2,030,423.3
+microseconds (-36.9%), generic-matmul time from 2,541,982.1 to 1,361,243.1 microseconds (-46.5%), and raised
+matched steady median throughput from the historical 3,579 to 4,513 tokens/s (+26.1%). The six-step printed
+training and validation trajectory matched. Both the default and optimized implementations passed 105 real GPU
+parity/gradient tests.
+
+Implementation and executable checks:
+
+- `scripts/smoke-helios-dispatch-profiler.mjs`
+- `scripts/smoke-helios-matmul-autotune.mjs`
+- `HELIOS_PROFILE_GPU_TIMESTAMPS=1` for exact non-replayed per-dispatch timing
+- `HELIOS_MATMUL_REG2X2=1` for the measured portable candidate
+
+The odd-dimension test covers all three GEMM layouts at `M=113`, `N=157`, `K=93`; it passes on RTX 4090 and
+Mesa llvmpipe. Physical AMD validation remains open and is not implied by software Vulkan evidence.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

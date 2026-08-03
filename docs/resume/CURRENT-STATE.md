@@ -1,5 +1,31 @@
 # Current state
 
+## 2026-08-03 superseding update
+
+The three-arm foundation learning-rate pilot is complete and selected peak learning rate `0.002`. The packed
+train cache contains 2,058,181,632 verified tokens and the planned foundation contract consumes 1,941,995,520
+tokens over 79,020 steps. No full foundation run has begun and no new model checkpoint has been published.
+
+Helios now has exact per-dispatch Vulkan timestamp attribution. On the selected 97,098,880-parameter recipe,
+generic FP32 GEMMs consumed about 80.2% of measured dispatch time. A portable 16 x 16-workgroup, 2 x 2-output
+register-blocked GEMM reduced exact one-step dispatch time by 36.9% and generic-matmul time by 46.5%. Matched
+steady median throughput rose from the historical 3,579 to 4,513 tokens/s (+26.1%). The six-step loss,
+gradient-norm, clipping, learning-rate, and validation trajectory matched at trainer precision, and both the
+default and optimized paths passed 105 real NVIDIA parity/gradient tests. This is an engine improvement only;
+there is no new Discord sample, Hugging Face model, runtime, or BLAH version.
+
+The optimized kernel remains opt-in through `HELIOS_MATMUL_REG2X2=1` pending broader hardware evidence. Its
+scalar Vulkan contract is vendor-neutral and passes an awkward-shape compiler/numerical smoke through Mesa
+llvmpipe, but physical AMD validation is still open. The current RunPod catalog offers no AMD device to this
+account, so Radeon Vulkan and Instinct ROCm/HIP validation require another provider or machine. The dedicated
+Alpha pod `wtupxv15debnvh` was live and idle at the audit; its state and USD 0.69/hour price are volatile.
+
+At 4,513 tokens/s the current token contract is about 119.5 hours before evaluation/checkpoint overhead, rather
+than the earlier roughly 158-hour estimate. Optimization continues against exact GPU time before the multi-day
+run. The next measured hotspots are flash-attention backward DKV, elementwise scale/fusion, and reductions. See
+`HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md` and
+`HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md`.
+
 ## 2026-08-02 superseding update
 
 The V12 public-recipe control is now closed. Both packed full-sequence

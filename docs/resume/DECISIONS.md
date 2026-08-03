@@ -223,3 +223,25 @@ A future decision to train again must record:
 - why the new evidence justifies that change.
 
 Until then, “resume” means recover state and prepare a proposal, not start a GPU.
+
+## 2026-08-03 — Helios optimization is exact-time-driven and AMD is a first-class target
+
+The operator authorized continued Helios optimization, physical AMD compatibility, and research into published
+and novel techniques across the engine. Exact GPU timestamp attribution supersedes dispatch count as the
+immediate prioritization signal. Operation count remains an important fusion/overhead metric, but a high-count
+family is not optimized ahead of a lower-count family when measured device time says otherwise.
+
+The first result selects the portable 2 x 2 register-blocked FP32 GEMM as the current NVIDIA foundation-run
+candidate through `HELIOS_MATMUL_REG2X2=1`. This is an evidence-backed run setting, not yet an unconditional
+default for unknown devices. It passed awkward-shape numerical checks, identical six-step training trajectory,
+and the 105-test NVIDIA parity/gradient suite while raising matched steady throughput by 26.1%. Physical AMD
+measurement is still required before making a cross-vendor default claim.
+
+Every expensive Helios operation will be pursued in three explicit lanes: the strongest relevant published
+algorithm, a correct capability-driven portable implementation, and a separately labeled Helios-native
+hypothesis with a baseline and a falsifying control. Failed or order-biased experiments remain evidence. Vendor
+specialization is allowed behind capabilities and parity tests; no vendor name alone admits or rejects a device.
+
+The full Alpha foundation run remains unstarted while exact optimization continues. Engine speed is not model
+quality, does not authorize Discord model samples, and does not create a Hugging Face or BLAH version. The model
+program still requires foundation training, chat post-training, free-generation selection, and behavioral proof.

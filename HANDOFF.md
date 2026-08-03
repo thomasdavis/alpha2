@@ -1,6 +1,48 @@
-# HANDOFF — Alpha repair v3 executed and rejected semantically; v4 data repair in local preflight; best honest checkpoint unchanged, state as of 2026-08-01
+# HANDOFF — Alpha foundation and Helios acceleration active; best honest chat checkpoint unchanged, state as of 2026-08-03
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
+
+### 2026-08-03 superseding execution state
+
+The active path is now a better-trained small foundation followed by distillation and chat post-training. The
+full foundation run has **not** begun. Its 2,058,181,632-token packed train cache and fixed validation cache are
+verified, a matched three-arm pilot selected peak learning rate `0.002`, and the current candidate contract is
+97,098,880 parameters, sequence length 1,024, batch 24, 79,020 optimizer steps, and 1,941,995,520 planned
+training tokens. Symbiogenesis is disabled for this run. Do not describe the verified caches or LR pilot as a
+trained foundation model.
+
+Helios optimization now has its first measured, numerically validated result. An exact per-dispatch Vulkan GPU
+timestamp profiler showed that generic FP32 GEMMs consumed about 80.2% of the selected recipe's measured
+dispatch time. A new portable 2 x 2 register-blocked GEMM family reduced exact one-step dispatch time from
+3,216,809.1 to 2,030,423.3 microseconds (-36.9%), reduced generic-matmul time by 46.5%, and raised matched
+steady median throughput from the historical 3,579 to 4,513 tokens/s (+26.1%). The complete six-step loss,
+gradient-norm, clipping, learning-rate, and validation trajectory matched at trainer precision. Both the default
+and register-blocked paths passed the 105-test NVIDIA parity/gradient suite. This is an engine gain, not a
+behavioral model gain, so it has not triggered Discord, Hugging Face, or BLAH publication.
+
+The register-blocked path remains explicitly selected with `HELIOS_MATMUL_REG2X2=1` while more devices are
+measured. It needs only ordinary scalar FP32 Vulkan compute, a 16 x 16 workgroup, 256 invocations, and 4 KiB of
+shared memory; its awkward-dimension numerical smoke also passes Mesa llvmpipe. That is useful portability
+evidence but **not** physical AMD proof. The current RunPod catalog visible to this account offers NVIDIA GPUs
+only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-neutral HIP/ROCm lowering for
+Instinct rentals that do not expose production Vulkan.
+
+The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle at
+the 2026-08-03 audit; pod state and price are volatile and must be rechecked. At the measured 4,513 tokens/s,
+the current full-token contract would take about 119.5 hours before validation/checkpoint overhead and cost
+about USD 82.45 at that price. This is materially better but still not the accepted engine endpoint. The next
+exact hotspots are flash-attention backward DKV, elementwise scale/fusion, and reductions. Finish the
+correctness-gated optimization/accelerator decision before starting the multi-day run.
+
+Read these first:
+
+- [Helios exact profiler and register-blocking evidence](docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md)
+- [Helios optimization and AMD compatibility program](docs/resume/HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md)
+- [Foundation candidate feasibility and LR contract](docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md)
+- [Current state](docs/resume/CURRENT-STATE.md)
+
+The older historical sections below remain evidence, but any statement that no Alpha pod is billing, no paid run
+is authorized, or the LR pilot is merely planned is superseded by this execution state.
 
 The operator explicitly returned the project to the original product goal on 2026-07-31: Alpha should be a
 small, natural conversational model. AlphaCorpus remains a valuable side project, but its D5 review workflow is

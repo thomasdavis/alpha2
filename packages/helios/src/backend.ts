@@ -53,6 +53,30 @@ const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MA
 // every recorded GPU operation and is intended for bounded performance sweeps,
 // not production training runs.
 const PROFILE_GPU_OPS = process.env.HELIOS_PROFILE_GPU_OPS === "1";
+// Timestamp the dispatches in their real batched command buffer. This path is
+// synchronous and deliberately diagnostic-only: it changes scheduling enough
+// that its aggregate throughput must not be reported as the production rate.
+const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1";
+// Generic FP32 GEMMs have multiple portable Vulkan implementations.  The old
+// size threshold is retained as the zero-overhead default, while this opt-in
+// path measures the real device/driver/shape combination once and caches the
+// winner.  It deliberately does not run during full-graph timestamp profiling:
+// standalone probes would contaminate that diagnostic's accounting.
+const ENABLE_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE === "1";
+const LOG_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG === "1";
+const ENABLE_MATMUL_REG2X2 = process.env.HELIOS_MATMUL_REG2X2 === "1";
+const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
+let MATMUL_TILE_OVERRIDE: 16 | 32 | null = null;
+if (MATMUL_TILE_OVERRIDE_ENV) {
+  const parsed = Number(MATMUL_TILE_OVERRIDE_ENV);
+  if (parsed === 16 || parsed === 32) {
+    MATMUL_TILE_OVERRIDE = parsed;
+  } else {
+    console.warn(
+      `[helios] ignoring HELIOS_MATMUL_TILE=${MATMUL_TILE_OVERRIDE_ENV}; expected 16 or 32`,
+    );
+  }
+}
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 !== "0";
@@ -900,13 +924,17 @@ interface PendingOp {
 
 export interface GpuStepStats {
   profilingEnabled: boolean;
+  timingEnabled: boolean;
   operations: number;
   flushes: number;
   waitedFlushes: number;
   dgcFlushes: number;
+  timestampedFlushes: number;
+  batchGpuTimeUs: number;
+  dispatchGpuTimeUs: number;
   operationsPerFlush: number;
-  byKind: Array<{ name: string; count: number }>;
-  byKernel: Array<{ name: string; count: number }>;
+  byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
+  byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
 }
 
 /**
@@ -927,8 +955,13 @@ class ComputeGraph {
   flushesThisStep = 0;
   waitedFlushesThisStep = 0;
   dgcFlushesThisStep = 0;
+  timestampedFlushesThisStep = 0;
+  batchGpuTimeUsThisStep = 0;
+  dispatchGpuTimeUsThisStep = 0;
   private opsByKindThisStep = new Map<PendingOpKind, number>();
   private opsByKernelThisStep = new Map<string, number>();
+  private gpuTimeByKindThisStep = new Map<PendingOpKind, number>();
+  private gpuTimeByKernelThisStep = new Map<string, number>();
 
   // DGC state: pipeline slot for the BDA binary op kernel, -1 if not set up
   private dgcBinaryPipeSlot = -1;
@@ -1000,7 +1033,7 @@ class ComputeGraph {
     this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
     this.opsThisStep++;
-    if (PROFILE_GPU_OPS) {
+    if (PROFILE_GPU_OPS || PROFILE_GPU_TIMESTAMPS) {
       this.opsByKindThisStep.set(op.kind, (this.opsByKindThisStep.get(op.kind) ?? 0) + 1);
       this.opsByKernelThisStep.set(op.kernel, (this.opsByKernelThisStep.get(op.kernel) ?? 0) + 1);
     }
@@ -1012,24 +1045,40 @@ class ComputeGraph {
     this.flushesThisStep = 0;
     this.waitedFlushesThisStep = 0;
     this.dgcFlushesThisStep = 0;
+    this.timestampedFlushesThisStep = 0;
+    this.batchGpuTimeUsThisStep = 0;
+    this.dispatchGpuTimeUsThisStep = 0;
     this.opsByKindThisStep.clear();
     this.opsByKernelThisStep.clear();
+    this.gpuTimeByKindThisStep.clear();
+    this.gpuTimeByKernelThisStep.clear();
   }
 
   getStepStats(): GpuStepStats {
-    const sortCounts = (counts: Map<string, number>): Array<{ name: string; count: number }> =>
+    const rows = (
+      counts: Map<string, number>,
+      times: Map<string, number>,
+    ): Array<{ name: string; count: number; gpuTimeUs: number }> =>
       [...counts.entries()]
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        .map(([name, count]) => ({ name, count, gpuTimeUs: times.get(name) ?? 0 }))
+        .sort((a, b) =>
+          PROFILE_GPU_TIMESTAMPS
+            ? b.gpuTimeUs - a.gpuTimeUs || b.count - a.count || a.name.localeCompare(b.name)
+            : b.count - a.count || a.name.localeCompare(b.name),
+        );
     return {
-      profilingEnabled: PROFILE_GPU_OPS,
+      profilingEnabled: PROFILE_GPU_OPS || PROFILE_GPU_TIMESTAMPS,
+      timingEnabled: PROFILE_GPU_TIMESTAMPS,
       operations: this.opsThisStep,
       flushes: this.flushesThisStep,
       waitedFlushes: this.waitedFlushesThisStep,
       dgcFlushes: this.dgcFlushesThisStep,
+      timestampedFlushes: this.timestampedFlushesThisStep,
+      batchGpuTimeUs: this.batchGpuTimeUsThisStep,
+      dispatchGpuTimeUs: this.dispatchGpuTimeUsThisStep,
       operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
-      byKind: sortCounts(this.opsByKindThisStep),
-      byKernel: sortCounts(this.opsByKernelThisStep),
+      byKind: rows(this.opsByKindThisStep, this.gpuTimeByKindThisStep),
+      byKernel: rows(this.opsByKernelThisStep, this.gpuTimeByKernelThisStep),
     };
   }
 
@@ -1078,7 +1127,7 @@ class ComputeGraph {
 
     // ── DGC fast path: when all ops are DGC-eligible binary ops ──
     // Uses device-generated commands (single GPU submit, no per-op descriptor sets).
-    if (this.dgcReady && ops.length >= 2 && typeof vk.batchExecuteAllDGC === "function") {
+    if (!PROFILE_GPU_TIMESTAMPS && this.dgcReady && ops.length >= 2 && typeof vk.batchExecuteAllDGC === "function") {
       // Check if ALL ops are DGC-eligible (binary ops with 3 buffers)
       let allEligible = true;
       for (let i = 0; i < ops.length; i++) {
@@ -1178,7 +1227,36 @@ class ComputeGraph {
     // Prefer combined batchExecuteAll (single N-API call) for lower dispatch overhead.
     // Falls back to 3-call path (batchBegin + batchDispatchMany + batchSubmit).
     let tv: number;
-    if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
+    if (PROFILE_GPU_TIMESTAMPS) {
+      if (typeof vk.batchExecuteAllProfiled !== "function") {
+        throw new Error(
+          "HELIOS_PROFILE_GPU_TIMESTAMPS=1 requires a native addon with batchExecuteAllProfiled()",
+        );
+      }
+      const profile = vk.batchExecuteAllProfiled(packed, ops.length);
+      if (profile.dispatchCount !== ops.length || profile.dispatchTimesUs.length !== ops.length) {
+        throw new Error(
+          `Helios profiler dispatch mismatch: recorded=${profile.dispatchCount} expected=${ops.length}`,
+        );
+      }
+      tv = profile.timeline;
+      this.timestampedFlushesThisStep++;
+      this.batchGpuTimeUsThisStep += profile.batchGpuTimeUs;
+      for (let i = 0; i < ops.length; i++) {
+        const timeUs = profile.dispatchTimesUs[i];
+        const op = ops[i];
+        this.dispatchGpuTimeUsThisStep += timeUs;
+        this.gpuTimeByKindThisStep.set(
+          op.kind,
+          (this.gpuTimeByKindThisStep.get(op.kind) ?? 0) + timeUs,
+        );
+        this.gpuTimeByKernelThisStep.set(
+          op.kernel,
+          (this.gpuTimeByKernelThisStep.get(op.kernel) ?? 0) + timeUs,
+        );
+      }
+      // The native profiling path has already waited for timestamp readback.
+    } else if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
       tv = vk.batchExecuteAll(packed, ops.length);
       if (withWait && tv > 0) waitTimelineTracked(vk, tv);
     } else {
@@ -1286,6 +1364,20 @@ export interface CoopMatmulStats {
   coopHitRate: number;
 }
 
+type MatmulTile = 16 | 32;
+
+export interface MatmulTileAutotuneDecision {
+  key: string;
+  kernel: string;
+  shape: { M: number; N: number; K: number; batchSize: number };
+  tile: MatmulTile;
+  tile16GpuTimeUs: number | null;
+  tile32GpuTimeUs: number | null;
+  tile16SamplesUs: number[];
+  tile32SamplesUs: number[];
+  reason: "measured" | "override" | "capability" | "heuristic" | "probe-fallback";
+}
+
 export class HeliosBackend implements Backend {
   readonly name = "helios";
   private readonly rng = new SeededRng(42);
@@ -1313,6 +1405,9 @@ export class HeliosBackend implements Backend {
   private _coopTransposedARewriteDispatches = 0;
   private _coopF16InputCache = new Map<TensorData, TensorData>();
   private _coopF16InputCacheLastFlushTimeline = -1;
+  private _matmulTileCache = new Map<string, MatmulTile>();
+  private _matmulTileDecisions = new Map<string, MatmulTileAutotuneDecision>();
+  private _matmulReg2x2WarningEmitted = false;
   private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
   private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
@@ -1347,6 +1442,13 @@ export class HeliosBackend implements Backend {
 
   getWaitTimelineCount(): number {
     return waitTimelineCount;
+  }
+
+  getMatmulTileAutotuneDecisions(): MatmulTileAutotuneDecision[] {
+    return [...this._matmulTileDecisions.values()].map((decision) => ({
+      ...decision,
+      shape: { ...decision.shape },
+    }));
   }
 
   private init(): NativeAddon {
@@ -1401,6 +1503,25 @@ export class HeliosBackend implements Backend {
     }
     this._coopF16InputCache.clear();
     this._coopF16InputCacheLastFlushTimeline = graph.lastFlushTimeline;
+  }
+
+  private shouldUseMatmulReg2x2(batchSize: number): boolean {
+    if (!ENABLE_MATMUL_REG2X2) return false;
+    const info = this._nativeDeviceInfo;
+    const supported =
+      batchSize === 1 &&
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 256 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 16 &&
+      (info?.maxComputeWorkGroupSizeY ?? 0) >= 16 &&
+      (info?.maxComputeSharedMemorySize ?? 0) >= 4096;
+    if (!supported && !this._matmulReg2x2WarningEmitted) {
+      this._matmulReg2x2WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_REG2X2=1 requested, but this dispatch/device lacks " +
+        "the current non-batched 256-invocation/4KiB-shared-memory contract; using tiled GEMM",
+      );
+    }
+    return supported;
   }
 
   /**
@@ -3289,6 +3410,184 @@ export class HeliosBackend implements Backend {
     return { dx: dxOut, dw: dwOut };
   }
 
+  /**
+   * Select the portable FP32 tiled GEMM kernel for one exact device/driver and
+   * shape.  A tile-32 shader uses 1024 local invocations, so it is only a legal
+   * candidate when Vulkan reports that capability.  In autotune mode both
+   * legal candidates execute against the real resident inputs and the exact
+   * output region already reserved for the graph dispatch.  This avoids a
+   * transient duplicate allocation for the largest vocabulary projections.
+   */
+  private selectMatmulTile(
+    vk: NativeAddon,
+    kernel: string,
+    bufA: number,
+    bufB: number,
+    outputRegion: OutputRegion,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+  ): MatmulTile {
+    const info = this._nativeDeviceInfo;
+    const key = [
+      info?.vendorId ?? 0,
+      info?.deviceId ?? 0,
+      info?.driverVersion ?? 0,
+      kernel,
+      M,
+      N,
+      K,
+      batchSize,
+    ].join(":");
+    const cached = this._matmulTileCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const shape = { M, N, K, batchSize };
+    const tile32Supported =
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 1024 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 1024;
+    const heuristicTile: MatmulTile = tile32Supported && M * N >= LARGE_TILE_THRESHOLD ? 32 : 16;
+
+    const remember = (
+      tile: MatmulTile,
+      reason: MatmulTileAutotuneDecision["reason"],
+      tile16GpuTimeUs: number | null = null,
+      tile32GpuTimeUs: number | null = null,
+      tile16SamplesUs: number[] = [],
+      tile32SamplesUs: number[] = [],
+    ): MatmulTile => {
+      const decision: MatmulTileAutotuneDecision = {
+        key,
+        kernel,
+        shape,
+        tile,
+        tile16GpuTimeUs,
+        tile32GpuTimeUs,
+        tile16SamplesUs,
+        tile32SamplesUs,
+        reason,
+      };
+      this._matmulTileCache.set(key, tile);
+      this._matmulTileDecisions.set(key, decision);
+      if (LOG_MATMUL_TILE_AUTOTUNE) {
+        console.error(`[helios matmul tile] ${JSON.stringify(decision)}`);
+      }
+      return tile;
+    };
+
+    if (MATMUL_TILE_OVERRIDE !== null) {
+      if (MATMUL_TILE_OVERRIDE === 32 && !tile32Supported) {
+        console.warn(
+          `[helios] tile-32 override is unsupported on ${info?.deviceName ?? "this device"}; using tile 16`,
+        );
+        return remember(16, "capability");
+      }
+      return remember(MATMUL_TILE_OVERRIDE, "override");
+    }
+
+    if (!ENABLE_MATMUL_TILE_AUTOTUNE || PROFILE_GPU_TIMESTAMPS) {
+      return remember(heuristicTile, tile32Supported ? "heuristic" : "capability");
+    }
+
+    // Inputs may be graph-produced lazy tensors.  Resolve all earlier work
+    // before standalone replay, otherwise the probe can race their writers.
+    graph.flushAndWait();
+    const push = push4Memo(M, N, K, 0);
+    const candidates: MatmulTile[] = tile32Supported ? [16, 32] : [16];
+    let tile16GpuTimeUs: number | null = null;
+    let tile32GpuTimeUs: number | null = null;
+    const tile16SamplesUs: number[] = [];
+    const tile32SamplesUs: number[] = [];
+    const probeErrors: string[] = [];
+    const pipelines = new Map<MatmulTile, number>();
+
+    // Compile and prewarm each legal candidate before collecting any evidence.
+    // This avoids selecting the second candidate merely because it inherited
+    // higher clocks and warm caches from the first candidate's cold launch.
+    for (const tile of candidates) {
+      const suffix = tile === 32 ? "_T32" : "";
+      try {
+        const pipeline = getPipeline(vk, `${kernel}${suffix}`, 3, 16);
+        pipelines.set(tile, pipeline);
+        vk.gpuTime(
+          pipeline,
+          [bufA, bufB, outputRegion.handle],
+          Math.ceil(N / tile),
+          Math.ceil(M / tile),
+          batchSize,
+          push,
+          1,
+          2,
+        );
+      } catch (error) {
+        probeErrors.push(`tile${tile} warmup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // Measure in both orders.  The minimum of the two counterbalanced samples
+    // estimates each kernel's warm steady-state path while discounting transient
+    // clock ramp and interference from whichever candidate happened to run first.
+    for (const order of [candidates, [...candidates].reverse()]) {
+      for (const tile of order) {
+        const pipeline = pipelines.get(tile);
+        if (pipeline === undefined) continue;
+        try {
+          const elapsed = vk.gpuTime(
+            pipeline,
+            [bufA, bufB, outputRegion.handle],
+            Math.ceil(N / tile),
+            Math.ceil(M / tile),
+            batchSize,
+            push,
+            3,
+            1,
+          );
+          if (!Number.isFinite(elapsed) || elapsed <= 0) {
+            throw new Error(`invalid GPU time ${elapsed}`);
+          }
+          if (tile === 16) tile16SamplesUs.push(elapsed);
+          else tile32SamplesUs.push(elapsed);
+        } catch (error) {
+          probeErrors.push(`tile${tile} sample: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
+    if (tile16SamplesUs.length > 0) tile16GpuTimeUs = Math.min(...tile16SamplesUs);
+    if (tile32SamplesUs.length > 0) tile32GpuTimeUs = Math.min(...tile32SamplesUs);
+
+    let selected: MatmulTile | null = null;
+    if (tile16GpuTimeUs !== null) selected = 16;
+    if (
+      tile32GpuTimeUs !== null &&
+      (tile16GpuTimeUs === null || tile32GpuTimeUs < tile16GpuTimeUs)
+    ) {
+      selected = 32;
+    }
+    if (selected === null) {
+      console.warn(
+        `[helios] matmul tile probes failed for ${kernel} ${M}x${N}x${K}: ${probeErrors.join("; ")}`,
+      );
+      return remember(
+        heuristicTile,
+        "probe-fallback",
+        tile16GpuTimeUs,
+        tile32GpuTimeUs,
+        tile16SamplesUs,
+        tile32SamplesUs,
+      );
+    }
+    return remember(
+      selected,
+      "measured",
+      tile16GpuTimeUs,
+      tile32GpuTimeUs,
+      tile16SamplesUs,
+      tile32SamplesUs,
+    );
+  }
+
   private gpuMatmul(a: TensorData, b: TensorData): TensorData {
     const vk = this.init();
     this._matmulDispatches++;
@@ -3325,19 +3624,19 @@ export class HeliosBackend implements Backend {
       return coopPadded;
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    // All discrete GPUs we target (A100, L4, etc.) support 1024 invocations per workgroup
-    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1 ? "matmul" : "matmul_batched";
+    const outBytes = batchSize * M * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg2x2
+      ? 32
+      : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
+    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul${suffix}`, 3, 16);
-      const bufA = ensureGpu(vk, a);
-      const bufB = ensureGpu(vk, b);
-      const outBytes = M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
@@ -3359,10 +3658,6 @@ export class HeliosBackend implements Backend {
     } else {
       // Batched matmul — dispatch all batches in one GPU submission
       const pipeline = getPipeline(vk, `matmul_batched${suffix}`, 3, 16);
-      const bufA = ensureGpu(vk, a);
-      const bufB = ensureGpu(vk, b);
-      const outBytes = batchSize * M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
@@ -3453,22 +3748,22 @@ export class HeliosBackend implements Backend {
       return coopPadded;
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
-
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1 ? "matmul_transposed" : "matmul_transposed_batched";
+    const outBytes = batchSize * M * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg2x2
+      ? 32
+      : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
+    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(M / TILE);
     const push = push4Memo(M, N, K, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed${suffix}`, 3, 16);
-      const outBytes = M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3485,8 +3780,6 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     } else {
       const pipeline = getPipeline(vk, `matmul_transposed_batched${suffix}`, 3, 16);
-      const outBytes = batchSize * M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3539,22 +3832,34 @@ export class HeliosBackend implements Backend {
       return this.gpuMatmulTransposed(aT, bT, outM, N, loopK);
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = outM * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
-
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1
+      ? "matmul_transposed_a"
+      : "matmul_transposed_a_batched";
+    const outBytes = batchSize * outM * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg2x2
+      ? 32
+      : this.selectMatmulTile(
+          vk,
+          kernel,
+          bufA,
+          bufB,
+          region,
+          outM,
+          N,
+          loopK,
+          batchSize,
+        );
+    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(outM / TILE);
     const push = push4Memo(outM, N, loopK, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed_a${suffix}`, 3, 16);
-      const outBytes = outM * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3571,8 +3876,6 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, [...aBatch, outM, N], region);
     } else {
       const pipeline = getPipeline(vk, `matmul_transposed_a_batched${suffix}`, 3, 16);
-      const outBytes = batchSize * outM * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",

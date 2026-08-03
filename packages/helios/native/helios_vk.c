@@ -129,8 +129,109 @@ typedef uint64_t VkFence;
 typedef uint64_t VkSemaphore;
 
 // Structs
-// Full VkPhysicalDeviceProperties is ~824 bytes. We define the fields we read
-// and pad the rest so Vulkan doesn't write past our allocation.
+// Exact prefix of VkPhysicalDeviceLimits through timestampPeriod, copied from
+// the Khronos-generated Vulkan header.  Do not replace this with a byte offset:
+// VkPhysicalDeviceLimits has 8-byte alignment, so padding between the UUID and
+// limits differs from the naïve sum of preceding field widths.
+typedef struct {
+  uint32_t maxImageDimension1D;
+  uint32_t maxImageDimension2D;
+  uint32_t maxImageDimension3D;
+  uint32_t maxImageDimensionCube;
+  uint32_t maxImageArrayLayers;
+  uint32_t maxTexelBufferElements;
+  uint32_t maxUniformBufferRange;
+  uint32_t maxStorageBufferRange;
+  uint32_t maxPushConstantsSize;
+  uint32_t maxMemoryAllocationCount;
+  uint32_t maxSamplerAllocationCount;
+  VkDeviceSize bufferImageGranularity;
+  VkDeviceSize sparseAddressSpaceSize;
+  uint32_t maxBoundDescriptorSets;
+  uint32_t maxPerStageDescriptorSamplers;
+  uint32_t maxPerStageDescriptorUniformBuffers;
+  uint32_t maxPerStageDescriptorStorageBuffers;
+  uint32_t maxPerStageDescriptorSampledImages;
+  uint32_t maxPerStageDescriptorStorageImages;
+  uint32_t maxPerStageDescriptorInputAttachments;
+  uint32_t maxPerStageResources;
+  uint32_t maxDescriptorSetSamplers;
+  uint32_t maxDescriptorSetUniformBuffers;
+  uint32_t maxDescriptorSetUniformBuffersDynamic;
+  uint32_t maxDescriptorSetStorageBuffers;
+  uint32_t maxDescriptorSetStorageBuffersDynamic;
+  uint32_t maxDescriptorSetSampledImages;
+  uint32_t maxDescriptorSetStorageImages;
+  uint32_t maxDescriptorSetInputAttachments;
+  uint32_t maxVertexInputAttributes;
+  uint32_t maxVertexInputBindings;
+  uint32_t maxVertexInputAttributeOffset;
+  uint32_t maxVertexInputBindingStride;
+  uint32_t maxVertexOutputComponents;
+  uint32_t maxTessellationGenerationLevel;
+  uint32_t maxTessellationPatchSize;
+  uint32_t maxTessellationControlPerVertexInputComponents;
+  uint32_t maxTessellationControlPerVertexOutputComponents;
+  uint32_t maxTessellationControlPerPatchOutputComponents;
+  uint32_t maxTessellationControlTotalOutputComponents;
+  uint32_t maxTessellationEvaluationInputComponents;
+  uint32_t maxTessellationEvaluationOutputComponents;
+  uint32_t maxGeometryShaderInvocations;
+  uint32_t maxGeometryInputComponents;
+  uint32_t maxGeometryOutputComponents;
+  uint32_t maxGeometryOutputVertices;
+  uint32_t maxGeometryTotalOutputComponents;
+  uint32_t maxFragmentInputComponents;
+  uint32_t maxFragmentOutputAttachments;
+  uint32_t maxFragmentDualSrcAttachments;
+  uint32_t maxFragmentCombinedOutputResources;
+  uint32_t maxComputeSharedMemorySize;
+  uint32_t maxComputeWorkGroupCount[3];
+  uint32_t maxComputeWorkGroupInvocations;
+  uint32_t maxComputeWorkGroupSize[3];
+  uint32_t subPixelPrecisionBits;
+  uint32_t subTexelPrecisionBits;
+  uint32_t mipmapPrecisionBits;
+  uint32_t maxDrawIndexedIndexValue;
+  uint32_t maxDrawIndirectCount;
+  float maxSamplerLodBias;
+  float maxSamplerAnisotropy;
+  uint32_t maxViewports;
+  uint32_t maxViewportDimensions[2];
+  float viewportBoundsRange[2];
+  uint32_t viewportSubPixelBits;
+  size_t minMemoryMapAlignment;
+  VkDeviceSize minTexelBufferOffsetAlignment;
+  VkDeviceSize minUniformBufferOffsetAlignment;
+  VkDeviceSize minStorageBufferOffsetAlignment;
+  int32_t minTexelOffset;
+  uint32_t maxTexelOffset;
+  int32_t minTexelGatherOffset;
+  uint32_t maxTexelGatherOffset;
+  float minInterpolationOffset;
+  float maxInterpolationOffset;
+  uint32_t subPixelInterpolationOffsetBits;
+  uint32_t maxFramebufferWidth;
+  uint32_t maxFramebufferHeight;
+  uint32_t maxFramebufferLayers;
+  VkFlags framebufferColorSampleCounts;
+  VkFlags framebufferDepthSampleCounts;
+  VkFlags framebufferStencilSampleCounts;
+  VkFlags framebufferNoAttachmentsSampleCounts;
+  uint32_t maxColorAttachments;
+  VkFlags sampledImageColorSampleCounts;
+  VkFlags sampledImageIntegerSampleCounts;
+  VkFlags sampledImageDepthSampleCounts;
+  VkFlags sampledImageStencilSampleCounts;
+  VkFlags storageImageSampleCounts;
+  uint32_t maxSampleMaskWords;
+  VkBool32 timestampComputeAndGraphics;
+  float timestampPeriod;
+} VkPhysicalDeviceLimits_timestamp_prefix;
+
+// Full VkPhysicalDeviceProperties is currently under 1 KiB. We define the
+// exact fields through timestampPeriod and pad the remainder so Vulkan cannot
+// write past our allocation as future tail fields are added.
 typedef struct {
   uint32_t apiVersion;
   uint32_t driverVersion;
@@ -139,7 +240,8 @@ typedef struct {
   uint32_t deviceType;
   char     deviceName[256];
   uint8_t  pipelineCacheUUID[16];
-  uint8_t  _padding[1024]; // covers VkPhysicalDeviceLimits + VkPhysicalDeviceSparseProperties
+  VkPhysicalDeviceLimits_timestamp_prefix limits;
+  uint8_t  _padding[1024];
 } VkPhysicalDeviceProperties_partial;
 
 // Core Vulkan 1.1 subgroup properties and Vulkan 1.3 / EXT subgroup-size
@@ -739,6 +841,9 @@ static uint32_t deviceType = 0;
 static uint32_t deviceApiVersion = 0;
 static uint32_t deviceDriverVersion = 0;
 static double deviceLocalMemoryBytes = 0.0;
+static uint32_t maxComputeSharedMemorySize = 0;
+static uint32_t maxComputeWorkGroupInvocations = 0;
+static uint32_t maxComputeWorkGroupSize[3] = {0, 0, 0};
 static uint32_t subgroupSize = 0;
 static VkFlags subgroupSupportedStages = 0;
 static VkFlags subgroupSupportedOperations = 0;
@@ -751,8 +856,29 @@ static uint32_t maxComputeWorkgroupSubgroups = 0;
 static VkFlags requiredSubgroupSizeStages = 0;
 static uint32_t computeTimestampValidBits = 0;
 static VkQueryPool timestampPool = 0;
+// Opt-in, per-dispatch profiling uses a separate pool so it never perturbs the
+// standalone gpuTime() helper's two queries.  The TypeScript graph currently
+// caps a batch at 2048 dispatches; two batch-boundary queries plus a start/end
+// pair for every dispatch are sufficient to profile the real command buffer
+// without replaying stateful optimizer or in-place kernels.
+#define PROFILE_MAX_DISPATCHES 2048
+#define PROFILE_QUERY_COUNT (2 + 2 * PROFILE_MAX_DISPATCHES)
+static VkQueryPool profileTimestampPool = 0;
 static int timestampsSupported = 0;
 static float timestampPeriodNs = 1.0f;  // ns per tick (most GPUs = 1.0)
+
+// Vulkan only guarantees the least-significant timestampValidBits bits. Some
+// implementations expose fewer than 64 bits and leave the upper bits
+// undefined, so plain uint64 subtraction can produce bogus durations after a
+// wrap or on a different vendor. Subtraction in the masked ring is correct for
+// intervals shorter than one counter period, as every Helios probe is.
+static uint64_t timestampTickDelta(uint64_t end, uint64_t start) {
+  if (computeTimestampValidBits >= 64) return end - start;
+  if (computeTimestampValidBits == 0) return 0;
+  uint64_t mask = (UINT64_C(1) << computeTimestampValidBits) - UINT64_C(1);
+  return (end - start) & mask;
+}
+
 static int f16Supported = 0;            // can use f16 storage buffers
 static PFN_vkGetPhysicalDeviceFeatures2 fp_vkGetPhysicalDeviceFeatures2;
 static PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr;
@@ -1449,6 +1575,10 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   deviceType = bestProps.deviceType;
   deviceApiVersion = bestProps.apiVersion;
   deviceDriverVersion = bestProps.driverVersion;
+  maxComputeSharedMemorySize = bestProps.limits.maxComputeSharedMemorySize;
+  maxComputeWorkGroupInvocations = bestProps.limits.maxComputeWorkGroupInvocations;
+  memcpy(maxComputeWorkGroupSize, bestProps.limits.maxComputeWorkGroupSize,
+    sizeof(maxComputeWorkGroupSize));
 
   // Get memory properties
   fp_vkGetPhysicalDeviceMemoryProperties(physDevice, &memProps);
@@ -2149,21 +2279,24 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     if (res != VK_SUCCESS) {
       timestampsSupported = 0;
       timestampPool = 0;
+    } else {
+      VkQueryPoolCreateInfo profileQpInfo = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = PROFILE_QUERY_COUNT,
+      };
+      // A device can still train and use gpuTime() if this larger diagnostic
+      // pool cannot be allocated.  The profiled entry point reports that exact
+      // limitation instead of weakening the ordinary path.
+      res = fp_vkCreateQueryPool(device, &profileQpInfo, NULL, &profileTimestampPool);
+      if (res != VK_SUCCESS) profileTimestampPool = 0;
     }
   }
 
-  // Extract timestampPeriod from device properties (float at known offset)
-  // VkPhysicalDeviceLimits starts at offset 292 in VkPhysicalDeviceProperties.
-  // timestampPeriod is at offset 276 within VkPhysicalDeviceLimits.
-  // Total offset from start of struct: 292 + 276 = 568 bytes.
-  // We access it as raw bytes from our padded struct.
-  {
-    uint8_t fullProps[1024];
-    memset(fullProps, 0, sizeof(fullProps));
-    fp_vkGetPhysicalDeviceProperties(physDevice, (VkPhysicalDeviceProperties_partial*)fullProps);
-    float period;
-    memcpy(&period, fullProps + 568, sizeof(float));
-    if (period > 0.0f) timestampPeriodNs = period;
+  // The device reports nanoseconds per timestamp tick. This must come from the
+  // typed Vulkan property, not a hand-computed byte offset (see struct above).
+  if (bestProps.limits.timestampPeriod > 0.0f) {
+    timestampPeriodNs = bestProps.limits.timestampPeriod;
   }
 
   // Init resource slots
@@ -2244,6 +2377,21 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_create_double(env, deviceLocalMemoryBytes, &val);
   napi_set_named_property(env, result, "deviceLocalMemoryBytes", val);
+
+  napi_create_uint32(env, maxComputeSharedMemorySize, &val);
+  napi_set_named_property(env, result, "maxComputeSharedMemorySize", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupInvocations, &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupInvocations", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[0], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeX", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[1], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeY", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[2], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeZ", val);
 
   napi_create_uint32(env, subgroupSize, &val);
   napi_set_named_property(env, result, "subgroupSize", val);
@@ -3627,7 +3775,12 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
 // Combined batchBegin + batchDispatchMany + batchSubmit in a single N-API call.
 // Saves ~4-6μs per flush by eliminating 2 N-API boundary crossings.
 
-static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
+static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info, int profile) {
+  if (profile && (!timestampsSupported || !profileTimestampPool)) {
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: per-dispatch GPU timestamps are not supported on this device");
+    return NULL;
+  }
+
   size_t argc = 2;
   napi_value args[2];
   napi_get_cb_info(env, info, &argc, args, NULL, NULL);
@@ -3638,6 +3791,10 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
 
   uint32_t count;
   napi_get_value_uint32(env, args[1], &count);
+  if (profile && count > PROFILE_MAX_DISPATCHES) {
+    napi_throw_range_error(env, NULL, "batchExecuteAllProfiled: dispatch count exceeds profiling pool capacity");
+    return NULL;
+  }
 
   // ── batchBegin logic (inlined) ──
   uint32_t slot = g_ringHead;
@@ -3661,6 +3818,10 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
   };
   fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
 
+  if (profile) {
+    fp_vkCmdResetQueryPool(g_ring[slot].cmd, profileTimestampPool, 0, 2 + 2 * count);
+  }
+
   {
     VkMemoryBarrier memBarrier = {
       .sType = 46,
@@ -3675,6 +3836,15 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
   batchRecording = 1;
   batchDispatchCount = 0;
   bufWriteGeneration++;
+
+  if (profile) {
+    // The batch time intentionally begins after the inherited global barrier.
+    // Per-dispatch intervals begin after dependency barriers and therefore
+    // measure the dispatched kernel rather than charging predecessor hazards
+    // to an arbitrary successor.
+    fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      profileTimestampPool, 0);
+  }
 
   // ── batchDispatchMany logic (inlined) ──
   VkCommandBuffer ringCmd = g_ring[slot].cmd;
@@ -3827,11 +3997,25 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
     if (pushSize > 0 && pushPtr) {
       fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushPtr);
     }
+    if (profile) {
+      uint32_t queryBase = 2 + batchDispatchCount * 2;
+      fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        profileTimestampPool, queryBase);
+    }
     fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
+    if (profile) {
+      uint32_t queryBase = 2 + batchDispatchCount * 2;
+      fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        profileTimestampPool, queryBase + 1);
+    }
     batchDispatchCount++;
   }
 
   // ── batchSubmit logic (inlined) ──
+  if (profile) {
+    fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      profileTimestampPool, 1);
+  }
   fp_vkEndCommandBuffer(g_ring[slot].cmd);
 
   uint64_t tv = 0;
@@ -3849,11 +4033,66 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
 
   g_ringHead = (g_ringHead + 1) % RING_SIZE;
   batchRecording = 0;
+  uint32_t recordedDispatchCount = batchDispatchCount;
   batchDispatchCount = 0;
 
-  napi_value result;
-  napi_create_double(env, (double)tv, &result);
+  if (!profile) {
+    napi_value result;
+    napi_create_double(env, (double)tv, &result);
+    return result;
+  }
+
+  // Profiling is intentionally synchronous and opt-in.  Reading timestamps
+  // from the exact submitted batch avoids unsafe replay of in-place kernels.
+  if (tv > 0) waitTimelineValue(tv);
+  uint32_t queryCount = 2 + recordedDispatchCount * 2;
+  uint64_t* ticks = (uint64_t*)calloc(queryCount, sizeof(uint64_t));
+  if (!ticks) {
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: timestamp allocation failed");
+    return NULL;
+  }
+  VkResult queryResult = fp_vkGetQueryPoolResults(device, profileTimestampPool, 0, queryCount,
+    (size_t)queryCount * sizeof(uint64_t), ticks, sizeof(uint64_t),
+    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+  if (queryResult != VK_SUCCESS) {
+    free(ticks);
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: timestamp readback failed");
+    return NULL;
+  }
+
+  napi_value result, value, timesArrayBuffer, timesTypedArray;
+  napi_create_object(env, &result);
+  napi_create_double(env, (double)tv, &value);
+  napi_set_named_property(env, result, "timeline", value);
+  double batchUs = (double)timestampTickDelta(ticks[1], ticks[0]) *
+    (double)timestampPeriodNs / 1000.0;
+  napi_create_double(env, batchUs, &value);
+  napi_set_named_property(env, result, "batchGpuTimeUs", value);
+  napi_create_uint32(env, recordedDispatchCount, &value);
+  napi_set_named_property(env, result, "dispatchCount", value);
+
+  void* timesData = NULL;
+  napi_create_arraybuffer(env, (size_t)recordedDispatchCount * sizeof(double),
+    &timesData, &timesArrayBuffer);
+  double* timesUs = (double*)timesData;
+  for (uint32_t d = 0; d < recordedDispatchCount; d++) {
+    uint32_t queryBase = 2 + d * 2;
+    timesUs[d] = (double)timestampTickDelta(ticks[queryBase + 1], ticks[queryBase]) *
+      (double)timestampPeriodNs / 1000.0;
+  }
+  napi_create_typedarray(env, napi_float64_array, recordedDispatchCount,
+    timesArrayBuffer, 0, &timesTypedArray);
+  napi_set_named_property(env, result, "dispatchTimesUs", timesTypedArray);
+  free(ticks);
   return result;
+}
+
+static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
+  return napi_batchExecuteAllImpl(env, info, 0);
+}
+
+static napi_value napi_batchExecuteAllProfiled(napi_env env, napi_callback_info info) {
+  return napi_batchExecuteAllImpl(env, info, 1);
 }
 
 // ── N-API: waitTimeline(value) ───────────────────────────────────────────────
@@ -4072,7 +4311,8 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
     sizeof(timestamps), timestamps, sizeof(uint64_t),
     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 
-  double elapsedUs = (double)(timestamps[1] - timestamps[0]) * (double)timestampPeriodNs / 1000.0;
+  double elapsedUs = (double)timestampTickDelta(timestamps[1], timestamps[0]) *
+    (double)timestampPeriodNs / 1000.0;
   // Return per-iteration average
   elapsedUs /= (double)iters;
 
@@ -4798,6 +5038,7 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   transferQueueFamily = UINT32_MAX;
   hasAsyncTransfer = 0;
 
+  if (profileTimestampPool) { fp_vkDestroyQueryPool(device, profileTimestampPool, NULL); profileTimestampPool = 0; }
   if (timestampPool) { fp_vkDestroyQueryPool(device, timestampPool, NULL); timestampPool = 0; }
   timestampsSupported = 0;
   fp_vkDestroyFence(device, persistentFence, NULL);
@@ -4852,6 +5093,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "batchDispatchMany", NULL, napi_batchDispatchMany, NULL, NULL, NULL, napi_default, NULL },
     { "batchSubmit",     NULL, napi_batchSubmit,     NULL, NULL, NULL, napi_default, NULL },
     { "batchExecuteAll", NULL, napi_batchExecuteAll, NULL, NULL, NULL, napi_default, NULL },
+    { "batchExecuteAllProfiled", NULL, napi_batchExecuteAllProfiled, NULL, NULL, NULL, napi_default, NULL },
     { "waitTimeline",    NULL, napi_waitTimeline,    NULL, NULL, NULL, napi_default, NULL },
     { "getCompleted",    NULL, napi_getCompleted,    NULL, NULL, NULL, napi_default, NULL },
     { "gpuTime",         NULL, napi_gpuTime,         NULL, NULL, NULL, napi_default, NULL },

@@ -30,6 +30,11 @@ export interface NativeDeviceInfo {
   apiVersion: number;
   driverVersion: number;
   deviceLocalMemoryBytes: number;
+  maxComputeSharedMemorySize: number;
+  maxComputeWorkGroupInvocations: number;
+  maxComputeWorkGroupSizeX: number;
+  maxComputeWorkGroupSizeY: number;
+  maxComputeWorkGroupSizeZ: number;
   subgroupSize: number;
   subgroupSupportedStages: number;
   subgroupSupportedOperations: number;
@@ -89,6 +94,12 @@ export interface NativeAddon {
   batchDispatchMany(packed: ArrayBuffer, count: number): void;
   batchSubmit(): number;
   batchExecuteAll?(packed: ArrayBuffer, count: number): number;
+  batchExecuteAllProfiled?(packed: ArrayBuffer, count: number): {
+    timeline: number;
+    batchGpuTimeUs: number;
+    dispatchCount: number;
+    dispatchTimesUs: Float64Array;
+  };
   batchExecuteAllDGC?(packed: ArrayBuffer, count: number): number;
   dgcSetup?(pipelineSlot: number, pushConstantSize: number, maxSequences: number): boolean;
   dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
