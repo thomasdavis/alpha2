@@ -14,9 +14,18 @@ batch="${BATCH:-10}"
 mkdir -p "$output_root"
 cd "$repo_root"
 
-git rev-parse HEAD > "$output_root/SOURCE-COMMIT.txt"
-git status --short > "$output_root/SOURCE-STATUS.txt"
-git diff --binary > "$output_root/SOURCE-DIFF.patch"
+source_commit="${SOURCE_COMMIT_OVERRIDE:-}"
+if [[ -z "$source_commit" ]]; then
+  source_commit="$(git rev-parse HEAD)"
+fi
+printf '%s\n' "$source_commit" > "$output_root/SOURCE-COMMIT.txt"
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git status --short > "$output_root/SOURCE-STATUS.txt"
+  git diff --binary > "$output_root/SOURCE-DIFF.patch"
+else
+  printf '%s\n' "source package supplied with SOURCE_COMMIT_OVERRIDE=$source_commit" > "$output_root/SOURCE-STATUS.txt"
+  : > "$output_root/SOURCE-DIFF.patch"
+fi
 sha256sum "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" > "$output_root/INPUT-HASHES.sha256"
 sha256sum \
   packages/helios/src/backend.ts \
