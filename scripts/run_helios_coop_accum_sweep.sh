@@ -96,7 +96,12 @@ jq -r '
 
 (
   cd "$output_dir"
-  find . -maxdepth 1 -type f ! -name ARTIFACTS.sha256 -printf '%P\0' \
+  # hash-check.log is the verifier's own output and changes while verification
+  # runs; hashing it would make the act of checking invalidate the manifest.
+  find . -maxdepth 1 -type f \
+    ! -name ARTIFACTS.sha256 \
+    ! -name hash-check.log \
+    -printf '%P\0' \
     | sort -z \
     | xargs -0 sha256sum > ARTIFACTS.sha256
   sha256sum -c ARTIFACTS.sha256
