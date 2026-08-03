@@ -28,6 +28,7 @@ import {
 
 import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo } from "./device.js";
 import { getKernelSpirv } from "./kernels.js";
+import { loadStaticSlotPlan, type StaticSlotPlan } from "./static-slot-plan.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,17 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 // for ahead-of-time graph compilation and command replay.
 const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
 const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
+// An offline, warmup-excluded lifetime trace can be compiled into a fixed set
+// of reusable VkBuffer handles. The path is opt-in because the plan is tied to
+// one exact graph; strict runtime validation fails before a mismatched write.
+const STATIC_SLOT_PLAN_PATH = process.env.HELIOS_STATIC_SLOT_PLAN?.trim() ?? "";
+const STATIC_SLOT_PLAN: StaticSlotPlan | null = STATIC_SLOT_PLAN_PATH
+  ? loadStaticSlotPlan(STATIC_SLOT_PLAN_PATH)
+  : null;
+const STATIC_SLOT_PLAN_WARMUP_STEPS = Math.max(
+  0,
+  Number.parseInt(process.env.HELIOS_STATIC_SLOT_PLAN_WARMUP_STEPS ?? "1", 10) || 0,
+);
 // Generic FP32 GEMMs have multiple portable Vulkan implementations.  The old
 // size threshold is retained as the zero-overhead default, while this opt-in
 // path measures the real device/driver/shape combination once and caches the
@@ -707,7 +719,13 @@ const PUSH_SIZE = 8;  // bytes — all kernels use 2 x f32 push constants
 
 // ── GPU residence tracking ──────────────────────────────────────────────────
 
-interface GpuHandle { handle: number; byteSize: number; refs: number; released: boolean }
+interface GpuHandle {
+  handle: number;
+  byteSize: number;
+  refs: number;
+  released: boolean;
+  staticSlotId?: number;
+}
 
 /** Maps TensorData → its GPU buffer. Keyed on the object identity. */
 const gpuResidence = new WeakMap<object, GpuHandle>();
@@ -744,6 +762,11 @@ const gpuCleanup = new FinalizationRegistry<GpuHandle>((info) => {
   if (info.released) return; // already explicitly released
   info.refs--;
   _diagFrReleasesThisStep++;
+  if (info.staticSlotId !== undefined) {
+    // Static slots are owned by the plan runtime, not by any one TensorData.
+    if (info.refs <= 0) info.released = true;
+    return;
+  }
   if (info.refs <= 0) {
     info.released = true;
     try {
@@ -805,6 +828,10 @@ function releaseGpuBufferFor(td: TensorData): void {
   info.refs--;
   gpuResidence.delete(td);
   _diagReleasesThisStep++;
+  if (info.staticSlotId !== undefined) {
+    if (info.refs <= 0) info.released = true;
+    return;
+  }
   if (info.refs <= 0) {
     info.released = true;
     gpuResidence.delete(td);
@@ -850,11 +877,16 @@ interface OutputRegion {
   handle: number;
   byteSize: number;
   readyValue: number;  // timeline value when this region becomes available
+  staticSlotId?: number;
 }
 
 const outputPool = new Map<number, OutputRegion[]>();
 let outputPoolEntries = 0;
 let outputPoolBytes = 0;
+// Only allocated when a static plan is requested, preserving the normal hot
+// path. It lets record() replace a just-acquired dynamic output with the
+// preplanned handle, including multi-output kernels.
+const unsubmittedOutputRegions = STATIC_SLOT_PLAN ? new Map<number, OutputRegion>() : null;
 
 // Cached timeline completion value — avoids N-API call per-op.
 // Refreshed lazily: only re-queries GPU when cache is stale (after flush).
@@ -897,12 +929,15 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
         outputPoolEntries--;
         outputPoolBytes -= rounded;
         _flowOutputPoolHits++;
+        if (unsubmittedOutputRegions) unsubmittedOutputRegions.set(region.handle, region);
         return region;
       }
     }
   }
   _flowOutputPoolMisses++;
-  return { handle: acquireBuffer(vk, rounded, true), byteSize: rounded, readyValue: 0 };
+  const region = { handle: acquireBuffer(vk, rounded, true), byteSize: rounded, readyValue: 0 };
+  if (unsubmittedOutputRegions) unsubmittedOutputRegions.set(region.handle, region);
+  return region;
 }
 
 /**
@@ -914,6 +949,8 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
 const pendingDestroys: { handle: number; readyValue: number }[] = [];
 
 function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
+  if (region.staticSlotId !== undefined) return;
+  if (unsubmittedOutputRegions) unsubmittedOutputRegions.delete(region.handle);
   region.readyValue = submitValue;
   let pool = outputPool.get(region.byteSize);
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
@@ -991,6 +1028,122 @@ interface PendingOp {
   packedBytes?: number;     // encoded byte size for batchDispatchMany payload
   elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
 }
+
+class StaticSlotRuntime {
+  private readonly handles = new Map<number, { handle: number; byteSize: number }>();
+  private active = false;
+  private step = 0;
+  private bindingsThisStep = 0;
+  private completedActiveSteps = 0;
+
+  constructor(private readonly plan: StaticSlotPlan, private readonly warmupSteps: number) {}
+
+  beginStep(): { activated: boolean } {
+    if (this.active) {
+      if (this.bindingsThisStep !== this.plan.assignmentCount) {
+        throw new Error(
+          `[helios static slots] prior step bound ${this.bindingsThisStep}/${this.plan.assignmentCount} planned values`,
+        );
+      }
+      this.completedActiveSteps++;
+    }
+    this.step++;
+    this.bindingsThisStep = 0;
+    const nextActive = this.step > this.warmupSteps;
+    const activated = nextActive && !this.active;
+    this.active = nextActive;
+    return { activated };
+  }
+
+  bindOperation(vk: NativeAddon, operationIndex: number, op: PendingOp): void {
+    if (!this.active) return;
+    if (operationIndex >= this.plan.operationCount) {
+      throw new Error(
+        `[helios static slots] operation ${operationIndex} exceeds planned count ${this.plan.operationCount}`,
+      );
+    }
+    const assignments = this.plan.assignmentsByOperation.get(operationIndex);
+    if (!assignments || assignments.length === 0) return;
+    const handles = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+    for (const assignment of assignments) {
+      if (assignment.producerKind !== op.kind || assignment.producerKernel !== op.kernel) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} expected ${assignment.producerKind}/${assignment.producerKernel}, ` +
+            `got ${op.kind}/${op.kernel}`,
+        );
+      }
+      const oldHandle = handles[assignment.producerPosition];
+      const target = unsubmittedOutputRegions?.get(oldHandle);
+      if (!target) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} binding ${assignment.producerPosition} is not a fresh output region`,
+        );
+      }
+      if (target.byteSize !== assignment.logicalBytes) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} binding ${assignment.producerPosition} size ` +
+            `${target.byteSize} != planned ${assignment.logicalBytes}`,
+        );
+      }
+      const slotSpec = this.plan.slots[assignment.slotId];
+      let slot = this.handles.get(assignment.slotId);
+      if (!slot) {
+        slot = { handle: acquireBuffer(vk, slotSpec.allocationBytes, true), byteSize: slotSpec.allocationBytes };
+        this.handles.set(assignment.slotId, slot);
+      }
+
+      // The old region has not appeared in a command yet. Return a copy to the
+      // ordinary pool, then mutate the caller-owned region so the TensorData
+      // and every descriptor see the stable slot handle.
+      unsubmittedOutputRegions!.delete(oldHandle);
+      releaseOutputRegion({ ...target }, target.readyValue);
+      target.handle = slot.handle;
+      target.byteSize = slot.byteSize;
+      target.readyValue = 0;
+      target.staticSlotId = assignment.slotId;
+      handles[assignment.producerPosition] = slot.handle;
+      this.bindingsThisStep++;
+    }
+    if (op.allBufs) {
+      op.allBufs = handles;
+    } else {
+      const outputPosition = op.inputBufs.length;
+      const assignment = assignments.find((row) => row.producerPosition === outputPosition);
+      if (!assignment) {
+        throw new Error(`[helios static slots] op ${operationIndex} planned a non-output binding without allBufs`);
+      }
+      op.outputRegion.handle = handles[outputPosition];
+    }
+  }
+
+  destroy(vk: NativeAddon): void {
+    for (const { handle } of this.handles.values()) {
+      vk.destroyBuffer(handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
+      if (_liveAllocCount > 0) _liveAllocCount--;
+    }
+    this.handles.clear();
+  }
+
+  stats(): Record<string, number> {
+    return {
+      staticSlotPlanEnabled: 1,
+      staticSlotPlanActive: this.active ? 1 : 0,
+      staticSlotPlanStep: this.step,
+      staticSlotPlanSlotsDeclared: this.plan.slots.length,
+      staticSlotPlanSlotsAllocated: this.handles.size,
+      staticSlotPlanBytesDeclared: this.plan.totalSlotBytes,
+      staticSlotPlanBytesAllocated: [...this.handles.values()].reduce((sum, slot) => sum + slot.byteSize, 0),
+      staticSlotPlanAssignments: this.plan.assignmentCount,
+      staticSlotBindingsThisStep: this.bindingsThisStep,
+      staticSlotCompletedSteps: this.completedActiveSteps,
+    };
+  }
+}
+
+const staticSlotRuntime = STATIC_SLOT_PLAN
+  ? new StaticSlotRuntime(STATIC_SLOT_PLAN, STATIC_SLOT_PLAN_WARMUP_STEPS)
+  : null;
 
 export type GraphTraceEvent =
   | {
@@ -1154,6 +1307,10 @@ class ComputeGraph {
         4 +                             // writeMask
         bufCount * 4 +                  // buf handles
         op.pushSize;                    // push constants bytes
+    }
+
+    if (staticSlotRuntime && this.vk) {
+      staticSlotRuntime.bindOperation(this.vk, this.opsThisStep, op);
     }
 
     if (PROFILE_GRAPH_SIGNATURE) {
@@ -1485,7 +1642,13 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
   // Use region.byteSize (rounded) for pool key consistency.
   // acquireOutputRegion rounds to 4MB bins; release must match that key
   // or every iteration allocates a new buffer (vkAllocateMemory overhead).
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
+  const gpuInfo: GpuHandle = {
+    handle: region.handle,
+    byteSize: region.byteSize,
+    refs: 1,
+    released: false,
+    staticSlotId: region.staticSlotId,
+  };
   const td: TensorData = {
     shape,
     dtype: "f32",
@@ -1513,7 +1676,13 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
 /** Like graphLazyTensor but for f16 output buffers (2 bytes per element). */
 function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
   const size = shapeSize(shape);
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
+  const gpuInfo: GpuHandle = {
+    handle: region.handle,
+    byteSize: region.byteSize,
+    refs: 1,
+    released: false,
+    staticSlotId: region.staticSlotId,
+  };
   const td: TensorData = {
     shape: [...shape],
     dtype: "f16",
@@ -1826,6 +1995,9 @@ export class HeliosBackend implements Backend {
     bufferPoolEntries = 0;
     bufferPoolBytes = 0;
 
+    // Plan-owned slots never enter either ordinary pool.
+    if (staticSlotRuntime) staticSlotRuntime.destroy(vk);
+
     // Safe to destroy now — GPU sync above guarantees all work has completed
     processPendingDestroys(vk);
     this.resetCoopF16InputCache(false);
@@ -1870,6 +2042,10 @@ export class HeliosBackend implements Backend {
       flowBufferPoolHits: _flowBufferPoolHits,
       flowEnsureGpuHits: _flowEnsureGpuHits,
       flowEnsureGpuUploads: _flowEnsureGpuUploads,
+      ...(staticSlotRuntime ? staticSlotRuntime.stats() : {
+        staticSlotPlanEnabled: 0,
+        staticSlotPlanActive: 0,
+      }),
       ...nativeAllocatorStats,
     };
     // Only reset per-step diag counters (not flow totals)
@@ -2007,7 +2183,16 @@ export class HeliosBackend implements Backend {
   /** Get count of GPU ops dispatched this step (reset with resetStepOps). */
   get gpuOpsThisStep(): number { return graph.opsThisStep; }
   get gpuOpsTotal(): number { return graph.totalOpsRecorded; }
-  resetStepOps(): void { graph.resetStepStats(); }
+  resetStepOps(): void {
+    const transition = staticSlotRuntime?.beginStep();
+    if (transition?.activated) {
+      // The warm-up path populated the ordinary pools. Retire it before
+      // reserving plan-owned slots so the first active step measures the fixed
+      // plan rather than an accidental union of both allocators.
+      this.purgeBufferPools();
+    }
+    graph.resetStepStats();
+  }
   getGpuStepStats(): GpuStepStats { return graph.getStepStats(); }
 
   // ── GPU binary ops ──────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ git diff --binary HEAD > "$output_dir/SOURCE-DIFF.patch"
 sha256sum "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" > "$output_dir/INPUT-HASHES.sha256"
 sha256sum \
   packages/helios/src/backend.ts \
+  packages/helios/src/static-slot-plan.ts \
   packages/helios/native/helios_vk.c \
   packages/train/src/trainer.ts \
   apps/cli/dist/main.js \
@@ -222,6 +223,9 @@ for mode in "${modes[@]}"; do
     node scripts/analyze_helios_buffer_lifetimes.mjs \
       "$mode_dir/run/gpu-graph-trace.jsonl" --skip-first "$warmup" --json \
       > "$mode_dir/buffer-lifetime-analysis.json"
+    node scripts/analyze_helios_buffer_lifetimes.mjs \
+      "$mode_dir/run/gpu-graph-trace.jsonl" --skip-first "$warmup" --emit-plan --json \
+      > "$mode_dir/static-slot-plan.json"
     node scripts/analyze_helios_buffer_lifetimes.mjs \
       "$mode_dir/run/gpu-graph-trace.jsonl" --skip-first "$warmup" \
       > "$mode_dir/BUFFER-LIFETIME-ANALYSIS.md"

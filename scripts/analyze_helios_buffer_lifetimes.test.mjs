@@ -46,6 +46,32 @@ test("versions a reused physical buffer and computes conservative peak liveness"
   assert.equal(row.peakLiveTransientBytes, 96);
   assert.equal(row.greedyArenaBytes, 512);
   assert.equal(row.physicalBuffersObserved, 4);
+  assert.equal(row.staticBufferSlots, 2);
+  assert.equal(row.staticBufferSlotBytes, 512);
+  assert.equal(row.staticBufferSlotReuseVsCreated, 160 / 512);
+});
+
+test("emits a deterministic producer-to-slot plan and reuses only non-overlapping values", () => {
+  const result = analyze([{
+    step: 1,
+    events: [
+      op(0, [0, 1, 2], [256, 256, 256], 4, "first"),
+      op(1, [2, 1, 3], [256, 256, 256], 4, "middle"),
+      op(2, [3, 1, 4], [256, 256, 256], 4, "last"),
+    ],
+  }], ["--emit-plan"]);
+  const row = result.analyses[0];
+  assert.equal(row.staticBufferSlots, 2);
+  assert.equal(row.staticBufferSlotBytes, 512);
+  assert.deepEqual(
+    row.staticSlotPlan.assignments.map(({ producerOperation, slotId }) => ({ producerOperation, slotId })),
+    [
+      { producerOperation: 0, slotId: 0 },
+      { producerOperation: 1, slotId: 1 },
+      { producerOperation: 2, slotId: 0 },
+    ],
+  );
+  assert.equal(row.staticSlotPlan.slots[0].assignmentCount, 2);
 });
 
 test("rejects legacy traces without buffer identities", () => {
