@@ -60,7 +60,7 @@ promoted to training until whole-step and trajectory parity clear. Evidence:
 
 | # | Action | Cost | Why first |
 |---:|---|---|---|
-| 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | **instrumentation complete 2026-08-03; physical value open** | Confirms or refutes the host-bound model that the whole ladder rests on |
+| 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | **complete 2026-08-03 on L40S** | Steady split is 3,216 ms host build / 1,479 ms GPU blocking; the accounting closes against 1,471 ms timestamped dispatch |
 | 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | **complete 2026-08-03 on RTX 4090** | Shape-dependent 0.61–0.90x of F16 accumulation; 4.99–5.81x selected FP32, so mixed precision stays open |
 | 3 | R1 — static-graph record and replay | days | Largest single rung (1.84×), and it makes every later kernel gain actually visible |
 | 4 | R2 → R3 → R4 | — | Reprofile after each; the ordering may change once R1 lands |
@@ -86,12 +86,30 @@ and the runner live at:
 - `scripts/run_helios_coop_accum_sweep.sh`;
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-accum-physical-20260803-r3/`.
 
-The host split is still open. Five exact-shape attempts on one RTX 4090 host
-failed before step one because the driver's usable device budget is below the
-full FP32 graph peak. Those failures diagnosed and removed a 53 MiB smoke-test
-leak, exposed 704 MiB of temp-slab tail waste, and added exact buffer classes;
-none changed the shape or arithmetic. The next probe moves the unchanged graph
-to a higher-memory one-GPU device rather than weakening the measurement.
+The host split is physically complete on an NVIDIA L40S without changing the
+shape or arithmetic. Excluding the first warm step, the exact foundation graph
+spent **3,216.2 ms (68.49%)** in host-side build/lifecycle work and **1,479.4 ms
+(31.51%)** blocked on the GPU. Timestamped dispatch was **1,470.6 ms**, so the
+independent GPU clocks and the wall-clock partition agree. The measured
+zero-host-overhead ceiling on this host/device is therefore about **3.19x**.
+This confirms the ladder's host-bound mechanism, although the raw L40S rate is
+not a substitute for the 4090 baseline.
+
+A ten-step Node CPU profile localizes the removable part of host time. `flush`
+is dominated by the genuine synchronous GPU wait and must not be counted as
+free speedup. The large non-GPU self-time is instead native buffer lifecycle:
+`createFreshBuffer` accounts for 15.230 sampled seconds and
+`processPendingDestroys` for 13.629 seconds. Over ten steps the exact-size,
+individual-allocation policy created 8,981 buffers and destroyed 8,026. The
+next discriminator is therefore a 2x2 physical allocator experiment (coarse
+versus exact size classes; temp slabs versus individual allocations), before
+attempting full static graph replay.
+
+Evidence:
+
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-split-physical-l40s-20260803-r1/`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r1/`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r2/`.
 
 ## Parity gates — how a rung is earned
 

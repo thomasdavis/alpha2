@@ -58,7 +58,7 @@ subject to whole-step and training-trajectory parity.
 | Gate | Definition | State |
 |---|---|---|
 | **G0** | Physical baseline: exact FLOP accounting, roofline position, four-factor decomposition, reproducible from scripts. | **met 2026-08-03** |
-| **G1a** | `host_build_ms` printed beside `dispatch_gpu_us` in the trainer, confirming or refuting the host-bound model of X8. **Run this first** — it changes how every candidate is scored. | **instrumented 2026-08-03; physical value open** |
+| **G1a** | `host_build_ms` printed beside `dispatch_gpu_us` in the trainer, confirming or refuting the host-bound model of X8. **Run this first** — it changes how every candidate is scored. | **met 2026-08-03 on L40S: 68.49% host / 31.51% GPU blocking steady-state; GPU wall agrees with timestamped dispatch** |
 | **G1** | Reference-stack control run of the exact foundation shape on one 4090 (~$0.70, <=1 h), tokens/s and MFU recorded. Decides whether Helios is the production engine or the research engine. | open |
 | **G2** | The 51% unattributed step interval explained and either eliminated or accounted for in a corrected ledger. **Diagnosed 2026-08-03 (X8): host-bound, unoverlapped, static graph rebuilt every step.** | diagnosed, unfixed |
 | **G3** | >= 3x end-to-end over 7,253.8 tokens/s on the exact foundation shape, with exact-loss and gradient parity under existing promotion rules. | open |
@@ -70,14 +70,16 @@ experiments in the program, and together they price every Tier-1 item. Kernel wo
 resumes only after both, and then against a known target instead of against the
 previous kernel.
 
-The G1a implementation is locally complete and the cooperative-accumulation
-discriminator is physically complete on an RTX 4090. The physical runner fails
-if production-pattern cooperative tests skip, records the exact device and
-source, and separates accumulation-rate ratio from cast-inclusive efficiency.
-All production oracles passed with maximum error zero. G1a's host/GPU split
-remains open because the first 4090 host exposed less usable VRAM than the exact
-FP32 graph peak; the allocator failure sequence is preserved rather than
-silently changing the batch.
+G1a and the cooperative-accumulation discriminator are both physically
+complete. The cooperative test ran on an RTX 4090; the unchanged exact
+foundation graph required a higher-memory L40S for the host/GPU split. After
+the first warm step, host build/lifecycle averaged 3,216.2 ms and synchronous
+GPU blocking averaged 1,479.4 ms. The independent timestamped dispatch sum was
+1,470.6 ms, which closes the accounting and confirms that the missing interval
+is host-side rather than hidden GPU execution. A ten-step CPU profile then
+localized the actionable self-time to repeated Vulkan buffer creation and
+destruction. The immediate experiment is allocator-policy elimination; static
+graph replay remains the structural R1 destination.
 
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):
