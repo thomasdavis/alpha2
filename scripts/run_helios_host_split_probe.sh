@@ -58,6 +58,9 @@ controlled_env=(
   # reserved by the 8 GiB temp-slab policy. Individual VkDeviceMemory blocks
   # remove slab tail waste while preserving tensors, operations, and kernels.
   "HELIOS_DISABLE_TEMP_SLABS=1"
+  # The foundation shape is static; exact-size classes avoid padding every
+  # persistent matrix and activation to a 4 MiB bin.
+  "HELIOS_EXACT_BUFFER_SIZES=1"
   "HELIOS_DISABLE_COOP_MAT=1"
   "HELIOS_FLASH_FWD_PREFER_COOP2=0"
   "HELIOS_WG_SIZE=64"

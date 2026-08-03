@@ -546,6 +546,7 @@ const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFF
 const MAX_OUTPUT_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_OUTPUT_POOL_ENTRIES ?? "512", 10));
 const LIVE_ALLOC_SOFT_CAP = Math.max(0, parseInt(process.env.HELIOS_LIVE_ALLOC_SOFT_CAP ?? "8000", 10));
 const LIVE_ALLOC_HARD_CAP = Math.max(LIVE_ALLOC_SOFT_CAP + 1, parseInt(process.env.HELIOS_LIVE_ALLOC_HARD_CAP ?? "10000", 10));
+const EXACT_BUFFER_SIZES = process.env.HELIOS_EXACT_BUFFER_SIZES === "1";
 
 let _totalAllocCount = 0;
 let _totalAllocBytes = 0;
@@ -851,6 +852,10 @@ function invalidateCompletedCache(): void { _completedCacheDirty = true; }
  * Collapses many similar sizes into fewer size classes for better reuse.
  */
 function roundPoolSize(bytes: number): number {
+  // Exact classes avoid material tail waste for stable, large training shapes.
+  // The coarse policy remains the default because it can improve reuse when a
+  // workload emits many nearby dynamic sizes. Tensor byte counts are f32-aligned.
+  if (EXACT_BUFFER_SIZES) return Math.max(4, bytes);
   if (bytes <= 4096) return 4096;
   if (bytes <= 1_048_576) return Math.ceil(bytes / 262144) * 262144;  // 256KB bins up to 1MB
   return Math.ceil(bytes / 4_194_304) * 4_194_304;  // 4MB bins above 1MB
