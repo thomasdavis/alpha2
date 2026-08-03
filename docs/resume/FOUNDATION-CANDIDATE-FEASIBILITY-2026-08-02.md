@@ -110,6 +110,8 @@ scripts/freeze_pretrain_validation_slice.ts
 scripts/run_foundation_candidate_lr_pilot.sh
 scripts/analyze_foundation_candidate_lr_sweep.ts
 scripts/pretokenize_pretrain_shard.ts
+scripts/run_foundation_candidate_full.sh
+scripts/analyze_foundation_candidate_full.ts
 ```
 
 The pretokenizer builds the identical hash-keyed cache consumed by the trainer
@@ -139,6 +141,14 @@ Before the long run:
 No LR-pilot output is posted to Discord, Hugging Face, or BLAH. Those channels
 receive a new version only after a completed foundation plus conversational
 post-training candidate produces a genuine behavioral improvement.
+
+The selected full-run contract is 79,020 steps at batch 24 and block size
+1,024: 1,941,995,520 causal tokens, just over 20 tokens per parameter. It binds
+the LR-selection report, four-shard manifest, wholly held-out validation slice,
+tokenizer, source revision, optimizer, and `symbio=false` setting. The paired
+analyzer requires exact metric and evaluation cadence, improving held-out loss,
+finite native checkpoint contents, zero allocator overflow, and measured
+steady-state throughput before the foundation can be handed to post-training.
 
 ## Canonical feasibility evidence
 

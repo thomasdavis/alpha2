@@ -86,6 +86,9 @@ Canonical research root:
 The root contains the accepted and rejected synthetic population, independent
 review lineage, exact corpus and mask hashes, run contract and metrics,
 structural outputs, sampled trajectories, failed zero-row evaluation attempts,
-both blinded packets, and both final GPT-5.5 reviews. Rejected checkpoint weights
-remain on the dedicated Alpha pod and are not duplicated locally.
-
+both blinded packets, and both final GPT-5.5 reviews. On 2026-08-03 the eight
+rejected checkpoints were losslessly compressed to `training/checkpoints/` in
+that same root to release the dedicated pod's enforced storage quota. Both the
+raw and compressed SHA-256 ledgers are present, and every local archive was
+stream-decompressed back to its recorded raw digest before the remote raw copy
+was released.
