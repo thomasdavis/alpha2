@@ -90,6 +90,17 @@ Read these first:
 - [Foundation candidate feasibility and LR contract](docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md)
 - [Current state](docs/resume/CURRENT-STATE.md)
 
+All Helios research and benchmark evidence must be persisted on the mounted drive. The canonical policy and
+mounted evidence register are:
+
+    /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/EVIDENCE-REGISTER.md
+
+`/tmp`, pod root filesystems, terminal output, and uncommitted worktrees are never the sole copy. Preserve raw
+controls, candidates, rejected and invalid runs, exact commands, device/driver metadata, source identities, test
+reports, and checksum manifests before closing an experiment or deleting a remote machine. Pause before a
+project slice adds more than 15 GiB; do not discard evidence merely to remain below that threshold.
+
 The older historical sections below remain evidence, but any statement that no Alpha pod is billing, no paid run
 is authorized, or the LR pilot is merely planned is superseded by this execution state.
 

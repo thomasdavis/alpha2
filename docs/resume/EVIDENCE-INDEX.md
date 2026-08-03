@@ -3,6 +3,14 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+The mandatory mounted-disk preservation policy and cross-experiment register are:
+
+    /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/EVIDENCE-REGISTER.md
+
+Raw research, controls, failures, rejected candidates, machine metadata, and checksums must remain on the mounted
+drive; repository prose is an index, not a substitute for those artifacts.
+
 ## 2026-08-03 Helios exact profiler and register-blocked GEMM
 
 Authoritative evidence and rejected-measurement record:

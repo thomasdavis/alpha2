@@ -73,6 +73,13 @@ AMD compatibility is required even if the first Alpha run ultimately remains on 
 
 This document is not permission to trade away mathematical correctness for attractive throughput. Every optimized path retains a portable reference path and must be checked against it. There is deliberately no arbitrary performance threshold: end-to-end measurements and tokens per dollar decide which path is useful.
 
+All prior-art research and experimental evidence is part of the deliverable. Canonical research lives under
+`/mnt/donto-data/donto-resources/research/alpha-helios/`; raw benchmark families live under
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-*`. The preservation contract is
+`PRESERVATION-POLICY.md` in that research directory. Every success, null result, failure, invalid run, exact
+command, device/driver identity, source commit, test result, and digest manifest must reach the mounted drive
+before temporary files or remote machines are removed.
+
 ## 2. Boundaries and non-goals
 
 This program serves the Alpha model; it does not replace the model objective with an engine benchmark.
