@@ -137,6 +137,12 @@ if (MATMUL_TILE_OVERRIDE_ENV) {
 }
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
+// The cooperative shader can either consume pre-cast f16 SSBOs or load f32
+// operands and narrow each reusable tile into f16 workgroup memory.  The
+// pre-cast path wins isolated GEMM microbenchmarks, but a training graph pays
+// for whole-tensor cast dispatches and their lifetimes.  Keep the historical
+// default while exposing the fused graph-level alternative explicitly.
+const COOP_PRECAST_F16_INPUT = process.env.HELIOS_COOP_PRECAST_F16_INPUT !== "0";
 // Diagnostic shape gates for cooperative-matrix training parity work.  Each
 // entry is a logical MxNxK triple (for example "10240x1920x640").  ALLOW is
 // an optional positive list; DENY is applied after it.  These gates are
@@ -3019,6 +3025,24 @@ export class HeliosBackend implements Backend {
     return this.ensureGpuF16(vk, casted);
   }
 
+  /**
+   * Select the storage basis consumed by one cooperative dispatch.  A mixed
+   * f16/f32 pair still uses the pre-cast path because both shader bindings
+   * must have the same scalar width.  When both operands are f32 and graph
+   * fusion is enabled, the shader narrows only the tiles it stages in shared
+   * memory and no full-size cast tensor is materialized.
+   */
+  private coopUsesPrecastF16Inputs(a: TensorData, b: TensorData): boolean {
+    return COOP_PRECAST_F16_INPUT || a.dtype === "f16" || b.dtype === "f16";
+  }
+
+  private getCoopF32InputBuffer(vk: NativeAddon, td: TensorData): number {
+    if (td.dtype !== "f32") {
+      throw new Error(`Helios fused-f32 cooperative matmul requires f32 inputs (got ${td.dtype})`);
+    }
+    return ensureGpu(vk, td);
+  }
+
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────
 
   private gpuSoftmax(a: TensorData): TensorData {
@@ -4647,9 +4671,11 @@ export class HeliosBackend implements Backend {
         : (batchSize > 1 ? "batched" : "basic");
     }
 
+    const usePrecastF16Inputs = this.coopUsesPrecastF16Inputs(a, b);
+    const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
-      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     this.recordCoopShape(kernelName, M, N, K, batchSize, false, transposed);
@@ -4660,8 +4686,12 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = this.getCoopInputBuffer(vk, a);
-    const bufB = this.getCoopInputBuffer(vk, b);
+    const bufA = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, a)
+      : this.getCoopF32InputBuffer(vk, a);
+    const bufB = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, b)
+      : this.getCoopF32InputBuffer(vk, b);
 
     if (useSplitK) {
       // Split-K path: dispatch matmul to temp buffer, then reduce.
@@ -4888,8 +4918,10 @@ export class HeliosBackend implements Backend {
     const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
     const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
+    const usePrecastF16Inputs = this.coopUsesPrecastF16Inputs(a, b);
+    const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
     const kernelName =
-      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     this.recordCoopShape(kernelName, outM, N, loopK, batchSize, true, false);
@@ -4900,8 +4932,12 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = this.getCoopInputBuffer(vk, a);
-    const bufB = this.getCoopInputBuffer(vk, b);
+    const bufA = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, a)
+      : this.getCoopF32InputBuffer(vk, a);
+    const bufB = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, b)
+      : this.getCoopF32InputBuffer(vk, b);
 
     if (useSplitK) {
       const kChunk = alignUp(Math.ceil(loopK / splitK), kTileK);
