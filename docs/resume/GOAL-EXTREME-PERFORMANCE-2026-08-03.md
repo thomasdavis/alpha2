@@ -102,6 +102,16 @@ mounted research tree reduces the task to behavioral construction, surveys 100
 external mechanisms, and makes the closed-loop Behavioral Constraint Compiler
 the primary L2/L3 research candidate alongside the L5 static graph/arena work.
 
+**Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
+100 directions to receive a faithful attempt, not only the agent's preferred
+candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.
+Every direction receives a mechanism/prior-art audit and a direction-appropriate
+cheap discriminator; only survivors advance to bounded RTX 3090 tests. A proof,
+trace, offline replay, or controlled proxy may faithfully close a direction when
+it reaches the mechanism's risky prediction. Discussion alone never counts as an
+attempt. Current generated state begins at **100 queued / 0 claimed complete** at
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/PORTFOLIO-STATUS.md`.
+
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):
 
