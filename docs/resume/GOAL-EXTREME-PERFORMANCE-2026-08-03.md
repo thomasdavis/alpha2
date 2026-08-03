@@ -131,6 +131,36 @@ Two changes to the **training contract** — no kernel work, no new mathematics:
    tokens-to-target and may share a mechanism. F2 is worth 2.2x–3.7x; one
    matched-token pilot varying both together resolves where.
 
+## Closed by proof, not measurement
+
+**Gauge-Quotient Muon (X15).** Proposed: Muon's spectral flattening may promote
+numerical noise in functionally dead parameter directions into full-sized
+updates, so project the gauge out first. Measured two exact continuous
+symmetries (SwiGLU up/down scaling; per-head V/O rotation) on the real
+checkpoint:
+
+| | gradient | quantisation error | null |
+|---|---:|---:|---:|
+| FFN scaling gauge | **0.000%** | 0.097% | 0.098% |
+| V/O rotation gauge | **0.00x fair share** | 1.00x fair share | — |
+
+The gradient figure is **exactly zero, and forced**: if the loss is invariant
+along a symmetry orbit, the directional derivative along any tangent of that
+orbit is identically zero, so the gradient is always exactly orthogonal to the
+gauge tangent space. The proposed mechanism therefore cannot operate through the
+gradient; the only channel is numerical error, which measures as perfectly
+isotropic (1.00x fair share) in a subspace occupying 0.098% (FFN) and 3.08%
+(V/O) of the parameters.
+
+This closure is stronger than the empirical ones — it will not become true at
+another scale or checkpoint. It also self-validates: a mis-derived symmetry
+would have produced a visibly nonzero gradient projection rather than exactly
+zero, and a unit test confirmed a pure gauge direction projects to 1.000000.
+
+Note the corrected threshold: "<1% of energy" was the wrong null. A gauge
+subspace of dimension d inside ambient D captures d/D of any isotropic vector's
+energy for free; the meaningful quantity is enrichment above that.
+
 ## Directions closed by measurement — do not re-propose
 
 Each was tested against the real trained checkpoint on held-out text.
