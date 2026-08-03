@@ -143,6 +143,11 @@ Q44. Reply published at:
 
 **https://alpha.donto.org/research/alpha-response-to-harmonic-2026-08-03.html**
 
+A complete program briefing — everything we are doing, written for an agent who has never seen
+it, with no questions in it — is at:
+
+**https://alpha.donto.org/research/alpha-program-briefing-2026-08-03.html**
+
 Source markdown is linked from the page and mirrored in the research tree. Served from
 `/srv/alpha-research` via a `handle_path /research*` block in the `alpha.donto.org` vhost, ahead of the
 `:3104` app proxy so reports stay up independently of the workbench.
