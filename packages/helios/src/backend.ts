@@ -492,6 +492,10 @@ function autoTuneWgSize(vk: NativeAddon): void {
 
 const pipelineCache = new Map<string, number>();
 let waitTimelineCount = 0;
+// Wall time spent inside synchronous GPU-completion calls during the current
+// step. This is distinct from timestamped kernel execution: a wait can return
+// immediately after useful overlap, while profiled timestamp readback blocks.
+let gpuBlockingTimeMsThisStep = 0;
 
 function makePipelineCacheKey(name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): string {
   return `${name}:${numBindings}:${pushSize}:${wgSize}`;
@@ -521,7 +525,9 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 function waitTimelineTracked(vk: NativeAddon, timelineValue: number): void {
   if (timelineValue <= 0) return;
   waitTimelineCount++;
+  const started = performance.now();
   vk.waitTimeline(timelineValue);
+  gpuBlockingTimeMsThisStep += performance.now() - started;
 }
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
@@ -963,6 +969,8 @@ export interface GpuStepStats {
   timestampedFlushes: number;
   batchGpuTimeUs: number;
   dispatchGpuTimeUs: number;
+  /** Host wall time spent inside synchronous GPU-completion calls. */
+  gpuBlockingTimeMs: number;
   operationsPerFlush: number;
   byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
   byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
@@ -1079,6 +1087,7 @@ class ComputeGraph {
     this.timestampedFlushesThisStep = 0;
     this.batchGpuTimeUsThisStep = 0;
     this.dispatchGpuTimeUsThisStep = 0;
+    gpuBlockingTimeMsThisStep = 0;
     this.opsByKindThisStep.clear();
     this.opsByKernelThisStep.clear();
     this.gpuTimeByKindThisStep.clear();
@@ -1107,6 +1116,7 @@ class ComputeGraph {
       timestampedFlushes: this.timestampedFlushesThisStep,
       batchGpuTimeUs: this.batchGpuTimeUsThisStep,
       dispatchGpuTimeUs: this.dispatchGpuTimeUsThisStep,
+      gpuBlockingTimeMs: gpuBlockingTimeMsThisStep,
       operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
       byKind: rows(this.opsByKindThisStep, this.gpuTimeByKindThisStep),
       byKernel: rows(this.opsByKernelThisStep, this.gpuTimeByKernelThisStep),
@@ -1264,7 +1274,12 @@ class ComputeGraph {
           "HELIOS_PROFILE_GPU_TIMESTAMPS=1 requires a native addon with batchExecuteAllProfiled()",
         );
       }
+      // Timestamp readback makes this native call synchronous. Count its wall
+      // time just like waitTimeline so GPU execution is not mislabeled as host
+      // graph construction in the trainer's direct split.
+      const profileStarted = performance.now();
       const profile = vk.batchExecuteAllProfiled(packed, ops.length);
+      gpuBlockingTimeMsThisStep += performance.now() - profileStarted;
       if (profile.dispatchCount !== ops.length || profile.dispatchTimesUs.length !== ops.length) {
         throw new Error(
           `Helios profiler dispatch mismatch: recorded=${profile.dispatchCount} expected=${ops.length}`,

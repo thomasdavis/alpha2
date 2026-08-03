@@ -310,6 +310,12 @@ export interface StepMetrics {
   timing_flush_ms?: number;
   timing_grad_norm_ms?: number;
   timing_grad_clip_ms?: number;
+  /** Pre-metrics step wall time not spent blocked on GPU completion. */
+  timing_host_build_ms?: number;
+  /** Wall time spent in synchronous GPU completion/timestamp calls. */
+  timing_gpu_blocking_ms?: number;
+  /** Step interval used by the direct host/GPU split. */
+  timing_core_step_ms?: number;
   gpu_ops_count?: number;
   // Clipping telemetry
   clip_coef?: number;
@@ -1459,6 +1465,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     timestampedFlushes: number;
     batchGpuTimeUs: number;
     dispatchGpuTimeUs: number;
+    gpuBlockingTimeMs: number;
     operationsPerFlush: number;
     byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
     byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
@@ -2652,10 +2659,24 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     }
     const _t6 = capturePhaseTimings ? performance.now() : 0;
 
+    // Direct host/GPU split for the performance program's G1a gate. Helios
+    // measures wall time inside actual completion waits, including blocking
+    // timestamp readback. Subtracting that from the pre-metrics step interval
+    // exposes the non-blocking control-plane portion: data preparation,
+    // autograd traversal, operation construction, allocation, packing and
+    // submission, optimizer orchestration, and memory policy. This is useful
+    // work today rather than generic "overhead", and a future scheduler may
+    // overlap it with device execution.
+    const gpuStepStats = traceEnabled ? getGpuStepStatsFn?.() : undefined;
+    const coreStepElapsedMs = capturePhaseTimings ? _t6 - stepStart : 0;
+    const gpuBlockingMs = gpuStepStats?.gpuBlockingTimeMs ?? 0;
+    const hostBuildMs = capturePhaseTimings
+      ? Math.max(0, coreStepElapsedMs - gpuBlockingMs)
+      : 0;
+
     if (traceEnabled) {
       const gpuOps = "gpuOpsThisStep" in backend ? ` gpu_ops=${(backend as any).gpuOpsThisStep}` : "";
       console.log(`  [trace] phase_mode=${phaseSyncProfile ? "gpu_sync" : "enqueue"} data=${dataLoadMs.toFixed(0)}ms fwd=${fwdMs.toFixed(0)}ms bwd=${bwdMs.toFixed(0)}ms gradnorm=${(_t4-_t3).toFixed(0)}ms clip=${(_t4b-_t4).toFixed(0)}ms optim=${(_t5-_t4b).toFixed(0)}ms flush=${(_t6-_t5).toFixed(0)}ms${gpuOps}`);
-      const gpuStepStats = getGpuStepStatsFn?.();
       if (gpuStepStats?.profilingEnabled) {
         const top = (
           rows: Array<{ name: string; count: number; gpuTimeUs: number }>,
@@ -2668,7 +2689,10 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         const timing = gpuStepStats.timingEnabled
           ? ` timestamped=${gpuStepStats.timestampedFlushes}` +
             ` batch_gpu_us=${gpuStepStats.batchGpuTimeUs.toFixed(1)}` +
-            ` dispatch_gpu_us=${gpuStepStats.dispatchGpuTimeUs.toFixed(1)}`
+            ` dispatch_gpu_us=${gpuStepStats.dispatchGpuTimeUs.toFixed(1)}` +
+            ` host_build_ms=${hostBuildMs.toFixed(1)}` +
+            ` gpu_blocking_ms=${gpuBlockingMs.toFixed(1)}` +
+            ` core_step_ms=${coreStepElapsedMs.toFixed(1)}`
           : "";
         console.log(
           `  [gpu_ops] flushes=${gpuStepStats.flushes} waited=${gpuStepStats.waitedFlushes}` +
@@ -2747,6 +2771,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       metrics.timing_optim_ms = _t5 - _t4b;
       metrics.timing_flush_ms = _t6 - _t5;
       metrics.timing_data_ms = dataLoadMs;
+      metrics.timing_host_build_ms = hostBuildMs;
+      metrics.timing_gpu_blocking_ms = gpuBlockingMs;
+      metrics.timing_core_step_ms = coreStepElapsedMs;
     }
     if ("gpuOpsThisStep" in backend) {
       metrics.gpu_ops_count = (backend as any).gpuOpsThisStep;

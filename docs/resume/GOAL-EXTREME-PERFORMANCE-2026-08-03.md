@@ -57,7 +57,7 @@ outright. A ~$0.70 microbenchmark settles it and must precede implementation.
 | Gate | Definition | State |
 |---|---|---|
 | **G0** | Physical baseline: exact FLOP accounting, roofline position, four-factor decomposition, reproducible from scripts. | **met 2026-08-03** |
-| **G1a** | `host_build_ms` printed beside `dispatch_gpu_us` in the trainer, confirming or refuting the host-bound model of X8. ~1 hour, local, no GPU. **Run this first** — it changes how every candidate is scored. | open |
+| **G1a** | `host_build_ms` printed beside `dispatch_gpu_us` in the trainer, confirming or refuting the host-bound model of X8. **Run this first** — it changes how every candidate is scored. | **instrumented 2026-08-03; physical value open** |
 | **G1** | Reference-stack control run of the exact foundation shape on one 4090 (~$0.70, <=1 h), tokens/s and MFU recorded. Decides whether Helios is the production engine or the research engine. | open |
 | **G2** | The 51% unattributed step interval explained and either eliminated or accounted for in a corrected ledger. **Diagnosed 2026-08-03 (X8): host-bound, unoverlapped, static graph rebuilt every step.** | diagnosed, unfixed |
 | **G3** | >= 3x end-to-end over 7,253.8 tokens/s on the exact foundation shape, with exact-loss and gradient parity under existing promotion rules. | open |
@@ -68,6 +68,13 @@ outright. A ~$0.70 microbenchmark settles it and must precede implementation.
 experiments in the program, and together they price every Tier-1 item. Kernel work
 resumes only after both, and then against a known target instead of against the
 previous kernel.
+
+The G1a implementation and the cooperative-accumulation discriminator are now
+locally complete. The physical runner fails if the production-pattern
+cooperative tests skip, records the exact device and source, and separates the
+die accumulation-rate ratio from cast-inclusive implementation efficiency.
+Local proof: 109 suites, 233 executed tests passed, 55 physical-gated, zero
+failed. No physical throughput conclusion is claimed yet.
 
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):

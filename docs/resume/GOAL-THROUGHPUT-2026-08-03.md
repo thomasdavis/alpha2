@@ -51,13 +51,34 @@ That inverts the usual advice, and it is settled by a **~$0.70, one-hour microbe
 
 | # | Action | Cost | Why first |
 |---:|---|---|---|
-| 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | ~1 h, local, free | Confirms or refutes the host-bound model that the whole ladder rests on |
-| 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | ~$0.70, 1 h | Decides whether R5 is worth 2× or worth nothing |
+| 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | **instrumentation complete 2026-08-03; physical value open** | Confirms or refutes the host-bound model that the whole ladder rests on |
+| 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | **harness complete 2026-08-03; ~$0.70 physical run open** | Decides whether R5 is worth 2× or worth nothing |
 | 3 | R1 — static-graph record and replay | days | Largest single rung (1.84×), and it makes every later kernel gain actually visible |
 | 4 | R2 → R3 → R4 | — | Reprofile after each; the ordering may change once R1 lands |
 | 5 | R5 / R6 | — | Only if step 2 says yes |
 
 Nothing after step 1 should start before step 1 finishes. The ladder's arithmetic is only as good as the host/GPU split it assumes.
+
+### Current execution state
+
+The direct split is now implemented without weakening the physical-device
+guard. Helios measures synchronous completion wall time and the trainer emits
+`host_build_ms`, `gpu_blocking_ms`, and `core_step_ms` beside
+`dispatch_gpu_us`. Historical profile logs remain parseable. Local validation
+is 109 suites / 233 executed tests passed / 55 physical-gated / 0 failed.
+
+The paid discriminator is also ready. It first requires all three
+production-pattern cooperative GEMM oracles to execute with no skips, then
+compares resident-F16 FP32 accumulation, resident-F16 F16 accumulation,
+cast-inclusive cooperative execution, and selected tiled FP32 on exact
+foundation matrix shapes. Evidence and the runner live at:
+
+- `scripts/bench-helios-coop-accum.mjs`;
+- `scripts/run_helios_coop_accum_sweep.sh`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-build-instrumentation-preflight-20260803/`.
+
+No host-bound or mixed-precision conclusion has been promoted yet. Both require
+the next physical run.
 
 ## Parity gates — how a rung is earned
 

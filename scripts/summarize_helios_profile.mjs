@@ -45,6 +45,12 @@ export function parseGpuOpsLine(line, source = "<input>") {
     if (!Number.isFinite(value)) throw new Error(`${source}: missing or invalid ${name}`);
     return value;
   };
+  const optionalNumber = (name) => {
+    if (!(name in scalars)) return null;
+    const value = Number(scalars[name]);
+    if (!Number.isFinite(value)) throw new Error(`${source}: invalid ${name}`);
+    return value;
+  };
 
   return {
     source,
@@ -55,6 +61,9 @@ export function parseGpuOpsLine(line, source = "<input>") {
     timestamped: number("timestamped"),
     batchGpuUs: number("batch_gpu_us"),
     dispatchGpuUs: number("dispatch_gpu_us"),
+    hostBuildMs: optionalNumber("host_build_ms"),
+    gpuBlockingMs: optionalNumber("gpu_blocking_ms"),
+    coreStepMs: optionalNumber("core_step_ms"),
     kinds: parseNamedSeries(
       payload.slice(kindsIndex + " kinds=".length, kernelsIndex),
       source,
@@ -90,6 +99,10 @@ function averageSeries(samples, field) {
 export function summarizeGpuOps(samples, sources = []) {
   if (samples.length === 0) throw new Error("no [gpu_ops] samples found");
   const mean = (field) => samples.reduce((sum, sample) => sum + sample[field], 0) / samples.length;
+  const meanOptional = (field) => {
+    const values = samples.map((sample) => sample[field]).filter((value) => value !== null);
+    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  };
   const dispatchGpuUs = mean("dispatchGpuUs");
   const withShares = (entries) => entries.map((entry) => ({
     ...entry,
@@ -109,6 +122,9 @@ export function summarizeGpuOps(samples, sources = []) {
       batchGpuUs: mean("batchGpuUs"),
       dispatchGpuUs,
       unaccountedBatchUs: mean("batchGpuUs") - dispatchGpuUs,
+      hostBuildMs: meanOptional("hostBuildMs"),
+      gpuBlockingMs: meanOptional("gpuBlockingMs"),
+      coreStepMs: meanOptional("coreStepMs"),
     },
     kinds: withShares(averageSeries(samples, "kinds")),
     kernels: withShares(averageSeries(samples, "kernels")),
@@ -129,12 +145,21 @@ function formatMarkdown(summary, top) {
     `Samples: ${summary.sampleCount}`,
     `Average measured dispatch time: ${formatNumber(summary.averages.dispatchGpuUs / 1000)} ms`,
     `Average timestamped batch time: ${formatNumber(summary.averages.batchGpuUs / 1000)} ms`,
+  ];
+  if (summary.averages.hostBuildMs !== null) {
+    lines.push(
+      `Average host build time: ${formatNumber(summary.averages.hostBuildMs)} ms`,
+      `Average GPU-blocking wall time: ${formatNumber(summary.averages.gpuBlockingMs)} ms`,
+      `Average pre-metrics core step: ${formatNumber(summary.averages.coreStepMs)} ms`,
+    );
+  }
+  lines.push(
     "",
     "## Operation kinds",
     "",
     "| Rank | Kind | Avg calls | Avg total | Mean/call | Dispatch share |",
     "|---:|---|---:|---:|---:|---:|",
-  ];
+  );
   summary.kinds.forEach((entry, index) => {
     lines.push(
       `| ${index + 1} | \`${entry.name}\` | ${formatNumber(entry.averageCalls)} | ` +
@@ -231,4 +256,3 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exitCode = 1;
   }
 }
-
