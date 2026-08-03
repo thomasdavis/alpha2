@@ -12,6 +12,7 @@ output_root="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-c
 
 steps="${STEPS:-3}"
 batch="${BATCH:-10}"
+control_shapes="${CONTROL_SHAPES:-}"
 mkdir -p "$output_root"
 cd "$repo_root"
 
@@ -67,7 +68,7 @@ run_row() {
     "HELIOS_PROFILE_GPU_OPS=1"
     "HELIOS_PROFILE_GPU_TIMESTAMPS=0"
     "HELIOS_COOP_REPORT_SHAPES=1"
-    "HELIOS_ENABLE_COOP_BACKWARD=0"
+    "HELIOS_ENABLE_COOP_BACKWARD=${HELIOS_ENABLE_COOP_BACKWARD:-0}"
     "HELIOS_COOP_PRECAST_F16_INPUT=${HELIOS_COOP_PRECAST_F16_INPUT:-1}"
     "HELIOS_COOP_SHAPE_ALLOW=$shape_allow"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
@@ -112,6 +113,9 @@ run_row() {
 }
 
 run_row baseline_fp32 off "" default
+if [[ -n "$control_shapes" ]]; then
+  run_row control_composition on "$control_shapes" default
+fi
 run_row profitable_four_default on "$PROFITABLE_SHAPES" default
 if [[ "${SOAK_ONLY:-0}" != "1" ]]; then
   run_row cooperative_all_default on "" default
