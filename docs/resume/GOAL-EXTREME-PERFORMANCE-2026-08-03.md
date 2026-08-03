@@ -90,6 +90,18 @@ and opens a narrower capacity sweep: the 8 GiB arena still fell back 6,471
 temporary requests and the static graph still created/destroyed thousands of
 buffer handles per run.
 
+A 50-step follow-up selected the bounded stable policy rather than the fastest
+short arm. The 12 GiB arena / 48-large-output policy exited cleanly at 9,585
+warm-median tokens/s on L40S; the 8 GiB / 64-output policy exited cleanly at
+9,325. The 16 GiB policy segfaulted after completing in two runs and is not
+eligible. The L40S pod was terminated. Further algorithm tests should use an
+RTX 3090 when one is available; raw rates remain device-labelled.
+
+The cost model has also been widened beyond optimizing SGD as given. X17 in the
+mounted research tree reduces the task to behavioral construction, surveys 100
+external mechanisms, and makes the closed-loop Behavioral Constraint Compiler
+the primary L2/L3 research candidate alongside the L5 static graph/arena work.
+
 **Third result already banked** — from preserved logs, no new runs
 (`X8-THE-MISSING-HALF-OF-THE-STEP.md`):
 

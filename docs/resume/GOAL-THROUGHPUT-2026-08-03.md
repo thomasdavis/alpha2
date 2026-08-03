@@ -116,12 +116,30 @@ roughly eight to ten thousand `VkBuffer` objects, and 6,471 temporary requests
 fell back outside the 8 GiB slab arena. The next bounded sweep increases arena
 coverage and retained output capacity before implementing graph replay.
 
+The 50-step stability sweep narrowed the safe candidate. **12 GiB temp slabs +
+48 retained large outputs per size class** completed cleanly at a **9,585
+tokens/s warm median** on the L40S, about **1.83x** the original 5,234-token/s
+exact/individual policy on that host. The 8 GiB/64-output arm also completed at
+9,325 tokens/s. The faster 16 GiB policy is rejected for now: it segfaulted
+after completing all steps in two separate runs. That failure is evidence, not
+an acceptable teardown quirk. No policy becomes a default until it reproduces
+on the cheaper RTX 3090 target and passes a longer parity run.
+
+The fundamental track is now explicit in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X17-ONE-HUNDRED-WAYS-TO-REIMAGINE-TRAINING.md`.
+It maps 100 bodies of knowledge to falsifiable Alpha experiments and proposes a
+Behavioral Constraint Compiler: closed-loop, counterexample-driven selection
+of the smallest synthetic curriculum that changes desired behavior. This
+attacks tokens and updates while graph compilation attacks milliseconds.
+
 Evidence:
 
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-split-physical-l40s-20260803-r1/`;
 - `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r1/`;
-- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r2/`.
-- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-factorial-l40s-20260803-r1/`.
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-host-cpu-profile-l40s-20260803-r2/`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-factorial-l40s-20260803-r1/`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-capacity-l40s-20260803-r1/`;
+- `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-allocator-stability-l40s-20260803-r1/`.
 
 ## Parity gates — how a rung is earned
 
