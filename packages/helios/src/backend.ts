@@ -553,6 +553,9 @@ const OUTPUT_POOL_SMALL_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_SMALL_
 const OUTPUT_POOL_MEDIUM_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_MEDIUM_PER_CLASS", 32);
 const OUTPUT_POOL_LARGE_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_LARGE_PER_CLASS", 8);
 const bufferPool = new Map<number, number[]>();
+// Diagnostic-only handle metadata for the opt-in graph/lifetime trace. Keeping
+// it behind PROFILE_GRAPH_TRACE avoids per-allocation map work in normal runs.
+const traceBufferSizeByHandle = new Map<number, number>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
 const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFFER_POOL_ENTRIES ?? "512", 10));
@@ -595,6 +598,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
     while (regions.length > 0 && getLiveAllocCount() > targetLive) {
       const region = regions.pop()!;
       vk.destroyBuffer(region.handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(region.handle);
       if (_liveAllocCount > 0) _liveAllocCount--;
       outputPoolEntries--;
       outputPoolBytes -= size;
@@ -608,6 +612,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
       while (handles.length > 0 && getLiveAllocCount() > targetLive) {
         const handle = handles.pop()!;
         vk.destroyBuffer(handle);
+        if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
         if (_liveAllocCount > 0) _liveAllocCount--;
         bufferPoolEntries--;
         bufferPoolBytes -= size;
@@ -628,6 +633,7 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
     bufferPoolEntries--;
     bufferPoolBytes -= rounded;
     _flowBufferPoolHits++;
+    if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.set(handle, rounded);
     return handle;
   }
   _totalAllocCount++;
@@ -639,7 +645,9 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
       // Output/intermediate tensors are short-lived and belong in the native
       // device-local slab pool. Uploaded inputs, parameters, and optimizer
       // state remain individual allocations so they cannot pin temp slabs.
-      return vk.createBuffer(rounded, 0, temporary ? 1 : 0);
+      const handle = vk.createBuffer(rounded, 0, temporary ? 1 : 0);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.set(handle, rounded);
+      return handle;
     } catch (err) {
       if (_liveAllocCount > 0) _liveAllocCount--;
       throw err;
@@ -687,6 +695,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
     bufferPoolBytes += rounded;
   } else {
     vk.destroyBuffer(handle);
+    if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
     _liveAllocCount--;
     _flowDestroys++;
   }
@@ -929,6 +938,7 @@ function processPendingDestroys(vk: NativeAddon): void {
   for (let i = 0; i < pendingDestroys.length; i++) {
     if (pendingDestroys[i].readyValue <= completed) {
       vk.destroyBuffer(pendingDestroys[i].handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(pendingDestroys[i].handle);
       _liveAllocCount--;
       _flowDestroys++;
     } else {
@@ -989,6 +999,8 @@ export type GraphTraceEvent =
       kind: PendingOpKind;
       kernel: string;
       bufferCount: number;
+      bufferIds: number[];
+      bufferBytes: number[];
       writeMask: number;
       groups: [number, number, number];
       pushSize: number;
@@ -1049,6 +1061,16 @@ class ComputeGraph {
   private graphHashA = 0x811c9dc5;
   private graphHashB = 0x9e3779b9;
   private graphTraceThisStep: GraphTraceEvent[] = [];
+  private graphTraceBufferIds = new Map<number, number>();
+  private graphTraceNextBufferId = 0;
+
+  private graphTraceBufferId(handle: number): number {
+    const existing = this.graphTraceBufferIds.get(handle);
+    if (existing !== undefined) return existing;
+    const id = this.graphTraceNextBufferId++;
+    this.graphTraceBufferIds.set(handle, id);
+    return id;
+  }
 
   private mixGraphWord(value: number): void {
     if (!PROFILE_GRAPH_SIGNATURE) return;
@@ -1149,12 +1171,15 @@ class ComputeGraph {
       this.mixGraphWord(op.elementCount ?? 0xffffffff);
     }
     if (PROFILE_GRAPH_TRACE) {
+      const bufferHandles = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
       this.graphTraceThisStep.push({
         event: "op",
         order: this.graphTraceThisStep.length,
         kind: op.kind,
         kernel: op.kernel,
         bufferCount: bufCount,
+        bufferIds: bufferHandles.map((handle) => this.graphTraceBufferId(handle)),
+        bufferBytes: bufferHandles.map((handle) => traceBufferSizeByHandle.get(handle) ?? 0),
         writeMask: op.writeMask,
         groups: [...op.groups],
         pushSize: op.pushSize,
@@ -1190,6 +1215,8 @@ class ComputeGraph {
     this.graphHashA = 0x811c9dc5;
     this.graphHashB = 0x9e3779b9;
     this.graphTraceThisStep = [];
+    this.graphTraceBufferIds.clear();
+    this.graphTraceNextBufferId = 0;
   }
 
   getStepStats(): GpuStepStats {
@@ -1791,6 +1818,7 @@ export class HeliosBackend implements Backend {
     for (const [, handles] of bufferPool) {
       for (const handle of handles) {
         vk.destroyBuffer(handle);
+        if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
         if (_liveAllocCount > 0) _liveAllocCount--;
       }
     }

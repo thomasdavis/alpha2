@@ -60,6 +60,7 @@ sha256sum \
   apps/cli/dist/main.js \
   scripts/summarize_helios_allocator_factorial.mjs \
   scripts/summarize_helios_graph_trace.mjs \
+  scripts/analyze_helios_buffer_lifetimes.mjs \
   scripts/run_helios_allocator_factorial.sh \
   package-lock.json > "$output_dir/SOURCE-HASHES.sha256"
 
@@ -218,6 +219,12 @@ for mode in "${modes[@]}"; do
     node scripts/summarize_helios_graph_trace.mjs \
       "$mode_dir/run/gpu-graph-trace.jsonl" \
       > "$mode_dir/GRAPH-TRACE.md"
+    node scripts/analyze_helios_buffer_lifetimes.mjs \
+      "$mode_dir/run/gpu-graph-trace.jsonl" --json \
+      > "$mode_dir/buffer-lifetime-analysis.json"
+    node scripts/analyze_helios_buffer_lifetimes.mjs \
+      "$mode_dir/run/gpu-graph-trace.jsonl" \
+      > "$mode_dir/BUFFER-LIFETIME-ANALYSIS.md"
   fi
   if (( status != 0 )); then
     overall_status=1
