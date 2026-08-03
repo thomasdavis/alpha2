@@ -32,6 +32,7 @@
     "bench:cuda": "npx tsx scripts/bench-vs-cuda.ts",
     "fleet:bench:cuda": "scripts/fleet-cuda-bench-cycle.sh",
     "perf:tune:adaptive": "scripts/tune-adaptive-env-loop.sh 100 20",
+    "perf:profile:summary": "node scripts/summarize_helios_profile.mjs",
     "server": "npm run dev -w @alpha/web",
     "web": "npm run dev -w @alpha/web",
     "tui": "npm run dev -w @alpha/tui",

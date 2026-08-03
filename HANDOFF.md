@@ -106,6 +106,13 @@ slice, correct reduced-precision matrix acceleration, a real attention-backward 
 operation-graph quotienting. Finish the
 correctness-gated optimization/accelerator decision before starting the multi-day run.
 
+Profiler interpretation is now reproducible rather than hand-transcribed. Run
+`npm run perf:profile:summary -- LOG...` to parse every exact `[gpu_ops]` sample, average the profiler's dynamic
+operation kinds and physical kernel identities, calculate mean/call and dispatch share, and bind every source log
+by SHA-256. Against the two selected R42C/R42C-A profiles it reproduces the ledger mean exactly at
+1,670,607.05 us and emits the requested readable Markdown tables plus a JSON mode. It deliberately does not use a
+hand-maintained kernel-category map.
+
 Read these first:
 
 - [Helios exact profiler and register-blocking evidence](docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md)

@@ -214,6 +214,11 @@ No device is rejected merely for being AMD, Intel, or unknown. No device is acce
 
 Helios needs an inventory that maps every model operation to its forward kernel, backward construction, materialized intermediates, dispatch count, bytes moved, arithmetic work, supported dtypes, device requirements, and parity coverage. “Optimize all operations” means every row is measured and assigned one of: retain, fuse, specialize, replace, or retire.
 
+The first repeatable inventory surface is implemented as `npm run perf:profile:summary -- LOG...`. It derives
+operation-kind and physical-kernel tables from the exact timestamp logs, averages matched profiles, calculates
+per-call time and measured dispatch share, and records each source hash. It intentionally preserves dynamic
+profiler labels rather than maintaining a brittle hand-authored classification table.
+
 ### 6.1 Elementwise and broadcast operations
 
 Current scale/add/unary dispatch counts suggest excess graph fragmentation.

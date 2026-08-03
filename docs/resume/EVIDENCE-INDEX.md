@@ -169,6 +169,16 @@ suite passes 233 tests with 55 physical-GPU-gated and zero failures. This is por
 preflight only: the family is disabled unless `HELIOS_COLUMN_SUM_ROW_LANES=4|8|16`, and it has no speed claim or
 production status before a provenance-bound physical-GPU profile and sustained trajectory comparison.
 
+## 2026-08-03 reproducible profiler summaries
+
+`scripts/summarize_helios_profile.mjs` parses raw `[gpu_ops]` lines directly, averages any number of samples,
+retains the profiler's dynamic operation kinds and kernel identities, calculates per-call time and measured
+dispatch share, and hashes every input log. It emits Markdown for operator review or JSON for later comparisons.
+The two selected transposed-A candidate profiles reproduce the canonical `1,670,607.05 us` mean dispatch total.
+The generated reference report is preserved at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-profile-summary-tool-20260803/
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:
