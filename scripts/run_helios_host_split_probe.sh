@@ -54,6 +54,10 @@ controlled_env=(
   # dgc=0), so do not reserve its preprocess buffer during this tight-VRAM
   # measurement. This changes setup memory only, not the dispatched graph.
   "HELIOS_DISABLE_DGC=1"
+  # This driver's usable device budget is slightly below the backing capacity
+  # reserved by the 8 GiB temp-slab policy. Individual VkDeviceMemory blocks
+  # remove slab tail waste while preserving tensors, operations, and kernels.
+  "HELIOS_DISABLE_TEMP_SLABS=1"
   "HELIOS_DISABLE_COOP_MAT=1"
   "HELIOS_FLASH_FWD_PREFER_COOP2=0"
   "HELIOS_WG_SIZE=64"

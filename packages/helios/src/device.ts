@@ -75,6 +75,7 @@ export interface NativeAddon {
     tempSlabLiveBytes: number;
     tempSlabLiveRefs: number;
     tempSlabResets: number;
+    tempSlabsDisabled: number;
     hostSlabCount: number;
     hostSlabCapacityBytes: number;
     trackedVkMemoryAllocations: number;

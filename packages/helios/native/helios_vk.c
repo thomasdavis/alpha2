@@ -1234,6 +1234,7 @@ static PipelineSlot pipelines[MAX_PIPELINES];
 static uint64_t temporaryBufferRequests = 0;
 static uint64_t slabFallbackCount = 0;
 static uint64_t tempSlabResetCount = 0;
+static int disableTempSlabs = 0;
 
 // Per-buffer write tracking for fine-grained barriers within a batch (O(1) lookup)
 static uint32_t bufWriteDispatch[MAX_BUFFERS]; // dispatch index of last write per buffer slot
@@ -1435,6 +1436,11 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   debugCoopProps = (dbgCoop && dbgCoop[0] == '1') ? 1 : 0;
   const char* spinEnv = getenv("HELIOS_SPIN_WAIT");
   if (spinEnv) spinWaitIters = atoi(spinEnv);
+  const char* disableTempSlabsEnv = getenv("HELIOS_DISABLE_TEMP_SLABS");
+  disableTempSlabs = (disableTempSlabsEnv && disableTempSlabsEnv[0] == '1') ? 1 : 0;
+  if (disableTempSlabs) {
+    fprintf(stderr, "[helios:native] temporary slab allocation disabled\n");
+  }
 
   // Load Vulkan loader. Try common absolute paths first so nix-based shells
   // can still find the host driver without mutating LD_LIBRARY_PATH.
@@ -2525,7 +2531,7 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
   // persistent params from blocking slab reclamation when intermediates are freed.
   SlabPool* pool = useHostPool ? &hostPool : &deviceTempPool;
   SlabAlloc salloc;
-  int slabCompatible = (useHostPool || temporary)
+  int slabCompatible = (useHostPool || (temporary && !disableTempSlabs))
     ? (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0
     : 0;
   int usedSlab = slabCompatible && slabPoolAlloc(pool, memReq.size, memReq.alignment, &salloc);
@@ -3004,6 +3010,7 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
   setNumberProperty(env, result, "tempSlabLiveBytes", (double)tempLive);
   setNumberProperty(env, result, "tempSlabLiveRefs", (double)tempRefs);
   setNumberProperty(env, result, "tempSlabResets", (double)tempSlabResetCount);
+  setNumberProperty(env, result, "tempSlabsDisabled", (double)disableTempSlabs);
   setNumberProperty(env, result, "hostSlabCount", (double)hostPool.slabCount);
   setNumberProperty(env, result, "hostSlabCapacityBytes", (double)hostCapacity);
   setNumberProperty(env, result, "hostSlabUsedBytes", (double)hostUsed);
