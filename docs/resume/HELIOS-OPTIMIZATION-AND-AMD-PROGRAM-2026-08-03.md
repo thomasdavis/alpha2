@@ -270,8 +270,12 @@ For every material operation family, the ledger must identify the strongest rele
 |---|---|
 | FlashAttention 1/2 IO-aware exact tiling and work partitioning | Can the exact forward/backward algorithm be expressed efficiently in portable SPIR-V for both wave32 and wave64 without reproducing the old layout bug? |
 | FlashAttention-3 asynchronous pipelines, warp specialization, GEMM/softmax interleaving, block-scaled low precision | Which principles transfer to Vulkan cooperative matrices and AMD asynchronous facilities, and which are inseparable from Hopper TMA/WGMMA? |
+| FlashAttention-4 asymmetric pipeline co-design, software exponentials, larger tiles, and backward shared-memory/atomic reduction | Which bottleneck-shift ideas survive on scalar Vulkan, cooperative Vulkan, Radeon wave32, and Instinct wave64 when tensor throughput grows faster than non-matmul hardware? |
 | ThunderKittens tile, block, and grid-level abstractions | Can Helios introduce a small backend-neutral tile algebra that emits SPIR-V and HIP while keeping tensor layouts explicit and inspectable? |
 | Mirage multi-level superoptimization | Can Helios search algebraic, workgroup, and kernel-fusion transformations jointly over its own typed operation graph, with equivalence tests as the verifier? |
+| Cut Cross-Entropy on-the-fly classifier/loss computation | Does fusing the tied output projection, log-sum-exp, target logit, and backward remove a material logits allocation or HBM round-trip for Alpha's 12,288-token vocabulary? |
+| BF16 stochastic rounding and muNit/FP8 scaling | Can operation-specific unbiased rounding and principled scaling rescue Helios's previously incorrect broad mixed-precision path while preserving a fixed-token trajectory? |
+| AMD AITER and Composable Kernel portfolios | Which shape-specialized GEMM, attention, RMSNorm, and fusion policies should inform the HIP lowering without importing an opaque runtime as Helios itself? |
 | Deep Kernel Fusion / megakernels | Which complete transformer forward/backward slices become faster when intermediates remain on-chip, and where do register pressure and lost occupancy make fusion harmful? |
 | Persistent kernels and on-device schedulers | Can repeated training-step subgraphs remain resident or device-scheduled without losing fairness, watchdog safety, checkpoint observability, or cross-vendor support? |
 | Communication-avoiding and recomputation algorithms | At one-GPU scale, which saved tensors should be recomputed to reduce HBM traffic and peak liveness rather than retained by conventional autograd? |
@@ -342,6 +346,28 @@ The useful result would be faster convergence to good AMD configurations from NV
 Most kernel systems validate isolated outputs. Helios will make short deterministic training-trajectory agreement a first-class compiler/search constraint. Candidate transforms are ranked not only by local error but by their effect on loss, gradient direction, parameter update, and checkpoint continuation across several steps.
 
 This may reject locally plausible fast kernels that systematically bias training, and may identify operation-specific error patterns that ordinary max-absolute-error tests miss.
+
+#### H11 — Certificate-carrying kernel evolution
+
+Every generated kernel mutation carries a machine-readable claim about the semantic transformation it applies,
+the tensor/layout preconditions it assumes, the capabilities it requires, its estimated resource bounds, and the
+metamorphic identities that should remain true. Promotion requires compiling the certificate into adversarial
+fixtures and a short trajectory gate. This combines search with explicit failure obligations: the optimizer
+cannot merely discover a fast shader and rely on a broad end-to-end tolerance to conceal why it works.
+
+The control is ordinary black-box evolutionary/autotuning search over the same candidate budget. The hypothesis
+is that certificates improve cross-shape correctness and reduce wasted physical-GPU measurements without
+preventing discovery of non-obvious schedules.
+
+#### H12 — Dual-lowering differential evolution
+
+Apply the same typed kernel mutation to both SPIR-V/Vulkan and HIP/ROCm lowerings. Compare outputs, gradients,
+compiler diagnostics, resource usage, and trajectory behavior across NVIDIA, Radeon, and Instinct. Agreement
+across independently compiled backends becomes a differential correctness oracle; disagreement becomes a
+localized compiler/undefined-behavior investigation rather than an unexplained model failure.
+
+This is not an assumption that performance transfers. The cross-vendor performance divergence becomes training
+data for H9, while semantics must remain equal. The control mutates and validates each backend independently.
 
 ### 6.14 Novelty discipline
 
@@ -530,9 +556,20 @@ Primary sources guiding the first implementation pass:
 - [FlashAttention](https://arxiv.org/abs/2205.14135): make attention exact and IO-aware rather than materializing avoidable HBM traffic.
 - [FlashAttention-2](https://arxiv.org/abs/2307.08691): improve work partitioning and sequence parallelism rather than assuming the first tiled mapping is optimal.
 - [FlashAttention-3](https://arxiv.org/abs/2407.08608): study asynchronous overlap, GEMM/softmax interleaving, and block-scaled low precision while separating Hopper-specific mechanisms from portable principles.
+- [FlashAttention-4](https://arxiv.org/abs/2603.05451): account for asymmetric hardware scaling, non-matmul bottlenecks, software exponential/rescaling, larger asynchronous tiles, and reduced shared-memory/atomic traffic in backward.
 - [ThunderKittens](https://arxiv.org/abs/2410.20399): study a compact hierarchy of tile, block, and grid primitives as inspiration for a cross-backend Helios kernel algebra.
 - [Mirage](https://arxiv.org/abs/2405.05751): study multi-level algebra/schedule/kernel superoptimization with explicit verification.
+- [Cut Cross-Entropy](https://arxiv.org/abs/2411.09009): test an on-the-fly tied classifier/loss path rather than materializing the complete token-by-vocabulary logits matrix.
+- [Stochastic Rounding for LLM Training](https://arxiv.org/abs/2502.20566): evaluate unbiased low-precision rounding as a trajectory-level intervention, not a local cast benchmark.
+- [muNit Scaling](https://arxiv.org/abs/2502.05967): study principled FP8 scaling and hyperparameter transfer while keeping Helios's existing f32 path as authority.
 - [Deep Kernel Fusion for Transformers](https://arxiv.org/abs/2602.11808): investigate deep fusion as a research direction, but validate its numerical and register-pressure tradeoffs in Helios rather than copying headline results.
+- [KernelFoundry](https://arxiv.org/abs/2603.12440): use quality-diversity and hardware-aware evolutionary search as the nearest control for H1 rather than claiming evolutionary search itself as novel.
+- [Dr. Kernel](https://arxiv.org/abs/2602.05885): use profiling-based rejection and reward-hacking controls when an LLM proposes kernels.
+- [GPU Forecasters](https://arxiv.org/abs/2605.31464): treat selective performance prediction as prior-art for H9; the physical device remains the final authority.
+- [ROCm AITER optimization guide](https://rocm.docs.amd.com/en/docs-7.2.4/how-to/rocm-for-ai/inference-optimization/vllm-optimization.html): inventory AMD's current fused attention, GEMM, RMSNorm, and online-tuning portfolio for the HIP backend.
+- [Composable Kernel MI300 block GEMM](https://rocm.docs.amd.com/projects/composable_kernel/en/latest/conceptual/ck_tile/hardware/gemm_optimization.html): use LDS, MFMA, occupancy, and shape-tuning guidance as the Instinct baseline.
+- [Vulkan cooperative matrices](https://github.khronos.org/Vulkan-Site/tutorial/latest/Advanced_Vulkan_Compute/09_Specialized_Math/02_cooperative_matrices.html): enumerate implementation-supported shapes; Vulkan 1.4 exposure does not make any fixed tile universal.
+- [Vulkan maximal reconvergence](https://github.khronos.org/Vulkan-Site/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html): make divergent subgroup behavior explicit before relying on portable tangled operations.
 - [RunPod pricing](https://www.runpod.io/pricing) and [RunPod GPU types](https://docs.runpod.io/references/gpu-types): record volatile price/availability at benchmark time.
 
 ## 13. Evidence locations

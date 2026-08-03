@@ -303,3 +303,34 @@ Local mounted-disk headroom is currently much lower than the older handbook snap
 The register-blocked algorithm is established GPU practice; the novelty claim is not that Helios invented per-thread output blocking. The contribution here is an inspectable from-scratch SPIR-V implementation integrated into a custom tensor/autograd/training engine, its exact state-safe profiler, capability-based cross-vendor contract, and full trajectory evidence.
 
 The creative research lane begins where fixed templates end: operation-graph quotienting, semantic megakernel boundaries, sensitivity-budgeted precision, temporal memory coloring with recomputation edges, and cross-device kernel evolution. Those ideas must earn their place against this now much stronger baseline. A novel name without an equal-contract control is not a Helios result.
+
+## 13. Rejected dKV batch-unrolling experiment
+
+The next measured hotspot was flash-attention backward dKV. Helios already contained an unused V2 kernel that
+compile-time unrolled query rows in batches of four to expose instruction-level parallelism. It was temporarily
+wired behind an experimental selector and tested before attempting a larger rewrite.
+
+Correctness evidence:
+
+- the serialized four-file physical-GPU gate passed 105/105 tests;
+- the 20-step and 100-step trajectory checks passed;
+- the exact six-step 97M loss, gradient-norm, clipping, learning-rate, and validation values matched the selected
+  register-blocked baseline at trainer precision.
+
+Performance evidence rejected it:
+
+| Metric | Runtime-loop dKV | Batched-unrolled dKV V2 | Change |
+|---|---:|---:|---:|
+| Exact dKV dispatch time (18 layers, us) | 263,820.3 | 460,817.0 | +74.7% |
+| Exact full-graph dispatch time (us) | 2,030,423.3 | 2,347,140.2 | +15.6% |
+| Steady steps 2-5 tokens/s | 4,512, 4,447, 4,541, 4,514 | 4,464, 4,374, 4,403, 4,344 | -2.8% median |
+
+The unrolled variant increased code size and live values without reducing the underlying shared-memory and
+transcendental costs. It is not selected and the temporary backend selector was removed. The generated V2 kernel
+source remains historical repository code, but production continues to use the runtime-loop dKV implementation.
+
+One full-suite run initially produced a one-ulp-scale deterministic-replay mismatch while several GPU-bearing
+test files shared the process-global Vulkan singleton concurrently. The same case passed alone and the canonical
+serialized 105-test gate passed. The test configuration now serializes files because device destruction,
+allocator state, timelines, and pipeline caches are global. This removes a test-harness race rather than relaxing
+any numerical tolerance.
