@@ -19,6 +19,7 @@ function usage() {
   node scripts/helios_direction_portfolio.mjs status --direction N --to STATUS --reason TEXT [--evidence PATH] [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs atlas-status --idea N --to STATUS --reason TEXT [--evidence PATH] [--db PATH] [--report PATH]
   node scripts/helios_direction_portfolio.mjs run --direction N --run-id ID --stage STAGE --status STATUS --artifact PATH --metrics PATH [--revision SHA] [--checkpoint HASH] [--workload HASH] [--hardware TEXT] [--accelerator-seconds N] [--cost N] [--started ISO] [--finished ISO] [--db PATH] [--report PATH]
+  node scripts/helios_direction_portfolio.mjs link-atlas-run --idea N --run-id ID --status STATUS [--relation TEXT] [--db PATH] [--report PATH]
 
 Statuses are descriptive research states, not automatic promotion decisions:
   queued, designed, cheap_test_running, cheap_test_complete,
@@ -286,6 +287,16 @@ function schema(db) {
       PRIMARY KEY(run_id, direction_id)
     );
 
+    CREATE TABLE IF NOT EXISTS atlas_idea_run (
+      run_id TEXT NOT NULL REFERENCES physical_run(run_id),
+      atlas_idea_id TEXT NOT NULL REFERENCES atlas_idea(atlas_idea_id),
+      contract_id TEXT NOT NULL REFERENCES atlas_experiment_contract(contract_id),
+      relation TEXT NOT NULL,
+      status TEXT NOT NULL,
+      linked_at TEXT NOT NULL,
+      PRIMARY KEY(run_id, atlas_idea_id)
+    );
+
     CREATE TABLE IF NOT EXISTS verdict (
       verdict_id INTEGER PRIMARY KEY AUTOINCREMENT,
       direction_id INTEGER NOT NULL REFERENCES direction(direction_id),
@@ -300,6 +311,8 @@ function schema(db) {
       ON experiment_run(direction_id, started_at);
     CREATE INDEX IF NOT EXISTS direction_run_direction_idx
       ON direction_run(direction_id, linked_at);
+    CREATE INDEX IF NOT EXISTS atlas_idea_run_idea_idx
+      ON atlas_idea_run(atlas_idea_id, linked_at);
     CREATE INDEX IF NOT EXISTS state_event_direction_idx
       ON state_event(direction_id, created_at);
   `);
@@ -603,6 +616,30 @@ function recordRun(dbPath, options) {
   db.close();
 }
 
+function linkAtlasRun(dbPath, options) {
+  const sourceIndex = Number.parseInt(String(options.get("idea")), 10);
+  const runId = options.get("run-id");
+  const status = options.get("status");
+  const relation = String(options.get("relation") ?? "shared_evidence");
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 1 || sourceIndex > 100 || !runId || !status) {
+    throw new Error("link-atlas-run requires --idea 1..100, --run-id, and --status");
+  }
+  const atlasIdeaId = `X19-${String(sourceIndex).padStart(3, "0")}`;
+  const contractId = `${atlasIdeaId}-V1`;
+  const db = new DatabaseSync(dbPath);
+  schema(db);
+  if (!db.prepare("SELECT 1 FROM physical_run WHERE run_id = ?").get(String(runId))) {
+    db.close();
+    throw new Error(`Physical run ${String(runId)} is not recorded`);
+  }
+  db.prepare(`
+    INSERT INTO atlas_idea_run (
+      run_id, atlas_idea_id, contract_id, relation, status, linked_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(String(runId), atlasIdeaId, contractId, relation, String(status), new Date().toISOString());
+  db.close();
+}
+
 function markdownCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
 }
@@ -638,6 +675,9 @@ function writeReport(dbPath, reportPath) {
   const directionsWithRuns = db.prepare(`
     SELECT COUNT(DISTINCT direction_id) AS count FROM direction_run
   `).get().count;
+  const atlasIdeasWithRuns = db.prepare(`
+    SELECT COUNT(DISTINCT atlas_idea_id) AS count FROM atlas_idea_run
+  `).get().count;
   const atlasIdeaCount = db.prepare("SELECT COUNT(*) AS count FROM atlas_idea").get().count;
   const atlasCounts = db.prepare(`
     SELECT status, COUNT(*) AS count
@@ -658,6 +698,7 @@ function writeReport(dbPath, reportPath) {
     `**Companion X19 atlas ideas:** ${atlasIdeaCount} (source SHA-256: \`${meta.atlas_source_sha256 ?? "not imported"}\`; state: ${atlasStatusSummary})  `,
     `**State:** ${statusSummary}  `,
     `**Recorded physical runs:** ${runCounts.runs}, linked to ${directionsWithRuns} directions; accelerator time recorded for ${runCounts.runs_with_accelerator_seconds}/${runCounts.runs} runs (${Number(runCounts.accelerator_seconds).toFixed(1)} s total); cost recorded for ${runCounts.runs_with_estimated_cost}/${runCounts.runs} runs ($${Number(runCounts.estimated_cost_usd).toFixed(4)} total).`,
+    `**X19 ideas with linked physical evidence:** ${atlasIdeasWithRuns}. Shared links do not duplicate accelerator time or cost.`,
     "",
     "A direction is not counted as attempted merely because it appeared in X17. Its state changes only when an evidence artifact is attached. The first experiment is deliberately cheap; survivors progress to a bounded RTX 3090 discriminator and only then to matched-loss training.",
     "",
@@ -722,6 +763,9 @@ try {
     }
   } else if (command === "run") {
     recordRun(dbPath, options);
+    writeReport(dbPath, reportPath);
+  } else if (command === "link-atlas-run") {
+    linkAtlasRun(dbPath, options);
     writeReport(dbPath, reportPath);
   } else {
     usage();

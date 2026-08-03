@@ -135,7 +135,8 @@ attempt. The operator-supplied X19 atlas adds a separate 100-item contract and
 state namespace for concrete Autonomic Dataflow mechanisms. X17 and X19 therefore
 form 200 traceable research objects: they may reuse an instrument or physical run,
 but each retains its own evidence and verdict. Current generated state is at
-**X17: 96 queued / 4 cheap tests complete; X19: 100 queued** at
+**X17: 96 queued / 4 cheap tests complete; X19: 98 queued / 1 designed /
+1 cheap test complete** at
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/PORTFOLIO-STATUS.md`.
 
 **Third result already banked** — from preserved logs, no new runs
