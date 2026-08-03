@@ -121,13 +121,17 @@ const log = fs.readFileSync(process.argv[2], "utf8");
 const lines = [...log.matchAll(/^(?:\s*\[coop_shapes\]\s+|coop_shapes:\s+)(.+)$/mg)];
 if (lines.length === 0) process.exit(0);
 const rows = JSON.parse(lines.at(-1)[1]);
-const shapes = [...new Set(rows.map((row) => `${row.M}x${row.N}x${row.K}`))].sort();
+const shapes = [...new Set(rows.map((row) => {
+  const layout = row.transposedA ? "ta" : row.transposedB ? "tb" : "nn";
+  return `${layout}:${row.M}x${row.N}x${row.K}`;
+}))].sort();
 for (const shape of shapes) process.stdout.write(`${shape}\n`);
 NODE
 )
 
 for shape in "${shapes[@]}"; do
-  run_row "shape_${shape}" on "$shape"
+  safe_shape="${shape//:/_}"
+  run_row "shape_${safe_shape}" on "$shape"
 done
 
 node scripts/summarize_helios_coop_bisect.mjs --root "$output_root"

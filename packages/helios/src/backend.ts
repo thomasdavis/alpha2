@@ -144,18 +144,25 @@ const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 // default while exposing the fused graph-level alternative explicitly.
 const COOP_PRECAST_F16_INPUT = process.env.HELIOS_COOP_PRECAST_F16_INPUT !== "0";
 // Diagnostic shape gates for cooperative-matrix training parity work.  Each
-// entry is a logical MxNxK triple (for example "10240x1920x640").  ALLOW is
-// an optional positive list; DENY is applied after it.  These gates are
-// intentionally generic and opt-in: they let a physical run bisect a bad
-// production graph without baking model-specific dimensions into Helios.
+// entry is either a logical MxNxK triple (for example "10240x1920x640") or a
+// layout-qualified key (for example "tb:10240x1920x640").  Unqualified keys
+// retain the historical all-layout behavior.  Qualified keys are required for
+// causal bisection because forward, ordinary-backward, and transposed-A
+// backward can share dimensions while exercising different storage layouts.
+// ALLOW is an optional positive list; DENY is applied after it.  These gates
+// remain generic and opt-in: no model-specific dimensions are baked into
+// Helios.
 function parseCoopShapeSet(name: string): ReadonlySet<string> {
   const raw = process.env[name]?.trim() ?? "";
   if (!raw) return new Set<string>();
   const parsed = new Set<string>();
   for (const entry of raw.split(",")) {
     const key = entry.trim().toLowerCase();
-    if (!/^\d+x\d+x\d+$/.test(key)) {
-      console.warn(`[helios] ignoring invalid ${name} entry ${JSON.stringify(entry)}; expected MxNxK`);
+    if (!/^(?:(?:nn|tb|ta):)?\d+x\d+x\d+$/.test(key)) {
+      console.warn(
+        `[helios] ignoring invalid ${name} entry ${JSON.stringify(entry)}; ` +
+          "expected MxNxK or (nn|tb|ta):MxNxK",
+      );
       continue;
     }
     parsed.add(key);
@@ -167,9 +174,13 @@ const COOP_SHAPE_DENY = parseCoopShapeSet("HELIOS_COOP_SHAPE_DENY");
 function coopShapeKey(M: number, N: number, K: number): string {
   return `${M}x${N}x${K}`;
 }
-function coopShapeIsEnabled(M: number, N: number, K: number): boolean {
+type CoopShapeLayout = "nn" | "tb" | "ta";
+function coopShapeIsEnabled(layout: CoopShapeLayout, M: number, N: number, K: number): boolean {
   const key = coopShapeKey(M, N, K);
-  return (COOP_SHAPE_ALLOW.size === 0 || COOP_SHAPE_ALLOW.has(key)) && !COOP_SHAPE_DENY.has(key);
+  const qualified = `${layout}:${key}`;
+  const allowed = COOP_SHAPE_ALLOW.size === 0 || COOP_SHAPE_ALLOW.has(key) || COOP_SHAPE_ALLOW.has(qualified);
+  const denied = COOP_SHAPE_DENY.has(key) || COOP_SHAPE_DENY.has(qualified);
+  return allowed && !denied;
 }
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 !== "0";
 const COOP_F16IN_S2X2_MIN_FLOPS = 20_000_000;
@@ -4200,7 +4211,7 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(M, N, K);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("nn", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -4327,7 +4338,7 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(M, N, K);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("tb", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -4425,7 +4436,7 @@ export class HeliosBackend implements Backend {
     // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
     const outM = K;
     const loopK = M;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled(outM, N, loopK);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("ta", outM, N, loopK);
 
     // Direct cooperative path for aligned transposed-A GEMMs.
     if (coopInputDtypesOk && this._coopMatSupported &&
