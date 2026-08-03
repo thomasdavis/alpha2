@@ -46,13 +46,22 @@ midpoint (-13.61%). In candidate-first and control-second 20-step production run
 steps, maximum gradient-norm difference was `2.154e-8`, and terminal validation, learning rate, and clipping
 matched. The physical suite again passed 29 files / 283 tests.
 
+One additional candidate is implemented but not selected. R42CK32 doubles the coalesced transposed-B reduction
+tile from 16 to 32, increasing shared memory from 4 KiB to 8 KiB and halving load/barrier rounds. At exact source
+commit `2ca869249da901763b7f4a69db939226753b198f`, Mesa llvmpipe dispatched the intended shader on the awkward
+`113 x 157 x 93` edge shape and matched the CPU reference to `3.338e-6` maximum absolute error. The complete
+local suite passed 233 tests with 50 physical-GPU gates skipped and 0 failures. This does not establish speed;
+the K32 flag is absent from the selected launcher pending an alternating physical K16/K32 comparison.
+
 The optimized portfolio remains selected through `HELIOS_MATMUL_REG4X2=1`,
 `HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1`, `HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1`,
 `HELIOS_MATMUL_TRANSPOSED_A_COALESCED=1`, and
 `HELIOS_MATMUL_REG2X2=1` pending broader hardware evidence. Its scalar Vulkan contract is vendor-neutral and passes an awkward-shape compiler/numerical smoke through Mesa
 llvmpipe, but physical AMD validation is still open. The current RunPod catalog offers no AMD device to this
 account, so Radeon Vulkan and Instinct ROCm/HIP validation require another provider or machine. The dedicated
-Alpha pod `wtupxv15debnvh` was live and idle at the audit; its state and USD 0.69/hour price are volatile.
+Alpha pod `wtupxv15debnvh` was deleted after complete recovery on 2026-08-03. `runpodctl pod list` returned empty,
+so no Alpha RunPod is billing. The dirty-worktree and stash recovery archive is
+`/mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/`.
 
 At the sustained median 7,253.8 tokens/s the current 1,941,995,520-token contract is about 74.37 hours before
 evaluation/checkpoint overhead, or approximately USD 51.31 at the observed USD 0.69/hour price. Optimization
@@ -116,7 +125,8 @@ test rows, both 100% structurally clean; nine exact test/train overlaps were
 excluded and none remain; a systematic 4,096-row sample has exact native/HF
 token-ID parity. Train SHA-256 is `e15e19f1...`, test SHA-256 is `0b6e240d...`,
 and manifest SHA-256 is `68365ae0...`. The dedicated Alpha RTX 4090 pod
-`wtupxv15debnvh` was verified live and idle before launch. No V12 training claim
+`wtupxv15debnvh` was verified live and idle before launch and was deleted after the later 2026-08-03 engine
+gates and recovery. No V12 training claim
 exists until the declared pilot produces finite checkpoints and free-generation
 evidence.
 

@@ -100,6 +100,25 @@ files / 283 tests. The launcher now binds `layout-portfolio-r42c-r42ca-r2-v3` at
 `028e9b31524e6d89b2caee76dad2ae47b8896e03`. At the measured median, the frozen contract estimates to 74.37
 device-hours or USD 51.31 at USD 0.69/hour before overhead.
 
+### Experimental R42CK32 local preflight
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-r42ck32-local-preflight-20260803/
+
+Source commit `2ca869249da901763b7f4a69db939226753b198f` adds an opt-in transposed-B R42C shader with a 32-wide K tile and
+8 KiB total shared memory. The intended `matmul_transposed_R42CK32` dispatch passed the awkward
+`M=113`, `N=157`, `K=93` Mesa smoke with maximum absolute error `3.338e-6`; the selected K16 R42C/R42C-A control
+smokes and the complete local 233-pass/50-gated/0-fail suite also passed. This archive is a local correctness
+preflight, not physical speed evidence. K32 remains absent from the selected launcher until a future physical
+K16/K32 A/B establishes end-to-end value.
+
+RunPod `wtupxv15debnvh` was deleted after the selected and experimental source were pushed. Its pre-deletion
+dirty worktree, untracked scripts, all stashes, and small root artifacts were preserved with transfer hash parity
+at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

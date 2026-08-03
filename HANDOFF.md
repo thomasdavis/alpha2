@@ -45,6 +45,15 @@ exact across all steps and maximum gradient-norm drift was `2.154e-8`. The physi
 tests. Selected source commit is `028e9b31524e6d89b2caee76dad2ae47b8896e03`; complete evidence is under
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`.
 
+An additional **unselected** R42CK32 experiment is now available at source commit
+`2ca869249da901763b7f4a69db939226753b198f`. It retains the coalesced transposed-B R42C mapping but doubles the
+K-reduction tile from 16 to 32, increasing total shared memory from 4 KiB to 8 KiB in exchange for half as many
+tile load/barrier rounds. The opt-in shader dispatched correctly on the awkward `113 x 157 x 93` Mesa smoke,
+with transposed-B maximum absolute error `3.338e-6`; the refactored K16 R42C and R42C-A controls also passed, as
+did the full local suite at 233 pass / 50 GPU-gated / 0 fail. This is correctness evidence only. The foundation
+launcher does not enable `HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32`, and no speed claim exists until an
+alternating physical-GPU K16/K32 comparison passes the complete parity and sustained-throughput gates.
+
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
 `6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
 embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,
@@ -64,8 +73,10 @@ evidence but **not** physical AMD proof. The current RunPod catalog visible to t
 only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-neutral HIP/ROCm lowering for
 Instinct rentals that do not expose production Vulkan.
 
-The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle after
-the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 7,253.8
+The dedicated RTX 4090 pod `wtupxv15debnvh` was deleted on 2026-08-03 after the pushed commits, mounted evidence,
+older dirty worktree, untracked files, and all stashes were recovered and hash-checked. `runpodctl pod list`
+returned empty after deletion, so no Alpha RunPod is billing. Recovery is at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/`. At the sustained median 7,253.8
 tokens/s, the current full-token contract would take about 74.37 hours before validation/checkpoint overhead and
 cost about USD 51.31 at that price. This is materially better but still not the accepted engine endpoint. The
 next exact targets are a CODA-controlled GEMM-epilogue slice, correct reduced-precision matrix acceleration, a

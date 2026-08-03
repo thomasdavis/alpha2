@@ -40,6 +40,14 @@ In candidate-first/control-second production runs, warm median improved from 7,0
 Evidence is preserved at
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`.
 
+**Experimental, not selected:** R42CK32 keeps the transposed-B coalesced mapping but doubles the reduction tile
+to 32. It uses 8 KiB total shared memory and should halve load/barrier rounds, with a possible countervailing
+occupancy and shader-size cost. The exact source `2ca869249da901763b7f4a69db939226753b198f` passed the awkward
+Mesa numerical smoke and the complete local suite, but has no physical timing. It remains behind
+`HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32=1`, which the selected foundation launcher does not set. Evidence
+and the physical promotion contract are at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-r42ck32-local-preflight-20260803/`.
+
 **Rejected follow-up:** a portable vec4 RMSNorm column-sum kernel preserved the exact one-step trajectory but took
 `64,568.7 us` across 37 calls versus `59,631.3 us` for the scalar reference, about 8.3% slower. It was reverted.
 The failed candidate and an earlier invalid cooperative-path-confounded run are retained at

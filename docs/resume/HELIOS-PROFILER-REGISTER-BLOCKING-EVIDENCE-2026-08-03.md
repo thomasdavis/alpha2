@@ -588,3 +588,44 @@ Complete evidence and checksums are at:
 
 At 7,253.8 tokens/s, the frozen foundation contract estimates to 74.37 device-hours or USD 51.31 at USD
 0.69/hour before overhead. Physical AMD performance remains an open measurement gate.
+
+## 18. Experimental R42CK32 reduction tile
+
+R42C remains the largest generic GEMM subfamily in the selected graph, at roughly 440-480 milliseconds per
+profiled step. A new opt-in candidate tests a different part of the same IO design: keep the coalesced
+transposed-B mapping and 32 x 32 output tile, but increase the K-reduction tile from 16 to 32.
+
+The candidate:
+
+- retains the 16 x 8 workgroup and eight FP32 accumulators per invocation;
+- retains identical output ownership and global-to-shared B orientation;
+- increases total shared memory from 4 KiB to 8 KiB;
+- doubles staged A and B values per load round;
+- halves the number of tile load/barrier rounds;
+- requires no subgroup, cooperative-matrix, NVIDIA, or AMD-specific instruction.
+
+Source commit `2ca869249da901763b7f4a69db939226753b198f` binds the shader name
+`matmul_transposed_R42CK32`, the opt-in environment flag
+`HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32=1`, and an 8 KiB capability guard with fallback to selected K16
+R42C.
+
+The awkward `M=113`, `N=157`, `K=93` Mesa smoke crosses output boundaries and exercises a partial final K32
+tile. It dispatched R42CK32 and matched the independent CPU reference with maximum absolute error
+`3.337860107421875e-6`. Refactored K16 R42C and R42C-A smokes also passed. The complete local result was 107/107
+suites successful, 233 passed tests, 50 physical-GPU-gated tests, and 0 failures; TypeScript and diff checks
+passed.
+
+This is not a sixth selected optimization. Mesa provides compiler and numerical evidence but not relevant
+performance evidence. The foundation launcher deliberately omits the K32 flag. Promotion requires alternating
+K16/K32 exact profiles, candidate-first and control-first sustained physical runs, complete trajectory parity,
+and the serialized physical test suite. The possibility that 8 KiB shared allocation reduces residency more
+than the halved barriers help is an explicit rejection outcome, not something hidden by the hypothesis.
+
+Mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-r42ck32-local-preflight-20260803/
+
+The billing RTX 4090 pod was deleted after preserving its selected source, mounted evidence, older dirty
+worktree, untracked files, and all stashes. Shutdown recovery is at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/
