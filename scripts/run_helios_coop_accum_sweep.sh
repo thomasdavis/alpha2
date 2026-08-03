@@ -52,8 +52,15 @@ npx tsc -b packages/tests --pretty false \
 jq -e '
   .success == true and
   .numFailedTests == 0 and
-  .numPassedTests >= 3 and
-  .numPendingTests == 0
+  ([
+    .testResults[].assertionResults[] |
+    select(
+      (.title | contains("proves direct cooperative dispatch")) or
+      (.title | contains("generic FP32 path exactly"))
+    )
+  ] as $targeted |
+    ($targeted | length) == 4 and
+    all($targeted[]; .status == "passed"))
 ' "$output_dir/production-oracle.json" > /dev/null
 
 nice -n 10 node scripts/bench-helios-coop-accum.mjs \
