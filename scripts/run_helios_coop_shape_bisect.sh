@@ -38,7 +38,10 @@ sha256sum \
 } > "$output_root/HOST.txt" 2>&1
 
 HELIOS_NATIVE_FORCE_REBUILD=1 npm run build -w @alpha/helios > "$output_root/build.log" 2>&1
-npx tsc -b >> "$output_root/build.log" 2>&1
+# Build the executable and its dependency closure only. A fresh research pod
+# does not contain unrelated web-app generated artifacts, and their absence
+# must not block a native trainer discriminator.
+npx turbo build --filter=@alpha/cli... >> "$output_root/build.log" 2>&1
 
 run_row() {
   local name="$1"
