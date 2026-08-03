@@ -204,6 +204,23 @@ async function main(): Promise<void> {
   for (const [key, expected] of Object.entries(expectedContract)) {
     if (contract[key] !== expected) throw new Error(`contract ${key} ${String(contract[key])} != ${String(expected)}`);
   }
+  const expectedEngine = {
+    backend: "helios",
+    accelerator_api: "vulkan",
+    kernel_policy: "layout-portfolio-r42-r2-v1",
+    environment: {
+      HELIOS_DISABLE_COOP_MAT: "1",
+      HELIOS_FLASH_FWD_PREFER_COOP2: "0",
+      HELIOS_WG_SIZE: "64",
+      HELIOS_MATMUL_REG4X2: "1",
+      HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "0",
+      HELIOS_MATMUL_REG2X2: "1",
+      HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
+    },
+  };
+  if (!isDeepStrictEqual(contract.engine, expectedEngine)) {
+    throw new Error("foundation Helios kernel policy drifted");
+  }
   if (!/^[0-9a-f]{40}$/.test(contract.source_commit ?? "") ||
       ![1e-3, 2e-3, 3e-3].includes(contract.learning_rate) ||
       contract.learning_rate_min !== contract.learning_rate / 10) {

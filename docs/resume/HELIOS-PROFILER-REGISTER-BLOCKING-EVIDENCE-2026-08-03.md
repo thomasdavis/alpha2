@@ -7,7 +7,7 @@
 
 ## 1. Outcome
 
-Helios now has an exact, opt-in per-dispatch GPU timestamp profiler and a new portable scalar-FP32 register-blocked GEMM family. On the reference RTX 4090, the new kernel reduced the measured GPU time of the three dominant generic GEMM families by approximately 45–50%, reduced total measured dispatch time for the exact one-step training graph by 36.9%, and increased matched steady-state training throughput by 26.1%.
+Helios now has an exact, opt-in per-dispatch GPU timestamp profiler and portable scalar-FP32 register-blocked GEMM families. The first R2 kernel reduced the measured GPU time of the three dominant generic GEMM families by approximately 45–50%, reduced total measured dispatch time for the exact one-step training graph by 36.9%, and increased matched steady-state training throughput by 26.1%. A later layout-aware R4x2/R2 portfolio, documented in Section 15, adds another 4.10% sustained median gain over the ownership-optimized R2 path.
 
 The six-step training trajectory was identical at the precision printed by the trainer:
 
@@ -286,17 +286,16 @@ Local mounted-disk headroom is currently much lower than the older handbook snap
 
 ## 11. Next gates
 
-1. Run the ordinary default-path suite once more to prove the experimental kernel did not change the default.
-2. Commit and push this evidence and implementation.
-3. Obtain physical AMD hardware from a provider that actually exposes Radeon Vulkan or implement the ROCm/HIP lowering for an available Instinct rental.
-4. Add the register-blocked family as a third autotuner candidate only after physical cross-device results; do not make it a universal hardcoded default from one NVIDIA device.
-5. Profile the new graph again and move to the next time-ranked operations:
+1. Preserve the R4x2/R2 layout portfolio as the exact foundation engine recipe, not a universal device default.
+2. Obtain physical AMD hardware from a provider that actually exposes Radeon Vulkan or implement the ROCm/HIP lowering for an available Instinct rental.
+3. Generalize the layout portfolio into a persistent, device-fingerprinted selector only after physical cross-device results.
+4. Profile the new graph again and move to the next time-ranked operations:
    - flash-attention backward DKV redesign (the simple V2 unroll is rejected below);
    - column-sum/reduction path;
    - transposes and deeper backward quotienting;
    - broader ownership/liveness forwarding beyond the selected clone-scale case.
-6. Preserve one strong published baseline and one falsifiable Helios-specific hypothesis for every operation family.
-7. Freeze the fastest numerically valid one-GPU recipe, recalculate full-run time/cost, then resume Alpha foundation training and conversational post-training.
+5. Preserve one strong published baseline and one falsifiable Helios-specific hypothesis for every operation family.
+6. Freeze the fastest numerically valid one-GPU recipe, recalculate full-run time/cost, then resume Alpha foundation training and conversational post-training.
 
 ## 12. Scientific interpretation
 
@@ -412,3 +411,69 @@ Selection depends on declared work, not vendor identity. The deterministic kerne
 only and is valid for wave32 and wave64 devices. The previously failing test passed in ten separate GPU processes,
 then the complete serialized RTX 4090 suite passed 29 files / 283 tests. No epsilon was relaxed. The final suite
 output and current-source sustained run are archived in the mounted evidence directory.
+
+## 15. Selected layout-aware R4x2/R2 GEMM portfolio
+
+The R2 kernel established that per-invocation output blocking was the right portable baseline. The next bounded
+experiment doubled row ownership while halving the workgroup's Y dimension:
+
+- workgroup: 16 x 8 = 128 invocations;
+- output tile: 32 x 32;
+- per-invocation outputs: 4 x 2;
+- eight FP32 accumulators;
+- the same 4 KiB shared-memory tile as R2;
+- scalar SPIR-V with no subgroup or vendor-specific instruction.
+
+All three R4x2 layouts passed the awkward `M=113`, `N=157`, `K=93` numerical smoke on both RTX 4090 Vulkan and
+Mesa llvmpipe. The physical maximum absolute errors were `5.588e-8`, `3.815e-6`, and `1.937e-7` for ordinary,
+transposed-B, and transposed-A respectively.
+
+### 15.1 Why this is a portfolio
+
+The all-R4x2 exact profile was correct but exposed a layout-specific performance boundary:
+
+| Kernel family | R4x2 exact GPU time |
+|---|---:|
+| Ordinary | 224,830.7 us |
+| Transposed-B | 577,259.5 us |
+| Transposed-A | 337,088.0 us |
+
+Against the earlier selected R2 profile, R4x2 improved ordinary multiplication by approximately 31.5% and
+transposed-A by approximately 24.9%, but repeated transposed-B samples were approximately 7-10% slower. Helios
+therefore selects R4x2 for ordinary and transposed-A while preserving R2 for transposed-B. The exact hybrid
+profile recorded 1,759,004.2 us total dispatch time and 1,173,653.9 us generic-matmul time.
+
+The production recipe is explicit rather than hidden in a vendor branch:
+
+```text
+HELIOS_MATMUL_REG4X2=1
+HELIOS_MATMUL_REG4X2_TRANSPOSED_B=0
+HELIOS_MATMUL_REG2X2=1
+```
+
+### 15.2 Sustained outcome
+
+Across the matched 18-step warm window:
+
+| Statistic | Ownership plus R2 | Ownership plus R4x2/R2 |
+|---|---:|---:|
+| Minimum | 6,411.7 | 6,616.7 |
+| p10 | 6,432.6 | 6,638.4 |
+| Median | 6,567.7 | 6,836.8 |
+| p90 | 6,666.5 | 6,970.6 |
+| Maximum | 6,677.8 | 6,992.6 |
+| Mean | 6,559.3 | 6,820.2 |
+
+The median gain is 4.0973%. Maximum trajectory differences were `9.537e-7` for loss and `4.308e-8` for gradient
+norm; learning rate, clipping coefficient, and terminal validation loss were exact. The complete RTX 4090 suite
+passed 29 files / 283 tests. At 6,836.8 tokens/s, the frozen 1,941,995,520-token contract estimates to 78.9
+device-hours or USD 54.44 at USD 0.69/hour before run overhead.
+
+The mounted evidence, including both exact profiles, the sustained run, physical and software smokes, full-suite
+output, README, and verified digest ledger, is:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/
+
+This is a stronger basis for AMD work than a single hardcoded kernel. The portable R2 and R4x2 implementations
+form correctness references; future Vulkan and HIP/ROCm candidates should compete per layout and device
+fingerprint. Physical AMD validation remains open.

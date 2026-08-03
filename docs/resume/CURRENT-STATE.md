@@ -6,7 +6,7 @@ The three-arm foundation learning-rate pilot is complete and selected peak learn
 train cache contains 2,058,181,632 verified tokens and the planned foundation contract consumes 1,941,995,520
 tokens over 79,020 steps. No full foundation run has begun and no new model checkpoint has been published.
 
-Helios now has exact per-dispatch Vulkan timestamp attribution and two selected engine improvements. A portable
+Helios now has exact per-dispatch Vulkan timestamp attribution and three selected engine improvements. A portable
 16 x 16-workgroup, 2 x 2-output register-blocked GEMM first reduced exact one-step dispatch time by 36.9%,
 generic-matmul time by 46.5%, and raised matched steady median throughput from the historical 3,579 to 4,513
 tokens/s. Corrected physical-kernel labels then exposed 637 `scale_vec4x2` calls that were actually autograd
@@ -24,14 +24,21 @@ passed in 10 fresh GPU processes and the default-on ownership path passed the co
 also measured and rejected: it made dKV 74.7% slower and the full dispatch graph 15.6% slower. This is an engine
 improvement only; there is no new Discord sample, Hugging Face model, runtime, or BLAH version.
 
-The optimized kernel remains opt-in through `HELIOS_MATMUL_REG2X2=1` pending broader hardware evidence. Its
-scalar Vulkan contract is vendor-neutral and passes an awkward-shape compiler/numerical smoke through Mesa
+The third result is a layout-aware portable GEMM portfolio. A new 16 x 8-workgroup, 4 x 2-output kernel wins for
+ordinary and transposed-A multiplication, while R2 remains faster for transposed-B. The selected R4x2/R2 path
+measured 18 warm production steps at p10/median/p90 6,638.4 / 6,836.8 / 6,970.6 tokens/s, a 4.10% median gain
+over the prior selected engine and about 91% over the historical 3,579-token/s path. Maximum loss and
+gradient-norm differences were `9.537e-7` and `4.308e-8`; the terminal held-out loss, learning rate, and clipping
+coefficients matched. The full RTX 4090 suite again passed 29 files / 283 tests.
+
+The optimized portfolio remains selected through `HELIOS_MATMUL_REG4X2=1` plus `HELIOS_MATMUL_REG2X2=1`, with
+transposed-B R4x2 disabled pending broader hardware evidence. Its scalar Vulkan contract is vendor-neutral and passes an awkward-shape compiler/numerical smoke through Mesa
 llvmpipe, but physical AMD validation is still open. The current RunPod catalog offers no AMD device to this
 account, so Radeon Vulkan and Instinct ROCm/HIP validation require another provider or machine. The dedicated
 Alpha pod `wtupxv15debnvh` was live and idle at the audit; its state and USD 0.69/hour price are volatile.
 
-At the sustained median 6,567.7 tokens/s the current 1,941,995,520-token contract is about 82.1 hours before
-evaluation/checkpoint overhead, or approximately USD 56.67 at the observed USD 0.69/hour price. Optimization
+At the sustained median 6,836.8 tokens/s the current 1,941,995,520-token contract is about 78.9 hours before
+evaluation/checkpoint overhead, or approximately USD 54.44 at the observed USD 0.69/hour price. Optimization
 continues against exact GPU time before the multi-day run. With naive dKV unrolling and clone-scale materialization
 now closed, the next measured targets are a CODA-controlled GEMM-epilogue slice, correct operation-specific
 low precision, real attention-backward redesign, column-sum/reductions, transposes, and deeper operation-graph

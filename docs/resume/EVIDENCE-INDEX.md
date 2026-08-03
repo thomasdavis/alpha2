@@ -49,6 +49,23 @@ production scatter; the case passed in 10 fresh GPU processes and the physical s
 The same evidence record preserves the rejected dKV V2 experiment: +74.7% dKV GPU time, +15.6% full-graph
 dispatch time, and -2.8% steady throughput. It is not selected.
 
+### Layout-aware R4x2/R2 follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/
+
+A portable 16 x 8-workgroup, 4 x 2-output kernel improved ordinary and transposed-A multiplication but regressed
+transposed-B, so the selected portfolio uses R4x2 / R2 / R4x2 by layout. Across 18 warm production steps, median
+throughput rose from 6,567.7 to 6,836.8 tokens/s (+4.10%), with p10/p90 6,638.4 / 6,970.6. Maximum loss and
+gradient-norm differences were `9.537e-7` and `4.308e-8`; terminal held-out loss, learning rate, and clipping
+coefficients matched. The full RTX 4090 suite passed 29 files / 283 tests. The artifact README and digest ledger
+cover the all-R4x2 profile, selected hybrid profile, sustained run, physical/software smokes, and full test output.
+
+The full foundation launcher now binds this exact environment as kernel policy
+`layout-portfolio-r42-r2-v1`. At the measured median, the frozen token contract estimates to 78.9 device-hours or
+USD 54.44 at USD 0.69/hour before run overhead. This is engine evidence only, not a new model version.
+
 ## 2026-08-02 Helios chat-throughput sweep
 
 Authoritative outcome:

@@ -59,7 +59,11 @@ fi
 
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}
 export HELIOS_DISABLE_COOP_MAT=1
+export HELIOS_FLASH_FWD_PREFER_COOP2=0
 export HELIOS_WG_SIZE=64
+export HELIOS_MATMUL_REG4X2=1
+export HELIOS_MATMUL_REG4X2_TRANSPOSED_B=0
+export HELIOS_MATMUL_REG2X2=1
 export HELIOS_MAX_OUTPUT_POOL_ENTRIES=512
 export ALPHA_GPU_METRICS_SAMPLE_EVERY=100
 export ALPHA_FAIL_ON_SMOKE_TEST=1
@@ -87,9 +91,25 @@ if [[ -n "$resume_checkpoint" ]]; then
       learning_rate: Number(process.env.FULL_LR),
       learning_rate_min: Number(process.env.FULL_LR_MIN),
       source_commit: process.env.SOURCE_COMMIT,
+      engine: {
+        backend: "helios",
+        accelerator_api: "vulkan",
+        kernel_policy: "layout-portfolio-r42-r2-v1",
+        environment: {
+          HELIOS_DISABLE_COOP_MAT: "1",
+          HELIOS_FLASH_FWD_PREFER_COOP2: "0",
+          HELIOS_WG_SIZE: "64",
+          HELIOS_MATMUL_REG4X2: "1",
+          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "0",
+          HELIOS_MATMUL_REG2X2: "1",
+          HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
+        },
+      },
     };
     for (const [key, value] of Object.entries(expected)) {
-      if (c[key] !== value) throw new Error(`resume contract ${key}: ${c[key]} != ${value}`);
+      if (JSON.stringify(c[key]) !== JSON.stringify(value)) {
+        throw new Error(`resume contract ${key}: ${JSON.stringify(c[key])} != ${JSON.stringify(value)}`);
+      }
     }
     if (c.lr_selection?.path !== process.env.SELECTION_PATH || c.lr_selection?.sha256 !== process.env.SELECTION_SHA256) throw new Error("resume LR-selection mismatch");
     if (c.data_manifest?.path !== process.env.MANIFEST_PATH || c.data_manifest?.sha256 !== process.env.MANIFEST_SHA256) throw new Error("resume data-manifest mismatch");
@@ -133,6 +153,20 @@ else
       checkpoint_interval: 1000,
       eval_iters: 5,
       source_commit: process.env.SOURCE_COMMIT,
+      engine: {
+        backend: "helios",
+        accelerator_api: "vulkan",
+        kernel_policy: "layout-portfolio-r42-r2-v1",
+        environment: {
+          HELIOS_DISABLE_COOP_MAT: "1",
+          HELIOS_FLASH_FWD_PREFER_COOP2: "0",
+          HELIOS_WG_SIZE: "64",
+          HELIOS_MATMUL_REG4X2: "1",
+          HELIOS_MATMUL_REG4X2_TRANSPOSED_B: "0",
+          HELIOS_MATMUL_REG2X2: "1",
+          HELIOS_MAX_OUTPUT_POOL_ENTRIES: "512",
+        },
+      },
       lr_selection: {
         path: process.env.SELECTION_PATH,
         sha256: process.env.SELECTION_SHA256,

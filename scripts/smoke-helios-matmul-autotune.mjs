@@ -10,9 +10,18 @@
  */
 process.env.HELIOS_DISABLE_COOP_MAT = "1";
 process.env.HELIOS_PROFILE_GPU_OPS = "1";
-const variant = process.env.HELIOS_MATMUL_SMOKE_VARIANT === "reg2x2" ? "reg2x2" : "autotune";
+const requestedVariant = process.env.HELIOS_MATMUL_SMOKE_VARIANT;
+const variant = requestedVariant === "reg2x2" || requestedVariant === "reg4x2"
+  ? requestedVariant
+  : "autotune";
 if (variant === "reg2x2") {
   process.env.HELIOS_MATMUL_REG2X2 = "1";
+} else if (variant === "reg4x2") {
+  process.env.HELIOS_MATMUL_REG4X2 = "1";
+  // This smoke validates all three R4x2 shader layouts. Production keeps the
+  // transposed-B family independently selectable because the measured Alpha
+  // portfolio is faster with R2 for that layout.
+  process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B = "1";
 } else {
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE = "1";
   process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG ??= "1";
@@ -131,7 +140,12 @@ if (variant === "autotune") {
     throw new Error(`expected measured decisions: ${JSON.stringify(decisions)}`);
   }
 } else {
-  const expectedKernels = new Set(["matmul_R2", "matmul_transposed_R2", "matmul_transposed_a_R2"]);
+  const suffix = variant === "reg4x2" ? "R42" : "R2";
+  const expectedKernels = new Set([
+    `matmul_${suffix}`,
+    `matmul_transposed_${suffix}`,
+    `matmul_transposed_a_${suffix}`,
+  ]);
   for (const row of stats.byKernel) expectedKernels.delete(row.name);
   if (expectedKernels.size > 0) {
     throw new Error(`missing register-blocked dispatches for ${[...expectedKernels].join(", ")}`);

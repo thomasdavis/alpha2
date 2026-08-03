@@ -11,7 +11,7 @@ verified, a matched three-arm pilot selected peak learning rate `0.002`, and the
 training tokens. Symbiogenesis is disabled for this run. Do not describe the verified caches or LR pilot as a
 trained foundation model.
 
-Helios optimization now has two selected, numerically validated results. The exact per-dispatch Vulkan profiler
+Helios optimization now has three selected, numerically validated results. The exact per-dispatch Vulkan profiler
 first guided a portable 2 x 2 register-blocked GEMM that reduced one-step dispatch time by 36.9% and raised
 matched steady median throughput from the historical 3,579 to 4,513 tokens/s. Corrected physical-kernel labels
 then exposed 637 `scale_vec4x2` calls as autograd gradient copies rather than useful arithmetic. The tape now
@@ -20,6 +20,13 @@ available with `ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1`; it measured 4,121.0 token
 forwarding (+48.6%). A longer trace-off production run measured 18 warm steps at p10/median/p90 6,432.6 /
 6,567.7 / 6,666.5 tokens/s. Its median is +45.5% over the prior register-blocked baseline and +83.5% over the
 historical path.
+
+A third, portable 4 x 2 register-blocked GEMM was then evaluated per physical layout. It is faster for ordinary
+and transposed-A multiplication but slower for transposed-B, so the selected portfolio uses R4x2 / R2 / R4x2 for
+ordinary / transposed-B / transposed-A respectively. Across 18 warm production steps, it raised median throughput
+from 6,567.7 to 6,836.8 tokens/s (+4.10%), with p10/p90 6,638.4 / 6,970.6. Maximum loss and gradient-norm
+differences were `9.537e-7` and `4.308e-8`; the terminal held-out loss, learning rate, and clipping coefficients
+matched. The complete RTX 4090 suite passed 29 files / 283 tests.
 
 Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
 `6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
@@ -30,17 +37,18 @@ unroll was separately rejected after making dKV 74.7% slower and the complete di
 are engine gains, not behavioral model gains, so they have not triggered Discord, Hugging Face, or BLAH
 publication.
 
-The register-blocked path remains explicitly selected with `HELIOS_MATMUL_REG2X2=1` while more devices are
-measured. It needs only ordinary scalar FP32 Vulkan compute, a 16 x 16 workgroup, 256 invocations, and 4 KiB of
-shared memory; its awkward-dimension numerical smoke also passes Mesa llvmpipe. That is useful portability
+The register-blocked portfolio remains explicitly selected with `HELIOS_MATMUL_REG4X2=1` and
+`HELIOS_MATMUL_REG2X2=1` while more devices are measured; transposed-B R4x2 remains disabled. R4x2 needs only
+ordinary scalar FP32 Vulkan compute, a 16 x 8 workgroup, 128 invocations, and 4 KiB of shared memory; the R2
+fallback needs a 16 x 16 workgroup and 256 invocations. Their awkward-dimension numerical smokes also pass Mesa llvmpipe. That is useful portability
 evidence but **not** physical AMD proof. The current RunPod catalog visible to this account offers NVIDIA GPUs
 only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-neutral HIP/ROCm lowering for
 Instinct rentals that do not expose production Vulkan.
 
 The dedicated Alpha pod is currently `wtupxv15debnvh`, an RTX 4090 at USD 0.69/hour. It was live and idle after
-the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 6,567.7
-tokens/s, the current full-token contract would take about 82.1 hours before validation/checkpoint overhead and
-cost about USD 56.67 at that price. This is materially better but still not the accepted engine endpoint. The
+the 2026-08-03 gates; pod state and price are volatile and must be rechecked. At the sustained median 6,836.8
+tokens/s, the current full-token contract would take about 78.9 hours before validation/checkpoint overhead and
+cost about USD 54.44 at that price. This is materially better but still not the accepted engine endpoint. The
 next exact targets are a CODA-controlled GEMM-epilogue slice, correct reduced-precision matrix acceleration, a
 real attention-backward redesign, column-sum/reductions, transposes, and operation-graph quotienting. Finish the
 correctness-gated optimization/accelerator decision before starting the multi-day run.

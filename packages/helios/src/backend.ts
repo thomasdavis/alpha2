@@ -70,6 +70,12 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 const ENABLE_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE === "1";
 const LOG_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG === "1";
 const ENABLE_MATMUL_REG2X2 = process.env.HELIOS_MATMUL_REG2X2 === "1";
+const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
+// R4x2 is not universally better across physical layouts. Keep transposed-B
+// separately selectable so an evidence-derived portfolio can use R4x2 for
+// basic/transposed-A while retaining R2 for this family.
+const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
+  process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
 const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
 let MATMUL_TILE_OVERRIDE: 16 | 32 | null = null;
 if (MATMUL_TILE_OVERRIDE_ENV) {
@@ -1413,6 +1419,7 @@ export class HeliosBackend implements Backend {
   private _matmulTileCache = new Map<string, MatmulTile>();
   private _matmulTileDecisions = new Map<string, MatmulTileAutotuneDecision>();
   private _matmulReg2x2WarningEmitted = false;
+  private _matmulReg4x2WarningEmitted = false;
   private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
   private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
@@ -1524,6 +1531,25 @@ export class HeliosBackend implements Backend {
       console.warn(
         "[helios] HELIOS_MATMUL_REG2X2=1 requested, but this dispatch/device lacks " +
         "the current non-batched 256-invocation/4KiB-shared-memory contract; using tiled GEMM",
+      );
+    }
+    return supported;
+  }
+
+  private shouldUseMatmulReg4x2(batchSize: number): boolean {
+    if (!ENABLE_MATMUL_REG4X2) return false;
+    const info = this._nativeDeviceInfo;
+    const supported =
+      batchSize === 1 &&
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 128 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 16 &&
+      (info?.maxComputeWorkGroupSizeY ?? 0) >= 8 &&
+      (info?.maxComputeSharedMemorySize ?? 0) >= 4096;
+    if (!supported && !this._matmulReg4x2WarningEmitted) {
+      this._matmulReg4x2WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_REG4X2=1 requested, but this dispatch/device lacks " +
+        "the current non-batched 128-invocation/4KiB-shared-memory contract; using another GEMM path",
       );
     }
     return supported;
@@ -3646,11 +3672,12 @@ export class HeliosBackend implements Backend {
     const kernel = batchSize === 1 ? "matmul" : "matmul_batched";
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
-    const TILE = useReg2x2
+    const useReg4x2 = this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
       ? 32
       : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
-    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
+    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul${suffix}`, 3, 16);
@@ -3770,11 +3797,13 @@ export class HeliosBackend implements Backend {
     const kernel = batchSize === 1 ? "matmul_transposed" : "matmul_transposed_batched";
     const outBytes = batchSize * M * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
-    const TILE = useReg2x2
+    const useReg4x2 =
+      ENABLE_MATMUL_REG4X2_TRANSPOSED_B && this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
       ? 32
       : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
-    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
+    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(M / TILE);
     const push = push4Memo(M, N, K, 0);
@@ -3856,8 +3885,9 @@ export class HeliosBackend implements Backend {
       : "matmul_transposed_a_batched";
     const outBytes = batchSize * outM * N * 4;
     const region = acquireOutputRegion(vk, outBytes);
-    const useReg2x2 = this.shouldUseMatmulReg2x2(batchSize);
-    const TILE = useReg2x2
+    const useReg4x2 = this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
       ? 32
       : this.selectMatmulTile(
           vk,
@@ -3870,7 +3900,7 @@ export class HeliosBackend implements Backend {
           loopK,
           batchSize,
         );
-    const suffix = useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
+    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(outM / TILE);
     const push = push4Memo(outM, N, loopK, 0);

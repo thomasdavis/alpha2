@@ -1667,7 +1667,7 @@ export function kernelMatmulTransposedABatched(wgSize = DEFAULT_TILE * DEFAULT_T
 
 // ── Register-blocked 2×2 output kernels ────────────────────────────────────
 
-type Reg2x2Mode = "basic" | "transposed-b" | "transposed-a";
+type RegisterBlockMode = "basic" | "transposed-b" | "transposed-a";
 
 /**
  * Portable register-blocked FP32 GEMM.
@@ -1682,7 +1682,7 @@ type Reg2x2Mode = "basic" | "transposed-b" | "transposed-a";
  * portable baseline for NVIDIA and AMD; cooperative-matrix kernels are a
  * separate capability-selected family.
  */
-function kernelMatmulReg2x2Impl(mode: Reg2x2Mode): Uint32Array {
+function kernelMatmulReg2x2Impl(mode: RegisterBlockMode): Uint32Array {
   const WG = 16;
   const OUT_TILE = 32;
   const b = new SpirVBuilder();
@@ -1915,4 +1915,272 @@ export function kernelMatmulTransposedReg2x2(): Uint32Array {
 
 export function kernelMatmulTransposedAReg2x2(): Uint32Array {
   return kernelMatmulReg2x2Impl("transposed-a");
+}
+
+/**
+ * Experimental portable 4x2 register-blocked FP32 GEMM.
+ *
+ * A 16x8 workgroup still computes a 32x32 output tile, but each invocation
+ * owns four rows and two columns.  Relative to R2 this halves the invocation
+ * count, doubles A-value reuse per thread, and retains the same 4 KiB shared
+ * tile.  The exact Alpha shape profile decides whether the added register
+ * pressure is worthwhile; this generator makes no vendor assumption.
+ */
+function kernelMatmulReg4x2Impl(mode: RegisterBlockMode): Uint32Array {
+  const WG_X = 16;
+  const WG_Y = 8;
+  const OUT_TILE = 32;
+  const b = new SpirVBuilder();
+  const p = preamble(b, WG_X, WG_Y, 1);
+
+  const bufA = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufB = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 4);
+
+  const c8 = b.id(); b.constant(p.tU32, c8, 8);
+  const c16 = b.id(); b.constant(p.tU32, c16, 16);
+  const c32 = b.id(); b.constant(p.tU32, c32, OUT_TILE);
+  const c128 = b.id(); b.constant(p.tU32, c128, WG_X * WG_Y);
+  const c512 = b.id(); b.constant(p.tU32, c512, OUT_TILE * WG_X);
+
+  const tSharedArray = b.id();
+  b.typeArray(tSharedArray, p.tF32, c512);
+  const tPtrSharedArray = b.id();
+  b.typePointer(tPtrSharedArray, StorageClass.Workgroup, tSharedArray);
+  const tPtrSharedF32 = b.id();
+  b.typePointer(tPtrSharedF32, StorageClass.Workgroup, p.tF32);
+  const tileA = b.id(); b.variable(tPtrSharedArray, tileA, StorageClass.Workgroup);
+  const tileB = b.id(); b.variable(tPtrSharedArray, tileB, StorageClass.Workgroup);
+
+  const tPtrInputVec3 = b.id();
+  b.typePointer(tPtrInputVec3, StorageClass.Input, p.tVec3U32);
+  const vWorkgroupId = b.id();
+  b.variable(tPtrInputVec3, vWorkgroupId, StorageClass.Input);
+  b.addDecorate(vWorkgroupId, Decoration.BuiltIn, BuiltIn.WorkgroupId);
+  const vLocalId = b.id();
+  b.variable(tPtrInputVec3, vLocalId, StorageClass.Input);
+  b.addDecorate(vLocalId, Decoration.BuiltIn, BuiltIn.LocalInvocationId);
+
+  const scopeWg = b.id(); b.constant(p.tU32, scopeWg, Scope.Workgroup);
+  const semAcqRelWg = b.id();
+  b.constant(
+    p.tU32,
+    semAcqRelWg,
+    MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory,
+  );
+
+  const tPtrFnU32 = b.id(); b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id(); b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId, vWorkgroupId, vLocalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, WG_X, WG_Y, 1);
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  const entry = b.id(); b.emit(Op.Label, [entry]);
+
+  const varT = b.id(); b.emit(Op.Variable, [tPtrFnU32, varT, StorageClass.Function]);
+  const accumulators: number[][] = [];
+  for (let r = 0; r < 4; r++) {
+    const row: number[] = [];
+    for (let c = 0; c < 2; c++) {
+      const acc = b.id();
+      b.emit(Op.Variable, [tPtrFnF32, acc, StorageClass.Function]);
+      b.emit(Op.Store, [acc, p.const0f]);
+      row.push(acc);
+    }
+    accumulators.push(row);
+  }
+
+  const lid = b.id(); b.emit(Op.Load, [p.tVec3U32, lid, vLocalId]);
+  const tx = b.id(); b.emit(Op.CompositeExtract, [p.tU32, tx, lid, 0]);
+  const ty = b.id(); b.emit(Op.CompositeExtract, [p.tU32, ty, lid, 1]);
+  const wgId = b.id(); b.emit(Op.Load, [p.tVec3U32, wgId, vWorkgroupId]);
+  const bx = b.id(); b.emit(Op.CompositeExtract, [p.tU32, bx, wgId, 0]);
+  const by = b.id(); b.emit(Op.CompositeExtract, [p.tU32, by, wgId, 1]);
+
+  const MF = loadPushLen(b, p, pc);
+  const NF = loadPushScalar(b, p, pc);
+  const ptrK = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrK, pc.varId, p.const2u]);
+  const KF = b.id(); b.emit(Op.Load, [p.tF32, KF, ptrK]);
+  const M = b.id(); b.emit(Op.ConvertFToU, [p.tU32, M, MF]);
+  const N = b.id(); b.emit(Op.ConvertFToU, [p.tU32, N, NF]);
+  const K = b.id(); b.emit(Op.ConvertFToU, [p.tU32, K, KF]);
+
+  const bx32 = b.id(); b.emit(Op.IMul, [p.tU32, bx32, bx, c32]);
+  const by32 = b.id(); b.emit(Op.IMul, [p.tU32, by32, by, c32]);
+  const col0 = b.id(); b.emit(Op.IAdd, [p.tU32, col0, bx32, tx]);
+  const col1 = b.id(); b.emit(Op.IAdd, [p.tU32, col1, col0, c16]);
+  const rows: number[] = [];
+  const row0 = b.id(); b.emit(Op.IAdd, [p.tU32, row0, by32, ty]);
+  rows.push(row0);
+  for (let r = 1; r < 4; r++) {
+    const row = b.id();
+    const offset = b.id(); b.constant(p.tU32, offset, r * WG_Y);
+    b.emit(Op.IAdd, [p.tU32, row, row0, offset]);
+    rows.push(row);
+  }
+
+  const ty16 = b.id(); b.emit(Op.IMul, [p.tU32, ty16, ty, c16]);
+  const localLinear = b.id(); b.emit(Op.IAdd, [p.tU32, localLinear, ty16, tx]);
+
+  const loadA = (row: number, reductionCol: number): number => {
+    const rowOk = b.id(); b.emit(Op.ULessThan, [p.tBool, rowOk, row, M]);
+    const colOk = b.id(); b.emit(Op.ULessThan, [p.tBool, colOk, reductionCol, K]);
+    const inBounds = b.id(); b.emit(Op.LogicalAnd, [p.tBool, inBounds, rowOk, colOk]);
+    const major = b.id();
+    const linear = b.id();
+    if (mode === "transposed-a") {
+      b.emit(Op.IMul, [p.tU32, major, reductionCol, M]);
+      b.emit(Op.IAdd, [p.tU32, linear, major, row]);
+    } else {
+      b.emit(Op.IMul, [p.tU32, major, row, K]);
+      b.emit(Op.IAdd, [p.tU32, linear, major, reductionCol]);
+    }
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrF32, ptr, bufA.varId, p.const0u, linear]);
+    const raw = b.id(); b.emit(Op.Load, [p.tF32, raw, ptr]);
+    const value = b.id(); b.emit(Op.Select, [p.tF32, value, inBounds, raw, p.const0f]);
+    return value;
+  };
+
+  const loadB = (reductionRow: number, col: number): number => {
+    const rowOk = b.id(); b.emit(Op.ULessThan, [p.tBool, rowOk, reductionRow, K]);
+    const colOk = b.id(); b.emit(Op.ULessThan, [p.tBool, colOk, col, N]);
+    const inBounds = b.id(); b.emit(Op.LogicalAnd, [p.tBool, inBounds, rowOk, colOk]);
+    const major = b.id();
+    const linear = b.id();
+    if (mode === "transposed-b") {
+      b.emit(Op.IMul, [p.tU32, major, col, K]);
+      b.emit(Op.IAdd, [p.tU32, linear, major, reductionRow]);
+    } else {
+      b.emit(Op.IMul, [p.tU32, major, reductionRow, N]);
+      b.emit(Op.IAdd, [p.tU32, linear, major, col]);
+    }
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [bufB.tPtrF32, ptr, bufB.varId, p.const0u, linear]);
+    const raw = b.id(); b.emit(Op.Load, [p.tF32, raw, ptr]);
+    const value = b.id(); b.emit(Op.Select, [p.tF32, value, inBounds, raw, p.const0f]);
+    return value;
+  };
+
+  const storeShared = (tile: number, index: number, value: number): void => {
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF32, ptr, tile, index]);
+    b.emit(Op.Store, [ptr, value]);
+  };
+
+  b.emit(Op.Store, [varT, p.const0u]);
+  const loopHead = b.id();
+  const loopBody = b.id();
+  const loopMerge = b.id();
+  const loopContinue = b.id();
+  b.emit(Op.Branch, [loopHead]);
+  b.emit(Op.Label, [loopHead]);
+  const t = b.id(); b.emit(Op.Load, [p.tU32, t, varT]);
+  const keepGoing = b.id(); b.emit(Op.ULessThan, [p.tBool, keepGoing, t, K]);
+  b.emit(Op.LoopMerge, [loopMerge, loopContinue, 0]);
+  b.emit(Op.BranchConditional, [keepGoing, loopBody, loopMerge]);
+  b.emit(Op.Label, [loopBody]);
+
+  const aCol = b.id(); b.emit(Op.IAdd, [p.tU32, aCol, t, tx]);
+  for (let r = 0; r < 4; r++) {
+    const sharedIndex = b.id();
+    const offset = b.id(); b.constant(p.tU32, offset, r * WG_X * WG_Y);
+    b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
+    storeShared(tileA, sharedIndex, loadA(rows[r], aCol));
+  }
+  for (let i = 0; i < 4; i++) {
+    const sharedIndex = b.id();
+    const offset = b.id(); b.constant(p.tU32, offset, i * WG_X * WG_Y);
+    b.emit(Op.IAdd, [p.tU32, sharedIndex, localLinear, offset]);
+    const tileRow = b.id(); b.emit(Op.UDiv, [p.tU32, tileRow, sharedIndex, c32]);
+    const tileCol = b.id(); b.emit(Op.UMod, [p.tU32, tileCol, sharedIndex, c32]);
+    const reductionRow = b.id(); b.emit(Op.IAdd, [p.tU32, reductionRow, t, tileRow]);
+    const globalCol = b.id(); b.emit(Op.IAdd, [p.tU32, globalCol, bx32, tileCol]);
+    storeShared(tileB, sharedIndex, loadB(reductionRow, globalCol));
+  }
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+
+  const accumulate = (acc: number, av: number, bv: number): void => {
+    const current = b.id(); b.emit(Op.Load, [p.tF32, current, acc]);
+    const product = b.id(); b.emit(Op.FMul, [p.tF32, product, av, bv]);
+    const next = b.id(); b.emit(Op.FAdd, [p.tF32, next, current, product]);
+    b.emit(Op.Store, [acc, next]);
+  };
+
+  for (let k = 0; k < WG_X; k++) {
+    const ck = b.id(); b.constant(p.tU32, ck, k);
+    const aValues: number[] = [];
+    for (let r = 0; r < 4; r++) {
+      const rowBase = b.id();
+      const rowOffset = b.id(); b.constant(p.tU32, rowOffset, r * WG_Y * WG_X);
+      b.emit(Op.IAdd, [p.tU32, rowBase, ty16, rowOffset]);
+      const aIndex = b.id(); b.emit(Op.IAdd, [p.tU32, aIndex, rowBase, ck]);
+      const ptr = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptr, tileA, aIndex]);
+      const value = b.id(); b.emit(Op.Load, [p.tF32, value, ptr]);
+      aValues.push(value);
+    }
+    const k32 = b.id(); b.emit(Op.IMul, [p.tU32, k32, ck, c32]);
+    const b0Index = b.id(); b.emit(Op.IAdd, [p.tU32, b0Index, k32, tx]);
+    const b1Index = b.id(); b.emit(Op.IAdd, [p.tU32, b1Index, b0Index, c16]);
+    const ptrB0 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrB0, tileB, b0Index]);
+    const ptrB1 = b.id(); b.emit(Op.AccessChain, [tPtrSharedF32, ptrB1, tileB, b1Index]);
+    const b0 = b.id(); b.emit(Op.Load, [p.tF32, b0, ptrB0]);
+    const b1 = b.id(); b.emit(Op.Load, [p.tF32, b1, ptrB1]);
+    for (let r = 0; r < 4; r++) {
+      accumulate(accumulators[r][0], aValues[r], b0);
+      accumulate(accumulators[r][1], aValues[r], b1);
+    }
+  }
+
+  b.emit(Op.ControlBarrier, [scopeWg, scopeWg, semAcqRelWg]);
+  b.emit(Op.Branch, [loopContinue]);
+  b.emit(Op.Label, [loopContinue]);
+  const oldT = b.id(); b.emit(Op.Load, [p.tU32, oldT, varT]);
+  const nextT = b.id(); b.emit(Op.IAdd, [p.tU32, nextT, oldT, c16]);
+  b.emit(Op.Store, [varT, nextT]);
+  b.emit(Op.Branch, [loopHead]);
+  b.emit(Op.Label, [loopMerge]);
+
+  const writeOutput = (row: number, col: number, acc: number): void => {
+    const rowOk = b.id(); b.emit(Op.ULessThan, [p.tBool, rowOk, row, M]);
+    const colOk = b.id(); b.emit(Op.ULessThan, [p.tBool, colOk, col, N]);
+    const inBounds = b.id(); b.emit(Op.LogicalAnd, [p.tBool, inBounds, rowOk, colOk]);
+    const writeLabel = b.id();
+    const endLabel = b.id();
+    b.emit(Op.SelectionMerge, [endLabel, 0]);
+    b.emit(Op.BranchConditional, [inBounds, writeLabel, endLabel]);
+    b.emit(Op.Label, [writeLabel]);
+    const rowBase = b.id(); b.emit(Op.IMul, [p.tU32, rowBase, row, N]);
+    const linear = b.id(); b.emit(Op.IAdd, [p.tU32, linear, rowBase, col]);
+    const ptr = b.id();
+    b.emit(Op.AccessChain, [bufC.tPtrF32, ptr, bufC.varId, p.const0u, linear]);
+    const value = b.id(); b.emit(Op.Load, [p.tF32, value, acc]);
+    b.emit(Op.Store, [ptr, value]);
+    b.emit(Op.Branch, [endLabel]);
+    b.emit(Op.Label, [endLabel]);
+  };
+
+  for (let r = 0; r < 4; r++) {
+    writeOutput(rows[r], col0, accumulators[r][0]);
+    writeOutput(rows[r], col1, accumulators[r][1]);
+  }
+
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+export function kernelMatmulReg4x2(): Uint32Array {
+  return kernelMatmulReg4x2Impl("basic");
+}
+
+export function kernelMatmulTransposedReg4x2(): Uint32Array {
+  return kernelMatmulReg4x2Impl("transposed-b");
+}
+
+export function kernelMatmulTransposedAReg4x2(): Uint32Array {
+  return kernelMatmulReg4x2Impl("transposed-a");
 }

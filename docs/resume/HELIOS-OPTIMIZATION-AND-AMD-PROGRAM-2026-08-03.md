@@ -1,9 +1,9 @@
 # Helios optimization and AMD compatibility program
 
-**Status:** active execution plan; exact profiler, portable GEMM, and gradient-ownership forwarding validated, 2026-08-03
+**Status:** active execution plan; exact profiler, portable GEMM portfolio, and gradient-ownership forwarding validated, 2026-08-03
 **Product goal:** finish Alpha as a genuinely chatty conversational model on one affordable GPU
 **Engine goal:** make Helios a fast, numerically trustworthy, capability-driven training engine across NVIDIA and AMD hardware
-**Immediate decision:** token caches are verified and two measured optimizations are selected; continue through the time-ranked graph and accelerator decision before beginning the multi-day Alpha foundation run
+**Immediate decision:** token caches are verified and three measured optimizations are selected; continue through the time-ranked graph and accelerator decision before beginning the multi-day Alpha foundation run
 
 **First implementation result:** the new 16 × 16-workgroup, 2 × 2-per-thread scalar-FP32 GEMM reduced exact graph dispatch time by 36.9% and raised matched steady median training throughput from 3,579 to 4,513 tokens/s (+26.1%) with an identical six-step printed trajectory. Full evidence, rejected measurements, and AMD limitations are in `HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md`.
 
@@ -15,6 +15,14 @@ steps. Matched losses and validation loss were exact, maximum gradient-norm diff
 RTX 4090 suite passed 29 files / 283 tests. A separate fixed-order embedding-gradient kernel closed an intermittent
 one-ulp replay failure without slowing the production scatter path. The mounted evidence is
 `/mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/`.
+
+**Third implementation result:** a portable 16 x 8-workgroup, 4 x 2-output kernel was tested as a replacement for
+the 2 x 2 GEMM family. It was not uniformly superior: R4x2 won for ordinary and transposed-A multiplication, while
+R2 remained faster for transposed-B. The selected layout portfolio raised the 18-warm-step median from 6,567.7 to
+6,836.8 tokens/s (+4.10%), with p10/p90 6,638.4 / 6,970.6. Maximum loss and gradient-norm differences from the
+prior selected trajectory were `9.537e-7` and `4.308e-8`; learning rate, clipping coefficient, and terminal held-out
+loss were exact. The RTX 4090 suite passed 29 files / 283 tests. Evidence is preserved at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/`.
 
 **Rejected follow-up:** a portable vec4 RMSNorm column-sum kernel preserved the exact one-step trajectory but took
 `64,568.7 us` across 37 calls versus `59,631.3 us` for the scalar reference, about 8.3% slower. It was reverted.
@@ -33,7 +41,7 @@ unrolling is ruled out for this exact head-dimension-64 graph.
 
 ## 1. Why this program exists
 
-The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected GEMM-plus-ownership recipe measures 6,597.3 tokens/s, implying about 81.8 device-hours and USD 56.42 before validation/checkpoint overhead. These remain bounded estimates, not a sustained full-run result.
+The selected Alpha foundation candidate is scientifically credible but currently expensive to train. The frozen candidate has 97,098,880 parameters, a 1,024-token training window, batch size 24, 79,020 optimizer steps, and 1,941,995,520 planned training tokens. The selected learning rate is `0.002`, chosen from three equal-token, equal-seed arms. The pre-optimization RTX 4090 Vulkan path sustained about 3,410-3,579 tokens/s after warmup, implying roughly 158 hours and USD 109 at USD 0.69/hour. The currently selected layout-portfolio-plus-ownership recipe measures a sustained 18-warm-step median of 6,836.8 tokens/s, implying about 78.9 device-hours and USD 54.44 before validation/checkpoint overhead. These remain bounded estimates, not a completed full-run result.
 
 That is a baseline, not an accepted final runtime. A prior synchronized Helios profile showed that backward computation consumes about 84% of forward-plus-backward wall time and that one ordinary step launches more than two thousand GPU operations. Optimizer and host overhead are small. The current opportunity is therefore algorithmic: fewer materialized intermediates, fewer reductions and transposes, fewer dispatches, more arithmetic intensity, better device-specific tiling, and correct reduced-precision matrix paths.
 
@@ -303,6 +311,10 @@ For every material operation family, the ledger must identify the strongest rele
 | BF16 stochastic rounding and muNit/FP8 scaling | Can operation-specific unbiased rounding and principled scaling rescue Helios's previously incorrect broad mixed-precision path while preserving a fixed-token trajectory? |
 | AMD AITER and Composable Kernel portfolios | Which shape-specialized GEMM, attention, RMSNorm, and fusion policies should inform the HIP lowering without importing an opaque runtime as Helios itself? |
 | GEAK v4, Kernel-Smith, and harness-governed LLM kernel search | Can a retained population of compiled candidates plus profiler/correctness/trajectory feedback turn Codex-assisted optimization into a reproducible local improver, while certificates and physical measurements prevent reward hacking? |
+| Atrex trace-weighted kernel evaluation | Can Helios weight candidate work by measured share of full Alpha device time and a roofline ceiling, while rejecting fallback implementations that pass correctness without executing the proposed kernel? |
+| Kernel Forge MCTS and whole-model reintegration | Can branching search escape locally attractive schedules while every retained candidate is re-integrated into the unchanged native Alpha graph rather than winning only on isolated random tensors? |
+| Kerncap AMD kernel capture and replay | Can a future HIP backend snapshot exact Helios AMD operands and launch state so candidate edit-compile-validate loops run cheaply without weakening whole-step validation? |
+| hipBLASLt offline tuning | Can exact Alpha GEMM shapes use library results as a device-and-release-specific performance ceiling and proposal source while Helios retains its native execution and fingerprinted portable path? |
 | Deep Kernel Fusion / megakernels | Which complete transformer forward/backward slices become faster when intermediates remain on-chip, and where do register pressure and lost occupancy make fusion harmful? |
 | Persistent kernels and on-device schedulers | Can repeated training-step subgraphs remain resident or device-scheduled without losing fairness, watchdog safety, checkpoint observability, or cross-vendor support? |
 | Communication-avoiding and recomputation algorithms | At one-GPU scale, which saved tensors should be recomputed to reduce HBM traffic and peak liveness rather than retained by conventional autograd? |
@@ -626,6 +638,12 @@ Primary sources guiding the first implementation pass:
 - [AMD GEAK v4](https://www.amd.com/en/developer/resources/technical-articles/2026/geak-v4.html): treat current agentic AMD kernel optimization as an engineering baseline, including its real-device feedback loop.
 - [Kernel-Smith](https://arxiv.org/abs/2603.28342): use retained executable populations and structured execution feedback as the nearest evolutionary-agent control for H14.
 - [Harness Engineering for LLM-Driven GPU Kernel Generation](https://arxiv.org/abs/2607.17979): separate the correctness/timing/archive harness from the agent controller, and prefer expert/evidence-assisted proposals over unconstrained full-agent search.
+- [Atrex-Bench and Atrex-Kernel-Agent](https://arxiv.org/abs/2607.14541): weight work by production-trace importance and roofline headroom, detect framework fallbacks, and use optimization dropout only inside a correctness-governed measure-revise loop.
+- [Kernel Forge](https://arxiv.org/abs/2607.24762): treat MCTS and whole-model in-place integration as direct controls for the Helios kernel ecology rather than claiming branching agent search itself as novel.
+- [Kerncap](https://arxiv.org/abs/2605.03208): use captured AMD kernel state to shorten future HIP edit-recompile-validate cycles while retaining whole-step parity as the promotion gate.
+- [ROCm AITER](https://github.com/ROCm/aiter): use AMD's multi-backend, shape-tuned attention/GEMM/RMSNorm portfolio as a moving performance reference for the HIP path, including training operators and accuracy fixes.
+- [hipBLASLt offline tuning](https://rocm.docs.amd.com/projects/hipBLASLt/en/docs-7.0.2/how-to/how-to-use-hipblaslt-offline-tuning.html): record tuned solution indices with both device architecture and library release because AMD explicitly states that results are not portable across either boundary.
+- [ROCm graph-safe library status](https://rocmdocs.amd.com/en/develop/reference/graph-safe-support.html): do not assume Composable Kernel or every ROCm library can be embedded safely in a captured/replayed training graph.
 - [Composable Kernel MI300 block GEMM](https://rocm.docs.amd.com/projects/composable_kernel/en/latest/conceptual/ck_tile/hardware/gemm_optimization.html): use LDS, MFMA, occupancy, and shape-tuning guidance as the Instinct baseline.
 - [Vulkan cooperative matrices](https://github.khronos.org/Vulkan-Site/tutorial/latest/Advanced_Vulkan_Compute/09_Specialized_Math/02_cooperative_matrices.html): enumerate implementation-supported shapes; Vulkan 1.4 exposure does not make any fixed tile universal.
 - [Vulkan maximal reconvergence](https://github.khronos.org/Vulkan-Site/features/latest/features/proposals/VK_KHR_shader_maximal_reconvergence.html): make divergent subgroup behavior explicit before relying on portable tangled operations.
