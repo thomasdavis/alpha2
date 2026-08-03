@@ -56,7 +56,7 @@ K32: warmed target-kernel time was 315.9571 ms versus 312.7565 ms for K16, while
 only +0.4975% mean and +0.1740% median throughput. Maximum loss and gradient-norm differences were `4.3392e-5`
 and `3.3260e-3`, so the candidate also failed exact trajectory parity.
 
-The first RTX 3090 critical-path profile attributes 84.69% of warmed dispatch time to the three selected GEMM
+The first RTX 3090 critical-path profile attributes 84.59% of warmed dispatch time to the three selected GEMM
 layouts plus attention dKV backward. A wired four-query dKV-v2 candidate was 4.50x slower and was rejected.
 Non-square dKV tile experiments initially appeared much faster but produced `NaN` gradients; the kernel assumed
 equal query/key tile ordinals and loaded too few query rows. Correct causal indexing and cooperative staging

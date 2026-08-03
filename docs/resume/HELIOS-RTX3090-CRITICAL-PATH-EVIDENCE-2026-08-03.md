@@ -10,7 +10,7 @@
 
 The first exact RTX 3090 per-kernel profile moves the binding constraint back from host allocation to four device
 kernels. On the second, warmed timestamped step, the three generic GEMM layouts plus attention dKV backward
-account for 84.69% of measured dispatch time. None of the first two follow-up candidates is selected:
+account for 84.59% of measured dispatch time. None of the first two follow-up candidates is selected:
 
 - transposed-B `R42CK32` is numerically close but slightly slower in-kernel and neutral end to end;
 - the pre-existing four-query dKV-v2 kernel is numerically valid but 4.50x slower than selected dKV.
@@ -116,4 +116,3 @@ tile tuning or another allocator percentage point. The next faithful gates shoul
 4. pursue persistent subgraphs only after measuring whether dispatch/control time remains material inside the
    post-allocation step;
 5. keep algorithmic token reduction separate from raw training-token/s so the 50k claim remains honest.
-
