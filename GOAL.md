@@ -35,13 +35,13 @@ forever, a better model run."
 | Item | State |
 |---|---|
 | 1–3. Verify revision, manifest, clean tree; read current records | done 2026-08-04 |
-| 4. Reproduce the X38 microbenchmark before reinterpreting it | **not done** |
+| 4. Reproduce the X38 microbenchmark before reinterpreting it | **done — X41** (3/3 byte-parity; 0.050–0.066% of host) |
 | 5. Instrument the native interval beneath JS packing | **done — X39** |
 | 6. Print host subintervals beside device dispatch time | **done — X39** (`[host_phases]`, env-gated) |
 | 7. Attack the currently binding constraint, then re-profile | in progress — X40 identifies it |
 | 8. Source-guided implementation only where the mechanism maps faithfully | not started |
 | 9. Keep ordinary math exact until X25–X31 parity is physical | holding |
-| 10. Verify whether `x10b_consumed_metric.py` is still an open question | **not done** |
+| 10. Verify whether `x10b_consumed_metric.py` is still an open question | **done — X41**; open, unrun, correctly ranked below host work (1.12x ceiling at S=1024) |
 
 ## Subordinate goals
 
