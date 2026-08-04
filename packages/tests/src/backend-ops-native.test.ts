@@ -112,6 +112,19 @@ describe("every Backend method, native vs cpu_ref, at model ranks", () => {
   it.runIf(() => gpu !== null)("matmul batches on the left and on both sides", () => {
     both("matmul [1,8,16]x[16,16]", APPROX, (B) =>
       B.matmul(B.fromArray(V, [1, 8, 16]), B.fromArray(W, [16, 16])));
+    /*
+     * The shapes ATTENTION uses: rank 4 on both operands, [B,H,T,D] against
+     * [B,H,D,T]. This is the loop path -- one launch per (batch, head) -- and
+     * its loop bound is computed differently from the rank-3 case below, which
+     * is why covering rank 3 did not cover it.
+     */
+    both("matmul [1,2,8,16]x[1,2,16,8]", APPROX, (B) =>
+      B.matmul(B.fromArray(fill([1, 2, 8, 16], (i) => ((i % 9) - 4) * 0.25), [1, 2, 8, 16]),
+               B.fromArray(fill([1, 2, 16, 8], (i) => ((i % 7) - 3) * 0.5), [1, 2, 16, 8])));
+    both("matmul [1,2,8,8]x[1,2,8,16]", APPROX, (B) =>
+      B.matmul(B.fromArray(fill([1, 2, 8, 8], (i) => ((i % 5) - 2) * 0.5), [1, 2, 8, 8]),
+               B.fromArray(fill([1, 2, 8, 16], (i) => ((i % 11) - 5) * 0.25), [1, 2, 8, 16])));
+
     both("matmul [2,4,8]x[2,8,4]", APPROX, (B) =>
       B.matmul(B.fromArray(fill([2, 4, 8], (i) => (i % 5) - 2), [2, 4, 8]),
                B.fromArray(fill([2, 8, 4], (i) => (i % 3) + 1), [2, 8, 4])));
