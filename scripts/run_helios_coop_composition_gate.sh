@@ -8,8 +8,6 @@ output_root="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-c
 : "${TRAIN_DATA:?set TRAIN_DATA to the frozen training prefix}"
 : "${VAL_DATA:?set VAL_DATA to the wholly held-out validation prefix}"
 : "${TOKENIZER:?set TOKENIZER to the exact tokenizer artifact}"
-: "${PROFITABLE_SHAPES:?set PROFITABLE_SHAPES to a comma-separated MxNxK allow-list}"
-
 steps="${STEPS:-3}"
 batch="${BATCH:-10}"
 eval_interval="${EVAL_INTERVAL:-0}"
@@ -19,6 +17,12 @@ minimum_learning_rate="${MINIMUM_LEARNING_RATE:-0.0002}"
 warmup_iters="${WARMUP_ITERS:-790}"
 control_shapes="${CONTROL_SHAPES:-}"
 skip_baseline="${SKIP_BASELINE:-0}"
+skip_candidate="${SKIP_CANDIDATE:-0}"
+profitable_shapes="${PROFITABLE_SHAPES:-}"
+if [[ "$skip_candidate" != "1" && -z "$profitable_shapes" ]]; then
+  printf '%s\n' 'set PROFITABLE_SHAPES to a comma-separated layout-qualified allow-list' >&2
+  exit 2
+fi
 mkdir -p "$output_root"
 cd "$repo_root"
 
@@ -133,11 +137,15 @@ fi
 if [[ -n "$control_shapes" ]]; then
   run_row control_composition on "$control_shapes" default
 fi
-run_row profitable_four_default on "$PROFITABLE_SHAPES" default
+if [[ "$skip_candidate" != "1" ]]; then
+  run_row profitable_four_default on "$profitable_shapes" default
+fi
 if [[ "${SOAK_ONLY:-0}" != "1" ]]; then
   run_row cooperative_all_default on "" default
   run_row cooperative_all_forced_reclaim on "" forced
-  run_row profitable_four_forced_reclaim on "$PROFITABLE_SHAPES" forced
+  if [[ "$skip_candidate" != "1" ]]; then
+    run_row profitable_four_forced_reclaim on "$profitable_shapes" forced
+  fi
 fi
 
 node scripts/summarize_helios_coop_bisect.mjs --root "$output_root"
