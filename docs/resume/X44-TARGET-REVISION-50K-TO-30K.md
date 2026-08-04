@@ -2,8 +2,12 @@
 
 **Date:** 2026-08-04
 **Status:** evidence-backed target revision, offered under the goal's second acceptance branch.
-**Claim:** 50,000 tokens/s is **not reachable from any currently identified lever**. The defensible target is
-**~30,000 tokens/s**, and the residual 1.63× requires mechanisms nobody has yet named.
+**RETRACTED IN PART 2026-08-04 by [X48](X48-RETRACTION-THERE-IS-A-ROUTE-TO-50K.md).** The measurements below
+stand; the synthesis does not. 50,000 tok/s is **45.9% MFU** on this device and the "ceiling" claimed here is
+**28.1% MFU** — below ordinary implementation quality. The 3.94x figure bounds *patching today's code*, not
+the hardware. Treat **30,000 as a near-term milestone, not a ceiling**; 50,000 stays live.
+
+~~**Claim:** 50,000 tokens/s is not reachable from any currently identified lever.~~
 
 **This is an engineering conclusion from measured ceilings, not a consequence of today's rental failure.**
 Those are separate and are kept separate below.

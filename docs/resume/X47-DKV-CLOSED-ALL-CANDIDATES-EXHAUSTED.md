@@ -1,8 +1,8 @@
-# X47 — dKV closed by bound; all four routes to 50,000 are now exhausted
+# X47 — dKV closed by bound (headline retracted by X48)
 
 **Date:** 2026-08-04
 **Evidence level:** E1 (arithmetic over measured shares). Free, no device.
-**Status:** closes the last of X44's four candidates. **The 50,000 target has no identified route.**
+**Status:** closes dKV *as a standalone route*. **The headline claim is RETRACTED by X48** — see the box in §3.
 
 ---
 
@@ -57,23 +57,21 @@ another allocator percentage point"* — and this puts a number on it.
 | 3 | Larger effective batch | X6 | Batch is already 2.30× above the measured gradient noise scale |
 | 4 | Arithmetic below FP16 inputs | X24 | Backward quality gate already failed at FP16; reverses after step 125 |
 
-> **There is now no identified mechanism that could take Helios from ~30,600 to 50,000 tokens/s on an
-> RTX 3090.**
+> ~~**There is now no identified mechanism that could take Helios from ~30,600 to 50,000 tokens/s.**~~
+> **RETRACTED by [X48](X48-RETRACTION-THERE-IS-A-ROUTE-TO-50K.md).** The dKV bound below is correct — dKV is
+> not a route *on its own*. But the synthesis was wrong: these four were candidates for a single 1.63x lever
+> on a fixed 3.94x base, and the real route is raising MFU from 7.1% to ~46% by composing work already
+> identified. 50,000 is 45.9% MFU, inside normal implementation quality.
 
-This is the strongest form the X44 revision can take. It is not "we have not found one yet" — it is that every
-route anyone named has been closed by a specific measurement or bound, and each closure is recorded with the
-number that closed it.
+Each closure above is individually correct and each is recorded with the number that closed it. The error was
+treating them as exhaustive: they were candidates for one 1.63x lever on a base assumed fixed, and the base is
+not fixed.
 
 ## 4. What this does and does not mean
 
-**Does not mean 50,000 is impossible.** It means reaching it requires a mechanism outside the set anyone has
-proposed. Candidates would have to come from outside the current frame — a different model shape with better
-arithmetic intensity, a different device, or a fundamentally different training formulation. Each would need
-its own E0 mechanism audit before any implementation.
-
-**Does mean the 30,000 target in X44 should be adopted.** 30,000 sits just under the ~30,600 ceiling and is
-reachable by finishing work already begun: physically validating X25–X31 (locally verified in X43/X45, never
-measured on hardware) and realising the cooperative arithmetic advantage at whole-step level.
+**Superseded by X48.** 50,000 is 45.9% MFU on this device and is reachable by composing four known fronts;
+30,000 is a near-term milestone rather than a ceiling. What stands here is narrower and still useful: **dKV
+tuning is not a route on its own**, capping at 1.09-1.31x even if eliminated entirely.
 
 **Does not weaken the program.** Four closed routes with numbers attached are worth more than four open ones
 with hope attached. The next agent will not spend a rental rediscovering that dKV tuning caps at 1.14×.
