@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import type { CooperativeMatrixProperty } from "./cooperative-matrix-capabilities.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,6 +55,8 @@ export interface NativeDeviceInfo {
   coopMatM: number;
   coopMatN: number;
   coopMatK: number;
+  /** Complete tuple list returned by vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR. */
+  cooperativeMatrixProperties: CooperativeMatrixProperty[];
   hasPushDescriptors: boolean;
   hasBDA: boolean;
   hasDGC: boolean;
@@ -115,6 +118,7 @@ export interface NativeAddon {
 
 let _native: NativeAddon | null = null;
 let _deviceInfo: NativeDeviceInfo | null = null;
+let _nativeAddonPath: string | null = null;
 
 function findNativeAddon(): string {
   const envOverride = process.env.HELIOS_NATIVE_ADDON;
@@ -154,6 +158,7 @@ export function initDevice(): NativeDeviceInfo {
   const addonPath = findNativeAddon();
   const require = createRequire(import.meta.url);
   _native = require(addonPath) as NativeAddon;
+  _nativeAddonPath = addonPath;
 
   _deviceInfo = _native.initDevice();
   return _deviceInfo;
@@ -173,11 +178,18 @@ export function getDeviceInfo(): NativeDeviceInfo {
   return _deviceInfo!;
 }
 
+/** Exact native addon binary loaded for the current device session. */
+export function getNativeAddonPath(): string {
+  if (!_nativeAddonPath) initDevice();
+  return _nativeAddonPath!;
+}
+
 /** Destroy the Vulkan device and release all resources. */
 export function destroyDevice(): void {
   if (_native) {
     _native.destroy();
     _native = null;
     _deviceInfo = null;
+    _nativeAddonPath = null;
   }
 }

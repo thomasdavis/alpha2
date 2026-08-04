@@ -35,7 +35,7 @@ typedef uint32_t VkFlags;
 typedef uint32_t VkBool32;
 typedef uint64_t VkDeviceSize;
 
-typedef enum { VK_SUCCESS = 0 } VkResult;
+typedef enum { VK_SUCCESS = 0, VK_INCOMPLETE = 5 } VkResult;
 typedef enum {
   VK_STRUCTURE_TYPE_APPLICATION_INFO = 0,
   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1,
@@ -397,7 +397,10 @@ typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; uint32
 
 // Cooperative matrix (VK_KHR_cooperative_matrix)
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR 1000506000
-#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR 1000506002
+// VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR.  Do not confuse this
+// with VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR
+// (1000506002), which is a different structure.
+#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR 1000506001
 
 // VkComponentTypeKHR values
 #define VK_COMPONENT_TYPE_FLOAT16_KHR 0
@@ -899,6 +902,11 @@ static int hasAsyncTransfer = 0;
 static int coopMatSupported = 0;
 static uint32_t coopMatM = 0, coopMatN = 0, coopMatK = 0;
 static int coopMat2Supported = 0;
+// Preserve the driver's complete advertised tuple list for capability-gated
+// experiments.  The selected f16xf16->f32 tile above remains the production
+// choice; this list is evidence, not an implicit request to use other types.
+static VkCooperativeMatrixPropertiesKHR* coopMatProperties = NULL;
+static uint32_t coopMatPropertyCount = 0;
 
 // Buffer Device Address (Vulkan 1.2 core)
 static int hasBDA = 0;
@@ -1439,6 +1447,11 @@ static void waitTimelineValue(uint64_t value) {
 // ── N-API: initDevice() ─────────────────────────────────────────────────────
 
 static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
+  if (coopMatProperties) {
+    free(coopMatProperties);
+    coopMatProperties = NULL;
+  }
+  coopMatPropertyCount = 0;
   const char* dbgP = getenv("HELIOS_DEBUG_PIPELINES");
   debugPipelines = (dbgP && dbgP[0] == '1') ? 1 : 0;
   const char* dbgCoop = getenv("HELIOS_DEBUG_COOP_PROPS");
@@ -2098,15 +2111,26 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
     if (fp_getCoopMatProps) {
       uint32_t propCount = 0;
-      fp_getCoopMatProps(physDevice, &propCount, NULL);
-      if (propCount > 0) {
+      VkResult countResult = fp_getCoopMatProps(physDevice, &propCount, NULL);
+      if ((countResult == VK_SUCCESS || countResult == VK_INCOMPLETE) && propCount > 0) {
         VkCooperativeMatrixPropertiesKHR* props =
           (VkCooperativeMatrixPropertiesKHR*)malloc(sizeof(VkCooperativeMatrixPropertiesKHR) * propCount);
+        if (!props) {
+          napi_throw_error(env, NULL, "Unable to allocate cooperative matrix property list");
+          return NULL;
+        }
         for (uint32_t i = 0; i < propCount; i++) {
           props[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
           props[i].pNext = NULL;
         }
-        fp_getCoopMatProps(physDevice, &propCount, props);
+        VkResult propertyResult = fp_getCoopMatProps(physDevice, &propCount, props);
+        if (propertyResult != VK_SUCCESS && propertyResult != VK_INCOMPLETE) {
+          free(props);
+          props = NULL;
+          propCount = 0;
+        }
+        coopMatProperties = props;
+        coopMatPropertyCount = propCount;
         if (debugCoopProps) {
           fprintf(stderr, "[helios:native] cooperative matrix properties count=%u\n", propCount);
           for (uint32_t i = 0; i < propCount; i++) {
@@ -2185,7 +2209,6 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
               coopMatM, coopMatN, coopMatK, bestIdx);
           }
         }
-        free(props);
       }
     }
   }
@@ -2523,6 +2546,36 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_get_boolean(env, coopMat2Supported, &val);
   napi_set_named_property(env, result, "coopMat2Supported", val);
+
+  napi_value coopPropsArray;
+  napi_create_array_with_length(env, coopMatPropertyCount, &coopPropsArray);
+  for (uint32_t i = 0; i < coopMatPropertyCount; i++) {
+    napi_value prop;
+    napi_value field;
+    napi_create_object(env, &prop);
+
+    napi_create_uint32(env, coopMatProperties[i].MSize, &field);
+    napi_set_named_property(env, prop, "MSize", field);
+    napi_create_uint32(env, coopMatProperties[i].NSize, &field);
+    napi_set_named_property(env, prop, "NSize", field);
+    napi_create_uint32(env, coopMatProperties[i].KSize, &field);
+    napi_set_named_property(env, prop, "KSize", field);
+    napi_create_uint32(env, coopMatProperties[i].AType, &field);
+    napi_set_named_property(env, prop, "AType", field);
+    napi_create_uint32(env, coopMatProperties[i].BType, &field);
+    napi_set_named_property(env, prop, "BType", field);
+    napi_create_uint32(env, coopMatProperties[i].CType, &field);
+    napi_set_named_property(env, prop, "CType", field);
+    napi_create_uint32(env, coopMatProperties[i].ResultType, &field);
+    napi_set_named_property(env, prop, "ResultType", field);
+    napi_get_boolean(env, coopMatProperties[i].saturatingAccumulation, &field);
+    napi_set_named_property(env, prop, "saturatingAccumulation", field);
+    napi_create_uint32(env, coopMatProperties[i].scope, &field);
+    napi_set_named_property(env, prop, "scope", field);
+
+    napi_set_element(env, coopPropsArray, i, prop);
+  }
+  napi_set_named_property(env, result, "cooperativeMatrixProperties", coopPropsArray);
 
   return result;
 }
@@ -5134,6 +5187,12 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   fp_vkDestroyCommandPool(device, cmdPool, NULL);
   fp_vkDestroyDevice(device, NULL);
   fp_vkDestroyInstance(instance, NULL);
+
+  if (coopMatProperties) {
+    free(coopMatProperties);
+    coopMatProperties = NULL;
+  }
+  coopMatPropertyCount = 0;
 
   device = NULL;
   instance = NULL;

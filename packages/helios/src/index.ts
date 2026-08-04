@@ -13,7 +13,15 @@
  */
 
 export { HeliosBackend, type GpuDeviceInfo } from "./backend.js";
-export { initDevice, destroyDevice, getDeviceInfo, getNative, type NativeAddon, type NativeDeviceInfo } from "./device.js";
+export { initDevice, destroyDevice, getDeviceInfo, getNative, getNativeAddonPath, type NativeAddon, type NativeDeviceInfo } from "./device.js";
+export {
+  VulkanComponentType,
+  VulkanScope,
+  analyzeCooperativeMatrixCapabilities,
+  canonicalizeCooperativeMatrixProperties,
+  type CooperativeMatrixCapabilityAnalysis,
+  type CooperativeMatrixProperty,
+} from "./cooperative-matrix-capabilities.js";
 export { SpirVBuilder } from "./spirv.js";
 export { getKernelSpirv } from "./kernels.js";
 export {
