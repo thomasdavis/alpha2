@@ -69,6 +69,22 @@ typedef struct {
  * Ampere; there is no AMPERE_CHANNEL_GROUP. */
 #define KEPLER_CHANNEL_GROUP_A 0x0000A06C
 
+/* FERMI_CONTEXT_SHARE_A. Allocated UNDER the channel group and referenced by
+ * the channel through hContextShare. This is what binds a channel to an address
+ * space context; without it the channel allocates and schedules cleanly and
+ * then never runs anything.
+ *
+ * Found by tracing a working Vulkan submit on the same GPU: it allocates 0x9067
+ * under the TSG immediately before the channel. Nothing in the channel's own
+ * parameter documentation says it is required. */
+#define FERMI_CONTEXT_SHARE_A 0x00009067
+
+typedef struct {
+  NvHandle hVASpace;
+  NvU32 flags;
+  NvU32 subctxId;
+} NV_CTXSHARE_ALLOCATION_PARAMETERS;
+
 /* Engine index for graphics/compute. Determined by probe: the channel group
  * allocates with NV_OK at 1 and NV_ERR_INVALID_ARGUMENT at 0, 2 and 3. Compute
  * work runs on the graphics engine rather than a separate one. */
@@ -108,6 +124,16 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
       goto fail;
   }
 
+  /* The context share, which the channel will reference. */
+  {
+    NV_CTXSHARE_ALLOCATION_PARAMETERS cs;
+    memset(&cs, 0, sizeof cs);
+    cs.hVASpace = d->vaspace;
+    if ((rc = aether_alloc(d, c->group, &c->ctxshare, FERMI_CONTEXT_SHARE_A,
+                           &cs, sizeof cs)) != 0)
+      goto fail;
+  }
+
   /*
    * The channel itself, and the two fields that must be LEFT ZERO.
    *
@@ -125,6 +151,7 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
     p.gpFifoOffset = c->gpfifo.gpuAddr;
     p.gpFifoEntries = GPFIFO_ENTRIES;
     p.engineType = HERMES_ENGINE_GRAPHICS;
+    p.hContextShare = c->ctxshare;
     if ((rc = aether_alloc(d, c->group, &c->handle, AMPERE_CHANNEL_GPFIFO_A,
                            &p, sizeof p)) != 0)
       goto fail;
@@ -147,6 +174,7 @@ fail:
 void hermes_channel_close(aether_device *d, hermes_channel *c) {
   if (c->compute) { aether_free(d, c->compute); c->compute = 0; }
   if (c->handle) { aether_free(d, c->handle); c->handle = 0; }
+  if (c->ctxshare) { aether_free(d, c->ctxshare); c->ctxshare = 0; }
   if (c->group) { aether_free(d, c->group); c->group = 0; }
   gaia_free(d, &c->pushbuffer);
   gaia_free(d, &c->gpfifo);

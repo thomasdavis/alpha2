@@ -33,6 +33,8 @@
 
 typedef struct {
   NvHandle group;    /* the channel group (TSG) the channel lives in */
+  NvHandle ctxshare; /* FERMI_CONTEXT_SHARE_A — binds the channel to an
+                      * address-space context; the channel is inert without it */
   NvHandle handle;   /* the channel object */
   NvHandle compute;  /* AMPERE_COMPUTE_B, bound to this channel */
 
