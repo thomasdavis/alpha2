@@ -122,6 +122,8 @@ export interface NativeAddon {
   getHostTiming?(): NativeHostTiming;
   resetHostTiming?(): void;
   dgcSetup?(pipelineSlot: number, pushConstantSize: number, maxSequences: number): boolean;
+  /** Device address of a buffer as [lo, hi] u32 words. Requires BDA support. */
+  dgcGetBufferAddress?(bufferSlot: number): [number, number];
   dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
   waitTimeline(value: number): void;
   getCompleted(): number;

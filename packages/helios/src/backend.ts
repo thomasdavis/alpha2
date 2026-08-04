@@ -1166,6 +1166,28 @@ const MAX_PENDING_OPS = 2048;
 // X49: flush-boundary split so a long DGC-eligible run can actually use the
 // DGC path. Opt-out via HELIOS_DISABLE_DGC_SPLIT_RUNS=1.
 const DGC_SPLIT_RUNS = process.env.HELIOS_DISABLE_DGC_SPLIT_RUNS !== "1";
+
+// X58: collapse the gradient-norm reduction tree by writing per-tensor partials
+// into slots of one buffer (X50's fix, using the X56/X57 BDA reduction).
+// Opt-IN while it is new: the tree remains the default until this has run on
+// real hardware. Set HELIOS_SUMSQ_SLOT_REDUCE=1 to enable.
+const SUMSQ_SLOT_REDUCE = process.env.HELIOS_SUMSQ_SLOT_REDUCE === "1";
+const SUMSQ_BDA_PUSH_BYTES = 24;   // u64 src + u64 dst + u32 len + u32 outOffset
+const EMPTY_PUSH = new Float32Array(0);
+
+/** Pack the BDA reduction push block as exact u32 words (see PendingOp.pushU32). */
+function bdaPush(
+  src: [number, number],
+  dst: [number, number],
+  len: number,
+  outOffset: number,
+): Uint32Array {
+  const w = new Uint32Array(6);
+  w[0] = src[0] >>> 0; w[1] = src[1] >>> 0;
+  w[2] = dst[0] >>> 0; w[3] = dst[1] >>> 0;
+  w[4] = len >>> 0;    w[5] = outOffset >>> 0;
+  return w;
+}
 const DGC_RUN_MIN = Number(process.env.HELIOS_DGC_RUN_MIN ?? "16"); // auto-flush when this many ops are pending
 
 type PendingOpKind = "binary" | "unary" | "softmax" | "softmax_online" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
@@ -1186,6 +1208,13 @@ interface PendingOp {
   flags?: number;           // packed dispatch flags (gY + hasGZ bit)
   packedBytes?: number;     // encoded byte size for batchDispatchMany payload
   elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
+  // X58: raw push bytes, as u32 words. Buffer-device-address kernels carry
+  // 64-bit addresses in their push block, and the default Float32Array path
+  // packs by reading each word as a float and re-writing it with setFloat32 --
+  // which CANONICALIZES NaN bit patterns. An address whose upper word lands on
+  // a NaN encoding would be silently corrupted. When present this is packed
+  // with setUint32 instead, preserving the bits exactly.
+  pushU32?: Uint32Array;
 }
 
 class StaticSlotRuntime {
@@ -1781,12 +1810,20 @@ class ComputeGraph {
         offset += 4;
       }
 
-      // Push constants (raw bytes from Float32Array)
+      // Push constants (raw bytes from Float32Array, or exact u32 words)
       if (op.pushSize > 0) {
         const words = op.pushSize >>> 2;
-        for (let i = 0; i < words; i++) {
-          view.setFloat32(offset, op.push[i], true);
-          offset += 4;
+        const raw = op.pushU32;
+        if (raw !== undefined) {
+          for (let i = 0; i < words; i++) {
+            view.setUint32(offset, raw[i], true);
+            offset += 4;
+          }
+        } else {
+          for (let i = 0; i < words; i++) {
+            view.setFloat32(offset, op.push[i], true);
+            offset += 4;
+          }
         }
       }
     }
@@ -3053,6 +3090,11 @@ export class HeliosBackend implements Backend {
     }
     if (tensors.length === 1) return this.sumOfSquares(tensors[0]);
 
+    if (SUMSQ_SLOT_REDUCE) {
+      const collapsed = this.totalSumOfSquaresSlotted(tensors);
+      if (collapsed) return collapsed;
+    }
+
     const partials = new Array<TensorData>(tensors.length);
     for (let i = 0; i < tensors.length; i++) {
       partials[i] = this.sumOfSquares(tensors[i]);
@@ -3078,6 +3120,102 @@ export class HeliosBackend implements Backend {
       count = write;
     }
     return partials[0];
+  }
+
+  /**
+   * X58 — the gradient norm without the tree.
+   *
+   * X50 found `totalSumOfSquares` spends 127 separate `add` dispatches summing
+   * 128 scalars, purely because each per-tensor partial lives in its own buffer
+   * and the pairwise tree exists to bring them together.
+   *
+   * Here each tensor's reduction writes directly into slot i of ONE partials
+   * buffer, via the buffer-device-address reduction's `outOffset` (X56/X57), and
+   * a single reduction over the contiguous result finishes the job. 127
+   * dispatches become 1.
+   *
+   * BDA kernels declare no descriptor bindings, so these dispatches also skip
+   * the `desc_update` phase entirely — X39 measured that at 23.4% of host time,
+   * per-dispatch.
+   *
+   * Returns null when the route is unavailable (no BDA support, or a tensor
+   * small enough to take the CPU path), leaving the caller on the tree.
+   */
+  private totalSumOfSquaresSlotted(tensors: TensorData[]): TensorData | null {
+    const vk = this.init();
+    if (typeof vk.dgcGetBufferAddress !== "function") return null;
+
+    // Every tensor must be large enough to reduce on GPU, or the mix of CPU and
+    // GPU partials defeats the point.
+    for (const t of tensors) {
+      if (shapeSize(t.shape) < this._minGpuSize) return null;
+    }
+
+    const n = tensors.length;
+    const slotsRegion = acquireOutputRegion(vk, n * 4);
+    let slotsAddr: [number, number];
+    try {
+      slotsAddr = vk.dgcGetBufferAddress(slotsRegion.handle) as [number, number];
+    } catch {
+      return null;
+    }
+
+    const bdaPipe = getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES);
+
+    for (let i = 0; i < n; i++) {
+      // Reduce tensor i to a single scalar in its own region, exactly as before...
+      const scalar = this.gpuReduceSumOfSquares(tensors[i]);
+      const srcBuf = ensureGpu(vk, scalar);
+      let srcAddr: [number, number];
+      try {
+        srcAddr = vk.dgcGetBufferAddress(srcBuf) as [number, number];
+      } catch {
+        return null;
+      }
+
+      // ...then move it into slot i with a 1-element BDA reduction. This is the
+      // op that replaces this tensor's participation in the tree.
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "sum_reduce_bda",
+        pipeline: bdaPipe,
+        inputBufs: [],
+        outputRegion: slotsRegion,
+        groups: [1, 1, 1],
+        push: EMPTY_PUSH,
+        pushU32: bdaPush(srcAddr, slotsAddr, 1, i),
+        pushSize: SUMSQ_BDA_PUSH_BYTES,
+        shape: [n],
+        allBufs: [srcBuf, slotsRegion.handle],
+      });
+      releaseGpuBufferFor(scalar);
+    }
+
+    // One reduction over the n contiguous slots.
+    const outRegion = acquireOutputRegion(vk, 4);
+    let outAddr: [number, number];
+    try {
+      outAddr = vk.dgcGetBufferAddress(outRegion.handle) as [number, number];
+    } catch {
+      return null;
+    }
+
+    graph.record({
+      kind: "reduce_sum",
+      kernel: "sum_reduce_bda",
+      pipeline: bdaPipe,
+      inputBufs: [],
+      outputRegion: outRegion,
+      groups: [1, 1, 1],
+      push: EMPTY_PUSH,
+      pushU32: bdaPush(slotsAddr, outAddr, n, 0),
+      pushSize: SUMSQ_BDA_PUSH_BYTES,
+      shape: [],
+      allBufs: [slotsRegion.handle, outRegion.handle],
+    });
+
+    graph.deferRelease(slotsRegion);
+    return graphLazyTensor(vk, [], outRegion);
   }
 
   private gpuReduceSumOfSquares(a: TensorData): TensorData {
@@ -3112,10 +3250,57 @@ export class HeliosBackend implements Backend {
         allBufs: [inputBuf, region1.handle],
       });
 
-      // Pass 2: reduce partial sums → 1 value (single WG handles up to 256)
+      // Pass 2: reduce the partial sums to a single value.
+      //
+      // X58 CORRECTNESS FIX. This used to be one dispatch of a single workgroup,
+      // on the assumption noted in the old comment that "a single WG handles up
+      // to 256". That was true when WG_SIZE was 256. WG_SIZE now defaults to
+      // 128 while STRIDE_WGS is still 256, so pass 1 emits 256 partials and a
+      // single 128-thread workgroup reduced only the FIRST 128 of them --
+      // sum_reduce loads A[gidX] for gidX < wgSize and the rest were silently
+      // dropped.
+      //
+      // The result was a gradient norm roughly half its true value for every
+      // tensor at or above STRIDE_THRESHOLD. Measured with an all-ones vector,
+      // where sum-of-squares must equal the element count:
+      //
+      //   n=65536  counted 32768   n=70000  counted 37232
+      //   n=131072 counted 65536   n=200000 counted 101696
+      //
+      // Every one of those is exactly the coverage of workgroups 0..127.
+      //
+      // Reducing in a loop instead removes the assumption entirely: it is
+      // correct for any WG_SIZE, and collapses to the original single dispatch
+      // whenever numGroups <= WG_SIZE.
       if (numGroups > 1) {
+        let remaining = numGroups;
+        let src = region1;
+        let level: OutputRegion | null = null;
+
+        while (remaining > WG_SIZE) {
+          const nextGroups = Math.ceil(remaining / WG_SIZE);
+          const regionN = acquireOutputRegion(vk, nextGroups * 4);
+          graph.record({
+            kind: "reduce_sum",
+            kernel: "sum_reduce",
+            pipeline: sumPipeline,
+            inputBufs: [],
+            outputRegion: regionN,
+            groups: [nextGroups, 1, 1],
+            push: push2Memo(remaining, 0),
+            pushSize: PUSH_SIZE,
+            shape: [nextGroups],
+            allBufs: [src.handle, regionN.handle],
+          });
+          if (level) graph.deferRelease(level);
+          level = regionN;
+          src = regionN;
+          remaining = nextGroups;
+        }
+
         const region2 = acquireOutputRegion(vk, 4);
-        const push2 = push2Memo(numGroups, 0);
+        const push2 = push2Memo(remaining, 0);
+        const finalInput = src;
 
         graph.record({
           kind: "reduce_sum",
@@ -3127,10 +3312,11 @@ export class HeliosBackend implements Backend {
           push: push2,
           pushSize: PUSH_SIZE,
           shape: [],
-          allBufs: [region1.handle, region2.handle],
+          allBufs: [finalInput.handle, region2.handle],
         });
 
         graph.deferRelease(region1);
+        if (level && level !== region1) graph.deferRelease(level);
         return graphLazyTensor(vk, [], region2);
       }
 

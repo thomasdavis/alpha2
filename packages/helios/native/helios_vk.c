@@ -4161,8 +4161,21 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
     }
     htEnd(HT_BIND, htBind);
 
-    if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
-      for (uint32_t i = 0; i < bufCount; i++) {
+    // X58: a buffer-device-address kernel declares zero descriptor bindings and
+    // reaches operands through 64-bit addresses in push constants. Writing
+    // bufCount descriptors against an empty layout is invalid, and skipping the
+    // work outright removes the desc_update phase for those ops -- X39 measured
+    // desc_update at 23.4% of host time, per-dispatch, so this is the phase BDA
+    // conversion actually eliminates.
+    //
+    // Buffers stay in bufSlots: they still drive residency and the barrier pass
+    // above. They are simply never bound.
+    const uint32_t descWrites = bufCount < ps->numBindings ? bufCount : ps->numBindings;
+
+    if (ps->numBindings == 0) {
+      /* BDA kernel: no descriptor work at all. */
+    } else if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+      for (uint32_t i = 0; i < descWrites; i++) {
         bufInfos[i] = (VkDescriptorBufferInfo){
           .buffer = buffers[bufSlots[i]].buffer,
           .offset = 0,
@@ -4179,7 +4192,7 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
       }
       uint64_t htPd = htBegin();
       fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-        ps->layout, 0, bufCount, writes);
+        ps->layout, 0, descWrites, writes);
       htEnd(HT_DESC_UPDATE, htPd);
     } else {
       VkDescriptorSetAllocateInfo dsAllocInfo = {
@@ -4196,7 +4209,7 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
         napi_throw_error(env, NULL, "batchExecuteAll: vkAllocateDescriptorSets failed");
         return NULL;
       }
-      for (uint32_t i = 0; i < bufCount; i++) {
+      for (uint32_t i = 0; i < descWrites; i++) {
         bufInfos[i] = (VkDescriptorBufferInfo){
           .buffer = buffers[bufSlots[i]].buffer,
           .offset = 0,
@@ -4212,7 +4225,7 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
         };
       }
       uint64_t htU = htBegin();
-      fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+      fp_vkUpdateDescriptorSets(device, descWrites, writes, 0, NULL);
       htEnd(HT_DESC_UPDATE, htU);
       uint64_t htBd = htBegin();
       fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
