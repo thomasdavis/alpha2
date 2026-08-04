@@ -82,6 +82,11 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
                       NvU32 blockZ);
 
+/* Point constant bank `index` at `addr`, marking it valid. Only needed for
+ * kernels that read c[index][...] -- a kernel whose addresses are immediates
+ * needs no bank at all, and an unset bank is simply invalid rather than wrong. */
+void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
+
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)
 #define HERMES_QMD_SCRATCH_STRIDE (64 * 1024)
 
@@ -155,11 +160,34 @@ void hermes_compute_init(hermes_channel *c, NvU32 subchannel,
 /* An aperture base far above anything Gaia hands out (it allocates upward from
  * 0x04000000), so the window cannot overlap a real buffer. CUDA picks a high
  * address of the same shape. */
-#define HERMES_SHARED_WINDOW_DEFAULT 0x00007f0000000000ull
-#define HERMES_LOCAL_WINDOW_DEFAULT 0x00007e0000000000ull
+/*
+ * THE WINDOWS ARE NOT OURS TO PICK FREELY.
+ *
+ * They were first set to invented high addresses (0x7f00_00000000 and
+ * 0x7e00_00000000) on the reasoning that a window only has to sit where no real
+ * mapping does. Mesa's NVK driver -- which dispatches compute on this exact
+ * hardware -- uses specific values for Volta through Ada:
+ *
+ *     shared window = 0xfe << 24 = 0xFE000000
+ *     local  window = 0xff << 24 = 0xFF000000
+ *
+ * with the comment "reduce likelihood of collision with real buffers by placing
+ * the hole at the top of the 4G area". These are slots near the top of the low
+ * 4 GiB, not arbitrary 47-bit addresses, and the SM's generic-address decode
+ * cares which is which.
+ *
+ * (NVK also emits SET_PROGRAM_REGION, but only for pre-Volta classes -- Ampere
+ * takes an absolute program address, and clc7c0.h has no such method. Worth
+ * recording so nobody adds it on the strength of seeing it in that driver.)
+ */
+#define HERMES_SHARED_WINDOW_DEFAULT 0x00000000fe000000ull
+#define HERMES_LOCAL_WINDOW_DEFAULT 0x00000000ff000000ull
 
-/* sm_86: SET_SPA_VERSION carries major 8, minor 6. */
+/* sm_86: SET_SPA_VERSION carries major 8, minor 6 (fields MINOR 7:0, MAJOR
+ * 15:8). SASS_VERSION is the QMD's own field and is a single byte, 0x86 -- both
+ * are required and they are not interchangeable. */
 #define HERMES_SPA_VERSION_SM86 0x0806
+#define HERMES_SASS_VERSION_SM86 0x86u
 
 /* Bind the compute class to a subchannel. Must precede the first launch.
  * SET_OBJECT takes the RAW class id (0xc7c0) — confirmed by capture, correcting

@@ -99,10 +99,29 @@ typedef struct {
  * out addresses from 0x200000 -- which MAPS fine, but mapping succeeding is not
  * the same as the fetch engine being able to read from there. Moved to match
  * the reference range. */
-/* A high base (0x800000000, matching the shape of CUDA's addresses) was tried
- * as a probe and behaves identically, so the GR fault is not about address
- * range. Kept low: it is easier to read in a hex dump. */
-#define GAIA_VA_BASE 0x04000000ULL
+/*
+ * AND WE ARE NOT THE ONLY ONE ALLOCATING IN THIS ADDRESS SPACE.
+ *
+ * RM maps the GR context buffers into the channel's VA space when the compute
+ * object is created, choosing its own addresses -- and a low base is exactly
+ * where an allocator naturally starts. Handing out 0x04000000 upward through
+ * DMA_OFFSET_FIXED, which forces a mapping at an address we name rather than
+ * asking for a free one, can therefore land on top of RM's context mappings.
+ * That would look precisely like what we see: everything works until a CTA
+ * launches, because nothing before that reads the GR context.
+ *
+ * So the base moves clear of anything an allocator would pick first, but not so
+ * far that it leaves the usable range. 16 TiB was tried and is OUTSIDE it: the
+ * mappings succeed and then the GPU cannot even fetch the pushbuffer, reporting
+ * ROBUST_CHANNEL_FIFO_ERROR_MMU_ERR_FLT (31) with GP_GET stuck at zero. Useful
+ * calibration in its own right -- it is the first error code other than 13 this
+ * path has produced, which proves the notifier distinguishes causes rather than
+ * reporting one catch-all.
+ *
+ * 32 GiB is inside the range (an early probe mapped there cleanly) and still far
+ * above where RM hands itself context buffers.
+ */
+#define GAIA_VA_BASE 0x0000000800000000ULL
 
 /*
  * GPU virtual addresses are handed out by a bump allocator.

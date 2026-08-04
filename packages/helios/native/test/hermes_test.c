@@ -23,6 +23,7 @@
 #include "harness.h"
 #include "../aether/ioctl.h" /* aether_status_name — a failure must name itself */
 #include "../hermes/pushbuffer.h"
+#include "../hermes/qmd.h"
 
 #include <time.h>
 
@@ -171,10 +172,55 @@ done:
   HT_END();
 }
 
+/*
+ * The QMD's field positions, as known answers from NVIDIA's clc7c0qmd.h.
+ *
+ * Every position is stated there as MW(hi:lo) over the whole descriptor, so
+ * word = lo/32 and shift = lo%32. Checking a few by construction catches the
+ * two ways this goes wrong, both of which happened: a mistranscribed offset,
+ * and -- worse, because it is invisible -- a mistaken WIDTH, which silently
+ * writes zeroes across the neighbouring field.
+ */
+static void test_qmd_field_positions(void) {
+  HT_CASE("QMD fields land where clc7c0qmd.h says");
+  NvU32 q[HERMES_QMD_DWORDS];
+
+  /* Distinct values so no field can be confused with another. */
+  hermes_qmd_build(q, 0x800060000ull, 0, 3, 5, 13, 9, 11, 7);
+
+  HT_EQ_U64(q[12], 3);  /* CTA_RASTER_WIDTH   MW(415:384) */
+  HT_EQ_U64(q[13], 5);  /* CTA_RASTER_HEIGHT  MW(431:416) */
+  HT_EQ_U64(q[14], 13); /* CTA_RASTER_DEPTH   MW(463:448) */
+  HT_EQ_U64(q[18] >> 16, 9);            /* CTA_THREAD_DIMENSION0 MW(607:592) */
+  HT_EQ_U64(q[19] & 0xffff, 11);        /* CTA_THREAD_DIMENSION1 MW(623:608) */
+  HT_EQ_U64(q[19] >> 16, 7);            /* CTA_THREAD_DIMENSION2 MW(639:624) */
+  HT_EQ_U64(q[48], 0x00060000u);        /* PROGRAM_ADDRESS_LOWER MW(1567:1536) */
+  HT_EQ_U64(q[49] & 0x1ffff, 8);        /* PROGRAM_ADDRESS_UPPER MW(1584:1568) */
+  HT_EQ_U64(q[51] >> 24, 0x86);         /* SASS_VERSION          MW(1663:1656) */
+  HT_EQ_U64((q[18] >> 4) & 0xf, 3);     /* QMD_MAJOR_VERSION     MW(583:580) */
+
+  /* The SM shared-memory partition, encoded (kB/4)+1. Zero is not a legal
+   * configuration, which is why leaving these unset faults every launch. */
+  HT_EQ_U64((q[17] >> 18) & 0x3f, 5);   /* MIN    16 KB */
+  HT_EQ_U64((q[17] >> 25) & 0x3f, 26);  /* MAX   100 KB */
+  HT_EQ_U64((q[20] >> 17) & 0x3f, 5);   /* TARGET 16 KB */
+
+  /*
+   * WIDTHS, not just offsets. CTA_RASTER_HEIGHT is sixteen bits; a value that
+   * fits in sixteen must not disturb the upper half of its dword. Writing it as
+   * a 32-bit field passes every check above and fails this one.
+   */
+  hermes_qmd_build(q, 0x800060000ull, 0, 1, 0xffffu, 1, 1, 1, 1);
+  HT_EQ_U64(q[13] & 0xffff, 0xffffu);
+  HT_EQ_U64(q[13] >> 16, 0);
+  HT_END();
+}
+
 void ht_run(void) {
   printf("\nhermes — channels and submission\n");
   test_userd_offsets_match_dev_ram();
   test_doorbell_offset();
   test_method_encoding();
+  test_qmd_field_positions();
   test_gpu_executes_a_semaphore_release();
 }
