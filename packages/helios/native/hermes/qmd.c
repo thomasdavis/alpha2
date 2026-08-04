@@ -262,6 +262,33 @@ void hermes_launch_inline(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd) {
  * what NVK emits, so a fault that follows one and not the other says something,
  * and a fault that follows both says the descriptor rather than its delivery.
  */
+/*
+ * A barrier between dispatches, and it is NOT optional.
+ *
+ * Consecutive launches on one channel PIPELINE -- they do not serialise. The
+ * synchronous design hid that completely, because the host waited on a fence
+ * after every launch and the wait was the barrier. Batching two dependent
+ * kernels without this produced a copy-then-double that returned the copied
+ * value: the doubling read its input before the copy had written it, doubled
+ * zero, and then the copy landed on top. A plausible number, and the wrong one.
+ *
+ * WAIT_FOR_IDLE is the blunt instrument -- it drains the whole pipe rather than
+ * expressing which kernel depends on which -- and it is the right one here.
+ * What batching buys is removing the HOST round trip per launch, the doorbell
+ * and the fence spin; it was never going to buy overlap between kernels that
+ * read each other's output. Expressing real dependencies needs the QMD's
+ * dependent-launch fields, which is a larger change and wants a measurement
+ * saying the drain costs something.
+ *
+ * (clc7c0.h, NVC7C0_WAIT_FOR_IDLE)
+ */
+#define NVC7C0_WAIT_FOR_IDLE 0x0110
+
+void hermes_barrier(hermes_channel *c) {
+  hermes_method(c, 1, NVC7C0_WAIT_FOR_IDLE, 1);
+  hermes_data(c, 0);
+}
+
 void hermes_launch(hermes_channel *c, NvU64 qmdAddr) {
   hermes_method(c, 1, NVC7C0_SEND_PCAS_A, 1);
   hermes_data(c, (NvU32)(qmdAddr >> 8));

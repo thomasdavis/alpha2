@@ -153,6 +153,10 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  * `qmdAddr` is where the hardware stages the descriptor; it must be 256-byte
  * aligned GPU-visible memory.
  */
+/* Drain the compute pipe. Required between launches that share memory --
+ * dispatches on one channel pipeline and do not serialise on their own. */
+void hermes_barrier(hermes_channel *c);
+
 void hermes_launch_inline(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd);
 
 /* The PCAS launch: the descriptor is already in GPU memory at `qmdAddr` and the

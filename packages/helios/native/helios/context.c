@@ -15,6 +15,9 @@
 #define PROGRAM_BYTES 8192
 #define CODE_BYTES (PROGRAM_BYTES * HELIOS_RING_SLOTS)
 #define LAUNCH_TIMEOUT_NS 5000000000ull
+/* Dwords a queued launch may occupy, generously. Used only to decide when to
+ * drain before the pushbuffer wraps. */
+#define LAUNCH_DWORD_BUDGET 512
 
 #define FAIL(stage)                                                            \
   do {                                                                         \
@@ -125,6 +128,25 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   /* A full ring must drain before its oldest slot can be reused. */
   if (ctx->pending >= HELIOS_RING_SLOTS && helios_flush(ctx) != 0) return -1;
 
+  /*
+   * And so must a pushbuffer that is about to WRAP.
+   *
+   * hermes_begin resets pushOffset to zero when a segment would not fit at the
+   * end, which is safe when the GPU has consumed everything -- and it has, in
+   * the synchronous design, because the host just waited. Batching breaks that:
+   * a wrap in the middle of a batch overwrites segments that are queued and not
+   * yet fetched, and the channel stops making progress with no error. The
+   * two-launch test never saw it because two launches never reach the end.
+   *
+   * So drain before the wrap rather than after it. The budget is generous: a
+   * launch is a barrier plus a PCAS pair, well under this.
+   */
+  const NvU32 capacityDwords = (NvU32)(ctx->channel.pushbuffer.size / 4);
+  if (ctx->pending > 0 &&
+      ctx->channel.pushOffset + LAUNCH_DWORD_BUDGET > capacityDwords &&
+      helios_flush(ctx) != 0)
+    return -1;
+
   const unsigned slot = ctx->ringNext;
   volatile NvU8 *cb =
       (volatile NvU8 *)ctx->scratch.hostPtr + (size_t)slot * HERMES_CBUF0_BYTES;
@@ -162,6 +184,9 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
    * stores.
    */
   hermes_begin(&ctx->channel);
+  /* Drain before this launch if anything is already queued: the kernels in a
+   * batch routinely consume each other's output, and dispatches pipeline. */
+  if (ctx->pending > 0) hermes_barrier(&ctx->channel);
   hermes_launch(&ctx->channel, ctx->qmd.gpuAddr + (NvU64)slot * HERMES_QMD_BYTES);
   if (hermes_submit(&ctx->device, &ctx->channel) != 0) return -1;
   ctx->ringNext = (slot + 1) % HELIOS_RING_SLOTS;

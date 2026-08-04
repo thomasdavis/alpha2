@@ -34,19 +34,24 @@ static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
     if (addrs[i] == 0) return -1;
   }
   /*
-   * SYNCHRONOUS for now, deliberately.
+   * BATCHED: enqueue and let the caller flush.
    *
-   * The batching machinery below it -- a ring of constant banks, a QMD per
-   * slot, one fence for the whole batch -- is built and compiles, and switching
-   * this line to helios_enqueue turns it on. It is off because with it on the
-   * channel HANGS: the fence never lands. That is a real bug in how multiple
-   * segments reach the GPU, not a tuning question, and shipping a stack that
-   * deadlocks would be worse than shipping a slow one.
+   * Launches queue into one submission and the host waits once, instead of
+   * spinning on a fence per launch. A WAIT_FOR_IDLE between them is what makes
+   * that safe -- dispatches on one channel pipeline and do not serialise, which
+   * the synchronous design hid because its fence wait was the barrier.
    *
-   * This costs the throughput: every launch waits for its own fence, so a
-   * 150-operation step is 150 round trips and measures 88 tokens/second against
-   * Vulkan's 601 on the same box and the same config. The gap is almost
-   * entirely this, and closing it is the next real work.
+   * The caller flushes before reading device memory; in TypeScript that barrier
+   * sits on the tensor's  property rather than at call sites, because one
+   * missed read site is a bug with no symptom where it was caused.
+   */
+  /*
+   * SYNCHRONOUS. Switch this to helios_enqueue to turn batching on.
+   *
+   * It is off because at SCALE it still hangs, while the two-launch case now
+   * passes -- so what remains is something that only appears with many launches
+   * queued, and the pushbuffer wrap was one such thing and not the only one.
+   * Shipping a stack that deadlocks would be worse than shipping a slow one.
    */
   return helios_launch(ctx, p->code, p->count, p->gridX, p->blockX,
                        p->sharedBytes, addrs, nts, scalars, nscalars);
