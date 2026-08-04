@@ -224,6 +224,15 @@ the tuple element requires `1000506001`. The target RTX 3090 capture is pending;
 no TF32 shader, timing, or quality claim exists. Evidence:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X37-TF32-COOPERATIVE-MATRIX-CAPABILITY-GATE.md`.
 
+Static pre-encoding of the JavaScript packed-dispatch stream has also been
+measured and closed. X38 uses the exact 1,703-operation RTX 3090 trace field
+distribution and produces byte-identical output: reusable templates make the
+encoder 3.57x faster, but the absolute saving is only 228.36 microseconds, or
+0.0663% of the measured 344.55 ms host interval. Helios therefore does not gain
+a runtime template cache; the material host targets remain native Vulkan object
+lifecycle and command construction. Evidence:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X38-STATIC-PACKED-DISPATCH-ENCODING-REJECTION.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.

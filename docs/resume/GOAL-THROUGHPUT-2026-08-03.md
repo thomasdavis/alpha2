@@ -161,6 +161,14 @@ does not equate a float32 component type with proven TF32 behavior. It also
 corrects a hand-written Khronos ABI constant (`1000506002` to `1000506001`).
 The exact RTX 3090 tuple capture is still pending; no TF32, timing, or quality
 claim has been made.
+X38 also closes a tempting host-side partial-evaluation branch before it reaches
+production. On the exact field distribution of a preserved 1,703-operation RTX
+3090 trace, pre-encoding invariant packed-dispatch bytes and patching only
+handles/push constants is 3.57x faster than the current encoder, but saves only
+228.36 microseconds per complete traced step. That is 0.0663% of the measured
+344.55 ms host interval under the selected 12 GiB policy. Packed output parity
+passes, but no runtime cache is justified; native Vulkan object lifecycle and
+command construction remain the material targets.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
