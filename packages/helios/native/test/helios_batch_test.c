@@ -98,4 +98,88 @@ static void test_batched_launch(void) {
   HT_END();
 }
 
-void hl_batch_tests(void) { test_batched_launch(); }
+/*
+ * How many launches can share a submission before it breaks.
+ *
+ * Two work. A full training step does not. This walks the sizes between them
+ * and reports the largest that is CORRECT, which turns "it hangs at scale" into
+ * a number -- and a number is something the next change can be measured
+ * against.
+ *
+ * Each batch is a chain: every kernel doubles what the one before it wrote, so
+ * the answer after n launches is 2^n times the input. That makes the check
+ * sensitive to ORDER as well as to delivery -- a batch whose kernels ran out of
+ * sequence, or one where a launch was dropped, gives the wrong power of two
+ * rather than merely a wrong number.
+ */
+static void test_batch_depth(void) {
+  HT_CASE("how deep a batch can go and stay correct");
+
+  helios_context ctx;
+  if (helios_context_open(&ctx, 0) != 0) {
+    printf("skip (no NVIDIA driver)\n");
+    ht_case_failed = 0;
+    return;
+  }
+  helios_program_reset();
+
+  gaia_buffer buf;
+  memset(&buf, 0, sizeof buf);
+  if (gaia_alloc(&ctx.device, &buf, 4096, GAIA_SYSMEM) != 0 ||
+      gaia_map_gpu(&ctx.device, &buf) != 0 ||
+      gaia_map_host(&ctx.device, &buf) != 0) {
+    HT_FAIL("buffer");
+    helios_context_close(&ctx);
+    HT_END();
+    return;
+  }
+
+  const helios_key k = {HL_ELEMENTWISE, PR_EW_ADD, 64, 0};
+  const helios_program *p = helios_program_get(k);
+  HT_TRUE(p != NULL);
+
+  unsigned deepest = 0;
+  for (unsigned depth = 1; depth <= 32; depth *= 2) {
+    volatile NvU32 *h = (volatile NvU32 *)buf.hostPtr;
+    for (unsigned i = 0; i < 64; i++) {
+      const float one = 1.0f;
+      memcpy((void *)&h[i], &one, 4);
+    }
+
+    const NvU64 bufs[3] = {buf.gpuAddr, buf.gpuAddr, buf.gpuAddr};
+    int queued = 1;
+    for (unsigned i = 0; i < depth && queued; i++)
+      queued = helios_enqueue(&ctx, p->code, p->count, p->gridX, p->blockX,
+                              p->sharedBytes, bufs, 3, NULL, 0) == 0;
+    if (!queued || helios_flush(&ctx) != 0) {
+      printf("\n      depth %u: flush failed, channel error 0x%x", depth,
+             ctx.lastError);
+      break;
+    }
+
+    float got;
+    memcpy(&got, (const void *)&h[0], 4);
+    float want = 1.0f;
+    for (unsigned i = 0; i < depth; i++) want *= 2.0f;
+    if (got != want) {
+      printf("\n      depth %u: got %g want %g", depth, (double)got,
+             (double)want);
+      break;
+    }
+    deepest = depth;
+  }
+
+  printf("\n      deepest correct batch: %u  ", deepest);
+  /* Two is the floor: below that batching buys nothing and the earlier test
+   * already covers it. Anything more is progress toward the step. */
+  HT_TRUE(deepest >= 2);
+
+  gaia_free(&ctx.device, &buf);
+  helios_context_close(&ctx);
+  HT_END();
+}
+
+void hl_batch_tests(void) {
+  test_batched_launch();
+  test_batch_depth();
+}
