@@ -242,6 +242,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
     case "sum_sq_reduce_stride": spirv = kernelSumOfSquaresStride(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
+    case "max_abs_reduce": spirv = kernelMaxReduce(wgSize, true); break;
     case "softmax":   spirv = kernelSoftmax(wgSize); break;
     case "softmax_online": spirv = kernelSoftmaxOnline(wgSize); break;
     case "softmax_online_pcta": spirv = kernelSoftmaxOnlinePCTA(wgSize); break;

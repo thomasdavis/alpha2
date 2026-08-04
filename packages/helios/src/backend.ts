@@ -26,9 +26,18 @@ import {
   broadcastStrides,
 } from "@alpha/core";
 
+import { appendFileSync } from "node:fs";
+
 import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo } from "./device.js";
 import { getKernelSpirv } from "./kernels.js";
 import { loadStaticSlotPlan, type StaticSlotPlan } from "./static-slot-plan.js";
+import {
+  CoopF16x3BalancePlanRuntime,
+  coopF16x3GraphFingerprint,
+  loadCoopF16x3BalancePlan,
+  type CoopF16x3CalibrationEntry,
+  type CoopF16x3MatmulDescriptor,
+} from "./coop-balance-plan.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -171,11 +180,41 @@ if (COOP_F16X3_BALANCE_EXP !== 0 && !ENABLE_COOP_F16X3) {
   throw new Error("HELIOS_COOP_F16X3_BALANCE_EXP requires HELIOS_COOP_F16X3=1");
 }
 
-function coopF16x3BalanceSuffix(): string {
-  if (COOP_F16X3_BALANCE_EXP === 0) return "";
-  const sign = COOP_F16X3_BALANCE_EXP < 0 ? "n" : "p";
-  return `_be${sign}${Math.abs(COOP_F16X3_BALANCE_EXP)}`;
+function coopF16x3BalanceSuffix(exponent = COOP_F16X3_BALANCE_EXP): string {
+  if (exponent === 0) return "";
+  const sign = exponent < 0 ? "n" : "p";
+  return `_be${sign}${Math.abs(exponent)}`;
 }
+
+// X34: calibration is deliberately a bounded diagnostic.  It appends one
+// immutable JSONL record per observed step and is absent from the normal graph.
+// A compiled plan is separately fingerprinted and matched operation-by-operation.
+const COOP_F16X3_CHECKPOINT_FINGERPRINT =
+  process.env.HELIOS_COOP_F16X3_CHECKPOINT_FINGERPRINT?.trim().toLowerCase() ?? "";
+const COOP_F16X3_BALANCE_PLAN_PATH = process.env.HELIOS_COOP_F16X3_BALANCE_PLAN?.trim() ?? "";
+const COOP_F16X3_CALIBRATION_OUT = process.env.HELIOS_COOP_F16X3_CALIBRATION_OUT?.trim() ?? "";
+const COOP_F16X3_CALIBRATION_STEPS = Math.max(
+  1,
+  Number.parseInt(process.env.HELIOS_COOP_F16X3_CALIBRATION_STEPS ?? "1", 10) || 1,
+);
+if ((COOP_F16X3_BALANCE_PLAN_PATH || COOP_F16X3_CALIBRATION_OUT) && !ENABLE_COOP_F16X3) {
+  throw new Error("FP16x3 balance plans and calibration require HELIOS_COOP_F16X3=1");
+}
+if ((COOP_F16X3_BALANCE_PLAN_PATH || COOP_F16X3_CALIBRATION_OUT) &&
+    !/^[0-9a-f]{64}$/.test(COOP_F16X3_CHECKPOINT_FINGERPRINT)) {
+  throw new Error(
+    "HELIOS_COOP_F16X3_CHECKPOINT_FINGERPRINT must be the exact lowercase SHA-256 checkpoint fingerprint",
+  );
+}
+if (COOP_F16X3_BALANCE_PLAN_PATH && COOP_F16X3_BALANCE_EXP !== 0) {
+  throw new Error("HELIOS_COOP_F16X3_BALANCE_PLAN and HELIOS_COOP_F16X3_BALANCE_EXP are mutually exclusive");
+}
+if (COOP_F16X3_BALANCE_PLAN_PATH && COOP_F16X3_CALIBRATION_OUT) {
+  throw new Error("FP16x3 plan application and calibration are separate modes");
+}
+const COOP_F16X3_BALANCE_PLAN = COOP_F16X3_BALANCE_PLAN_PATH
+  ? loadCoopF16x3BalancePlan(COOP_F16X3_BALANCE_PLAN_PATH)
+  : null;
 
 function coopF16x3SharedBytes(
   coopM: number,
@@ -1932,6 +1971,17 @@ export class HeliosBackend implements Backend {
   private _coopShapeCounts = new Map<string, CoopMatmulStats["shapeCounts"][number]>();
   private _coopF16InputCache = new Map<TensorData, TensorData>();
   private _coopF16InputCacheLastFlushTimeline = -1;
+  private _coopF16x3BalancePlanRuntime = COOP_F16X3_BALANCE_PLAN
+    ? new CoopF16x3BalancePlanRuntime(COOP_F16X3_BALANCE_PLAN, COOP_F16X3_CHECKPOINT_FINGERPRINT)
+    : null;
+  private _coopF16x3CalibrationStep = 0;
+  private _coopF16x3CalibrationActive = false;
+  private _coopF16x3CalibrationScalars = new Map<TensorData, TensorData>();
+  private _coopF16x3CalibrationEntries: Array<{
+    descriptor: CoopF16x3MatmulDescriptor;
+    maxAbsA: TensorData;
+    maxAbsB: TensorData;
+  }> = [];
   private _matmulTileCache = new Map<string, MatmulTile>();
   private _matmulTileDecisions = new Map<string, MatmulTileAutotuneDecision>();
   private _matmulReg2x2WarningEmitted = false;
@@ -2383,9 +2433,106 @@ export class HeliosBackend implements Backend {
       this.purgeBufferPools();
     }
     graph.resetStepStats();
+    this._coopF16x3BalancePlanRuntime?.beginStep();
+    this._coopF16x3CalibrationStep++;
+    this._coopF16x3CalibrationActive =
+      COOP_F16X3_CALIBRATION_OUT.length > 0 &&
+      this._coopF16x3CalibrationStep <= COOP_F16X3_CALIBRATION_STEPS;
+    this._coopF16x3CalibrationScalars.clear();
+    this._coopF16x3CalibrationEntries = [];
   }
-  finishStepOps(): void { staticSlotRuntime?.finishStep(graph.opsThisStep); }
+  finishStepOps(): void {
+    staticSlotRuntime?.finishStep(graph.opsThisStep);
+    this._coopF16x3BalancePlanRuntime?.finishStep();
+    this.finishCoopF16x3CalibrationStep();
+  }
   getGpuStepStats(): GpuStepStats { return graph.getStepStats(); }
+
+  private coopF16x3Descriptor(
+    layout: "nn" | "tb" | "ta",
+    a: TensorData,
+    b: TensorData,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+  ): CoopF16x3MatmulDescriptor {
+    return {
+      layout,
+      M,
+      N,
+      K,
+      batchSize,
+      aShape: [...a.shape],
+      bShape: [...b.shape],
+      aDtype: a.dtype,
+      bDtype: b.dtype,
+    };
+  }
+
+  private coopF16x3MaxAbsScalar(tensor: TensorData): TensorData {
+    const existing = this._coopF16x3CalibrationScalars.get(tensor);
+    if (existing) return existing;
+    const scalar = this.gpuReduceMaxAbs(tensor);
+    this._coopF16x3CalibrationScalars.set(tensor, scalar);
+    return scalar;
+  }
+
+  private coopF16x3BalanceExponent(
+    descriptor: CoopF16x3MatmulDescriptor,
+    a: TensorData,
+    b: TensorData,
+  ): number {
+    if (this._coopF16x3CalibrationActive) {
+      this._coopF16x3CalibrationEntries.push({
+        descriptor,
+        maxAbsA: this.coopF16x3MaxAbsScalar(a),
+        maxAbsB: this.coopF16x3MaxAbsScalar(b),
+      });
+    }
+    return this._coopF16x3BalancePlanRuntime?.exponentFor(descriptor) ?? COOP_F16X3_BALANCE_EXP;
+  }
+
+  private finishCoopF16x3CalibrationStep(): void {
+    if (!this._coopF16x3CalibrationActive) return;
+    if (this._coopF16x3CalibrationEntries.length === 0) {
+      throw new Error("FP16x3 calibration observed no cooperative matmuls in the training step");
+    }
+
+    const valueByScalar = new Map<TensorData, number>();
+    try {
+      // The trainer has already flushed the training graph at this boundary.
+      // The first access is therefore the only possible completion wait; each
+      // subsequent scalar is a tiny read from an already completed timeline.
+      for (const scalar of this._coopF16x3CalibrationScalars.values()) {
+        const value = Number(scalar.data[0]);
+        if (!Number.isFinite(value) || value < 0) {
+          throw new Error(`FP16x3 calibration found a non-finite operand (maxAbs=${String(value)})`);
+        }
+        valueByScalar.set(scalar, value);
+      }
+      const entries: CoopF16x3CalibrationEntry[] = this._coopF16x3CalibrationEntries.map((entry, ordinal) => ({
+        ordinal,
+        descriptor: entry.descriptor,
+        maxAbsA: valueByScalar.get(entry.maxAbsA)!,
+        maxAbsB: valueByScalar.get(entry.maxAbsB)!,
+      }));
+      const record = {
+        schemaVersion: 1 as const,
+        kind: "helios-coop-f16x3-calibration" as const,
+        checkpointFingerprint: COOP_F16X3_CHECKPOINT_FINGERPRINT,
+        createdAt: new Date().toISOString(),
+        graphFingerprint: coopF16x3GraphFingerprint(entries.map((entry) => entry.descriptor)),
+        entries,
+      };
+      appendFileSync(COOP_F16X3_CALIBRATION_OUT, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
+    } finally {
+      for (const scalar of this._coopF16x3CalibrationScalars.values()) this.releaseGpuTensor(scalar);
+      this._coopF16x3CalibrationScalars.clear();
+      this._coopF16x3CalibrationEntries = [];
+      this._coopF16x3CalibrationActive = false;
+    }
+  }
 
   // ── GPU binary ops ──────────────────────────────────────────────────────
 
@@ -2731,6 +2878,47 @@ export class HeliosBackend implements Backend {
 
     const outShape = keepdims ? a.shape.map(() => 1) : [];
     return graphLazyTensor(vk, outShape, finalRegion);
+  }
+
+  /**
+   * Calibration-only maximum absolute value reduction. Non-finite input is
+   * converted to +Inf by the shader so the host-side gate fails closed.
+   * This method is intentionally not part of Backend: ordinary training must
+   * not acquire a permanent whole-tensor pass for FP16x3 balancing.
+   */
+  private gpuReduceMaxAbs(a: TensorData): TensorData {
+    const vk = this.init();
+    const totalSize = shapeSize(a.shape);
+    if (totalSize < 2) throw new Error("FP16x3 calibration requires a non-scalar matmul operand");
+    const pipeline = getPipeline(vk, "max_abs_reduce", 2);
+
+    let inputBuf = ensureGpu(vk, a);
+    let remaining = totalSize;
+    let finalRegion: OutputRegion | null = null;
+
+    while (remaining > 1) {
+      const numGroups = Math.ceil(remaining / WG_SIZE);
+      const region = acquireOutputRegion(vk, numGroups * 4);
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "max_abs_reduce",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [numGroups, 1, 1],
+        push: push2Memo(remaining, 0),
+        pushSize: PUSH_SIZE,
+        shape: numGroups === 1 ? [] : [numGroups],
+        allBufs: [inputBuf, region.handle],
+      });
+      if (finalRegion) graph.deferRelease(finalRegion);
+      inputBuf = region.handle;
+      finalRegion = region;
+      remaining = numGroups;
+    }
+
+    if (!finalRegion) throw new Error("FP16x3 max-absolute reduction produced no output");
+    return graphLazyTensor(vk, [], finalRegion);
   }
 
   private gpuSumAxis(a: TensorData, axis: number, keepdims: boolean): TensorData {
@@ -4749,6 +4937,14 @@ export class HeliosBackend implements Backend {
   ): TensorData {
     const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
       a.dtype === "f32" && b.dtype === "f32";
+    const balanceExponent = useFp16x3 &&
+      (this._coopF16x3BalancePlanRuntime !== null || this._coopF16x3CalibrationActive)
+      ? this.coopF16x3BalanceExponent(
+          this.coopF16x3Descriptor(transposed ? "tb" : "nn", a, b, M, N, K, batchSize),
+          a,
+          b,
+        )
+      : COOP_F16X3_BALANCE_EXP;
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -4924,7 +5120,7 @@ export class HeliosBackend implements Backend {
 
     const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
-    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix()}` : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix(balanceExponent)}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
@@ -5046,6 +5242,14 @@ export class HeliosBackend implements Backend {
   ): TensorData {
     const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
       a.dtype === "f32" && b.dtype === "f32";
+    const balanceExponent = useFp16x3 &&
+      (this._coopF16x3BalancePlanRuntime !== null || this._coopF16x3CalibrationActive)
+      ? this.coopF16x3BalanceExponent(
+          this.coopF16x3Descriptor("ta", a, b, outM, N, loopK, batchSize),
+          a,
+          b,
+        )
+      : COOP_F16X3_BALANCE_EXP;
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -5194,7 +5398,7 @@ export class HeliosBackend implements Backend {
     const skPrefix = useSplitK ? "splitk_" : "";
     const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
-    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix()}` : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix(balanceExponent)}` : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +

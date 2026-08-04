@@ -16,6 +16,17 @@ export { HeliosBackend, type GpuDeviceInfo } from "./backend.js";
 export { initDevice, destroyDevice, getDeviceInfo, getNative, type NativeAddon, type NativeDeviceInfo } from "./device.js";
 export { SpirVBuilder } from "./spirv.js";
 export { getKernelSpirv } from "./kernels.js";
+export {
+  CoopF16x3BalancePlanRuntime,
+  canonicalCoopF16x3Descriptor,
+  compileCoopF16x3BalancePlan,
+  coopF16x3GraphFingerprint,
+  loadCoopF16x3BalancePlan,
+  parseCoopF16x3CalibrationJsonl,
+  type CoopF16x3BalancePlan,
+  type CoopF16x3CalibrationRecord,
+  type CoopF16x3MatmulDescriptor,
+} from "./coop-balance-plan.js";
 
 // Re-export types from core
 export type { Backend, TensorData, Dtype, Shape } from "@alpha/core";

@@ -198,7 +198,7 @@ export function kernelSumReduce(wgSize = 256): Uint32Array {
  * Max reduction kernel (same structure as sum, but uses FMax instead of FAdd).
  * Identity element: -inf (instead of 0).
  */
-export function kernelMaxReduce(wgSize = 256): Uint32Array {
+export function kernelMaxReduce(wgSize = 256, absolute = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
@@ -210,6 +210,11 @@ export function kernelMaxReduce(wgSize = 256): Uint32Array {
   const constNegInf = b.id();
   // IEEE 754: -infinity = 0xFF800000
   b.constant(p.tF32, constNegInf, 0xFF800000);
+  const constPosInf = b.id();
+  // IEEE 754: +infinity = 0x7F800000.  The max-absolute calibration variant
+  // maps every NaN/Inf input to +Inf so a non-finite operand cannot be hidden
+  // by GLSL FMax's implementation-defined NaN choice.
+  b.constant(p.tF32, constPosInf, 0x7F800000);
 
   // Shared memory
   const constWgSize = b.id();
@@ -281,6 +286,19 @@ export function kernelMaxReduce(wgSize = 256): Uint32Array {
   b.emit(Op.AccessChain, [bufA.tPtrF32, ptrA, bufA.varId, p.const0u, gidX]);
   const loadedVal = b.id();
   b.emit(Op.Load, [p.tF32, loadedVal, ptrA]);
+  let reducedVal = loadedVal;
+  if (absolute) {
+    const absVal = b.id();
+    b.emit(Op.ExtInst, [p.tF32, absVal, p.glslStd, GLSLstd450.FAbs, loadedVal]);
+    const isNan = b.id();
+    b.emit(Op.IsNan, [p.tBool, isNan, loadedVal]);
+    const isInf = b.id();
+    b.emit(Op.IsInf, [p.tBool, isInf, loadedVal]);
+    const isNotFinite = b.id();
+    b.emit(Op.LogicalOr, [p.tBool, isNotFinite, isNan, isInf]);
+    reducedVal = b.id();
+    b.emit(Op.Select, [p.tF32, reducedVal, isNotFinite, constPosInf, absVal]);
+  }
   b.emit(Op.Branch, [labelAfterLoad]);
 
   b.emit(Op.Label, [labelOOB]);
@@ -288,7 +306,7 @@ export function kernelMaxReduce(wgSize = 256): Uint32Array {
 
   b.emit(Op.Label, [labelAfterLoad]);
   const val = b.id();
-  b.emit(Op.Phi, [p.tF32, val, loadedVal, labelLoad, constNegInf, labelOOB]);
+  b.emit(Op.Phi, [p.tF32, val, reducedVal, labelLoad, constNegInf, labelOOB]);
 
   // Store to shared memory
   const ptrSharedLocal = b.id();
