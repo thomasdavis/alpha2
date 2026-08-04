@@ -134,10 +134,10 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
             ((PROGRAM_PREFETCH_SIZE & 0x1ffu) << 9) |
             (NvU32)(((program >> 8) >> 32) & 0x1ffu);
 
-  set_addr_pair(qmd, 24, scratch + 0x0000, 0x4080);
-  set_addr_pair(qmd, 32, scratch + 0x1000, 0x0c84);
-  set_addr_pair(qmd, 34, scratch + 0x2000, 0x0480);
-  set_addr_pair(qmd, 46, scratch + 0x3000, 0x8000);
+  set_addr_pair(qmd, 24, scratch + 0 * HERMES_QMD_SCRATCH_STRIDE, 0x4080);
+  set_addr_pair(qmd, 32, scratch + 1 * HERMES_QMD_SCRATCH_STRIDE, 0x0c84);
+  set_addr_pair(qmd, 34, scratch + 2 * HERMES_QMD_SCRATCH_STRIDE, 0x0480);
+  set_addr_pair(qmd, 46, scratch + 3 * HERMES_QMD_SCRATCH_STRIDE, 0x8000);
 
   /* Two representations of the same address, both present in every capture:
    * a full 64-bit pair and a shifted-by-8 copy. Setting only one is the kind of

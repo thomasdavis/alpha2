@@ -26,6 +26,7 @@
 #include "../hermes/pushbuffer.h"
 #include "../hermes/qmd.h"
 
+#include <stdlib.h>
 #include <time.h>
 
 /* Captured from ptxas -arch=sm_86, via nvdisasm -c -hex. */
@@ -235,7 +236,7 @@ static void test_gpu_runs_our_machine_code(void) {
       (rc = gaia_map_gpu(&d, &qmdbuf)) != 0) {
     HT_FAIL("qmd buffer: %s", aether_status_name((unsigned)rc)); goto done;
   }
-  if ((rc = gaia_alloc(&d, &scratch, 64 * 1024, GAIA_VIDMEM)) != 0 ||
+  if ((rc = gaia_alloc(&d, &scratch, HERMES_QMD_SCRATCH_BYTES, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &scratch)) != 0) {
     HT_FAIL("qmd scratch: %s", aether_status_name((unsigned)rc)); goto done;
   }
@@ -250,33 +251,21 @@ static void test_gpu_runs_our_machine_code(void) {
 
   {
     /*
-     * BYTES FROM ptxas, not from Hephaestus -- deliberately, as a control.
+     * Back to our own SASS, and deliberately a kernel that reads NO constant
+     * bank -- the address is an immediate. Paired with CONSTANT_BUFFER_VALID
+     * cleared in the QMD, that removes three address pairs and the whole
+     * constant-bank configuration from the set of things that can be wrong.
      *
-     * Every attempt so far has ended in GR_EXCEPTION, and two explanations
-     * remained: our launch configuration is wrong, or our instruction stream
-     * is. Running a kernel the vendor compiler produced separates them
-     * absolutely. If these bytes run, the launch path is correct and the
-     * problem is Hephaestus; if they fault, Hephaestus is exonerated a second
-     * time and the launch path still has something missing.
-     *
-     * This is `__global__ void k() {}` at sm_86, from cuobjdump:
-     *
-     *   MOV R1, c[0x0][0x28]     the stack pointer, from constant bank 0
-     *   EXIT
-     *   BRA 0x20                 self-loop, the compiler's landing pad
-     *   NOP x N
-     *
-     * Note the prologue: even an EMPTY kernel loads R1 from c[0x0][0x28]. A
-     * bare EXIT, which is what we were emitting, is not what the hardware is
-     * ever given.
+     * (The ptxas control kernel cannot be used with banks off: even an empty
+     * CUDA kernel opens with MOV R1, c[0x0][0x28].)
      */
-    static const uint64_t REAL[] = {
-        0x00000a0000017a02ull, 0x000fe40000000f00ull, /* MOV R1, c[0x0][0x28] */
-        0x000000000000794dull, 0x000fea0003800000ull, /* EXIT */
-        0xfffffff000007947ull, 0x000fc0000383ffffull, /* BRA self */
-    };
-    hp_word prog[3];
-    memcpy(prog, REAL, sizeof REAL);
+    hp_word prog[5];
+    prog[0] = hp_mov_imm(0, (uint32_t)(out.gpuAddr & 0xffffffffu), hp_ctrl_safe());
+    prog[1] = hp_mov_imm(1, (uint32_t)(out.gpuAddr >> 32), hp_ctrl_safe());
+    prog[2] = hp_mov_imm(2, KERNEL_MAGIC, hp_ctrl_safe());
+    prog[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
+    prog[4] = hp_exit(hp_ctrl_safe());
+
     /*
      * Pad with EXIT rather than zeroing.
      *
@@ -297,6 +286,7 @@ static void test_gpu_runs_our_machine_code(void) {
   {
     NvU32 qmd[HERMES_QMD_DWORDS];
     hermes_qmd_build(qmd, code.gpuAddr, scratch.gpuAddr, 1, 1, 1, 1, 1, 1);
+    if (getenv("HELIOS_NO_CBANK")) qmd[20] &= ~0xffu; /* CONSTANT_BUFFER_VALID */
 
     hermes_begin(&c);
     hermes_compute_config cfg;
@@ -309,7 +299,10 @@ static void test_gpu_runs_our_machine_code(void) {
     cfg.localMemSize = lmem.size;
     cfg.smCount = 46; /* RTX 3070 */
     hermes_compute_init(&c, 1, &cfg);
-    hermes_launch(&c, qmdbuf.gpuAddr, qmd);
+    /* PROBE: skip the launch. If the fence lands, compute_init is clean and the
+     * launch is what faults; if it does not, one of the init methods is itself
+     * the problem -- several were added on reasoning rather than evidence. */
+    if (!getenv("HELIOS_SKIP_LAUNCH")) hermes_launch(&c, qmdbuf.gpuAddr, qmd);
     hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
     hermes_submit(&d, &c);
 

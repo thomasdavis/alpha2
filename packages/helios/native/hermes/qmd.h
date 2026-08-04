@@ -68,14 +68,22 @@
  * `scratch` backs the four address pairs the descriptor carries. Even a kernel
  * with no parameters and no shared memory has all four set in a real capture,
  * so they are not optional -- but the captured VALUES are pointers into the
- * traced process and must be replaced, not copied. Four 4 KiB regions are taken
- * from `scratch`, which must therefore be at least 16 KiB and GPU-visible.
+ * traced process and must be replaced, not copied.
+ *
+ * THE REGIONS ARE 64 KiB APART, not 4 KiB, because the descriptor also declares
+ * each bank's SIZE and those sizes must fit. Decoding the captured attribute
+ * words through CONSTANT_BUFFER_SIZE_SHIFTED4 gives 6400 bytes for bank 0, 2304
+ * for bank 1 and 65536 for bank 7 — so packing them 4 KiB apart in a 64 KiB
+ * buffer had bank 7 claiming memory that ran off the end of the allocation. The
+ * sizes were being copied from the capture while the layout was invented, which
+ * is a combination that cannot be right.
  */
 void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
                       NvU32 blockZ);
 
-#define HERMES_QMD_SCRATCH_BYTES (16 * 1024)
+#define HERMES_QMD_SCRATCH_BYTES (256 * 1024)
+#define HERMES_QMD_SCRATCH_STRIDE (64 * 1024)
 
 /*
  * Emit the launch into the channel's pushbuffer.

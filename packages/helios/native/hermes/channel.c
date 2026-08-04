@@ -88,6 +88,10 @@ typedef struct {
 /* Control commands. ctrla06c.h, ctrlc36f.h, ctrl906f.h. */
 #define NVA06C_CTRL_CMD_GPFIFO_SCHEDULE 0xa06c0101
 #define NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN 0xc36f0108
+
+/* ctrl2080gr.h. The only STATE-CHANGING GR control a CUDA process issues --
+ * everything else in the 0x2080_12xx range it touches is a GET_*. */
+#define NV2080_CTRL_CMD_GR_SET_CTXSW_PREEMPTION_MODE 0x20801210
 #define NV906F_CTRL_GET_CLASS_ENGINEID 0x906f0101
 
 /* nvos.h, NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT (1:0) */
@@ -250,6 +254,38 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
     struct { NvU8 bEnable, bSkipSubmit, bSkipEnable; } sched = { 1, 0, 0 };
     if ((rc = aether_control(d, c->group, NVA06C_CTRL_CMD_GPFIFO_SCHEDULE,
                              &sched, sizeof sched)) != 0) FAIL("group SCHEDULE");
+  }
+
+  /*
+   * Compute-instruction-level preemption mode.
+   *
+   * Issued on the SUBDEVICE, naming the channel GROUP -- not the channel. A
+   * CUDA process calls this exactly once per group with
+   *   flags = CILP_SET(1), hChannel = <the TSG>, gfxp = 0, cilp = 2
+   * and nothing else in the GR control range changes state.
+   *
+   * PROVENANCE: read out of an ioctl trace; the params struct is
+   * NV2080_CTRL_GR_SET_CTXSW_PREEMPTION_MODE_PARAMS, 32 bytes including a
+   * 16-byte grRouteInfo the trace leaves zero.
+   */
+  {
+    struct {
+      NvU32 flags;
+      NvHandle hChannel;
+      NvU32 gfxpPreemptMode;
+      NvU32 cilpPreemptMode;
+      NvU32 routeFlags;
+      NvU32 pad;
+      NvU64 route __attribute__((aligned(8)));
+    } pm;
+    memset(&pm, 0, sizeof pm);
+    pm.flags = 1;              /* FLAGS_CILP_SET */
+    pm.hChannel = c->group;    /* the TSG, not the channel */
+    pm.cilpPreemptMode = 2;    /* as observed */
+    if ((rc = aether_control(d, d->subdevice,
+                             NV2080_CTRL_CMD_GR_SET_CTXSW_PREEMPTION_MODE, &pm,
+                             sizeof pm)) != 0)
+      FAIL("SET_CTXSW_PREEMPTION_MODE");
   }
 
   /*

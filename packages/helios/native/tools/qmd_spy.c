@@ -315,7 +315,7 @@ static int scan_once(void) {
         const uint32_t m = (h & 0xfffu) * 4;
         const int nd = data_words(op, cnt);
         if (nd < 0 || k + 1 + (uint32_t)nd > len) break;
-        if (m == 0x0318 || m == 0x0320 || m == 0x02b4) { has_launch = 1; break; }
+        if (m == 0x0700 || m == 0x0418 || m == 0x0400) { has_launch = 1; break; }
         k += 1 + (uint32_t)nd;
       }
       seen++;
