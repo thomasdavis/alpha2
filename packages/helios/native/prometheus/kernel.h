@@ -32,10 +32,21 @@
  * enough that a checker can walk the whole output. */
 #define PR_N 64
 
-/* Upper bound on the instructions any kernel emits, so a caller can size a
- * buffer without knowing which kernel it is about to build. Deliberately
- * generous; the cost of being wrong is a stack overwrite. */
-#define PR_MAX_INSTRUCTIONS 64
+/*
+ * Upper bound on the instructions any kernel emits, so a caller can size a
+ * buffer without knowing which kernel it is about to build.
+ *
+ * 64 was not enough and the way it failed is the point: softmax reduces twice,
+ * each tree is six unrolled steps of six instructions, and the builder wrote
+ * straight past the end of the caller's array. The well-formedness test checked
+ * `count <= PR_MAX_INSTRUCTIONS` -- AFTER the builder had already overrun -- so
+ * the check could not catch the thing it existed to catch, and the failure
+ * arrived as a stack smash instead of a message.
+ *
+ * The bound is now generous, and the test allocates twice it with a sentinel
+ * behind, so an overrun is DETECTED rather than fatal.
+ */
+#define PR_MAX_INSTRUCTIONS 256
 
 typedef struct {
   const char *name;

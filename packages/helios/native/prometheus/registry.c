@@ -16,6 +16,7 @@
  * checked exactly. A blanket tolerance would hide real bugs in the exact ops.
  */
 #include "elementwise.h"
+#include "normalize.h"
 #include "reduction.h"
 
 #include <math.h>
@@ -232,6 +233,49 @@ static const char *chk_mean(const volatile NvU32 *o) {
   return g_msg;
 }
 
+/* rmsNorm and softmax both go through MUFU, so both get a tolerance. Softmax
+ * additionally sums in tree order, so its denominator differs from a host loop
+ * in the last bits. */
+#define RMS_EPS 1e-5f
+static const char *chk_rms(const volatile NvU32 *o) {
+  float ss = 0;
+  for (unsigned i = 0; i < PR_N; i++) ss += in_signed(i) * in_signed(i);
+  const float inv = 1.0f / sqrtf(ss / (float)PR_N + RMS_EPS);
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float want = in_signed(i) * inv, got = pr_u2f(o[i]);
+    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
+      snprintf(g_msg, sizeof g_msg, "rms: o[%u]=%g want %g", i, (double)got,
+               (double)want);
+      return g_msg;
+    }
+  }
+  return NULL;
+}
+
+static const char *chk_softmax(const volatile NvU32 *o) {
+  float mx = in_signed(0), sum = 0, total = 0;
+  for (unsigned i = 0; i < PR_N; i++)
+    if (in_signed(i) > mx) mx = in_signed(i);
+  for (unsigned i = 0; i < PR_N; i++) sum += expf(in_signed(i) - mx);
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float want = expf(in_signed(i) - mx) / sum, got = pr_u2f(o[i]);
+    total += got;
+    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
+      snprintf(g_msg, sizeof g_msg, "softmax: o[%u]=%g want %g", i, (double)got,
+               (double)want);
+      return g_msg;
+    }
+  }
+  /* And it must be a distribution. A per-element check can pass while the
+   * whole thing is scaled wrong only if every element is wrong by the same
+   * factor, which this catches. */
+  if (fabsf(total - 1.0f) > 1e-4f) {
+    snprintf(g_msg, sizeof g_msg, "softmax: sums to %g", (double)total);
+    return g_msg;
+  }
+  return NULL;
+}
+
 UCHECK(silu, in_signed, x / (1.0f + expf(-x)))
 UCHECK(exp, in_pos, expf(x))
 UCHECK(logn, in_pos, logf(x))
@@ -281,6 +325,14 @@ EW(silu, PR_EW_SILU)
 static unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
   return pr_emit_reduction(p, PR_RED_SUM, PR_N);
+}
+static unsigned bld_rms(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_normalize(p, PR_NORM_RMS, PR_N);
+}
+static unsigned bld_softmax(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_normalize(p, PR_NORM_SOFTMAX, PR_N);
 }
 static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
@@ -386,6 +438,14 @@ static const pr_kernel KERNELS[] = {
     K(.name = "reduce mean", .build = bld_mean, .fill = fill_pos,
       .check = chk_mean, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4, .scalar = 1.0f / (float)PR_N),
+
+    /* Normalisation: a reduction whose result every thread reads back. */
+    K(.name = "rmsNorm", .build = bld_rms, .fill = fill_signed,
+      .check = chk_rms, .blockX = PR_N, .gridX = 1, .sharedBytes = PR_N * 4,
+      .scalar = 1.0f / (float)PR_N, .scalar2 = RMS_EPS),
+    K(.name = "softmax", .build = bld_softmax, .fill = fill_signed,
+      .check = chk_softmax, .blockX = PR_N, .gridX = 1,
+      .sharedBytes = PR_N * 4, .scalar = LOG2_E),
 };
 
 

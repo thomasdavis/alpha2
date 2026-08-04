@@ -31,4 +31,24 @@ typedef enum {
  * width: every thread contributes exactly one element. */
 unsigned pr_emit_reduction(hp_word *prog, pr_red_op op, unsigned elements);
 
+/* How a tree step combines two values. */
+typedef enum {
+  PR_COMBINE_ADD,
+  PR_COMBINE_MAX,
+} pr_combine;
+
+/*
+ * The tree itself, exposed so normalisation can reuse it.
+ *
+ * Assumes every thread has already written its contribution to shared memory at
+ * its own index and that a barrier has followed. Leaves the result in slot 0,
+ * with a barrier after the final step, so every thread may then read it.
+ *
+ * `tid` is the register holding the thread index; the caller owns register
+ * assignment and passes in three scratch registers, because a normalisation
+ * kernel has live values a reduction does not and cannot have them clobbered.
+ */
+unsigned pr_emit_tree(hp_word *prog, unsigned elements, pr_combine how,
+                      unsigned tid, unsigned lhs, unsigned rhs);
+
 #endif /* HELIOS_PROMETHEUS_REDUCTION_H */

@@ -228,10 +228,24 @@ static void test_registry_is_wellformed(void) {
      * would be comparing against memory no thread ever wrote. */
     HT_EQ_U64(k->blockX * k->gridX, PR_N);
 
-    /* And the builder must fit the buffer the runner gives it. */
-    hp_word prog[PR_MAX_INSTRUCTIONS];
+    /*
+     * And the builder must fit the buffer the runner gives it.
+     *
+     * Twice the bound, with a sentinel in the upper half: checking the returned
+     * count alone happens after the damage, so it cannot catch an overrun. This
+     * can.
+     */
+    hp_word prog[PR_MAX_INSTRUCTIONS * 2];
+    const hp_word sentinel = {0xdeadbeefcafef00dull, 0x0123456789abcdefull};
+    for (unsigned s = PR_MAX_INSTRUCTIONS; s < PR_MAX_INSTRUCTIONS * 2; s++)
+      prog[s] = sentinel;
     const unsigned count = k->build(prog, 0x1000, 0x2000);
     HT_TRUE(count > 0 && count <= PR_MAX_INSTRUCTIONS);
+    for (unsigned s = PR_MAX_INSTRUCTIONS; s < PR_MAX_INSTRUCTIONS * 2; s++)
+      if (!hp_word_eq(prog[s], sentinel)) {
+        HT_FAIL("%s overran its instruction buffer", k->name);
+        break;
+      }
   }
   HT_END();
 }

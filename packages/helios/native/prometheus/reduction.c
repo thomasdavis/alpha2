@@ -32,17 +32,29 @@ enum {
  * thread can read a neighbour's slot before that neighbour has written it, and
  * the result is a sum that is wrong by an amount that varies per run.
  */
-static unsigned emit_step(hp_word *p, unsigned stride) {
+static unsigned emit_step(hp_word *p, unsigned stride, pr_combine how,
+                          unsigned tid, unsigned lhs, unsigned rhs) {
   unsigned n = 0;
-  p[n++] = hp_isetp_gt_imm(P_INACTIVE, R_TID, stride - 1, hp_ctrl_safe());
-  p[n++] = hp_predicated(hp_lds(R_LHS, R_TID, 0, hp_ctrl_setbar(BAR_LDS)),
+  p[n++] = hp_isetp_gt_imm(P_INACTIVE, tid, stride - 1, hp_ctrl_safe());
+  p[n++] = hp_predicated(hp_lds(lhs, tid, 0, hp_ctrl_setbar(BAR_LDS)),
+                         P_INACTIVE, 1);
+  p[n++] = hp_predicated(hp_lds(rhs, tid, stride * 4, hp_ctrl_setbar(BAR_LDS)),
                          P_INACTIVE, 1);
   p[n++] = hp_predicated(
-      hp_lds(R_RHS, R_TID, stride * 4, hp_ctrl_setbar(BAR_LDS)), P_INACTIVE, 1);
-  p[n++] = hp_predicated(
-      hp_fadd(R_LHS, R_LHS, R_RHS, hp_ctrl_wait(BAR_LDS)), P_INACTIVE, 1);
-  p[n++] = hp_predicated(hp_sts(R_TID, R_LHS, 0, hp_ctrl_safe()), P_INACTIVE, 1);
+      how == PR_COMBINE_MAX
+          ? hp_fmnmx(lhs, lhs, rhs, 1, hp_ctrl_wait(BAR_LDS))
+          : hp_fadd(lhs, lhs, rhs, hp_ctrl_wait(BAR_LDS)),
+      P_INACTIVE, 1);
+  p[n++] = hp_predicated(hp_sts(tid, lhs, 0, hp_ctrl_safe()), P_INACTIVE, 1);
   p[n++] = hp_bar_sync(hp_ctrl_safe());
+  return n;
+}
+
+unsigned pr_emit_tree(hp_word *p, unsigned elements, pr_combine how,
+                      unsigned tid, unsigned lhs, unsigned rhs) {
+  unsigned n = 0;
+  for (unsigned stride = elements / 2; stride >= 1; stride >>= 1)
+    n += emit_step(&p[n], stride, how, tid, lhs, rhs);
   return n;
 }
 
@@ -61,8 +73,7 @@ unsigned pr_emit_reduction(hp_word *p, pr_red_op op, unsigned elements) {
   p[n++] = hp_bar_sync(hp_ctrl_safe());
 
   /* The tree, unrolled. Halving from elements/2 down to 1. */
-  for (unsigned stride = elements / 2; stride >= 1; stride >>= 1)
-    n += emit_step(&p[n], stride);
+  n += pr_emit_tree(&p[n], elements, PR_COMBINE_ADD, R_TID, R_LHS, R_RHS);
 
   /*
    * Thread 0 alone writes the answer.
