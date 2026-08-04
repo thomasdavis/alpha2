@@ -13,7 +13,7 @@ import {
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   sliceQkv, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
-  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, checkpoint,
+  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, qkvFlashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
 
@@ -327,11 +327,33 @@ function transformerBlock(
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
+  const combinedQkvFlash = ropeOn
+    && !!ctx.backend.flashAttention
+    && !!ctx.backend.flashAttentionBackward
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackwardCombined;
   const fusedQkvLayout = ropeOn
     && !!ctx.backend.flashAttention
     && !!ctx.backend.qkvHeadMajorRope
     && !!ctx.backend.qkvHeadMajorRopeBackward;
-  if (fusedQkvLayout) {
+  if (combinedQkvFlash) {
+    // Record the layout/RoPE boundary and flash attention as one autograd
+    // operation. Its backward consumes dQ/dK/dV together and writes the
+    // complete grouped QKV gradient once, avoiding three zero-padded branch
+    // tensors plus two full-width tape additions.
+    const attnOut = qkvFlashAttention(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+      1 / Math.sqrt(headDim),
+      useSoftCap ? softCapVal! : 0,
+    );
+    attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
+  } else if (fusedQkvLayout) {
     // The QKV projection is token-major [B*T,3*H*D], whereas flash attention
     // consumes head-major [B*H,T,D]. Cross that boundary once and rotate Q/K
     // in the same dispatch instead of materialising slice, transpose, and RoPE

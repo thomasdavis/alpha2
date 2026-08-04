@@ -18,4 +18,11 @@ describe("fused QKV head-major RoPE kernels", () => {
     expect(words[0]).toBe(SPIRV_MAGIC);
     expect(words.length).toBeGreaterThan(5);
   });
+
+  it.each([32, 64, 128, 256] as const)("generates combined-backward SPIR-V at workgroup size %i", (wgSize) => {
+    const words = getKernelSpirv("qkv_head_major_rope_backward_combined", wgSize);
+    expect(words).toBeInstanceOf(Uint32Array);
+    expect(words[0]).toBe(SPIRV_MAGIC);
+    expect(words.length).toBeGreaterThan(5);
+  });
 });

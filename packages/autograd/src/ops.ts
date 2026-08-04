@@ -1379,6 +1379,97 @@ export function flashAttention(
   }, cleanup);
 }
 
+/**
+ * One-tape-entry form of grouped-QKV layout/RoPE followed by flash attention.
+ * Forward still uses the backend's two exact physical operations. Backward can
+ * consume dQ, dK, and dV together and write the complete grouped QKV gradient
+ * once, avoiding three zero-padded branch tensors and their accumulation.
+ */
+export function qkvFlashAttention(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+  scaleValue: number,
+  softCapValue: number,
+): Variable {
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope
+    || !B.qkvHeadMajorRopeBackwardCombined
+    || !B.flashAttention
+    || !B.flashAttentionBackward) {
+    const [q, k, v] = qkvHeadMajorRope(
+      ctx, qkv, batch, sequence, heads, headDim, theta,
+    );
+    return flashAttention(ctx, q, k, v, sequence, scaleValue, softCapValue);
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data, cos, sin, batch, sequence, heads, headDim,
+  );
+  const { output, lse } = B.flashAttention(
+    qData, kData, vData, sequence, scaleValue, softCapValue,
+  );
+  let qForBackward: TensorData | null = qData;
+  let kForBackward: TensorData | null = kData;
+  let vForBackward: TensorData | null = vData;
+  let lseForBackward: TensorData | null = lse;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (qForBackward) release(qForBackward);
+      if (kForBackward) release(kForBackward);
+      if (vForBackward) release(vForBackward);
+      if (lseForBackward) release(lseForBackward);
+    }
+    qForBackward = null;
+    kForBackward = null;
+    vForBackward = null;
+    lseForBackward = null;
+  };
+
+  return record(ctx, output, [qkv], (grad, backwardBackend, release) => {
+    if (!backwardBackend.flashAttentionBackward
+      || !backwardBackend.qkvHeadMajorRopeBackwardCombined) {
+      throw new Error("qkvFlashAttention backward hooks disappeared after forward");
+    }
+    if (!qForBackward || !kForBackward || !vForBackward || !lseForBackward) {
+      throw new Error("qkvFlashAttention backward state was released before use");
+    }
+    const { dQ, dK, dV } = backwardBackend.flashAttentionBackward(
+      qForBackward,
+      kForBackward,
+      vForBackward,
+      output,
+      grad,
+      lseForBackward,
+      sequence,
+      scaleValue,
+      softCapValue,
+    );
+    const grouped = backwardBackend.qkvHeadMajorRopeBackwardCombined(
+      dQ,
+      dK,
+      dV,
+      cos,
+      negSin,
+      batch,
+      sequence,
+      heads,
+      headDim,
+    );
+    if (release) {
+      release(dQ);
+      release(dK);
+      release(dV);
+    }
+    return [grouped];
+  }, cleanup);
+}
+
 // ── Slice ──────────────────────────────────────────────────────────────────
 
 /** Slice a tensor: out = a[starts:ends] along each dimension. */

@@ -79,6 +79,10 @@ const DISABLE_RESIDUAL_ADD_RMSNORM =
 // composes the established slice/transpose/rope kernels on the same backend.
 const DISABLE_QKV_HEAD_MAJOR_ROPE =
   process.env.HELIOS_DISABLE_QKV_HEAD_MAJOR_ROPE === "1";
+// Matched-control switch for collapsing three zero-padded QKV branch gradients
+// and their two grouped additions into one complete inverse-layout write.
+const DISABLE_QKV_COMBINED_BACKWARD =
+  process.env.HELIOS_DISABLE_QKV_COMBINED_BACKWARD === "1";
 // An offline, warmup-excluded lifetime trace can be compiled into a fixed set
 // of reusable VkBuffer handles. Physical r6 testing found that a complete plan
 // can preserve loss while corrupting backward gradients before structural
@@ -6899,6 +6903,145 @@ export class HeliosBackend implements Backend {
       }
     }
     return makeTensor(outputShape, grad.dtype, output);
+  }
+
+  qkvHeadMajorRopeBackwardCombined(
+    qGrad: TensorData,
+    kGrad: TensorData,
+    vGrad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): TensorData {
+    const expectedGradShape: Shape = [batch * heads, sequence, headDim];
+    if (headDim <= 0 || (headDim & 1) !== 0) {
+      throw new Error(
+        `qkvHeadMajorRopeBackwardCombined: headDim must be positive and even, got ${headDim}`,
+      );
+    }
+    for (const [name, grad] of [["q", qGrad], ["k", kGrad], ["v", vGrad]] as const) {
+      if (!this.shapesEqual(grad.shape, expectedGradShape)) {
+        throw new Error(
+          `qkvHeadMajorRopeBackwardCombined: expected ${name} grad [${expectedGradShape}], `
+            + `got [${grad.shape}]`,
+        );
+      }
+    }
+    if (cos.shape[0] !== sequence || cos.shape[1] !== headDim / 2
+      || inverseSin.shape[0] !== sequence || inverseSin.shape[1] !== headDim / 2) {
+      throw new Error(
+        `qkvHeadMajorRopeBackwardCombined: expected cos/inverseSin `
+          + `[${sequence},${headDim / 2}], got [${cos.shape}] and [${inverseSin.shape}]`,
+      );
+    }
+    const modelDim = heads * headDim;
+    const outputShape: Shape = [batch * sequence, 3 * modelDim];
+    const outputSize = shapeSize(outputShape);
+
+    if (DISABLE_QKV_COMBINED_BACKWARD) {
+      const q = this.qkvHeadMajorRopeBackward(
+        qGrad, cos, inverseSin, batch, sequence, heads, headDim, 0,
+      );
+      const k = this.qkvHeadMajorRopeBackward(
+        kGrad, cos, inverseSin, batch, sequence, heads, headDim, 1,
+      );
+      const v = this.qkvHeadMajorRopeBackward(
+        vGrad, cos, inverseSin, batch, sequence, heads, headDim, 2,
+      );
+      const qk = this.add(q, k);
+      const combined = this.add(qk, v);
+      // The matched control intentionally materialises the three padded
+      // branches and two adds, but these temporaries have no Tape variables of
+      // their own. Register deterministic deferred release after their graph
+      // consumers have been recorded instead of waiting for JavaScript GC.
+      releaseGpuBufferFor(q);
+      releaseGpuBufferFor(k);
+      releaseGpuBufferFor(v);
+      releaseGpuBufferFor(qk);
+      return combined;
+    }
+
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const qBuffer = ensureGpu(vk, qGrad);
+      const kBuffer = ensureGpu(vk, kGrad);
+      const vBuffer = ensureGpu(vk, vGrad);
+      const cosBuffer = ensureGpu(vk, cos);
+      const inverseSinBuffer = ensureGpu(vk, inverseSin);
+      const outputRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(5);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize >>> 1;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      const pipeline = getPipeline(
+        vk,
+        "qkv_head_major_rope_backward_combined",
+        6,
+        5 * 4,
+      );
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope_backward_combined",
+        pipeline,
+        inputBufs: [],
+        outputRegion,
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
+        push,
+        pushSize: 5 * 4,
+        shape: outputShape,
+        allBufs: [
+          qBuffer,
+          kBuffer,
+          vBuffer,
+          cosBuffer,
+          inverseSinBuffer,
+          outputRegion.handle,
+        ],
+      });
+      return graphLazyTensor(vk, outputShape, outputRegion);
+    }
+
+    this.checkFallback("qkvHeadMajorRopeBackwardCombined");
+    const qData = qGrad.data as Float32Array;
+    const kData = kGrad.data as Float32Array;
+    const vData = vGrad.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const inverseSinData = inverseSin.data as Float32Array;
+    const output = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    const sources = [qData, kData, vData];
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const gradBase = ((b * heads + h) * sequence + t) * headDim;
+          const tableBase = t * half;
+          for (let which = 0; which < 3; which++) {
+            const outputBase = (b * sequence + t) * (3 * modelDim)
+              + which * modelDim + h * headDim;
+            for (let i = 0; i < half; i++) {
+              const gA = sources[which][gradBase + i];
+              const gB = sources[which][gradBase + i + half];
+              if (which < 2) {
+                const c = cosData[tableBase + i];
+                const sInv = inverseSinData[tableBase + i];
+                output[outputBase + i] = gA * c - gB * sInv;
+                output[outputBase + i + half] = gB * c + gA * sInv;
+              } else {
+                output[outputBase + i] = gA;
+                output[outputBase + i + half] = gB;
+              }
+            }
+          }
+        }
+      }
+    }
+    return makeTensor(outputShape, qGrad.dtype, output);
   }
 
   scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {

@@ -143,6 +143,11 @@ The grouped QKV-to-flash boundary now unpacks Q/K/V, writes head-major layout,
 and applies Q/K RoPE in one exact dispatch with paired inverse-layout gradient
 kernels. Static accounting removes another 180 complete-step dispatches and
 8.789 GiB of logical activation traffic at that same selected shape.
+That boundary and Flash Attention are now one autograd operation: its backward
+consumes dQ/dK/dV together and writes one complete grouped gradient, eliminating
+three padded branch tensors and two additions. This removes another 72
+dispatches and 10.547 GiB versus X28; cumulatively the pair removes 252
+dispatches and 19.336 GiB versus the pre-X28 boundary.
 Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
@@ -151,7 +156,9 @@ VRAM and complete-step effects remain unmeasured. Canonical record:
 with the two-output fusion recorded separately in
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`
 and the grouped layout fusion in
-`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`.
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`,
+with the one-tape combined backward in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred

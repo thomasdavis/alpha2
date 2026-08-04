@@ -305,3 +305,138 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
   return b.build();
 }
+
+/**
+ * Combined Q/K/V inverse-layout backward.
+ *
+ * Bindings: 0=dQ, 1=dK, 2=dV, 3=cos, 4=inverseSin, 5=grouped grad.
+ * Push u32: [totalGroupedPairs, T, H, headDim, modelDim].
+ * One invocation writes one complete pair in its final Q/K/V segment, so no
+ * zero-padded branch tensors or later grouped-gradient additions are needed.
+ */
+export function kernelQkvHeadMajorRopeBackwardCombined(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+  const qGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const kGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const vGrad = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
+  const cos = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, true);
+  const inverseSin = declareStorageBuffer(b, p.tF32, p.tU32, 0, 4, true);
+  const out = declareStorageBuffer(b, p.tF32, p.tU32, 0, 5, false, true);
+  const pc = declareU32PushConstants(b, p.tU32, 5);
+  const three = b.id(); b.constant(p.tU32, three, 3);
+
+  const main = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, main, "main", [p.vGlobalId]);
+  b.addExecutionMode(main, ExecutionMode.LocalSize, wgSize, 1, 1);
+  const entry = b.id();
+  const body = b.id();
+  const end = b.id();
+  b.emit(Op.Function, [p.tVoid, main, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [entry]);
+
+  const gidVec = b.id(); b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gid = b.id(); b.emit(Op.CompositeExtract, [p.tU32, gid, gidVec, 0]);
+  const total = loadPushU32(b, p.tU32, pc, 0);
+  const outOfBounds = b.id();
+  b.emit(Op.UGreaterThanEqual, [p.tBool, outOfBounds, gid, total]);
+  b.emit(Op.SelectionMerge, [end, 0]);
+  b.emit(Op.BranchConditional, [outOfBounds, end, body]);
+  b.emit(Op.Label, [body]);
+
+  const sequence = loadPushU32(b, p.tU32, pc, 1);
+  const heads = loadPushU32(b, p.tU32, pc, 2);
+  const headDim = loadPushU32(b, p.tU32, pc, 3);
+  const modelDim = loadPushU32(b, p.tU32, pc, 4);
+  const half = b.id(); b.emit(Op.UDiv, [p.tU32, half, headDim, p.const2u]);
+  const groupedWidth = b.id(); b.emit(Op.IMul, [p.tU32, groupedWidth, modelDim, three]);
+  const groupedPairWidth = b.id(); b.emit(Op.UDiv, [p.tU32, groupedPairWidth, groupedWidth, p.const2u]);
+  const segmentPairWidth = b.id(); b.emit(Op.UDiv, [p.tU32, segmentPairWidth, modelDim, p.const2u]);
+  const tokenRow = b.id(); b.emit(Op.UDiv, [p.tU32, tokenRow, gid, groupedPairWidth]);
+  const groupedPairCol = b.id(); b.emit(Op.UMod, [p.tU32, groupedPairCol, gid, groupedPairWidth]);
+  const segment = b.id(); b.emit(Op.UDiv, [p.tU32, segment, groupedPairCol, segmentPairWidth]);
+  const localPair = b.id(); b.emit(Op.UMod, [p.tU32, localPair, groupedPairCol, segmentPairWidth]);
+  const head = b.id(); b.emit(Op.UDiv, [p.tU32, head, localPair, half]);
+  const pair = b.id(); b.emit(Op.UMod, [p.tU32, pair, localPair, half]);
+
+  const tokenRowBase = b.id(); b.emit(Op.IMul, [p.tU32, tokenRowBase, tokenRow, groupedWidth]);
+  const segmentBase = b.id(); b.emit(Op.IMul, [p.tU32, segmentBase, segment, modelDim]);
+  const headOffset = b.id(); b.emit(Op.IMul, [p.tU32, headOffset, head, headDim]);
+  const rowSegmentBase = b.id(); b.emit(Op.IAdd, [p.tU32, rowSegmentBase, tokenRowBase, segmentBase]);
+  const outputHeadBase = b.id(); b.emit(Op.IAdd, [p.tU32, outputHeadBase, rowSegmentBase, headOffset]);
+  const outputA = b.id(); b.emit(Op.IAdd, [p.tU32, outputA, outputHeadBase, pair]);
+  const outputB = b.id(); b.emit(Op.IAdd, [p.tU32, outputB, outputA, half]);
+
+  const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, tokenRow, sequence]);
+  const token = b.id(); b.emit(Op.UMod, [p.tU32, token, tokenRow, sequence]);
+  const batchTimesH = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesH, batch, heads]);
+  const batchHead = b.id(); b.emit(Op.IAdd, [p.tU32, batchHead, batchTimesH, head]);
+  const bhTimesT = b.id(); b.emit(Op.IMul, [p.tU32, bhTimesT, batchHead, sequence]);
+  const headMajorRow = b.id(); b.emit(Op.IAdd, [p.tU32, headMajorRow, bhTimesT, token]);
+  const gradBase = b.id(); b.emit(Op.IMul, [p.tU32, gradBase, headMajorRow, headDim]);
+  const gradAIndex = b.id(); b.emit(Op.IAdd, [p.tU32, gradAIndex, gradBase, pair]);
+  const gradBIndex = b.id(); b.emit(Op.IAdd, [p.tU32, gradBIndex, gradAIndex, half]);
+  const tableBase = b.id(); b.emit(Op.IMul, [p.tU32, tableBase, token, half]);
+  const tableIndex = b.id(); b.emit(Op.IAdd, [p.tU32, tableIndex, tableBase, pair]);
+
+  const isQ = b.id(); b.emit(Op.IEqual, [p.tBool, isQ, segment, p.const0u]);
+  const qBody = b.id();
+  const notQBody = b.id();
+  const segmentEnd = b.id();
+  b.emit(Op.SelectionMerge, [segmentEnd, 0]);
+  b.emit(Op.BranchConditional, [isQ, qBody, notQBody]);
+
+  b.emit(Op.Label, [qBody]);
+  const qA = loadF32(b, p.tF32, p.const0u, qGrad, gradAIndex);
+  const qB = loadF32(b, p.tF32, p.const0u, qGrad, gradBIndex);
+  const qC = loadF32(b, p.tF32, p.const0u, cos, tableIndex);
+  const qS = loadF32(b, p.tF32, p.const0u, inverseSin, tableIndex);
+  const qAc = b.id(); b.emit(Op.FMul, [p.tF32, qAc, qA, qC]);
+  const qBs = b.id(); b.emit(Op.FMul, [p.tF32, qBs, qB, qS]);
+  const qOutA = b.id(); b.emit(Op.FSub, [p.tF32, qOutA, qAc, qBs]);
+  const qBc = b.id(); b.emit(Op.FMul, [p.tF32, qBc, qB, qC]);
+  const qAs = b.id(); b.emit(Op.FMul, [p.tF32, qAs, qA, qS]);
+  const qOutB = b.id(); b.emit(Op.FAdd, [p.tF32, qOutB, qBc, qAs]);
+  storeF32(b, p.const0u, out, outputA, qOutA);
+  storeF32(b, p.const0u, out, outputB, qOutB);
+  b.emit(Op.Branch, [segmentEnd]);
+
+  b.emit(Op.Label, [notQBody]);
+  const isK = b.id(); b.emit(Op.IEqual, [p.tBool, isK, segment, p.const1u]);
+  const kBody = b.id();
+  const vBody = b.id();
+  const notQEnd = b.id();
+  b.emit(Op.SelectionMerge, [notQEnd, 0]);
+  b.emit(Op.BranchConditional, [isK, kBody, vBody]);
+
+  b.emit(Op.Label, [kBody]);
+  const kA = loadF32(b, p.tF32, p.const0u, kGrad, gradAIndex);
+  const kB = loadF32(b, p.tF32, p.const0u, kGrad, gradBIndex);
+  const kC = loadF32(b, p.tF32, p.const0u, cos, tableIndex);
+  const kS = loadF32(b, p.tF32, p.const0u, inverseSin, tableIndex);
+  const kAc = b.id(); b.emit(Op.FMul, [p.tF32, kAc, kA, kC]);
+  const kBs = b.id(); b.emit(Op.FMul, [p.tF32, kBs, kB, kS]);
+  const kOutA = b.id(); b.emit(Op.FSub, [p.tF32, kOutA, kAc, kBs]);
+  const kBc = b.id(); b.emit(Op.FMul, [p.tF32, kBc, kB, kC]);
+  const kAs = b.id(); b.emit(Op.FMul, [p.tF32, kAs, kA, kS]);
+  const kOutB = b.id(); b.emit(Op.FAdd, [p.tF32, kOutB, kBc, kAs]);
+  storeF32(b, p.const0u, out, outputA, kOutA);
+  storeF32(b, p.const0u, out, outputB, kOutB);
+  b.emit(Op.Branch, [notQEnd]);
+
+  b.emit(Op.Label, [vBody]);
+  const vA = loadF32(b, p.tF32, p.const0u, vGrad, gradAIndex);
+  const vB = loadF32(b, p.tF32, p.const0u, vGrad, gradBIndex);
+  storeF32(b, p.const0u, out, outputA, vA);
+  storeF32(b, p.const0u, out, outputB, vB);
+  b.emit(Op.Branch, [notQEnd]);
+
+  b.emit(Op.Label, [notQEnd]);
+  b.emit(Op.Branch, [segmentEnd]);
+  b.emit(Op.Label, [segmentEnd]);
+  b.emit(Op.Branch, [end]);
+  b.emit(Op.Label, [end]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}

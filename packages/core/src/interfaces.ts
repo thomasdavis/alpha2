@@ -229,6 +229,20 @@ export interface Backend {
     headDim: number,
     which: 0 | 1 | 2,
   ): TensorData;
+  /** Combined exact backward for the three Q/K/V branches. Unlike the branch
+   *  hook above, this writes the complete grouped gradient in one pass and
+   *  therefore requires no zero-padded contributions or tape accumulation. */
+  qkvHeadMajorRopeBackwardCombined?(
+    qGrad: TensorData,
+    kGrad: TensorData,
+    vGrad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): TensorData;
 
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
