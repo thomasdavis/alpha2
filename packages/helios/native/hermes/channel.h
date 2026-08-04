@@ -75,6 +75,17 @@ typedef struct {
  * { NvBool bNotifyEachChannelInTSG } -- a single byte. Passing an NvU32 gives
  * NV_ERR_INVALID_ARGUMENT. Attaching via hObjectError at allocation time is
  * what actually works and is sufficient.
+ *
+ * On USERD: RM will allocate the doorbell page itself, and it will ALSO accept
+ * ours through hUserdMemory[0] -- but only if hVASpace is left zero. The first
+ * sweep tested {userd, vaspace} pairs and stopped at the first success
+ * ({none, none}), never reaching {ours, none}, which also works. Owning USERD
+ * is worth having because it makes GP_PUT's location certain rather than
+ * assumed.
+ *
+ * NEITHER causes the GPU to execute submitted work. See
+ * donto-resources/research/alpha-helios-reimagined/HERMES-SUBMISSION-BLOCKER.md
+ * for the full map of what is established and what remains.
  */
 
 /* Allocate a channel and everything it needs. */
