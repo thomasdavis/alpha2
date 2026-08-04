@@ -51,6 +51,12 @@ typedef struct {
 
 NvHandle aether_next_handle(aether_device *d) { return d->nextHandle++; }
 
+int aether_register_fd(aether_device *d, int fd) {
+  /* Issued on the NEW fd, naming the control fd — see the header. */
+  int arg = d->ctlFd;
+  return aether_ioctl(fd, NV_ESC_REGISTER_FD, &arg, sizeof arg);
+}
+
 int aether_alloc(aether_device *d, NvHandle parent, NvHandle *out, NvV32 cls,
                  void *params, NvU32 paramsSize) {
   NVOS21_PARAMETERS p;

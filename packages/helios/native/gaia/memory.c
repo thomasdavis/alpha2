@@ -283,6 +283,9 @@ int gaia_map_host(aether_device *d, gaia_buffer *b) {
   }
   int fd = open(path, O_RDWR | O_CLOEXEC);
   if (fd < 0) return -1;
+  /* Every secondary descriptor is registered against the control fd, which is
+   * what a working driver does for each fd it opens. */
+  aether_register_fd(d, fd);
 
   struct {
     NVOS33_PARAMETERS params;

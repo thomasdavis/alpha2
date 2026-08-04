@@ -60,6 +60,21 @@ int aether_device_open(aether_device *d, int index);
 
 void aether_device_close(aether_device *d);
 
+/*
+ * Associate a secondary file descriptor with the control fd.
+ *
+ * DIRECTION MATTERS and is the opposite of what the name suggests: the ioctl is
+ * issued ON THE NEW FD, naming the control fd it should be attached to. Issued
+ * the other way round it returns EINVAL.
+ *
+ *   aether_register_fd(d, newfd)  ->  ioctl(newfd, NV_ESC_REGISTER_FD, &ctlFd)
+ *
+ * A working CUDA process does this for every extra descriptor it opens. Ours
+ * were unregistered, which is now fixed -- though it did not by itself make the
+ * GPU consume submitted work.
+ */
+int aether_register_fd(aether_device *d, int fd);
+
 /* Allocate a fresh RM handle within this client. */
 NvHandle aether_next_handle(aether_device *d);
 

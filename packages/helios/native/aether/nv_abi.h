@@ -48,6 +48,23 @@ typedef uint64_t NvP64;
 #define NV_ESC_RM_MAP_MEMORY_DMA 0x57
 #define NV_ESC_RM_UNMAP_MEMORY_DMA 0x58
 
+/* --- non-RM escapes -------------------------------------------------------
+ *
+ * These are NOT in nv_escape.h's RM list; they are defined as NV_IOCTL_BASE + n
+ * with NV_IOCTL_BASE = 200, which is why they appear as 0xc8..0xd7 in a trace
+ * and match nothing when grepped for as literals.
+ *
+ * Found by interposing ioctl on a working CUDA process: it issues these before
+ * touching RM at all.
+ */
+#define NV_ESC_CARD_INFO 0xc8          /* base + 0  */
+#define NV_ESC_REGISTER_FD 0xc9        /* base + 1  */
+#define NV_ESC_ALLOC_OS_EVENT 0xce     /* base + 6  */
+#define NV_ESC_CHECK_VERSION_STR 0xd2  /* base + 10 */
+#define NV_ESC_ATTACH_GPUS_TO_FD 0xd4  /* base + 12 */
+#define NV_ESC_SYS_PARAMS 0xd6         /* base + 14 */
+#define NV_ESC_NUMA_INFO 0xd7          /* base + 15 */
+
 /* The character-device major used by /dev/nvidiactl and /dev/nvidiaN.
  * nv-linux.h; only needed if we ever have to mknod the nodes ourselves. */
 #define NV_MAJOR_DEVICE_NUMBER 195
