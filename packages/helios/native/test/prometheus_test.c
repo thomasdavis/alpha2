@@ -38,7 +38,7 @@ static NvU64 now_ns(void) {
 
 /* Everything a launch needs, allocated once. */
 typedef struct {
-  gaia_buffer code, out, in, inB, qmd, scratch, lmem;
+  gaia_buffer code, out, in, inB, inC, qmd, scratch, lmem;
 } pr_buffers;
 
 static int alloc_buffers(aether_device *d, pr_buffers *b) {
@@ -50,6 +50,9 @@ static int alloc_buffers(aether_device *d, pr_buffers *b) {
   if ((rc = gaia_alloc(d, &b->in, 4096, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->in)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->in)) != 0) return rc;
+  if ((rc = gaia_alloc(d, &b->inC, 4096, GAIA_SYSMEM)) != 0) return rc;
+  if ((rc = gaia_map_gpu(d, &b->inC)) != 0) return rc;
+  if ((rc = gaia_map_host(d, &b->inC)) != 0) return rc;
   if ((rc = gaia_alloc(d, &b->inB, 4096, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->inB)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->inB)) != 0) return rc;
@@ -107,11 +110,12 @@ static void write_code(gaia_buffer *code, const hp_word *prog, unsigned count) {
 static void write_params(pr_buffers *b, NvU32 blockX, const pr_kernel *k) {
   volatile NvU8 *cb = (volatile NvU8 *)b->scratch.hostPtr;
   *(volatile NvU32 *)(cb + HERMES_CBUF0_NTID_X) = blockX;
-  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0) = b->out.gpuAddr;
-  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 8) = b->in.gpuAddr;
-  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 16) = b->inB.gpuAddr;
-  const float s[HERMES_CBUF0_SCALAR_COUNT] = {k->scalar, k->scalar2, k->scalar3,
-                                              k->scalar4};
+  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM_N(0)) = b->out.gpuAddr;
+  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM_N(1)) = b->in.gpuAddr;
+  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM_N(2)) = b->inB.gpuAddr;
+  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM_N(3)) = b->inC.gpuAddr;
+  const float s[HERMES_CBUF0_SCALAR_COUNT] = {
+      k->scalar, k->scalar2, k->scalar3, k->scalar4, k->scalar5, k->scalar6};
   for (unsigned i = 0; i < HERMES_CBUF0_SCALAR_COUNT; i++)
     *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR_N(i)) = pr_f2u(s[i]);
 }
@@ -121,8 +125,11 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
                               pr_buffers *b, const pr_kernel *k) {
   volatile NvU32 *o = (volatile NvU32 *)b->out.hostPtr;
   for (unsigned i = 0; i < FENCE_OFFSET / 4 + 4; i++) o[i] = 0;
+  for (unsigned i = 0; i < PR_N; i++)
+    ((volatile NvU32 *)b->inC.hostPtr)[i] = 0;
   if (k->fill)
     k->fill((volatile NvU32 *)b->in.hostPtr, (volatile NvU32 *)b->inB.hostPtr);
+  if (k->fillC) k->fillC((volatile NvU32 *)b->inC.hostPtr);
   if (k->seed) k->seed(o);
   write_params(b, k->blockX, k);
 

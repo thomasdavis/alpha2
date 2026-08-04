@@ -79,6 +79,22 @@
 #define HP_MUFU_LG2 0x0c
 #define HP_MUFU_RCP 0x10
 #define HP_MUFU_RSQ 0x14
+/*
+ * SQRT and TANH, read off ptxas (sqrt.approx.f32 -> 0x00002000 in bits 64..95,
+ * tanh.approx.f32 -> 0x00002400; these constants are that field over 256).
+ *
+ * The values follow the obvious progression from the four above, and that is
+ * exactly why they were CHECKED rather than assumed -- the progression also
+ * predicted an IADD3 register opcode that turned out to be wrong, assembled
+ * anyway, and gave a wrong answer with no fault.
+ *
+ * SQRT matters beyond saving an instruction: the existing pair, RSQ then RCP,
+ * is correct at zero only by accident of infinity arithmetic (1/inf is 0), and
+ * relying on that in an optimizer whose second moment starts at exactly zero is
+ * not something to leave to accident.
+ */
+#define HP_MUFU_SQRT 0x20
+#define HP_MUFU_TANH 0x24
 #define HP_OP_STG 0x986
 #define HP_OP_LDG 0x981
 #define HP_OP_EXIT 0x94d

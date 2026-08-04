@@ -52,7 +52,7 @@ unsigned pr_emit_branch_nop(hp_word *p, pr_branch_mode mode) {
   p[n++] = hp_imad_const(R_INDEX, R_INDEX, 0, HERMES_CBUF0_NTID_X, R_TID,
                          hp_ctrl_wait(BAR_ID));
   p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   /*
    * Predicated or not, the branch goes to the instruction after it, so the
@@ -91,7 +91,7 @@ unsigned pr_emit_branch_nop(hp_word *p, pr_branch_mode mode) {
   } else {
     p[n++] = hp_bra(0, hp_ctrl_branch());
   }
-  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_exit(hp_ctrl_safe());
@@ -111,7 +111,7 @@ unsigned pr_emit_loop_scale(hp_word *p, unsigned trips) {
   p[n++] = hp_imad_const(R_INDEX, R_INDEX, 0, HERMES_CBUF0_NTID_X, R_TID,
                          hp_ctrl_wait(BAR_ID));
   p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /* The load is hoisted out of the loop deliberately: this kernel is about the
@@ -124,7 +124,7 @@ unsigned pr_emit_loop_scale(hp_word *p, unsigned trips) {
   p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
   n++;
 
-  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());
   p[n++] = hp_exit(hp_ctrl_safe());

@@ -10,6 +10,7 @@
 
 #include "oracle.h"
 
+const char *chk_adamw(const volatile NvU32 *o);
 const char *chk_add(const volatile NvU32 *o);
 const char *chk_addconst(const volatile NvU32 *o);
 const char *chk_addidx(const volatile NvU32 *o);

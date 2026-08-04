@@ -57,10 +57,10 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
   p[n++] = hp_imad_imm(R_DST_IDX, R_COL, rows, R_ROW, hp_ctrl_safe());
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
@@ -93,20 +93,20 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
 
   /* ids[i], from the second input. */
   p[n++] = hp_imad_wide_const(R_ADDR, R_ROW, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 16, hp_ctrl_wait(BAR_ID));
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_wait(BAR_ID));
   p[n++] = hp_ldg(R_TABLE_ROW, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /* table[id][d] -- the address that depends on the load above. */
   p[n++] = hp_imad_imm(R_SRC_IDX, R_TABLE_ROW, dim, R_COL,
                        hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /* out[i][d] -- contiguous, unlike the gather that fed it. */
   p[n++] = hp_imad_imm(R_DST_IDX, R_ROW, dim, R_COL, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;

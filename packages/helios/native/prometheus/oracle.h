@@ -31,6 +31,13 @@ void pr_fill_pair(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_embedding(volatile NvU32 *table, volatile NvU32 *ids);
 NvU32 pr_emb_id(unsigned i);
 void pr_fill_mask(volatile NvU32 *a, volatile NvU32 *mask);
+void pr_fill_adam(volatile NvU32 *grad, volatile NvU32 *m);
+void pr_fill_adam_v(volatile NvU32 *v);
+void pr_seed_adam(volatile NvU32 *param);
+float pr_adam_param(unsigned i);
+float pr_adam_grad(unsigned i);
+float pr_adam_m(unsigned i);
+float pr_adam_v(unsigned i);
 int pr_mask_set(unsigned i);
 
 float pr_in_a(unsigned i);
@@ -76,6 +83,24 @@ char *pr_msg(void);
  * dimensions -- cannot pass. A square shape would let both through.
  */
 /* The causal mask is square -- it has to be, it is a token-by-token relation. */
+/*
+ * AdamW test constants.
+ *
+ * Deliberately NOT the usual 0.9 / 0.999: those are close enough to one that a
+ * kernel which dropped the (1-b) term entirely would still produce nearly the
+ * right answer for one step, and one step is all a test runs. At 0.5 and 0.25
+ * every term contributes visibly.
+ *
+ * The kernel is handed 1-b1 and 1-b2 rather than b1 and b2, because it computes
+ * m + (1-b1)*(g-m) -- the same arithmetic in fewer instructions, and the
+ * subtraction belongs on the host where it happens once.
+ */
+#define PR_ADAM_B1 0.5f
+#define PR_ADAM_B2 0.25f
+#define PR_ADAM_LR 0.125f
+#define PR_ADAM_EPS 0.03125f
+#define PR_ADAM_WD 0.0625f
+
 #define PR_MASK_N 8
 
 /* What masked_fill writes where the mask is set. Distinctive and not a value

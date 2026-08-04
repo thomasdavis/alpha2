@@ -22,6 +22,7 @@
 #include "mask.h"
 #include "matmul.h"
 #include "normalize.h"
+#include "optimizer.h"
 #include "oracle.h"
 #include "reduction.h"
 
@@ -84,6 +85,12 @@ static unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;
   return pr_emit_loop_scale(p, PR_LOOP_TRIPS);
+}
+
+static unsigned bld_adamw(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_adamw(p);
 }
 
 static unsigned bld_causal(hp_word *p, NvU64 out, NvU64 in) {
@@ -245,6 +252,14 @@ static const pr_kernel KERNELS[] = {
      * with a branch, so when both fail it says which suspect to look at. */
     K(.name = "loop scale", .build = bld_loop_scale, .fill = pr_fill_pos,
       .check = chk_loop_scale),
+
+    /* The parameter is BOTH input and output, so it is seeded into the output
+     * buffer rather than filled into an input one. Slot 1 is the gradient,
+     * slot 2 is m -- which fill writes as a pair -- and slot 3 is v. */
+    K(.name = "adamw step", .build = bld_adamw, .fill = pr_fill_adam,
+      .fillC = pr_fill_adam_v, .seed = pr_seed_adam, .check = chk_adamw,
+      .scalar = 1.0f - PR_ADAM_B1, .scalar2 = 1.0f - PR_ADAM_B2,
+      .scalar3 = PR_ADAM_LR, .scalar4 = PR_ADAM_EPS, .scalar5 = PR_ADAM_WD),
 
     K(.name = "causal mask 8x8", .build = bld_causal, .blockX = PR_MASK_N,
       .gridX = PR_MASK_N, .fill = pr_fill_pos, .check = chk_causal),

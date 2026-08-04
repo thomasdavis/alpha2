@@ -228,6 +228,24 @@ static void test_imad_immediate(void) {
   HT_END();
 }
 
+/* ptxas: sqrt.approx.f32 / tanh.approx.f32 */
+#define REF_MUFU_SQRT_LO 0x0000000000047308ULL
+#define REF_MUFU_SQRT_HI 0x00002000ULL
+#define REF_MUFU_TANH_HI 0x00002400ULL
+
+static void test_mufu_functions(void) {
+  HT_CASE("MUFU function selectors match ptxas");
+  /* The selector lives in the HIGH word, so a low-word check cannot tell SQRT
+   * from RCP -- which is the whole class of bug this catches. */
+  HT_EQ_U64(lo_of(hp_mufu(4, 0, HP_MUFU_SQRT, hp_ctrl_safe())),
+            REF_MUFU_SQRT_LO);
+  HT_EQ_U64(hi_of(hp_mufu(4, 0, HP_MUFU_SQRT, hp_ctrl_safe())),
+            REF_MUFU_SQRT_HI);
+  HT_EQ_U64(hi_of(hp_mufu(5, 4, HP_MUFU_TANH, hp_ctrl_safe())),
+            REF_MUFU_TANH_HI);
+  HT_END();
+}
+
 static void test_field_placement_primitives(void) {
   HT_CASE("hp_put places fields correctly, including across the 64-bit seam");
   hp_word w = {0, 0};
@@ -254,6 +272,7 @@ void ht_run(void) {
   printf("\nhephaestus — sm_86 encoder vs ptxas\n");
   test_control_flow();
   test_imad_immediate();
+  test_mufu_functions();
   test_field_placement_primitives();
   test_control_roundtrip();
   test_control_lives_above_bit_105();

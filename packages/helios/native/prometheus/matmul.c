@@ -71,12 +71,12 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
 
   /* A[row][k] */
   p[n++] = hp_imad_wide_const(R_AADDR, R_AIDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /* B[k][col] */
   p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 16, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
   p[n++] = hp_ldg(R_BVAL, R_BADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /*
@@ -110,7 +110,7 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
 
   /* C[row][col] is element row*N + col. */
   p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());
-  p[n++] = hp_imad_wide_const(R_OUT, R_OIDX, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_OIDX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());
   p[n++] = hp_exit(hp_ctrl_safe());

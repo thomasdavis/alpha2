@@ -83,3 +83,33 @@ void pr_fill_mask(volatile NvU32 *a, volatile NvU32 *mask) {
     mask[i] = pr_mask_set(i) ? 1u : 0u;
   }
 }
+
+/*
+ * AdamW inputs.
+ *
+ * Four tensors, all different, none derivable from another by a constant
+ * factor. A gradient equal to the parameter, or a v equal to m squared, would
+ * let two of the four be confused with no visible effect.
+ *
+ * v[0] is exactly ZERO on purpose. That is the state of the second moment on
+ * the first step of real training, and it is where a sqrt implemented as
+ * reciprocal-of-reciprocal-square-root produces 0 * inf = NaN. The one element
+ * most likely to be wrong in practice is therefore the first one tested.
+ */
+float pr_adam_param(unsigned i) { return (float)(i + 1) * 0.25f; }
+float pr_adam_grad(unsigned i) { return (float)(i % 7u) - 3.0f; }
+float pr_adam_m(unsigned i) { return (float)(i % 5u) * 0.5f - 1.0f; }
+float pr_adam_v(unsigned i) { return i == 0 ? 0.0f : (float)(i % 3u) + 0.5f; }
+
+void pr_seed_adam(volatile NvU32 *param) {
+  for (unsigned i = 0; i < PR_N; i++) param[i] = pr_f2u(pr_adam_param(i));
+}
+void pr_fill_adam(volatile NvU32 *grad, volatile NvU32 *m) {
+  for (unsigned i = 0; i < PR_N; i++) {
+    grad[i] = pr_f2u(pr_adam_grad(i));
+    m[i] = pr_f2u(pr_adam_m(i));
+  }
+}
+void pr_fill_adam_v(volatile NvU32 *v) {
+  for (unsigned i = 0; i < PR_N; i++) v[i] = pr_f2u(pr_adam_v(i));
+}

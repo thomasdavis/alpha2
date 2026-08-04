@@ -58,7 +58,7 @@ unsigned pr_emit_causal_mask(hp_word *p, unsigned cols) {
   p[n++] = hp_imad_imm(R_INDEX, R_ROW, cols, R_COL, hp_ctrl_wait(BAR_ID));
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   /* Mask where the column is strictly beyond the row: a token may attend to
@@ -71,7 +71,7 @@ unsigned pr_emit_causal_mask(hp_word *p, unsigned cols) {
                        P_MASKED, 0);
   n++;
 
-  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_exit(hp_ctrl_safe());
@@ -95,10 +95,10 @@ unsigned pr_emit_masked_fill(hp_word *p) {
                          hp_ctrl_wait(BAR_ID));
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   p[n++] = hp_imad_wide_const(R_MASK_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 16, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
   p[n++] = hp_ldg(R_MASK, R_MASK_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 
   p[n++] = hp_isetp_gt_imm(P_MASKED, R_MASK, 0, hp_ctrl_wait(BAR_LOAD));
@@ -107,7 +107,7 @@ unsigned pr_emit_masked_fill(hp_word *p) {
       0);
   n++;
 
-  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_safe());
   p[n++] = hp_exit(hp_ctrl_safe());

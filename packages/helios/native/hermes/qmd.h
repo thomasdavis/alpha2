@@ -100,17 +100,41 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  */
 #define HERMES_CBUF0_NTID_X 0x000
 #define HERMES_CBUF0_PARAM0 0x160
-/* Three pointers then two scalars: out, a, b, s0, s1. Two because several
- * operations need a pair -- clamp has a low and a high, silu needs log2(e) and
- * 1.0 -- and materialising constants as immediates would mean an FMUL-immediate
- * encoding that has not been verified against ptxas. */
-#define HERMES_CBUF0_SCALAR (0x160 + 24)
-#define HERMES_CBUF0_SCALAR2 (0x160 + 28)
-/* Four in total. gelu needs three constants and softCap four, and folding
+
+/*
+ * FOUR buffer pointers: out, a, b, c.
+ *
+ * It was three -- out, a, b -- which covers every element-wise and binary
+ * kernel. It does not cover the optimizer step, which reads a parameter, a
+ * gradient, and two moment estimates while writing the parameter back, nor the
+ * fused residual-and-normalise, which reads two tensors and a weight. Those are
+ * not exotic: they are the two kernels a training step spends most of its time
+ * in. Widening the layout is cheaper than teaching every such kernel to pack
+ * two tensors into one buffer.
+ *
+ * They are addressed positionally rather than by name because a kernel's third
+ * input is its third input; what it MEANS is the kernel's business.
+ */
+#define HERMES_CBUF0_PARAM_N(i) (0x160 + (i) * 8)
+#define HERMES_CBUF0_PARAM_COUNT 4
+
+/*
+ * Then the scalars, after the pointers.
+ *
+ * Four of them. gelu needs three constants and softCap four, and folding
  * several into one where the algebra allows it is done at the HOST, not by
- * emitting arithmetic the GPU would repeat for every element. */
-#define HERMES_CBUF0_SCALAR_N(i) (0x160 + 24 + (i) * 4)
-#define HERMES_CBUF0_SCALAR_COUNT 4
+ * emitting arithmetic the GPU would repeat for every element. Several
+ * operations need at least a pair -- clamp has a low and a high, silu needs
+ * log2(e) and 1.0 -- and materialising those as immediates would mean an
+ * FMUL-immediate encoding that has not been verified against ptxas.
+ */
+#define HERMES_CBUF0_SCALAR_N(i) (0x160 + HERMES_CBUF0_PARAM_COUNT * 8 + (i) * 4)
+/* Six. AdamW alone needs five -- two decay rates, a learning rate, an epsilon,
+ * and a weight decay -- and a spare costs four bytes of a constant bank that is
+ * four kilobytes long. */
+#define HERMES_CBUF0_SCALAR_COUNT 6
+#define HERMES_CBUF0_SCALAR HERMES_CBUF0_SCALAR_N(0)
+#define HERMES_CBUF0_SCALAR2 HERMES_CBUF0_SCALAR_N(1)
 #define HERMES_CBUF0_BYTES 0x1000
 
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)

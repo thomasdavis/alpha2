@@ -31,7 +31,7 @@ static unsigned emit_load(hp_word *p) {
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_ADDR, R_TID, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_wait(BAR_TID));
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_wait(BAR_TID));
   p[n++] = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   return n;
 }
@@ -52,7 +52,7 @@ static unsigned emit_reduce(hp_word *p, unsigned elements, pr_combine how) {
 /* Store R_X to out[tid]. */
 static unsigned emit_store(hp_word *p, hp_control c) {
   unsigned n = 0;
-  p[n++] = hp_imad_wide_const(R_OUT, R_TID, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_TID, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_X, 0, c);
   p[n++] = hp_exit(hp_ctrl_safe());

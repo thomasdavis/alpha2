@@ -72,12 +72,17 @@ typedef struct {
    * scale, and the base conversions inside exp and log -- read it from there,
    * which is how a real kernel receives a scalar. Last in the struct so the
    * registry table reads name, code, geometry, data, expectation. */
-  float scalar, scalar2, scalar3, scalar4;
+  float scalar, scalar2, scalar3, scalar4, scalar5, scalar6;
 
   /* Seed the OUTPUT before launch, for kernels that read what they write.
    * Accumulate-style operations are only meaningfully tested against a known
    * prior value; clearing to zero would make an accumulate indistinguishable
    * from an assign. */
+  /* Fills the THIRD input buffer, for the kernels that need four tensors --
+   * the optimizer step and the fused residual paths. Separate from `fill`
+   * rather than widening it, so the thirty-odd kernels that will never use a
+   * third input do not have to mention it. */
+  void (*fillC)(volatile NvU32 *c);
   void (*seed)(volatile NvU32 *out);
 
   /* Shared memory the kernel needs, in bytes. Declared in the QMD; a kernel

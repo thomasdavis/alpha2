@@ -35,11 +35,11 @@ unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
 
   /* Addresses: base + index * 4, widened to 64 bits. */
   p[n++] = hp_imad_wide_const(R_OUT_ADDR, R_INDEX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0, hp_ctrl_safe());
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
 
   if (reads_input(op)) {
     p[n++] = hp_imad_wide_const(R_IN_ADDR, R_INDEX, R_ESIZE, 0,
-                                HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
     p[n++] = hp_ldg(R_VALUE, R_IN_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   }
 
@@ -50,7 +50,7 @@ unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
 
   if (reads_b(op)) {
     p[n++] = hp_imad_wide_const(R_B_ADDR, R_INDEX, R_ESIZE, 0,
-                                HERMES_CBUF0_PARAM0 + 16, hp_ctrl_safe());
+                                HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
     p[n++] = hp_ldg(R_B_VALUE, R_B_ADDR, 0, hp_ctrl_setbar(BAR_LOAD_B));
   }
 

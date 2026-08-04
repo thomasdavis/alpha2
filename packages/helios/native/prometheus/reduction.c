@@ -67,7 +67,7 @@ unsigned pr_emit_reduction(hp_word *p, pr_red_op op, unsigned elements) {
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_ADDR, R_TID, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM0 + 8, hp_ctrl_wait(BAR_TID));
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_wait(BAR_TID));
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   p[n++] = hp_sts(R_TID, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_bar_sync(hp_ctrl_safe());
@@ -93,7 +93,7 @@ unsigned pr_emit_reduction(hp_word *p, pr_red_op op, unsigned elements) {
         hp_fmul(R_LHS, R_LHS, R_SCALAR, hp_ctrl_wait(BAR_LDS)), P_INACTIVE, 1);
   }
 
-  p[n++] = hp_imad_wide_const(R_OUT, R_TID, R_ESIZE, 0, HERMES_CBUF0_PARAM0,
+  p[n++] = hp_imad_wide_const(R_OUT, R_TID, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_predicated(
       hp_stg(R_OUT, R_LHS, 0,
