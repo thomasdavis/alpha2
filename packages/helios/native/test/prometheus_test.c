@@ -121,6 +121,8 @@ static void write_params(pr_buffers *b, NvU32 blockX, const pr_kernel *k) {
         k->rawScalar[i] ? k->rawScalar[i] : pr_f2u(s[i]);
 }
 
+static char g_mut[96];
+
 /* Run one kernel. Returns NULL on success or the reason it failed. */
 static const char *run_kernel(aether_device *d, hermes_channel *c,
                               pr_buffers *b, const pr_kernel *k) {
@@ -155,7 +157,52 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
    * not be able to mask a working kernel. */
   const NvU64 deadline = now_ns() + 2000000000ull;
   while (now_ns() < deadline && k->check(o) != NULL) {}
-  return k->check(o);
+  const char *why = k->check(o);
+  if (why) return why;
+
+  if (k->checkAux) {
+    why = k->checkAux((const volatile NvU32 *)b->inB.hostPtr,
+                      (const volatile NvU32 *)b->inC.hostPtr);
+    if (why) return why;
+  }
+
+  /*
+   * Test the TEST: a checker that passes everything passes a broken kernel too.
+   *
+   * Every slot the kernel claims to check is perturbed in turn and the checker
+   * must REJECT it. The slot is restored either way, so the output is unchanged
+   * by the time anything else looks at it.
+   *
+   * The perturbation flips an EXPONENT bit, changing the value by a factor of
+   * about two. The first version flipped the lowest mantissa bit, on the
+   * reasoning that the smallest possible change is the hardest test -- and that
+   * was wrong. One unit in the last place is roughly 1.2e-7 in relative terms,
+   * comfortably inside the 1e-5 the transcendental checkers allow, and they
+   * allow it because MUFU is approximate by design. Nine kernels "failed" this
+   * check while behaving exactly as specified.
+   *
+   * So the mutation has to be larger than any tolerance a checker is entitled
+   * to have, and a factor of two is far outside every one here. What this
+   * proves is therefore narrower than it first appeared: that the checker LOOKS
+   * at each slot it claims to, not that its tolerance is tight. Tightness is
+   * argued separately, per checker, next to the tolerance itself.
+   */
+#define MUTATION_BIT 0x40000000u
+  const NvU32 work = k->workElements ? k->workElements : PR_N;
+  const NvU32 checked = k->checkedElements ? k->checkedElements : work;
+  for (NvU32 i = 0; i < checked; i++) {
+    const NvU32 saved = o[i];
+    o[i] = saved ^ MUTATION_BIT;
+    const char *caught = k->check(o);
+    o[i] = saved;
+    if (!caught) {
+      snprintf(g_mut, sizeof g_mut,
+               "%s: checker accepts a perturbed o[%u] -- it does not check it",
+               k->name, i);
+      return g_mut;
+    }
+  }
+  return NULL;
 }
 
 static void test_registry(void) {

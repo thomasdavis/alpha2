@@ -8,6 +8,20 @@
  * definition rather than as the kernel's rearrangement is what makes the
  * rearrangement something this test can actually check.
  */
+/*
+ * NOTE ON THE COMPARISON'S SHAPE: written as !(err <= tol), never err > tol.
+ *
+ * They differ on NaN, and only on NaN. Any comparison involving NaN is false,
+ * so "err > tol" does not fire and the value is ACCEPTED; "!(err <= tol)" fires
+ * and rejects it. Three checkers here were the first form, and a kernel that
+ * produced NaN would have passed all three -- which is the exact output a
+ * broken normalisation gives, from a zero-divided-by-zero or an
+ * infinity-minus-infinity.
+ *
+ * Found by the runner's mutation pass rather than by reading: it flips an
+ * exponent bit in each checked slot and requires the checker to object, and any
+ * output in [1,2) becomes a NaN under that flip.
+ */
 #include "expect.h"
 
 const char *chk_cross_entropy(const volatile NvU32 *o) {
@@ -20,7 +34,7 @@ const char *chk_cross_entropy(const volatile NvU32 *o) {
     const float got = pr_u2f(o[r]);
     /* Two MUFU operations and a tree-ordered sum, so a tolerance. Tight enough
      * that a missing max shift or a forgotten ln(2) fails by a wide margin. */
-    if (fabsf(got - want) / (fabsf(want) + 1e-6f) > 1e-4f) {
+    if (!(fabsf(got - want) / (fabsf(want) + 1e-6f) <= 1e-4f)) {
       snprintf(pr_msg(), PR_MSG_SIZE, "crossEnt: o[%u]=%g want %g", r,
                (double)got, (double)want);
       return pr_msg();

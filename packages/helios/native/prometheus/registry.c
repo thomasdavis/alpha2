@@ -127,7 +127,8 @@ static const pr_kernel KERNELS[] = {
      * is said; the kernel cannot see how many elements exist. */
     K(.name = "cast f32 to f16", .build = bld_cast_to_f16,
       .blockX = PR_BLOCK / 2, .gridX = PR_GRID, .fill = pr_fill_cast,
-      .check = chk_cast_to_f16, .elementsPerThread = 2),
+      .check = chk_cast_to_f16, .elementsPerThread = 2,
+      .checkedElements = PR_N / 2),
     K(.name = "cast f16 to f32", .build = bld_cast_to_f32,
       .blockX = PR_BLOCK / 2, .gridX = PR_GRID, .fill = pr_fill_packed,
       .check = chk_cast_to_f32, .elementsPerThread = 2),
@@ -142,7 +143,7 @@ static const pr_kernel KERNELS[] = {
      * launch covers the LOGITS and the check reads only the rows. */
     K(.name = "cross entropy", .build = bld_cross_entropy,
       .blockX = PR_CE_CLASSES, .gridX = PR_CE_ROWS, .fill = pr_fill_ce,
-      .check = chk_cross_entropy, .scalar = PR_LOG2_E, .scalar2 = PR_LN_2,
+      .check = chk_cross_entropy, .checkedElements = PR_CE_ROWS, .scalar = PR_LOG2_E, .scalar2 = PR_LN_2,
       .sharedBytes = PR_CE_CLASSES * 4),
 
     K(.name = "adamw step", .build = bld_adamw, .fill = pr_fill_adam,
@@ -171,10 +172,10 @@ static const pr_kernel KERNELS[] = {
     K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N,
       .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
 
-    K(.name = "reduce sum", .build = bld_sum, .fill = pr_fill_pos,
+    K(.name = "reduce sum", .build = bld_sum, .checkedElements = 1, .fill = pr_fill_pos,
       .check = chk_sum, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4),
-    K(.name = "reduce mean", .build = bld_mean, .fill = pr_fill_pos,
+    K(.name = "reduce mean", .build = bld_mean, .checkedElements = 1, .fill = pr_fill_pos,
       .check = chk_mean, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4, .scalar = 1.0f / (float)PR_N),
 

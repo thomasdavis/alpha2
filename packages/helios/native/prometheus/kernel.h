@@ -128,6 +128,18 @@ typedef struct {
    * kernel knows.
    */
   NvU32 workElements;
+  /*
+   * How many leading output slots the checker actually inspects. Zero means
+   * workElements.
+   *
+   * This is not documentation. After a kernel passes on hardware, the runner
+   * perturbs each of these slots in turn and requires the checker to REJECT the
+   * result -- so a wrong number here fails immediately, either because a slot
+   * it claimed was checked is not, or because the count is short and a real
+   * checker catches more than was declared. A checker that passed everything
+   * would be caught the first time it ran.
+   */
+  NvU32 checkedElements;
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */

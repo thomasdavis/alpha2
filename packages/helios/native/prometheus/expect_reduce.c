@@ -8,6 +8,20 @@
  * with the number of elements. Demanding the exact bound used for a single
  * multiply would be demanding an accident.
  */
+/*
+ * NOTE ON THE COMPARISON'S SHAPE: written as !(err <= tol), never err > tol.
+ *
+ * They differ on NaN, and only on NaN. Any comparison involving NaN is false,
+ * so "err > tol" does not fire and the value is ACCEPTED; "!(err <= tol)" fires
+ * and rejects it. Three checkers here were the first form, and a kernel that
+ * produced NaN would have passed all three -- which is the exact output a
+ * broken normalisation gives, from a zero-divided-by-zero or an
+ * infinity-minus-infinity.
+ *
+ * Found by the runner's mutation pass rather than by reading: it flips an
+ * exponent bit in each checked slot and requires the checker to object, and any
+ * output in [1,2) becomes a NaN under that flip.
+ */
 #include "oracle.h"
 
 /*
@@ -45,7 +59,7 @@ const char *chk_rms(const volatile NvU32 *o) {
   const float inv = 1.0f / sqrtf(ss / (float)PR_N + PR_RMS_EPS);
   for (unsigned i = 0; i < PR_N; i++) {
     const float want = pr_in_signed(i) * inv, got = pr_u2f(o[i]);
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
+    if (!(fabsf(got - want) / (fabsf(want) + 1e-30f) <= 1e-4f)) {
       snprintf(pr_msg(), PR_MSG_SIZE, "rms: o[%u]=%g want %g", i, (double)got,
                (double)want);
       return pr_msg();
@@ -67,7 +81,7 @@ const char *chk_layer(const volatile NvU32 *o) {
   const float inv = 1.0f / sqrtf(var + PR_RMS_EPS);
   for (unsigned i = 0; i < PR_N; i++) {
     const float want = (pr_in_signed(i) - mean) * inv, got = pr_u2f(o[i]);
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-3f) {
+    if (!(fabsf(got - want) / (fabsf(want) + 1e-30f) <= 1e-3f)) {
       snprintf(pr_msg(), PR_MSG_SIZE, "layerNorm: o[%u]=%g want %g", i,
                (double)got, (double)want);
       return pr_msg();
@@ -84,7 +98,7 @@ const char *chk_softmax(const volatile NvU32 *o) {
   for (unsigned i = 0; i < PR_N; i++) {
     const float want = expf(pr_in_signed(i) - mx) / sum, got = pr_u2f(o[i]);
     total += got;
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
+    if (!(fabsf(got - want) / (fabsf(want) + 1e-30f) <= 1e-4f)) {
       snprintf(pr_msg(), PR_MSG_SIZE, "softmax: o[%u]=%g want %g", i, (double)got,
                (double)want);
       return pr_msg();
@@ -93,7 +107,7 @@ const char *chk_softmax(const volatile NvU32 *o) {
   /* And it must be a distribution. A per-element check can pass while the
    * whole thing is scaled wrong only if every element is wrong by the same
    * factor, which this catches. */
-  if (fabsf(total - 1.0f) > 1e-4f) {
+  if (!(fabsf(total - 1.0f) <= 1e-4f)) {
     snprintf(pr_msg(), PR_MSG_SIZE, "softmax: sums to %g", (double)total);
     return pr_msg();
   }
