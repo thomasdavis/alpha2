@@ -16,6 +16,7 @@
  * checked exactly. A blanket tolerance would hide real bugs in the exact ops.
  */
 #include "elementwise.h"
+#include "reduction.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -205,6 +206,32 @@ static const char *chk_addinp(const volatile NvU32 *o) {
   return NULL;
 }
 
+/*
+ * Reductions write ONE value, so only o[0] is checked.
+ *
+ * The tolerance is relative and small: the additions themselves are exact, but
+ * a tree sums in a different ORDER than a sequential loop, and float addition
+ * is not associative. Demanding bit-equality with a host loop would be
+ * demanding the GPU reduce in an order it has no reason to use.
+ */
+static const char *chk_sum(const volatile NvU32 *o) {
+  float want = 0;
+  for (unsigned i = 0; i < PR_N; i++) want += (float)(i + 1);
+  const float got = pr_u2f(o[0]);
+  if (fabsf(got - want) / want <= 1e-6f) return NULL;
+  snprintf(g_msg, sizeof g_msg, "sum: %g want %g", (double)got, (double)want);
+  return g_msg;
+}
+static const char *chk_mean(const volatile NvU32 *o) {
+  float want = 0;
+  for (unsigned i = 0; i < PR_N; i++) want += (float)(i + 1);
+  want /= (float)PR_N;
+  const float got = pr_u2f(o[0]);
+  if (fabsf(got - want) / want <= 1e-6f) return NULL;
+  snprintf(g_msg, sizeof g_msg, "mean: %g want %g", (double)got, (double)want);
+  return g_msg;
+}
+
 UCHECK(silu, in_signed, x / (1.0f + expf(-x)))
 UCHECK(exp, in_pos, expf(x))
 UCHECK(logn, in_pos, logf(x))
@@ -250,6 +277,15 @@ EW(fill, PR_EW_FILL)
 EW(clamp, PR_EW_CLAMP)
 EW(addinp, PR_EW_ADD_INPLACE)
 EW(silu, PR_EW_SILU)
+
+static unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_reduction(p, PR_RED_SUM, PR_N);
+}
+static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_reduction(p, PR_RED_MEAN, PR_N);
+}
 
 /* ---- the table ---------------------------------------------------------- */
 
@@ -338,6 +374,18 @@ static const pr_kernel KERNELS[] = {
       .check = chk_addinp, .seed = seed_addinp),
     K(.name = "elementwise silu", .build = bld_silu, .fill = fill_signed,
       .check = chk_silu, .scalar = LOG2_E, .scalar2 = 1.0f),
+
+    /*
+     * Reductions. One block covering every element, because a tree reduction
+     * is within a block by construction -- crossing blocks needs a second pass
+     * or atomics, which is a separate problem.
+     */
+    K(.name = "reduce sum", .build = bld_sum, .fill = fill_pos,
+      .check = chk_sum, .blockX = PR_N, .gridX = 1,
+      .sharedBytes = PR_N * 4),
+    K(.name = "reduce mean", .build = bld_mean, .fill = fill_pos,
+      .check = chk_mean, .blockX = PR_N, .gridX = 1,
+      .sharedBytes = PR_N * 4, .scalar = 1.0f / (float)PR_N),
 };
 
 

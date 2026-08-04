@@ -257,6 +257,52 @@ hp_word hp_fneg(unsigned dst, unsigned srcA, hp_control c) {
   return w;
 }
 
+hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
+  hp_word w = base(HP_OP_LDS, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, addrReg);
+  hp_put(&w, HP_F_SRCB + 8, 24, offset);
+  /* 0x48 at bits 72..79 selects the .X4 scaled addressing mode. */
+  hp_put(&w, 72, 8, 0x48);
+  return w;
+}
+
+hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
+               hp_control c) {
+  hp_word w = base(HP_OP_STS, c);
+  hp_put(&w, HP_F_SRCA, 8, addrReg);
+  hp_put(&w, HP_F_SRCB, 8, dataReg);
+  hp_put(&w, HP_F_SRCB + 8, 24, offset);
+  hp_put(&w, 72, 8, 0x48);
+  return w;
+}
+
+hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
+                        hp_control c) {
+  hp_word w = base(HP_OP_ISETP_IMM, c);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 32, imm);
+  /* 0x03f04070 carries the comparison (GT), the type (U32), the combining
+   * operation (AND) and the second predicate source (PT). The destination
+   * predicate index sits at bits 81..83 within it. */
+  hp_put(&w, 64, 32, 0x03f04070);
+  hp_put(&w, 81, 3, destPred);
+  return w;
+}
+
+hp_word hp_predicated(hp_word w, unsigned pred, int negate) {
+  /*
+   * The field is CLEARED before it is written, because hp_put ORs. Every other
+   * caller starts from a zeroed word so that has never mattered; here the field
+   * already holds PT from base(), and OR-ing 0 into 7 leaves 7. The symptom is
+   * quiet and specific: `@!P0` assembles as `@!PT`, which is "never" rather
+   * than "when P0 is false" -- an instruction that silently does nothing.
+   */
+  w.lo &= ~((uint64_t)0xf << HP_F_PRED);
+  w.lo |= (uint64_t)((pred & 7u) | (negate ? 8u : 0u)) << HP_F_PRED;
+  return w;
+}
+
 hp_word hp_exit(hp_control c) {
   hp_word w = base(HP_OP_EXIT, c);
   hp_put(&w, 64, 32, 0x03800000);

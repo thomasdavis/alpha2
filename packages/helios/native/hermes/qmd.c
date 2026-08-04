@@ -129,7 +129,7 @@ static void qmd_set_cbuf(NvU32 *qmd, unsigned i, NvU64 addr, NvU32 size) {
 
 void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
-                      NvU32 blockZ) {
+                      NvU32 blockZ, NvU32 sharedBytes) {
   memset(qmd, 0, HERMES_QMD_BYTES);
 
   /* Version, and the two enums NVK sets before anything else. */
@@ -181,7 +181,9 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * whenever the ORDER changed, which no property of a kernel can explain.
    */
   qmd_set(qmd, BARRIER_COUNT, 1);
-  qmd_set(qmd, SHARED_MEMORY_SIZE, 0);
+  /* Shared memory is rounded up to 256 bytes, the granularity NVK rounds to
+   * before writing this field. A kernel that uses none asks for none. */
+  qmd_set(qmd, SHARED_MEMORY_SIZE, (sharedBytes + 0xff) & ~0xffu);
   qmd_set(qmd, MIN_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
   qmd_set(qmd, TARGET_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
   qmd_set(qmd, MAX_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MAX_KB));

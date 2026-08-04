@@ -68,6 +68,10 @@ typedef struct {
    * prior value; clearing to zero would make an accumulate indistinguishable
    * from an assign. */
   void (*seed)(volatile NvU32 *out);
+
+  /* Shared memory the kernel needs, in bytes. Declared in the QMD; a kernel
+   * that reads or writes shared memory it did not ask for faults. */
+  NvU32 sharedBytes;
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */

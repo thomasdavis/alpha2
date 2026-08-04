@@ -39,6 +39,9 @@
 #define HP_OP_FFMA 0x223
 #define HP_OP_MUFU 0x308     /* transcendentals: EX2, LG2, RCP, RSQ */
 #define HP_OP_FMNMX 0x209    /* FMNMX Rd, Ra, Rb, {PT|!PT} — min or max */
+#define HP_OP_LDS 0x984      /* LDS Rd, [Ra.X4+off] — shared memory load  */
+#define HP_OP_STS 0x388      /* STS [Ra.X4+off], Rb — shared memory store */
+#define HP_OP_ISETP_IMM 0x80c /* ISETP.<cmp>.U32.AND Pd, PT, Ra, imm, PT  */
 
 /* MUFU function selector, bits 72..79. Values captured from cuobjdump. */
 #define HP_MUFU_EX2 0x08
@@ -107,6 +110,36 @@ hp_word hp_fmnmx(unsigned dst, unsigned srcA, unsigned srcB, int wantMax,
  * Reference: FADD R13, -R0, -RZ  0x800000ff000d7221 0x004fca0000000100 */
 hp_word hp_fneg(unsigned dst, unsigned srcA, hp_control c);
 
+/*
+ * Shared memory. The address register is scaled by four (the .X4 mode a
+ * compiler emits for float arrays), so `addrReg` holds an ELEMENT index rather
+ * than a byte offset, while `offset` is in bytes.
+ *
+ * References: STS [R7.X4], R2       0x0000000207007388 0x004fe80000004800
+ *             LDS R5, [R7.X4+0x80]  0x0000800007058984 0x000e240000004800
+ */
+hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c);
+hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
+               hp_control c);
+
+/*
+ * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.
+ * Reference: ISETP.GT.U32.AND P0, PT, R7, 0x1f, PT
+ *   0x0000001f0700780c 0x040fe40003f04070
+ */
+hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
+                        hp_control c);
+
+/*
+ * Predicate an already-encoded instruction: @P<pred> or @!P<pred>.
+ *
+ * A separate step rather than a parameter on every encoder, because predication
+ * is orthogonal to what an instruction does and threading it through twenty
+ * signatures would obscure both. PT (7) is "always", which is what base()
+ * writes, so an unpredicated instruction is the default.
+ */
+hp_word hp_predicated(hp_word w, unsigned pred, int negate);
+
 /* STG.E [Ra.64 + offset], Rb — store to global memory through a 64-bit address
  * held in Ra:Ra+1. */
 hp_word hp_stg(unsigned addrReg, unsigned dataReg, uint32_t offset, hp_control c);
@@ -144,6 +177,36 @@ hp_word hp_fmnmx(unsigned dst, unsigned srcA, unsigned srcB, int wantMax,
 /* FADD Rd, -Ra, -RZ — negation, which has no opcode of its own.
  * Reference: FADD R13, -R0, -RZ  0x800000ff000d7221 0x004fca0000000100 */
 hp_word hp_fneg(unsigned dst, unsigned srcA, hp_control c);
+
+/*
+ * Shared memory. The address register is scaled by four (the .X4 mode a
+ * compiler emits for float arrays), so `addrReg` holds an ELEMENT index rather
+ * than a byte offset, while `offset` is in bytes.
+ *
+ * References: STS [R7.X4], R2       0x0000000207007388 0x004fe80000004800
+ *             LDS R5, [R7.X4+0x80]  0x0000800007058984 0x000e240000004800
+ */
+hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c);
+hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
+               hp_control c);
+
+/*
+ * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.
+ * Reference: ISETP.GT.U32.AND P0, PT, R7, 0x1f, PT
+ *   0x0000001f0700780c 0x040fe40003f04070
+ */
+hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
+                        hp_control c);
+
+/*
+ * Predicate an already-encoded instruction: @P<pred> or @!P<pred>.
+ *
+ * A separate step rather than a parameter on every encoder, because predication
+ * is orthogonal to what an instruction does and threading it through twenty
+ * signatures would obscure both. PT (7) is "always", which is what base()
+ * writes, so an unpredicated instruction is the default.
+ */
+hp_word hp_predicated(hp_word w, unsigned pred, int negate);
 
 /* IMAD Rd, Ra, c[bank][offset], Rc — multiply a register by a constant-bank
  * value and add a register. This is how a global thread index is built:
