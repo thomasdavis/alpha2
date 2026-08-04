@@ -119,6 +119,25 @@ static NvU64 gaia_va_take(NvU64 size) {
   return at;
 }
 
+/* Allocate with a caller-chosen attr word. Exposed so the coherency of buffers
+ * the GPU POLLS (the GPFIFO ring, the pushbuffer) can be chosen deliberately
+ * rather than inheriting the default. */
+int gaia_alloc_attr(aether_device *d, gaia_buffer *b, NvU64 size, NvU32 attr) {
+  memset(b, 0, sizeof *b);
+  b->hostFd = -1;
+  NV_MEMORY_ALLOCATION_PARAMS p;
+  memset(&p, 0, sizeof p);
+  p.owner = 0x48454c49;
+  p.size = size;
+  p.alignment = 4096;
+  p.flags = ALLOC_FLAGS_MAP_NOT_REQUIRED;
+  p.attr = attr;
+  int rc = aether_alloc(d, d->device, &b->handle, NV01_MEMORY_LOCAL_USER, &p, sizeof p);
+  if (rc != 0) return rc;
+  b->size = size;
+  return 0;
+}
+
 int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where) {
   memset(b, 0, sizeof *b);
   b->hostFd = -1;

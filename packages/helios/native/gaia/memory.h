@@ -45,6 +45,10 @@ typedef enum {
   GAIA_VIDMEM,
 } gaia_location;
 
+/* Allocate with an explicit NVOS32_ATTR word — for buffers whose coherency
+ * matters, such as anything the GPU polls. */
+int gaia_alloc_attr(aether_device *d, gaia_buffer *b, NvU64 size, NvU32 attr);
+
 /* Allocate `size` bytes. The buffer has no addresses yet. */
 int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where);
 
