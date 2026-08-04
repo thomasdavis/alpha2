@@ -14,6 +14,7 @@
  * back. A test whose expectation came from the implementation proves only that
  * the implementation is deterministic (standard 5).
  */
+#include "../aether/device.h"
 #include "../aether/ioctl.h"
 #include "../aether/nv_abi.h"
 #include "harness.h"
@@ -151,6 +152,48 @@ static void test_status_names(void) {
   HT_END();
 }
 
+/* The handle allocator is ours, not RM's — a collision aliases two objects, so
+ * it is worth proving it is monotonic and starts where we think. */
+static void test_handle_allocator(void) {
+  HT_CASE("handle allocator is monotonic and namespaced");
+  aether_device d;
+  memset(&d, 0, sizeof d);
+  d.nextHandle = 0xcafe0000u;
+
+  NvHandle a = aether_next_handle(&d);
+  NvHandle b = aether_next_handle(&d);
+  NvHandle c = aether_next_handle(&d);
+  HT_EQ_U64(a, 0xcafe0000u);
+  HT_EQ_U64(b, 0xcafe0001u);
+  HT_EQ_U64(c, 0xcafe0002u);
+  HT_TRUE(a != b && b != c);
+  HT_END();
+}
+
+/* Opening a device on a box with no GPU must fail cleanly rather than crash or
+ * leave half a chain behind. This runs everywhere, including CI. */
+static void test_open_without_gpu_is_clean(void) {
+  HT_CASE("device open fails cleanly when there is no GPU");
+  aether_device d;
+  int rc = aether_device_open(&d, 0);
+  if (rc == 0) {
+    /* A real GPU is present — then the chain must be fully built. */
+    HT_TRUE(d.client != 0);
+    HT_TRUE(d.device != 0);
+    HT_TRUE(d.subdevice != 0);
+    HT_TRUE(d.vaspace != 0);
+    aether_device_close(&d);
+    HT_EQ_U64(d.client, 0);
+  } else {
+    /* No GPU: everything must be reset, not left dangling. */
+    HT_EQ_U64(d.client, 0);
+    HT_EQ_U64(d.device, 0);
+    HT_TRUE(d.ctlFd < 0);
+    HT_TRUE(d.gpuFd < 0);
+  }
+  HT_END();
+}
+
 void ht_run(void) {
   printf("\naether — ioctl transport\n");
   test_scalar_widths();
@@ -161,4 +204,6 @@ void ht_run(void) {
   test_ioctl_request_encoding();
   test_class_ids();
   test_status_names();
+  test_handle_allocator();
+  test_open_without_gpu_is_clean();
 }

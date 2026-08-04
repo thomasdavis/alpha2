@@ -43,7 +43,7 @@ const LAYERS = [
 ];
 
 const CFLAGS = [
-  "-std=c11",
+  "-std=gnu11",   /* O_CLOEXEC and friends are POSIX-but-not-C11 */
   "-O2",
   "-g",
   "-Wall",
