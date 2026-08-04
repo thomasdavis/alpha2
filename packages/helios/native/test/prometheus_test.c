@@ -38,7 +38,7 @@ static NvU64 now_ns(void) {
 
 /* Everything a launch needs, allocated once. */
 typedef struct {
-  gaia_buffer code, out, in, qmd, scratch, lmem;
+  gaia_buffer code, out, in, inB, qmd, scratch, lmem;
 } pr_buffers;
 
 static int alloc_buffers(aether_device *d, pr_buffers *b) {
@@ -50,6 +50,9 @@ static int alloc_buffers(aether_device *d, pr_buffers *b) {
   if ((rc = gaia_alloc(d, &b->in, 4096, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->in)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->in)) != 0) return rc;
+  if ((rc = gaia_alloc(d, &b->inB, 4096, GAIA_SYSMEM)) != 0) return rc;
+  if ((rc = gaia_map_gpu(d, &b->inB)) != 0) return rc;
+  if ((rc = gaia_map_host(d, &b->inB)) != 0) return rc;
   if ((rc = gaia_alloc(d, &b->code, 4096, GAIA_VIDMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->code)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->code)) != 0) return rc;
@@ -69,6 +72,7 @@ static void free_buffers(aether_device *d, pr_buffers *b) {
   gaia_free(d, &b->scratch);
   gaia_free(d, &b->qmd);
   gaia_free(d, &b->code);
+  gaia_free(d, &b->inB);
   gaia_free(d, &b->in);
   gaia_free(d, &b->out);
 }
@@ -100,11 +104,13 @@ static void write_code(gaia_buffer *code, const hp_word *prog, unsigned count) {
 }
 
 /* Kernel parameters, in constant bank 0 in CUDA's layout. */
-static void write_params(pr_buffers *b, NvU32 blockX) {
+static void write_params(pr_buffers *b, NvU32 blockX, float scalar) {
   volatile NvU8 *cb = (volatile NvU8 *)b->scratch.hostPtr;
   *(volatile NvU32 *)(cb + HERMES_CBUF0_NTID_X) = blockX;
   *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0) = b->out.gpuAddr;
   *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 8) = b->in.gpuAddr;
+  *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 16) = b->inB.gpuAddr;
+  *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR) = pr_f2u(scalar);
 }
 
 /* Run one kernel. Returns NULL on success or the reason it failed. */
@@ -112,8 +118,9 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
                               pr_buffers *b, const pr_kernel *k) {
   volatile NvU32 *o = (volatile NvU32 *)b->out.hostPtr;
   for (unsigned i = 0; i < FENCE_OFFSET / 4 + 4; i++) o[i] = 0;
-  if (k->fill) k->fill((volatile NvU32 *)b->in.hostPtr);
-  write_params(b, k->blockX);
+  if (k->fill)
+    k->fill((volatile NvU32 *)b->in.hostPtr, (volatile NvU32 *)b->inB.hostPtr);
+  write_params(b, k->blockX, k->scalar);
 
   hp_word prog[PR_MAX_INSTRUCTIONS];
   const unsigned count = k->build(prog, b->out.gpuAddr, b->in.gpuAddr);

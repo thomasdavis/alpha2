@@ -100,6 +100,8 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  */
 #define HERMES_CBUF0_NTID_X 0x000
 #define HERMES_CBUF0_PARAM0 0x160
+/* Three pointers then a scalar: out, a, b, s. */
+#define HERMES_CBUF0_SCALAR (0x160 + 24)
 #define HERMES_CBUF0_BYTES 0x1000
 
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)

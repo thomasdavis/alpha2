@@ -12,6 +12,10 @@ enum {
   R_ESIZE = 5,
   R_OUT_ADDR = 6, /* R6:R7 */
   R_RESULT = 8,
+  R_B_ADDR = 10,  /* R10:R11 — the second input, for binary operations */
+  R_B_VALUE = 12,
+  R_SCALAR = 13,
+  R_TEMP = 14,
 };
 
 /* Bytes per element. Everything here is 32-bit. */
@@ -24,15 +28,29 @@ enum {
 #define BAR_INDEX 0
 #define BAR_LOAD 1
 #define BAR_MUFU 2
+#define BAR_LOAD_B 3
 
 /* Does the operation read in[i]? PR_EW_INDEX does not, and emitting a load it
  * never uses would make it a worse probe. */
 static int reads_input(pr_ew_op op) { return op != PR_EW_INDEX; }
 
+/* Does the operation read a SECOND input array? */
+static int reads_b(pr_ew_op op) {
+  return op == PR_EW_ADD || op == PR_EW_SUB || op == PR_EW_MUL ||
+         op == PR_EW_DIV;
+}
+
+/* Does it read the scalar from the constant bank? */
+static int reads_scalar(pr_ew_op op) {
+  return op == PR_EW_SCALE || op == PR_EW_EXP || op == PR_EW_LOG;
+}
+
 /* The operation itself: R_RESULT = f(R_VALUE, R_INDEX). Every case here waits
  * on the load barrier when it consumes the loaded value. */
 static unsigned emit_op(hp_word *p, pr_ew_op op) {
   const hp_control after_load = hp_ctrl_wait(BAR_LOAD);
+  const hp_control both_loads =
+      hp_ctrl_waitmask((1u << BAR_LOAD) | (1u << BAR_LOAD_B));
   switch (op) {
     case PR_EW_COPY:
       p[0] = hp_iadd3_imm(R_RESULT, R_VALUE, 0, after_load);
@@ -86,6 +104,53 @@ static unsigned emit_op(hp_word *p, pr_ew_op op) {
     case PR_EW_INDEX:
       p[0] = hp_iadd3_imm(R_RESULT, R_INDEX, 0, hp_ctrl_safe());
       return 1;
+
+    /* Binary. Both loads are outstanding, so wait on both barriers. */
+    case PR_EW_ADD:
+      p[0] = hp_fadd(R_RESULT, R_VALUE, R_B_VALUE, both_loads);
+      return 1;
+    case PR_EW_MUL:
+      p[0] = hp_fmul(R_RESULT, R_VALUE, R_B_VALUE, both_loads);
+      return 1;
+    /* Subtraction has no opcode: negate then add. Two instructions is the
+     * honest cost, and cheaper than pretending FADD has a negate modifier we
+     * have not verified. */
+    case PR_EW_SUB:
+      p[0] = hp_fneg(R_TEMP, R_B_VALUE, both_loads);
+      p[1] = hp_fadd(R_RESULT, R_VALUE, R_TEMP, hp_ctrl_safe());
+      return 2;
+    /* Division likewise: the hardware offers a reciprocal, not a divide. */
+    case PR_EW_DIV:
+      p[0] = hp_mufu(R_TEMP, R_B_VALUE, HP_MUFU_RCP,
+                     hp_ctrl_wait_setbar(BAR_LOAD_B, BAR_MUFU));
+      p[1] = hp_fmul(R_RESULT, R_VALUE, R_TEMP, hp_ctrl_wait(BAR_MUFU));
+      return 2;
+
+    case PR_EW_SCALE:
+      p[0] = hp_fmul(R_RESULT, R_VALUE, R_SCALAR, after_load);
+      return 1;
+
+    /* exp(x) = exp2(x * log2 e), with the constant coming from the bank rather
+     * than being materialised as an immediate — which is how a real kernel
+     * receives a scalar, and avoids an FMUL-immediate encoding we have not
+     * verified. */
+    case PR_EW_EXP:
+      p[0] = hp_fmul(R_TEMP, R_VALUE, R_SCALAR, after_load);
+      p[1] = hp_mufu(R_RESULT, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+      return 2;
+    case PR_EW_LOG:
+      p[0] = hp_mufu(R_TEMP, R_VALUE, HP_MUFU_LG2,
+                     hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
+      p[1] = hp_fmul(R_RESULT, R_TEMP, R_SCALAR, hp_ctrl_wait(BAR_MUFU));
+      return 2;
+    /* sqrt(x) = 1 / rsqrt(x). Two dependent MUFUs, so the second waits on the
+     * first and the store waits on the second. */
+    case PR_EW_SQRT:
+      p[0] = hp_mufu(R_TEMP, R_VALUE, HP_MUFU_RSQ,
+                     hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
+      p[1] = hp_mufu(R_RESULT, R_TEMP, HP_MUFU_RCP,
+                     hp_ctrl_wait_setbar(BAR_MUFU, BAR_MUFU));
+      return 2;
     case PR_EW_COUNT:
       break;
   }
@@ -93,9 +158,11 @@ static unsigned emit_op(hp_word *p, pr_ew_op op) {
 }
 
 /* Does the operation leave its result under a scoreboard barrier? */
+/* Does the result land under a scoreboard barrier the store must wait on? True
+ * whenever the LAST instruction of the operation is a MUFU. */
 static int op_sets_barrier(pr_ew_op op) {
   return op == PR_EW_EXP2 || op == PR_EW_LOG2 || op == PR_EW_RCP ||
-         op == PR_EW_RSQ;
+         op == PR_EW_RSQ || op == PR_EW_EXP || op == PR_EW_SQRT;
 }
 
 unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
@@ -118,6 +185,15 @@ unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
                                 HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
     p[n++] = hp_ldg(R_VALUE, R_IN_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   }
+
+  if (reads_b(op)) {
+    p[n++] = hp_imad_wide_const(R_B_ADDR, R_INDEX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM0 + 16, hp_ctrl_safe());
+    p[n++] = hp_ldg(R_B_VALUE, R_B_ADDR, 0, hp_ctrl_setbar(BAR_LOAD_B));
+  }
+
+  if (reads_scalar(op))
+    p[n++] = hp_mov_const(R_SCALAR, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
 
   n += emit_op(&p[n], op);
 

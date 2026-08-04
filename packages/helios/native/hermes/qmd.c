@@ -151,11 +151,22 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
   qmd_set(qmd, PROGRAM_ADDRESS_UPPER, (program >> 32) & 0x1ffffu);
   qmd_set(qmd, SASS_VERSION, HERMES_SASS_VERSION_SM86);
 
-  /* Resources. Generous on registers -- 16 is what an empty CUDA kernel asks
-   * for, and over-requesting costs occupancy rather than correctness. The rest
-   * are genuinely zero for a kernel with no shared memory, no spills and no
-   * barriers. */
-  qmd_set(qmd, REGISTER_COUNT_V, 16);
+  /*
+   * Registers per thread.
+   *
+   * 16 was taken from an empty CUDA kernel and is not enough once kernels do
+   * real work: the binary elementwise ones use up to R14 for a second address
+   * pair, a second loaded value, a scalar and a temporary, and asking for
+   * fewer registers than a kernel touches raises GR_EXCEPTION rather than
+   * spilling. Ampere allocates in units of 8, so 32 is the next size that
+   * comfortably covers everything here.
+   *
+   * Over-requesting costs occupancy, not correctness. A register allocator will
+   * eventually compute this per kernel; until then a generous fixed number is
+   * the right trade, because the failure mode of guessing low is a fault and
+   * the failure mode of guessing high is slower.
+   */
+  qmd_set(qmd, REGISTER_COUNT_V, 32);
   /*
    * ONE BARRIER, always.
    *

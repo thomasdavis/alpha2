@@ -52,6 +52,26 @@ typedef enum {
   PR_EW_RSQ,       /* out[i] = 1 / sqrt(in[i])          */
   PR_EW_RELU,      /* out[i] = max(in[i], 0)            */
   PR_EW_INDEX,     /* out[i] = i — a probe, reads nothing */
+
+  /* Binary: out[i] = a[i] OP b[i]. */
+  PR_EW_ADD,       /* a + b                              */
+  PR_EW_SUB,       /* a - b                              */
+  PR_EW_MUL,       /* a * b                              */
+  PR_EW_DIV,       /* a * (1/b), which is what the hardware offers */
+
+  /* Scalar: out[i] = a[i] OP s, with s from the constant bank. */
+  PR_EW_SCALE,     /* a * s                              */
+
+  /*
+   * Composed unary. The hardware has exp2 and log2, not exp and log, so these
+   * are two or three instructions rather than one -- a base conversion around a
+   * MUFU. Naming them exp and log is honest here because that IS what they
+   * compute; the earlier PR_EW_EXP2 stays because it names a different thing.
+   */
+  PR_EW_EXP,       /* exp2(a * log2(e))                  */
+  PR_EW_LOG,       /* log2(a) * ln(2)                    */
+  PR_EW_SQRT,      /* 1 / rsqrt(a)                       */
+
   PR_EW_COUNT,
 } pr_ew_op;
 

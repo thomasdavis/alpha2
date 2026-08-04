@@ -47,12 +47,19 @@ typedef struct {
 
   NvU32 blockX, gridX;
 
-  /* Prepare the input buffer, or NULL for kernels that read no input. */
-  void (*fill)(volatile NvU32 *in);
+  /* Prepare the inputs. Binary kernels use both; unary kernels ignore `b`;
+   * kernels that read nothing leave this NULL. */
+  void (*fill)(volatile NvU32 *a, volatile NvU32 *b);
 
   /* Inspect the output. NULL means correct; anything else is the reason, and
    * should say what was wrong rather than that something was. */
   const char *(*check)(const volatile NvU32 *o);
+
+  /* A scalar operand, placed in the constant bank. Kernels that take one --
+   * scale, and the base conversions inside exp and log -- read it from there,
+   * which is how a real kernel receives a scalar. Last in the struct so the
+   * registry table reads name, code, geometry, data, expectation. */
+  float scalar;
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */

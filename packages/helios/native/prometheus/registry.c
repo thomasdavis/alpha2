@@ -26,19 +26,34 @@ float pr_u2f(NvU32 u) { float f; memcpy(&f, &u, 4); return f; }
 
 /* ---- inputs ------------------------------------------------------------- */
 
-static void fill_ints(volatile NvU32 *in) {
-  for (unsigned i = 0; i < PR_N; i++) in[i] = i + 1;
+static void fill_ints(volatile NvU32 *a, volatile NvU32 *b) {
+  (void)b;
+  for (unsigned i = 0; i < PR_N; i++) a[i] = i + 1;
 }
 /* Strictly positive, so log2 and rsqrt are defined everywhere. */
-static void fill_pos(volatile NvU32 *in) {
-  for (unsigned i = 0; i < PR_N; i++) in[i] = pr_f2u((float)(i + 1));
+static void fill_pos(volatile NvU32 *a, volatile NvU32 *b) {
+  (void)b;
+  for (unsigned i = 0; i < PR_N; i++) a[i] = pr_f2u((float)(i + 1));
 }
 /* Alternating sign, so relu and negation have something to do. A relu tested
  * only on positive input tests nothing. */
-static void fill_signed(volatile NvU32 *in) {
+static void fill_signed(volatile NvU32 *a, volatile NvU32 *b) {
+  (void)b;
   for (unsigned i = 0; i < PR_N; i++)
-    in[i] = pr_f2u((i & 1) ? -(float)(i + 1) : (float)(i + 1));
+    a[i] = pr_f2u((i & 1) ? -(float)(i + 1) : (float)(i + 1));
 }
+
+/* Two operands for the binary kernels: a[i] = i+1, b[i] = 2i+3. Distinct, both
+ * non-zero so division is defined, and different enough that a kernel which
+ * confuses its inputs fails rather than coincidentally agreeing. */
+static void fill_pair(volatile NvU32 *a, volatile NvU32 *b) {
+  for (unsigned i = 0; i < PR_N; i++) {
+    a[i] = pr_f2u((float)(i + 1));
+    b[i] = pr_f2u((float)(2 * i + 3));
+  }
+}
+static float in_a(unsigned i) { return (float)(i + 1); }
+static float in_b(unsigned i) { return (float)(2 * i + 3); }
 
 static float in_pos(unsigned i) { return (float)(i + 1); }
 static float in_signed(unsigned i) {
@@ -106,6 +121,49 @@ FCHECK(ffma, in_pos, x *x + x)
 FCHECK(fneg, in_signed, -x)
 FCHECK(relu, in_signed, x > 0.0f ? x : 0.0f)
 
+/* Binary comparison: x is a[i] and y is b[i]. */
+#define BCHECK(tag, expr)                                                      \
+  static const char *chk_##tag(const volatile NvU32 *o) {                      \
+    for (unsigned i = 0; i < PR_N; i++) {                                      \
+      const float x = in_a(i), y = in_b(i);                                    \
+      (void)x; (void)y;                                                        \
+      if (pr_u2f(o[i]) != (expr)) {                                            \
+        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g", i,            \
+                 (double)pr_u2f(o[i]), (double)(expr));                        \
+        return g_msg;                                                          \
+      }                                                                        \
+    }                                                                          \
+    return NULL;                                                               \
+  }
+
+/* Same, with tolerance, for anything routed through MUFU. */
+#define BUCHECK(tag, expr)                                                     \
+  static const char *chk_##tag(const volatile NvU32 *o) {                      \
+    for (unsigned i = 0; i < PR_N; i++) {                                      \
+      const float x = in_a(i), y = in_b(i);                                    \
+      const float want = (expr), got = pr_u2f(o[i]);                           \
+      const float err = fabsf(got - want) / (fabsf(want) + 1e-30f);            \
+      if (!(err <= MUFU_REL_TOLERANCE)) {                                      \
+        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g", i,            \
+                 (double)got, (double)want);                                   \
+        return g_msg;                                                          \
+      }                                                                        \
+    }                                                                          \
+    return NULL;                                                               \
+  }
+
+BCHECK(add, x + y)
+BCHECK(sub, x - y)
+BCHECK(mul, x *y)
+BUCHECK(div, x / y)
+
+/* scale multiplies by the scalar the kernel reads from the constant bank. */
+#define SCALE_BY 0.25f
+FCHECK(scale, in_pos, x *SCALE_BY)
+
+UCHECK(exp, in_pos, expf(x))
+UCHECK(logn, in_pos, logf(x))
+UCHECK(sqrt, in_pos, sqrtf(x))
 UCHECK(exp2, in_pos, exp2f(x))
 UCHECK(log2, in_pos, log2f(x))
 UCHECK(rcp, in_pos, 1.0f / x)
@@ -135,6 +193,14 @@ EW(exp2, PR_EW_EXP2)
 EW(log2, PR_EW_LOG2)
 EW(rcp, PR_EW_RCP)
 EW(rsq, PR_EW_RSQ)
+EW(add, PR_EW_ADD)
+EW(sub, PR_EW_SUB)
+EW(mul, PR_EW_MUL)
+EW(div, PR_EW_DIV)
+EW(scale, PR_EW_SCALE)
+EW(exp, PR_EW_EXP)
+EW(logn, PR_EW_LOG)
+EW(sqrt, PR_EW_SQRT)
 
 /* ---- the table ---------------------------------------------------------- */
 
@@ -145,20 +211,39 @@ EW(rsq, PR_EW_RSQ)
 #define GRID (PR_N / BLOCK)
 
 static const pr_kernel KERNELS[] = {
-    {"elementwise copy", bld_copy, BLOCK, GRID, fill_ints, chk_copy},
-    {"elementwise add index", bld_addidx, BLOCK, GRID, fill_ints, chk_addidx},
-    {"elementwise add constant", bld_addconst, BLOCK, GRID, fill_ints, chk_addconst},
-    {"elementwise index", bld_index, BLOCK, GRID, NULL, chk_index},
-    {"elementwise fadd", bld_fadd, BLOCK, GRID, fill_pos, chk_fadd},
-    {"elementwise fmul", bld_fmul, BLOCK, GRID, fill_pos, chk_fmul},
-    {"elementwise ffma", bld_ffma, BLOCK, GRID, fill_pos, chk_ffma},
-    {"elementwise negate", bld_fneg, BLOCK, GRID, fill_signed, chk_fneg},
-    {"elementwise relu", bld_relu, BLOCK, GRID, fill_signed, chk_relu},
-    {"elementwise exp2", bld_exp2, BLOCK, GRID, fill_pos, chk_exp2},
-    {"elementwise log2", bld_log2, BLOCK, GRID, fill_pos, chk_log2},
-    {"elementwise reciprocal", bld_rcp, BLOCK, GRID, fill_pos, chk_rcp},
-    {"elementwise rsqrt", bld_rsq, BLOCK, GRID, fill_pos, chk_rsq},
+    /* name                       build      block  grid   fill         check       scalar */
+    {"elementwise copy",          bld_copy,  BLOCK, GRID, fill_ints,   chk_copy,     0.0f},
+    {"elementwise add index",     bld_addidx,BLOCK, GRID, fill_ints,   chk_addidx,   0.0f},
+    {"elementwise add constant",  bld_addconst,BLOCK,GRID,fill_ints,   chk_addconst, 0.0f},
+    {"elementwise index",         bld_index, BLOCK, GRID, NULL,        chk_index,    0.0f},
+
+    {"elementwise fadd",          bld_fadd,  BLOCK, GRID, fill_pos,    chk_fadd,     0.0f},
+    {"elementwise fmul",          bld_fmul,  BLOCK, GRID, fill_pos,    chk_fmul,     0.0f},
+    {"elementwise ffma",          bld_ffma,  BLOCK, GRID, fill_pos,    chk_ffma,     0.0f},
+    {"elementwise negate",        bld_fneg,  BLOCK, GRID, fill_signed, chk_fneg,     0.0f},
+    {"elementwise relu",          bld_relu,  BLOCK, GRID, fill_signed, chk_relu,     0.0f},
+
+    {"elementwise exp2",          bld_exp2,  BLOCK, GRID, fill_pos,    chk_exp2,     0.0f},
+    {"elementwise log2",          bld_log2,  BLOCK, GRID, fill_pos,    chk_log2,     0.0f},
+    {"elementwise reciprocal",    bld_rcp,   BLOCK, GRID, fill_pos,    chk_rcp,      0.0f},
+    {"elementwise rsqrt",         bld_rsq,   BLOCK, GRID, fill_pos,    chk_rsq,      0.0f},
+
+    /* Binary. */
+    {"elementwise add (a+b)",     bld_add,   BLOCK, GRID, fill_pair,   chk_add,      0.0f},
+    {"elementwise sub (a-b)",     bld_sub,   BLOCK, GRID, fill_pair,   chk_sub,      0.0f},
+    {"elementwise mul (a*b)",     bld_mul,   BLOCK, GRID, fill_pair,   chk_mul,      0.0f},
+    {"elementwise div (a/b)",     bld_div,   BLOCK, GRID, fill_pair,   chk_div,      0.0f},
+
+    /* Scalar operand, and the composed unaries the hardware has no opcode for.
+     * The constants are the base conversions: log2(e) for exp, ln(2) for log. */
+    {"elementwise scale",         bld_scale, BLOCK, GRID, fill_pos,    chk_scale, SCALE_BY},
+    {"elementwise exp",           bld_exp,   BLOCK, GRID, fill_pos,    chk_exp,
+     1.4426950408889634f},
+    {"elementwise log",           bld_logn,  BLOCK, GRID, fill_pos,    chk_logn,
+     0.6931471805599453f},
+    {"elementwise sqrt",          bld_sqrt,  BLOCK, GRID, fill_pos,    chk_sqrt,     0.0f},
 };
+
 
 const pr_kernel *pr_kernels(unsigned *count) {
   *count = sizeof KERNELS / sizeof KERNELS[0];
