@@ -32,12 +32,14 @@
 #include "../gaia/memory.h"
 
 typedef struct {
+  NvHandle group;    /* the channel group (TSG) the channel lives in */
   NvHandle handle;   /* the channel object */
   NvHandle compute;  /* AMPERE_COMPUTE_B, bound to this channel */
 
   gaia_buffer gpfifo;     /* the ring of entries */
   gaia_buffer pushbuffer; /* the methods those entries point at */
-  gaia_buffer userd;      /* the doorbell page */
+  /* No userd buffer: RM allocates the doorbell page itself, and supplying one
+   * makes channel allocation fail. */
 
   NvU32 gpfifoEntries;
   NvU32 put;   /* our index into the ring */
