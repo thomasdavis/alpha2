@@ -126,16 +126,61 @@ int aether_device_open(aether_device *d, int index) {
   memset(d, 0, sizeof *d);
   d->ctlFd = -1;
   d->gpuFd = -1;
+  d->attachFd = -1;
   d->index = index;
   d->nextHandle = AETHER_HANDLE_BASE;
 
   d->ctlFd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
   if (d->ctlFd < 0) return -1;
 
+  /*
+   * The initialisation handshake, in the order a working driver performs it.
+   * Captured by tracing opens and ioctls of a Vulkan compute submit:
+   *
+   *   open /dev/nvidiactl                    -> primary control fd
+   *   CHECK_VERSION_STR, SYS_PARAMS, CARD_INFO on it
+   *   open /dev/nvidiaN, REGISTER_FD on each
+   *   open a SECOND /dev/nvidiactl           -> and ATTACH_GPUS_TO_FD on THAT
+   *
+   * The last step is the one that is easy to get wrong and produces no useful
+   * error: ATTACH_GPUS_TO_FD must go on a FRESH control fd, as its first
+   * operation, with no REGISTER_FD first. Issued on a device fd -- which is
+   * what the name suggests -- it returns EINVAL every time.
+   */
+  {
+    struct { NvU32 cmd, reply; char v[64]; } ver;
+    memset(&ver, 0, sizeof ver);
+    ver.cmd = '1'; /* NV_RM_API_VERSION_CMD_RELAXED */
+    aether_ioctl(d->ctlFd, NV_ESC_CHECK_VERSION_STR, &ver, sizeof ver);
+
+    /* CARD_INFO is an array of 72-byte entries, one per card. gpu_id sits at
+     * offset 16 within an entry, so card N's id is at 72*N + 16. Device index
+     * and card index line up on this machine (/dev/nvidia1 -> entry 1). */
+    static unsigned char ci[2304];
+    memset(ci, 0, sizeof ci);
+    if (aether_ioctl(d->ctlFd, NV_ESC_CARD_INFO, ci, sizeof ci) == 0) {
+      const unsigned off = (unsigned)index * 72u + 16u;
+      if (off + 4 <= sizeof ci) d->gpuId = *(NvU32 *)(ci + off);
+    }
+  }
+
   char path[32];
   snprintf(path, sizeof path, "/dev/nvidia%d", index);
   d->gpuFd = open(path, O_RDWR | O_CLOEXEC);
   if (d->gpuFd < 0) goto fail;
+  aether_register_fd(d, d->gpuFd);
+
+  /* Attach the GPU on its own fresh control fd. Held open for the lifetime of
+   * the device: closing it would detach. */
+  if (d->gpuId) {
+    d->attachFd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
+    if (d->attachFd >= 0) {
+      static NvU32 gpus[32];
+      memset(gpus, 0, sizeof gpus);
+      gpus[0] = d->gpuId;
+      aether_ioctl(d->attachFd, NV_ESC_ATTACH_GPUS_TO_FD, gpus, sizeof gpus);
+    }
+  }
 
   /* The client is the root of our handle namespace. It is allocated with
    * itself as both root and parent, which is the one place the chain is
@@ -196,9 +241,11 @@ void aether_device_close(aether_device *d) {
   if (d->subdevice) aether_free(d, d->subdevice);
   if (d->device) aether_free(d, d->device);
   if (d->client) aether_free(d, d->client);
+  if (d->attachFd >= 0) close(d->attachFd);
   if (d->gpuFd >= 0) close(d->gpuFd);
   if (d->ctlFd >= 0) close(d->ctlFd);
   memset(d, 0, sizeof *d);
   d->ctlFd = -1;
   d->gpuFd = -1;
+  d->attachFd = -1;
 }

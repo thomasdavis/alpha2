@@ -38,7 +38,9 @@
 typedef struct {
   int ctlFd;  /* /dev/nvidiactl — the control channel, all RM escapes go here */
   int gpuFd;  /* /dev/nvidiaN  — needed for mapping this GPU's memory */
-  int index;  /* which GPU */
+  int index;     /* which GPU */
+  int attachFd;  /* fresh control fd the GPU is attached to; must stay open */
+  NvU32 gpuId;   /* from CARD_INFO; the value ATTACH_GPUS_TO_FD wants */
 
   NvHandle client;
   NvHandle device;
