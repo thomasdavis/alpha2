@@ -330,7 +330,7 @@ static unsigned emit_elementwise(hp_word *p, ew_op op) {
   unsigned n = 0;
   /* Both S2R results are consumed by the same IMAD, so one scoreboard barrier
    * covers them: it does not clear until every producer that set it retires. */
-  p[n++] = hp_s2r(0, HP_SR_TID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_s2r(0, HP_SR_CTAID_X, hp_ctrl_setbar(0));
   p[n++] = hp_s2r(3, HP_SR_TID_X, hp_ctrl_setbar(0));
   p[n++] = hp_mov_imm(5, 4, hp_ctrl_safe()); /* bytes per element */
   p[n++] = hp_imad_const(0, 0, 0, HERMES_CBUF0_NTID_X, 3, hp_ctrl_wait(0));
@@ -339,16 +339,16 @@ static unsigned emit_elementwise(hp_word *p, ew_op op) {
    * it a clean probe for whether LDG is what faults. */
   if (op != EW_INDEX) {
     p[n++] = hp_imad_wide_const(2, 0, 5, 0, HERMES_CBUF0_PARAM0 + 8, hp_ctrl_safe());
-    p[n++] = hp_ldg(4, 2, 0, hp_ctrl_setbar(2));
+    p[n++] = hp_ldg(4, 2, 0, hp_ctrl_setbar(1));
   }
 
   switch (op) {
-    case EW_COPY:      p[n++] = hp_iadd3_imm(8, 4, 0, hp_ctrl_wait(2)); break;
-    case EW_ADD_INDEX: p[n++] = hp_iadd3_reg(8, 4, 0, hp_ctrl_wait(2)); break;
-    case EW_ADD_CONST: p[n++] = hp_iadd3_imm(8, 4, 0x1234, hp_ctrl_wait(2)); break;
-    case EW_FADD_SELF: p[n++] = hp_fadd(8, 4, 4, hp_ctrl_wait(2)); break;
-    case EW_FMUL_SELF: p[n++] = hp_fmul(8, 4, 4, hp_ctrl_wait(2)); break;
-    case EW_FFMA_SELF: p[n++] = hp_ffma(8, 4, 4, 4, hp_ctrl_wait(2)); break;
+    case EW_COPY:      p[n++] = hp_iadd3_imm(8, 4, 0, hp_ctrl_wait(1)); break;
+    case EW_ADD_INDEX: p[n++] = hp_iadd3_reg(8, 4, 0, hp_ctrl_wait(1)); break;
+    case EW_ADD_CONST: p[n++] = hp_iadd3_imm(8, 4, 0x1234, hp_ctrl_wait(1)); break;
+    case EW_FADD_SELF: p[n++] = hp_fadd(8, 4, 4, hp_ctrl_wait(1)); break;
+    case EW_FMUL_SELF: p[n++] = hp_fmul(8, 4, 4, hp_ctrl_wait(1)); break;
+    case EW_FFMA_SELF: p[n++] = hp_ffma(8, 4, 4, 4, hp_ctrl_wait(1)); break;
     case EW_INDEX:     p[n++] = hp_iadd3_imm(8, 0, 0, hp_ctrl_safe()); break;
   }
 
@@ -460,6 +460,67 @@ static const char *c_tidstore(const volatile NvU32 *o) {
   return NULL;
 }
 
+/*
+ * IMAD against a constant bank, on its own.
+ *
+ * Computes ctaid * c[0x0][0x0] + tid and stores it through an IMMEDIATE
+ * address, so a wrong result shows up as a wrong number instead of a fault.
+ * Launched as block 1 / grid 3 with ntid = 1, so the answer is the block index
+ * and must land in [0x100, 0x103).
+ */
+static unsigned k_imadc(hp_word *p, NvU64 out, NvU64 in) {
+  (void)in;
+  unsigned n = 0;
+  p[n++] = hp_s2r(0, HP_SR_CTAID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_s2r(3, HP_SR_TID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_imad_const(4, 0, 0, HERMES_CBUF0_NTID_X, 3, hp_ctrl_wait(0));
+  p[n++] = hp_iadd3_imm(6, 4, 0x100, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(2, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(3, (uint32_t)(out >> 32), hp_ctrl_safe());
+  p[n++] = hp_stg(2, 6, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+/* Same kernel at block 64 / grid 1: ntid is 64 but ctaid is 0, so the answer is
+ * the thread id and must land in [0x100, 0x140). */
+static const char *c_imadc64(const volatile NvU32 *o) {
+  static char m[64];
+  if (o[0] >= 0x100u && o[0] < 0x140u) return NULL;
+  snprintf(m, sizeof m, "imad-const@64 gave 0x%x", o[0]);
+  return m;
+}
+static const char *c_imadc(const volatile NvU32 *o) {
+  static char m[64];
+  if (o[0] >= 0x100u && o[0] < 0x103u) return NULL;
+  snprintf(m, sizeof m, "imad-const gave 0x%x", o[0]);
+  return m;
+}
+
+/*
+ * The working address probe, with ONE change: the store goes through the
+ * computed address instead of an immediate one. Minimal step from a kernel that
+ * passes to the shape that faults.
+ */
+static unsigned k_addrstore(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  unsigned n = 0;
+  p[n++] = hp_mov_imm(5, 4, hp_ctrl_safe());
+  p[n++] = hp_s2r(0, HP_SR_CTAID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_s2r(3, HP_SR_TID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_imad_const(0, 0, 0, HERMES_CBUF0_NTID_X, 3, hp_ctrl_wait(0));
+  p[n++] = hp_imad_wide_const(6, 0, 5, 0, HERMES_CBUF0_PARAM0, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(8, 0, 0, hp_ctrl_safe());
+  p[n++] = hp_stg(6, 8, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+static const char *c_addrstore(const volatile NvU32 *o) {
+  static char m[72];
+  for (unsigned i = 0; i < 64; i++)
+    if (o[i] != i) { snprintf(m, sizeof m, "wrote %u of 64 (o[%u]=%u)", i, i, o[i]); return m; }
+  return NULL;
+}
+
 #define EW_KERNEL(tag, opv)                                                    \
   static unsigned k_##tag(hp_word *p, NvU64 out, NvU64 in) {                   \
     (void)out; (void)in;                                                       \
@@ -553,6 +614,9 @@ static const kernel_case KERNELS[] = {
      * parameters read from a constant bank. */
     {"S2R ctaid with a 3-wide grid", k_ctaid, 1, 3, NULL, c_ctaid},
     {"computed address", k_addr, 1, 1, NULL, c_addr},
+    {"IMAD against a constant bank", k_imadc, 1, 3, NULL, c_imadc},
+    {"IMAD const, block 64", k_imadc, 64, 1, NULL, c_imadc64},
+    {"store via computed address, 64", k_addrstore, 64, 1, NULL, c_addrstore},
     {"out[tid] = tid, 64 threads", k_tidstore, 64, 1, NULL, c_tidstore},
     {"index probe: block 64, grid 1", k_ew_index, 64, 1, fill_ints, c_ew_index},
     {"index probe: block 1, grid 64", k_ew_index, 1, 64, fill_ints, c_ew_index},
@@ -655,6 +719,13 @@ static void test_gpu_runs_our_machine_code(void) {
     }
     hp_word prog[32];
     const unsigned count = kc->build(prog, out.gpuAddr, in.gpuAddr);
+    if (getenv("HELIOS_DUMP_KERNEL") &&
+        strstr(kc->name, getenv("HELIOS_DUMP_KERNEL"))) {
+      printf("\n      [%s] %u instructions:\n", kc->name, count);
+      for (unsigned i = 0; i < count; i++)
+        printf("        %016llx %016llx\n",
+               (unsigned long long)prog[i].lo, (unsigned long long)prog[i].hi);
+    }
     memcpy(code.hostPtr, prog, count * sizeof(hp_word));
 
     NvU32 qmd[HERMES_QMD_DWORDS];
