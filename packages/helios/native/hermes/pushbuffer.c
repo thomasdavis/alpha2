@@ -20,8 +20,28 @@
  * work it is reporting on. */
 #define SEM_RELEASE_WFI_EN (0u << 20)
 
+/*
+ * Each segment gets FRESH pushbuffer space; it does not reuse the start.
+ *
+ * The first version reset the cursor to the base every time, which silently
+ * overwrites methods the GPU may still be fetching -- submitting a second
+ * kernel while the first is in flight rewrites the memory the PBDMA is reading
+ * from. It manifested as ROBUST_CHANNEL_PBDMA_ERROR (32) on the second launch,
+ * after which the channel is dead and every later kernel reports whatever the
+ * notifier still holds. The first kernel always passed, which made it look like
+ * a problem with kernels 2 through 5 rather than with the ring underneath them.
+ *
+ * Bump, aligned, and wrap when there is not enough room left. Wrapping is only
+ * safe because callers wait for each kernel's effect before submitting the
+ * next; a pipelined submitter needs real tracking of what the GPU has consumed.
+ */
+#define HERMES_SEGMENT_ALIGN 64 /* dwords */
+
 void hermes_begin(hermes_channel *c) {
-  c->push = (NvU32 *)c->pushbuffer.hostPtr;
+  NvU32 *base = (NvU32 *)c->pushbuffer.hostPtr;
+  const NvU32 capacity = (NvU32)(c->pushbuffer.size / 4);
+  if (c->pushOffset + HERMES_SEGMENT_ALIGN * 4 > capacity) c->pushOffset = 0;
+  c->push = base + c->pushOffset;
 }
 
 void hermes_method(hermes_channel *c, NvU32 subchannel, NvU32 addr, NvU32 count) {
@@ -37,7 +57,16 @@ void hermes_semaphore_release(hermes_channel *c, NvU64 gpuAddr, NvU32 payload) {
    *   SEMAPHOREB  address bits 31:0
    *   SEMAPHOREC  payload
    *   SEMAPHORED  operation */
-  hermes_method(c, 0, NVC56F_SEMAPHOREA, 4);
+  /*
+   * Subchannel 1, not 0.
+   *
+   * SEMAPHOREA..D are host methods, but the PBDMA still rejects a method stream
+   * that names a subchannel with no object bound to it: once SET_OBJECT has
+   * put the compute class on subchannel 1, emitting on subchannel 0 raises
+   * ROBUST_CHANNEL_PBDMA_ERROR (32). It worked before compute existed precisely
+   * because nothing was bound anywhere, which made subchannel 0 as good as any.
+   */
+  hermes_method(c, 1, NVC56F_SEMAPHOREA, 4);
   hermes_data(c, (NvU32)(gpuAddr >> 32));
   hermes_data(c, (NvU32)(gpuAddr & 0xffffffffu));
   hermes_data(c, payload);
@@ -75,11 +104,11 @@ void hermes_semaphore_release(hermes_channel *c, NvU64 gpuAddr, NvU32 payload) {
  */
 int hermes_submit(aether_device *d, hermes_channel *c) {
   (void)d;
-  NvU32 *base = (NvU32 *)c->pushbuffer.hostPtr;
+  NvU32 *base = (NvU32 *)c->pushbuffer.hostPtr + c->pushOffset;
   const NvU32 dwords = (NvU32)(c->push - base);
   if (dwords == 0) return 0;
 
-  const NvU64 addr = c->pushbuffer.gpuAddr;
+  const NvU64 addr = c->pushbuffer.gpuAddr + (NvU64)c->pushOffset * 4;
   NvU32 *ring = (NvU32 *)c->gpfifo.hostPtr;
 
   /* GP_ENTRY0_GET is bits 31:2 and holds the address directly -- the low two
@@ -89,6 +118,8 @@ int hermes_submit(aether_device *d, hermes_channel *c) {
       (NvU32)((addr >> 32) & 0xff) | ((dwords & 0x1fffff) << 10);
 
   c->put = (c->put + 1) % c->gpfifoEntries;
+  /* Advance past this segment, aligned, so the next one cannot land on it. */
+  c->pushOffset += (dwords + HERMES_SEGMENT_ALIGN - 1) & ~(HERMES_SEGMENT_ALIGN - 1);
 
   /* The entry must be visible before put advances, or the GPU can fetch a slot
    * we have not finished writing. */

@@ -110,6 +110,7 @@ typedef struct {
 
   NvU32 gpfifoEntries;
   NvU32 put;   /* our index into the ring */
+  NvU32 pushOffset; /* dwords consumed in the pushbuffer so far */
   NvU32 *push; /* write cursor into the pushbuffer */
 
   /* Which step of bring-up failed, for the same reason aether_device carries

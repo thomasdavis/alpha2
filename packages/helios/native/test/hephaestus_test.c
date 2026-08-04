@@ -167,9 +167,7 @@ static void test_field_placement_primitives(void) {
  *
  * It was written there first and would not link: hephaestus sits ABOVE hermes,
  * so a hermes test binary cannot reach the assembler. That is standard 4 doing
- * its job -- the layering is checked by the link graph rather than by review,
- * and it answered a question about test placement without anyone having to
- * remember the rule.
+ * its job -- the layering is checked by the link graph rather than by review.
  */
 static NvU64 now_ns(void) {
   struct timespec ts;
@@ -178,27 +176,134 @@ static NvU64 now_ns(void) {
 }
 
 /*
- * The real gate: our own machine code, assembled by Hephaestus, executed by the
- * GPU.
+ * FIVE KERNELS, each proving something the previous one did not.
  *
- * The kernel is the smallest program that can prove it ran — put a recognisable
- * constant at an address we chose:
+ * A kernel is described by a builder that assembles it and a checker that says
+ * whether the GPU did what it was asked. Everything else -- channel, engine
+ * init, descriptor, submission, fence -- is shared, so a failure points at the
+ * kernel rather than at the plumbing.
  *
- *   MOV R0, lo32(target)
- *   MOV R1, hi32(target)
- *   MOV R2, 0xCAFEF00D
- *   STG.E [R0], R2
- *   EXIT
- *
- * No parameters, so no constant banks; the address is immediate. That removes
- * the one part of the QMD whose encoding is least established, which matters:
- * if this fails, the failure should be about the launch, not about a field we
- * could have avoided setting.
+ * Every instruction used here has been round-tripped through nvdisasm (see
+ * tools/dump_prog.c). That is not a formality: three encoders were wrong in
+ * ways that produced well-formed instructions meaning something else, and no
+ * bit-comparison test caught any of them.
  */
-#define KERNEL_MAGIC 0xcafef00du
+#define MAGIC 0xcafef00du
+
+typedef struct {
+  const char *name;
+  /* Assemble into `prog`, returning the instruction count. `out` and `in` are
+   * GPU addresses; `blockX` is the block width the launch will use. */
+  unsigned (*build)(hp_word *prog, NvU64 out, NvU64 in);
+  NvU32 blockX;
+  /* Inspect the 8 output dwords. Returns NULL on success or a reason. */
+  const char *(*check)(const volatile NvU32 *o);
+} kernel_case;
+
+/* 1. Store an immediate. The smallest thing that can prove execution. */
+static unsigned k_store(hp_word *p, NvU64 out, NvU64 in) {
+  (void)in;
+  p[0] = hp_mov_imm(0, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[1] = hp_mov_imm(1, (uint32_t)(out >> 32), hp_ctrl_safe());
+  p[2] = hp_mov_imm(2, MAGIC, hp_ctrl_safe());
+  p[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
+  p[4] = hp_exit(hp_ctrl_safe());
+  return 5;
+}
+static const char *c_store(const volatile NvU32 *o) {
+  return o[0] == MAGIC ? NULL : "out[0] != MAGIC";
+}
+
+/* 2. Store at four different offsets -- exercises STG's offset field, which is
+ *    encoded separately from the address register and was never proven. */
+static unsigned k_offsets(hp_word *p, NvU64 out, NvU64 in) {
+  (void)in;
+  unsigned n = 0;
+  p[n++] = hp_mov_imm(0, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(1, (uint32_t)(out >> 32), hp_ctrl_safe());
+  for (unsigned i = 0; i < 4; i++) {
+    p[n++] = hp_mov_imm(2, 0x1000u + i, hp_ctrl_safe());
+    p[n++] = hp_stg(0, 2, i * 4, hp_ctrl_safe());
+  }
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+static const char *c_offsets(const volatile NvU32 *o) {
+  for (unsigned i = 0; i < 4; i++)
+    if (o[i] != 0x1000u + i) return "offset slot wrong";
+  return NULL;
+}
+
+/* 3. Load then store -- the first kernel that READS memory. */
+static unsigned k_copy(hp_word *p, NvU64 out, NvU64 in) {
+  unsigned n = 0;
+  p[n++] = hp_mov_imm(4, (uint32_t)(in & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(5, (uint32_t)(in >> 32), hp_ctrl_safe());
+  p[n++] = hp_ldg(2, 4, 0, hp_ctrl_setbar(0));
+  p[n++] = hp_mov_imm(0, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(1, (uint32_t)(out >> 32), hp_ctrl_wait(0));
+  p[n++] = hp_stg(0, 2, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+static const char *c_copy(const volatile NvU32 *o) {
+  return o[0] == 0xf00dbabeu ? NULL : "copy did not carry the input value";
+}
+
+/* 4. Load, add an immediate, store -- arithmetic, and the dependency barrier
+ *    that makes a load's result safe to consume. */
+static unsigned k_addim(hp_word *p, NvU64 out, NvU64 in) {
+  unsigned n = 0;
+  p[n++] = hp_mov_imm(4, (uint32_t)(in & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(5, (uint32_t)(in >> 32), hp_ctrl_safe());
+  p[n++] = hp_ldg(2, 4, 0, hp_ctrl_setbar(0));
+  p[n++] = hp_mov_imm(0, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(1, (uint32_t)(out >> 32), hp_ctrl_wait(0));
+  p[n++] = hp_iadd3_imm(3, 2, 0x1234, hp_ctrl_safe());
+  p[n++] = hp_stg(0, 3, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+static const char *c_addim(const volatile NvU32 *o) {
+  return o[0] == 0xf00dbabeu + 0x1234u ? NULL : "sum wrong";
+}
+
+/* 5. Thirty-two threads, a special register and a barrier.
+ *
+ *    Every thread reads its own lane id, adds a base, synchronises, and stores
+ *    to the SAME address -- so the write races on purpose and the result is
+ *    whichever thread landed last. The assertion is therefore a RANGE: the
+ *    value must be base + [0,32). That is a weaker claim than an exact answer
+ *    and it is the honest one, because proving which thread won would require
+ *    per-thread addressing this instruction set does not yet have. What it does
+ *    prove is that a 32-thread block launched, that S2R produced a real lane
+ *    id, and that BAR.SYNC executed without faulting. */
+static unsigned k_threads(hp_word *p, NvU64 out, NvU64 in) {
+  (void)in;
+  unsigned n = 0;
+  p[n++] = hp_s2r(2, HP_SR_TID_X, hp_ctrl_setbar(0));
+  p[n++] = hp_mov_imm(0, (uint32_t)(out & 0xffffffffu), hp_ctrl_safe());
+  p[n++] = hp_mov_imm(1, (uint32_t)(out >> 32), hp_ctrl_wait(0));
+  p[n++] = hp_iadd3_imm(3, 2, 0x1000, hp_ctrl_safe());
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  p[n++] = hp_stg(0, 3, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+static const char *c_threads(const volatile NvU32 *o) {
+  return (o[0] >= 0x1000u && o[0] < 0x1020u) ? NULL : "lane id out of range";
+}
+
+static const kernel_case KERNELS[] = {
+    {"store an immediate", k_store, 1, c_store},
+    {"store at four offsets", k_offsets, 1, c_offsets},
+    {"load and store", k_copy, 1, c_copy},
+    {"load, add, store", k_addim, 1, c_addim},
+    {"32 threads, S2R and a barrier", k_threads, 32, c_threads},
+};
 
 static void test_gpu_runs_our_machine_code(void) {
-  HT_CASE("GPU executes a kernel Hephaestus assembled");
+  HT_CASE("GPU runs five kernels Hephaestus assembled");
 
   aether_device d;
   if (aether_device_open(&d, 0) != 0) {
@@ -215,246 +320,104 @@ static void test_gpu_runs_our_machine_code(void) {
     aether_device_close(&d); HT_END(); return;
   }
 
-  gaia_buffer code, out, qmdbuf, lmem, scratch;
+  gaia_buffer code, out, qmdbuf, lmem, scratch, in;
   memset(&code, 0, sizeof code); memset(&out, 0, sizeof out);
   memset(&qmdbuf, 0, sizeof qmdbuf); memset(&lmem, 0, sizeof lmem);
-  memset(&scratch, 0, sizeof scratch);
+  memset(&scratch, 0, sizeof scratch); memset(&in, 0, sizeof in);
 
   if ((rc = gaia_alloc(&d, &out, 4096, GAIA_SYSMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &out)) != 0 ||
-      (rc = gaia_map_host(&d, &out)) != 0) {
-    HT_FAIL("output buffer: %s", aether_status_name((unsigned)rc)); goto done;
-  }
-  ((volatile NvU32 *)out.hostPtr)[0] = 0;
-
-  if ((rc = gaia_alloc(&d, &code, 4096, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_host(&d, &out)) != 0 ||
+      (rc = gaia_alloc(&d, &in, 4096, GAIA_SYSMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &in)) != 0 ||
+      (rc = gaia_map_host(&d, &in)) != 0 ||
+      (rc = gaia_alloc(&d, &code, 4096, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &code)) != 0 ||
-      (rc = gaia_map_host(&d, &code)) != 0) {
-    HT_FAIL("code buffer: %s", aether_status_name((unsigned)rc)); goto done;
-  }
-  if ((rc = gaia_alloc(&d, &qmdbuf, 4096, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_host(&d, &code)) != 0 ||
+      (rc = gaia_alloc(&d, &qmdbuf, 4096, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &qmdbuf)) != 0 ||
-      (rc = gaia_map_host(&d, &qmdbuf)) != 0) {
-    HT_FAIL("qmd buffer: %s", aether_status_name((unsigned)rc)); goto done;
-  }
-  /* Host-mapped so the staged QMD can be read back. SET_INLINE_QMD_ADDRESS
-   * names where the hardware PUTS the descriptor it is handed inline; whether
-   * it ever arrives there is a fact we have been assuming rather than
-   * checking. */
-  memset(qmdbuf.hostPtr, 0, 4096);
-  if ((rc = gaia_alloc(&d, &scratch, HERMES_QMD_SCRATCH_BYTES, GAIA_VIDMEM)) != 0 ||
-      (rc = gaia_map_gpu(&d, &scratch)) != 0) {
-    HT_FAIL("qmd scratch: %s", aether_status_name((unsigned)rc)); goto done;
-  }
-  /* Local-memory backing. Generous: the SM sizes its per-thread allocation from
-   * this, and being short is a fault rather than a slowdown. 4 MB failed with
-   * NV_ERR_NO_MEMORY -- gaia allocates CONTIGUOUS vidmem, and that is a real
-   * limit rather than a spelling mistake. */
-  if ((rc = gaia_alloc(&d, &lmem, 1024 * 1024, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_host(&d, &qmdbuf)) != 0 ||
+      (rc = gaia_alloc(&d, &scratch, HERMES_QMD_SCRATCH_BYTES, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &scratch)) != 0 ||
+      (rc = gaia_alloc(&d, &lmem, 1024 * 1024, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &lmem)) != 0) {
-    HT_FAIL("local memory: %s", aether_status_name((unsigned)rc)); goto done;
+    HT_FAIL("buffers: %s", aether_status_name((unsigned)rc)); goto done;
   }
 
+  /* Engine init once, in its own submission, consumed before any launch. */
   {
-    /*
-     * Back to our own SASS, and deliberately a kernel that reads NO constant
-     * bank -- the address is an immediate. Paired with CONSTANT_BUFFER_VALID
-     * cleared in the QMD, that removes three address pairs and the whole
-     * constant-bank configuration from the set of things that can be wrong.
-     *
-     * (The ptxas control kernel cannot be used with banks off: even an empty
-     * CUDA kernel opens with MOV R1, c[0x0][0x28].)
-     */
-    /*
-     * The ptxas control, re-run.
-     *
-     * It was tried once before against a QMD that is now known to have been
-     * broken -- SASS_VERSION zero, no SM shared-memory partition -- so it
-     * proved nothing about the descriptor as it stands. A control experiment
-     * against a known-bad configuration is not a control.
-     *
-     * cuobjdump prints each instruction as (low, high); stored in that order.
-     */
-    static const uint64_t PTXAS[] = {
-        0x00000a0000017a02ull, 0x000fe40000000f00ull, /* MOV R1, c[0x0][0x28] */
-        0x000000000000794dull, 0x000fea0003800000ull, /* EXIT */
-        0xfffffff000007947ull, 0x000fc0000383ffffull, /* BRA self */
-    };
-    hp_word prog[5];
-    if (getenv("HELIOS_PTXAS")) {
-      memcpy(prog, PTXAS, sizeof PTXAS);
-    } else {
-    prog[0] = hp_mov_imm(0, (uint32_t)(out.gpuAddr & 0xffffffffu), hp_ctrl_safe());
-    prog[1] = hp_mov_imm(1, (uint32_t)(out.gpuAddr >> 32), hp_ctrl_safe());
-    prog[2] = hp_mov_imm(2, KERNEL_MAGIC, hp_ctrl_safe());
-    prog[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
-    prog[4] = hp_exit(hp_ctrl_safe());
-    }
-
-    /*
-     * Pad with EXIT rather than zeroing.
-     *
-     * All-zero SASS is not a no-op, it is an illegal instruction, and the SM
-     * prefetches past the end of a kernel -- so a program followed by zeroes
-     * can fault on instructions the program never reaches. nvcc pads with a
-     * self-branch for the same reason. Filling with EXIT makes every possible
-     * landing point in the buffer legal.
-     */
-    {
-      hp_word pad = hp_exit(hp_ctrl_safe());
-      hp_word *slot = (hp_word *)code.hostPtr;
-      for (unsigned k = 0; k < 4096 / sizeof(hp_word); k++) slot[k] = pad;
-    }
-    memcpy(code.hostPtr, prog, sizeof prog);
-  }
-
-  {
-    NvU32 qmd[HERMES_QMD_DWORDS];
-    hermes_qmd_build(qmd, code.gpuAddr, scratch.gpuAddr, 1, 1, 1, 1, 1, 1);
-
-    hermes_begin(&c);
     hermes_compute_config cfg;
     memset(&cfg, 0, sizeof cfg);
-    cfg.classId = 0xc7c0u; /* AMPERE_COMPUTE_B, raw class id */
+    cfg.classId = 0xc7c0u;
     cfg.spaVersion = HERMES_SPA_VERSION_SM86;
     cfg.sharedWindow = HERMES_SHARED_WINDOW_DEFAULT;
     cfg.localWindow = HERMES_LOCAL_WINDOW_DEFAULT;
     cfg.localMem = lmem.gpuAddr;
     cfg.localMemSize = lmem.size;
-    cfg.smCount = 46; /* RTX 3070 */
-    /*
-     * Engine init goes in its OWN submission, fully consumed before the launch.
-     *
-     * A CUDA process does it that way -- init is one pushbuffer, launches are
-     * others -- and we had been emitting all of it, including 64 CWD
-     * reference-counter writes, immediately ahead of the launch in a single
-     * stream. Whether the compute work distributor tolerates that is not
-     * something to assume.
-     */
+    cfg.smCount = 46;
     hermes_begin(&c);
     hermes_compute_init(&c, 1, &cfg);
-    hermes_semaphore_release(&c, out.gpuAddr + 128, 0x1111u);
     hermes_submit(&d, &c);
-    {
-      volatile NvU32 *pg = (volatile NvU32 *)c.userd.hostPtr;
-      hermes_ring(&c, pg, c.doorbell, c.token);
-      const NvU64 dl = now_ns() + 1000000000ull;
-      while (now_ns() < dl && ((volatile NvU32 *)out.hostPtr)[32] != 0x1111u) {}
-      printf("      init fence = 0x%08x\n", ((volatile NvU32 *)out.hostPtr)[32]);
-    }
-    hermes_begin(&c);
-    /* PROBE: skip the launch. If the fence lands, compute_init is clean and the
-     * launch is what faults; if it does not, one of the init methods is itself
-     * the problem -- several were added on reasoning rather than evidence. */
-    /* Write the descriptor into GPU memory ourselves, then launch by address --
-     * NVK's path. qmdbuf is host-mapped, so this is a plain memcpy. */
-    memcpy(qmdbuf.hostPtr, qmd, HERMES_QMD_BYTES);
-    __asm__ __volatile__("sfence" ::: "memory");
-    if (!getenv("HELIOS_SKIP_LAUNCH")) {
-      if (getenv("HELIOS_INLINE_QMD"))
-        hermes_launch_inline(&c, qmdbuf.gpuAddr, qmd);
-      else
-        hermes_launch(&c, qmdbuf.gpuAddr);
-    }
-    hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
-    hermes_submit(&d, &c);
-
-    volatile NvU32 *page = (volatile NvU32 *)c.userd.hostPtr;
-    hermes_ring(&c, page, c.doorbell, c.token);
-
-    const NvU64 deadline = now_ns() + 2000000000ull;
-    while (now_ns() < deadline) {
-      if (((volatile NvU32 *)out.hostPtr)[16] == 0x5eeeeeedu) break;
-    }
-
-    const NvU32 got = ((volatile NvU32 *)out.hostPtr)[0];
-    const NvU32 fence = ((volatile NvU32 *)out.hostPtr)[16];
-    volatile NvU32 *u = page + c.userdSlot / 4;
-    if (got != KERNEL_MAGIC) {
-      HT_FAIL("kernel did not run: got 0x%08x, want 0x%08x", got, KERNEL_MAGIC);
-      /* The fence distinguishes "the channel never got there" from "it ran the
-       * launch and the kernel did nothing". */
-      printf("      fence=0x%08x GP_GET=%u GP_PUT=%u code@0x%llx qmd@0x%llx\n",
-             fence, u[HERMES_USERD_GP_GET / 4], u[HERMES_USERD_GP_PUT / 4],
-             (unsigned long long)code.gpuAddr,
-             (unsigned long long)qmdbuf.gpuAddr);
-      {
-        const NvU32 *st = (const NvU32 *)qmdbuf.hostPtr;
-        /* Diff the STAGED descriptor against what we built. The hardware
-         * writes back the QMD it consumed, so any word that differs is a word
-         * the hardware changed -- which is information we cannot get any other
-         * way. */
-        printf("      staged QMD @0x%llx, words differing from ours:\n",
-               (unsigned long long)qmdbuf.gpuAddr);
-        int ndiff = 0;
-        for (int w = 0; w < HERMES_QMD_DWORDS; w++) {
-          if (st[w] == qmd[w]) continue;
-          printf("        [%2d] ours %08x  staged %08x\n", w, qmd[w], st[w]);
-          ndiff++;
-        }
-        if (!ndiff) printf("        (none -- staged byte-identical)\n");
-      }
-      /*
-       * Ask RM what the exception actually was.
-       *
-       * The error notifier gives one number -- 13, GR_EXCEPTION -- and the
-       * detail behind it normally reaches the kernel log, which a container
-       * cannot read. But RM keeps the robust-channel error records and will
-       * hand them over: RC_GET_ERROR_COUNT then RC_GET_ERROR_V2 per record.
-       * This is the difference between eliminating candidates blind and being
-       * told what is wrong.  (ctrl2080rc.h)
-       */
-      {
-        struct { NvU32 errorCount; } cnt;
-        memset(&cnt, 0, sizeof cnt);
-        int r = aether_control(&d, d.subdevice, 0x20802205, &cnt, sizeof cnt);
-        printf("      RC_GET_ERROR_COUNT -> %s count=%u\n",
-               aether_status_name((unsigned)r), cnt.errorCount);
-
-        static struct {
-          NvU32 whichBuffer;
-          NvU32 outputRecordSize;
-          NvU8 recordBuffer[0x2000];
-        } rec;
-        for (NvU32 i = 0; i < cnt.errorCount && i < 4; i++) {
-          memset(&rec, 0, sizeof rec);
-          rec.whichBuffer = i;
-          r = aether_control(&d, d.subdevice, 0x20802213, &rec, sizeof rec);
-          printf("      RC record %u: %s size=%u\n", i,
-                 aether_status_name((unsigned)r), rec.outputRecordSize);
-          const NvU32 *w = (const NvU32 *)rec.recordBuffer;
-          const NvU32 n = rec.outputRecordSize / 4;
-          for (NvU32 k = 0; k < n && k < 24; k += 8) {
-            printf("        +0x%02x ", k * 4);
-            for (NvU32 q = 0; q < 8 && k + q < n; q++) printf("%08x ", w[k + q]);
-            printf("\n");
-          }
-        }
-      }
-      printf("      errnotif: %08x %08x %08x %08x\n",
-             ((NvU32 *)c.errnotif.hostPtr)[0], ((NvU32 *)c.errnotif.hostPtr)[1],
-             ((NvU32 *)c.errnotif.hostPtr)[2], ((NvU32 *)c.errnotif.hostPtr)[3]);
-      /* Print what we ACTUALLY emitted, not what we believe we emitted. The
-       * same diff-against-a-working-driver that unblocked the channel applies
-       * to the method stream, and it only works if both sides are visible. */
-      {
-        const NvU32 *pbw = (const NvU32 *)c.pushbuffer.hostPtr;
-        const NvU32 n = (NvU32)(c.push - (NvU32 *)c.pushbuffer.hostPtr);
-        printf("      our pushbuffer, %u dwords:\n", n);
-        for (NvU32 k = 0; k < n && k < 24; k += 8) {
-          printf("        +0x%03x ", k * 4);
-          for (NvU32 q = 0; q < 8 && k + q < n; q++) printf("%08x ", pbw[k + q]);
-          printf("\n");
-        }
-        printf("      qmd head: %08x %08x %08x %08x %08x %08x\n", qmd[0], qmd[1],
-               qmd[2], qmd[3], qmd[4], qmd[5]);
-      }
-    } else {
-      HT_EQ_U64(got, KERNEL_MAGIC);
-    }
+    hermes_ring(&c, (volatile NvU32 *)c.userd.hostPtr, c.doorbell, c.token);
   }
 
+  const unsigned n = sizeof KERNELS / sizeof KERNELS[0];
+  unsigned passed = 0;
+  for (unsigned k = 0; k < n; k++) {
+    const kernel_case *kc = &KERNELS[k];
+    volatile NvU32 *o = (volatile NvU32 *)out.hostPtr;
+    for (int i = 0; i < 8; i++) o[i] = 0;
+    ((volatile NvU32 *)in.hostPtr)[0] = 0xf00dbabeu;
+
+    /* Pad with EXIT: all-zero SASS is illegal and the SM prefetches past the
+     * end of a kernel. */
+    {
+      hp_word pad = hp_exit(hp_ctrl_safe());
+      hp_word *slot = (hp_word *)code.hostPtr;
+      for (unsigned i = 0; i < 4096 / sizeof(hp_word); i++) slot[i] = pad;
+    }
+    hp_word prog[32];
+    const unsigned count = kc->build(prog, out.gpuAddr, in.gpuAddr);
+    memcpy(code.hostPtr, prog, count * sizeof(hp_word));
+
+    NvU32 qmd[HERMES_QMD_DWORDS];
+    hermes_qmd_build(qmd, code.gpuAddr, scratch.gpuAddr, 1, 1, 1, kc->blockX, 1, 1);
+    memcpy(qmdbuf.hostPtr, qmd, HERMES_QMD_BYTES);
+    __asm__ __volatile__("sfence" ::: "memory");
+
+    hermes_begin(&c);
+    hermes_launch(&c, qmdbuf.gpuAddr);
+    hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
+    hermes_submit(&d, &c);
+    hermes_ring(&c, (volatile NvU32 *)c.userd.hostPtr, c.doorbell, c.token);
+
+    /*
+     * Wait on the KERNEL'S OWN EFFECT, not only on the fence.
+     *
+     * A fence proves the channel reached the end of the pushbuffer; the check
+     * proves the kernel did its job. Polling the check directly means a broken
+     * fence cannot mask a working kernel -- which it did: kernel 0 wrote its
+     * magic value correctly while the run was reported as a failure because the
+     * semaphore behind it had faulted.
+     */
+    const NvU64 deadline = now_ns() + 2000000000ull;
+    while (now_ns() < deadline && kc->check(o) != NULL) {}
+
+    const char *why = kc->check(o);
+    if (why) {
+      HT_FAIL("kernel %u (%s): %s [out=%08x %08x %08x %08x errnotif=%08x]", k,
+              kc->name, why, o[0], o[1], o[2], o[3],
+              ((NvU32 *)c.errnotif.hostPtr)[2]);
+    } else {
+      passed++;
+      printf("\n        %u. %-32s ok", k + 1, kc->name);
+    }
+  }
+  printf("\n      %u/%u kernels ", passed, n);
+  HT_EQ_U64(passed, n);
+
 done:
+  gaia_free(&d, &in);
   gaia_free(&d, &scratch);
   gaia_free(&d, &lmem);
   gaia_free(&d, &qmdbuf);
