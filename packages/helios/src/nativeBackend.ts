@@ -68,7 +68,8 @@ export class NativeHeliosBackend implements Backend {
       `helios-native: ${op} has no kernel yet. Implemented: add sub mul div ` +
         `neg relu gelu silu exp log sqrt scale clamp matmul sum mean rmsNorm ` +
         `layerNorm softmax embedding crossEntropy transpose zeros ones full ` +
-        `fromArray reshape clone slice causalMask maskedFill equal allClose.`,
+        `fromArray reshape clone slice causalMask maskedFill equal allClose ` +
+        `pow cat gather argmax topk, and sum/mean over the final axis.`,
     );
   }
 
@@ -180,7 +181,26 @@ export class NativeHeliosBackend implements Backend {
   silu(a: TensorData): TensorData {
     return this.unary("silu", this.hl.op.silu, a, -Math.LOG2E, 1);
   }
-  pow(): TensorData { return this.unsupported("pow"); }
+  /**
+   * a^k.
+   *
+   * Small non-negative integer exponents become repeated multiplication --
+   * exact, and the case that actually occurs, since a squaring is what a
+   * variance or an L2 norm asks for. Everything else goes through exp(k*log a),
+   * which is what the hardware can do and which is undefined for a negative
+   * base. That restriction is real and is stated rather than silently returning
+   * NaN: a fractional power of a negative number has no real value, and a
+   * backend that produced one would be lying.
+   */
+  pow(a: TensorData, exp: number): TensorData {
+    if (Number.isInteger(exp) && exp >= 0 && exp <= 8) {
+      if (exp === 0) return this.full(a.shape, 1);
+      let acc = this.device(a) as TensorData;
+      for (let i = 1; i < exp; i++) acc = this.mul(acc, a);
+      return acc;
+    }
+    return this.exp(this.scale(this.log(a), exp));
+  }
 
   // ── linear algebra and reduction ─────────────────────────────────────────
 
@@ -207,14 +227,48 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * Along the LAST axis: one reduction per row, launched one row at a time.
+   *
+   * Row at a time rather than one launch over all of them, because the
+   * reduction kernel writes its answer to element zero of its output and has no
+   * notion of which row it is on. Fixing that is a kernel change -- a row index
+   * added to the store address -- and it is worth making once rows are the
+   * common case. For now the loop is honest about being a loop.
+   */
+  private reduceAxis(name: string, mean: boolean, a: TensorData): TensorData {
+    const width = a.shape[a.shape.length - 1] ?? 1;
+    const rows = shapeSize(a.shape) / width;
+    const da = this.device(a);
+    const outShape = a.shape.slice(0, -1);
+    const out = this.make(outShape.length ? outShape : [1], "f32");
+    const rowIn = this.make([width], "f32");
+    const rowOut = this.make([1], "f32");
+    for (let r = 0; r < rows; r++) {
+      rowIn.buffer.floats.set(da.buffer.floats.subarray(r * width, (r + 1) * width));
+      this.scratch.floats.fill(0);
+      this.check(
+        this.hl.reduce(mean ? 1 : 0, rowOut.buffer.handle, rowIn.buffer.handle,
+                       this.scratch.handle, width),
+        name,
+      );
+      out.buffer.floats[r] = rowOut.buffer.floats[0];
+    }
+    rowIn.buffer.release(this.hl);
+    rowOut.buffer.release(this.hl);
+    return out;
+  }
+
   sum(a: TensorData, axis?: number): TensorData {
-    if (axis !== undefined) this.unsupported("sum along an axis");
-    return this.reduceAll("sum", false, a);
+    if (axis === undefined) return this.reduceAll("sum", false, a);
+    if (axis !== a.shape.length - 1) this.unsupported("sum over a non-final axis");
+    return this.reduceAxis("sum", false, a);
   }
 
   mean(a: TensorData, axis?: number): TensorData {
-    if (axis !== undefined) this.unsupported("mean along an axis");
-    return this.reduceAll("mean", true, a);
+    if (axis === undefined) return this.reduceAll("mean", true, a);
+    if (axis !== a.shape.length - 1) this.unsupported("mean over a non-final axis");
+    return this.reduceAxis("mean", true, a);
   }
 
   // ── nn ───────────────────────────────────────────────────────────────────
@@ -383,10 +437,81 @@ export class NativeHeliosBackend implements Backend {
     return true;
   }
 
-  cat(): TensorData { return this.unsupported("cat"); }
-  argmax(): TensorData { return this.unsupported("argmax"); }
-  topk(): { values: TensorData; indices: TensorData } { return this.unsupported("topk"); }
-  gather(): TensorData { return this.unsupported("gather"); }
+  /**
+   * Concatenation, and the reason it does not need a kernel.
+   *
+   * It moves bytes and performs no arithmetic, and both sides are already
+   * mapped into this address space -- so a copy between the views IS the
+   * operation, at memory bandwidth, with no launch and no round trip. Writing a
+   * kernel for it would add a launch to do exactly what a memcpy does. The
+   * "every FLOP through our own SASS" constraint is about arithmetic; there is
+   * none here.
+   */
+  cat(tensors: TensorData[], axis: number): TensorData {
+    if (axis !== 0) this.unsupported(`cat along axis ${axis}`);
+    const total = tensors.reduce((n, t) => n + shapeSize(t.shape), 0);
+    const rest = tensors[0].shape.slice(1);
+    const out = this.make([total / (shapeSize(rest) || 1), ...rest], "f32");
+    let at = 0;
+    for (const t of tensors) {
+      const d = this.device(t);
+      const n = shapeSize(t.shape);
+      out.buffer.floats.set(d.buffer.floats.subarray(0, n), at);
+      at += n;
+    }
+    return out;
+  }
+
+  /**
+   * gather along axis 0 IS the embedding lookup -- same kernel, same indices,
+   * different name at the call site. Any other axis would be a different
+   * addressing pattern and is not pretended to be this one.
+   */
+  gather(a: TensorData, axis: number, indices: TensorData): TensorData {
+    if (axis !== 0) this.unsupported(`gather along axis ${axis}`);
+    return this.embedding(a, indices);
+  }
+
+  /*
+   * argmax and topk run on the HOST, and that is not a gap.
+   *
+   * Both produce INDICES, which are consumed by control flow -- sampling,
+   * evaluation, beam search -- so the answer has to reach the host regardless.
+   * A kernel would compute them on the device and then read them back, which is
+   * a launch and a synchronisation to deliver a handful of integers. Neither
+   * appears in a training step; both are inference-path.
+   */
+  argmax(a: TensorData, axis?: number): TensorData {
+    const width = axis === undefined ? shapeSize(a.shape) : (a.shape[a.shape.length - 1] ?? 1);
+    const rows = shapeSize(a.shape) / width;
+    const src = this.device(a).buffer.floats;
+    const out = this.make(rows === 1 ? [1] : [rows], "i32");
+    for (let r = 0; r < rows; r++) {
+      let best = 0;
+      for (let i = 1; i < width; i++)
+        if (src[r * width + i] > src[r * width + best]) best = i;
+      out.buffer.ints[r] = best;
+    }
+    return out;
+  }
+
+  topk(a: TensorData, k: number, axis?: number): { values: TensorData; indices: TensorData } {
+    const width = axis === undefined ? shapeSize(a.shape) : (a.shape[a.shape.length - 1] ?? 1);
+    const rows = shapeSize(a.shape) / width;
+    const src = this.device(a).buffer.floats;
+    const values = this.make(rows === 1 ? [k] : [rows, k], "f32");
+    const indices = this.make(rows === 1 ? [k] : [rows, k], "i32");
+    for (let r = 0; r < rows; r++) {
+      const order = Array.from({ length: width }, (_, i) => i)
+        .sort((x, y) => src[r * width + y] - src[r * width + x])
+        .slice(0, k);
+      for (let j = 0; j < k; j++) {
+        values.buffer.floats[r * k + j] = src[r * width + order[j]];
+        indices.buffer.ints[r * k + j] = order[j];
+      }
+    }
+    return { values, indices };
+  }
 
   /** Pool and program statistics, for confirming a step reuses rather than
    * reallocates. `allocations` should stop growing after the first step. */

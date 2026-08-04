@@ -90,8 +90,9 @@ int hl_reduce(helios_context *ctx, int mean, helios_tensor out, helios_tensor a,
 
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps) {
-  (void)rows; /* one block per row is the launch; the emitter sees only width */
-  const helios_key k = {HL_NORMALIZE, op, width, 0};
+  /* The row count is part of the KEY, not just the launch: a program built for
+   * one row and launched over eight would have every block writing row zero. */
+  const helios_key k = {HL_NORMALIZE, op, width, rows};
   const helios_tensor ts[2] = {out, a};
 
   /*

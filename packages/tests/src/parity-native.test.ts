@@ -152,11 +152,18 @@ describe("native backend parity with cpu_ref", () => {
     expect((r.data as ArrayLike<number>)[3]).toBe(999);
   });
 
-  it.runIf(() => gpu !== null)("an unimplemented operation throws by name", () => {
-    /* Not a fallback, on purpose: an operation that quietly ran on the host
-     * would be indistinguishable from one that works. */
-    expect(() => (gpu as unknown as { argmax(): unknown }).argmax()).toThrow(
-      /argmax/,
-    );
+  it.runIf(() => gpu !== null)("an unsupported case throws by name", () => {
+    /*
+     * Not a fallback, on purpose: an operation that quietly ran on the host
+     * would be indistinguishable from one that works.
+     *
+     * The case checked is a non-final reduction AXIS rather than a missing
+     * operation, because there are no missing operations left -- every Backend
+     * method is implemented. What remains unsupported is particular argument
+     * shapes, and those have to fail as loudly as a missing kernel would.
+     */
+    const g = gpu!;
+    expect(() => g.sum(g.zeros([4, 4]), 0)).toThrow(/non-final axis/);
+    expect(() => g.cat([g.zeros([4])], 1)).toThrow(/cat along axis 1/);
   });
 });

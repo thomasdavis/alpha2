@@ -6,6 +6,7 @@
 
 enum {
   R_TID = 0,
+  R_ROW = 1,   /* blockIdx.x -- which row of the batch this block owns */
   R_ADDR = 2, /* R2:R3 */
   R_X = 4,    /* this thread's element, live across the whole kernel */
   R_ESIZE = 5,
@@ -18,6 +19,11 @@ enum {
   R_S1 = 13,
   R_TMP = 14,
   R_MEAN = 15,
+  /* R16, not R3: R2:R3 is the address PAIR, and putting the index in R3 quietly
+   * overwrote the high half of every address the moment the row offset was
+   * added. The kernels still ran and read from somewhere near enough to look
+   * like data. */
+  R_IDX = 16,
 };
 
 #define BAR_TID 0
@@ -25,13 +31,28 @@ enum {
 #define BAR_LDS 2
 #define BAR_MUFU 3
 
-/* Load this thread's element and leave it in R_X. */
-static unsigned emit_load(hp_word *p) {
+/*
+ * Load this thread's element and leave it in R_X.
+ *
+ * ONE BLOCK PER ROW, and the row index has to reach the address: the first
+ * version indexed by thread id alone and hardcoded a grid of one, so on an
+ * eight-row tensor exactly one row was normalised and the other seven kept
+ * whatever the output buffer held. Every value was finite and plausible and the
+ * loss was wrong by two percent -- which is small enough to look like a
+ * tolerance problem and is not.
+ *
+ * The reduction stays block-local, which is what makes this correct: each block
+ * has its own shared memory and its own barriers, so rows cannot see each
+ * other's partial sums no matter how many run at once.
+ */
+static unsigned emit_load(hp_word *p, unsigned width) {
   unsigned n = 0;
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_TID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-  p[n++] = hp_imad_wide_const(R_ADDR, R_TID, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_wait(BAR_TID));
+  p[n++] = hp_imad_imm(R_IDX, R_ROW, width, R_TID, hp_ctrl_wait(BAR_TID));
+  p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   return n;
 }
@@ -52,7 +73,7 @@ static unsigned emit_reduce(hp_word *p, unsigned elements, pr_combine how) {
 /* Store R_X to out[tid]. */
 static unsigned emit_store(hp_word *p, hp_control c) {
   unsigned n = 0;
-  p[n++] = hp_imad_wide_const(R_OUT, R_TID, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
+  p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_X, 0, c);
   p[n++] = hp_exit(hp_ctrl_safe());
@@ -67,7 +88,7 @@ static unsigned emit_store(hp_word *p, hp_control c) {
  * why the formula is written with a reciprocal in the first place.
  */
 static unsigned emit_rms(hp_word *p, unsigned elements) {
-  unsigned n = emit_load(p);
+  unsigned n = emit_load(p, elements);
   p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_wait(BAR_LOAD));
   n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
 
@@ -92,7 +113,7 @@ static unsigned emit_rms(hp_word *p, unsigned elements) {
  * first pass, which is the whole reason it takes one.
  */
 static unsigned emit_softmax(hp_word *p, unsigned elements) {
-  unsigned n = emit_load(p);
+  unsigned n = emit_load(p, elements);
 
   /* Pass one: the maximum. */
   p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
@@ -131,7 +152,7 @@ static unsigned emit_softmax(hp_word *p, unsigned elements) {
  * data and is the reason this kernel is trustworthy at all.
  */
 static unsigned emit_layer(hp_word *p, unsigned elements) {
-  unsigned n = emit_load(p);
+  unsigned n = emit_load(p, elements);
 
   /* Pass one: the mean. */
   p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));

@@ -77,9 +77,11 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_NORMALIZE:
+      /* arg1 is the row WIDTH and arg2 the row count: one block per row, each
+       * with its own shared memory, so rows normalise independently. */
       p->count = pr_emit_normalize(p->code, (pr_norm_op)key->arg0, n);
       p->blockX = n;
-      p->gridX = 1;
+      p->gridX = key->arg2 ? key->arg2 : 1;
       p->sharedBytes = n * 4;
       return 0;
 
