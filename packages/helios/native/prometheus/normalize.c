@@ -17,6 +17,7 @@ enum {
   R_S0 = 12,
   R_S1 = 13,
   R_TMP = 14,
+  R_MEAN = 15,
 };
 
 #define BAR_TID 0
@@ -119,7 +120,50 @@ static unsigned emit_softmax(hp_word *p, unsigned elements) {
   return n;
 }
 
+/*
+ * layerNorm: (x - mean) / sqrt(var + eps).
+ *
+ * Two reductions, and deliberately the two-pass formulation rather than the
+ * algebraic shortcut var = mean(x^2) - mean(x)^2. That identity is exact in
+ * real arithmetic and catastrophic in floating point when the mean is large
+ * relative to the spread: it subtracts two nearly equal numbers and keeps the
+ * rounding error. Computing the deviations first costs one more pass over the
+ * data and is the reason this kernel is trustworthy at all.
+ */
+static unsigned emit_layer(hp_word *p, unsigned elements) {
+  unsigned n = emit_load(p);
+
+  /* Pass one: the mean. */
+  p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_mov_const(R_S0, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
+  p[n++] = hp_fmul(R_MEAN, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+
+  /* x becomes its deviation from the mean, which is what both the variance and
+   * the final result need. */
+  p[n++] = hp_fneg(R_TMP, R_MEAN, hp_ctrl_safe());
+  p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
+
+  /* Shared memory still holds pass one, so barrier before reusing it. */
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  /* Pass two: the mean of the squared deviations. */
+  p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_mov_const(R_S1, 0, HERMES_CBUF0_SCALAR2, hp_ctrl_safe());
+  p[n++] = hp_fmul(R_TMP, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
+  p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
+  p[n++] = hp_fmul(R_X, R_X, R_TMP, hp_ctrl_wait(BAR_MUFU));
+  n += emit_store(&p[n], hp_ctrl_safe());
+  return n;
+}
+
 unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
-  return op == PR_NORM_RMS ? emit_rms(p, elements)
-                           : emit_softmax(p, elements);
+  switch (op) {
+    case PR_NORM_RMS: return emit_rms(p, elements);
+    case PR_NORM_SOFTMAX: return emit_softmax(p, elements);
+    case PR_NORM_LAYER: return emit_layer(p, elements);
+  }
+  return 0;
 }

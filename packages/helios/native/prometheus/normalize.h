@@ -24,6 +24,8 @@ typedef enum {
   PR_NORM_RMS,
   /* out[i] = exp(a[i] - max(a)) / sum(exp(a - max)) */
   PR_NORM_SOFTMAX,
+  /* out[i] = (a[i] - mean(a)) / sqrt(var(a) + eps) */
+  PR_NORM_LAYER,
 } pr_norm_op;
 
 unsigned pr_emit_normalize(hp_word *prog, pr_norm_op op, unsigned elements);

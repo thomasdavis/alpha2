@@ -252,6 +252,28 @@ static const char *chk_rms(const volatile NvU32 *o) {
   return NULL;
 }
 
+static const char *chk_layer(const volatile NvU32 *o) {
+  float mean = 0;
+  for (unsigned i = 0; i < PR_N; i++) mean += in_signed(i);
+  mean /= (float)PR_N;
+  float var = 0;
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float d = in_signed(i) - mean;
+    var += d * d;
+  }
+  var /= (float)PR_N;
+  const float inv = 1.0f / sqrtf(var + RMS_EPS);
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float want = (in_signed(i) - mean) * inv, got = pr_u2f(o[i]);
+    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-3f) {
+      snprintf(g_msg, sizeof g_msg, "layerNorm: o[%u]=%g want %g", i,
+               (double)got, (double)want);
+      return g_msg;
+    }
+  }
+  return NULL;
+}
+
 static const char *chk_softmax(const volatile NvU32 *o) {
   float mx = in_signed(0), sum = 0, total = 0;
   for (unsigned i = 0; i < PR_N; i++)
@@ -333,6 +355,10 @@ static unsigned bld_rms(hp_word *p, NvU64 out, NvU64 in) {
 static unsigned bld_softmax(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
   return pr_emit_normalize(p, PR_NORM_SOFTMAX, PR_N);
+}
+static unsigned bld_layer(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_normalize(p, PR_NORM_LAYER, PR_N);
 }
 static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
@@ -446,6 +472,9 @@ static const pr_kernel KERNELS[] = {
     K(.name = "softmax", .build = bld_softmax, .fill = fill_signed,
       .check = chk_softmax, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4, .scalar = LOG2_E),
+    K(.name = "layerNorm", .build = bld_layer, .fill = fill_signed,
+      .check = chk_layer, .blockX = PR_N, .gridX = 1, .sharedBytes = PR_N * 4,
+      .scalar = 1.0f / (float)PR_N, .scalar2 = RMS_EPS),
 };
 
 
