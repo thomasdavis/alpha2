@@ -23,11 +23,27 @@ mkdir -p "$output_root"
 cd "$repo_root"
 
 source_commit="${SOURCE_COMMIT_OVERRIDE:-}"
+repo_commit=""
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  repo_commit="$(git rev-parse HEAD)"
+fi
 if [[ -z "$source_commit" ]]; then
-  source_commit="$(git rev-parse HEAD)"
+  if [[ -z "$repo_commit" ]]; then
+    printf '%s\n' 'SOURCE_COMMIT_OVERRIDE is required when the source package has no Git metadata' >&2
+    exit 64
+  fi
+  source_commit="$repo_commit"
+elif [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'invalid SOURCE_COMMIT_OVERRIDE (expected 40 lowercase hex characters): %s\n' \
+    "$source_commit" >&2
+  exit 64
+elif [[ -n "$repo_commit" && "$source_commit" != "$repo_commit" ]]; then
+  printf 'SOURCE_COMMIT_OVERRIDE mismatch: declared=%s actual=%s\n' \
+    "$source_commit" "$repo_commit" >&2
+  exit 64
 fi
 printf '%s\n' "$source_commit" > "$output_root/SOURCE-COMMIT.txt"
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if [[ -n "$repo_commit" ]]; then
   git status --short > "$output_root/SOURCE-STATUS.txt"
   git diff --binary > "$output_root/SOURCE-DIFF.patch"
 else

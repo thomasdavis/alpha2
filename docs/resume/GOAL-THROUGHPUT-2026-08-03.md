@@ -1,6 +1,6 @@
 # Standing goal — maximise training throughput on the foundation shape
 
-**Set:** 2026-08-03 · **Status:** ACTIVE
+**Set:** 2026-08-03 · **Target revised:** 2026-08-04 · **Status:** ACTIVE
 **Parent goal:** [`GOAL-EXTREME-PERFORMANCE-2026-08-03.md`](GOAL-EXTREME-PERFORMANCE-2026-08-03.md) (10× cost reduction)
 **Derivation:** `donto-resources/research/alpha-helios-reimagined/experiments/x16_throughput_ladder.py`
 
@@ -8,19 +8,35 @@
 
 ## The goal
 
-> Raise sustained training throughput on the **exact frozen foundation shape** from
-> **7,253.8 tokens/s** to **30,000 tokens/s committed**, with a **45,000 tokens/s
-> stretch** — every rung gated on numerical parity, and no rung earned by changing
-> what is computed unless that change has already been shown loss-neutral.
+> Raise sustained **complete-step** training throughput on the exact frozen
+> foundation shape to **64,000 tokens/s on one RTX 3090**. **50,000 tokens/s is the
+> first acceptance gate; 70,000 tokens/s is the stretch.** Every rung is gated on
+> numerical parity, and no rung is earned by changing what is computed unless that
+> change has already been shown loss- and behaviour-neutral.
 
-| Target | tokens/s | vs today | GPU-hours for the 1.942B-token run | Cost at $0.69/h |
+| Target | tokens/s | vs current 3090 evidence | GPU-hours for the 1.942B-token run | Cost at $0.22/h |
 |---|---:|---:|---:|---:|
-| Today | 7,254 | 1.0× | 74.4 | $51.31 |
-| **Committed** | **30,000** | **4.1×** | **18.0** | **$12.41** |
-| **Stretch** | **45,000** | **6.2×** | 12.0 | $8.27 |
-| Hard BF16 roofline | 252,909 | 34.9× | 2.1 | $1.47 |
+| Current quality-bearing RTX 3090 warm median | 7,762 | 1.0× | 69.5 | $15.29 |
+| **First acceptance gate** | **50,000** | **6.44×** | **10.8** | **$2.37** |
+| **Primary goal** | **64,000** | **8.25×** | **8.4** | **$1.85** |
+| **Stretch** | **70,000** | **9.02×** | **7.7** | **$1.70** |
+| Hard BF16 roofline | 252,909 | 32.6× | 2.1 | $0.47 |
 
-Shape is fixed throughout: 18 layers, d=640, 10 heads × 64, FFN 1,728, vocab 12,288, S=1,024, batch 24, 24,576 tokens/step.
+Shape is fixed throughout: 18 layers, d=640, 10 heads × 64, FFN 1,728, vocab
+12,288, and sequence length 1,024. “Complete-step” includes forward, backward,
+parameter gradients, gradient norm/clipping, optimizer update, required mixed-
+precision bookkeeping, and synchronization before the next batch. Batch changes
+must be accompanied by tokens-to-target evidence.
+
+The revised primary target is anchored by a public `llm.c` report of approximately
+64,285 tok/s and 72.5–72.7% BF16 MFU for GPT-2 124M at sequence length 1,024 on a
+single power-limited RTX 3090. It is an external comparator, not an Alpha result:
+the architecture, stack, batch, optimizer path, and corpus differ, and the report
+does not name an immutable code revision. Alpha will pin and study the official
+source, map its relevant mechanisms onto Helios, and implement them in Helios.
+The operator explicitly declined a separate external control run on 2026-08-04;
+no GPU reproduction or competing CUDA training engine is part of this plan.
+Source: https://github.com/karpathy/llm.c/discussions/481
 
 ## Why these numbers and not rounder ones
 
@@ -39,7 +55,11 @@ They are the output of the measured ladder, not an aspiration. The step decompos
 | R5′ | BF16 tensor cores — *pessimistic (half-rate FP32 accumulate)* | 765 | 32,139 | 4.43× |
 | **R6** | int8 weight-gradient GEMM on top of R5 | 605 | 40,600 | 5.60× |
 
-**The committed target is reached at R4, in pure FP32, with no tensor cores and no change to the arithmetic.** That is deliberate: it does not depend on the one fact nobody has measured.
+The older ladder reached its former 30,000-token/s rung at R4. It does **not**
+reach the revised 50,000 first gate: even its optimistic R6 estimate is 40,600.
+The source-guided exact path must therefore remove more memory/control overhead
+and establish a complete mixed-precision contract; the ladder is retained as a
+decomposition, not presented as completion.
 
 ## The cooperative-accumulation gate is now measured
 
@@ -60,13 +80,24 @@ promoted to training until whole-step and trajectory parity clear. Evidence:
 
 | # | Action | Cost | Why first |
 |---:|---|---|---|
-| 1 | Print `host_build_ms` beside `dispatch_gpu_us` in the trainer | **complete 2026-08-03 on L40S** | Steady split is 3,216 ms host build / 1,479 ms GPU blocking; the accounting closes against 1,471 ms timestamped dispatch |
-| 2 | Microbenchmark the FP32-accumulate cooperative-matrix path | **complete 2026-08-03 on RTX 4090** | Shape-dependent 0.61–0.90x of F16 accumulation; 4.99–5.81x selected FP32, so mixed precision stays open |
-| 3 | R1 — static-graph record and replay | days | Largest single rung (1.84×), and it makes every later kernel gain actually visible |
-| 4 | R2 → R3 → R4 | — | Reprofile after each; the ordering may change once R1 lands |
-| 5 | R5 / R6 | — | Only if step 2 says yes |
+| 1 | Preserve and close the completed sentinel evidence | local | Do not rerun a quality-losing or mislabeled branch |
+| 2 | Pin and audit the official `llm.c` source | local/source | Extract mechanisms without paying for a control run or replacing Helios |
+| 3 | Implement the useful mechanisms in Helios | local | Start with same-mathematics changes to large tensors and the 84.59% critical path |
+| 4 | Prove local correctness and preserve future physical gates | local | An implementation is not a measured throughput gain |
+| 5 | Revisit approximate/multirate methods | later | Only after the exact path's remaining bottleneck is understood |
 
-Nothing after step 1 should start before step 1 finishes. The ladder's arithmetic is only as good as the host/GPU split it assumes.
+Current source map and implementation record:
+
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/LLMC-SOURCE-MECHANISM-MAP-2026-08-04.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`.
+
+The first pass now implements two native exact-path mechanisms: combined
+ordinary/masked training classifiers that avoid a full probability tensor, and
+selective SwiGLU product rematerialization. The latter removes 1,215 MiB of
+logical tape retention at the batch-10 shape for one extra elementwise pass
+whose preserved 3090 price is about 4.418 ms. These are local implementations,
+not new physical throughput results; Vulkan submission-boundary reuse and
+complete-step performance remain explicit future gates.
 
 ### Current execution state
 
@@ -177,4 +208,8 @@ Each of these was closed by measurement or proof, and each re-opens only if its 
 
 ## Definition of done
 
-Sustained warm median ≥ 30,000 tokens/s on the exact foundation shape, with full parity evidence preserved and checksum-verified on the mounted drive, reproduced from the selected source commit, and the pod removed or actively running the accepted job.
+The first gate is sustained warm median >= 50,000 complete training tok/s. The goal
+is done only at >= 64,000 complete training tok/s on one physical RTX 3090 for the
+exact foundation computation, with parity or matched-loss evidence preserved and
+checksum-verified on the mounted drive, reproduced from the selected source commit,
+and the pod removed after recovery unless it is actively running the accepted job.

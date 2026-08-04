@@ -1,6 +1,6 @@
 # Standing goal — extreme performance by rethinking the problem
 
-**Set:** 2026-08-03 · **Status:** ACTIVE · **Owner:** ajax + agent
+**Set:** 2026-08-03 · **Throughput target revised:** 2026-08-04 · **Status:** ACTIVE · **Owner:** ajax + agent
 **Research home:** `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/`
 **Primary document:** `REIMAGINING-ALPHA-PERFORMANCE-2026-08-03.md`
 
@@ -40,12 +40,15 @@ contesting 2-4% kernel candidates. The unit of progress was wrong.
 
 ## Sub-goal: throughput
 
-A dedicated throughput goal derived from the measured kernel ladder is at
-[GOAL-THROUGHPUT-2026-08-03.md](GOAL-THROUGHPUT-2026-08-03.md): raise sustained
-tokens/s on the exact foundation shape from **7,254 to 30,000 committed**
-(45,000 stretch), taking the 1.942B-token run from 74.4 GPU-hours / $51.31 to
-**18.0 hours / $12.41**. The committed target is reached in pure FP32 with no
-tensor cores and no change to the arithmetic.
+A dedicated throughput goal is at
+[GOAL-THROUGHPUT-2026-08-03.md](GOAL-THROUGHPUT-2026-08-03.md): raise complete
+training throughput on one RTX 3090 from the current quality-bearing **7,762
+tok/s** to a **50,000 tok/s first gate**, a **64,000 tok/s primary target**, and a
+**70,000 tok/s stretch**. At $0.22/hour the primary target would execute the
+1.942B-token contract in about 8.4 GPU-hours / $1.85 before evaluation and
+checkpoint overhead. The 64k target is anchored by a public `llm.c` 124M BF16
+report, but remains unproven for Alpha until Helios reaches it with matched
+full-step accounting.
 
 The cooperative-matrix discriminator is now physically measured. GeForce Ada's
 FP32-accumulate rate is shape-dependent (0.61–0.90x the F16-accumulate rate),
@@ -59,9 +62,10 @@ subject to whole-step and training-trajectory parity.
 |---|---|---|
 | **G0** | Physical baseline: exact FLOP accounting, roofline position, four-factor decomposition, reproducible from scripts. | **met 2026-08-03** |
 | **G1a** | `host_build_ms` printed beside `dispatch_gpu_us` in the trainer, confirming or refuting the host-bound model of X8. **Run this first** — it changes how every candidate is scored. | **met 2026-08-03 on L40S: 68.49% host / 31.51% GPU blocking steady-state; GPU wall agrees with timestamped dispatch** |
-| **G1** | Reference-stack control run of the exact foundation shape on one 4090 (~$0.70, <=1 h), tokens/s and MFU recorded. Decides whether Helios is the production engine or the research engine. | open |
+| **G1** | Pin and audit the official high-throughput reference source, map its mechanisms to the exact Alpha graph, and implement compatible parts in Helios. No external control run is authorized. | active |
 | **G2** | The 51% unattributed step interval explained and either eliminated or accounted for in a corrected ledger. **Diagnosed 2026-08-03 (X8): host-bound, unoverlapped, static graph rebuilt every step.** | diagnosed, unfixed |
-| **G3** | >= 3x end-to-end over 7,253.8 tokens/s on the exact foundation shape, with exact-loss and gradient parity under existing promotion rules. | open |
+| **G3** | >= 50,000 complete tok/s on one RTX 3090 for the exact foundation computation, with exact-loss or matched-loss parity under existing promotion rules. | open |
+| **G3b** | >= 64,000 complete tok/s on one RTX 3090, with the full timed boundary and Helios source/mechanism provenance recorded. | open |
 | **G4** | >= 10x reduction in GPU-dollars to a fixed held-out loss, demonstrated on a bounded pilot with matched tokens, not extrapolated. | open |
 | **G5** | Foundation run executed under the improved recipe with complete mounted evidence. | open |
 
@@ -123,6 +127,16 @@ The cost model has also been widened beyond optimizing SGD as given. X17 in the
 mounted research tree reduces the task to behavioral construction, surveys 100
 external mechanisms, and makes the closed-loop Behavioral Constraint Compiler
 the primary L2/L3 research candidate alongside the L5 static graph/arena work.
+
+**Source-guided exact-path implementation (2026-08-04).** Official `llm.c`
+source was pinned at `f1e2ace651495b74ae22d45d1723443fd00ecd3a` and used as a
+mechanism oracle without launching a control or GPU run. Helios now has combined
+ordinary/masked training classifiers and selective SwiGLU product
+rematerialization. Closed-form savings are 1,440 MiB of classifier traffic per
+training call and 1,215 MiB of logical activation retention across 18 layers at
+batch 10. Local gradients and release/rematerialization behavior pass; physical
+VRAM and complete-step effects remain unmeasured. Canonical record:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred

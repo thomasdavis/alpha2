@@ -60,6 +60,9 @@ export {
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardFusedOnline, kernelCrossEntropyBackwardMaskedFusedOnline,
+  kernelCrossEntropyTrainingFusedOnline,
+  kernelCrossEntropyMaskedTrainingFusedOnline,
   kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
   kernelEmbeddingBackwardDeterministic,
@@ -76,6 +79,9 @@ import {
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardFusedOnline, kernelCrossEntropyBackwardMaskedFusedOnline,
+  kernelCrossEntropyTrainingFusedOnline,
+  kernelCrossEntropyMaskedTrainingFusedOnline,
   kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
   kernelEmbeddingBackwardDeterministic,
@@ -305,8 +311,12 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "ce_fwd_vec4":  spirv = kernelCrossEntropyForwardVec4(wgSize); break;
     case "ce_fwd_pick": spirv = kernelCrossEntropyForwardPick(wgSize); break;
     case "cross_entropy_backward": spirv = kernelCrossEntropyBackward(wgSize); break;
+    case "ce_backward_fused_online": spirv = kernelCrossEntropyBackwardFusedOnline(wgSize); break;
     case "ce_fwd_masked": spirv = kernelCrossEntropyForwardMasked(wgSize); break;
     case "ce_masked_backward": spirv = kernelCrossEntropyBackwardMasked(wgSize); break;
+    case "ce_masked_backward_fused_online": spirv = kernelCrossEntropyBackwardMaskedFusedOnline(wgSize); break;
+    case "ce_training_fused_online": spirv = kernelCrossEntropyTrainingFusedOnline(wgSize); break;
+    case "ce_masked_training_fused_online": spirv = kernelCrossEntropyMaskedTrainingFusedOnline(wgSize); break;
     case "ul_fwd_masked": spirv = kernelCrossEntropyForwardUnlikelihoodMasked(wgSize); break;
     case "ul_masked_backward": spirv = kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;

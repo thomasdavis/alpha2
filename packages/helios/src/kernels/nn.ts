@@ -345,7 +345,27 @@ export function kernelSoftmax(wgSize = 256): Uint32Array {
  * Push constants: { dimVec4: f32, numRows: f32 }
  * Dispatch: (numRows, 1, 1) workgroups of (wgSize, 1, 1)
  */
-export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
+type OnlineSoftmaxOutput =
+  | "probabilities"
+  | "cross_entropy_backward"
+  | "cross_entropy_masked_backward"
+  | "cross_entropy_training"
+  | "cross_entropy_masked_training";
+
+/**
+ * Shared online-normalization generator.
+ *
+ * The cross-entropy variants deliberately normalize and form dlogits in the
+ * same kernel.  The historical path first wrote an N*C probability tensor,
+ * then read it back in a second dispatch to form another N*C dlogits tensor.
+ * For language-model vocabularies that is a very large, wholly avoidable VRAM
+ * round trip.  Keeping this generator shared with softmax also keeps the
+ * numerical reduction order identical to the already exercised online kernel.
+ */
+function kernelSoftmaxOnlineImpl(
+  wgSize: number,
+  outputKind: OnlineSoftmaxOutput,
+): Uint32Array {
   const SUBGROUP_SIZE = 32;
   const numSubgroups = Math.max(1, wgSize / SUBGROUP_SIZE);
   const b = new SpirVBuilder();
@@ -358,11 +378,35 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   // vec4 type
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
+  const tVec4Bool = b.id();
+  b.typeVector(tVec4Bool, p.tBool, 4);
 
-  // Buffers: input (vec4, readonly), output (vec4, write)
+  const isCrossEntropy = outputKind !== "probabilities";
+  const isMaskedCrossEntropy = outputKind === "cross_entropy_masked_backward"
+    || outputKind === "cross_entropy_masked_training";
+  const isTrainingCrossEntropy = outputKind === "cross_entropy_training"
+    || outputKind === "cross_entropy_masked_training";
+
+  // Buffers: input (vec4, readonly), optional targets/mask, output (vec4).
+  // Output is always the final binding so Helios's default write mask remains
+  // correct for every variant.
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
-  const pc = declareParamsPushConstant(b, p.tF32, 2); // dimVec4, numRows
+  const bufTargets = isCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true)
+    : null;
+  const bufMask = isMaskedCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true)
+    : null;
+  const bufLosses = isTrainingCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, isMaskedCrossEntropy ? 3 : 2, false)
+    : null;
+  const outputBinding = isTrainingCrossEntropy
+    ? isMaskedCrossEntropy ? 4 : 3
+    : isMaskedCrossEntropy ? 3
+    : isCrossEntropy ? 2
+    : 1;
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, outputBinding, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, isCrossEntropy ? 3 : 2);
 
   // Constants
   const constWgSize = b.id();
@@ -373,6 +417,12 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.constantF32(p.tF32, constNegMax, -3.4028235e+38);
   const const1f = b.id();
   b.constantF32(p.tF32, const1f, 1.0);
+  const const2u = b.id();
+  b.constant(p.tU32, const2u, 2);
+  const const3u = b.id();
+  b.constant(p.tU32, const3u, 3);
+  const const4u = b.id();
+  b.constant(p.tU32, const4u, 4);
   const scopeSubgroup = b.id();
   b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
   const const5u = b.id();
@@ -633,12 +683,84 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
     b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
   }
 
-  // Precompute 1/sum and splat vectors for Phase 2
+  // Precompute 1/sum and splat vectors for Phase 2.
   const invSum = b.id(); b.emit(Op.FDiv, [p.tF32, invSum, const1f, globalSum]);
   const splatGMax = b.id();
   b.emit(Op.CompositeConstruct, [tVec4F32, splatGMax, globalMax, globalMax, globalMax, globalMax]);
   const splatInvSum = b.id();
   b.emit(Op.CompositeConstruct, [tVec4F32, splatInvSum, invSum, invSum, invSum, invSum]);
+
+  // Cross-entropy variants additionally load the row target and upstream
+  // scale once.  The masked variant folds its row weight into that scale.
+  let targetU = p.const0u;
+  let outputScale = const1f;
+  let rowMask = const1f;
+  if (isCrossEntropy) {
+    const ptrTarget = b.id();
+    b.emit(Op.AccessChain, [bufTargets!.tPtrF32, ptrTarget, bufTargets!.varId, p.const0u, row]);
+    const targetF = b.id();
+    b.emit(Op.Load, [p.tF32, targetF, ptrTarget]);
+    targetU = b.id();
+    b.emit(Op.Bitcast, [p.tU32, targetU, targetF]);
+
+    const ptrScale = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, const2u]);
+    outputScale = b.id();
+    b.emit(Op.Load, [p.tF32, outputScale, ptrScale]);
+
+    if (isMaskedCrossEntropy) {
+      const ptrMask = b.id();
+      b.emit(Op.AccessChain, [bufMask!.tPtrF32, ptrMask, bufMask!.varId, p.const0u, row]);
+      const maskValue = b.id();
+      b.emit(Op.Load, [p.tF32, maskValue, ptrMask]);
+      rowMask = maskValue;
+      const maskedScale = b.id();
+      b.emit(Op.FMul, [p.tF32, maskedScale, outputScale, maskValue]);
+      outputScale = maskedScale;
+    }
+  }
+
+  if (isTrainingCrossEntropy) {
+    // Loss uses the same max/sum pair as dlogits. Only lane 0 writes the row
+    // scalar; all workgroup lanes then continue into the second logits pass.
+    const targetVecIndex = b.id();
+    b.emit(Op.ShiftRightLogical, [p.tU32, targetVecIndex, targetU, const2u]);
+    const targetLane = b.id();
+    b.emit(Op.BitwiseAnd, [p.tU32, targetLane, targetU, const3u]);
+    const targetGlobalVec = b.id();
+    b.emit(Op.IAdd, [p.tU32, targetGlobalVec, rowOffset, targetVecIndex]);
+    const ptrTargetVec = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrTargetVec, bufA.varId, p.const0u, targetGlobalVec]);
+    const targetVec = b.id();
+    b.emit(Op.Load, [tVec4F32, targetVec, ptrTargetVec]);
+    const targetLogit = b.id();
+    b.emit(Op.VectorExtractDynamic, [p.tF32, targetLogit, targetVec, targetLane]);
+    const logSum = b.id();
+    b.emit(Op.ExtInst, [p.tF32, logSum, p.glslStd, GLSLstd450.Log, globalSum]);
+    const logSumExp = b.id();
+    b.emit(Op.FAdd, [p.tF32, logSumExp, logSum, globalMax]);
+    const unmaskedRowLoss = b.id();
+    b.emit(Op.FSub, [p.tF32, unmaskedRowLoss, logSumExp, targetLogit]);
+    let rowLoss = unmaskedRowLoss;
+    if (isMaskedCrossEntropy) {
+      rowLoss = b.id();
+      b.emit(Op.FMul, [p.tF32, rowLoss, unmaskedRowLoss, rowMask]);
+    }
+    const isLane0 = b.id();
+    b.emit(Op.IEqual, [p.tBool, isLane0, localIdx, p.const0u]);
+    const writeLossLabel = b.id();
+    const afterLossLabel = b.id();
+    b.emit(Op.SelectionMerge, [afterLossLabel, 0]);
+    b.emit(Op.BranchConditional, [isLane0, writeLossLabel, afterLossLabel]);
+    b.emit(Op.Label, [writeLossLabel]);
+    const ptrLoss = b.id();
+    b.emit(Op.AccessChain, [bufLosses!.tPtrF32, ptrLoss, bufLosses!.varId, p.const0u, row]);
+    b.emit(Op.Store, [ptrLoss, rowLoss]);
+    b.emit(Op.Branch, [afterLossLabel]);
+    b.emit(Op.Label, [afterLossLabel]);
+  }
+  const zeroVec = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, zeroVec, p.const0f, p.const0f, p.const0f, p.const0f]);
 
   // ── Phase 2: Normalize: output = exp(input - max) * invSum ──
   b.emit(Op.Store, [varIdx, localIdx]);
@@ -672,10 +794,46 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.emit(Op.ExtInst, [tVec4F32, expV2, p.glslStd, GLSLstd450.Exp, shifted2]);
   const normalized = b.id();
   b.emit(Op.FMul, [tVec4F32, normalized, expV2, splatInvSum]);
+
+  let outputValue = normalized;
+  if (isCrossEntropy) {
+    // This vec4 represents scalar columns [4*i, 4*i+1, 4*i+2, 4*i+3].
+    // Construct the local one-hot vector without ever materializing N*C
+    // probabilities or one-hot values in memory.
+    const baseCol = b.id();
+    b.emit(Op.IMul, [p.tU32, baseCol, curIdx2, const4u]);
+    const col1 = b.id(); b.emit(Op.IAdd, [p.tU32, col1, baseCol, p.const1u]);
+    const col2 = b.id(); b.emit(Op.IAdd, [p.tU32, col2, baseCol, const2u]);
+    const col3 = b.id(); b.emit(Op.IAdd, [p.tU32, col3, baseCol, const3u]);
+    const eq0 = b.id(); b.emit(Op.IEqual, [p.tBool, eq0, baseCol, targetU]);
+    const eq1 = b.id(); b.emit(Op.IEqual, [p.tBool, eq1, col1, targetU]);
+    const eq2 = b.id(); b.emit(Op.IEqual, [p.tBool, eq2, col2, targetU]);
+    const eq3 = b.id(); b.emit(Op.IEqual, [p.tBool, eq3, col3, targetU]);
+    const hot0 = b.id(); b.emit(Op.Select, [p.tF32, hot0, eq0, const1f, p.const0f]);
+    const hot1 = b.id(); b.emit(Op.Select, [p.tF32, hot1, eq1, const1f, p.const0f]);
+    const hot2 = b.id(); b.emit(Op.Select, [p.tF32, hot2, eq2, const1f, p.const0f]);
+    const hot3 = b.id(); b.emit(Op.Select, [p.tF32, hot3, eq3, const1f, p.const0f]);
+    const oneHot = b.id();
+    b.emit(Op.CompositeConstruct, [tVec4F32, oneHot, hot0, hot1, hot2, hot3]);
+    const diff = b.id();
+    b.emit(Op.FSub, [tVec4F32, diff, normalized, oneHot]);
+    const scaleVec = b.id();
+    b.emit(Op.CompositeConstruct, [tVec4F32, scaleVec, outputScale, outputScale, outputScale, outputScale]);
+    const scaled = b.id();
+    b.emit(Op.FMul, [tVec4F32, scaled, diff, scaleVec]);
+
+    // Canonicalize both signs of exact zero component-wise. In particular,
+    // masked target rows would otherwise contain -0, violating the existing
+    // backend-independent exact-zero contract.
+    const isZero = b.id();
+    b.emit(Op.FOrdEqual, [tVec4Bool, isZero, scaled, zeroVec]);
+    outputValue = b.id();
+    b.emit(Op.Select, [tVec4F32, outputValue, isZero, zeroVec, scaled]);
+  }
   // Store to output
   const ptrC2 = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC2, bufC.varId, p.const0u, globalIdx2]);
-  b.emit(Op.Store, [ptrC2, normalized]);
+  b.emit(Op.Store, [ptrC2, outputValue]);
 
   b.emit(Op.Branch, [labelP2Cont]);
   b.emit(Op.Label, [labelP2Cont]);
@@ -691,6 +849,37 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
 
   return b.build();
+}
+
+/** Two-pass online softmax with vec4 loads. */
+export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "probabilities");
+}
+
+/**
+ * Two-pass fused cross-entropy backward from logits directly to dlogits.
+ * This removes the full-size probability tensor and the follow-up dispatch.
+ */
+export function kernelCrossEntropyBackwardFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_backward");
+}
+
+/** Fused masked-mean cross-entropy backward, directly from logits. */
+export function kernelCrossEntropyBackwardMaskedFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_masked_backward");
+}
+
+/**
+ * Training classifier: writes per-row losses and mean-loss dlogits together.
+ * The caller reduces the small loss vector; backward reuses the cached dlogits.
+ */
+export function kernelCrossEntropyTrainingFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_training");
+}
+
+/** Masked training classifier: weighted loss rows and dlogits in one pass. */
+export function kernelCrossEntropyMaskedTrainingFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_masked_training");
 }
 
 // ── Kernel: Persistent CTA softmax (grid-stride row loop for L2 reuse) ────

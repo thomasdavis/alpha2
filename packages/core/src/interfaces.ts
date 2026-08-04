@@ -92,12 +92,32 @@ export interface Backend {
   softmax(a: TensorData, axis?: number): TensorData;
   logSoftmax(a: TensorData, axis?: number): TensorData;
   crossEntropy(logits: TensorData, targets: TensorData): TensorData;
+  /**
+   * Optional training-only classifier fusion. Returns the ordinary mean
+   * cross-entropy and its unscaled derivative with respect to logits in one
+   * backend pass. Autograd applies any later upstream scalar. A backend may
+   * return null for an unsupported shape; callers then use the ordinary
+   * forward/backward hooks. Evaluation must use crossEntropy() so it does not
+   * calculate or retain an unused N*C gradient.
+   */
+  crossEntropyForwardBackward?(
+    logits: TensorData,
+    targets: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null;
   /** Masked (assistant-only SFT) cross-entropy. Optional — backends that don't
    *  implement it are driven through the cpu_ref path in the autograd op.
    *  logits [N,C], targets [N] class idx, mask [N] f32 per-row weights.
    *  Returns scalar = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1). An all-zero
    *  mask yields exactly 0 (denominator floored at 1, no NaN). */
   crossEntropyMasked?(logits: TensorData, targets: TensorData, mask: TensorData): TensorData;
+  /** Training-only masked classifier fusion, analogous to
+   *  crossEntropyForwardBackward. gradLogits already includes mask[row] and
+   *  division by max(sum(mask),1), but not a later upstream scalar. */
+  crossEntropyMaskedForwardBackward?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null;
   /** Masked token-unlikelihood loss for rollout-conditioned negative targets.
    *  logits [N,C], targets [N] undesired class idx, mask [N] f32 per-row
    *  weights. Returns sum_i(-log(max(1-p(target_i), epsilon)) * mask_i) /

@@ -3570,6 +3570,40 @@ export class HeliosBackend implements Backend {
     const totalElements = N * C;
     const gradScalar = (gradOutput.data as Float32Array)[0];
 
+    // Default large-vocabulary path: normalize logits and form dlogits in one
+    // online vec4 kernel. The former path materialized an N*C probability
+    // tensor, then read it in a second dispatch to write another N*C tensor.
+    // Alpha's [10240,12288] training shape made each of those buffers ~480 MiB.
+    // Keep the legacy route selectable for numerical bisection and for shapes
+    // that cannot use aligned vec4 storage.
+    const useFusedOnline = process.env.HELIOS_CE_BACKWARD_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (useFusedOnline) {
+      const dimVec4 = C >>> 2;
+      const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const pipeline = getPipeline(vk, "ce_backward_fused_online", 3, 3 * 4, ceWg);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const push = new Float32Array([dimVec4, N, gradScalar / N]);
+
+      graph.record({
+        kind: "backward",
+        kernel: "ce_backward_fused_online",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufLogits, bufTargets, region.handle],
+      });
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
     // Compute softmax on GPU (stays lazy — no flush needed)
     const probs = this.softmax(logits, -1);
 
@@ -3635,6 +3669,35 @@ export class HeliosBackend implements Backend {
     let sumMask = 0;
     for (let i = 0; i < N; i++) sumMask += maskArr[i];
     const invDenom = gradScalar / Math.max(sumMask, 1);
+
+    const useFusedOnline = process.env.HELIOS_CE_BACKWARD_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (useFusedOnline) {
+      const dimVec4 = C >>> 2;
+      const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ce_masked_backward_fused_online", 4, 3 * 4, ceWg);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const push = new Float32Array([dimVec4, N, invDenom]);
+
+      graph.record({
+        kind: "backward",
+        kernel: "ce_masked_backward_fused_online",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufLogits, bufTargets, bufMask, region.handle],
+      });
+      return graphLazyTensor(vk, logits.shape, region);
+    }
 
     // softmax on GPU (stays lazy — no flush)
     const probs = this.softmax(logits, -1);
@@ -5881,6 +5944,107 @@ export class HeliosBackend implements Backend {
 
   logSoftmax(a: TensorData, axis?: number): TensorData {
     return this.cpuLogSoftmax(a, axis);
+  }
+
+  crossEntropyForwardBackward(
+    logits: TensorData,
+    targets: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null {
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const totalElements = N * C;
+    const supported = process.env.HELIOS_CE_TRAINING_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (!supported) return null;
+
+    const vk = this.init();
+    const dimVec4 = C >>> 2;
+    const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+    const bufLogits = ensureGpu(vk, logits);
+    const bufTargets = ensureGpuRawBits(vk, targets);
+    const lossRegion = acquireOutputRegion(vk, N * 4);
+    const gradRegion = acquireOutputRegion(vk, totalElements * 4);
+    const pipeline = getPipeline(vk, "ce_training_fused_online", 4, 3 * 4, ceWg);
+    const push = new Float32Array([dimVec4, N, 1 / N]);
+
+    graph.record({
+      kind: "backward",
+      kernel: "ce_training_fused_online",
+      pipeline,
+      inputBufs: [],
+      outputRegion: gradRegion,
+      groups: [N, 1, 1],
+      push,
+      pushSize: 3 * 4,
+      shape: logits.shape,
+      allBufs: [bufLogits, bufTargets, lossRegion.handle, gradRegion.handle],
+      writeMask: 0b1100,
+    });
+
+    const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
+    const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
+    const totalLoss = this.gpuReduceSum(perRowLosses, false);
+    const total = (totalLoss.data as Float32Array)[0];
+    return {
+      loss: makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / N])),
+      gradLogits,
+    };
+  }
+
+  crossEntropyMaskedForwardBackward(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null {
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const totalElements = N * C;
+    const supported = process.env.HELIOS_CE_TRAINING_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (!supported) return null;
+
+    const maskValues = mask.data as Float32Array;
+    let denominator = 0;
+    for (let i = 0; i < N; i++) denominator += maskValues[i];
+    denominator = Math.max(denominator, 1);
+
+    const vk = this.init();
+    const dimVec4 = C >>> 2;
+    const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+    const bufLogits = ensureGpu(vk, logits);
+    const bufTargets = ensureGpuRawBits(vk, targets);
+    const bufMask = ensureGpu(vk, mask);
+    const lossRegion = acquireOutputRegion(vk, N * 4);
+    const gradRegion = acquireOutputRegion(vk, totalElements * 4);
+    const pipeline = getPipeline(vk, "ce_masked_training_fused_online", 5, 3 * 4, ceWg);
+    const push = new Float32Array([dimVec4, N, 1 / denominator]);
+
+    graph.record({
+      kind: "backward",
+      kernel: "ce_masked_training_fused_online",
+      pipeline,
+      inputBufs: [],
+      outputRegion: gradRegion,
+      groups: [N, 1, 1],
+      push,
+      pushSize: 3 * 4,
+      shape: logits.shape,
+      allBufs: [bufLogits, bufTargets, bufMask, lossRegion.handle, gradRegion.handle],
+      writeMask: 0b11000,
+    });
+
+    const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
+    const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
+    const totalLoss = this.gpuReduceSum(perRowLosses, false);
+    const total = (totalLoss.data as Float32Array)[0];
+    return {
+      loss: makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / denominator])),
+      gradLogits,
+    };
   }
 
   crossEntropy(logits: TensorData, targets: TensorData): TensorData {

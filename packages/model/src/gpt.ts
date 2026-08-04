@@ -10,7 +10,7 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
+  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, flashAttention, checkpoint,
@@ -392,7 +392,7 @@ function transformerBlock(
     // SwiGLU: h = (silu(x @ W_gate) ⊙ (x @ W_up)) @ W_proj
     const gatePre = matmulTransposed(ctx, flat, layer.mlp.fc_gate!);
     const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);
-    mlpH = matmulTransposed(ctx, siluMul(ctx, gatePre, up), layer.mlp.fc_proj!);
+    mlpH = siluMulMatmulTransposedRecompute(ctx, gatePre, up, layer.mlp.fc_proj!);
   } else if (activation === "universal") {
     // Universal Approximator: f(x) = silu(x) * gate + x * skip
     // Learnable per-channel gating — can represent any blend of SiLU and identity.
@@ -539,9 +539,9 @@ export function gptForward(
       // Assistant-only SFT: masked mean over positions (padding + user tokens
       // carry weight 0, so they contribute neither loss nor gradient).
       const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };
-      loss = crossEntropyMasked(ctx, logitsVar, targetsFlat, maskFlat);
+      loss = crossEntropyMasked(ctx, logitsVar, targetsFlat, maskFlat, training);
     } else {
-      loss = crossEntropy(ctx, logitsVar, targetsFlat);
+      loss = crossEntropy(ctx, logitsVar, targetsFlat, training);
     }
   }
 

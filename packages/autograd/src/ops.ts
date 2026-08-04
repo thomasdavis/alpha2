@@ -357,6 +357,42 @@ export function silu(ctx: Ctx, a: Variable): Variable {
   });
 }
 
+/** Compute the two input gradients for silu(a) * b without retaining its output. */
+function siluMulBackwardData(
+  B: Backend,
+  aData: TensorData,
+  bData: TensorData,
+  g: TensorData,
+  release?: (td: TensorData) => void,
+  reusableSiluA?: TensorData,
+): [TensorData, TensorData] {
+  if (B.siluMulBackward) {
+    const grads = B.siluMulBackward(aData, bData, g);
+    return [grads[0], grads[1]];
+  }
+
+  // Portable fallback: da = (g*b)*silu'(a), db = g*silu(a).
+  const siluA = reusableSiluA ?? B.silu(aData);
+  const gTimesB = B.mul(g, bData);
+  const da = B.siluBackward ? B.siluBackward(aData, gTimesB) : (() => {
+    const src = aData.data as Float32Array;
+    const gradOut = gTimesB.data as Float32Array;
+    const grad = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const sig = 1 / (1 + Math.exp(-x));
+      grad[i] = gradOut[i] * (sig * (1 + x * (1 - sig)));
+    }
+    return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
+  })();
+  const db = B.mul(g, siluA);
+  if (release) {
+    release(gTimesB);
+    if (!reusableSiluA) release(siluA);
+  }
+  return [da, db];
+}
+
 /**
  * Fused SiLU-Mul: output = silu(a) * b — single dispatch for SwiGLU.
  * Backward: da = dout * b * silu'(a), db = dout * silu(a)
@@ -373,28 +409,134 @@ export function siluMul(ctx: Ctx, a: Variable, b: Variable): Variable {
   };
   const out = B.siluMul ? B.siluMul(aData, bData) : B.mul(siluFallback!, bData);
   return record(ctx, out, [a, b], (g, B2, release) => {
-    if (B2.siluMulBackward) return B2.siluMulBackward(aData, bData, g);
-    // Fallback: separate silu_backward and mul
-    const siluA = siluFallbackLive ?? B2.silu(aData);
-    const ga = B2.mul(g, bData);
-    const da = B2.siluBackward ? B2.siluBackward(aData, ga) : (() => {
-      const src = aData.data as Float32Array;
-      const gArr = ga.data as Float32Array;
-      const grad = new Float32Array(src.length);
-      for (let i = 0; i < src.length; i++) {
-        const x = src[i]; const sig = 1 / (1 + Math.exp(-x));
-        grad[i] = gArr[i] * (sig * (1 + x * (1 - sig)));
-      }
-      return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
-    })();
-    const db = B2.mul(g, siluA);
-    if (release) release(ga);
+    const grads = siluMulBackwardData(
+      B2, aData, bData, g, release, siluFallbackLive ?? undefined,
+    );
     if (siluFallbackLive && release) release(siluFallbackLive);
     siluFallbackLive = null;
-    if (!siluFallbackLive && siluA !== siluFallback) {
-      if (release) release(siluA);
+    return grads;
+  }, cleanup);
+}
+
+/**
+ * Selectively rematerialized SwiGLU projection:
+ *
+ *   output = (silu(gate) * up) @ weight^T
+ *
+ * The product activation is consumed by the projection and released during
+ * the forward graph construction. Backward recomputes only that elementwise
+ * product; gate, up, and weight remain ordinary tape inputs. This avoids
+ * retaining one [tokens, ffnDim] activation per transformer layer without the
+ * much larger GEMM cost of whole-block activation checkpointing.
+ *
+ * Backends without explicit release keep the forward activation for backward,
+ * which preserves portable CPU semantics. GPU backends pass ctx.release and
+ * therefore exercise the rematerialized path.
+ */
+export function siluMulMatmulTransposedRecompute(
+  ctx: Ctx,
+  gate: Variable,
+  up: Variable,
+  weight: Variable,
+): Variable {
+  const gateData = gate.data;
+  const upData = up.data;
+  const weightData = weight.data;
+  const B = ctx.backend;
+
+  const siluFallback = B.siluMul ? null : B.silu(gateData);
+  const activation = B.siluMul
+    ? B.siluMul(gateData, upData)
+    : B.mul(siluFallback!, upData);
+
+  const transposedWeight = B.matmulTransposed
+    ? null
+    : B.transpose(weightData, weightData.shape.length - 2, weightData.shape.length - 1);
+  const out = B.matmulTransposed
+    ? B.matmulTransposed(activation, weightData)
+    : B.matmul(activation, transposedWeight!);
+
+  let forwardAuxiliaries: TensorData[] = [];
+  if (siluFallback) forwardAuxiliaries.push(siluFallback);
+  if (transposedWeight) forwardAuxiliaries.push(transposedWeight);
+  if (ctx.release) {
+    for (const auxiliary of forwardAuxiliaries) ctx.release(auxiliary);
+    forwardAuxiliaries = [];
+  }
+
+  // When explicit ownership is available the graph has already recorded every
+  // forward consumer, so release can safely defer reuse until those consumers
+  // complete. Without explicit ownership (CPU/reference backends), keep the
+  // activation as a portable fallback instead of pretending it was freed.
+  let forwardActivation: TensorData | null = activation;
+  if (ctx.release) {
+    ctx.release(activation);
+    forwardActivation = null;
+  }
+
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (forwardActivation && release) release(forwardActivation);
+    forwardActivation = null;
+    if (release) {
+      for (const auxiliary of forwardAuxiliaries) release(auxiliary);
     }
-    return [da, db];
+    forwardAuxiliaries = [];
+  };
+
+  return record(ctx, out, [gate, up, weight], (g, B2, release, needsGrad) => {
+    const needGate = !needsGrad || needsGrad[0];
+    const needUp = !needsGrad || needsGrad[1];
+    const needWeight = !needsGrad || needsGrad[2];
+    // Only dWeight consumes the SwiGLU product. Gate/up gradients require the
+    // projection adjoint, but not the forward product itself.
+    const needActivation = needWeight;
+
+    let recomputedActivation: TensorData | null = null;
+    let recomputeSiluFallback: TensorData | null = null;
+    if (needActivation) {
+      if (forwardActivation) {
+        recomputedActivation = forwardActivation;
+        forwardActivation = null;
+      } else if (B2.siluMul) {
+        recomputedActivation = B2.siluMul(gateData, upData);
+      } else {
+        recomputeSiluFallback = B2.silu(gateData);
+        recomputedActivation = B2.mul(recomputeSiluFallback, upData);
+      }
+    }
+
+    let dGate: TensorData | null = null;
+    let dUp: TensorData | null = null;
+    if (needGate || needUp) {
+      const dActivation = B2.matmul(g, weightData);
+      const [allDGate, allDUp] = siluMulBackwardData(
+        B2, gateData, upData, dActivation, release,
+      );
+      dGate = needGate ? allDGate : null;
+      dUp = needUp ? allDUp : null;
+      if (release) {
+        release(dActivation);
+        if (!needGate) release(allDGate);
+        if (!needUp) release(allDUp);
+      }
+    }
+
+    let dWeight: TensorData | null = null;
+    if (needWeight) {
+      if (B2.matmulTransposedA) {
+        dWeight = B2.matmulTransposedA(g, recomputedActivation!);
+      } else {
+        const tG = B2.transpose(g, g.shape.length - 2, g.shape.length - 1);
+        dWeight = B2.matmul(tG, recomputedActivation!);
+        if (release) release(tG);
+      }
+    }
+
+    if (release) {
+      if (recomputedActivation) release(recomputedActivation);
+      if (recomputeSiluFallback) release(recomputeSiluFallback);
+    }
+    return [dGate!, dUp!, dWeight!];
   }, cleanup);
 }
 
@@ -856,15 +998,34 @@ export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   });
 }
 
-export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
+export function crossEntropy(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  training = false,
+): Variable {
   const logitsData = logits.data;
+  const fused = training ? ctx.backend.crossEntropyForwardBackward?.(logitsData, targets) ?? null : null;
+  let cachedGrad: TensorData | null = fused?.gradLogits ?? null;
   let targetsLive: TensorData | null = targets;
   const cleanup = (release?: (td: TensorData) => void): void => {
-    if (!targetsLive) return;
-    if (release) release(targetsLive);
+    if (release) {
+      if (targetsLive) release(targetsLive);
+      if (cachedGrad) release(cachedGrad);
+    }
     targetsLive = null;
+    cachedGrad = null;
   };
-  return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
+  return record(ctx, fused?.loss ?? ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
+    if (cachedGrad) {
+      const rawGrad = cachedGrad;
+      cachedGrad = null; // ownership transfers to the returned gradient path
+      const upstream = (g.data as Float32Array)[0];
+      if (upstream === 1) return [rawGrad];
+      const scaled = B.scale(rawGrad, upstream);
+      if (release) release(rawGrad);
+      return [scaled];
+    }
     const tgt = targetsLive ?? targets;
     if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, tgt, g)];
     // CPU fallback: (softmax(logits) - one_hot(targets)) * gScalar / N
@@ -897,21 +1058,40 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
  * mask 0 contribute nothing to the loss AND get an exactly-zero gradient — the
  * property the SFT loss-masking test asserts.
  */
-export function crossEntropyMasked(ctx: Ctx, logits: Variable, targets: TensorData, mask: TensorData): Variable {
+export function crossEntropyMasked(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  mask: TensorData,
+  training = false,
+): Variable {
   const logitsData = logits.data;
   const B = ctx.backend;
   if (!B.crossEntropyMasked) throw new Error("crossEntropyMasked requires a backend with crossEntropyMasked");
+  const fused = training ? B.crossEntropyMaskedForwardBackward?.(logitsData, targets, mask) ?? null : null;
+  let cachedGrad: TensorData | null = fused?.gradLogits ?? null;
   let targetsLive: TensorData | null = targets;
   let maskLive: TensorData | null = mask;
   const cleanup = (release?: (td: TensorData) => void): void => {
     if (release) {
       if (targetsLive) release(targetsLive);
       if (maskLive) release(maskLive);
+      if (cachedGrad) release(cachedGrad);
     }
     targetsLive = null;
     maskLive = null;
+    cachedGrad = null;
   };
-  return record(ctx, B.crossEntropyMasked(logitsData, targets, mask), [logits], (g, Bk, release) => {
+  return record(ctx, fused?.loss ?? B.crossEntropyMasked(logitsData, targets, mask), [logits], (g, Bk, release) => {
+    if (cachedGrad) {
+      const rawGrad = cachedGrad;
+      cachedGrad = null;
+      const upstream = (g.data as Float32Array)[0];
+      if (upstream === 1) return [rawGrad];
+      const scaled = Bk.scale(rawGrad, upstream);
+      if (release) release(rawGrad);
+      return [scaled];
+    }
     const tgt = targetsLive ?? targets;
     const msk = maskLive ?? mask;
     if (Bk.crossEntropyMaskedBackward) return [Bk.crossEntropyMaskedBackward(logitsData, tgt, msk, g)];

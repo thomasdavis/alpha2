@@ -197,12 +197,46 @@ describeGpu("per-op forward parity", () => {
     assertClose("siluMul", f32(g), f32(cRef), FWD_REL_TOL, FWD_ABS_TOL);
   });
 
-  it("crossEntropy [6,10]", () => {
+  it("crossEntropy [6,10] retains the non-vec4 forward case", () => {
     const logits = rnd(11, 60, -3, 3);
     const targets: TensorData = { shape: [6], dtype: "i32", data: Int32Array.from([1, 3, 0, 9, 4, 7]) };
     const c = cpu.crossEntropy(cpu.fromArray(logits, [6, 10]), targets);
     const g = gpu.crossEntropy(gpu.fromArray(logits, [6, 10]), targets);
     relCloseScalar("crossEntropy", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
+  });
+
+  it("crossEntropyBackward [6,16] uses direct fused dlogits parity", () => {
+    const N = 6, C = 16;
+    const logits = rnd(111, N * C, -3, 3);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0, 15, 4, 7]) };
+    const upstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([0.75]) };
+    const probs = cpu.softmax(cpu.fromArray(logits, [N, C]), -1).data as Float32Array;
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / C);
+      const col = idx % C;
+      return (p - (col === targets.data[row] ? 1 : 0)) * 0.75 / N;
+    });
+    const actual = gpu.crossEntropyBackward!(gpu.fromArray(logits, [N, C]), targets, upstream);
+    assertClose("crossEntropyBackward fused online", f32(actual), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+
+  it("crossEntropyForwardBackward [6,16] fuses training loss and cached dlogits", () => {
+    const N = 6, C = 16;
+    const logits = rnd(112, N * C, -3, 3);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0, 15, 4, 7]) };
+    const logitsCpu = cpu.fromArray(logits, [N, C]);
+    const fused = gpu.crossEntropyForwardBackward!(gpu.fromArray(logits, [N, C]), targets);
+    expect(fused).not.toBeNull();
+    const expectedLoss = cpu.crossEntropy(logitsCpu, targets);
+    relCloseScalar("crossEntropyForwardBackward loss", f32(fused!.loss)[0], f32(expectedLoss)[0], LOSS_REL_TOL);
+
+    const probs = cpu.softmax(logitsCpu, -1).data as Float32Array;
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / C);
+      const col = idx % C;
+      return (p - (col === targets.data[row] ? 1 : 0)) / N;
+    });
+    assertClose("crossEntropyForwardBackward dlogits", f32(fused!.gradLogits), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
   });
 
   it("embedding [12,8] gather + repeated-index backward", () => {
@@ -264,6 +298,53 @@ describeGpu("masked cross-entropy parity", () => {
     // Masked-out rows (1 and 4) are bit-exactly zero on GPU too.
     const gd = f32(g);
     for (const r of [1, 4]) for (let c = 0; c < C; c++) expect(gd[r * C + c]).toBe(0);
+  });
+
+  it("crossEntropyMaskedForwardBackward fuses weighted loss and cached dlogits", () => {
+    const fusedN = 6, fusedC = 16;
+    const fusedLogits = rnd(151, fusedN * fusedC, -3, 3);
+    const fusedTargetsArray = [1, 3, 0, 15, 4, 7];
+    const fusedMaskArray = [1, 0, 0.5, 1, 0, 1];
+    const fusedTargets: TensorData = {
+      shape: [fusedN], dtype: "i32", data: Int32Array.from(fusedTargetsArray),
+    };
+    const fusedMask: TensorData = {
+      shape: [fusedN], dtype: "f32", data: Float32Array.from(fusedMaskArray),
+    };
+    const logitsCpu = cpu.fromArray(fusedLogits, [fusedN, fusedC]);
+    const fused = gpu.crossEntropyMaskedForwardBackward!(
+      gpu.fromArray(fusedLogits, [fusedN, fusedC]), fusedTargets, fusedMask,
+    );
+    expect(fused).not.toBeNull();
+    const expectedLoss = cpu.crossEntropyMasked!(logitsCpu, fusedTargets, fusedMask);
+    relCloseScalar("crossEntropyMaskedForwardBackward loss", f32(fused!.loss)[0], f32(expectedLoss)[0], LOSS_REL_TOL);
+
+    const probs = cpu.softmax(logitsCpu, -1).data as Float32Array;
+    const denominator = fusedMaskArray.reduce((a, b) => a + b, 0);
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / fusedC);
+      const col = idx % fusedC;
+      return (p - (col === fusedTargetsArray[row] ? 1 : 0))
+        * fusedMaskArray[row] / Math.max(denominator, 1);
+    });
+    assertClose("crossEntropyMaskedForwardBackward dlogits", f32(fused!.gradLogits), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+
+  it("crossEntropyMaskedForwardBackward preserves the all-zero-mask contract", () => {
+    const fusedN = 3, fusedC = 16;
+    const fusedLogits = rnd(152, fusedN * fusedC, -3, 3);
+    const fusedTargets: TensorData = {
+      shape: [fusedN], dtype: "i32", data: Int32Array.from([1, 3, 15]),
+    };
+    const zeroMask: TensorData = {
+      shape: [fusedN], dtype: "f32", data: new Float32Array(fusedN),
+    };
+    const fused = gpu.crossEntropyMaskedForwardBackward!(
+      gpu.fromArray(fusedLogits, [fusedN, fusedC]), fusedTargets, zeroMask,
+    );
+    expect(fused).not.toBeNull();
+    expect(f32(fused!.loss)[0]).toBe(0);
+    for (const value of f32(fused!.gradLogits)) expect(value).toBe(0);
   });
 });
 
