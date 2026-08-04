@@ -1,5 +1,9 @@
 /*
- * device.c — see device.h.
+ * device.c — opening a GPU and building its object chain.
+ *
+ * WHAT: enumerate the cards this process can actually reach, open one, and
+ * build the client/device/subdevice/address-space chain everything else hangs
+ * off. The RM verbs those calls are made with live in rm.c.
  */
 /* O_CLOEXEC is POSIX-2008, not C11, so the build uses -std=gnu11. A
  * _GNU_SOURCE define here would be a no-op: it has to precede the first system
@@ -60,77 +64,6 @@ NvHandle aether_next_handle(aether_device *d) { return d->nextHandle++; }
     d->failStatus = (int)(status);                                             \
     goto fail;                                                                 \
   } while (0)
-
-int aether_check_version(aether_device *d, const char *driverVersion) {
-  /* nv_ioctl_rm_api_version_t — kernel-open/common/inc/nv-ioctl.h.
-   * cmd '1' is NV_RM_API_VERSION_CMD_RELAXED; reply 1 is RECOGNIZED. */
-  struct {
-    NvU32 cmd, reply;
-    char versionString[64];
-  } v;
-  memset(&v, 0, sizeof v);
-  v.cmd = '1';
-  snprintf(v.versionString, sizeof v.versionString, "%s", driverVersion);
-
-  int rc = aether_ioctl(d->ctlFd, NV_ESC_CHECK_VERSION_STR, &v, sizeof v);
-  if (rc < 0) return rc;
-  return v.reply == 1 ? 0 : -1;
-}
-
-int aether_register_fd(aether_device *d, int fd) {
-  /* Issued on the NEW fd, naming the control fd — see the header. */
-  int arg = d->ctlFd;
-  return aether_ioctl(fd, NV_ESC_REGISTER_FD, &arg, sizeof arg);
-}
-
-int aether_alloc(aether_device *d, NvHandle parent, NvHandle *out, NvV32 cls,
-                 void *params, NvU32 paramsSize) {
-  NVOS21_PARAMETERS p;
-  memset(&p, 0, sizeof p);
-  p.hRoot = d->client;
-  p.hObjectParent = parent;
-  p.hObjectNew = aether_next_handle(d);
-  p.hClass = cls;
-  p.pAllocParms = (NvP64)(uintptr_t)params;
-  p.paramsSize = paramsSize;
-
-  int rc = aether_ioctl(d->ctlFd, NV_ESC_RM_ALLOC, &p, sizeof p);
-  if (rc < 0) return rc;
-  /* The ioctl succeeding says nothing about RM accepting the request. */
-  if (p.status != NV_OK) return (int)p.status;
-
-  *out = p.hObjectNew;
-  return 0;
-}
-
-int aether_free(aether_device *d, NvHandle object) {
-  /* NV_ESC_RM_FREE reuses the alloc parameter block, with hObjectNew naming
-   * the object to release. */
-  NVOS21_PARAMETERS p;
-  memset(&p, 0, sizeof p);
-  p.hRoot = d->client;
-  p.hObjectParent = d->client;
-  p.hObjectNew = object;
-
-  int rc = aether_ioctl(d->ctlFd, NV_ESC_RM_FREE, &p, sizeof p);
-  if (rc < 0) return rc;
-  return p.status == NV_OK ? 0 : (int)p.status;
-}
-
-int aether_control(aether_device *d, NvHandle object, NvV32 cmd, void *params,
-                   NvU32 paramsSize) {
-  NVOS54_PARAMETERS p;
-  memset(&p, 0, sizeof p);
-  p.hClient = d->client;
-  p.hObject = object;
-  p.cmd = cmd;
-  p.params = (NvP64)(uintptr_t)params;
-  p.paramsSize = paramsSize;
-
-  int rc = aether_ioctl(d->ctlFd, NV_ESC_RM_CONTROL, &p, sizeof p);
-  if (rc < 0) return rc;
-  return p.status == NV_OK ? 0 : (int)p.status;
-}
 
 int aether_device_open(aether_device *d, int index) {
   memset(d, 0, sizeof *d);

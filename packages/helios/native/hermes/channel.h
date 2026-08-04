@@ -158,6 +158,11 @@ typedef struct {
  */
 int hermes_channel_open(aether_device *d, hermes_channel *c);
 
+/* Make the channel runnable and fetch its work-submit token. Called from
+ * hermes_channel_open; separate because scheduling fails differently from
+ * allocating, and silently. */
+int hermes_channel_schedule(aether_device *d, hermes_channel *c);
+
 void hermes_channel_close(aether_device *d, hermes_channel *c);
 
 #endif /* HELIOS_HERMES_CHANNEL_H */

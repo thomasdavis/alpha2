@@ -90,6 +90,11 @@ int gaia_map_gpu(aether_device *d, gaia_buffer *b);
  * choose an address for us -- mapping without DMA_OFFSET_FIXED fails. */
 int gaia_map_gpu_at(aether_device *d, gaia_buffer *b, NvHandle hDma, NvU64 at);
 
+/* Take the next free GPU virtual address range. Bump-only: freed ranges are not
+ * recycled, which is honest about being a placeholder and fine while allocation
+ * counts are small. */
+NvU64 gaia_va_take(NvU64 size);
+
 /* Reserve a GPU virtual address range (NV01_MEMORY_VIRTUAL, class 0x70). This is
  * the object NVOS46 wants in hDma; the VA space itself is rejected with
  * NV_ERR_INVALID_OBJECT_HANDLE. Base must avoid the null page. */
