@@ -173,6 +173,18 @@ and the direct output layout in
 and the direct grouped backward in
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X31-DIRECT-GROUPED-FLASH-BACKWARD.md`.
 
+An opt-in three-product FP16-residual cooperative GEMM is now implemented at
+commit `c5130d735e8a45ff60c46ed934053df80f09c55d`. Its offline discriminator
+reduces median relative arithmetic error 31.1x versus ordinary one-product FP16
+over 16 sampled Alpha-width GEMMs. Reciprocal power-of-two balancing improves
+that result to 428.2x and keeps a deliberate binary16-range stress finite, but
+the balance rule is not yet implemented in the shader. This is a numerical
+candidate, not a throughput or training-quality result; it remains disabled by
+default pending Vulkan parity, real-operand range audit, complete-step timing,
+and trajectory gates. The same change fixes authoritative `_kmN` cooperative
+kernel selection. Canonical record:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.

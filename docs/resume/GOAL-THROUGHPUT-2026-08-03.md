@@ -94,9 +94,11 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X31-DIRECT-GROUPED-FLASH-BACKWARD.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`.
 
-The first pass now implements six native exact-path mechanisms: combined
+The exact-path series now implements the following native mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
 selective SwiGLU product rematerialization. The latter removes 1,215 MiB of
 logical tape retention at the batch-10 shape for one extra elementwise pass
@@ -118,6 +120,16 @@ Flash Attention now writes O directly in token-major output-projection layout
 and consumes token-major O/dO in backward, eliminating the paired output
 transposes. This removes another 36 dispatches and 1.758 GiB in static
 accounting; X28-X30 total 288 dispatches and 21.094 GiB removed.
+Flash dQ/dKV now write their disjoint final grouped-QKV gradient segments
+directly, including inverse RoPE for Q/K, removing another 18 dispatches and
+2.637 GiB of logical traffic. X28-X31 total 306 dispatches and 23.730 GiB
+statically removed.
+Separately, the opt-in X32 cooperative path decomposes FP32 operands into
+tile-local FP16 high and residual values and accumulates three tensor-core
+products in FP32. It reduced median offline arithmetic error 31.1x over ordinary
+one-product FP16 in 16 sampled non-stress GEMMs; reciprocally balanced samples
+reached 428.2x, though balancing is not yet implemented in the shader. This is
+not a GPU timing or training-quality result and remains disabled by default.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
