@@ -89,7 +89,10 @@ run_row() {
     "HELIOS_COOP_REPORT_SHAPES=1"
     "HELIOS_ENABLE_COOP_BACKWARD=$coop_backward"
     "HELIOS_COOP_BACKWARD_EXACT_EVERY=$exact_every"
-    "HELIOS_COOP_PRECAST_F16_INPUT=1"
+    # X23/X24's selected path converts FP32 storage within each cooperative
+    # tile. Whole-tensor pre-casting is both a different intervention and an
+    # independently observed VRAM failure mode for this workload.
+    "HELIOS_COOP_PRECAST_F16_INPUT=0"
     "HELIOS_COOP_SHAPE_ALLOW=$shape_allow"
     "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
     "ALPHA_DISABLE_CHECKPOINTS=1"
