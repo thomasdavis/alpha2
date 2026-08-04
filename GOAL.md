@@ -1,4 +1,62 @@
-# CURRENT GOAL — recover the original Alpha chat model
+# CURRENT GOAL — execute the 2026-08-04 handoff program
+
+**Set:** 2026-08-04 · **Owner:** ajax + agent · **Status:** ACTIVE. Phase A in progress; Phase B unauthorized; no GPU rented.
+
+**The goal is the handoff document.** Not a paraphrase of it, and not a sub-goal derived from it:
+
+```
+/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/alpha-handoff-2026-08-04.md
+docs/resume/HANDOFF-TO-NEXT-MODEL-2026-08-04.md            (repo pointer)
+https://alpha.donto.org/research/alpha-handoff-2026-08-04.html
+```
+
+Its §12 "Strict order for the next operator" is the plan of record. Its §13 physical-run acceptance
+protocol is the gate for every proposed speedup. Its §2 one-minute recovery is the entry check for
+every session. Where this file and the handoff disagree, **the handoff wins** and this file is wrong.
+
+The handoff supersedes nothing below: the product goal (a genuinely chatty Alpha) remains the point,
+and the handoff's Phase C is that goal. Performance work exists to make it affordable to iterate on,
+which is the handoff's own framing — "performance work should eventually support, not postpone
+forever, a better model run."
+
+## Standing constraints carried from the handoff
+
+- **Phase B is not authorized.** Renting a GPU requires new explicit authorization each time.
+- **Never compose unvalidated multipliers.** A 1.08x allocator result and a 1.17x arithmetic result do
+  not imply 1.26x without a paired combined measurement.
+- **Four states are distinct and must not be conflated:** implemented, locally verified, physically
+  measured, quality-promoted.
+- **Keep ordinary math exact** until physical parity of X25–X31 is established.
+- **Do not weaken the capability guard.** It rejects devices whose subgroup width would silently
+  corrupt gradients.
+
+## Progress against §12 Phase A
+
+| Item | State |
+|---|---|
+| 1–3. Verify revision, manifest, clean tree; read current records | done 2026-08-04 |
+| 4. Reproduce the X38 microbenchmark before reinterpreting it | **not done** |
+| 5. Instrument the native interval beneath JS packing | **done — X39** |
+| 6. Print host subintervals beside device dispatch time | **done — X39** (`[host_phases]`, env-gated) |
+| 7. Attack the currently binding constraint, then re-profile | in progress — X40 identifies it |
+| 8. Source-guided implementation only where the mechanism maps faithfully | not started |
+| 9. Keep ordinary math exact until X25–X31 parity is physical | holding |
+| 10. Verify whether `x10b_consumed_metric.py` is still an open question | **not done** |
+
+## Subordinate goals
+
+These are means, not ends, and are subordinate to the handoff:
+
+- [GOAL-THROUGHPUT-2026-08-03.md](docs/resume/GOAL-THROUGHPUT-2026-08-03.md) — tokens/s ladder; superseded
+  in part by the 3090 measurements recorded in the handoff overlay (active target 50,000 tok/s).
+- [GOAL-EXTREME-PERFORMANCE-2026-08-03.md](docs/resume/GOAL-EXTREME-PERFORMANCE-2026-08-03.md) — the
+  four-factor cost decomposition.
+- [X40](docs/resume/X40-OPERATION-COUNT-IS-REDUCTIONS-NOT-GEMMS.md) — operation-count reduction target,
+  set 2026-08-04 as a Phase A item-7 candidate. **Subordinate.** Its own bound is ~1.15x end to end.
+
+---
+
+# PRODUCT GOAL (carried, now Phase C of the handoff) — recover the original Alpha chat model
 
 **Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE PRODUCT GOAL; V11 COMPLETE AND REJECTED; SAME-DATASET RECIPE AUDIT COMPLETE; DEDICATED ALPHA GPU LIVE; V12 RECIPE REPLICATION NEXT
 
