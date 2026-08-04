@@ -209,6 +209,21 @@ the old core step; X28's already-fused replacement is unmeasured and should be
 timed before three new kernels are built. Evidence:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X35-DIRECT-GROUPED-QKV-FLASH-DISCRIMINATOR.md`.
 
+The two-product residual shortcut is now closed by a paired numerical test.
+Correcting only one operand residual improves median error 1.42x over the
+one-product FP16 path but remains 302.3x worse than balanced FP16x3 across 16
+Alpha-shaped cases. No shader or physical run is justified. Evidence:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X36-ASYMMETRIC-FP16X2-REJECTION.md`.
+
+A different one-product route is now capability-gated. Ampere documents TF32
+Tensor Cores, but Vulkan only permits tuples enumerated by the driver. Helios
+now preserves and fingerprints every cooperative-matrix tuple, refuses to infer
+TF32 from a float32 type alone, and fixes a hand-written Khronos ABI constant
+that used the physical-device-properties structure type (`1000506002`) where
+the tuple element requires `1000506001`. The target RTX 3090 capture is pending;
+no TF32 shader, timing, or quality claim exists. Evidence:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X37-TF32-COOPERATIVE-MATRIX-CAPABILITY-GATE.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.

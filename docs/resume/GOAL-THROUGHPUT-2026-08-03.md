@@ -99,7 +99,9 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X33-RECIPROCAL-FP16X3-BALANCING.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X34-GRAPH-FINGERPRINTED-FP16X3-CALIBRATION.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X35-DIRECT-GROUPED-QKV-FLASH-DISCRIMINATOR.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X35-DIRECT-GROUPED-QKV-FLASH-DISCRIMINATOR.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X36-ASYMMETRIC-FP16X2-REJECTION.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X37-TF32-COOPERATIVE-MATRIX-CAPABILITY-GATE.md`.
 
 The exact-path series now implements the following native mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
@@ -148,6 +150,17 @@ implementing it. Direct grouped-QKV consumption would remove 18 dispatches and
 0.70% of the old core step, and X28 has already fused it to one operation.
 The three-kernel rewrite is therefore deferred until that fused operation is
 physically timed; dominant backward GEMMs keep priority.
+X36 rejects a tempting two-product shortcut for those dominant GEMMs. Across
+16 paired Alpha-shaped offline cases, choosing the larger of the two FP16
+residual cross terms improves median error only 1.42x over one-product FP16 and
+remains 302.3x worse than balanced FP16x3. No shader or GPU time is warranted.
+X37 instead opens a capability-gated one-product possibility: a driver-exposed
+float32-input cooperative tuple that could permit a TF32 experiment on Ampere.
+The adapter now preserves and fingerprints the complete Vulkan tuple list and
+does not equate a float32 component type with proven TF32 behavior. It also
+corrects a hand-written Khronos ABI constant (`1000506002` to `1000506001`).
+The exact RTX 3090 tuple capture is still pending; no TF32, timing, or quality
+claim has been made.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
