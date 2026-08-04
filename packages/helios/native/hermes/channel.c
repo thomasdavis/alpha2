@@ -80,6 +80,9 @@ typedef struct {
  * parameter documentation says it is required. */
 #define FERMI_CONTEXT_SHARE_A 0x00009067
 
+/* clc7b5.h — the Ampere copy engine class. */
+#define AMPERE_DMA_COPY_B 0x0000c7b5
+
 typedef struct {
   NvHandle hVASpace;
   NvU32 flags;
@@ -216,6 +219,17 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
   if ((rc = aether_alloc(d, c->handle, &c->compute, AMPERE_COMPUTE_B, NULL, 0)) != 0)
     FAIL("AMPERE_COMPUTE_B");
 
+  /* A CUDA process allocates AMPERE_DMA_COPY_B on EVERY compute channel, right
+   * after the compute object -- nine channels, nine of each. Whether the engine
+   * context is considered complete without it is not something to assume, and
+   * it is the last object-allocation difference from the reference. */
+  {
+    NvHandle copy = 0;
+    if ((rc = aether_alloc(d, c->handle, &copy, AMPERE_DMA_COPY_B, NULL, 0)) != 0)
+      FAIL("AMPERE_DMA_COPY_B");
+    c->copy = copy;
+  }
+
   /*
    * The doorbell window.
    *
@@ -348,6 +362,7 @@ fail:
 }
 
 void hermes_channel_close(aether_device *d, hermes_channel *c) {
+  if (c->copy) { aether_free(d, c->copy); c->copy = 0; }
   if (c->compute) { aether_free(d, c->compute); c->compute = 0; }
   if (c->handle) { aether_free(d, c->handle); c->handle = 0; }
   if (c->ctxshare) { aether_free(d, c->ctxshare); c->ctxshare = 0; }

@@ -93,6 +93,8 @@ typedef struct {
                       * address-space context; the channel is inert without it */
   NvHandle handle;   /* the channel object */
   NvHandle compute;  /* AMPERE_COMPUTE_B, bound to this channel */
+  NvHandle copy;     /* AMPERE_DMA_COPY_B — a working driver allocates one on
+                      * every compute channel */
 
   gaia_buffer usermode;   /* AMPERE_USERMODE_A — not memory but a 64 KiB MMIO
                            * window over NV_VIRTUAL_FUNCTION, which maps through

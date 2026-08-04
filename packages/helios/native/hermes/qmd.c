@@ -32,6 +32,12 @@
  * A real QMD, captured from a CUDA launch on an RTX 3070 (sm_86, driver
  * 580.95.05), with the launch-specific fields zeroed.
  *
+ * QMD_GROUP_ID (MW(133:128), word 4 bits 5:0) is set to 0, not the 63 the
+ * capture holds. QMD groups exist for dependent launches, and 63 is a group
+ * CUDA's runtime established; dispatching into one we never set up is not
+ * something to inherit. Bit 6, SM_GLOBAL_CACHING_ENABLE, is kept -- hence 0x40
+ * rather than 0x7f.
+ *
  * SHADER_LOCAL_MEMORY_HIGH_SIZE (MW(1623:1600), word 50) is ZEROED rather than
  * copied. The capture holds 1600, which is 1600 bytes PER THREAD -- and the SM
  * reserves that for maximum occupancy, so 1600 x 1536 threads x 46 SMs is about
