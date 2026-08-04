@@ -17,6 +17,8 @@
  */
 #include "elementwise.h"
 #include "expect.h"
+#include "loop.h"
+#include "matmul.h"
 #include "normalize.h"
 #include "oracle.h"
 #include "reduction.h"
@@ -57,6 +59,36 @@ EW(addinp, PR_EW_ADD_INPLACE)
 EW(silu, PR_EW_SILU)
 EW(gelu, PR_EW_GELU)
 EW(softcap, PR_EW_SOFTCAP)
+
+static unsigned bld_branch_nop(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_branch_nop(p, PR_BRANCH_PLAIN);
+}
+
+static unsigned bld_branch_nop_pred(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_branch_nop(p, PR_BRANCH_PREDICATED);
+}
+
+static unsigned bld_branch_skip(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_branch_nop(p, PR_BRANCH_SKIP);
+}
+
+static unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_loop_scale(p, PR_LOOP_TRIPS);
+}
+
+static unsigned bld_matmul(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_matmul(p, PR_MM_M, PR_MM_N, PR_MM_K);
+}
 
 static unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
@@ -176,6 +208,23 @@ static const pr_kernel KERNELS[] = {
      * is within a block by construction -- crossing blocks needs a second pass
      * or atomics, which is a separate problem.
      */
+    K(.name = "branch to next instruction", .build = bld_branch_nop,
+      .fill = pr_fill_pos, .check = chk_branch_nop),
+    K(.name = "predicated branch to next", .build = bld_branch_nop_pred,
+      .fill = pr_fill_pos, .check = chk_branch_nop),
+    K(.name = "branch over an instruction", .build = bld_branch_skip,
+      .fill = pr_fill_pos, .check = chk_branch_nop),
+
+    /* Ordered BEFORE matmul on purpose: it is the smaller of the two kernels
+     * with a branch, so when both fail it says which suspect to look at. */
+    K(.name = "loop scale", .build = bld_loop_scale, .fill = pr_fill_pos,
+      .check = chk_loop_scale),
+
+    /* One block per row, one thread per column -- NOT the default launch, and
+     * the registry is where that is said, because the kernel cannot see it. */
+    K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N,
+      .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
+
     K(.name = "reduce sum", .build = bld_sum, .fill = pr_fill_pos,
       .check = chk_sum, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4),

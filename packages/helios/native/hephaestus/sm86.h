@@ -32,7 +32,13 @@
 #define HP_OP_S2R 0x919
 #define HP_OP_IADD3 0x810      /* IADD3 Rd, Ra, imm, RZ */
 #define HP_OP_IADD3_R 0x210    /* IADD3 Rd, Ra, Rb, RZ — a DIFFERENT opcode */
-#define HP_OP_IMAD_C 0xa24     /* IMAD Rd, Ra, c[bank][off], Rc */
+#define HP_OP_IMAD_C 0xa24
+/* IMAD Rd, Ra, imm, Rc -- a 32-bit multiply-add with an immediate multiplier
+ * and a register addend. This is the form a generated kernel wants when a
+ * matrix dimension is fixed at codegen time: row*K + k in one instruction, with
+ * K baked in and no register spent holding it. (ptxas: mad.lo.s32 %r, %r, 12,
+ * %r) */
+#define HP_OP_IMAD_IMM 0x824     /* IMAD Rd, Ra, c[bank][off], Rc */
 #define HP_OP_IMAD_WIDE_C 0x625 /* IMAD.WIDE.U32 Rd, Ra, Rb, c[bank][off] */
 #define HP_OP_FADD 0x221
 #define HP_OP_FMUL 0x220
@@ -41,9 +47,34 @@
 #define HP_OP_FMNMX 0x209    /* FMNMX Rd, Ra, Rb, {PT|!PT} — min or max */
 #define HP_OP_LDS 0x984      /* LDS Rd, [Ra.X4+off] — shared memory load  */
 #define HP_OP_STS 0x388      /* STS [Ra.X4+off], Rb — shared memory store */
-#define HP_OP_ISETP_IMM 0x80c /* ISETP.<cmp>.U32.AND Pd, PT, Ra, imm, PT  */
+#define HP_OP_ISETP_IMM 0x80c
+/* Register form. The immediate/register opcode pairs differ by 0x600 -- as with
+ * IADD3, where 0x810 takes an immediate and 0x210 a register -- but the pattern
+ * was CONFIRMED against ptxas rather than extrapolated. Assuming it once
+ * produced an IADD3 that assembled, disassembled to something else, and gave a
+ * wrong answer with no fault. */
+#define HP_OP_ISETP_REG 0x20c
+#define HP_OP_BRA 0x947 /* ISETP.<cmp>.U32.AND Pd, PT, Ra, imm, PT  */
 
 /* MUFU function selector, bits 72..79. Values captured from cuobjdump. */
+/*
+ * ISETP comparison codes, at bits 76..79.
+ *
+ * GT, NE and GE are read directly off ptxas output. LT, EQ and LE are NOT --
+ * ptxas rewrites those by swapping the operands, so it never emits them, and
+ * their values here follow the obvious pattern of the three that are known.
+ * They are proven a different way: nvdisasm decodes them independently, so the
+ * round-trip test fails if the pattern does not hold. An unverified constant
+ * with a test that would catch it being wrong is acceptable; an unverified
+ * constant with no such test is not.
+ */
+#define HP_CMP_LT 1 /* inferred, proven by round-trip */
+#define HP_CMP_EQ 2 /* inferred, proven by round-trip */
+#define HP_CMP_LE 3 /* inferred, proven by round-trip */
+#define HP_CMP_GT 4 /* observed: ptxas setp.gt.s32 */
+#define HP_CMP_NE 5 /* observed: ptxas setp.ne.s32 */
+#define HP_CMP_GE 6 /* observed: ptxas setp.ge.s32 */
+
 #define HP_MUFU_EX2 0x08
 #define HP_MUFU_LG2 0x0c
 #define HP_MUFU_RCP 0x10
@@ -130,6 +161,22 @@ hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
 hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
                         hp_control c);
 
+/* destPred = (srcA <cmp> srcB), both registers. `isSigned` selects S32 over
+ * U32, which matters for exactly the comparisons where one operand could be
+ * negative -- a loop counter compared against a runtime bound, for instance. */
+hp_word hp_isetp_reg(unsigned destPred, unsigned srcA, unsigned srcB,
+                     unsigned cmp, int isSigned, hp_control c);
+
+/*
+ * Branch to `byteOffset` from the address of the FOLLOWING instruction.
+ *
+ * Callers work in instructions and this takes bytes, deliberately: the caller
+ * has to have thought about the 16-byte instruction size to use it, and a
+ * caller who has not thought about it gets an obviously wrong distance rather
+ * than a plausible one. Combine with hp_predicated for a conditional branch.
+ */
+hp_word hp_bra(int32_t byteOffset, hp_control c);
+
 /*
  * Predicate an already-encoded instruction: @P<pred> or @!P<pred>.
  *
@@ -198,6 +245,22 @@ hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
 hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
                         hp_control c);
 
+/* destPred = (srcA <cmp> srcB), both registers. `isSigned` selects S32 over
+ * U32, which matters for exactly the comparisons where one operand could be
+ * negative -- a loop counter compared against a runtime bound, for instance. */
+hp_word hp_isetp_reg(unsigned destPred, unsigned srcA, unsigned srcB,
+                     unsigned cmp, int isSigned, hp_control c);
+
+/*
+ * Branch to `byteOffset` from the address of the FOLLOWING instruction.
+ *
+ * Callers work in instructions and this takes bytes, deliberately: the caller
+ * has to have thought about the 16-byte instruction size to use it, and a
+ * caller who has not thought about it gets an obviously wrong distance rather
+ * than a plausible one. Combine with hp_predicated for a conditional branch.
+ */
+hp_word hp_bra(int32_t byteOffset, hp_control c);
+
 /*
  * Predicate an already-encoded instruction: @P<pred> or @!P<pred>.
  *
@@ -211,6 +274,8 @@ hp_word hp_predicated(hp_word w, unsigned pred, int negate);
 /* IMAD Rd, Ra, c[bank][offset], Rc — multiply a register by a constant-bank
  * value and add a register. This is how a global thread index is built:
  * ctaid.x * ntid.x + tid.x, with ntid.x living at c[0x0][0x0]. */
+hp_word hp_imad_imm(unsigned dst, unsigned srcA, uint32_t imm, unsigned srcC,
+                    hp_control c);
 hp_word hp_imad_const(unsigned dst, unsigned srcA, unsigned bank,
                       unsigned offset, unsigned srcC, hp_control c);
 

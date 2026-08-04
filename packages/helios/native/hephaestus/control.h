@@ -103,6 +103,26 @@ static inline hp_control hp_ctrl_wait_setbar(unsigned waitBar,
   return c;
 }
 
+/*
+ * The control field a BRANCH wants: stall 5, yield set.
+ *
+ * Every other instruction in this stack uses stall 15 with yield clear, which
+ * is maximally conservative and works. A branch is the exception, and it is not
+ * a performance preference -- a backward BRA carrying stall 15 / yield 0 faults
+ * the channel, both in a matmul and in a four-instruction loop that does
+ * nothing but add a register to itself. ptxas emits stall 5 with yield set for
+ * every BRA it generates, so that is what this returns.
+ *
+ * The values are copied from ptxas rather than reasoned about. What the yield
+ * bit means for a branch specifically is not something this file can claim to
+ * know; what it can say is that the combination ptxas uses works and the
+ * conservative-looking one does not.
+ */
+static inline hp_control hp_ctrl_branch(void) {
+  hp_control c = {5, 1, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};
+  return c;
+}
+
 static inline hp_control hp_ctrl_waitmask(unsigned mask) {
   hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, mask & 0x3f, 0};
   return c;

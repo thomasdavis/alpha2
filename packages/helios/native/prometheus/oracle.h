@@ -54,6 +54,22 @@ char *pr_msg(void);
 #define PR_LOG2_E 1.4426950408889634f
 #define PR_LN_2 0.6931471805599453f
 
+/*
+ * The matmul test shape: 8x8 times 8x8, which is 64 outputs and therefore
+ * exactly PR_N. Square and small on purpose -- a rectangular shape would let a
+ * transposed index pass, so the SQUARE case is checked here and the rectangular
+ * one separately, where M, N and K are all different and no two can be
+ * confused.
+ */
+/* How many times the loop probe goes round. Not a power of two and not equal
+ * to any block or grid dimension, so a trip count confused with a thread index
+ * gives a visibly wrong answer rather than an accidentally right one. */
+#define PR_LOOP_TRIPS 5
+
+#define PR_MM_M 8
+#define PR_MM_N 8
+#define PR_MM_K 8
+
 /* ---- comparison policy --------------------------------------------------- */
 /* Exact integer comparison. */
 #define ICHECK(tag, expr)                                                      \

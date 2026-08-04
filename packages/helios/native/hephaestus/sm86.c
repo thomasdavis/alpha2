@@ -2,12 +2,13 @@
  * sm86.c — see sm86.h.
  *
  * Each encoder builds the word field by field. The shared prologue (opcode,
- * predicate, control) is factored into base(); everything else is per-shape.
+ * predicate, control) is factored into hp_base(); everything else is per-shape.
  */
-#include "sm86.h"
+#include "encode.h"
 
 /* Opcode + always-true predicate + control. Every instruction starts here. */
-static hp_word base(unsigned opcode, hp_control c) {
+
+hp_word hp_base(unsigned opcode, hp_control c) {
   hp_word w = {0, 0};
   hp_put(&w, HP_F_OPCODE, 12, opcode);
   hp_put(&w, HP_F_PRED, 3, HP_PT);
@@ -16,7 +17,7 @@ static hp_word base(unsigned opcode, hp_control c) {
 }
 
 hp_word hp_mov_const(unsigned dst, unsigned bank, unsigned offset, hp_control c) {
-  hp_word w = base(HP_OP_MOV, c);
+  hp_word w = hp_base(HP_OP_MOV, c);
   hp_put(&w, HP_F_DST, 8, dst);
   /* srcA stays CLEAR, not RZ. Filling it with RZ the way IADD3 does produced
    * 0xa00ff017a02 against a captured 0xa0000017a02 -- MOV-from-const simply
@@ -51,7 +52,7 @@ hp_word hp_mov_const(unsigned dst, unsigned bank, unsigned offset, hp_control c)
  * srcC = RZ (0xff) at 64, and a fixed 0x078e00 at 72.
  */
 hp_word hp_mov_imm(unsigned dst, uint32_t imm, hp_control c) {
-  hp_word w = base(HP_OP_IMAD, c);
+  hp_word w = hp_base(HP_OP_IMAD, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, HP_RZ);
   hp_put(&w, HP_F_SRCB, 32, imm);
@@ -63,14 +64,14 @@ hp_word hp_mov_imm(unsigned dst, uint32_t imm, hp_control c) {
 }
 
 hp_word hp_s2r(unsigned dst, unsigned sreg, hp_control c) {
-  hp_word w = base(HP_OP_S2R, c);
+  hp_word w = hp_base(HP_OP_S2R, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SREG, 8, sreg);
   return w;
 }
 
 hp_word hp_iadd3_imm(unsigned dst, unsigned srcA, uint32_t imm, hp_control c) {
-  hp_word w = base(HP_OP_IADD3, c);
+  hp_word w = hp_base(HP_OP_IADD3, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB, 32, imm);
@@ -87,53 +88,7 @@ hp_word hp_iadd3_imm(unsigned dst, unsigned srcA, uint32_t imm, hp_control c) {
  * two operand kinds -- reg-reg is 0x210. Reference:
  *   IADD3 R7, R0, R3, RZ   0x0000000300077210 0x004fca0007ffe0ff  */
 
-/*
- * STG carries a memory descriptor in bits 64..95, and omitting it is not a
- * subtle error: nvdisasm rejects the instruction outright with "unrecognized
- * operation for functional unit uC". The first version set only the two
- * registers and the offset, leaving those bits zero.
- *
- * Reference encoding for `STG.E [R2.64], R5`, from cuobjdump:
- *
- *     0x0000000502007986   0x000fe2000c101904
- *
- * giving 0x0c101904 across bits 64..95. That word carries the .E 64-bit address
- * mode and the cache/scope descriptor together; it is reproduced because the
- * hardware and the disassembler both accept it, not because every sub-field in
- * it has been isolated. The same honest limit as the 0x04 in LDG below.
- */
-hp_word hp_stg(unsigned addrReg, unsigned dataReg, uint32_t offset, hp_control c) {
-  hp_word w = base(HP_OP_STG, c);
-  hp_put(&w, HP_F_SRCA, 8, addrReg);
-  hp_put(&w, HP_F_SRCB, 8, dataReg);
-  hp_put(&w, HP_F_SRCB + 8, 24, offset);
-  hp_put(&w, 64, 32, 0x0c101904);
-  return w;
-}
 
-hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
-  hp_word w = base(HP_OP_LDG, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, addrReg);
-  /* Every captured LDG carries 0x04 in bits 32-39, unchanged across
-   * destination register (R0/R4/R5) and access width (.E and .E.128). STG has
-   * a data register in the same slot and no such constant, so this is specific
-   * to loads.
-   *
-   * HONEST LIMIT: we have not isolated what this field means -- most likely
-   * part of the address-width encoding that prints as ".64". It is reproduced
-   * because the hardware was observed to accept it, not because it is
-   * understood. If a future LDG form disagrees, this is the first thing to
-   * re-derive. */
-  hp_put(&w, HP_F_SRCB, 8, 0x04);
-  hp_put(&w, HP_F_SRCB + 8, 24, offset);
-  /* The memory descriptor, bits 64..95, exactly as STG has one. Reference
-   * `LDG.E R2, [R2.64]` is 0x0000000402027981 / 0x000ea2000c1e1900. Leaving it
-   * zero makes the instruction undecodable -- nvdisasm rejects it with the same
-   * "unrecognized operation for functional unit uC" that STG produced. */
-  hp_put(&w, 64, 32, 0x0c1e1900);
-  return w;
-}
 
 /*
  * EXIT needs 0x03800000 in bits 64..95, and without it the instruction is not
@@ -162,7 +117,7 @@ hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
  * opposite of what the printed operand order suggests.
  */
 hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
-  hp_word w = base(HP_OP_IADD3_R, c);
+  hp_word w = hp_base(HP_OP_IADD3_R, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB, 8, srcB);
@@ -170,9 +125,22 @@ hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
   return w;
 }
 
+hp_word hp_imad_imm(unsigned dst, unsigned srcA, uint32_t imm, unsigned srcC,
+                    hp_control c) {
+  hp_word w = hp_base(HP_OP_IMAD_IMM, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, 32, 32, imm);
+  /* The addend is a register at bit 64, and 0x078e02 above it is the same
+   * fixed selector the const-bank form carries. */
+  hp_put(&w, 64, 8, srcC);
+  hp_put(&w, 72, 24, 0x078e02);
+  return w;
+}
+
 hp_word hp_imad_const(unsigned dst, unsigned srcA, unsigned bank,
                       unsigned offset, unsigned srcC, hp_control c) {
-  hp_word w = base(HP_OP_IMAD_C, c);
+  hp_word w = hp_base(HP_OP_IMAD_C, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB + 6, 16, offset);
@@ -184,7 +152,7 @@ hp_word hp_imad_const(unsigned dst, unsigned srcA, unsigned bank,
 
 hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
                            unsigned bank, unsigned offset, hp_control c) {
-  hp_word w = base(HP_OP_IMAD_WIDE_C, c);
+  hp_word w = hp_base(HP_OP_IMAD_WIDE_C, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB + 6, 16, offset);
@@ -194,119 +162,13 @@ hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
   return w;
 }
 
-hp_word hp_fadd(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
-  hp_word w = base(HP_OP_FADD, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, srcB);
-  return w;
-}
 
-hp_word hp_fmul(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
-  hp_word w = base(HP_OP_FMUL, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, srcB);
-  hp_put(&w, 64, 32, 0x00400000);
-  return w;
-}
 
-hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
-                hp_control c) {
-  hp_word w = base(HP_OP_FFMA, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, srcB);
-  hp_put(&w, 64, 8, srcC);
-  return w;
-}
 
-/* MUFU's operand sits in the srcB slot at bit 32, not srcA at bit 24. The
- * reference MUFU.LG2 R8, R6 carries 0x06 at bits 32..39, and every other
- * captured MUFU reads R0, which is zero in both slots and so proves nothing --
- * a case where three of four references were silently compatible with the wrong
- * answer. Caught by disassembling our own output: MUFU.LG2 R8, R6 came back as
- * MUFU.LG2 R8, R0. */
-hp_word hp_mufu(unsigned dst, unsigned src, unsigned fn, hp_control c) {
-  hp_word w = base(HP_OP_MUFU, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCB, 8, src);
-  hp_put(&w, 72, 8, fn);
-  return w;
-}
 
-hp_word hp_fmnmx(unsigned dst, unsigned srcA, unsigned srcB, int wantMax,
-                 hp_control c) {
-  hp_word w = base(HP_OP_FMNMX, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, srcB);
-  /* 0x03800000 is the predicate operand PT; bit 90 negates it to !PT, which is
-   * what turns a minimum into a maximum. */
-  hp_put(&w, 64, 32, wantMax ? 0x07800000u : 0x03800000u);
-  return w;
-}
 
-hp_word hp_fneg(unsigned dst, unsigned srcA, hp_control c) {
-  hp_word w = base(HP_OP_FADD, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, HP_RZ);
-  hp_put(&w, 63, 1, 1);  /* negate srcA */
-  hp_put(&w, 72, 8, 0x01); /* negate srcB (RZ), so the sum is just -Ra */
-  return w;
-}
 
-hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
-  hp_word w = base(HP_OP_LDS, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, addrReg);
-  hp_put(&w, HP_F_SRCB + 8, 24, offset);
-  /* 0x48 at bits 72..79 selects the .X4 scaled addressing mode. */
-  hp_put(&w, 72, 8, 0x48);
-  return w;
-}
 
-hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
-               hp_control c) {
-  hp_word w = base(HP_OP_STS, c);
-  hp_put(&w, HP_F_SRCA, 8, addrReg);
-  hp_put(&w, HP_F_SRCB, 8, dataReg);
-  hp_put(&w, HP_F_SRCB + 8, 24, offset);
-  hp_put(&w, 72, 8, 0x48);
-  return w;
-}
 
-hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
-                        hp_control c) {
-  hp_word w = base(HP_OP_ISETP_IMM, c);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 32, imm);
-  /* 0x03f04070 carries the comparison (GT), the type (U32), the combining
-   * operation (AND) and the second predicate source (PT). The destination
-   * predicate index sits at bits 81..83 within it. */
-  hp_put(&w, 64, 32, 0x03f04070);
-  hp_put(&w, 81, 3, destPred);
-  return w;
-}
 
-hp_word hp_predicated(hp_word w, unsigned pred, int negate) {
-  /*
-   * The field is CLEARED before it is written, because hp_put ORs. Every other
-   * caller starts from a zeroed word so that has never mattered; here the field
-   * already holds PT from base(), and OR-ing 0 into 7 leaves 7. The symptom is
-   * quiet and specific: `@!P0` assembles as `@!PT`, which is "never" rather
-   * than "when P0 is false" -- an instruction that silently does nothing.
-   */
-  w.lo &= ~((uint64_t)0xf << HP_F_PRED);
-  w.lo |= (uint64_t)((pred & 7u) | (negate ? 8u : 0u)) << HP_F_PRED;
-  return w;
-}
 
-hp_word hp_exit(hp_control c) {
-  hp_word w = base(HP_OP_EXIT, c);
-  hp_put(&w, 64, 32, 0x03800000);
-  return w;
-}
-hp_word hp_nop(hp_control c) { return base(HP_OP_NOP, c); }
-hp_word hp_bar_sync(hp_control c) { return base(HP_OP_BAR, c); }

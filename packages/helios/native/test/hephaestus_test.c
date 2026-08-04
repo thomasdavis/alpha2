@@ -46,6 +46,20 @@
  * therefore compares the instruction without its schedule. */
 static uint64_t lo_of(hp_word w) { return w.lo; }
 
+/*
+ * The high word WITHOUT the scheduling control field.
+ *
+ * Control occupies bits 105..127, which is the top 23 bits of the high word,
+ * and it is ours to choose -- ptxas picks different stall counts than we do for
+ * the same instruction, so comparing the raw high word against ptxas output
+ * would fail on a difference that is not a difference. Everything BELOW that is
+ * encoding, and for ISETP it is where the comparison lives: a low-word check
+ * alone cannot tell GT from GE, which is exactly the kind of wrong answer that
+ * arrives without a fault.
+ */
+#define HI_ENCODING_MASK ((1ULL << 41) - 1)
+static uint64_t hi_of(hp_word w) { return w.hi & HI_ENCODING_MASK; }
+
 static void test_control_roundtrip(void) {
   HT_CASE("control field packs and unpacks losslessly");
   hp_control c = {13, 1, 3, 5, 0x2a, 0x9};
@@ -135,6 +149,85 @@ static void test_memory(void) {
   HT_END();
 }
 
+/* ptxas ground truth, from a compiled loop and a compiled comparison chain.
+ * The comparisons are register-register and signed, which is what a loop
+ * counter against a runtime bound assembles to. */
+#define REF_BRA_NP0_LO 0x000002e000008947ULL /* @!P0 BRA +0x2e0 */
+#define REF_BRA_SELF_LO 0xfffffff000007947ULL /* BRA -0x10 (self) */
+#define REF_BRA_HI 0x03800000ULL
+/* ptxas, backward: @!P1 BRA -0x130. The high word differs from the forward case
+ * by 0x3ffff -- the sign of a fifty-bit offset. */
+#define REF_BRA_BACK_LO 0xfffffed000009947ULL
+#define REF_BRA_BACK_HI 0x0383ffffULL
+#define REF_ISETP_GT_HI 0x03f04270ULL /* ISETP.GT.AND P0, PT, R0, R3, PT */
+#define REF_ISETP_GE_HI 0x03f06270ULL /* ISETP.GE.AND P0, ... */
+#define REF_ISETP_NE_P1_HI 0x03f25270ULL /* ISETP.NE.AND P1, ... */
+#define REF_ISETP_REG_LO 0x000000030000720cULL /* R0, R3 */
+
+static void test_control_flow(void) {
+  HT_CASE("BRA and register-form ISETP match ptxas");
+
+  /* A branch offset is relative to the FOLLOWING instruction. Both directions
+   * are checked because a sign error shows up in only one of them. */
+  HT_EQ_U64(lo_of(hp_predicated(hp_bra(0x2e0, hp_ctrl_safe()), 0, 1)),
+            REF_BRA_NP0_LO);
+  HT_EQ_U64(lo_of(hp_bra(-16, hp_ctrl_safe())), REF_BRA_SELF_LO);
+  /*
+   * A NEGATIVE offset must sign-extend into bits 64..81. Checking the high word
+   * is the whole point: the low word of a backward branch looks correct with or
+   * without it, the disassembler prints the right target either way, and the
+   * hardware jumps four gigabytes forward without it.
+   */
+  HT_EQ_U64(lo_of(hp_predicated(hp_bra(-0x130, hp_ctrl_safe()), 1, 1)),
+            REF_BRA_BACK_LO);
+  HT_EQ_U64(hi_of(hp_predicated(hp_bra(-0x130, hp_ctrl_safe()), 1, 1)),
+            REF_BRA_BACK_HI);
+  HT_EQ_U64(hi_of(hp_bra(-16, hp_ctrl_safe())), REF_BRA_BACK_HI);
+
+  /* And a forward one must NOT: the sign bits are the only difference between
+   * the two directions, so asserting both ways pins it from both sides. */
+  HT_EQ_U64(hi_of(hp_bra(0x2e0, hp_ctrl_safe())), REF_BRA_HI);
+  HT_EQ_U64(hi_of(hp_bra(0, hp_ctrl_safe())), REF_BRA_HI);
+
+  HT_EQ_U64(lo_of(hp_isetp_reg(0, 0, 3, HP_CMP_GT, 1, hp_ctrl_safe())),
+            REF_ISETP_REG_LO);
+  HT_EQ_U64(hi_of(hp_isetp_reg(0, 0, 3, HP_CMP_GT, 1, hp_ctrl_safe())),
+            REF_ISETP_GT_HI);
+  HT_EQ_U64(hi_of(hp_isetp_reg(0, 0, 3, HP_CMP_GE, 1, hp_ctrl_safe())),
+            REF_ISETP_GE_HI);
+  HT_EQ_U64(hi_of(hp_isetp_reg(1, 0, 3, HP_CMP_NE, 1, hp_ctrl_safe())),
+            REF_ISETP_NE_P1_HI);
+
+  /* The destination predicate must not leak into the comparison, and the
+   * comparison must not leak into the destination. Changing one and asserting
+   * the other is unmoved is the only way to tell overlapping fields apart. */
+  const uint64_t gt_p0 = hi_of(hp_isetp_reg(0, 0, 3, HP_CMP_GT, 1, hp_ctrl_safe()));
+  const uint64_t gt_p2 = hi_of(hp_isetp_reg(2, 0, 3, HP_CMP_GT, 1, hp_ctrl_safe()));
+  HT_EQ_U64(gt_p2 ^ gt_p0, 2ULL << 17); /* only bits 81..83 moved */
+
+  /* Signedness is a bit of its own, not folded into the comparison. */
+  HT_EQ_U64(hi_of(hp_isetp_reg(0, 0, 3, HP_CMP_GT, 0, hp_ctrl_safe())) ^
+                REF_ISETP_GT_HI,
+            1ULL << 9); /* bit 73 */
+  HT_END();
+}
+
+/* ptxas: mad.lo.s32 %r5, %r4, 12, %r2  ->  IMAD R0, R0, 0xc, R3 */
+#define REF_IMAD_IMM_LO 0x0000000c00007824ULL
+#define REF_IMAD_IMM_HI 0x078e0203ULL
+
+static void test_imad_immediate(void) {
+  HT_CASE("IMAD with an immediate multiplier matches ptxas");
+  HT_EQ_U64(lo_of(hp_imad_imm(0, 0, 12, 3, hp_ctrl_safe())), REF_IMAD_IMM_LO);
+  HT_EQ_U64(hi_of(hp_imad_imm(0, 0, 12, 3, hp_ctrl_safe())), REF_IMAD_IMM_HI);
+
+  /* The multiplier is a full 32 bits, not the 16- or 24-bit field it would be
+   * easy to assume from the const-bank form sitting next to it. */
+  HT_EQ_U64(lo_of(hp_imad_imm(0, 0, 0x12345678, 3, hp_ctrl_safe())) >> 32,
+            0x12345678ULL);
+  HT_END();
+}
+
 static void test_field_placement_primitives(void) {
   HT_CASE("hp_put places fields correctly, including across the 64-bit seam");
   hp_word w = {0, 0};
@@ -159,6 +252,8 @@ static void test_field_placement_primitives(void) {
 
 void ht_run(void) {
   printf("\nhephaestus — sm_86 encoder vs ptxas\n");
+  test_control_flow();
+  test_imad_immediate();
   test_field_placement_primitives();
   test_control_roundtrip();
   test_control_lives_above_bit_105();

@@ -189,7 +189,7 @@ static void test_qmd_field_positions(void) {
    * given a real size too: it is the one argument whose encoding is not the
    * value itself but a hardware code, so passing zero would leave the only
    * non-obvious field untested. */
-  hermes_qmd_build(q, 0x800060000ull, 0, 3, 5, 13, 9, 11, 7, 4096);
+  hermes_qmd_build(q, 0x800060000ull, 0, 3, 5, 13, 9, 11, 7, 4096, 512);
 
   HT_EQ_U64(q[12], 3);  /* CTA_RASTER_WIDTH   MW(415:384) */
   HT_EQ_U64(q[13], 5);  /* CTA_RASTER_HEIGHT  MW(431:416) */
@@ -214,11 +214,31 @@ static void test_qmd_field_positions(void) {
   HT_EQ_U64(q[17] & 0x3ffff, 4096);     /* SHARED_MEMORY_SIZE    MW(561:544) */
 
   /*
+   * The prefetch region: where the instruction fetcher may look. Unset, a
+   * straight-line kernel still runs -- it is fetched sequentially -- and a
+   * backward branch faults the channel. So this is checked explicitly rather
+   * than left to the one kernel that happens to loop.
+   *
+   * Address 0x800060000 is granule-aligned, so the shifted value is the address
+   * over 256, and 512 bytes of program is exactly two granules.
+   */
+  HT_EQ_U64(q[8], 0x800060000ull >> 8);   /* PREFETCH_ADDR_LOWER MW(287:256) */
+  HT_EQ_U64(q[51] & 0x1ff, 0);            /* PREFETCH_ADDR_UPPER MW(1640:1632) */
+  HT_EQ_U64((q[51] >> 9) & 0x1ff, 2);     /* PREFETCH_SIZE       MW(1649:1641) */
+
+  /* A program that straddles a granule boundary must have BOTH granules in the
+   * region: rounding the base down without lengthening the size would leave its
+   * tail outside its own prefetch window. */
+  hermes_qmd_build(q, 0x8000600f0ull, 0, 1, 1, 1, 1, 1, 1, 0, 32);
+  HT_EQ_U64(q[8], 0x800060000ull >> 8);
+  HT_EQ_U64((q[51] >> 9) & 0x1ff, 2);
+
+  /*
    * WIDTHS, not just offsets. CTA_RASTER_HEIGHT is sixteen bits; a value that
    * fits in sixteen must not disturb the upper half of its dword. Writing it as
    * a 32-bit field passes every check above and fails this one.
    */
-  hermes_qmd_build(q, 0x800060000ull, 0, 1, 0xffffu, 1, 1, 1, 1, 0);
+  hermes_qmd_build(q, 0x800060000ull, 0, 1, 0xffffu, 1, 1, 1, 1, 0, 512);
   HT_EQ_U64(q[13] & 0xffff, 0xffffu);
   HT_EQ_U64(q[13] >> 16, 0);
   HT_END();

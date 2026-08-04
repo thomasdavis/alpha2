@@ -71,6 +71,28 @@ static const qmd_field BARRIER_COUNT = {763, 767};
 static const qmd_field SHARED_MEMORY_SIZE = {544, 561};
 static const qmd_field SHADER_LOCAL_MEMORY_LOW_SIZE = {736, 759};
 static const qmd_field SHADER_LOCAL_MEMORY_HIGH_SIZE = {1600, 1623};
+/*
+ * The PREFETCH region -- where the instruction fetcher is allowed to look.
+ *
+ * These were unset, and everything worked, because a straight-line kernel is
+ * fetched sequentially from PROGRAM_ADDRESS and never needs to look anywhere
+ * else. The first kernel with a BACKWARD branch faulted the channel with
+ * MMU_ERR_FLT on a jump of four instructions, with an instruction stream that
+ * disassembles correctly and encodes byte for byte the same as ptxas. A taken
+ * forward branch of zero distance worked; one taken backward branch did not.
+ * The asymmetry is the tell: forward is streaming, backward is random access
+ * into the program, and random access needs the region described.
+ *
+ * The address fields are SHIFTED by 8 -- the region is 256-byte granular -- and
+ * the size is in the same units, nine bits of it, so at most 128 KiB.
+ * (clc6c0qmd.h, NVC6C0_QMDV03_00_PROGRAM_PREFETCH_*)
+ */
+static const qmd_field PROGRAM_PREFETCH_ADDR_LOWER_SHIFTED = {256, 287};
+static const qmd_field PROGRAM_PREFETCH_ADDR_UPPER_SHIFTED = {1632, 1640};
+static const qmd_field PROGRAM_PREFETCH_SIZE = {1641, 1649};
+#define PREFETCH_GRANULE 256u
+#define PREFETCH_MAX_UNITS 511u
+
 static const qmd_field PROGRAM_ADDRESS_LOWER = {1536, 1567};
 static const qmd_field PROGRAM_ADDRESS_UPPER = {1568, 1584};
 static const qmd_field SASS_VERSION = {1656, 1663};
@@ -129,7 +151,8 @@ static void qmd_set_cbuf(NvU32 *qmd, unsigned i, NvU64 addr, NvU32 size) {
 
 void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
-                      NvU32 blockZ, NvU32 sharedBytes) {
+                      NvU32 blockZ, NvU32 sharedBytes,
+                      NvU32 programBytes) {
   memset(qmd, 0, HERMES_QMD_BYTES);
 
   /* Version, and the two enums NVK sets before anything else. */
@@ -149,6 +172,21 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
 
   qmd_set(qmd, PROGRAM_ADDRESS_LOWER, program & 0xffffffffu);
   qmd_set(qmd, PROGRAM_ADDRESS_UPPER, (program >> 32) & 0x1ffffu);
+
+  {
+    /* Round the region out to the granule in BOTH directions: down to the
+     * granule the program starts in, and up to cover its last byte. Rounding
+     * the address down without lengthening the size would leave the tail of a
+     * program outside its own prefetch region. */
+    const NvU64 base = program & ~(NvU64)(PREFETCH_GRANULE - 1);
+    const NvU64 end = program + programBytes;
+    NvU64 units = (end - base + PREFETCH_GRANULE - 1) / PREFETCH_GRANULE;
+    if (units < 1) units = 1;
+    if (units > PREFETCH_MAX_UNITS) units = PREFETCH_MAX_UNITS;
+    qmd_set(qmd, PROGRAM_PREFETCH_ADDR_LOWER_SHIFTED, (base >> 8) & 0xffffffffu);
+    qmd_set(qmd, PROGRAM_PREFETCH_ADDR_UPPER_SHIFTED, (base >> 40) & 0x1ffu);
+    qmd_set(qmd, PROGRAM_PREFETCH_SIZE, units);
+  }
   qmd_set(qmd, SASS_VERSION, HERMES_SASS_VERSION_SM86);
 
   /*

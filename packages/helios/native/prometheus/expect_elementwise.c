@@ -89,3 +89,10 @@ UCHECK(rsq, pr_in_pos, 1.0f / sqrtf(x))
 
 /* ---- builders ----------------------------------------------------------- */
 
+
+/* The loop probe: in[i] added to itself PR_LOOP_TRIPS times. Exact -- these are
+ * small integers and the additions are exact in float. */
+FCHECK(loop_scale, pr_in_pos, x *(float)PR_LOOP_TRIPS)
+
+/* The zero-distance branch must leave the copy untouched. */
+FCHECK(branch_nop, pr_in_pos, x)

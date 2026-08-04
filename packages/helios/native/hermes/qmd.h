@@ -80,7 +80,7 @@
  */
 void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
-                      NvU32 blockZ, NvU32 sharedBytes);
+                      NvU32 blockZ, NvU32 sharedBytes, NvU32 programBytes);
 
 /* Point constant bank `index` at `addr`, marking it valid. Only needed for
  * kernels that read c[index][...] -- a kernel whose addresses are immediates

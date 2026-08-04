@@ -132,7 +132,8 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
 
   NvU32 qmd[HERMES_QMD_DWORDS];
   hermes_qmd_build(qmd, b->code.gpuAddr, b->scratch.gpuAddr, k->gridX, 1, 1,
-                   k->blockX, 1, 1, k->sharedBytes);
+                   k->blockX, 1, 1, k->sharedBytes,
+                   count * (NvU32)sizeof(hp_word));
   memcpy(b->qmd.hostPtr, qmd, HERMES_QMD_BYTES);
   __asm__ __volatile__("sfence" ::: "memory");
 
