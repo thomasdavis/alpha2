@@ -90,7 +90,9 @@ typedef struct {
  * work runs on the graphics engine rather than a separate one. */
 #define HERMES_ENGINE_GRAPHICS 1
 
-#define GPFIFO_ENTRIES 1024
+/* A working Vulkan driver requests 0x8000 entries. Matching it removes one more
+ * difference from the reference trace. */
+#define GPFIFO_ENTRIES 0x8000
 #define GPFIFO_BYTES (GPFIFO_ENTRIES * 8) /* each entry is two 32-bit words */
 #define PUSHBUFFER_BYTES (64 * 1024)
 #define USERD_BYTES 4096
@@ -112,6 +114,13 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
   if ((rc = gaia_alloc(d, &c->pushbuffer, PUSHBUFFER_BYTES, GAIA_SYSMEM)) != 0) goto fail;
   if ((rc = gaia_map_gpu(d, &c->pushbuffer)) != 0) goto fail;
   if ((rc = gaia_map_host(d, &c->pushbuffer)) != 0) goto fail;
+
+  /* The error notifier. A working Vulkan driver passes a non-zero hObjectError
+   * on the channel; we had been leaving it zero, which is also why a fault
+   * produced no signal anywhere. */
+  if ((rc = gaia_alloc(d, &c->errnotif, 4096, GAIA_SYSMEM)) != 0) goto fail;
+  if ((rc = gaia_map_host(d, &c->errnotif)) != 0) goto fail;
+  memset(c->errnotif.hostPtr, 0, 4096);
 
   /* The channel group owns the address space. */
   {
@@ -152,6 +161,7 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
     p.gpFifoEntries = GPFIFO_ENTRIES;
     p.engineType = HERMES_ENGINE_GRAPHICS;
     p.hContextShare = c->ctxshare;
+    p.hObjectError = c->errnotif.handle;
     if ((rc = aether_alloc(d, c->group, &c->handle, AMPERE_CHANNEL_GPFIFO_A,
                            &p, sizeof p)) != 0)
       goto fail;
@@ -176,6 +186,7 @@ void hermes_channel_close(aether_device *d, hermes_channel *c) {
   if (c->handle) { aether_free(d, c->handle); c->handle = 0; }
   if (c->ctxshare) { aether_free(d, c->ctxshare); c->ctxshare = 0; }
   if (c->group) { aether_free(d, c->group); c->group = 0; }
+  gaia_free(d, &c->errnotif);
   gaia_free(d, &c->pushbuffer);
   gaia_free(d, &c->gpfifo);
   memset(c, 0, sizeof *c);

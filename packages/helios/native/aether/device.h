@@ -61,6 +61,23 @@ int aether_device_open(aether_device *d, int index);
 void aether_device_close(aether_device *d);
 
 /*
+ * The driver initialisation handshake, performed before any RM object exists.
+ *
+ * A working driver issues CHECK_VERSION_STR and CARD_INFO on the control fd
+ * before touching RM. The version check is a real handshake: it takes the
+ * running kernel module's version string and answers RECOGNIZED or not.
+ *
+ * Verified against driver 580.95.05 -- reply == 1 (RECOGNIZED).
+ *
+ * NOT yet working: NV_ESC_ATTACH_GPUS_TO_FD, which a working driver also issues
+ * and which returns EINVAL for every payload shape tried so far (bare id array,
+ * count-then-ids, on either fd). Its gpu_id comes from CARD_INFO offset 16
+ * (0x00000a00 on this machine, alongside PCI 10de:2484). This is the largest
+ * remaining known gap between our init sequence and a working one.
+ */
+int aether_check_version(aether_device *d, const char *driverVersion);
+
+/*
  * Associate a secondary file descriptor with the control fd.
  *
  * DIRECTION MATTERS and is the opposite of what the name suggests: the ioctl is

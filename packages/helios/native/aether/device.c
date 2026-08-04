@@ -51,6 +51,22 @@ typedef struct {
 
 NvHandle aether_next_handle(aether_device *d) { return d->nextHandle++; }
 
+int aether_check_version(aether_device *d, const char *driverVersion) {
+  /* nv_ioctl_rm_api_version_t — kernel-open/common/inc/nv-ioctl.h.
+   * cmd '1' is NV_RM_API_VERSION_CMD_RELAXED; reply 1 is RECOGNIZED. */
+  struct {
+    NvU32 cmd, reply;
+    char versionString[64];
+  } v;
+  memset(&v, 0, sizeof v);
+  v.cmd = '1';
+  snprintf(v.versionString, sizeof v.versionString, "%s", driverVersion);
+
+  int rc = aether_ioctl(d->ctlFd, NV_ESC_CHECK_VERSION_STR, &v, sizeof v);
+  if (rc < 0) return rc;
+  return v.reply == 1 ? 0 : -1;
+}
+
 int aether_register_fd(aether_device *d, int fd) {
   /* Issued on the NEW fd, naming the control fd — see the header. */
   int arg = d->ctlFd;
