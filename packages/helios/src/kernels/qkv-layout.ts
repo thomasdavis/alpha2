@@ -255,6 +255,16 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const gradBIndex = b.id(); b.emit(Op.IAdd, [p.tU32, gradBIndex, gradAIndex, half]);
   const gA = loadF32(b, p.tF32, p.const0u, grad, gradAIndex);
   const gB = loadF32(b, p.tF32, p.const0u, grad, gradBIndex);
+  const secondHalf = b.id();
+  b.emit(Op.UGreaterThanEqual, [p.tBool, secondHalf, dimension, half]);
+  const isRotatedBranch = b.id(); b.emit(Op.ULessThan, [p.tBool, isRotatedBranch, which, p.const2u]);
+  const rotateBody = b.id();
+  const rawBody = b.id();
+  const selectedEnd = b.id();
+  b.emit(Op.SelectionMerge, [selectedEnd, 0]);
+  b.emit(Op.BranchConditional, [isRotatedBranch, rotateBody, rawBody]);
+
+  b.emit(Op.Label, [rotateBody]);
   const tableBase = b.id(); b.emit(Op.IMul, [p.tU32, tableBase, token, half]);
   const tableIndex = b.id(); b.emit(Op.IAdd, [p.tU32, tableIndex, tableBase, pair]);
   const c = loadF32(b, p.tF32, p.const0u, cos, tableIndex);
@@ -267,14 +277,18 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const bCos = b.id(); b.emit(Op.FMul, [p.tF32, bCos, gB, c]);
   const aSin = b.id(); b.emit(Op.FMul, [p.tF32, aSin, gA, sInv]);
   const inverseB = b.id(); b.emit(Op.FAdd, [p.tF32, inverseB, bCos, aSin]);
-  const secondHalf = b.id();
-  b.emit(Op.UGreaterThanEqual, [p.tBool, secondHalf, dimension, half]);
   const rotated = b.id(); b.emit(Op.Select, [p.tF32, rotated, secondHalf, inverseB, inverseA]);
-  const rawDimensionIndex = b.id(); b.emit(Op.IAdd, [p.tU32, rawDimensionIndex, gradBase, dimension]);
-  const raw = loadF32(b, p.tF32, p.const0u, grad, rawDimensionIndex);
-  const isRotatedBranch = b.id(); b.emit(Op.ULessThan, [p.tBool, isRotatedBranch, which, p.const2u]);
-  const selectedValue = b.id(); b.emit(Op.Select, [p.tF32, selectedValue, isRotatedBranch, rotated, raw]);
-  storeF32(b, p.const0u, out, gid, selectedValue);
+  storeF32(b, p.const0u, out, gid, rotated);
+  b.emit(Op.Branch, [selectedEnd]);
+
+  // V has no rotary transform. Select the already-loaded pair member and do
+  // not touch the cosine/sine tables at all.
+  b.emit(Op.Label, [rawBody]);
+  const raw = b.id(); b.emit(Op.Select, [p.tF32, raw, secondHalf, gB, gA]);
+  storeF32(b, p.const0u, out, gid, raw);
+  b.emit(Op.Branch, [selectedEnd]);
+
+  b.emit(Op.Label, [selectedEnd]);
   b.emit(Op.Branch, [branchEnd]);
 
   b.emit(Op.Label, [branchEnd]);
