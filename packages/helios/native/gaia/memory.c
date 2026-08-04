@@ -94,7 +94,11 @@ typedef struct {
  * and at any base, mapping WITHOUT DMA_OFFSET_FIXED also fails with
  * NV_ERR_INVALID_ARGUMENT -- RM will not pick an address for us here, it only
  * honours one we name. */
-#define GAIA_VA_BASE 0x200000ULL
+/* A working Vulkan driver places its GPFIFO around 0x04020000. We were handing
+ * out addresses from 0x200000 -- which MAPS fine, but mapping succeeding is not
+ * the same as the fetch engine being able to read from there. Moved to match
+ * the reference range. */
+#define GAIA_VA_BASE 0x04000000ULL
 
 /*
  * GPU virtual addresses are handed out by a bump allocator.

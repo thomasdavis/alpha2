@@ -41,8 +41,8 @@ typedef struct {
   gaia_buffer gpfifo;     /* the ring of entries */
   gaia_buffer pushbuffer; /* the methods those entries point at */
   gaia_buffer errnotif;   /* hObjectError — RM writes fault records here */
-  /* No userd buffer: RM allocates the doorbell page itself, and supplying one
-   * makes channel allocation fail. */
+  gaia_buffer userd;      /* our own USERD, so GP_PUT's location is certain */
+
 
   NvU32 gpfifoEntries;
   NvU32 put;   /* our index into the ring */

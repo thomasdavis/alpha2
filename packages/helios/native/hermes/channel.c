@@ -115,6 +115,17 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
   if ((rc = gaia_map_gpu(d, &c->pushbuffer)) != 0) goto fail;
   if ((rc = gaia_map_host(d, &c->pushbuffer)) != 0) goto fail;
 
+  /* Our own USERD. RM will allocate one itself, but then the only way to reach
+   * GP_PUT is to map the channel object -- and a working driver never does
+   * that, so the offset semantics of such a mapping are unverified. Supplying
+   * our own buffer removes the question: GP_PUT is at offset 0x40 of memory we
+   * allocated and mapped ourselves.
+   *
+   * RM accepts this only when hVASpace is left zero on the channel. */
+  if ((rc = gaia_alloc(d, &c->userd, 4096, GAIA_VIDMEM)) != 0) goto fail;
+  if ((rc = gaia_map_host(d, &c->userd)) != 0) goto fail;
+  memset(c->userd.hostPtr, 0, 4096);
+
   /* The error notifier. A working Vulkan driver passes a non-zero hObjectError
    * on the channel; we had been leaving it zero, which is also why a fault
    * produced no signal anywhere. */
@@ -162,6 +173,8 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
     p.engineType = HERMES_ENGINE_GRAPHICS;
     p.hContextShare = c->ctxshare;
     p.hObjectError = c->errnotif.handle;
+    p.hUserdMemory[0] = c->userd.handle;
+    p.userdOffset[0] = 0;
     if ((rc = aether_alloc(d, c->group, &c->handle, AMPERE_CHANNEL_GPFIFO_A,
                            &p, sizeof p)) != 0)
       goto fail;
@@ -186,6 +199,7 @@ void hermes_channel_close(aether_device *d, hermes_channel *c) {
   if (c->handle) { aether_free(d, c->handle); c->handle = 0; }
   if (c->ctxshare) { aether_free(d, c->ctxshare); c->ctxshare = 0; }
   if (c->group) { aether_free(d, c->group); c->group = 0; }
+  gaia_free(d, &c->userd);
   gaia_free(d, &c->errnotif);
   gaia_free(d, &c->pushbuffer);
   gaia_free(d, &c->gpfifo);
