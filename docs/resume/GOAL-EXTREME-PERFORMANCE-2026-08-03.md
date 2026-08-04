@@ -139,13 +139,19 @@ Residual additions and their immediately following RMSNorms now share exact
 two-output dispatches at all eligible intra- and cross-block boundaries,
 removing 36 graph operations and 900 MiB of logical forward traffic at the
 selected batch-10/18-layer shape.
+The grouped QKV-to-flash boundary now unpacks Q/K/V, writes head-major layout,
+and applies Q/K RoPE in one exact dispatch with paired inverse-layout gradient
+kernels. Static accounting removes another 180 complete-step dispatches and
+8.789 GiB of logical activation traffic at that same selected shape.
 Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
 VRAM and complete-step effects remain unmeasured. Canonical record:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`,
 with the two-output fusion recorded separately in
-`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`.
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`
+and the grouped layout fusion in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred

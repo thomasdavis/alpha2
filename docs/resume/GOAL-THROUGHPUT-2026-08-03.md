@@ -91,9 +91,10 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/LLMC-SOURCE-MECHANISM-MAP-2026-08-04.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X26-DEVICE-RESIDENT-LAZY-TRAINING-LOSS.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`.
 
-The first pass now implements four native exact-path mechanisms: combined
+The first pass now implements five native exact-path mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
 selective SwiGLU product rematerialization. The latter removes 1,215 MiB of
 logical tape retention at the batch-10 shape for one extra elementwise pass
@@ -102,7 +103,11 @@ stays device-resident through backward graph construction, and tiny loss
 scaling/addition no longer falls through to CPU solely because the tensor has
 one element. Eligible intra- and cross-block residuals and following RMSNorms
 now share exact two-output dispatches, eliminating 36 operations and 900 MiB
-of logical forward traffic at the selected batch-10/18-layer shape. These are local implementations,
+of logical forward traffic at the selected batch-10/18-layer shape. The grouped
+QKV projection now crosses into head-major flash-attention layout and applies
+Q/K RoPE in one dispatch, with exact inverse-layout branch gradients; static
+accounting removes another 180 complete-step dispatches and 8.789 GiB of logical
+activation traffic. These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
 
