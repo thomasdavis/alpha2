@@ -479,7 +479,19 @@ export class NativeHeliosBackend implements Backend {
     const ids = this.make([tokens], "i32");
     const src = indices.data as ArrayLike<number>;
     for (let i = 0; i < tokens; i++) ids.buffer.ints[i] = src[i] | 0;
-    const out = this.make([tokens, dim], "f32");
+    /*
+     * The output keeps the INDICES' shape and appends the feature dimension:
+     * [1,8] indices into a [16,16] table give [1,8,16], not [8,16].
+     *
+     * Flattening it to [tokens, dim] was the root of every shape failure in the
+     * model for several rounds. It is operation EIGHT of a hundred and
+     * forty-seven, and it surfaced as a reshape complaining about an element
+     * count in the backward pass, seventy operations later, in a node that had
+     * nothing to do with it. Found by tracing both backends and diffing the
+     * first divergence -- which took one run, after several rounds of guessing
+     * from the symptom.
+     */
+    const out = this.make([...indices.shape, dim], "f32");
     this.check(this.hl.embedding(out.buffer.handle, dw.buffer.handle,
                                  ids.buffer.handle, tokens, dim), "embedding");
     ids.buffer.release(this.hl);
@@ -708,18 +720,39 @@ export class NativeHeliosBackend implements Backend {
    * "every FLOP through our own SASS" constraint is about arithmetic; there is
    * none here.
    */
+  /**
+   * Concatenate along any axis.
+   *
+   * Along axis 0 the inputs are already contiguous in the output, so it is one
+   * copy each. Along an interior axis each input contributes a SLAB per outer
+   * index, interleaved with the others -- so the copy walks outer indices and
+   * lays down one slab from each tensor in turn. Still no arithmetic: this is
+   * memory movement between mapped views, at bandwidth, and a kernel would add
+   * a launch to do the same thing.
+   */
   cat(tensors: TensorData[], axis: number): TensorData {
-    if (this.axisOf(tensors[0].shape, axis) !== 0)
-      this.unsupported(`cat along axis ${axis}`);
-    const total = tensors.reduce((n, t) => n + shapeSize(t.shape), 0);
-    const rest = tensors[0].shape.slice(1);
-    const out = this.make([total / (shapeSize(rest) || 1), ...rest], "f32");
-    let at = 0;
-    for (const t of tensors) {
-      const d = this.device(t);
-      const n = shapeSize(t.shape);
-      out.buffer.floats.set(d.buffer.floats.subarray(0, n), at);
-      at += n;
+    if (tensors.length === 0) throw new Error("helios-native: cat of nothing");
+    const shape = tensors[0].shape;
+    const k = this.axisOf(shape, axis);
+    const inner = shape.slice(k + 1).reduce((x, y) => x * y, 1);
+    const outer = shape.slice(0, k).reduce((x, y) => x * y, 1);
+    const sizes = tensors.map((t) => t.shape[k]);
+    const outShape = shape.slice();
+    outShape[k] = sizes.reduce((x, y) => x + y, 0);
+    const out = this.make(outShape, "f32");
+    const outSlab = outShape[k] * inner;
+
+    const devs = tensors.map((t) => this.device(t));
+    for (let o = 0; o < outer; o++) {
+      let at = o * outSlab;
+      for (let i = 0; i < devs.length; i++) {
+        const slab = sizes[i] * inner;
+        out.buffer.floats.set(
+          devs[i].buffer.floats.subarray(o * slab, (o + 1) * slab),
+          at,
+        );
+        at += slab;
+      }
     }
     return out;
   }
