@@ -55,7 +55,7 @@ import {
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
-  kernelRmsNorm, kernelRmsNormBackward, kernelRope,
+  kernelRmsNorm, kernelResidualAddRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
@@ -74,7 +74,7 @@ export {
 
 import {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
-  kernelRmsNorm, kernelRmsNormBackward, kernelRope,
+  kernelRmsNorm, kernelResidualAddRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
   kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
@@ -247,6 +247,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "layernorm": spirv = kernelLayerNorm(wgSize); break;
     case "layernorm_vec4": spirv = kernelLayerNormVec4(wgSize); break;
     case "rmsnorm": spirv = kernelRmsNorm(wgSize); break;
+    case "residual_add_rmsnorm": spirv = kernelResidualAddRmsNorm(wgSize); break;
     case "rmsnorm_backward": spirv = kernelRmsNormBackward(wgSize); break;
     case "rope": spirv = kernelRope(wgSize); break;
     case "silu":      spirv = kernelSilu(wgSize); break;

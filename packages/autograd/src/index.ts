@@ -5,7 +5,7 @@ export {
   matmul, matmulTransposed, matmulTransposedGelu,
   sum, mean,
   exp, log, sqrt, relu, silu, siluMul, siluMulMatmulTransposedRecompute, gelu, clamp, softCap,
-  dropout, residualDropoutAdd,
+  dropout, residualDropoutAdd, residualDropoutAddRmsNorm,
   embedding, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   flashAttention,

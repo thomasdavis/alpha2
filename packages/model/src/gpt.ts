@@ -13,7 +13,7 @@ import {
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
-  residualDropoutAdd, flashAttention, checkpoint,
+  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
 
@@ -374,10 +374,25 @@ function transformerBlock(
     attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
   }
   const projected = reshape(ctx, matmulTransposed(ctx, attnConcat, layer.attn.wo), [Batch, T, nEmbd]);
-  x = residualDropoutAdd(ctx, x, projected, config.dropout, training);
+  let ln2Out: Variable;
+  if ((config.normType ?? "layernorm") === "rmsnorm") {
+    const fused = residualDropoutAddRmsNorm(
+      ctx,
+      x,
+      projected,
+      layer.ln2.weight,
+      1e-5,
+      config.dropout,
+      training,
+    );
+    x = fused.residual;
+    ln2Out = fused.normalized;
+  } else {
+    x = residualDropoutAdd(ctx, x, projected, config.dropout, training);
+    ln2Out = applyNorm(ctx, x, layer.ln2, config, 1e-5);
+  }
 
   // 2) Norm → MLP → Residual
-  const ln2Out = applyNorm(ctx, x, layer.ln2, config, 1e-5);
   const flat = reshape(ctx, ln2Out, [Batch * T, nEmbd]);
   const activation = config.ffnActivation ?? "gelu";
 

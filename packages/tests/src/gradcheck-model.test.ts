@@ -203,6 +203,48 @@ describe("gradcheck: tiny GPT (Llama-form: rmsnorm + rope + tied + swiglu)", () 
     runGradcheck(config);
   });
 
+  it("model-level fused residual-add RMSNorm path matches the unfused graph", () => {
+    class FusedModelBackend extends CpuRefBackend {
+      fusedCalls = 0;
+
+      residualAddRmsNorm(
+        residual: TensorData,
+        projected: TensorData,
+        weight: TensorData,
+        eps: number,
+      ): { residual: TensorData; normalized: TensorData } {
+        this.fusedCalls++;
+        const residualOut = super.add(residual, projected);
+        return {
+          residual: residualOut,
+          normalized: super.rmsNorm(residualOut, weight, eps),
+        };
+      }
+    }
+
+    const batch = makeBatch(config, 99);
+    const run = (backend: CpuRefBackend) => {
+      const params = initGPT(config, backend, new SeededRng(20260722));
+      const tape = new Tape();
+      const result = gptForward(config, params, backend, tape, batch.tokens, batch.targets, false);
+      tape.backward(result.loss!, backend);
+      return {
+        loss: (result.loss!.data.data as Float32Array)[0],
+        grads: collectParamEntries(params).map(([name, variable]) => [
+          name,
+          Array.from(variable.grad!.data as Float32Array),
+        ] as const),
+      };
+    };
+
+    const baseline = run(new CpuRefBackend());
+    const fusedBackend = new FusedModelBackend();
+    const actual = run(fusedBackend);
+    expect(fusedBackend.fusedCalls).toBe(config.nLayer);
+    expect(actual.loss).toBe(baseline.loss);
+    expect(actual.grads).toEqual(baseline.grads);
+  });
+
   it("structural invariants: no wpe, single tied embedding, no norm biases", () => {
     const params = initGPT(config, B, new SeededRng(20260722));
     const names = collectParamEntries(params).map(([n]) => n);

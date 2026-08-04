@@ -69,6 +69,11 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 // for ahead-of-time graph compilation and command replay.
 const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
 const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
+// Matched-control switch for the residual-add + RMSNorm fusion. The public
+// backend hook remains available so the autograd topology is identical; only
+// the physical implementation changes from one dispatch back to add+rmsnorm.
+const DISABLE_RESIDUAL_ADD_RMSNORM =
+  process.env.HELIOS_DISABLE_RESIDUAL_ADD_RMSNORM === "1";
 // An offline, warmup-excluded lifetime trace can be compiled into a fixed set
 // of reusable VkBuffer handles. Physical r6 testing found that a complete plan
 // can preserve loss while corrupting backward gradients before structural
@@ -3567,6 +3572,96 @@ export class HeliosBackend implements Backend {
     const out = new Float32Array(size);
     for (let i = 0; i < size; i++) out[i] = rArr[i] + pArr[i] * mArr[i];
     return makeTensor(residual.shape, residual.dtype, out);
+  }
+
+  residualAddRmsNorm(
+    residual: TensorData,
+    projected: TensorData,
+    weight: TensorData,
+    eps: number,
+  ): { residual: TensorData; normalized: TensorData } {
+    if (DISABLE_RESIDUAL_ADD_RMSNORM) {
+      const residualOut = this.add(residual, projected);
+      return {
+        residual: residualOut,
+        normalized: this.rmsNorm(residualOut, weight, eps),
+      };
+    }
+    const size = shapeSize(residual.shape);
+    const dim = residual.shape[residual.shape.length - 1];
+    if (
+      size >= this._minGpuSize
+      && this.shapesEqual(residual.shape, projected.shape)
+      && shapeSize(weight.shape) === dim
+    ) {
+      const vk = this.init();
+      const bufResidual = ensureGpu(vk, residual);
+      const bufProjected = ensureGpu(vk, projected);
+      const bufWeight = ensureGpu(vk, weight);
+      const residualRegion = acquireOutputRegion(vk, size * 4);
+      const normalizedRegion = acquireOutputRegion(vk, size * 4);
+      const numRows = size / dim;
+      const pipeline = getPipeline(vk, "residual_add_rmsnorm", 5, PUSH_SIZE, WG_SIZE);
+
+      graph.record({
+        kind: "layernorm",
+        kernel: "residual_add_rmsnorm",
+        pipeline,
+        inputBufs: [],
+        outputRegion: residualRegion,
+        groups: [numRows, 1, 1],
+        push: push2Memo(dim, eps),
+        pushSize: PUSH_SIZE,
+        shape: residual.shape,
+        allBufs: [
+          bufResidual,
+          bufProjected,
+          bufWeight,
+          residualRegion.handle,
+          normalizedRegion.handle,
+        ],
+        writeMask: 0b11000,
+      });
+
+      return {
+        residual: graphLazyTensor(vk, residual.shape, residualRegion),
+        normalized: graphLazyTensor(vk, residual.shape, normalizedRegion),
+      };
+    }
+
+    // CPU reference path for small tensors and correctness tests.
+    this.checkFallback("residualAddRmsNorm");
+    if (!this.shapesEqual(residual.shape, projected.shape)) {
+      throw new Error(
+        `residualAddRmsNorm: residual [${residual.shape}] and projected [${projected.shape}] must match`,
+      );
+    }
+    if (shapeSize(weight.shape) !== dim) {
+      throw new Error(`residualAddRmsNorm: expected ${dim} weights, got ${shapeSize(weight.shape)}`);
+    }
+    const residualIn = residual.data as Float32Array;
+    const projectedIn = projected.data as Float32Array;
+    const weights = weight.data as Float32Array;
+    const residualOut = new Float32Array(size);
+    const normalizedOut = new Float32Array(size);
+    const rows = size / dim;
+    for (let row = 0; row < rows; row++) {
+      const offset = row * dim;
+      let sumSquares = 0;
+      for (let col = 0; col < dim; col++) {
+        const value = residualIn[offset + col] + projectedIn[offset + col];
+        residualOut[offset + col] = value;
+        sumSquares += value * value;
+      }
+      const invRms = 1 / Math.sqrt(sumSquares / dim + eps);
+      for (let col = 0; col < dim; col++) {
+        normalizedOut[offset + col] = residualOut[offset + col] * invRms * weights[col];
+      }
+    }
+    return {
+      residual: makeTensor(residual.shape, residual.dtype, residualOut),
+      normalized: makeTensor(residual.shape, residual.dtype, normalizedOut),
+    };
   }
 
   crossEntropyBackward(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData {

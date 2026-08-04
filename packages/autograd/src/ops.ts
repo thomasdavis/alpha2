@@ -717,6 +717,51 @@ export function layerNorm(
  * no mean-subtraction. Mirrors layerNorm's autograd structure — uses the
  * backend's fused rmsNormBackward when present, otherwise a CPU-loop fallback.
  */
+function rmsNormBackwardData(
+  B: Backend,
+  xData: TensorData,
+  wData: TensorData,
+  g: TensorData,
+  eps: number,
+): [TensorData, TensorData] {
+  if (B.rmsNormBackward) {
+    const { dx, dw } = B.rmsNormBackward(xData, wData, g, eps);
+    return [dx, dw];
+  }
+  // CPU fallback.
+  //   out_j = x_j * r * w_j,   r = 1/sqrt(mean(x^2)+eps)
+  //   dw_j += g_j * x_j * r
+  //   S    = Σ_j g_j * w_j * x_j
+  //   dx_j = r*g_j*w_j - x_j * r^3 * S / dim
+  const shape = xData.shape;
+  const dim = shape[shape.length - 1];
+  const n = shapeSize(shape) / dim;
+  const xArr = xData.data as Float32Array;
+  const wArr = wData.data as Float32Array;
+  const gArr = g.data as Float32Array;
+
+  const dx = B.zeros(shape, xData.dtype);
+  const dw = B.zeros(wData.shape, wData.dtype);
+  const dxArr = dx.data as Float32Array;
+  const dwArr = dw.data as Float32Array;
+
+  for (let i = 0; i < n; i++) {
+    const off = i * dim;
+    let ms = 0;
+    for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
+    ms /= dim;
+    const r = 1 / Math.sqrt(ms + eps);
+    const r3 = r * r * r;
+    let S = 0;
+    for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
+    for (let j = 0; j < dim; j++) {
+      dwArr[j] += gArr[off + j] * xArr[off + j] * r;
+      dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
+    }
+  }
+  return [dx, dw];
+}
+
 export function rmsNorm(
   ctx: Ctx,
   x: Variable,
@@ -725,44 +770,12 @@ export function rmsNorm(
 ): Variable {
   const xData = x.data;
   const wData = weight.data;
-  return record(ctx, ctx.backend.rmsNorm(xData, wData, eps), [x, weight], (g, B) => {
-    if (B.rmsNormBackward) {
-      const { dx, dw } = B.rmsNormBackward(xData, wData, g, eps);
-      return [dx, dw];
-    }
-    // CPU fallback.
-    //   out_j = x_j * r * w_j,   r = 1/sqrt(mean(x^2)+eps)
-    //   dw_j += g_j * x_j * r
-    //   S    = Σ_j g_j * w_j * x_j
-    //   dx_j = r*g_j*w_j - x_j * r^3 * S / dim
-    const shape = xData.shape;
-    const dim = shape[shape.length - 1];
-    const n = shapeSize(shape) / dim;
-    const xArr = xData.data as Float32Array;
-    const wArr = wData.data as Float32Array;
-    const gArr = g.data as Float32Array;
-
-    const dx = B.zeros(shape, xData.dtype);
-    const dw = B.zeros(wData.shape, wData.dtype);
-    const dxArr = dx.data as Float32Array;
-    const dwArr = dw.data as Float32Array;
-
-    for (let i = 0; i < n; i++) {
-      const off = i * dim;
-      let ms = 0;
-      for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
-      ms /= dim;
-      const r = 1 / Math.sqrt(ms + eps);
-      const r3 = r * r * r;
-      let S = 0;
-      for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
-      for (let j = 0; j < dim; j++) {
-        dwArr[j] += gArr[off + j] * xArr[off + j] * r;
-        dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
-      }
-    }
-    return [dx, dw];
-  });
+  return record(
+    ctx,
+    ctx.backend.rmsNorm(xData, wData, eps),
+    [x, weight],
+    (g, B) => rmsNormBackwardData(B, xData, wData, g, eps),
+  );
 }
 
 // ── Rotary position embedding (RoPE) ─────────────────────────────────────────
@@ -982,6 +995,57 @@ export function residualDropoutAdd(
     dropOutLive = null;
     return [ga, gb];
   }, fallbackCleanup);
+}
+
+/**
+ * Residual addition plus the immediately following RMSNorm. When dropout is
+ * inactive and the backend exposes the fused two-output primitive, this
+ * records the same autograd graph as add() followed by rmsNorm() while issuing
+ * one backend operation. With active dropout (or an unsupported backend), the
+ * ordinary compositional path remains authoritative.
+ */
+export function residualDropoutAddRmsNorm(
+  ctx: Ctx,
+  residual: Variable,
+  projected: Variable,
+  weight: Variable,
+  eps: number,
+  p: number,
+  training: boolean,
+): { residual: Variable; normalized: Variable } {
+  if ((training && p !== 0) || !ctx.backend.residualAddRmsNorm) {
+    const residualOut = residualDropoutAdd(ctx, residual, projected, p, training);
+    return {
+      residual: residualOut,
+      normalized: rmsNorm(ctx, residualOut, weight, eps),
+    };
+  }
+
+  const residualData = residual.data;
+  const projectedData = projected.data;
+  const weightData = weight.data;
+  const fused = ctx.backend.residualAddRmsNorm(residualData, projectedData, weightData, eps);
+
+  // Record the residual addition first. Its output remains a real graph node:
+  // one downstream path carries the residual stream and the other passes
+  // through RMSNorm. Reverse traversal therefore accumulates both gradients
+  // before sending them to the original residual and projection.
+  const residualOut = record(
+    ctx,
+    fused.residual,
+    [residual, projected],
+    (g, B, release) => [
+      reduceBroadcast(B, g, residualData.shape, release),
+      reduceBroadcast(B, g, projectedData.shape, release),
+    ],
+  );
+  const normalized = record(
+    ctx,
+    fused.normalized,
+    [residualOut, weight],
+    (g, B) => rmsNormBackwardData(B, fused.residual, weightData, g, eps),
+  );
+  return { residual: residualOut, normalized };
 }
 
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {

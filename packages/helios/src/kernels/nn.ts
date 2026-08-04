@@ -3697,17 +3697,25 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
  *   2. invRms = 1 / sqrt(ms + eps)
  *   3. out = x * invRms * weight
  *
- * Bindings: 0=X(in), 1=weight(in), 2=C(out)
+ * Plain bindings: 0=X(in), 1=weight(in), 2=C(out)
+ * Residual-add bindings: 0=residual(in), 1=projected(in), 2=weight(in),
+ *   3=residualOut(out), 4=C(out)
  * Push constants: { dim: f32, eps: f32 }
  * Dispatch: (numRows, 1, 1)
  */
-export function kernelRmsNorm(wgSize = 256): Uint32Array {
+function kernelRmsNormImpl(wgSize: number, residualAdd: boolean): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
   const bufX = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufW = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufProjected = residualAdd
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true)
+    : null;
+  const bufW = declareStorageBuffer(b, p.tF32, p.tU32, 0, residualAdd ? 2 : 1, true);
+  const bufResidualOut = residualAdd
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false)
+    : null;
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, residualAdd ? 4 : 2, false);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const constWgSize = b.id();
@@ -3733,7 +3741,13 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   const scopeWg = b.id();
   b.constant(p.tU32, scopeWg, Scope.Workgroup);
   const semAcqRelWg = b.id();
-  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+  b.constant(
+    p.tU32,
+    semAcqRelWg,
+    MemorySemantics.AcquireRelease
+      | MemorySemantics.WorkgroupMemory
+      | (residualAdd ? MemorySemantics.UniformMemory : 0),
+  );
 
   const tPtrFnU32 = b.id();
   b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
@@ -3842,8 +3856,20 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   emitAccLoop((gi) => {
     const ptr = b.id();
     b.emit(Op.AccessChain, [bufX.tPtrF32, ptr, bufX.varId, p.const0u, gi]);
-    const v = b.id();
-    b.emit(Op.Load, [p.tF32, v, ptr]);
+    const xv = b.id();
+    b.emit(Op.Load, [p.tF32, xv, ptr]);
+    let v = xv;
+    if (residualAdd) {
+      const ptrProjected = b.id();
+      b.emit(Op.AccessChain, [bufProjected!.tPtrF32, ptrProjected, bufProjected!.varId, p.const0u, gi]);
+      const projected = b.id();
+      b.emit(Op.Load, [p.tF32, projected, ptrProjected]);
+      v = b.id();
+      b.emit(Op.FAdd, [p.tF32, v, xv, projected]);
+      const ptrResidualOut = b.id();
+      b.emit(Op.AccessChain, [bufResidualOut!.tPtrF32, ptrResidualOut, bufResidualOut!.varId, p.const0u, gi]);
+      b.emit(Op.Store, [ptrResidualOut, v]);
+    }
     const sq = b.id();
     b.emit(Op.FMul, [p.tF32, sq, v, v]);
     return sq;
@@ -3892,7 +3918,8 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   const gi = b.id();
   b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
   const ptrX = b.id();
-  b.emit(Op.AccessChain, [bufX.tPtrF32, ptrX, bufX.varId, p.const0u, gi]);
+  const phase2Input = residualAdd ? bufResidualOut! : bufX;
+  b.emit(Op.AccessChain, [phase2Input.tPtrF32, ptrX, phase2Input.varId, p.const0u, gi]);
   const xv = b.id();
   b.emit(Op.Load, [p.tF32, xv, ptrX]);
   const ptrW = b.id();
@@ -3920,6 +3947,22 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
   return b.build();
+}
+
+/** Ordinary RMSNorm readout. */
+export function kernelRmsNorm(wgSize = 256): Uint32Array {
+  return kernelRmsNormImpl(wgSize, false);
+}
+
+/**
+ * Fuses residual + projected with the immediately following RMSNorm. Phase 1
+ * writes the residual stream while accumulating its sum of squares; phase 2
+ * reads that result once to emit the normalized view. Compared with separate
+ * add and RMSNorm kernels this removes one full residual-stream read and one
+ * dispatch without changing either output.
+ */
+export function kernelResidualAddRmsNorm(wgSize = 256): Uint32Array {
+  return kernelRmsNormImpl(wgSize, true);
 }
 
 // ── Kernel: RMSNorm backward (one workgroup per row) ─────────────────────────

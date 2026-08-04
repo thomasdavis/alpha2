@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { TensorData } from "@alpha/core";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu, checkpoint, scale } from "@alpha/autograd";
+import {
+  Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu,
+  gelu, checkpoint, scale, rmsNorm, residualDropoutAddRmsNorm,
+} from "@alpha/autograd";
 
 describe("Autograd", () => {
   const B = new CpuRefBackend();
@@ -52,6 +55,75 @@ describe("Autograd", () => {
     expect(a.grad).not.toBe(b.grad);
     expect(Array.from(a.grad!.data)).toEqual([2, 2, 2]);
     expect(Array.from(b.grad!.data)).toEqual([2, 2, 2]);
+  });
+
+  it("fused residual-add RMSNorm preserves both outputs and their combined gradients", () => {
+    class FusedReferenceBackend extends CpuRefBackend {
+      fusedCalls = 0;
+
+      residualAddRmsNorm(
+        residual: TensorData,
+        projected: TensorData,
+        weight: TensorData,
+        eps: number,
+      ): { residual: TensorData; normalized: TensorData } {
+        this.fusedCalls++;
+        const residualOut = super.add(residual, projected);
+        return {
+          residual: residualOut,
+          normalized: super.rmsNorm(residualOut, weight, eps),
+        };
+      }
+    }
+
+    const inputs = {
+      residual: [0.2, -0.7, 1.3, 0.4, -0.2, 0.9],
+      projected: [-0.1, 0.5, 0.2, -0.6, 0.8, -0.3],
+      weight: [0.8, 1.1, -0.4],
+    };
+
+    const run = (backend: CpuRefBackend, fused: boolean) => {
+      const tape = new Tape();
+      const ctx = { tape, backend };
+      const residual = new Variable(backend.fromArray(inputs.residual, [2, 3]), true);
+      const projected = new Variable(backend.fromArray(inputs.projected, [2, 3]), true);
+      const weight = new Variable(backend.fromArray(inputs.weight, [3]), true);
+      let residualOut: Variable;
+      let normalized: Variable;
+      if (fused) {
+        ({ residual: residualOut, normalized } = residualDropoutAddRmsNorm(
+          ctx, residual, projected, weight, 1e-5, 0, true,
+        ));
+      } else {
+        residualOut = add(ctx, residual, projected);
+        normalized = rmsNorm(ctx, residualOut, weight, 1e-5);
+      }
+      // Both returned values contribute with different coefficients. This
+      // verifies that the residual graph node receives and combines its direct
+      // path and RMSNorm path before propagating to both original inputs.
+      const loss = sum(ctx, add(ctx, scale(ctx, residualOut, 0.3), scale(ctx, normalized, -0.7)));
+      const residualValues = Array.from(residualOut.data.data as Float32Array);
+      const normalizedValues = Array.from(normalized.data.data as Float32Array);
+      tape.backward(loss, backend);
+      return {
+        residualValues,
+        normalizedValues,
+        residualGrad: Array.from(residual.grad!.data as Float32Array),
+        projectedGrad: Array.from(projected.grad!.data as Float32Array),
+        weightGrad: Array.from(weight.grad!.data as Float32Array),
+      };
+    };
+
+    const baseline = run(new CpuRefBackend(), false);
+    const fusedBackend = new FusedReferenceBackend();
+    const actual = run(fusedBackend, true);
+    expect(fusedBackend.fusedCalls).toBe(1);
+    for (const key of Object.keys(baseline) as Array<keyof typeof baseline>) {
+      expect(actual[key]).toHaveLength(baseline[key].length);
+      actual[key].forEach((value, index) => {
+        expect(value).toBeCloseTo(baseline[key][index], 6);
+      });
+    }
   });
 
   it("mul backward", () => {

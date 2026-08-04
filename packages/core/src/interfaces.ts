@@ -186,6 +186,16 @@ export interface Backend {
 
   // fused ops (GPU-optimized, optional)
   residualDropoutAdd?(residual: TensorData, projected: TensorData, mask: TensorData): TensorData;
+  /** Fused no-dropout residual addition followed by RMSNorm. Both outputs are
+   *  returned because the residual stream continues around the following MLP
+   *  while its normalized view feeds the MLP. Backends may omit this hook;
+   *  autograd then composes add() and rmsNorm() without changing semantics. */
+  residualAddRmsNorm?(
+    residual: TensorData,
+    projected: TensorData,
+    weight: TensorData,
+    eps: number,
+  ): { residual: TensorData; normalized: TensorData };
   matmulTransposed?(a: TensorData, b: TensorData): TensorData;
   matmulTransposedA?(a: TensorData, b: TensorData): TensorData;
   addInplace?(a: TensorData, b: TensorData): void;
