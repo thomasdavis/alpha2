@@ -33,6 +33,16 @@
 #define PR_N 64
 
 /*
+ * The largest block a reduction tree can use.
+ *
+ * Bounded by the hardware's 1024 threads per block, and by shared memory: the
+ * tree needs four bytes per thread, so 1024 threads is 4 KiB, well inside the
+ * SM's window. A reduction over more than this needs two passes, which is the
+ * dispatcher's job rather than the kernel's.
+ */
+#define PR_MAX_BLOCK 1024u
+
+/*
  * Upper bound on the instructions any kernel emits, so a caller can size a
  * buffer without knowing which kernel it is about to build.
  *

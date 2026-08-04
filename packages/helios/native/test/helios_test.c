@@ -15,7 +15,10 @@
 #include "harness.h"
 
 #include "../helios/context.h"
+#include "../helios/dispatch.h"
+#include "../prometheus/elementwise.h"
 #include "../helios/program.h"
+#include "../helios/tensor.h"
 #include "../prometheus/reduction.h"
 
 #include <string.h>
@@ -175,7 +178,104 @@ static void test_context_and_reduction(void) {
   HT_END();
 }
 
+/*
+ * The pool, and the handles that index it.
+ *
+ * The generation check is the part worth testing directly: a freed handle must
+ * be REJECTED, not silently address whatever now occupies its slot. Without
+ * that, a use-after-free corrupts an unrelated tensor with no fault and no way
+ * to trace the damage back.
+ */
+static void test_tensor_pool(void) {
+  HT_CASE("the pool reuses buffers and rejects stale handles");
+
+  helios_context ctx;
+  if (helios_context_open(&ctx, 0) != 0) {
+    printf("skip (no NVIDIA driver)\n");
+    ht_case_failed = 0;
+    return;
+  }
+  helios_tensor_release_all(&ctx);
+
+  const helios_tensor a = helios_tensor_alloc(&ctx, 4096);
+  HT_TRUE(a != HELIOS_TENSOR_NONE);
+  HT_TRUE(helios_tensor_addr(a) != 0);
+  HT_TRUE(helios_tensor_host(a) != NULL);
+  HT_EQ_U64(helios_tensor_bytes(a), 4096);
+  HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
+
+  /* Freed and re-requested at the same size: served from the pool, no second
+   * trip to the driver. This is the whole reason the pool exists. */
+  helios_tensor_free(a);
+  const helios_tensor b = helios_tensor_alloc(&ctx, 4096);
+  HT_TRUE(b != HELIOS_TENSOR_NONE);
+  HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
+
+  /* Same slot, and therefore the same memory -- but NOT the same handle, and
+   * the old one is dead. */
+  HT_TRUE(b != a);
+  HT_EQ_U64(helios_tensor_addr(a), 0);
+  HT_TRUE(helios_tensor_host(a) == NULL);
+  HT_TRUE(helios_tensor_addr(b) != 0);
+
+  helios_tensor_free(b);
+  helios_tensor_release_all(&ctx);
+  helios_context_close(&ctx);
+  HT_END();
+}
+
+/*
+ * A short chain of real operations through the dispatcher.
+ *
+ * Chained on purpose: each reads what the one before it wrote, so it also tests
+ * that launches are ordered. If they were not, the second would read whatever
+ * the buffer held before the first ran -- which, on a buffer the host just
+ * wrote, is a plausible number.
+ */
+static void test_dispatch_chain(void) {
+  HT_CASE("operations chain through the dispatcher in order");
+
+  helios_context ctx;
+  if (helios_context_open(&ctx, 0) != 0) {
+    printf("skip (no NVIDIA driver)\n");
+    ht_case_failed = 0;
+    return;
+  }
+  helios_tensor_release_all(&ctx);
+  helios_program_reset();
+
+  const unsigned N = 256;
+  const helios_tensor x = helios_tensor_alloc(&ctx, N * 4);
+  const helios_tensor y = helios_tensor_alloc(&ctx, N * 4);
+  const helios_tensor sum = helios_tensor_alloc(&ctx, 4096);
+  const helios_tensor scratch = helios_tensor_alloc(&ctx, 4096);
+  HT_TRUE(x && y && sum && scratch);
+
+  float *hx = (float *)helios_tensor_host(x);
+  double want_sum = 0;
+  for (unsigned i = 0; i < N; i++) {
+    hx[i] = (float)(i % 7u) - 3.0f;
+    want_sum += 2.0 * (double)hx[i]; /* after the doubling below */
+  }
+  memset(helios_tensor_host(scratch), 0, 4096);
+  memset(helios_tensor_host(sum), 0, 4096);
+
+  /* y = x + x, then sum(y). The second reads the first's output. */
+  HT_TRUE(hl_elementwise(&ctx, PR_EW_ADD, y, x, x, N, NULL, 0) == 0);
+  HT_TRUE(hl_reduce(&ctx, 0, sum, y, scratch, N) == 0);
+
+  const float got = *(const float *)helios_tensor_host(sum);
+  const double err = (double)got - want_sum;
+  HT_TRUE(err > -1e-3 && err < 1e-3);
+
+  helios_tensor_release_all(&ctx);
+  helios_context_close(&ctx);
+  HT_END();
+}
+
 void ht_run(void) {
+  test_tensor_pool();
+  test_dispatch_chain();
   test_cache_identity();
   test_context_and_reduction();
 }

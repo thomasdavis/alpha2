@@ -54,10 +54,16 @@ const CFLAGS = [
   "-Wno-unused-parameter",
 ];
 
+/* The N-API bindings are not part of any layer library: they need Node's
+ * headers and they are only ever linked into the addon. Excluding them by name
+ * keeps the layer builds free of a Node dependency. */
+const NAPI_SOURCES = ["napi.c", "napi_ops.c"];
+
 const sources = (dir) => {
   const p = join(HERE, dir);
   if (!existsSync(p)) return [];
   return readdirSync(p)
+    .filter((f) => !NAPI_SOURCES.includes(f))
     .filter((f) => f.endsWith(".c"))
     .map((f) => join(p, f));
 };
@@ -106,6 +112,29 @@ let failed = 0;
  * static in another file under a different name, and nothing noticed because
  * nothing built it. A tool that does not compile is not a tool.
  */
+/*
+ * The addon: the whole stack plus the N-API bindings, as one shared object.
+ *
+ * Built last because it depends on every layer, and separately from the layer
+ * libraries because it is the only thing that needs Node's headers -- keeping
+ * that dependency at the boundary rather than letting it reach down into the
+ * kernels.
+ */
+function buildAddon() {
+  const nodeDir = join(process.execPath, "..", "..", "include", "node");
+  if (!existsSync(nodeDir)) {
+    console.log("  addon: skipped (no node headers)");
+    return;
+  }
+  const dir = join(HERE, "helios");
+  const out = join(HERE, "helios_native.node");
+  const libs = LAYERS.flatMap(sources);
+  execFileSync("gcc", ["-std=gnu11", "-O2", "-fPIC", "-shared", "-o", out,
+                       ...NAPI_SOURCES.map((f) => join(dir, f)), ...libs,
+                       `-I${nodeDir}`, "-lm"], { stdio: "inherit" });
+  console.log(`  addon: ${out}`);
+}
+
 function buildTools() {
   const dir = join(HERE, "tools");
   const srcs = readdirSync(dir).filter((f) => f.endsWith(".c"));
@@ -157,6 +186,7 @@ if (ran === 0) {
   process.exit(1);
 }
 buildTools();
+buildAddon();
 
 console.log(`\n${ran} layer suite(s), ${failed} failing`);
 process.exit(failed === 0 ? 0 : 1);
