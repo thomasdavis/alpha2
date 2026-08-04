@@ -1,39 +1,10 @@
 /*
  * elementwise.c — see elementwise.h.
  */
-#include "elementwise.h"
+#include "ew_layout.h"
 
 /* Registers, named so the sequence below reads as intent rather than numbers. */
-enum {
-  R_INDEX = 0,
-  R_IN_ADDR = 2,  /* R2:R3 */
-  R_TID = 3,      /* consumed by the index IMAD, then reused as address high */
-  R_VALUE = 4,
-  R_ESIZE = 5,
-  R_OUT_ADDR = 6, /* R6:R7 */
-  R_RESULT = 8,
-  R_B_ADDR = 10,  /* R10:R11 — the second input, for binary operations */
-  R_B_VALUE = 12,
-  R_SCALAR = 13,
-  R_TEMP = 14,
-  R_SCALAR2 = 15,
-  R_TEMP2 = 16,
-  R_SCALAR3 = 17,
-  R_SCALAR4 = 18,
-  R_TEMP3 = 19,
-};
 
-/* Bytes per element. Everything here is 32-bit. */
-#define ELEMENT_BYTES 4
-
-/* Scoreboard barriers. Both S2Rs share barrier 0 on purpose: the scoreboard
- * counts outstanding writes, so one barrier tracking two producers is exactly
- * what it is for, and ptxas does the same. Splitting them across two barriers
- * with a combined wait was tried and faults. */
-#define BAR_INDEX 0
-#define BAR_LOAD 1
-#define BAR_MUFU 2
-#define BAR_LOAD_B 3
 
 /* Does the operation read in[i]? PR_EW_INDEX does not, and emitting a load it
  * never uses would make it a worse probe. */
@@ -47,216 +18,9 @@ static int reads_b(pr_ew_op op) {
          op == PR_EW_DIV;
 }
 
-/* Does it read the scalar from the constant bank? */
-static int reads_scalar(pr_ew_op op) {
-  return op == PR_EW_SCALE || op == PR_EW_EXP || op == PR_EW_LOG ||
-         op == PR_EW_FILL || op == PR_EW_CLAMP || op == PR_EW_SILU ||
-         op == PR_EW_GELU || op == PR_EW_SOFTCAP;
-}
-static int reads_scalar2(pr_ew_op op) {
-  return op == PR_EW_CLAMP || op == PR_EW_SILU || op == PR_EW_GELU ||
-         op == PR_EW_SOFTCAP;
-}
-/* NOTE the three predicates below must agree with what each case actually
- * reads. gelu and softCap were added to reads_scalar2 and reads_scalar34 but
- * not to reads_scalar, so their first constant was never loaded and the
- * register held whatever the last kernel left there -- a wrong answer with no
- * fault and no obvious cause. Adding an operation means checking all three. */
-static int reads_scalar34(pr_ew_op op) {
-  return op == PR_EW_GELU || op == PR_EW_SOFTCAP;
-}
-
 /* ADD_INPLACE reads the OUTPUT array as well as writing it, which is the whole
  * point of it -- an accumulate rather than an assign. */
 static int reads_output(pr_ew_op op) { return op == PR_EW_ADD_INPLACE; }
-
-/* The operation itself: R_RESULT = f(R_VALUE, R_INDEX). Every case here waits
- * on the load barrier when it consumes the loaded value. */
-static unsigned emit_op(hp_word *p, pr_ew_op op) {
-  const hp_control after_load = hp_ctrl_wait(BAR_LOAD);
-  const hp_control both_loads =
-      hp_ctrl_waitmask((1u << BAR_LOAD) | (1u << BAR_LOAD_B));
-  switch (op) {
-    case PR_EW_COPY:
-      p[0] = hp_iadd3_imm(R_RESULT, R_VALUE, 0, after_load);
-      return 1;
-    case PR_EW_ADD_INDEX:
-      p[0] = hp_iadd3_reg(R_RESULT, R_VALUE, R_INDEX, after_load);
-      return 1;
-    case PR_EW_ADD_CONST:
-      p[0] = hp_iadd3_imm(R_RESULT, R_VALUE, 0x1234, after_load);
-      return 1;
-    case PR_EW_FADD:
-      p[0] = hp_fadd(R_RESULT, R_VALUE, R_VALUE, after_load);
-      return 1;
-    case PR_EW_FMUL:
-      p[0] = hp_fmul(R_RESULT, R_VALUE, R_VALUE, after_load);
-      return 1;
-    case PR_EW_FFMA:
-      p[0] = hp_ffma(R_RESULT, R_VALUE, R_VALUE, R_VALUE, after_load);
-      return 1;
-    case PR_EW_FNEG:
-      p[0] = hp_fneg(R_RESULT, R_VALUE, after_load);
-      return 1;
-    /*
-     * MUFU both waits and sets: it consumes the loaded value, so it must wait
-     * for the load, and its own result is variable-latency, so the store must
-     * wait for it. Setting a barrier without waiting on the load reads a stale
-     * register -- and MUFU.EX2 of a stale zero returns 1.0, which looks like a
-     * plausible answer rather than a bug.
-     */
-    case PR_EW_EXP2:
-      p[0] = hp_mufu(R_RESULT, R_VALUE, HP_MUFU_EX2,
-                       hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      return 1;
-    case PR_EW_LOG2:
-      p[0] = hp_mufu(R_RESULT, R_VALUE, HP_MUFU_LG2,
-                       hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      return 1;
-    case PR_EW_RCP:
-      p[0] = hp_mufu(R_RESULT, R_VALUE, HP_MUFU_RCP,
-                       hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      return 1;
-    case PR_EW_RSQ:
-      p[0] = hp_mufu(R_RESULT, R_VALUE, HP_MUFU_RSQ,
-                       hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      return 1;
-    /* RZ reads as +0.0 in a float operand, so max(x, RZ) is relu with no
-     * constant to materialise. */
-    case PR_EW_RELU:
-      p[0] = hp_fmnmx(R_RESULT, R_VALUE, HP_RZ, 1, after_load);
-      return 1;
-    case PR_EW_INDEX:
-      p[0] = hp_iadd3_imm(R_RESULT, R_INDEX, 0, hp_ctrl_safe());
-      return 1;
-
-    /* Binary. Both loads are outstanding, so wait on both barriers. */
-    case PR_EW_ADD:
-      p[0] = hp_fadd(R_RESULT, R_VALUE, R_B_VALUE, both_loads);
-      return 1;
-    case PR_EW_MUL:
-      p[0] = hp_fmul(R_RESULT, R_VALUE, R_B_VALUE, both_loads);
-      return 1;
-    /* Subtraction has no opcode: negate then add. Two instructions is the
-     * honest cost, and cheaper than pretending FADD has a negate modifier we
-     * have not verified. */
-    case PR_EW_SUB:
-      p[0] = hp_fneg(R_TEMP, R_B_VALUE, both_loads);
-      p[1] = hp_fadd(R_RESULT, R_VALUE, R_TEMP, hp_ctrl_safe());
-      return 2;
-    /* Division likewise: the hardware offers a reciprocal, not a divide. */
-    case PR_EW_DIV:
-      p[0] = hp_mufu(R_TEMP, R_B_VALUE, HP_MUFU_RCP,
-                     hp_ctrl_wait_setbar(BAR_LOAD_B, BAR_MUFU));
-      p[1] = hp_fmul(R_RESULT, R_VALUE, R_TEMP, hp_ctrl_wait(BAR_MUFU));
-      return 2;
-
-    case PR_EW_SCALE:
-      p[0] = hp_fmul(R_RESULT, R_VALUE, R_SCALAR, after_load);
-      return 1;
-
-    case PR_EW_FILL:
-      p[0] = hp_iadd3_imm(R_RESULT, R_SCALAR, 0, hp_ctrl_safe());
-      return 1;
-
-    /* clamp(a, lo, hi) = min(max(a, lo), hi). Two FMNMX, opposite senses. */
-    case PR_EW_CLAMP:
-      p[0] = hp_fmnmx(R_TEMP, R_VALUE, R_SCALAR, 1, after_load);
-      p[1] = hp_fmnmx(R_RESULT, R_TEMP, R_SCALAR2, 0, hp_ctrl_safe());
-      return 2;
-
-    case PR_EW_ADD_INPLACE:
-      p[0] = hp_fadd(R_RESULT, R_VALUE, R_B_VALUE, both_loads);
-      return 1;
-
-    /*
-     * silu(x) = x / (1 + exp(-x)), built from what the hardware has:
-     *   t  = -x * log2(e)      negate, then scale into exp2's base
-     *   t  = exp2(t)           == exp(-x)
-     *   t  = t + 1
-     *   t  = 1/t               == sigmoid(x)
-     *   r  = x * t
-     * Five instructions for one activation, which is what it costs when the
-     * only transcendental is exp2 and the only divide is a reciprocal.
-     */
-    /*
-     * gelu(x) = x * (1 - 1/(exp2(s1*(x + s0*x^3)) + 1))
-     *
-     * FFMA does the cubic term in one instruction: s0*x^3 + x. The rest is the
-     * same shape as silu, which is not a coincidence -- both are x times a
-     * sigmoid of something, and both cost a reciprocal.
-     */
-    case PR_EW_GELU:
-      p[0] = hp_fmul(R_TEMP, R_VALUE, R_VALUE, after_load);
-      p[1] = hp_fmul(R_TEMP, R_TEMP, R_VALUE, hp_ctrl_safe());
-      p[2] = hp_ffma(R_TEMP, R_TEMP, R_SCALAR, R_VALUE, hp_ctrl_safe());
-      p[3] = hp_fmul(R_TEMP, R_TEMP, R_SCALAR2, hp_ctrl_safe());
-      p[4] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
-      p[5] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR3, hp_ctrl_wait(BAR_MUFU));
-      p[6] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
-      p[7] = hp_fneg(R_TEMP3, R_TEMP2, hp_ctrl_wait(BAR_MUFU));
-      p[8] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
-      p[9] = hp_fmul(R_RESULT, R_VALUE, R_TEMP3, hp_ctrl_safe());
-      return 10;
-
-    /*
-     * softCap(x) = c * tanh(x/c) = c * (1 - 2/(exp2(s0*x) + 1))
-     * with s0 = 2*log2(e)/c, s1 = 1, s2 = c, s3 = 2.
-     */
-    case PR_EW_SOFTCAP:
-      p[0] = hp_fmul(R_TEMP, R_VALUE, R_SCALAR, after_load);
-      p[1] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
-      p[2] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR2, hp_ctrl_wait(BAR_MUFU));
-      p[3] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
-      p[4] = hp_fmul(R_TEMP2, R_TEMP2, R_SCALAR4, hp_ctrl_wait(BAR_MUFU));
-      p[5] = hp_fneg(R_TEMP3, R_TEMP2, hp_ctrl_safe());
-      p[6] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR2, hp_ctrl_safe());
-      p[7] = hp_fmul(R_RESULT, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
-      return 8;
-
-    case PR_EW_SILU:
-      p[0] = hp_fneg(R_TEMP, R_VALUE, after_load);
-      p[1] = hp_fmul(R_TEMP, R_TEMP, R_SCALAR, hp_ctrl_safe());
-      p[2] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
-      p[3] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR2, hp_ctrl_wait(BAR_MUFU));
-      p[4] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
-      p[5] = hp_fmul(R_RESULT, R_VALUE, R_TEMP2, hp_ctrl_wait(BAR_MUFU));
-      return 6;
-
-    /* exp(x) = exp2(x * log2 e), with the constant coming from the bank rather
-     * than being materialised as an immediate — which is how a real kernel
-     * receives a scalar, and avoids an FMUL-immediate encoding we have not
-     * verified. */
-    case PR_EW_EXP:
-      p[0] = hp_fmul(R_TEMP, R_VALUE, R_SCALAR, after_load);
-      p[1] = hp_mufu(R_RESULT, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
-      return 2;
-    case PR_EW_LOG:
-      p[0] = hp_mufu(R_TEMP, R_VALUE, HP_MUFU_LG2,
-                     hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      p[1] = hp_fmul(R_RESULT, R_TEMP, R_SCALAR, hp_ctrl_wait(BAR_MUFU));
-      return 2;
-    /* sqrt(x) = 1 / rsqrt(x). Two dependent MUFUs, so the second waits on the
-     * first and the store waits on the second. */
-    case PR_EW_SQRT:
-      p[0] = hp_mufu(R_TEMP, R_VALUE, HP_MUFU_RSQ,
-                     hp_ctrl_wait_setbar(BAR_LOAD, BAR_MUFU));
-      p[1] = hp_mufu(R_RESULT, R_TEMP, HP_MUFU_RCP,
-                     hp_ctrl_wait_setbar(BAR_MUFU, BAR_MUFU));
-      return 2;
-    case PR_EW_COUNT:
-      break;
-  }
-  return 0;
-}
-
-/* Does the operation leave its result under a scoreboard barrier? */
-/* Does the result land under a scoreboard barrier the store must wait on? True
- * whenever the LAST instruction of the operation is a MUFU. */
-static int op_sets_barrier(pr_ew_op op) {
-  return op == PR_EW_EXP2 || op == PR_EW_LOG2 || op == PR_EW_RCP ||
-         op == PR_EW_RSQ || op == PR_EW_EXP || op == PR_EW_SQRT;
-}
 
 unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
   unsigned n = 0;
@@ -290,19 +54,16 @@ unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
     p[n++] = hp_ldg(R_B_VALUE, R_B_ADDR, 0, hp_ctrl_setbar(BAR_LOAD_B));
   }
 
-  if (reads_scalar(op))
-    p[n++] = hp_mov_const(R_SCALAR, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
-  if (reads_scalar2(op))
-    p[n++] = hp_mov_const(R_SCALAR2, 0, HERMES_CBUF0_SCALAR2, hp_ctrl_safe());
-  if (reads_scalar34(op)) {
-    p[n++] = hp_mov_const(R_SCALAR3, 0, HERMES_CBUF0_SCALAR_N(2), hp_ctrl_safe());
-    p[n++] = hp_mov_const(R_SCALAR4, 0, HERMES_CBUF0_SCALAR_N(3), hp_ctrl_safe());
-  }
+  /* Slot i of the bank always lands in SCALAR_REG[i], so the kernel body can
+   * name them positionally and the loader never has to know which op it is. */
+  for (unsigned s = 0; s < pr_ew_scalars_read(op); s++)
+    p[n++] =
+        hp_mov_const(SCALAR_REG[s], 0, HERMES_CBUF0_SCALAR_N(s), hp_ctrl_safe());
 
-  n += emit_op(&p[n], op);
+  n += pr_ew_emit_op(&p[n], op);
 
   p[n++] = hp_stg(R_OUT_ADDR, R_RESULT, 0,
-                  op_sets_barrier(op) ? hp_ctrl_wait(BAR_MUFU) : hp_ctrl_safe());
+                  pr_ew_sets_barrier(op) ? hp_ctrl_wait(BAR_MUFU) : hp_ctrl_safe());
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }
