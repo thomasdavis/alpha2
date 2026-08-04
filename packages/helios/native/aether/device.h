@@ -38,7 +38,8 @@
 typedef struct {
   int ctlFd;  /* /dev/nvidiactl — the control channel, all RM escapes go here */
   int gpuFd;  /* /dev/nvidiaN  — needed for mapping this GPU's memory */
-  int index;     /* which GPU */
+  int index;     /* which VALID card, counted from zero */
+  int minor;     /* the N in /dev/nvidiaN — NOT necessarily equal to index */
   int attachFd;  /* fresh control fd the GPU is attached to; must stay open */
   NvU32 gpuId;   /* from CARD_INFO; the value ATTACH_GPUS_TO_FD wants */
 
@@ -48,6 +49,19 @@ typedef struct {
   NvHandle vaspace;
 
   NvU32 nextHandle; /* our own handle allocator */
+
+  /*
+   * Where open() gave up, and what RM said about it.
+   *
+   * WHY a device carries a failure string: aether_device_open returns -1 for
+   * every kind of failure, and callers turned that into "no GPU present" — so a
+   * pod with a GPU at an unexpected minor number made the hardware tests SKIP
+   * instead of fail, and they stayed green while verifying nothing for a whole
+   * session. A failed open must be able to say which step failed, or the layer
+   * above cannot tell "absent" from "broken".
+   */
+  const char *failStage;
+  int failStatus; /* NV_ERR_* if RM rejected something, else errno */
 } aether_device;
 
 /*

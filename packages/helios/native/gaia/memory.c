@@ -279,11 +279,39 @@ int gaia_map_host(aether_device *d, gaia_buffer *b) {
    * descriptor". That single mistake made host-visible system memory look
    * impossible for four rounds of probing.
    */
+  /*
+   * AND THE FLAGS ARE NOT OPTIONAL EITHER.
+   *
+   * Left at zero, NVOS33_FLAGS_CACHING_TYPE (bits 25:23) is 0 = CACHED, so the
+   * host mapping is ordinary write-back memory. Everything then LOOKS correct
+   * from userspace -- a store followed by a load returns what was stored -- but
+   * the value is sitting in a CPU cache line and the GPU never sees it. That is
+   * the perfect crime for a doorbell protocol: GP_PUT reads back as the value we
+   * wrote, the GPU's fetch engine reads the stale memory behind it, GP_GET never
+   * advances, and no error is raised anywhere because nothing has gone wrong as
+   * far as either side can tell.
+   *
+   * The values are what a working CUDA process passes, observed with the ioctl
+   * interposer in tools/rm_spy.c and decoded against nvos.h:
+   *
+   *   sysmem  0x030c8000  MAPPING=DIRECT(1)     CACHING=DEFAULT(6)
+   *   vidmem  0x010d0000  MAPPING=REFLECTED(2)  CACHING=WRITECOMBINED(2)
+   *
+   * (Both also set MAP_FIXED and RESERVE_ON_UNMAP, bits 18 and 19. Those belong
+   * to CUDA's own VA-reservation scheme -- it supplies the address -- and we do
+   * not, so we leave them clear and let mmap() choose.)
+   *
+   * WRITECOMBINED rather than UNCACHED for video memory is the interesting
+   * choice: write-combining still buffers stores, so the sfence in hermes_ring
+   * is doing real work rather than being decorative.
+   */
   char path[32];
   if (b->location == GAIA_SYSMEM) {
     snprintf(path, sizeof path, "/dev/nvidiactl");
   } else {
-    snprintf(path, sizeof path, "/dev/nvidia%d", d->index);
+    /* minor, not index: the two differ whenever the process cannot see every
+     * card the driver knows about, which is the normal case in a container. */
+    snprintf(path, sizeof path, "/dev/nvidia%d", d->minor);
   }
   int fd = open(path, O_RDWR | O_CLOEXEC);
   if (fd < 0) return -1;
@@ -301,6 +329,9 @@ int gaia_map_host(aether_device *d, gaia_buffer *b) {
   w.params.hMemory = b->handle;
   w.params.offset = 0;
   w.params.length = b->size;
+  w.params.flags = b->mapFlags ? b->mapFlags
+                   : b->location == GAIA_SYSMEM ? GAIA_MAP_FLAGS_SYSMEM
+                                                : GAIA_MAP_FLAGS_VIDMEM;
   w.fd = fd;
 
   int rc = aether_ioctl(d->ctlFd, NV_ESC_RM_MAP_MEMORY, &w, sizeof w);

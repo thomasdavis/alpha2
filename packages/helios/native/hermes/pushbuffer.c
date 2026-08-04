@@ -53,10 +53,25 @@ void hermes_semaphore_release(hermes_channel *c, NvU64 gpuAddr, NvU32 payload) {
  * submission means writing that token to a doorbell register inside a USERMODE
  * object (AMPERE_USERMODE_A, 0xc561) at NOTIFY_CHANNEL_PENDING (0x90).
  *
- * All of that is verified working: the usermode object allocates, the 64 KiB
- * doorbell page maps, BIND and GPFIFO_SCHEDULE both return NV_OK, and the token
- * comes back as 0x4. What is NOT yet working is the GPU actually consuming the
- * entry -- see the note in hermes_submit.
+ * The doorbell offset is not a guess either. The usermode object maps the
+ * register window NV_VIRTUAL_FUNCTION, which swref/published/turing/tu102/dev_vm.h
+ * declares as 0x0003FFFF:0x00030000 -- 64 KiB based at 0x30000. Within it:
+ *
+ *   NV_VIRTUAL_FUNCTION_TIME_0     0x30080   -> +0x80
+ *   NV_VIRTUAL_FUNCTION_DOORBELL   0x30090   -> +0x90
+ *
+ * Reading a ticking GPU clock at +0x80 is therefore an independent confirmation
+ * that the window is mapped where we think it is, which is why that probe was
+ * worth running before trusting +0x90.
+ *
+ * The token's own layout, from dev_ctrl.h and kfifoGenerateWorkSubmitTokenHal_GA100:
+ *
+ *   NV_CTRL_VF_DOORBELL_VECTOR       11:0    the channel id
+ *   NV_CTRL_VF_DOORBELL_RUNLIST_ID  22:16    the runlist the channel is on
+ *
+ * so token 0x4 means channel 4 on runlist 0. RM refuses to generate a token at
+ * all unless the channel is already assigned to a runlist, which makes a
+ * successful GET_WORK_SUBMIT_TOKEN proof that the channel is schedulable.
  */
 int hermes_submit(aether_device *d, hermes_channel *c) {
   (void)d;
@@ -79,41 +94,18 @@ int hermes_submit(aether_device *d, hermes_channel *c) {
    * we have not finished writing. */
   __asm__ __volatile__("sfence" ::: "memory");
 
-  /*
-   * NOT YET WORKING, and this is where it stops.
-   *
-   * Ringing the doorbell (see hermes_ring) with a valid token does not cause
-   * the GPU to consume the entry. The semaphore release never lands. Everything
-   * observable is correct:
-   *
-   *   pushbuffer  [0] 0x20040004  header: INC_METHOD, count 4, SEMAPHOREA>>2
-   *               [1] 0x00000000  address hi
-   *               [2] 0x00220000  address lo
-   *               [3] 0xcafebabe  payload
-   *               [4] 0x00000002  OPERATION_RELEASE
-   *   gpfifo[0]   0x00210000      pushbuffer address
-   *   gpfifo[1]   0x00001400      length 5 dwords << 10
-   *   token       0x4
-   *
-   * Ruled out by probe: GP_PUT is not the problem -- writing put to EVERY
-   * 4-byte offset across the whole 512-byte USERD, ringing the doorbell after
-   * each, triggers nothing.
-   *
-   * The most likely remaining cause is that we are flying blind. hObjectError
-   * is left zero, so no error notifier is attached, and the container has no
-   * dmesg, so a channel fault produces no visible signal anywhere. The next
-   * step is to attach an error notifier and read it, rather than to guess at
-   * more offsets -- exactly the "read WHICH error came back" method that
-   * unblocked every previous layer, applied to a path that currently returns
-   * no error at all.
-   */
+  /* Submission itself is hermes_ring: GP_PUT, then the doorbell. Kept separate
+   * so a caller can build several entries and ring once. */
   return 0;
 }
 
 void hermes_ring(hermes_channel *c, volatile NvU32 *userd, volatile NvU32 *doorbell,
                  NvU32 token) {
-  /* USERD is 512 bytes: mapping it at 4096 returns NV_ERR_INVALID_LIMIT, at
-   * 512 or below it returns NV_OK. */
+  /* `userd` is the base of the shared 4 KiB page; our channel's 512-byte block
+   * starts at userdSlot. Writing at the page base addresses whichever channel
+   * happens to occupy slot 0 -- which is not an error, just someone else's
+   * doorbell. */
+  userd += c->userdSlot / 4;
   userd[HERMES_USERD_GP_PUT / 4] = c->put;
   __asm__ __volatile__("sfence" ::: "memory");
   doorbell[HERMES_DOORBELL_OFFSET / 4] = token;

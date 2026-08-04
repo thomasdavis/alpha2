@@ -28,9 +28,11 @@
 /* nvtypes.h. NvHandle is an opaque 32-bit RM object id; NvP64 is always 64 bits
  * wide even on 32-bit hosts, which is why it is not a plain pointer. */
 typedef uint32_t NvHandle;
+typedef uint8_t NvU8;
 typedef uint32_t NvU32;
 typedef uint64_t NvU64;
 typedef int32_t NvV32;
+typedef int32_t NvS32;
 typedef uint64_t NvP64;
 
 /* --- ioctl escape codes -------------------------------------------------- */
@@ -94,6 +96,10 @@ typedef uint64_t NvP64;
  * NV_ERR_INVALID_ARGUMENT. Match structs to the header they were declared in. */
 #define NV01_MEMORY_VIRTUAL 0x00000070    /* cl0070.h — a reserved VA range */
 #define FERMI_VASPACE_A 0x000090f1        /* cl90f1.h — a GPU address space */
+
+/* Control commands issued on the root client, before any device exists.
+ * ctrl/ctrl0000/ctrl0000gpu.h */
+#define NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2 0x205
 #define AMPERE_CHANNEL_GPFIFO_A 0x0000c56f /* clc56f.h — the submission channel */
 #define AMPERE_COMPUTE_B 0x0000c7c0        /* clc7c0.h — GA10x compute engine */
 #define AMPERE_DMA_COPY_A 0x0000c6b5       /* clc6b5.h — copy engine */

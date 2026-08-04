@@ -54,29 +54,21 @@ void hermes_semaphore_release(hermes_channel *c, NvU64 gpuAddr, NvU32 payload);
 /* Close the segment, append the GPFIFO entry, and advance put. */
 int hermes_submit(aether_device *d, hermes_channel *c);
 
-/* USERD is 512 bytes (mapping it larger returns NV_ERR_INVALID_LIMIT).
- *
- * It also sits at a NON-ZERO OFFSET inside its page: RM returns
- * pLinear = 0xbfef0800 on this GPU, a BAR address whose low bits are 0x800.
- * Whether mmap() hands back the page base (so USERD is at +0x800) or the object
- * itself (so it is at +0) is UNRESOLVED -- both were tried and neither causes
- * the GPU to fetch. Recorded because the offset is real and any future attempt
- * has to decide which it is. */
-#define HERMES_USERD_BYTES 512
-#define HERMES_USERD_GP_PUT 0x40
 
-/* AMPERE_USERMODE_A (class 0xc561) is a 64 KiB register page; the channel
- * doorbell is NVC361_NOTIFY_CHANNEL_PENDING within it. */
-#define HERMES_USERMODE_CLASS 0xc561
-#define HERMES_USERMODE_BYTES 65536
+/* The doorbell's offset inside the usermode window. NV_VIRTUAL_FUNCTION is
+ * based at 0x30000 and NV_VIRTUAL_FUNCTION_DOORBELL is 0x30090 (dev_vm.h), so
+ * the doorbell is +0x90. Independently confirmed on hardware by reading the GPU
+ * clock at +0x80 (NV_VIRTUAL_FUNCTION_TIME_0 = 0x30080) and watching it tick,
+ * which proves the window is based where we assume. */
 #define HERMES_DOORBELL_OFFSET 0x90
 
 /* Volta+ submission: bump GP_PUT, then write the channel's work-submit token to
  * the doorbell. The token comes from NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN
  * (0xc36f0108).
  *
- * NOTE: this sequence is implemented and every component of it verifies, but
- * the GPU does not yet consume the submitted entry. See hermes_submit. */
+ * `userd` is the base of the shared USERD PAGE, not this channel's block --
+ * hermes_ring applies the slot offset itself. Callers that read GP_GET back
+ * must apply it too. */
 void hermes_ring(hermes_channel *c, volatile NvU32 *userd, volatile NvU32 *doorbell,
                  NvU32 token);
 
