@@ -12,6 +12,8 @@ output_root="${1:-/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-c
 
 steps="${STEPS:-3}"
 batch="${BATCH:-10}"
+eval_interval="${EVAL_INTERVAL:-0}"
+eval_iters="${EVAL_ITERS:-1}"
 control_shapes="${CONTROL_SHAPES:-}"
 mkdir -p "$output_root"
 cd "$repo_root"
@@ -111,8 +113,8 @@ run_row() {
       --tieEmbeddings=true --backend=helios --gpuProfile=none --optim=adamw \
       --batch="$batch" --accumSteps=1 --steps="$steps" --lr=0.002 --lrMin=0.0002 \
       --warmupIters=790 --beta1=0.9 --beta2=0.95 --eps=0.00000001 --weightDecay=0.1 \
-      --gradClip=1.0 --spikeThreshold=50 --evalInterval=0 --checkpointInterval=1000000 \
-      --evalIters=1 --sampleInterval=0 --logEvery=1 --seed=42 --strictPlanning=false \
+      --gradClip=1.0 --spikeThreshold=50 --evalInterval="$eval_interval" --checkpointInterval=1000000 \
+      --evalIters="$eval_iters" --sampleInterval=0 --logEvery=1 --seed=42 --strictPlanning=false \
       --remote=false --fp16=false --minGpuSize=1 --no-fallback=true --packed=true \
       --symbio=false --postSamples=false --trace=true "${reclaim_args[@]}" \
       --runDir="$row_root" > "$row_root/console.log" 2>&1
