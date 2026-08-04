@@ -366,6 +366,43 @@ static void test_gpu_runs_our_machine_code(void) {
         }
         if (!ndiff) printf("        (none -- staged byte-identical)\n");
       }
+      /*
+       * Ask RM what the exception actually was.
+       *
+       * The error notifier gives one number -- 13, GR_EXCEPTION -- and the
+       * detail behind it normally reaches the kernel log, which a container
+       * cannot read. But RM keeps the robust-channel error records and will
+       * hand them over: RC_GET_ERROR_COUNT then RC_GET_ERROR_V2 per record.
+       * This is the difference between eliminating candidates blind and being
+       * told what is wrong.  (ctrl2080rc.h)
+       */
+      {
+        struct { NvU32 errorCount; } cnt;
+        memset(&cnt, 0, sizeof cnt);
+        int r = aether_control(&d, d.subdevice, 0x20802205, &cnt, sizeof cnt);
+        printf("      RC_GET_ERROR_COUNT -> %s count=%u\n",
+               aether_status_name((unsigned)r), cnt.errorCount);
+
+        static struct {
+          NvU32 whichBuffer;
+          NvU32 outputRecordSize;
+          NvU8 recordBuffer[0x2000];
+        } rec;
+        for (NvU32 i = 0; i < cnt.errorCount && i < 4; i++) {
+          memset(&rec, 0, sizeof rec);
+          rec.whichBuffer = i;
+          r = aether_control(&d, d.subdevice, 0x20802213, &rec, sizeof rec);
+          printf("      RC record %u: %s size=%u\n", i,
+                 aether_status_name((unsigned)r), rec.outputRecordSize);
+          const NvU32 *w = (const NvU32 *)rec.recordBuffer;
+          const NvU32 n = rec.outputRecordSize / 4;
+          for (NvU32 k = 0; k < n && k < 24; k += 8) {
+            printf("        +0x%02x ", k * 4);
+            for (NvU32 q = 0; q < 8 && k + q < n; q++) printf("%08x ", w[k + q]);
+            printf("\n");
+          }
+        }
+      }
       printf("      errnotif: %08x %08x %08x %08x\n",
              ((NvU32 *)c.errnotif.hostPtr)[0], ((NvU32 *)c.errnotif.hostPtr)[1],
              ((NvU32 *)c.errnotif.hostPtr)[2], ((NvU32 *)c.errnotif.hostPtr)[3]);
