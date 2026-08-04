@@ -111,6 +111,27 @@ static const pr_kernel KERNELS[] = {
     /* The parameter is BOTH input and output, so it is seeded into the output
      * buffer rather than filled into an input one. Slot 1 is the gradient,
      * slot 2 is m -- which fill writes as a pair -- and slot 3 is v. */
+    /* One block of PR_N threads: the RMS reduction is block-local, so the row
+     * has to fit in a block. A longer row needs a two-level reduction, which
+     * is a different kernel and not a parameter of this one. */
+    K(.name = "residual + rmsNorm", .build = bld_residual_rms, .blockX = PR_N,
+      .gridX = 1, .fill = pr_fill_residual, .fillC = pr_fill_res_weight,
+      .check = chk_residual_rms, .scalar = 1.0f / (float)PR_N,
+      .scalar2 = PR_RES_EPS, .sharedBytes = PR_N * 4),
+    K(.name = "residual + dropout add", .build = bld_residual_dropout,
+      .blockX = PR_N, .gridX = 1, .fill = pr_fill_residual,
+      .fillC = pr_fill_res_mask, .check = chk_residual_dropout,
+      .scalar = PR_DROP_SCALE),
+
+    /* Half the threads, because each handles a pair. The launch is where that
+     * is said; the kernel cannot see how many elements exist. */
+    K(.name = "cast f32 to f16", .build = bld_cast_to_f16,
+      .blockX = PR_BLOCK / 2, .gridX = PR_GRID, .fill = pr_fill_cast,
+      .check = chk_cast_to_f16, .elementsPerThread = 2),
+    K(.name = "cast f16 to f32", .build = bld_cast_to_f32,
+      .blockX = PR_BLOCK / 2, .gridX = PR_GRID, .fill = pr_fill_packed,
+      .check = chk_cast_to_f32, .elementsPerThread = 2),
+
     K(.name = "adamw step", .build = bld_adamw, .fill = pr_fill_adam,
       .fillC = pr_fill_adam_v, .seed = pr_seed_adam, .check = chk_adamw,
       .scalar = 1.0f - PR_ADAM_B1, .scalar2 = 1.0f - PR_ADAM_B2,

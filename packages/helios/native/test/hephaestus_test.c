@@ -246,6 +246,31 @@ static void test_mufu_functions(void) {
   HT_END();
 }
 
+/* ptxas: cvt.rn.f16x2.f32 -> F2FP.PACK_AB R0, R0, R3
+ *        cvt.f32.f16      -> HADD2.F32 R4, -RZ, R0.H0_H0 / R5, -RZ, R0.H1_H1 */
+#define REF_F2FP_LO 0x000000030000723eULL
+#define REF_F2FP_HI 0x000000ffULL
+#define REF_H2F_LO_LO 0x20000000ff047230ULL
+#define REF_H2F_HI_LO 0x30000000ff057230ULL
+#define REF_H2F_HI 0x00004100ULL
+
+static void test_half_conversion(void) {
+  HT_CASE("f16 pack and unpack match ptxas");
+  HT_EQ_U64(lo_of(hp_f2fp_pack(0, 0, 3, hp_ctrl_safe())), REF_F2FP_LO);
+  HT_EQ_U64(hi_of(hp_f2fp_pack(0, 0, 3, hp_ctrl_safe())), REF_F2FP_HI);
+
+  /* Both halves, because the selector is one bit and a kernel that read the
+   * wrong one returns the neighbouring element -- a plausible number in the
+   * wrong place, which is the failure this cannot afford to miss. */
+  HT_EQ_U64(lo_of(hp_half_to_float(4, 0, HP_HALF_LO, hp_ctrl_safe())),
+            REF_H2F_LO_LO);
+  HT_EQ_U64(lo_of(hp_half_to_float(5, 0, HP_HALF_HI, hp_ctrl_safe())),
+            REF_H2F_HI_LO);
+  HT_EQ_U64(hi_of(hp_half_to_float(4, 0, HP_HALF_LO, hp_ctrl_safe())),
+            REF_H2F_HI);
+  HT_END();
+}
+
 static void test_field_placement_primitives(void) {
   HT_CASE("hp_put places fields correctly, including across the 64-bit seam");
   hp_word w = {0, 0};
@@ -273,6 +298,7 @@ void ht_run(void) {
   test_control_flow();
   test_imad_immediate();
   test_mufu_functions();
+  test_half_conversion();
   test_field_placement_primitives();
   test_control_roundtrip();
   test_control_lives_above_bit_105();

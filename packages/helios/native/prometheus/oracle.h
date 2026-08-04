@@ -33,6 +33,16 @@ NvU32 pr_emb_id(unsigned i);
 void pr_fill_mask(volatile NvU32 *a, volatile NvU32 *mask);
 void pr_fill_adam(volatile NvU32 *grad, volatile NvU32 *m);
 void pr_fill_adam_v(volatile NvU32 *v);
+void pr_fill_residual(volatile NvU32 *x, volatile NvU32 *res);
+void pr_fill_res_weight(volatile NvU32 *w);
+void pr_fill_res_mask(volatile NvU32 *m);
+void pr_fill_cast(volatile NvU32 *a, volatile NvU32 *b);
+void pr_fill_packed(volatile NvU32 *a, volatile NvU32 *b);
+float pr_cast_in(unsigned i);
+float pr_res_x(unsigned i);
+float pr_res_r(unsigned i);
+float pr_res_w(unsigned i);
+float pr_res_mask(unsigned i);
 void pr_seed_adam(volatile NvU32 *param);
 float pr_adam_param(unsigned i);
 float pr_adam_grad(unsigned i);
@@ -102,6 +112,33 @@ char *pr_msg(void);
  * m + (1-b1)*(g-m) -- the same arithmetic in fewer instructions, and the
  * subtraction belongs on the host where it happens once.
  */
+/*
+ * Dropout scale, and the keep pattern.
+ *
+ * 0.25 is not 1/(1-p) for any p the test uses, and that is fine -- what matters
+ * is that it is neither 1 nor 0, so a kernel that ignored the scale entirely
+ * and one that zeroed everything both fail. A scale of 1.0 would hide the first.
+ */
+/*
+ * Half-precision conversion, from the IEEE 754 binary16 definition: sign bit,
+ * five exponent bits with a bias of 15, ten stored mantissa bits.
+ *
+ * Implemented here rather than taken from a library, and NOT from the kernel's
+ * instructions, because the definition is the oracle. Round-to-nearest-even is
+ * the mode F2FP encodes and therefore the mode this must implement -- a
+ * truncating reference would disagree on exactly the values that test whether
+ * the rounding mode was encoded at all.
+ */
+NvU32 pr_f32_to_f16_bits(float f);
+float pr_f16_bits_to_f32(NvU32 h);
+/* The round trip, which is what a cast kernel's output should equal. */
+float pr_half_round_trip(float f);
+
+#define PR_DROP_SCALE 0.25f
+
+/* RMS epsilon for the fused kernel, and the per-feature weight. */
+#define PR_RES_EPS 1e-5f
+
 #define PR_ADAM_B1 0.5f
 #define PR_ADAM_B2 0.25f
 #define PR_ADAM_LR 0.125f

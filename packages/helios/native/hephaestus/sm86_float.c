@@ -73,3 +73,29 @@ hp_word hp_fneg(unsigned dst, unsigned srcA, hp_control c) {
   hp_put(&w, 72, 8, 0x01); /* negate srcB (RZ), so the sum is just -Ra */
   return w;
 }
+
+hp_word hp_f2fp_pack(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
+  hp_word w = hp_base(HP_OP_F2FP, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, 24, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  /* 0xff at bits 64..71 is RZ in the third source slot, which this form does
+   * not use but still encodes. */
+  hp_put(&w, 64, 32, 0x000000ff);
+  return w;
+}
+
+hp_word hp_half_to_float(unsigned dst, unsigned src, unsigned half,
+                         hp_control c) {
+  hp_word w = hp_base(HP_OP_HADD2, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  /* srcA is RZ, negated by the fixed field below: adding negative zero is the
+   * identity, and the widening is the point. */
+  hp_put(&w, 24, 8, HP_RZ);
+  hp_put(&w, HP_F_SRCB, 8, src);
+  /* Bit 61 selects the broadcast form, bit 60 which half. */
+  hp_put(&w, 61, 1, 1);
+  hp_put(&w, 60, 1, half);
+  hp_put(&w, 64, 32, 0x00004100);
+  return w;
+}

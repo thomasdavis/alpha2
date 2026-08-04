@@ -146,3 +146,27 @@ unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
  * index as well as the thread index; a grid of one would let a broken ctaid
  * pass everything here.
  */
+
+unsigned bld_residual_rms(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_residual_rms(p, PR_N);
+}
+
+unsigned bld_residual_dropout(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_residual_dropout(p);
+}
+
+unsigned bld_cast_to_f16(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_cast_f32_to_f16(p);
+}
+
+unsigned bld_cast_to_f32(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_cast_f16_to_f32(p);
+}

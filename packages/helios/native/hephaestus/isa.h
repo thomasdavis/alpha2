@@ -98,6 +98,24 @@
 #define HP_OP_STG 0x986
 #define HP_OP_LDG 0x981
 #define HP_OP_EXIT 0x94d
+
+/*
+ * The half-precision pair.
+ *
+ * F2FP.PACK_AB converts two 32-bit floats into two 16-bit ones packed into a
+ * single register, and HADD2.F32 with a half selector converts one of them
+ * back. ptxas reaches for exactly these for cvt.rn.f16x2.f32 and cvt.f32.f16,
+ * which is why the cast kernels process TWO elements per thread: it keeps every
+ * memory access 32-bit and matches the shape the instructions were built for.
+ *
+ * HADD2 converting a half to a float looks like a strange choice and is the
+ * hardware's own: it adds the half to negative zero, which is the identity, and
+ * widens on the way out.
+ */
+#define HP_OP_F2FP 0x23e
+#define HP_OP_HADD2 0x230
+#define HP_HALF_LO 0
+#define HP_HALF_HI 1
 #define HP_OP_BRA 0x947
 #define HP_OP_NOP 0x918
 #define HP_OP_BAR 0xb1d

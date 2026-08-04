@@ -235,7 +235,12 @@ static void test_registry_is_wellformed(void) {
 
     /* The launch must cover every element a checker inspects, or the test
      * would be comparing against memory no thread ever wrote. */
-    HT_EQ_U64(k->blockX * k->gridX, PR_N);
+    /* Threads times elements-per-thread must cover the tensor exactly. Checking
+     * the PRODUCT rather than the thread count is what lets a kernel process a
+     * pair per thread without the check either failing or being weakened to an
+     * inequality that would stop catching a launch that covers too little. */
+    const NvU32 perThread = k->elementsPerThread ? k->elementsPerThread : 1u;
+    HT_EQ_U64(k->blockX * k->gridX * perThread, PR_N);
 
     /*
      * And the builder must fit the buffer the runner gives it.

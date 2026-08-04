@@ -88,6 +88,11 @@ typedef struct {
   /* Shared memory the kernel needs, in bytes. Declared in the QMD; a kernel
    * that reads or writes shared memory it did not ask for faults. */
   NvU32 sharedBytes;
+  /* How many elements each thread handles. Zero means one, so the thirty-odd
+   * kernels that handle exactly one do not have to say so. The cast kernels
+   * handle a pair, which is why the launch-size check multiplies by this rather
+   * than assuming threads and elements are the same count. */
+  NvU32 elementsPerThread;
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */

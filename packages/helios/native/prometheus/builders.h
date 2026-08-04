@@ -9,6 +9,7 @@
 #ifndef PROMETHEUS_BUILDERS_H
 #define PROMETHEUS_BUILDERS_H
 
+#include "cast.h"
 #include "elementwise.h"
 #include "oracle.h"
 #include "indexing.h"
@@ -18,6 +19,7 @@
 #include "normalize.h"
 #include "optimizer.h"
 #include "reduction.h"
+#include "residual.h"
 
 unsigned bld_adamw(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_branch_nop(hp_word *p, NvU64 out, NvU64 in);
@@ -61,5 +63,9 @@ unsigned bld_addinp(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_silu(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_gelu(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_softcap(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_residual_rms(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_residual_dropout(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cast_to_f16(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cast_to_f32(hp_word *p, NvU64 out, NvU64 in);
 
 #endif /* PROMETHEUS_BUILDERS_H */

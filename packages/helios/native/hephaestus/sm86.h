@@ -208,6 +208,16 @@ hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
 hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c);
 
 /* EXIT — ends the thread. */
+/*
+ * Pack two floats into one register as two halves: dst.H0 = srcA, dst.H1 = srcB.
+ * Rounds to nearest even, which is ptxas's cvt.rn and the only mode encoded.
+ */
+hp_word hp_f2fp_pack(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+
+/* Widen one half of `src` back to a float. `half` is HP_HALF_LO or _HI. */
+hp_word hp_half_to_float(unsigned dst, unsigned src, unsigned half,
+                         hp_control c);
+
 hp_word hp_exit(hp_control c);
 
 /* NOP */
