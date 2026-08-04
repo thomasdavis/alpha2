@@ -73,6 +73,19 @@ typedef struct {
    * which is how a real kernel receives a scalar. Last in the struct so the
    * registry table reads name, code, geometry, data, expectation. */
   float scalar, scalar2, scalar3, scalar4, scalar5, scalar6;
+  /*
+   * Scalar slots the kernel reads as raw 32-bit INTEGERS rather than floats.
+   * A non-zero entry here overrides the float of the same index.
+   *
+   * The constant bank is untyped -- it is 4 KiB of words -- so this is not a
+   * second mechanism, only a second way of spelling the same one. It exists
+   * because passing a seed through a float would leave the compiler free to
+   * canonicalise a bit pattern that happens to be a signalling NaN, and a
+   * random-number seed is exactly the kind of value that eventually is one.
+   * Zero means "not set", which is unambiguous: a raw zero and a float zero are
+   * the same word.
+   */
+  NvU32 rawScalar[HERMES_CBUF0_SCALAR_COUNT];
 
   /* Seed the OUTPUT before launch, for kernels that read what they write.
    * Accumulate-style operations are only meaningfully tested against a known
@@ -93,6 +106,17 @@ typedef struct {
    * handle a pair, which is why the launch-size check multiplies by this rather
    * than assuming threads and elements are the same count. */
   NvU32 elementsPerThread;
+  /*
+   * How many elements the launch is expected to span. Zero means PR_N.
+   *
+   * Not the same as the output size, and the difference is worth naming. Cross
+   * entropy launches one thread per LOGIT and writes one loss per row, so its
+   * work domain is the logits; slice launches one thread per output element and
+   * reads from a larger source, so its work domain is the output. What the
+   * check needs is the domain the launch is meant to cover, which only the
+   * kernel knows.
+   */
+  NvU32 workElements;
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */

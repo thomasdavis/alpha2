@@ -10,6 +10,8 @@
 #define PROMETHEUS_BUILDERS_H
 
 #include "cast.h"
+#include "crossentropy.h"
+#include "dropout.h"
 #include "elementwise.h"
 #include "oracle.h"
 #include "indexing.h"
@@ -67,5 +69,8 @@ unsigned bld_residual_rms(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_residual_dropout(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_cast_to_f16(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_cast_to_f32(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_dropout(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cross_entropy(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_slice(hp_word *p, NvU64 out, NvU64 in);
 
 #endif /* PROMETHEUS_BUILDERS_H */

@@ -117,7 +117,8 @@ static void write_params(pr_buffers *b, NvU32 blockX, const pr_kernel *k) {
   const float s[HERMES_CBUF0_SCALAR_COUNT] = {
       k->scalar, k->scalar2, k->scalar3, k->scalar4, k->scalar5, k->scalar6};
   for (unsigned i = 0; i < HERMES_CBUF0_SCALAR_COUNT; i++)
-    *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR_N(i)) = pr_f2u(s[i]);
+    *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR_N(i)) =
+        k->rawScalar[i] ? k->rawScalar[i] : pr_f2u(s[i]);
 }
 
 /* Run one kernel. Returns NULL on success or the reason it failed. */
@@ -240,7 +241,8 @@ static void test_registry_is_wellformed(void) {
      * pair per thread without the check either failing or being weakened to an
      * inequality that would stop catching a launch that covers too little. */
     const NvU32 perThread = k->elementsPerThread ? k->elementsPerThread : 1u;
-    HT_EQ_U64(k->blockX * k->gridX * perThread, PR_N);
+    const NvU32 work = k->workElements ? k->workElements : PR_N;
+    HT_EQ_U64(k->blockX * k->gridX * perThread, work);
 
     /*
      * And the builder must fit the buffer the runner gives it.

@@ -218,6 +218,13 @@ hp_word hp_f2fp_pack(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
 hp_word hp_half_to_float(unsigned dst, unsigned src, unsigned half,
                          hp_control c);
 
+/* dst = src >> shift, logical. `shift` is an immediate. */
+hp_word hp_shr_imm(unsigned dst, unsigned src, unsigned shift, hp_control c);
+
+/* dst = lut(srcA, srcB, RZ). Use HP_LUT_XOR for an exclusive or. */
+hp_word hp_lop3(unsigned dst, unsigned srcA, unsigned srcB, unsigned lut,
+                hp_control c);
+
 hp_word hp_exit(hp_control c);
 
 /* NOP */

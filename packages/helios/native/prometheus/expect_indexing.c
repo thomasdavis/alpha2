@@ -36,3 +36,20 @@ const char *chk_embedding(const volatile NvU32 *o) {
     }
   return NULL;
 }
+
+const char *chk_slice(const volatile NvU32 *o) {
+  /* Only the first PR_SLICE_COUNT outputs are written; the rest of the buffer
+   * is whatever the runner zeroed it to, and reading further would be checking
+   * the harness rather than the kernel. */
+  for (unsigned i = 0; i < PR_SLICE_COUNT; i++) {
+    /* pr_fill_pos writes a[i] = i+1. */
+    const float want = (float)(PR_SLICE_OFFSET + i * PR_SLICE_STRIDE + 1);
+    const float got = pr_u2f(o[i]);
+    if (got != want) {
+      snprintf(pr_msg(), PR_MSG_SIZE, "slice: o[%u]=%g want %g", i,
+               (double)got, (double)want);
+      return pr_msg();
+    }
+  }
+  return NULL;
+}

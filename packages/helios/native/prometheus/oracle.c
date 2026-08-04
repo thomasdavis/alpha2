@@ -222,3 +222,46 @@ void pr_fill_packed(volatile NvU32 *a, volatile NvU32 *b) {
     a[i] = pr_f32_to_f16_bits(pr_cast_in(2 * i)) |
            (pr_f32_to_f16_bits(pr_cast_in(2 * i + 1)) << 16);
 }
+
+/*
+ * murmur3's finalizer, written out.
+ *
+ * This is the same sequence the kernel emits, and that is unavoidable: a hash
+ * has no closed form to check it against, so the only independent statement of
+ * it IS the algorithm. What the oracle proves is therefore narrower than
+ * elsewhere -- that the kernel implements this hash rather than some other
+ * arrangement of the same instructions -- and it is worth being clear that it
+ * does not prove the hash is a good one.
+ *
+ * The multiplies are masked to 32 bits explicitly. C would do it anyway for
+ * NvU32, and writing it makes the wrap-around a stated part of the definition
+ * rather than a property of the type it happens to be stored in.
+ */
+NvU32 pr_drop_hash(unsigned index) {
+  NvU32 h = (NvU32)(PR_DROP_SEED + PR_DROP_COUNTER * 0x9E3779B1u +
+                    (NvU32)index * 0x85EBCA77u);
+  h = (h ^ (h >> 16)) * 0x85EBCA6Bu;
+  h = (h ^ (h >> 13)) * 0xC2B2AE35u;
+  return h ^ (h >> 16);
+}
+
+/*
+ * Cross-entropy inputs.
+ *
+ * The logits SPAN a wide range on purpose -- roughly -6 to +9 -- because the
+ * whole point of the max shift is what happens when exp of a logit would
+ * overflow, and a row of small similar numbers never exercises it. The row
+ * offset makes every row different, so a kernel that reduced the wrong row
+ * cannot pass.
+ */
+float pr_ce_logit(unsigned r, unsigned c) {
+  return (float)(c * 2u) - 6.0f + (float)r * 0.5f;
+}
+
+void pr_fill_ce(volatile NvU32 *logits, volatile NvU32 *targets) {
+  for (unsigned r = 0; r < PR_CE_ROWS; r++) {
+    for (unsigned c = 0; c < PR_CE_CLASSES; c++)
+      logits[r * PR_CE_CLASSES + c] = pr_f2u(pr_ce_logit(r, c));
+    targets[r] = PR_CE_TARGET(r);
+  }
+}

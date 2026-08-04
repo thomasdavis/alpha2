@@ -112,6 +112,23 @@
  * hardware's own: it adds the half to negative zero, which is the identity, and
  * widens on the way out.
  */
+/*
+ * Logical shift right, and the three-input logic unit.
+ *
+ * SHF is a FUNNEL shift -- it shifts a 64-bit pair -- and the plain
+ * right-shift-by-n is the .HI form with RZ as the low half. That is what ptxas
+ * emits for shr.u32 and it is why the value being shifted arrives in the third
+ * operand rather than the first.
+ *
+ * LOP3 computes any function of three inputs from an eight-bit truth table.
+ * XOR of two of them is 0x3c, with the third tied to RZ. Encoding it as a table
+ * rather than as an opcode is the hardware's design: there is no XOR
+ * instruction to find.
+ */
+#define HP_OP_SHF_R 0x819
+#define HP_OP_LOP3 0x212
+#define HP_LUT_XOR 0x3c /* a ^ b, c ignored */
+
 #define HP_OP_F2FP 0x23e
 #define HP_OP_HADD2 0x230
 #define HP_HALF_LO 0

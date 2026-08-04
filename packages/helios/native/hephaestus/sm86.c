@@ -172,3 +172,26 @@ hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
 
 
 
+
+hp_word hp_shr_imm(unsigned dst, unsigned src, unsigned shift, hp_control c) {
+  hp_word w = hp_base(HP_OP_SHF_R, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  /* The low half of the funnel is RZ, which makes this a plain shift. */
+  hp_put(&w, 24, 8, HP_RZ);
+  hp_put(&w, HP_F_SRCB, 32, shift);
+  hp_put(&w, 64, 8, src);
+  hp_put(&w, 72, 24, 0x000116);
+  return w;
+}
+
+hp_word hp_lop3(unsigned dst, unsigned srcA, unsigned srcB, unsigned lut,
+                hp_control c) {
+  hp_word w = hp_base(HP_OP_LOP3, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, 24, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 8, HP_RZ); /* the third input, unused by a two-input table */
+  hp_put(&w, 72, 8, lut);
+  hp_put(&w, 80, 16, 0x078e);
+  return w;
+}

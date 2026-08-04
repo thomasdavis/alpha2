@@ -132,6 +132,19 @@ static const pr_kernel KERNELS[] = {
       .blockX = PR_BLOCK / 2, .gridX = PR_GRID, .fill = pr_fill_packed,
       .check = chk_cast_to_f32, .elementsPerThread = 2),
 
+    /* Three raw integer scalars and one float. The mask is derived from the
+     * element index alone, so this kernel reads no input at all. */
+    K(.name = "dropout mask", .build = bld_dropout, .check = chk_dropout,
+      .scalar4 = PR_DROP_SCALE,
+      .rawScalar = {PR_DROP_SEED, PR_DROP_COUNTER, PR_DROP_THRESHOLD}),
+
+    /* One block per row. Only PR_CE_ROWS of the output are written, so the
+     * launch covers the LOGITS and the check reads only the rows. */
+    K(.name = "cross entropy", .build = bld_cross_entropy,
+      .blockX = PR_CE_CLASSES, .gridX = PR_CE_ROWS, .fill = pr_fill_ce,
+      .check = chk_cross_entropy, .scalar = PR_LOG2_E, .scalar2 = PR_LN_2,
+      .sharedBytes = PR_CE_CLASSES * 4),
+
     K(.name = "adamw step", .build = bld_adamw, .fill = pr_fill_adam,
       .fillC = pr_fill_adam_v, .seed = pr_seed_adam, .check = chk_adamw,
       .scalar = 1.0f - PR_ADAM_B1, .scalar2 = 1.0f - PR_ADAM_B2,
@@ -141,6 +154,11 @@ static const pr_kernel KERNELS[] = {
       .gridX = PR_MASK_N, .fill = pr_fill_pos, .check = chk_causal),
     K(.name = "masked fill", .build = bld_masked_fill, .fill = pr_fill_mask,
       .check = chk_masked_fill, .scalar = PR_MASK_FILL),
+
+    K(.name = "slice", .build = bld_slice, .blockX = PR_SLICE_COUNT,
+      .gridX = 1, .fill = pr_fill_pos, .check = chk_slice,
+      .workElements = PR_SLICE_COUNT,
+      .rawScalar = {PR_SLICE_OFFSET, PR_SLICE_STRIDE}),
 
     K(.name = "transpose 4x16", .build = bld_transpose, .blockX = PR_TR_COLS,
       .gridX = PR_TR_ROWS, .fill = pr_fill_pos, .check = chk_transpose),

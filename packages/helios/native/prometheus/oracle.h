@@ -18,6 +18,7 @@
 #define PROMETHEUS_ORACLE_H
 
 #include "kernel.h"
+#include "shapes.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -60,110 +61,7 @@ float pr_in_signed(unsigned i);
 #define PR_MSG_SIZE 96
 char *pr_msg(void);
 
-/* ---- the constants the kernels are fed ---------------------------------- */
-/* These are shared deliberately: the table passes them to the GPU through the
- * constant bank and the checker uses the same symbol. A kernel scaled by one
- * number and checked against another would pass only by coincidence. */
-#define PR_SCALE_BY 0.25f
-#define PR_FILL_VALUE 3.5f
-#define PR_CLAMP_LO (-8.0f)
-#define PR_CLAMP_HI 20.0f
-#define PR_RMS_EPS 1e-5f
-#define PR_GELU_K0 0.7978845608028654f
-#define PR_GELU_K1 0.044715f
-#define PR_SOFTCAP_C 4.0f
-#define PR_LOG2_E 1.4426950408889634f
-#define PR_LN_2 0.6931471805599453f
-
-/*
- * The matmul test shape: 8x8 times 8x8, which is 64 outputs and therefore
- * exactly PR_N. Square and small on purpose -- a rectangular shape would let a
- * transposed index pass, so the SQUARE case is checked here and the rectangular
- * one separately, where M, N and K are all different and no two can be
- * confused.
- */
-/* How many times the loop probe goes round. Not a power of two and not equal
- * to any block or grid dimension, so a trip count confused with a thread index
- * gives a visibly wrong answer rather than an accidentally right one. */
-/* The default launch when a kernel does not name its own: 32 threads in each of
- * 2 blocks, which is PR_N elements across more than one block and more than one
- * warp. A single block of 64 would never exercise the block index, and a single
- * warp would hide every intra-warp divergence. */
-#define PR_BLOCK 32
-#define PR_GRID (PR_N / PR_BLOCK)
-
-#define PR_LOOP_TRIPS 5
-
-/*
- * The indexing shapes. Rectangular on purpose, and rows != cols, so a transpose
- * that returned its input unchanged -- or that swapped the wrong pair of
- * dimensions -- cannot pass. A square shape would let both through.
- */
-/* The causal mask is square -- it has to be, it is a token-by-token relation. */
-/*
- * AdamW test constants.
- *
- * Deliberately NOT the usual 0.9 / 0.999: those are close enough to one that a
- * kernel which dropped the (1-b) term entirely would still produce nearly the
- * right answer for one step, and one step is all a test runs. At 0.5 and 0.25
- * every term contributes visibly.
- *
- * The kernel is handed 1-b1 and 1-b2 rather than b1 and b2, because it computes
- * m + (1-b1)*(g-m) -- the same arithmetic in fewer instructions, and the
- * subtraction belongs on the host where it happens once.
- */
-/*
- * Dropout scale, and the keep pattern.
- *
- * 0.25 is not 1/(1-p) for any p the test uses, and that is fine -- what matters
- * is that it is neither 1 nor 0, so a kernel that ignored the scale entirely
- * and one that zeroed everything both fail. A scale of 1.0 would hide the first.
- */
-/*
- * Half-precision conversion, from the IEEE 754 binary16 definition: sign bit,
- * five exponent bits with a bias of 15, ten stored mantissa bits.
- *
- * Implemented here rather than taken from a library, and NOT from the kernel's
- * instructions, because the definition is the oracle. Round-to-nearest-even is
- * the mode F2FP encodes and therefore the mode this must implement -- a
- * truncating reference would disagree on exactly the values that test whether
- * the rounding mode was encoded at all.
- */
-NvU32 pr_f32_to_f16_bits(float f);
-float pr_f16_bits_to_f32(NvU32 h);
-/* The round trip, which is what a cast kernel's output should equal. */
-float pr_half_round_trip(float f);
-
-#define PR_DROP_SCALE 0.25f
-
-/* RMS epsilon for the fused kernel, and the per-feature weight. */
-#define PR_RES_EPS 1e-5f
-
-#define PR_ADAM_B1 0.5f
-#define PR_ADAM_B2 0.25f
-#define PR_ADAM_LR 0.125f
-#define PR_ADAM_EPS 0.03125f
-#define PR_ADAM_WD 0.0625f
-
-#define PR_MASK_N 8
-
-/* What masked_fill writes where the mask is set. Distinctive and not a value
- * any input takes, so a fill that never fired is visible. */
-#define PR_MASK_FILL (-42.0f)
-
-#define PR_TR_ROWS 4
-#define PR_TR_COLS 16
-
-/* Embedding: 8 tokens of 8 features, from a table with more rows than tokens so
- * a lookup that ignored the id and used the position would read the wrong row. */
-#define PR_EMB_TOKENS 8
-#define PR_EMB_DIM 8
-/* The table has PR_N entries, so PR_N / PR_EMB_DIM rows. */
-#define PR_EMB_ROWS (PR_N / PR_EMB_DIM)
-
-#define PR_MM_M 8
-#define PR_MM_N 8
-#define PR_MM_K 8
+/* The constants each kernel is fed live in shapes.h, included above. */
 
 /* ---- comparison policy --------------------------------------------------- */
 /* Exact integer comparison. */

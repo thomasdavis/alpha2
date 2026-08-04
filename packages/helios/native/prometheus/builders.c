@@ -170,3 +170,21 @@ unsigned bld_cast_to_f32(hp_word *p, NvU64 out, NvU64 in) {
   (void)in;
   return pr_emit_cast_f16_to_f32(p);
 }
+
+unsigned bld_dropout(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_dropout_mask(p);
+}
+
+unsigned bld_cross_entropy(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_cross_entropy(p, PR_CE_CLASSES);
+}
+
+unsigned bld_slice(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_slice(p);
+}

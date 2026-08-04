@@ -67,6 +67,47 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
 }
 
 /*
+ * slice: out[i] = in[offset + i*stride].
+ *
+ * One dimension, because that is what every slice reduces to once the shape is
+ * flattened -- a start and a step through the source. A multi-dimensional slice
+ * is this with an offset and stride the HOST computed from the shapes, which is
+ * where that arithmetic belongs: it depends only on the shapes, so doing it per
+ * thread would repeat one calculation across the whole tensor.
+ *
+ * Both arrive as raw integers in the constant bank rather than as immediates,
+ * so one generated kernel serves every slice of a given rank. Baking them in
+ * would mean regenerating and reassembling for every new offset, and unlike a
+ * matrix dimension -- which changes rarely and is worth specialising for -- a
+ * slice offset can change on every call.
+ */
+unsigned pr_emit_slice(hp_word *p) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  p[n++] = hp_imad_const(R_DST_IDX, R_ROW, 0, HERMES_CBUF0_NTID_X, R_COL,
+                         hp_ctrl_wait(BAR_ID));
+
+  /* src = offset + dst*stride, which is one multiply-add with both operands
+   * from the bank. */
+  p[n++] = hp_mov_const(R_TABLE_ROW, 0, HERMES_CBUF0_SCALAR_N(0),
+                        hp_ctrl_safe());
+  p[n++] = hp_mov_const(R_VALUE, 0, HERMES_CBUF0_SCALAR_N(1), hp_ctrl_safe());
+  p[n++] = hp_imad_const(R_SRC_IDX, R_DST_IDX, 0, HERMES_CBUF0_SCALAR_N(1),
+                         R_TABLE_ROW, hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/*
  * embedding: out[i][d] = table[ids[i]][d].
  *
  * Block x is the token position i, thread x the feature d. The token id is

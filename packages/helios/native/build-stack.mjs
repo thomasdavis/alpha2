@@ -65,8 +65,19 @@ const sources = (dir) => {
 function build(layer, upto) {
   /* Link this layer plus every layer below it — never above. */
   const libs = LAYERS.slice(0, upto + 1).flatMap(sources);
+  /*
+   * A layer's tests may span more than one file: `<layer>_test.c` is the entry
+   * point and `<layer>_*_test.c` are additional ones it calls into. Splitting
+   * them is what keeps any single file under the line cap without merging
+   * unrelated encodings into one function, and the entry point still owns the
+   * order things run in.
+   */
   const test = join(HERE, "test", `${layer}_test.c`);
   if (!existsSync(test)) return null;
+  const extraTests = readdirSync(join(HERE, "test"))
+    .filter((f) => f.startsWith(`${layer}_`) && f.endsWith("_test.c") &&
+                   f !== `${layer}_test.c`)
+    .map((f) => join(HERE, "test", f));
 
   const harness = join(HERE, "test", "harness.c");
   const bin = join(OUT, `${layer}_test`);
@@ -75,7 +86,7 @@ function build(layer, upto) {
   /* -lm: the checkers evaluate exp2f/log2f/sqrtf on the host as an independent
    * oracle. Deliberately not reimplemented — a hand-rolled expected value is a
    * second implementation, and two implementations agreeing proves nothing. */
-  execFileSync("gcc", [...CFLAGS, "-o", bin, test, harness, ...libs, "-lm"], {
+  execFileSync("gcc", [...CFLAGS, "-o", bin, test, ...extraTests, harness, ...libs, "-lm"], {
     stdio: "inherit",
   });
   return bin;
