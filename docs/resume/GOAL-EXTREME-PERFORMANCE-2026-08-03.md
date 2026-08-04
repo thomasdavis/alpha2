@@ -201,6 +201,14 @@ per-operation reciprocal exponents. Application fails closed on graph drift.
 No GPU timing or training-quality result is claimed. Evidence:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X34-GRAPH-FINGERPRINTED-FP16X3-CALIBRATION.md`.
 
+The next exact attention-layout idea has been bounded rather than implemented.
+Direct grouped-QKV consumption would remove one 18-dispatch, 2.637-GiB
+materialization boundary but add 17.87 GFLOP of repeated tiled RoPE and 22.19
+GiB of cache-level table reads. The full pre-X28 boundary was below 0.70% of
+the old core step; X28's already-fused replacement is unmeasured and should be
+timed before three new kernels are built. Evidence:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X35-DIRECT-GROUPED-QKV-FLASH-DISCRIMINATOR.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.
@@ -212,8 +220,8 @@ attempt. The operator-supplied X19 atlas adds a separate 100-item contract and
 state namespace for concrete Autonomic Dataflow mechanisms. X17 and X19 therefore
 form 200 traceable research objects: they may reuse an instrument or physical run,
 but each retains its own evidence and verdict. Current generated state is at
-**X17: 96 queued / 4 cheap tests complete; X19: 98 queued / 1 designed /
-1 cheap test complete** at
+**X17: 92 queued / 4 cheap tests complete / 4 GPU tests complete; X19: 86
+queued / 3 cheap tests complete / 11 GPU tests complete** at
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/PORTFOLIO-STATUS.md`.
 
 **Third result already banked** — from preserved logs, no new runs

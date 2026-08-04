@@ -98,7 +98,8 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X31-DIRECT-GROUPED-FLASH-BACKWARD.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X33-RECIPROCAL-FP16X3-BALANCING.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X34-GRAPH-FINGERPRINTED-FP16X3-CALIBRATION.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X34-GRAPH-FINGERPRINTED-FP16X3-CALIBRATION.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X35-DIRECT-GROUPED-QKV-FLASH-DISCRIMINATOR.md`.
 
 The exact-path series now implements the following native mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
@@ -140,6 +141,13 @@ records into checkpoint- and ordered-graph-fingerprinted per-operation plans.
 Plan application adds no permanent reductions or readbacks and fails closed on
 graph drift. Physical calibration, timing, and training quality remain open;
 no throughput claim is added.
+X35 then prices the next exact attention-layout boundary rather than blindly
+implementing it. Direct grouped-QKV consumption would remove 18 dispatches and
+2.637 GiB of materialization traffic, but repeat 17.87 GFLOP of tiled RoPE and
+22.19 GiB of cache-level table reads. The complete pre-X28 boundary was below
+0.70% of the old core step, and X28 has already fused it to one operation.
+The three-kernel rewrite is therefore deferred until that fused operation is
+physically timed; dominant backward GEMMs keep priority.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
