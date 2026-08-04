@@ -249,13 +249,48 @@ static void test_gpu_runs_our_machine_code(void) {
   }
 
   {
-    hp_word prog[5];
-    prog[0] = hp_mov_imm(0, (uint32_t)(out.gpuAddr & 0xffffffffu), hp_ctrl_safe());
-    prog[1] = hp_mov_imm(1, (uint32_t)(out.gpuAddr >> 32), hp_ctrl_safe());
-    prog[2] = hp_mov_imm(2, KERNEL_MAGIC, hp_ctrl_safe());
-    prog[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
-    prog[4] = hp_exit(hp_ctrl_safe());
-    memset(code.hostPtr, 0, 4096);
+    /*
+     * BYTES FROM ptxas, not from Hephaestus -- deliberately, as a control.
+     *
+     * Every attempt so far has ended in GR_EXCEPTION, and two explanations
+     * remained: our launch configuration is wrong, or our instruction stream
+     * is. Running a kernel the vendor compiler produced separates them
+     * absolutely. If these bytes run, the launch path is correct and the
+     * problem is Hephaestus; if they fault, Hephaestus is exonerated a second
+     * time and the launch path still has something missing.
+     *
+     * This is `__global__ void k() {}` at sm_86, from cuobjdump:
+     *
+     *   MOV R1, c[0x0][0x28]     the stack pointer, from constant bank 0
+     *   EXIT
+     *   BRA 0x20                 self-loop, the compiler's landing pad
+     *   NOP x N
+     *
+     * Note the prologue: even an EMPTY kernel loads R1 from c[0x0][0x28]. A
+     * bare EXIT, which is what we were emitting, is not what the hardware is
+     * ever given.
+     */
+    static const uint64_t REAL[] = {
+        0x00000a0000017a02ull, 0x000fe40000000f00ull, /* MOV R1, c[0x0][0x28] */
+        0x000000000000794dull, 0x000fea0003800000ull, /* EXIT */
+        0xfffffff000007947ull, 0x000fc0000383ffffull, /* BRA self */
+    };
+    hp_word prog[3];
+    memcpy(prog, REAL, sizeof REAL);
+    /*
+     * Pad with EXIT rather than zeroing.
+     *
+     * All-zero SASS is not a no-op, it is an illegal instruction, and the SM
+     * prefetches past the end of a kernel -- so a program followed by zeroes
+     * can fault on instructions the program never reaches. nvcc pads with a
+     * self-branch for the same reason. Filling with EXIT makes every possible
+     * landing point in the buffer legal.
+     */
+    {
+      hp_word pad = hp_exit(hp_ctrl_safe());
+      hp_word *slot = (hp_word *)code.hostPtr;
+      for (unsigned k = 0; k < 4096 / sizeof(hp_word); k++) slot[k] = pad;
+    }
     memcpy(code.hostPtr, prog, sizeof prog);
   }
 
@@ -300,6 +335,21 @@ static void test_gpu_runs_our_machine_code(void) {
       printf("      errnotif: %08x %08x %08x %08x\n",
              ((NvU32 *)c.errnotif.hostPtr)[0], ((NvU32 *)c.errnotif.hostPtr)[1],
              ((NvU32 *)c.errnotif.hostPtr)[2], ((NvU32 *)c.errnotif.hostPtr)[3]);
+      /* Print what we ACTUALLY emitted, not what we believe we emitted. The
+       * same diff-against-a-working-driver that unblocked the channel applies
+       * to the method stream, and it only works if both sides are visible. */
+      {
+        const NvU32 *pbw = (const NvU32 *)c.pushbuffer.hostPtr;
+        const NvU32 n = (NvU32)(c.push - (NvU32 *)c.pushbuffer.hostPtr);
+        printf("      our pushbuffer, %u dwords:\n", n);
+        for (NvU32 k = 0; k < n && k < 24; k += 8) {
+          printf("        +0x%03x ", k * 4);
+          for (NvU32 q = 0; q < 8 && k + q < n; q++) printf("%08x ", pbw[k + q]);
+          printf("\n");
+        }
+        printf("      qmd head: %08x %08x %08x %08x %08x %08x\n", qmd[0], qmd[1],
+               qmd[2], qmd[3], qmd[4], qmd[5]);
+      }
     } else {
       HT_EQ_U64(got, KERNEL_MAGIC);
     }

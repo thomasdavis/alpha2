@@ -6,6 +6,16 @@
 
 #include <string.h>
 
+/* Instruction-set version the SM is told to decode. clc7c0qmd.h calls this
+ * SASS_VERSION; 0x86 is sm_86. Distinct from SET_SPA_VERSION (0x0806), which is
+ * a method rather than a QMD field -- both are required and they are not
+ * interchangeable. */
+#define HERMES_SASS_VERSION_SM86 0x86u
+
+/* Instruction cache prefetch, in the units the capture uses. Copied rather than
+ * derived: it is a performance hint, and its unit is not established. */
+#define PROGRAM_PREFETCH_SIZE 9u
+
 /* clc7c0.h */
 #define NVC7C0_SET_OBJECT 0x0000
 #define NVC7C0_SET_INLINE_QMD_ADDRESS_A 0x0318
@@ -20,6 +30,12 @@
 /*
  * A real QMD, captured from a CUDA launch on an RTX 3070 (sm_86, driver
  * 580.95.05), with the launch-specific fields zeroed.
+ *
+ * One deliberate change from the capture: word 5 bits 30 and 31
+ * (INVALIDATE_INSTRUCTION_CACHE, INVALIDATE_SHADER_CONSTANT_CACHE) are set,
+ * making 0x3c000000 into 0xfc000000. CUDA leaves them clear because it uploads
+ * code once into a cold cache; we rewrite the same GPU addresses on every run,
+ * so stale instruction-cache lines are a real hazard and invalidating is free.
  *
  * The capture is from an EMPTY kernel -- `__global__ void k() {}` launched
  * <<<1,1>>> -- deliberately, because that is as close as CUDA can get to the
@@ -66,7 +82,7 @@ static const NvU32 QMD_SKELETON[HERMES_QMD_DWORDS] = {
     /* 36 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 40 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 44 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    /* 48 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+    /* 48 */ 0x00000000, 0x00000000, 0x00000640, 0x00000000,
     /* 52 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 56 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 60 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -92,6 +108,31 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
                       NvU32 blockZ) {
   memcpy(qmd, QMD_SKELETON, sizeof QMD_SKELETON);
+
+  /*
+   * SASS_VERSION and the prefetch descriptor, per NVIDIA's own clc7c0qmd.h
+   * (open-gpu-doc, classes/compute). The header states the layout as bit ranges
+   * over the whole QMD, so word = lo/32:
+   *
+   *   SASS_VERSION                        MW(1663:1656)  word 51, bits 31:24
+   *   PROGRAM_PREFETCH_TYPE               MW(1651:1650)  word 51, bits 19:18
+   *   PROGRAM_PREFETCH_SIZE               MW(1649:1641)  word 51, bits 17:9
+   *   PROGRAM_PREFETCH_ADDR_UPPER_SHIFTED MW(1640:1632)  word 51, bits  8:0
+   *
+   * WHY THIS MATTERS MORE THAN ANYTHING ELSE HERE: word 51 was zeroed earlier
+   * on the reasoning that it held a foreign address -- its low bits do, they
+   * are the high bits of the program's prefetch address. But its TOP byte is
+   * SASS_VERSION, and zeroing it tells the SM to decode an ISA version 0.
+   * Every launch since raised GR_EXCEPTION before a single instruction retired.
+   *
+   * The lesson repeats the one from GP_PUT exactly: a word is not a unit of
+   * meaning. Reasoning about "this dword looks like a pointer" is reasoning
+   * about the wrong object, because the hardware's fields do not respect dword
+   * boundaries and two unrelated things routinely share one.
+   */
+  qmd[51] = (HERMES_SASS_VERSION_SM86 << 24) |
+            ((PROGRAM_PREFETCH_SIZE & 0x1ffu) << 9) |
+            (NvU32)(((program >> 8) >> 32) & 0x1ffu);
 
   set_addr_pair(qmd, 24, scratch + 0x0000, 0x4080);
   set_addr_pair(qmd, 32, scratch + 0x1000, 0x0c84);
