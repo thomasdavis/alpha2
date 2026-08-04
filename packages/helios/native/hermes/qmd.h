@@ -100,8 +100,12 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  */
 #define HERMES_CBUF0_NTID_X 0x000
 #define HERMES_CBUF0_PARAM0 0x160
-/* Three pointers then a scalar: out, a, b, s. */
+/* Three pointers then two scalars: out, a, b, s0, s1. Two because several
+ * operations need a pair -- clamp has a low and a high, silu needs log2(e) and
+ * 1.0 -- and materialising constants as immediates would mean an FMUL-immediate
+ * encoding that has not been verified against ptxas. */
 #define HERMES_CBUF0_SCALAR (0x160 + 24)
+#define HERMES_CBUF0_SCALAR2 (0x160 + 28)
 #define HERMES_CBUF0_BYTES 0x1000
 
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)

@@ -104,13 +104,15 @@ static void write_code(gaia_buffer *code, const hp_word *prog, unsigned count) {
 }
 
 /* Kernel parameters, in constant bank 0 in CUDA's layout. */
-static void write_params(pr_buffers *b, NvU32 blockX, float scalar) {
+static void write_params(pr_buffers *b, NvU32 blockX, float scalar,
+                         float scalar2) {
   volatile NvU8 *cb = (volatile NvU8 *)b->scratch.hostPtr;
   *(volatile NvU32 *)(cb + HERMES_CBUF0_NTID_X) = blockX;
   *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0) = b->out.gpuAddr;
   *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 8) = b->in.gpuAddr;
   *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM0 + 16) = b->inB.gpuAddr;
   *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR) = pr_f2u(scalar);
+  *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR2) = pr_f2u(scalar2);
 }
 
 /* Run one kernel. Returns NULL on success or the reason it failed. */
@@ -120,7 +122,8 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
   for (unsigned i = 0; i < FENCE_OFFSET / 4 + 4; i++) o[i] = 0;
   if (k->fill)
     k->fill((volatile NvU32 *)b->in.hostPtr, (volatile NvU32 *)b->inB.hostPtr);
-  write_params(b, k->blockX, k->scalar);
+  if (k->seed) k->seed(o);
+  write_params(b, k->blockX, k->scalar, k->scalar2);
 
   hp_word prog[PR_MAX_INSTRUCTIONS];
   const unsigned count = k->build(prog, b->out.gpuAddr, b->in.gpuAddr);

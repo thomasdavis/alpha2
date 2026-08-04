@@ -72,6 +72,14 @@ typedef enum {
   PR_EW_LOG,       /* log2(a) * ln(2)                    */
   PR_EW_SQRT,      /* 1 / rsqrt(a)                       */
 
+  /* Writes a constant everywhere, reading no input. zeros, ones and full are
+   * all this operation with a different scalar. */
+  PR_EW_FILL,
+
+  PR_EW_CLAMP,     /* min(max(a, s0), s1)                */
+  PR_EW_ADD_INPLACE, /* out[i] += a[i] — reads its own output */
+  PR_EW_SILU,      /* a / (1 + exp(-a))                  */
+
   PR_EW_COUNT,
 } pr_ew_op;
 

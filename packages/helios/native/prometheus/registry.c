@@ -161,6 +161,51 @@ BUCHECK(div, x / y)
 #define SCALE_BY 0.25f
 FCHECK(scale, in_pos, x *SCALE_BY)
 
+/* fills write a constant everywhere and read nothing. */
+#define FILL_VALUE 3.5f
+static const char *chk_fill(const volatile NvU32 *o) {
+  for (unsigned i = 0; i < PR_N; i++)
+    if (pr_u2f(o[i]) != FILL_VALUE) {
+      snprintf(g_msg, sizeof g_msg, "fill: o[%u]=%g", i, (double)pr_u2f(o[i]));
+      return g_msg;
+    }
+  return NULL;
+}
+static const char *chk_zeros(const volatile NvU32 *o) {
+  for (unsigned i = 0; i < PR_N; i++)
+    if (pr_u2f(o[i]) != 0.0f) return "zeros: not zero";
+  return NULL;
+}
+static const char *chk_ones(const volatile NvU32 *o) {
+  for (unsigned i = 0; i < PR_N; i++)
+    if (pr_u2f(o[i]) != 1.0f) return "ones: not one";
+  return NULL;
+}
+
+/* clamp is tested on signed input spanning both bounds, so both the max and the
+ * min actually fire. Bounds chosen to bite in the middle of the range. */
+#define CLAMP_LO (-8.0f)
+#define CLAMP_HI 20.0f
+FCHECK(clamp, in_signed, x < CLAMP_LO ? CLAMP_LO : (x > CLAMP_HI ? CLAMP_HI : x))
+
+/* add-inplace reads the output it is about to write. The runner seeds the
+ * output with a distinct sequence so "did it accumulate" is answerable. */
+static void seed_addinp(volatile NvU32 *o) {
+  for (unsigned i = 0; i < PR_N; i++) o[i] = pr_f2u((float)(100 + i));
+}
+static const char *chk_addinp(const volatile NvU32 *o) {
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float want = (float)(i + 1) + (float)(100 + i);
+    if (pr_u2f(o[i]) != want) {
+      snprintf(g_msg, sizeof g_msg, "addinp: o[%u]=%g want %g", i,
+               (double)pr_u2f(o[i]), (double)want);
+      return g_msg;
+    }
+  }
+  return NULL;
+}
+
+UCHECK(silu, in_signed, x / (1.0f + expf(-x)))
 UCHECK(exp, in_pos, expf(x))
 UCHECK(logn, in_pos, logf(x))
 UCHECK(sqrt, in_pos, sqrtf(x))
@@ -201,51 +246,112 @@ EW(scale, PR_EW_SCALE)
 EW(exp, PR_EW_EXP)
 EW(logn, PR_EW_LOG)
 EW(sqrt, PR_EW_SQRT)
+EW(fill, PR_EW_FILL)
+EW(clamp, PR_EW_CLAMP)
+EW(addinp, PR_EW_ADD_INPLACE)
+EW(silu, PR_EW_SILU)
 
 /* ---- the table ---------------------------------------------------------- */
 
-/* Two blocks of 32 rather than one of 64, so every kernel exercises both the
- * block index and the thread index. A grid of one would let a broken ctaid pass
- * everything here. */
 #define BLOCK 32
 #define GRID (PR_N / BLOCK)
 
+/* Base conversions, named because 1.4426950408889634 in a table row tells the
+ * reader nothing. */
+#define LOG2_E 1.4426950408889634f
+#define LN_2 0.6931471805599453f
+
+/*
+ * The table.
+ *
+ * DESIGNATED INITIALISERS on purpose. A positional table has to be edited in
+ * every row whenever a field is added, and gets silently wrong if two fields of
+ * the same type are ever transposed -- which already happened once here, when a
+ * scalar landed in the checker's slot and the compiler caught it only because
+ * the types differed. Named fields make each row say what it means and make
+ * adding a kernel a local change.
+ *
+ * Two blocks of 32 rather than one of 64, so every kernel exercises the block
+ * index as well as the thread index; a grid of one would let a broken ctaid
+ * pass everything here.
+ */
+#define K(...) {__VA_ARGS__}
+
 static const pr_kernel KERNELS[] = {
-    /* name                       build      block  grid   fill         check       scalar */
-    {"elementwise copy",          bld_copy,  BLOCK, GRID, fill_ints,   chk_copy,     0.0f},
-    {"elementwise add index",     bld_addidx,BLOCK, GRID, fill_ints,   chk_addidx,   0.0f},
-    {"elementwise add constant",  bld_addconst,BLOCK,GRID,fill_ints,   chk_addconst, 0.0f},
-    {"elementwise index",         bld_index, BLOCK, GRID, NULL,        chk_index,    0.0f},
+    K(.name = "elementwise copy", .build = bld_copy, .fill = fill_ints,
+      .check = chk_copy),
+    K(.name = "elementwise add index", .build = bld_addidx, .fill = fill_ints,
+      .check = chk_addidx),
+    K(.name = "elementwise add constant", .build = bld_addconst,
+      .fill = fill_ints, .check = chk_addconst),
+    K(.name = "elementwise index", .build = bld_index, .check = chk_index),
 
-    {"elementwise fadd",          bld_fadd,  BLOCK, GRID, fill_pos,    chk_fadd,     0.0f},
-    {"elementwise fmul",          bld_fmul,  BLOCK, GRID, fill_pos,    chk_fmul,     0.0f},
-    {"elementwise ffma",          bld_ffma,  BLOCK, GRID, fill_pos,    chk_ffma,     0.0f},
-    {"elementwise negate",        bld_fneg,  BLOCK, GRID, fill_signed, chk_fneg,     0.0f},
-    {"elementwise relu",          bld_relu,  BLOCK, GRID, fill_signed, chk_relu,     0.0f},
+    K(.name = "elementwise fadd", .build = bld_fadd, .fill = fill_pos,
+      .check = chk_fadd),
+    K(.name = "elementwise fmul", .build = bld_fmul, .fill = fill_pos,
+      .check = chk_fmul),
+    K(.name = "elementwise ffma", .build = bld_ffma, .fill = fill_pos,
+      .check = chk_ffma),
+    K(.name = "elementwise negate", .build = bld_fneg, .fill = fill_signed,
+      .check = chk_fneg),
+    K(.name = "elementwise relu", .build = bld_relu, .fill = fill_signed,
+      .check = chk_relu),
 
-    {"elementwise exp2",          bld_exp2,  BLOCK, GRID, fill_pos,    chk_exp2,     0.0f},
-    {"elementwise log2",          bld_log2,  BLOCK, GRID, fill_pos,    chk_log2,     0.0f},
-    {"elementwise reciprocal",    bld_rcp,   BLOCK, GRID, fill_pos,    chk_rcp,      0.0f},
-    {"elementwise rsqrt",         bld_rsq,   BLOCK, GRID, fill_pos,    chk_rsq,      0.0f},
+    K(.name = "elementwise exp2", .build = bld_exp2, .fill = fill_pos,
+      .check = chk_exp2),
+    K(.name = "elementwise log2", .build = bld_log2, .fill = fill_pos,
+      .check = chk_log2),
+    K(.name = "elementwise reciprocal", .build = bld_rcp, .fill = fill_pos,
+      .check = chk_rcp),
+    K(.name = "elementwise rsqrt", .build = bld_rsq, .fill = fill_pos,
+      .check = chk_rsq),
 
-    /* Binary. */
-    {"elementwise add (a+b)",     bld_add,   BLOCK, GRID, fill_pair,   chk_add,      0.0f},
-    {"elementwise sub (a-b)",     bld_sub,   BLOCK, GRID, fill_pair,   chk_sub,      0.0f},
-    {"elementwise mul (a*b)",     bld_mul,   BLOCK, GRID, fill_pair,   chk_mul,      0.0f},
-    {"elementwise div (a/b)",     bld_div,   BLOCK, GRID, fill_pair,   chk_div,      0.0f},
+    K(.name = "elementwise add (a+b)", .build = bld_add, .fill = fill_pair,
+      .check = chk_add),
+    K(.name = "elementwise sub (a-b)", .build = bld_sub, .fill = fill_pair,
+      .check = chk_sub),
+    K(.name = "elementwise mul (a*b)", .build = bld_mul, .fill = fill_pair,
+      .check = chk_mul),
+    K(.name = "elementwise div (a/b)", .build = bld_div, .fill = fill_pair,
+      .check = chk_div),
 
-    /* Scalar operand, and the composed unaries the hardware has no opcode for.
-     * The constants are the base conversions: log2(e) for exp, ln(2) for log. */
-    {"elementwise scale",         bld_scale, BLOCK, GRID, fill_pos,    chk_scale, SCALE_BY},
-    {"elementwise exp",           bld_exp,   BLOCK, GRID, fill_pos,    chk_exp,
-     1.4426950408889634f},
-    {"elementwise log",           bld_logn,  BLOCK, GRID, fill_pos,    chk_logn,
-     0.6931471805599453f},
-    {"elementwise sqrt",          bld_sqrt,  BLOCK, GRID, fill_pos,    chk_sqrt,     0.0f},
+    K(.name = "elementwise scale", .build = bld_scale, .fill = fill_pos,
+      .check = chk_scale, .scalar = SCALE_BY),
+    K(.name = "elementwise exp", .build = bld_exp, .fill = fill_pos,
+      .check = chk_exp, .scalar = LOG2_E),
+    K(.name = "elementwise log", .build = bld_logn, .fill = fill_pos,
+      .check = chk_logn, .scalar = LN_2),
+    K(.name = "elementwise sqrt", .build = bld_sqrt, .fill = fill_pos,
+      .check = chk_sqrt),
+
+    /* zeros, ones and full are one kernel with a different scalar, which is
+     * what they are in the existing stack too. */
+    K(.name = "fill (full)", .build = bld_fill, .check = chk_fill,
+      .scalar = FILL_VALUE),
+    K(.name = "fill (zeros)", .build = bld_fill, .check = chk_zeros),
+    K(.name = "fill (ones)", .build = bld_fill, .check = chk_ones,
+      .scalar = 1.0f),
+
+    K(.name = "elementwise clamp", .build = bld_clamp, .fill = fill_signed,
+      .check = chk_clamp, .scalar = CLAMP_LO, .scalar2 = CLAMP_HI),
+    K(.name = "elementwise add in place", .build = bld_addinp, .fill = fill_pos,
+      .check = chk_addinp, .seed = seed_addinp),
+    K(.name = "elementwise silu", .build = bld_silu, .fill = fill_signed,
+      .check = chk_silu, .scalar = LOG2_E, .scalar2 = 1.0f),
 };
 
 
+
+/* Fill in the default geometry once rather than in every row. */
+static pr_kernel g_resolved[sizeof KERNELS / sizeof KERNELS[0]];
+
 const pr_kernel *pr_kernels(unsigned *count) {
-  *count = sizeof KERNELS / sizeof KERNELS[0];
-  return KERNELS;
+  const unsigned n = sizeof KERNELS / sizeof KERNELS[0];
+  for (unsigned i = 0; i < n; i++) {
+    g_resolved[i] = KERNELS[i];
+    if (!g_resolved[i].blockX) g_resolved[i].blockX = BLOCK;
+    if (!g_resolved[i].gridX) g_resolved[i].gridX = GRID;
+  }
+  *count = n;
+  return g_resolved;
 }

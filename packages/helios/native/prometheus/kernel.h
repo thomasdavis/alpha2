@@ -45,6 +45,8 @@ typedef struct {
    * both and pick the pointers up at run time. Returns the instruction count. */
   unsigned (*build)(hp_word *prog, NvU64 out, NvU64 in);
 
+  /* Launch geometry. Zero means the registry default, which is what almost
+   * every elementwise kernel wants; a kernel with different needs says so. */
   NvU32 blockX, gridX;
 
   /* Prepare the inputs. Binary kernels use both; unary kernels ignore `b`;
@@ -59,7 +61,13 @@ typedef struct {
    * scale, and the base conversions inside exp and log -- read it from there,
    * which is how a real kernel receives a scalar. Last in the struct so the
    * registry table reads name, code, geometry, data, expectation. */
-  float scalar;
+  float scalar, scalar2;
+
+  /* Seed the OUTPUT before launch, for kernels that read what they write.
+   * Accumulate-style operations are only meaningfully tested against a known
+   * prior value; clearing to zero would make an accumulate indistinguishable
+   * from an assign. */
+  void (*seed)(volatile NvU32 *out);
 } pr_kernel;
 
 /* The registry. Every kernel the stack can run, in the order they are tested. */
