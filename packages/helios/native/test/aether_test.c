@@ -97,6 +97,27 @@ static void test_nvos02_layout(void) {
   HT_END();
 }
 
+/* The Unix layer wraps two escapes with a file descriptor. Their sizes are baked
+ * into the ioctl request code, so a wrong wrapper is rejected with EINVAL before
+ * RM ever sees it -- which looks nothing like an RM error and cost a round trip
+ * to recognise. Both wrappers are 56 bytes; verified against the vendor headers
+ * by compiling nvos.h directly. */
+static void test_with_fd_wrapper_sizes(void) {
+  HT_CASE("with_fd wrappers are the size the kernel expects");
+  struct w33 { NVOS33_PARAMETERS params; int fd; };
+  struct w02 { NVOS02_PARAMETERS params; int fd; };
+  HT_SIZEOF(NVOS33_PARAMETERS, 48);
+  HT_SIZEOF(NVOS02_PARAMETERS, 48);
+  HT_SIZEOF(struct w33, 56);
+  HT_SIZEOF(struct w02, 56);
+
+  /* And the request codes those sizes produce. NV_ESC_RM_MAP_MEMORY (0x4E)
+   * with a 56-byte wrapper:
+   *   (3 << 30) | (56 << 16) | (0x46 << 8) | 0x4E = 0xC038464E */
+  HT_EQ_U64(AE_IOWR(NV_ESC_RM_MAP_MEMORY, sizeof(struct w33)), 0xC038464EUL);
+  HT_END();
+}
+
 static void test_ioctl_request_encoding(void) {
   /* Hand-computed from the _IOC layout in ioctl.h:
    *   dir  = READ|WRITE = 3, at bit 30
@@ -213,6 +234,7 @@ void ht_run(void) {
   test_nvos33_layout();
   test_nvos02_layout();
   test_ioctl_request_encoding();
+  test_with_fd_wrapper_sizes();
   test_class_ids();
   test_status_names();
   test_handle_allocator();
