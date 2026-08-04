@@ -77,6 +77,21 @@ static inline hp_control hp_ctrl_wait(unsigned barrier) {
   return c;
 }
 
+/*
+ * Wait on SEVERAL barriers at once.
+ *
+ * Two variable-latency producers feeding one consumer need two barriers and a
+ * wait on both. Pointing both at the same barrier looks economical and is not
+ * safe: the wait can release once, leaving the second register still in flight,
+ * and the consumer reads whatever was there. It shows up as a plausible-looking
+ * wrong value rather than as a stall, which is the worst way for a race to
+ * present.
+ */
+static inline hp_control hp_ctrl_waitmask(unsigned mask) {
+  hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, mask & 0x3f, 0};
+  return c;
+}
+
 /* Pack to the 23-bit field value. */
 uint32_t hp_control_pack(hp_control c);
 

@@ -30,7 +30,13 @@
 #define HP_OP_MOV 0xa02
 #define HP_OP_IMAD 0x424 /* IMAD.MOV.U32 is how ptxas materialises immediates */
 #define HP_OP_S2R 0x919
-#define HP_OP_IADD3 0x810
+#define HP_OP_IADD3 0x810      /* IADD3 Rd, Ra, imm, RZ */
+#define HP_OP_IADD3_R 0x210    /* IADD3 Rd, Ra, Rb, RZ — a DIFFERENT opcode */
+#define HP_OP_IMAD_C 0xa24     /* IMAD Rd, Ra, c[bank][off], Rc */
+#define HP_OP_IMAD_WIDE_C 0x625 /* IMAD.WIDE.U32 Rd, Ra, Rb, c[bank][off] */
+#define HP_OP_FADD 0x221
+#define HP_OP_FMUL 0x220
+#define HP_OP_FFMA 0x223
 #define HP_OP_STG 0x986
 #define HP_OP_LDG 0x981
 #define HP_OP_EXIT 0x94d
@@ -66,9 +72,50 @@ hp_word hp_iadd3_imm(unsigned dst, unsigned srcA, uint32_t imm, hp_control c);
 /* IADD3 Rd, Ra, Rb, RZ */
 hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
 
+/* Single-precision arithmetic. References from cuobjdump:
+ *   FADD R9,  R0, R9       0x0000000900097221 0x004fca0000000000
+ *   FMUL R11, R0, R11      0x0000000b000b7220 0x004fca0000400000
+ *   FFMA R13, R0, R13, R15 0x0000000d000d7223 0x004fca000000000f
+ * FMUL carries 0x00400000 in bits 64..95 where FADD carries nothing, so the
+ * two are not the same shape with a different opcode. */
+hp_word hp_fadd(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+hp_word hp_fmul(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c);
+
 /* STG.E [Ra.64 + offset], Rb — store to global memory through a 64-bit address
  * held in Ra:Ra+1. */
 hp_word hp_stg(unsigned addrReg, unsigned dataReg, uint32_t offset, hp_control c);
+
+/* IADD3 Rd, Ra, Rb, RZ — the register-register add.
+ *
+ * NOTE the opcode differs from the immediate form (0x210 vs 0x810). They are
+ * not the same instruction with a different operand; assuming otherwise
+ * produces something that decodes as an unrelated operation. */
+hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+
+/* Single-precision arithmetic. References from cuobjdump:
+ *   FADD R9,  R0, R9       0x0000000900097221 0x004fca0000000000
+ *   FMUL R11, R0, R11      0x0000000b000b7220 0x004fca0000400000
+ *   FFMA R13, R0, R13, R15 0x0000000d000d7223 0x004fca000000000f
+ * FMUL carries 0x00400000 in bits 64..95 where FADD carries nothing, so the
+ * two are not the same shape with a different opcode. */
+hp_word hp_fadd(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+hp_word hp_fmul(unsigned dst, unsigned srcA, unsigned srcB, hp_control c);
+hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c);
+
+/* IMAD Rd, Ra, c[bank][offset], Rc — multiply a register by a constant-bank
+ * value and add a register. This is how a global thread index is built:
+ * ctaid.x * ntid.x + tid.x, with ntid.x living at c[0x0][0x0]. */
+hp_word hp_imad_const(unsigned dst, unsigned srcA, unsigned bank,
+                      unsigned offset, unsigned srcC, hp_control c);
+
+/* IMAD.WIDE.U32 Rd, Ra, Rb, c[bank][offset] — a 32x32 multiply widened to 64
+ * bits and added to a 64-bit constant-bank value, landing in Rd:Rd+1. This is
+ * how an element index becomes an address: index * elementSize + base. */
+hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
+                           unsigned bank, unsigned offset, hp_control c);
 
 /* LDG.E Rd, [Ra.64 + offset] */
 hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c);

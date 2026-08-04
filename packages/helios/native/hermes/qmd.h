@@ -87,6 +87,21 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
  * needs no bank at all, and an unset bank is simply invalid rather than wrong. */
 void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
 
+/*
+ * Constant bank 0 holds the kernel's parameters, and the layout is CUDA's:
+ * driver-provided values low, user parameters from 0x160. We follow it because
+ * every reference encoding we have -- and therefore every offset baked into an
+ * instruction like IMAD.WIDE.U32 Rd, Ra, Rb, c[0x0][0x160] -- assumes it.
+ *
+ *   0x000   ntid.x   the block width, read when computing a global index
+ *   0x160   param 0
+ *   0x168   param 1
+ *   ...
+ */
+#define HERMES_CBUF0_NTID_X 0x000
+#define HERMES_CBUF0_PARAM0 0x160
+#define HERMES_CBUF0_BYTES 0x1000
+
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)
 #define HERMES_QMD_SCRATCH_STRIDE (64 * 1024)
 

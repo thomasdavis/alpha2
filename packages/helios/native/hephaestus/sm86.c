@@ -82,16 +82,10 @@ hp_word hp_iadd3_imm(unsigned dst, unsigned srcA, uint32_t imm, hp_control c) {
   return w;
 }
 
-hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
-  hp_word w = base(HP_OP_IADD3, c);
-  hp_put(&w, HP_F_DST, 8, dst);
-  hp_put(&w, HP_F_SRCA, 8, srcA);
-  hp_put(&w, HP_F_SRCB, 8, srcB);
-  hp_put(&w, HP_F_SRCC, 8, HP_RZ);
-  hp_put(&w, 81, 3, HP_PT);
-  hp_put(&w, 84, 3, HP_PT);
-  return w;
-}
+/* The register-register add used the IMMEDIATE opcode (0x810) with a register
+ * in the srcB slot. Those are different instructions, not one instruction with
+ * two operand kinds -- reg-reg is 0x210. Reference:
+ *   IADD3 R7, R0, R3, RZ   0x0000000300077210 0x004fca0007ffe0ff  */
 
 /*
  * STG carries a memory descriptor in bits 64..95, and omitting it is not a
@@ -155,6 +149,78 @@ hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
  * caught it -- the round-trip through nvdisasm that standard 7 asks for, which
  * had been treated as a nicety rather than the actual test.
  */
+/*
+ * Reference encodings, from cuobjdump on a kernel doing
+ * `o[blockIdx.x*blockDim.x+threadIdx.x] = a[i] + i`:
+ *
+ *   IADD3 R7, R0, R3, RZ                    0x0000000300077210 0x004fca0007ffe0ff
+ *   IMAD R0, R0, c[0x0][0x0], R3            0x0000000000007a24 0x001fc800078e0203
+ *   IMAD.WIDE.U32 R2, R0, R5, c[0x0][0x168] 0x00005a0000027625 0x000fcc00078e0005
+ *
+ * Note where the operands sit, because it is not uniform: IMAD.WIDE puts its
+ * CONSTANT in the srcB slot at bit 32 and its register srcB at bit 64, the
+ * opposite of what the printed operand order suggests.
+ */
+hp_word hp_iadd3_reg(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
+  hp_word w = base(HP_OP_IADD3_R, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 32, 0x07ffe0ff); /* srcC = RZ, plus the fixed selector */
+  return w;
+}
+
+hp_word hp_imad_const(unsigned dst, unsigned srcA, unsigned bank,
+                      unsigned offset, unsigned srcC, hp_control c) {
+  hp_word w = base(HP_OP_IMAD_C, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB + 6, 16, offset);
+  hp_put(&w, HP_F_SRCB + 22, 5, bank);
+  hp_put(&w, 64, 8, srcC);
+  hp_put(&w, 72, 24, 0x078e02);
+  return w;
+}
+
+hp_word hp_imad_wide_const(unsigned dst, unsigned srcA, unsigned srcB,
+                           unsigned bank, unsigned offset, hp_control c) {
+  hp_word w = base(HP_OP_IMAD_WIDE_C, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB + 6, 16, offset);
+  hp_put(&w, HP_F_SRCB + 22, 5, bank);
+  hp_put(&w, 64, 8, srcB);
+  hp_put(&w, 72, 24, 0x078e00);
+  return w;
+}
+
+hp_word hp_fadd(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
+  hp_word w = base(HP_OP_FADD, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  return w;
+}
+
+hp_word hp_fmul(unsigned dst, unsigned srcA, unsigned srcB, hp_control c) {
+  hp_word w = base(HP_OP_FMUL, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 32, 0x00400000);
+  return w;
+}
+
+hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c) {
+  hp_word w = base(HP_OP_FFMA, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 8, srcC);
+  return w;
+}
+
 hp_word hp_exit(hp_control c) {
   hp_word w = base(HP_OP_EXIT, c);
   hp_put(&w, 64, 32, 0x03800000);

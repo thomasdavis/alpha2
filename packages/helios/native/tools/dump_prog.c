@@ -19,6 +19,13 @@
 
 int main(void) {
   hp_word p[] = {
+      /* the ctaid probe, exactly as the test builds it */
+      hp_s2r(0, HP_SR_CTAID_X, hp_ctrl_setbar(0)),
+      hp_mov_imm(2, 0x60000u, hp_ctrl_safe()),
+      hp_mov_imm(3, 0x8u, hp_ctrl_safe()),
+      hp_iadd3_imm(4, 0, 0x100, hp_ctrl_wait(0)),
+      hp_stg(2, 4, 0, hp_ctrl_safe()),
+      hp_exit(hp_ctrl_safe()),
       hp_mov_imm(0, 0x00060000u, hp_ctrl_safe()),
       hp_mov_imm(2, 0xcafef00du, hp_ctrl_safe()),
       hp_mov_const(1, 0, 0x28, hp_ctrl_safe()),
@@ -28,6 +35,12 @@ int main(void) {
       hp_ldg(4, 0, 0x40, hp_ctrl_setbar(0)),
       hp_stg(0, 2, 0, hp_ctrl_safe()),
       hp_stg(0, 2, 0x40, hp_ctrl_safe()),
+      hp_iadd3_reg(7, 0, 3, hp_ctrl_safe()),
+      hp_imad_const(0, 0, 0, 0x0, 3, hp_ctrl_safe()),
+      hp_imad_wide_const(2, 0, 5, 0, 0x168, hp_ctrl_safe()),
+      hp_fadd(9, 0, 9, hp_ctrl_safe()),
+      hp_fmul(11, 0, 11, hp_ctrl_safe()),
+      hp_ffma(13, 0, 13, 15, hp_ctrl_safe()),
       hp_bar_sync(hp_ctrl_safe()),
       hp_nop(hp_ctrl_safe()),
       hp_exit(hp_ctrl_safe()),

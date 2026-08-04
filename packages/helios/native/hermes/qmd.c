@@ -156,7 +156,20 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * are genuinely zero for a kernel with no shared memory, no spills and no
    * barriers. */
   qmd_set(qmd, REGISTER_COUNT_V, 16);
-  qmd_set(qmd, BARRIER_COUNT, 0);
+  /*
+   * ONE BARRIER, always.
+   *
+   * This was 0, and a kernel that executes BAR.SYNC with no barrier allocated
+   * does not fault at the barrier -- it corrupts SM state and the NEXT kernel
+   * raises GR_EXCEPTION. That misdirection cost a while: the barrier kernel
+   * passed, the kernel after it failed, and every hypothesis went to whatever
+   * that next kernel did differently. When the barrier kernel happened to run
+   * last, the whole suite passed.
+   *
+   * The tell was positional rather than technical: the failing kernel changed
+   * whenever the ORDER changed, which no property of a kernel can explain.
+   */
+  qmd_set(qmd, BARRIER_COUNT, 1);
   qmd_set(qmd, SHARED_MEMORY_SIZE, 0);
   qmd_set(qmd, MIN_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
   qmd_set(qmd, TARGET_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
@@ -171,7 +184,7 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * our kernel does not need it, so bank 0 gets bound to scratch. The size is
    * the minimum constant-buffer alignment on this hardware.
    */
-  if (scratch) qmd_set_cbuf(qmd, 0, scratch, 0x100);
+  if (scratch) qmd_set_cbuf(qmd, 0, scratch, HERMES_CBUF0_BYTES);
   qmd_set(qmd, SHADER_LOCAL_MEMORY_LOW_SIZE, 0);
   qmd_set(qmd, SHADER_LOCAL_MEMORY_HIGH_SIZE, 0);
 }
