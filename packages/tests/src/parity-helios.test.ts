@@ -41,14 +41,43 @@ const TRAIN_STEPS = 100;
 const TRAIN_LOSS_PCT = 0.05; // final helios loss must be within 5% of cpu_ref
 
 // ── Capability-based GPU detection ──────────────────────────────────────────
+//
+// X43 local correctness lane. `ALPHA_PARITY_ALLOW_SOFTWARE_DEVICE=1` lets this
+// suite run on a software Vulkan device (lavapipe) that the training capability
+// guard rejects.
+//
+// Why that is safe here and NOT a weakening of the guard:
+//   * `assessHeliosTrainingDevice` is untouched, and the trainer still refuses
+//     to train on such a device. Nothing in the training path changes.
+//   * The guard exists because a wrong subgroup width corrupts gradients
+//     SILENTLY during training. Every assertion in this suite compares against
+//     cpu_ref, so an incorrect result fails LOUDLY instead. That is the
+//     opposite failure mode, which is why the same restriction is not required.
+//   * Correctness only. It is deliberately not applied to the performance
+//     suite, where software-device timings would be meaningless.
+//
+// A pass here does not license promotion; it catches numerical regressions
+// before renting hardware rather than after.
+const ALLOW_SOFTWARE_DEVICE = process.env.ALPHA_PARITY_ALLOW_SOFTWARE_DEVICE === "1";
 let hasSupportedGpu = false;
+let usingSoftwareDevice = false;
 try {
   hasSupportedGpu = assessHeliosTrainingDevice(getDeviceInfo()).supported;
+  if (!hasSupportedGpu && ALLOW_SOFTWARE_DEVICE) {
+    hasSupportedGpu = true;
+    usingSoftwareDevice = true;
+  }
 } catch {
   hasSupportedGpu = false;
 }
 if (!hasSupportedGpu) {
   console.log("[parity-helios] no capability-compatible physical GPU detected — suite skipped");
+} else if (usingSoftwareDevice) {
+  console.log(
+    `[parity-helios] CORRECTNESS-ONLY run on an unsupported device ` +
+    `(${getDeviceInfo()?.deviceName}). Numerical parity is meaningful; ` +
+    `performance and promotion are not.`,
+  );
 }
 
 const gpu = hasSupportedGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
