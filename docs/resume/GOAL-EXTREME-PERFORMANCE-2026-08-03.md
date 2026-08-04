@@ -148,6 +148,10 @@ consumes dQ/dK/dV together and writes one complete grouped gradient, eliminating
 three padded branch tensors and two additions. This removes another 72
 dispatches and 10.547 GiB versus X28; cumulatively the pair removes 252
 dispatches and 19.336 GiB versus the pre-X28 boundary.
+Flash Attention now writes token-major O directly and reads token-major O/dO
+in backward, removing the remaining two output-layout transposes per layer:
+another 36 dispatches and 1.758 GiB, or 288 dispatches and 21.094 GiB across
+X28-X30 in static accounting.
 Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
@@ -158,7 +162,9 @@ with the two-output fusion recorded separately in
 and the grouped layout fusion in
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`,
 with the one-tape combined backward in
-`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`.
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`,
+and the direct output layout in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred

@@ -268,7 +268,7 @@ type FlashCoop2ScopeTag = "wg" | "sg";
 type FlashDispatchPath = "scalar" | "coop2";
 
 export interface FlashDispatchDebug {
-  requestedOp: "flashAttention" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
+  requestedOp: "flashAttention" | "flashAttentionTokenMajor" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
   executedPath: FlashDispatchPath;
   mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only";
   softCap: number;
@@ -5393,6 +5393,31 @@ export class HeliosBackend implements Backend {
 
   flashAttention(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData } {
+    return this.flashAttentionImpl(Q, K, V, T, scale, softCap, 1, Q.shape[0], false);
+  }
+
+  flashAttentionTokenMajor(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { output: TensorData; lse: TensorData } {
+    if (Q.shape[0] !== batch * heads) {
+      throw new Error(`flashAttentionTokenMajor expected BH=${batch * heads}, got ${Q.shape[0]}`);
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_TOKEN_MAJOR === "1") {
+      const { output: headMajor, lse } = this.flashAttention(Q, K, V, T, scale, softCap);
+      const headView = this.reshape(headMajor, [batch, heads, T, Q.shape[2]]);
+      const transposed = this.transpose(headView, 1, 2);
+      const output = this.reshape(transposed, [batch * T, heads * Q.shape[2]]);
+      releaseGpuBufferFor(headMajor);
+      releaseGpuBufferFor(headView);
+      releaseGpuBufferFor(transposed);
+      return { output, lse };
+    }
+    return this.flashAttentionImpl(Q, K, V, T, scale, softCap, batch, heads, true);
+  }
+
+  private flashAttentionImpl(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean): { output: TensorData; lse: TensorData } {
     const vk = this.init();
     // Q/K/V are [BH, T, D] where BH = batch * nHeads
     const BH = Q.shape[0];
@@ -5410,14 +5435,14 @@ export class HeliosBackend implements Backend {
     let fallbackReason: string | undefined;
     if (canUseCoop2Forward) {
       if (this._flashFwdCoop2Strict) {
-        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+        return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
       }
       if (this._flashFwdCoop2Ready === true) {
-        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+        return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
       }
       if (this._flashFwdCoop2Ready === null) {
         try {
-          const result = this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+          const result = this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
           this._flashFwdCoop2Ready = true;
           return result;
         } catch (err) {
@@ -5456,7 +5481,8 @@ export class HeliosBackend implements Backend {
     const Br = safeFlashTile(T, 32);
     const Bc = safeFlashTile(T, Math.min(16, Br));
     const scSuffix = softCap > 0 ? "_sc" : "";
-    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}`;
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}${tokenMajorSuffix}`;
     const pipelineLookup = getPipelineLookup(vk, kernelName, 5, 16);
     const pipeline = pipelineLookup.handle;
 
@@ -5471,7 +5497,7 @@ export class HeliosBackend implements Backend {
     const lseBytes = BH * T * 4;
     const lseRegion = acquireOutputRegion(vk, lseBytes);
 
-    const push = push4Memo(T, scale, softCap, 0);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
     const gX = Math.ceil(T / Br);
 
     graph.record({
@@ -5483,13 +5509,13 @@ export class HeliosBackend implements Backend {
       groups: [gX, BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
+      shape: tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
       writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
-      requestedOp: "flashAttention",
+      requestedOp: tokenMajorOutput ? "flashAttentionTokenMajor" : "flashAttention",
       executedPath: "scalar",
       mode: "full",
       softCap,
@@ -5503,7 +5529,8 @@ export class HeliosBackend implements Backend {
       fallbackReason,
     });
 
-    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const output = graphLazyTensor(vk,
+      tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
   }
@@ -5591,6 +5618,12 @@ export class HeliosBackend implements Backend {
 
   flashAttentionCoop2(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap = 0): { output: TensorData; lse: TensorData } {
+    return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, 1, Q.shape[0], false);
+  }
+
+  private flashAttentionCoop2Impl(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean): { output: TensorData; lse: TensorData } {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
@@ -5605,7 +5638,8 @@ export class HeliosBackend implements Backend {
     const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
     const noLseSuffix = skipLseWrite ? "_nolse" : "";
     const dbSuffix = this._flashCoop2DoubleBuf ? "_db" : "";
-    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}`;
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}${tokenMajorSuffix}`;
     const { kernelName, pipeline, pipelineKey, pipelineCreated, scope, fallbackReason } =
       this.resolveFlashCoop2Pipeline(vk, baseKernelName);
 
@@ -5618,7 +5652,7 @@ export class HeliosBackend implements Backend {
     const lseBytes = BH * T * 4;
     const lseRegion = acquireOutputRegion(vk, lseBytes);
 
-    const push = push4Memo(T, scale, softCap, 0);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
     const gX = Math.ceil(T / (Br * qTilesPerWG));
 
     graph.record({
@@ -5630,13 +5664,13 @@ export class HeliosBackend implements Backend {
       groups: [gX, BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
+      shape: tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
       writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
-      requestedOp: "flashAttentionCoop2",
+      requestedOp: tokenMajorOutput ? "flashAttentionTokenMajor" : "flashAttentionCoop2",
       executedPath: "coop2",
       mode: "full",
       softCap,
@@ -5651,7 +5685,8 @@ export class HeliosBackend implements Backend {
       fallbackReason,
     });
 
-    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const output = graphLazyTensor(vk,
+      tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
   }
@@ -5839,6 +5874,44 @@ export class HeliosBackend implements Backend {
   flashAttentionBackward(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    return this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, 1, Q.shape[0], false,
+    );
+  }
+
+  flashAttentionBackwardTokenMajor(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    if (Q.shape[0] !== batch * heads) {
+      throw new Error(`flashAttentionBackwardTokenMajor expected BH=${batch * heads}, got ${Q.shape[0]}`);
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_TOKEN_MAJOR === "1") {
+      const toHeadMajor = (value: TensorData): { value: TensorData; temps: TensorData[] } => {
+        const tokenView = this.reshape(value, [batch, T, heads, Q.shape[2]]);
+        const transposed = this.transpose(tokenView, 1, 2);
+        const headView = this.reshape(transposed, [batch * heads, T, Q.shape[2]]);
+        return { value: headView, temps: [tokenView, headView, transposed] };
+      };
+      const outputHeadMajor = toHeadMajor(O);
+      const gradHeadMajor = toHeadMajor(dO);
+      const result = this.flashAttentionBackward(
+        Q, K, V, outputHeadMajor.value, gradHeadMajor.value, lse, T, scale, softCap,
+      );
+      for (const temp of [...outputHeadMajor.temps, ...gradHeadMajor.temps]) {
+        releaseGpuBufferFor(temp);
+      }
+      return result;
+    }
+    return this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, batch, heads, true,
+    );
+  }
+
+  private flashAttentionBackwardImpl(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean): { dQ: TensorData; dK: TensorData; dV: TensorData } {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
@@ -5851,6 +5924,7 @@ export class HeliosBackend implements Backend {
     const BcDQ = safeFlashTile(T, Math.min(requestedBcDQ, Br));
     const BcDKV = safeFlashTile(T, requestedBcDKV);
     const scSuffix = softCap > 0 ? "_sc" : "";
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -5865,11 +5939,11 @@ export class HeliosBackend implements Backend {
     const dPreRegion = acquireOutputRegion(vk, dPreBytes);
 
     // dQ kernel: bindings [Q, K, V, dO, O, LSE, Dpre_out, dQ_out]
-    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}`;
+    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}${tokenMajorSuffix}`;
     const dqPipeline = getPipeline(vk, dqKernel, 8, 16);
     const dqBytes = BH * T * D * 4;
     const dqRegion = acquireOutputRegion(vk, dqBytes);
-    const push = push4Memo(T, scale, softCap, 0);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
 
     graph.record({
       kind: "backward",
@@ -5889,8 +5963,8 @@ export class HeliosBackend implements Backend {
     // Experimental ILP variant: each invocation processes several query rows
     // per loop body. Keep it opt-in until a physical device profile proves
     // that the extra registers/code size beat the selected scalar kernel.
-    const dkvVariant = process.env.HELIOS_FLASH_BWD_DKV_V2 === "1" ? "_v2" : "";
-    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}`;
+    const dkvVariant = !tokenMajorOutput && process.env.HELIOS_FLASH_BWD_DKV_V2 === "1" ? "_v2" : "";
+    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}${tokenMajorSuffix}`;
     const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
     const dkBytes = BH * T * D * 4;
     const dkRegion = acquireOutputRegion(vk, dkBytes);
@@ -5904,7 +5978,7 @@ export class HeliosBackend implements Backend {
       inputBufs: [],
       outputRegion: dkRegion,
       groups: [Math.ceil(T / BcDKV), BH, 1],
-      push: push4Memo(T, scale, softCap, 0),
+      push: push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0),
       pushSize: 16,
       shape: [BH, T, D],
       allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],

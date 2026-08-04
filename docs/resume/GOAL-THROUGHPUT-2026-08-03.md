@@ -93,7 +93,8 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X26-DEVICE-RESIDENT-LAZY-TRAINING-LOSS.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X28-QKV-HEAD-LAYOUT-ROPE-FUSION.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`.
 
 The first pass now implements six native exact-path mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
@@ -113,6 +114,10 @@ one autograd operation, allowing dQ/dK/dV to write one complete grouped
 gradient instead of three padded tensors plus two additions. This removes an
 additional 72 dispatches and 10.547 GiB versus X28; the two mechanisms
 cumulatively remove 252 dispatches and 19.336 GiB versus the pre-X28 boundary.
+Flash Attention now writes O directly in token-major output-projection layout
+and consumes token-major O/dO in backward, eliminating the paired output
+transposes. This removes another 36 dispatches and 1.758 GiB in static
+accounting; X28-X30 total 288 dispatches and 21.094 GiB removed.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.

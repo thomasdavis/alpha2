@@ -36,7 +36,13 @@ import {
 
 // ── Kernel: Flash Attention Forward ──────────────────────────────────────────
 
-export function kernelFlashAttentionForward(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
+export function kernelFlashAttentionForward(
+  Br: number,
+  Bc: number,
+  D: number,
+  useSoftCap: boolean = true,
+  tokenMajorOutput: boolean = false,
+): Uint32Array {
   const D4 = D >>> 2; // D must be divisible by 4
   const b = new SpirVBuilder();
   const p = preamble(b, Br, 1, 1);
@@ -52,7 +58,7 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number, u
   const bufO   = declareStorageBufferVec4(b, tVec4F32, 0, 3, false, true);
   const bufLSE = declareStorageBuffer(b, p.tF32, p.tU32, 0, 4, false, true);
 
-  // Push constants: { T, scale, softCapValue, _pad }
+  // Push constants: { T, scale, softCapValue, heads_for_token_major }
   const pc = declareParamsPushConstant(b, p.tF32, 4);
 
   // ── Constants ──────────────────────────────────────────────────────────────
@@ -166,6 +172,15 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number, u
   b.emit(Op.Load, [p.tF32, TF, ptrTpc]);
   const T = b.id();
   b.emit(Op.ConvertFToU, [p.tU32, T, TF]);
+
+  let outputHeads = 0;
+  if (tokenMajorOutput) {
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const ptrHeads = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrHeads, pc.varId, const3u]);
+    const headsF = b.id(); b.emit(Op.Load, [p.tF32, headsF, ptrHeads]);
+    outputHeads = b.id(); b.emit(Op.ConvertFToU, [p.tU32, outputHeads, headsF]);
+  }
 
   const ptrScale = b.id();
   b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, p.const1u]);
@@ -531,8 +546,20 @@ export function kernelFlashAttentionForward(Br: number, Bc: number, D: number, u
   const invL = b.id();
   b.emit(Op.FDiv, [p.tF32, invL, const1f, finalL]);
 
-  const oBase4 = b.id();
-  b.emit(Op.IAdd, [p.tU32, oBase4, baseOff4, qRowD4]);
+  let oBase4: number;
+  if (tokenMajorOutput) {
+    const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, bhIdx, outputHeads]);
+    const head = b.id(); b.emit(Op.UMod, [p.tU32, head, bhIdx, outputHeads]);
+    const batchTimesT = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesT, batch, T]);
+    const tokenRow = b.id(); b.emit(Op.IAdd, [p.tU32, tokenRow, batchTimesT, qRow]);
+    const modelD4 = b.id(); b.emit(Op.IMul, [p.tU32, modelD4, outputHeads, constD4]);
+    const tokenBase4 = b.id(); b.emit(Op.IMul, [p.tU32, tokenBase4, tokenRow, modelD4]);
+    const headBase4 = b.id(); b.emit(Op.IMul, [p.tU32, headBase4, head, constD4]);
+    oBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, oBase4, tokenBase4, headBase4]);
+  } else {
+    oBase4 = b.id();
+    b.emit(Op.IAdd, [p.tU32, oBase4, baseOff4, qRowD4]);
+  }
 
   for (let d4 = 0; d4 < D4; d4++) {
     const ptrRegOd4 = b.id();
@@ -1075,10 +1102,16 @@ export function kernelFlashAttentionForwardV2(
 // Bindings:
 //   0: Q [B*H, T, D] (readonly, vec4)  1: K  2: V  3: dO
 //   4: LSE [B*H, T] (readonly, f32)  5: D_precomp  6: dQ (write, vec4)
-// Push constants: { T, scale, softCapValue, _pad }
+// Push constants: { T, scale, softCapValue, heads_for_token_major }
 // Dispatch: (ceil(T/Br), B*H, 1)  Workgroup: (Br, 1, 1)
 
-export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
+export function kernelFlashAttentionBackwardDQ(
+  Br: number,
+  Bc: number,
+  D: number,
+  useSoftCap: boolean = true,
+  tokenMajorOutput: boolean = false,
+): Uint32Array {
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Br, 1, 1);
@@ -1166,6 +1199,14 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   const ptrTpc = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrTpc, pc.varId, p.const0u]);
   const TF = b.id(); b.emit(Op.Load, [p.tF32, TF, ptrTpc]);
   const T = b.id(); b.emit(Op.ConvertFToU, [p.tU32, T, TF]);
+  let outputHeads = 0;
+  if (tokenMajorOutput) {
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const ptrHeads = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrHeads, pc.varId, const3u]);
+    const headsF = b.id(); b.emit(Op.Load, [p.tF32, headsF, ptrHeads]);
+    outputHeads = b.id(); b.emit(Op.ConvertFToU, [p.tU32, outputHeads, headsF]);
+  }
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, p.const1u]);
   const scale = b.id(); b.emit(Op.Load, [p.tF32, scale, ptrScale]);
   let softCapValue: number = 0, softCapEnabled: number = 0, invSoftCap: number = 0;
@@ -1191,6 +1232,18 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
   // Load Q[qRow] pre-scaled, dO[qRow]
   const qRowD4 = b.id(); b.emit(Op.IMul, [p.tU32, qRowD4, qRow, constD4]);
   const qBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qBase4, baseOff4, qRowD4]);
+  let outputRowBase4 = qBase4;
+  if (tokenMajorOutput) {
+    const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, bhIdx, outputHeads]);
+    const head = b.id(); b.emit(Op.UMod, [p.tU32, head, bhIdx, outputHeads]);
+    const batchTimesT = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesT, batch, T]);
+    const tokenRow = b.id(); b.emit(Op.IAdd, [p.tU32, tokenRow, batchTimesT, qRow]);
+    const modelD4 = b.id(); b.emit(Op.IMul, [p.tU32, modelD4, outputHeads, constD4]);
+    const tokenBase4 = b.id(); b.emit(Op.IMul, [p.tU32, tokenBase4, tokenRow, modelD4]);
+    const headBase4 = b.id(); b.emit(Op.IMul, [p.tU32, headBase4, head, constD4]);
+    outputRowBase4 = b.id();
+    b.emit(Op.IAdd, [p.tU32, outputRowBase4, tokenBase4, headBase4]);
+  }
 
   // Load Q[qRow] pre-scaled into SSA registers (stays in GPU registers)
   for (let d4 = 0; d4 < D4; d4++) {
@@ -1203,7 +1256,7 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
 
   // Load dO[qRow] into SSA registers
   for (let d4 = 0; d4 < D4; d4++) {
-    const doIdx = b.id(); b.emit(Op.IAdd, [p.tU32, doIdx, qBase4, constD4Idx[d4]]);
+    const doIdx = b.id(); b.emit(Op.IAdd, [p.tU32, doIdx, outputRowBase4, constD4Idx[d4]]);
     const ptrDOElem = b.id(); b.emit(Op.AccessChain, [bufDO.tPtrVec4, ptrDOElem, bufDO.varId, p.const0u, doIdx]);
     const doVec = b.id(); b.emit(Op.Load, [tVec4F32, doVec, ptrDOElem]);
     regDOVecs.push(doVec);
@@ -1216,12 +1269,12 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
 
   // Inline D_precomp: Di = sum_d(dO[i,d] * O[i,d]) — dot product via Op.Dot on vec4s
   // Load O[qRow] and compute dot product with already-loaded dO[qRow]
-  const oIdx0 = b.id(); b.emit(Op.IAdd, [p.tU32, oIdx0, qBase4, constD4Idx[0]]);
+  const oIdx0 = b.id(); b.emit(Op.IAdd, [p.tU32, oIdx0, outputRowBase4, constD4Idx[0]]);
   const ptrO0 = b.id(); b.emit(Op.AccessChain, [bufO.tPtrVec4, ptrO0, bufO.varId, p.const0u, oIdx0]);
   const oVec0 = b.id(); b.emit(Op.Load, [tVec4F32, oVec0, ptrO0]);
   let Di = b.id(); b.emit(Op.Dot, [p.tF32, Di, regDOVecs[0], oVec0]);
   for (let d4 = 1; d4 < D4; d4++) {
-    const oIdx = b.id(); b.emit(Op.IAdd, [p.tU32, oIdx, qBase4, constD4Idx[d4]]);
+    const oIdx = b.id(); b.emit(Op.IAdd, [p.tU32, oIdx, outputRowBase4, constD4Idx[d4]]);
     const ptrO = b.id(); b.emit(Op.AccessChain, [bufO.tPtrVec4, ptrO, bufO.varId, p.const0u, oIdx]);
     const oVec = b.id(); b.emit(Op.Load, [tVec4F32, oVec, ptrO]);
     const partialDi = b.id(); b.emit(Op.Dot, [p.tF32, partialDi, regDOVecs[d4], oVec]);
@@ -1478,10 +1531,16 @@ export function kernelFlashAttentionBackwardDQ(Br: number, Bc: number, D: number
 //   0: Q [B*H, T, D] (readonly, vec4)  1: K  2: V  3: dO
 //   4: LSE [B*H, T] (readonly, f32)  5: D_precomp
 //   6: dK (write, vec4)  7: dV (write, vec4)
-// Push constants: { T, scale, softCapValue, _pad }
+// Push constants: { T, scale, softCapValue, heads_for_token_major }
 // Dispatch: (ceil(T/Bc), B*H, 1)  Workgroup: (Bc, 1, 1)
 
-export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: number, useSoftCap: boolean = true): Uint32Array {
+export function kernelFlashAttentionBackwardDKV(
+  Br: number,
+  Bc: number,
+  D: number,
+  useSoftCap: boolean = true,
+  tokenMajorOutput: boolean = false,
+): Uint32Array {
   if (Br % Bc !== 0) {
     throw new Error(`dKV query tile Br=${Br} must be an integer multiple of key tile Bc=${Bc}`);
   }
@@ -1577,6 +1636,14 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
   const ptrTpc = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrTpc, pc.varId, p.const0u]);
   const TF = b.id(); b.emit(Op.Load, [p.tF32, TF, ptrTpc]);
   const T = b.id(); b.emit(Op.ConvertFToU, [p.tU32, T, TF]);
+  let outputHeads = 0;
+  if (tokenMajorOutput) {
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const ptrHeads = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrHeads, pc.varId, const3u]);
+    const headsF = b.id(); b.emit(Op.Load, [p.tF32, headsF, ptrHeads]);
+    outputHeads = b.id(); b.emit(Op.ConvertFToU, [p.tU32, outputHeads, headsF]);
+  }
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, p.const1u]);
   const scale = b.id(); b.emit(Op.Load, [p.tF32, scale, ptrScale]);
   let softCapValue: number = 0, softCapEnabled: number = 0, invSoftCap: number = 0;
@@ -1669,6 +1736,18 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
     const inBoundsF = b.id(); b.emit(Op.Select, [p.tF32, inBoundsF, qRowInBounds, const1f, p.const0f]);
     const qRowD4 = b.id(); b.emit(Op.IMul, [p.tU32, qRowD4, qRow, constD4]);
     const qGlobalBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qGlobalBase4, baseOff4, qRowD4]);
+    let outputGlobalBase4 = qGlobalBase4;
+    if (tokenMajorOutput) {
+      const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, bhIdx, outputHeads]);
+      const head = b.id(); b.emit(Op.UMod, [p.tU32, head, bhIdx, outputHeads]);
+      const batchTimesT = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesT, batch, T]);
+      const tokenRow = b.id(); b.emit(Op.IAdd, [p.tU32, tokenRow, batchTimesT, qRow]);
+      const modelD4 = b.id(); b.emit(Op.IMul, [p.tU32, modelD4, outputHeads, constD4]);
+      const tokenBase4 = b.id(); b.emit(Op.IMul, [p.tU32, tokenBase4, tokenRow, modelD4]);
+      const headBase4 = b.id(); b.emit(Op.IMul, [p.tU32, headBase4, head, constD4]);
+      outputGlobalBase4 = b.id();
+      b.emit(Op.IAdd, [p.tU32, outputGlobalBase4, tokenBase4, headBase4]);
+    }
     const sharedRowOff4 = b.id(); b.emit(Op.IMul, [p.tU32, sharedRowOff4, sharedRow, constD4]);
 
     for (let d4 = 0; d4 < D4; d4++) {
@@ -1680,7 +1759,9 @@ export function kernelFlashAttentionBackwardDKV(Br: number, Bc: number, D: numbe
       const ptrSQ = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSQ, sQ, sQIdx]);
       b.emit(Op.Store, [ptrSQ, qVal]);
 
-      const ptrDOElem = b.id(); b.emit(Op.AccessChain, [bufDO.tPtrVec4, ptrDOElem, bufDO.varId, p.const0u, gIdx]);
+      const doIdx = b.id();
+      b.emit(Op.IAdd, [p.tU32, doIdx, outputGlobalBase4, constD4Idx[d4]]);
+      const ptrDOElem = b.id(); b.emit(Op.AccessChain, [bufDO.tPtrVec4, ptrDOElem, bufDO.varId, p.const0u, doIdx]);
       const doRaw = b.id(); b.emit(Op.Load, [tVec4F32, doRaw, ptrDOElem]);
       const doVal = b.id(); b.emit(Op.VectorTimesScalar, [tVec4F32, doVal, doRaw, inBoundsF]);
       const ptrSDO = b.id(); b.emit(Op.AccessChain, [tPtrSharedVec4, ptrSDO, sDO, sQIdx]);

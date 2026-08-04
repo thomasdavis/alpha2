@@ -1470,6 +1470,95 @@ export function qkvFlashAttention(
   }, cleanup);
 }
 
+/**
+ * Token-major-output counterpart to qkvFlashAttention. The physical Flash
+ * kernel writes [B*T,H*D] directly, so the output projection consumes it
+ * without a full attention-output transpose. Its paired backward reads O/dO
+ * in that same layout before the combined QKV/RoPE gradient write.
+ */
+export function qkvFlashAttentionTokenMajor(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+  scaleValue: number,
+  softCapValue: number,
+): Variable {
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope
+    || !B.qkvHeadMajorRopeBackwardCombined
+    || !B.flashAttentionTokenMajor
+    || !B.flashAttentionBackwardTokenMajor) {
+    const headMajor = qkvFlashAttention(
+      ctx, qkv, batch, sequence, heads, headDim, theta, scaleValue, softCapValue,
+    );
+    return reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, headMajor, [batch, heads, sequence, headDim]), 1, 2),
+      [batch * sequence, heads * headDim],
+    );
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data, cos, sin, batch, sequence, heads, headDim,
+  );
+  const { output, lse } = B.flashAttentionTokenMajor(
+    qData, kData, vData, sequence, batch, heads, scaleValue, softCapValue,
+  );
+  let qForBackward: TensorData | null = qData;
+  let kForBackward: TensorData | null = kData;
+  let vForBackward: TensorData | null = vData;
+  let lseForBackward: TensorData | null = lse;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (qForBackward) release(qForBackward);
+      if (kForBackward) release(kForBackward);
+      if (vForBackward) release(vForBackward);
+      if (lseForBackward) release(lseForBackward);
+    }
+    qForBackward = null;
+    kForBackward = null;
+    vForBackward = null;
+    lseForBackward = null;
+  };
+
+  return record(ctx, output, [qkv], (grad, backwardBackend, release) => {
+    if (!backwardBackend.flashAttentionBackwardTokenMajor
+      || !backwardBackend.qkvHeadMajorRopeBackwardCombined) {
+      throw new Error("qkvFlashAttentionTokenMajor backward hooks disappeared after forward");
+    }
+    if (!qForBackward || !kForBackward || !vForBackward || !lseForBackward) {
+      throw new Error("qkvFlashAttentionTokenMajor backward state was released before use");
+    }
+    const { dQ, dK, dV } = backwardBackend.flashAttentionBackwardTokenMajor(
+      qForBackward,
+      kForBackward,
+      vForBackward,
+      output,
+      grad,
+      lseForBackward,
+      sequence,
+      batch,
+      heads,
+      scaleValue,
+      softCapValue,
+    );
+    const grouped = backwardBackend.qkvHeadMajorRopeBackwardCombined(
+      dQ, dK, dV, cos, negSin, batch, sequence, heads, headDim,
+    );
+    if (release) {
+      release(dQ);
+      release(dK);
+      release(dV);
+    }
+    return [grouped];
+  }, cleanup);
+}
+
 // ── Slice ──────────────────────────────────────────────────────────────────
 
 /** Slice a tensor: out = a[starts:ends] along each dimension. */

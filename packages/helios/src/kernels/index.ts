@@ -371,20 +371,21 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           spirv = kernelLayerNormRegUnrolled(wgSize, iters);
         }
       }
-      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}
+      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}[_tm]
       // Optional _sc suffix enables soft-capping (tanh clamping). Without _sc, softcap code
       // is physically absent from the SPIR-V, eliminating ~25 ops/iter in forward, ~35 in backward.
       if (!spirv) {
-        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)$/);
+        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)(_tm)?$/);
         if (flashMatch) {
-          const [, variant, scSuffix, brS, bcS, dS] = flashMatch;
+          const [, variant, scSuffix, brS, bcS, dS, tokenMajorSuffix] = flashMatch;
           const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
           const useSoftCap = scSuffix === "_sc";
+          const tokenMajorOutput = tokenMajorSuffix === "_tm";
           switch (variant) {
-            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap); break;
+            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
             case "fwd_v2":     spirv = kernelFlashAttentionForwardV2(Br, Bc, D); break;
-            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap); break;
-            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap); break;
+            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
+            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
             case "bwd_dq_v2":  spirv = kernelFlashAttentionBackwardDQV2(Br, Bc, D); break;
             case "bwd_dkv_v2": spirv = kernelFlashAttentionBackwardDKVV2(Br, Bc, D); break;
           }
@@ -416,9 +417,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_db  (double-buffered KV staging)
       if (!spirv) {
-        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(_db)?(?:_(wg|sg))?$/);
+        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(_db)?(_tm)?(?:_(wg|sg))?$/);
         if (coop2FlashMatch) {
-          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, dbSuffix, scopeRaw] = coop2FlashMatch;
+          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, dbSuffix, tokenMajorSuffix, scopeRaw] = coop2FlashMatch;
           const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
           const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
           const softCapConst = scSuffix === "_sc30" ? 30 : null;
@@ -440,6 +441,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
             qTiles,
             localSize,
             doubleBuf,
+            tokenMajorSuffix === "_tm",
           );
         }
       }

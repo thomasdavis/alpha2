@@ -8,7 +8,7 @@ export {
   dropout, residualDropoutAdd, residualDropoutAddRmsNorm,
   embedding, layerNorm, rmsNorm, rope, qkvHeadMajorRope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
-  flashAttention, qkvFlashAttention,
+  flashAttention, qkvFlashAttention, qkvFlashAttentionTokenMajor,
   slice, sliceQkv, reshape, transpose,
   castToF16, castToF32,
 } from "./ops.js";

@@ -13,7 +13,8 @@ import {
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   sliceQkv, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
-  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, qkvFlashAttention, checkpoint,
+  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, qkvFlashAttention,
+  qkvFlashAttentionTokenMajor, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
 
@@ -327,6 +328,11 @@ function transformerBlock(
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
+  const tokenMajorQkvFlash = ropeOn
+    && !!ctx.backend.flashAttentionTokenMajor
+    && !!ctx.backend.flashAttentionBackwardTokenMajor
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackwardCombined;
   const combinedQkvFlash = ropeOn
     && !!ctx.backend.flashAttention
     && !!ctx.backend.flashAttentionBackward
@@ -336,7 +342,22 @@ function transformerBlock(
     && !!ctx.backend.flashAttention
     && !!ctx.backend.qkvHeadMajorRope
     && !!ctx.backend.qkvHeadMajorRopeBackward;
-  if (combinedQkvFlash) {
+  if (tokenMajorQkvFlash) {
+    // The Flash kernel writes [B*T,H*D] in the output projection's native
+    // token-major order and consumes O/dO in the same layout during backward.
+    // This removes both whole-tensor output transposes without changing Q/K/V.
+    attnConcat = qkvFlashAttentionTokenMajor(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+      1 / Math.sqrt(headDim),
+      useSoftCap ? softCapVal! : 0,
+    );
+  } else if (combinedQkvFlash) {
     // Record the layout/RoPE boundary and flash attention as one autograd
     // operation. Its backward consumes dQ/dK/dV together and writes the
     // complete grouped QKV gradient once, avoiding three zero-padded branch

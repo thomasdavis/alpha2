@@ -256,11 +256,22 @@ export interface Backend {
   // Q,K,V: [B*H, T, D], returns { output: [B*H, T, D], lse: [B*H, T] }
   flashAttention?(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData };
+  /** Flash Attention with its output written directly in token-major order.
+   *  Q/K/V remain [B*H,T,D]; output is [B*T,H*D]. */
+  flashAttentionTokenMajor?(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { output: TensorData; lse: TensorData };
   // dO: [B*H, T, D], O: forward output, lse: from forward
   // returns { dQ, dK, dV } each [B*H, T, D]
   flashAttentionBackward?(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData };
+  /** Backward paired with flashAttentionTokenMajor. O/dO are [B*T,H*D];
+   *  returned dQ/dK/dV retain the head-major [B*H,T,D] contract. */
+  flashAttentionBackwardTokenMajor?(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { dQ: TensorData; dK: TensorData; dV: TensorData };
 
   // rotary position embedding (optional) — applies HF-Llama rotate_half rotation.
   // x: [B*H, T, D] (head-major); cos/sin: [T, D/2] precomputed per position.

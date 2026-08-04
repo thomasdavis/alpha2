@@ -8,6 +8,7 @@ import {
   flashAttention,
   mul,
   qkvFlashAttention,
+  qkvFlashAttentionTokenMajor,
   qkvHeadMajorRope,
   sum,
 } from "@alpha/autograd";
@@ -22,6 +23,8 @@ class ReferenceFlashBackend extends CpuRefBackend {
   qkvForwardCalls = 0;
   qkvBranchBackwardCalls = 0;
   qkvCombinedBackwardCalls = 0;
+  tokenMajorForwardCalls = 0;
+  tokenMajorBackwardCalls = 0;
 
   qkvHeadMajorRope(
     qkv: TensorData,
@@ -280,6 +283,67 @@ class ReferenceFlashBackend extends CpuRefBackend {
       dV: { shape, dtype: "f32", data: dV },
     };
   }
+
+  flashAttentionTokenMajor(
+    q: TensorData,
+    k: TensorData,
+    v: TensorData,
+    sequence: number,
+    batch: number,
+    heads: number,
+    attentionScale: number,
+    softCap: number,
+  ): { output: TensorData; lse: TensorData } {
+    this.tokenMajorForwardCalls++;
+    const { output: headMajor, lse } = this.flashAttention(
+      q, k, v, sequence, attentionScale, softCap,
+    );
+    const headDim = q.shape[2];
+    const source = headMajor.data as Float32Array;
+    const output = new Float32Array(source.length);
+    for (let b = 0; b < batch; b++) for (let t = 0; t < sequence; t++) {
+      for (let h = 0; h < heads; h++) for (let d = 0; d < headDim; d++) {
+        output[(b * sequence + t) * heads * headDim + h * headDim + d] =
+          source[((b * heads + h) * sequence + t) * headDim + d];
+      }
+    }
+    return {
+      output: { shape: [batch * sequence, heads * headDim], dtype: "f32", data: output },
+      lse,
+    };
+  }
+
+  flashAttentionBackwardTokenMajor(
+    q: TensorData,
+    k: TensorData,
+    v: TensorData,
+    output: TensorData,
+    outputGrad: TensorData,
+    lse: TensorData,
+    sequence: number,
+    batch: number,
+    heads: number,
+    attentionScale: number,
+    softCap: number,
+  ): { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    this.tokenMajorBackwardCalls++;
+    const headDim = q.shape[2];
+    const toHeadMajor = (value: TensorData): TensorData => {
+      const source = value.data as Float32Array;
+      const converted = new Float32Array(source.length);
+      for (let b = 0; b < batch; b++) for (let t = 0; t < sequence; t++) {
+        for (let h = 0; h < heads; h++) for (let d = 0; d < headDim; d++) {
+          converted[((b * heads + h) * sequence + t) * headDim + d] =
+            source[(b * sequence + t) * heads * headDim + h * headDim + d];
+        }
+      }
+      return { shape: [batch * heads, sequence, headDim], dtype: "f32", data: converted };
+    };
+    return this.flashAttentionBackward(
+      q, k, v, toHeadMajor(output), toHeadMajor(outputGrad), lse,
+      sequence, attentionScale, softCap,
+    );
+  }
 }
 
 function expectArraysClose(actual: number[], expected: number[], digits = 5): void {
@@ -288,6 +352,76 @@ function expectArraysClose(actual: number[], expected: number[], digits = 5): vo
 }
 
 describe("one-tape grouped-QKV Flash Attention", () => {
+  it("writes token-major output and preserves the complete grouped gradient", () => {
+    const batch = 2;
+    const sequence = 3;
+    const heads = 2;
+    const headDim = 4;
+    const modelDim = heads * headDim;
+    const input = Array.from(
+      { length: batch * sequence * 3 * modelDim },
+      (_, index) => Math.sin(index * 0.11) - Math.cos(index * 0.17) * 0.2,
+    );
+    const tokenWeights = Array.from(
+      { length: batch * sequence * modelDim }, (_, index) => (index % 7 - 3) / 5,
+    );
+    const headWeights = new Array<number>(tokenWeights.length);
+    for (let b = 0; b < batch; b++) for (let t = 0; t < sequence; t++) {
+      for (let h = 0; h < heads; h++) for (let d = 0; d < headDim; d++) {
+        headWeights[((b * heads + h) * sequence + t) * headDim + d] =
+          tokenWeights[(b * sequence + t) * modelDim + h * headDim + d];
+      }
+    }
+
+    const run = (tokenMajor: boolean) => {
+      const backend = new ReferenceFlashBackend();
+      const tape = new Tape();
+      const ctx = { tape, backend };
+      const qkv = new Variable(
+        backend.fromArray(input, [batch * sequence, 3 * modelDim]), true,
+      );
+      const output = tokenMajor
+        ? qkvFlashAttentionTokenMajor(
+          ctx, qkv, batch, sequence, heads, headDim, 10000, 1 / 2, 0,
+        )
+        : qkvFlashAttention(
+          ctx, qkv, batch, sequence, heads, headDim, 10000, 1 / 2, 0,
+        );
+      const weights = new Variable(
+        backend.fromArray(
+          tokenMajor ? tokenWeights : headWeights,
+          output.data.shape,
+        ),
+        false,
+      );
+      const loss = sum(ctx, mul(ctx, output, weights));
+      const values = Array.from(output.data.data as Float32Array);
+      tape.backward(loss, backend);
+      return {
+        backend,
+        loss: (loss.data.data as Float32Array)[0],
+        values,
+        gradient: Array.from(qkv.grad!.data as Float32Array),
+      };
+    };
+
+    const headMajor = run(false);
+    const tokenMajor = run(true);
+    const expectedTokenMajor = new Array<number>(headMajor.values.length);
+    for (let b = 0; b < batch; b++) for (let t = 0; t < sequence; t++) {
+      for (let h = 0; h < heads; h++) for (let d = 0; d < headDim; d++) {
+        expectedTokenMajor[(b * sequence + t) * modelDim + h * headDim + d] =
+          headMajor.values[((b * heads + h) * sequence + t) * headDim + d];
+      }
+    }
+    expectArraysClose(tokenMajor.values, expectedTokenMajor, 6);
+    expect(tokenMajor.loss).toBeCloseTo(headMajor.loss, 6);
+    expectArraysClose(tokenMajor.gradient, headMajor.gradient, 6);
+    expect(tokenMajor.backend.tokenMajorForwardCalls).toBe(1);
+    expect(tokenMajor.backend.tokenMajorBackwardCalls).toBe(1);
+    expect(tokenMajor.backend.qkvCombinedBackwardCalls).toBe(1);
+  });
+
   it("matches the compositional output and complete grouped gradient", () => {
     const batch = 2;
     const sequence = 3;
@@ -397,5 +531,7 @@ describe("one-tape grouped-QKV Flash Attention", () => {
     expect(backend.qkvForwardCalls).toBe(config.nLayer);
     expect(backend.qkvCombinedBackwardCalls).toBe(config.nLayer);
     expect(backend.qkvBranchBackwardCalls).toBe(0);
+    expect(backend.tokenMajorForwardCalls).toBe(config.nLayer);
+    expect(backend.tokenMajorBackwardCalls).toBe(config.nLayer);
   });
 });
