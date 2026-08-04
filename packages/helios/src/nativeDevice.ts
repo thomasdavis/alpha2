@@ -43,6 +43,15 @@ export interface NativeAddon {
   readonly op: NativeOps;
   /** The folded constants the kernels expect, by name — see nativeBackend. */
   readonly scalar: NativeOps;
+  /** Device identity in the shape the NVIDIA gate checks: vendorId 0x10de, and
+   * channelLive, which distinguishes "ran on a GPU" from "ran at all". */
+  deviceInfo(): {
+    vendorId: number;
+    gpuId: number;
+    minor: number;
+    name: string;
+    channelLive: boolean;
+  } | null;
 
   elementwise(
     op: number, out: number, a: number, b: number, n: number,

@@ -151,6 +151,44 @@ static napi_value js_view(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/*
+ * Device identity, in the shape the gate script checks.
+ *
+ * `run_nvidia_gates.sh` requires vendor 0x10de and refuses a run that skipped
+ * everything -- both of which it reads through the device module. That is why
+ * "repoint device.ts" and "gates green" are one task rather than two: the gate
+ * asks the backend what hardware it is on, and until the native path can answer
+ * that, it cannot be gated at all.
+ *
+ * The vendor is a constant because this stack talks to nvidia.ko through RM
+ * ioctls and nothing else can be on the other end. Reporting it from a capture
+ * would be reporting the same number with extra steps.
+ */
+#define NVIDIA_VENDOR_ID 0x10de
+
+static napi_value js_device_info(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value out, v;
+  napi_create_object(env, &out);
+  if (!g_open) {
+    napi_get_null(env, &out);
+    return out;
+  }
+  napi_create_uint32(env, NVIDIA_VENDOR_ID, &v);
+  napi_set_named_property(env, out, "vendorId", v);
+  napi_create_uint32(env, g_ctx.device.gpuId, &v);
+  napi_set_named_property(env, out, "gpuId", v);
+  napi_create_uint32(env, (NvU32)g_ctx.device.minor, &v);
+  napi_set_named_property(env, out, "minor", v);
+  napi_create_string_utf8(env, "helios-native (sm_86)", NAPI_AUTO_LENGTH, &v);
+  napi_set_named_property(env, out, "name", v);
+  /* The gate distinguishes "ran on a GPU" from "ran at all"; this is the flag
+   * it needs, and it can only be true if a channel actually came up. */
+  napi_get_boolean(env, g_ctx.channel.token != 0, &v);
+  napi_set_named_property(env, out, "channelLive", v);
+  return out;
+}
+
 static napi_value js_stats(napi_env env, napi_callback_info info) {
   (void)info;
   const helios_tensor_stats s = helios_tensor_get_stats();
@@ -181,6 +219,7 @@ static napi_value init(napi_env env, napi_value exports) {
   hl_export(env, exports, "free", js_free);
   hl_export(env, exports, "view", js_view);
   hl_export(env, exports, "stats", js_stats);
+  hl_export(env, exports, "deviceInfo", js_device_info);
   return hl_napi_register_ops(env, exports);
 }
 

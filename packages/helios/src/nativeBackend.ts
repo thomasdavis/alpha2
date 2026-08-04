@@ -862,6 +862,11 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /** Device identity, for the NVIDIA gate. Null until the context is open. */
+  deviceInfo(): ReturnType<NativeAddon["deviceInfo"]> {
+    return this.hl.deviceInfo();
+  }
+
   /** Pool and program statistics, for confirming a step reuses rather than
    * reallocates. `allocations` should stop growing after the first step. */
   stats(): { live: number; pooled: number; allocations: number; programs: number } {
