@@ -216,12 +216,69 @@ export class NativeHeliosBackend implements Backend {
 
   // ── linear algebra and reduction ─────────────────────────────────────────
 
+  /**
+   * Batched by FLATTENING, not by a batched kernel.
+   *
+   * [B,M,K] against a [K,N] weight is [B*M,K] against [K,N] -- the rows are
+   * independent and contiguous, so collapsing every leading dimension into the
+   * row count is the same arithmetic in the same memory order. One kernel
+   * serves both, and the program cache sees one shape instead of one per batch
+   * size.
+   *
+   * The output shape keeps the leading dimensions and replaces the last: the
+   * first version took M and N from the final two dimensions and DROPPED
+   * everything before them, so a [1,8,16] came back as [8,16] and the next
+   * reshape rejected it for changing the element count. It did not change the
+   * element count; it changed the rank, and the error message was pointing at
+   * the wrong operation.
+   *
+   * A batched RIGHT operand -- [B,M,K] against [B,K,N], where each batch has
+   * its own matrix -- is genuinely different and is not this. It needs the
+   * kernel to offset b by the batch index, and it is refused rather than
+   * silently computed against batch zero.
+   */
   matmul(a: TensorData, b: TensorData): TensorData {
-    const M = a.shape[a.shape.length - 2] ?? 1;
     const K = a.shape[a.shape.length - 1] ?? 1;
     const N = b.shape[b.shape.length - 1] ?? 1;
+
+    /*
+     * A batched RIGHT operand -- attention's Q @ K-transpose, where every head
+     * has its own matrix -- is a different operation and gets a loop.
+     *
+     * Not a batched kernel, because the kernel addresses one matrix and giving
+     * it a batch index means threading another dimension through its address
+     * arithmetic. A loop of launches is slower and it is correct, and the
+     * ordering that makes it correct is free: launches on one channel run in
+     * sequence, so batch i is finished before batch i+1 starts.
+     */
+    if (b.shape.length > 2) {
+      const M0 = a.shape[a.shape.length - 2] ?? 1;
+      const batch = shapeSize(b.shape) / (K * N);
+      const da = this.device(a), db = this.device(b);
+      const out = this.make([...a.shape.slice(0, -1), N], "f32");
+      const la = this.make([M0, K], "f32"), lb = this.make([K, N], "f32");
+      const lo = this.make([M0, N], "f32");
+      for (let i = 0; i < batch; i++) {
+        la.buffer.floats.set(da.buffer.floats.subarray(i * M0 * K, (i + 1) * M0 * K));
+        lb.buffer.floats.set(db.buffer.floats.subarray(i * K * N, (i + 1) * K * N));
+        this.check(this.hl.matmul(lo.buffer.handle, la.buffer.handle,
+                                  lb.buffer.handle, M0, N, K), "matmul");
+        out.buffer.floats.set(lo.buffer.floats.subarray(0, M0 * N), i * M0 * N);
+      }
+      la.buffer.release(this.hl);
+      lb.buffer.release(this.hl);
+      lo.buffer.release(this.hl);
+      return out;
+    }
+
+    if ((b.shape[b.shape.length - 2] ?? K) !== K)
+      throw new Error(
+        `helios-native: matmul inner dimensions disagree, ${a.shape} x ${b.shape}`,
+      );
+    const M = shapeSize(a.shape) / K;
     const da = this.device(a), db = this.device(b);
-    const out = this.make([M, N], "f32");
+    const outShape = [...a.shape.slice(0, -1), N];
+    const out = this.make(outShape, "f32");
     this.check(this.hl.matmul(out.buffer.handle, da.buffer.handle,
                               db.buffer.handle, M, N, K), "matmul");
     return out;
@@ -271,18 +328,59 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
-  sum(a: TensorData, axis?: number): TensorData {
-    if (axis === undefined) return this.reduceAll("sum", false, a);
-    if (this.axisOf(a.shape, axis) !== a.shape.length - 1)
-      this.unsupported("sum over a non-final axis");
-    return this.reduceAxis("sum", false, a);
+  /**
+   * Reduce over any axis by bringing it to the END first.
+   *
+   * The kernel reduces a contiguous row, so an interior axis has to be made
+   * contiguous before it can be reduced. Viewing the tensor as
+   * [outer, axis, inner] and transposing the [axis, inner] plane does exactly
+   * that, and both the transpose and the reduction stay on the device -- which
+   * matters, because summing on the host would be arithmetic done somewhere
+   * other than our own SASS, and that is the one thing this stack exists to
+   * avoid.
+   *
+   * A trailing axis skips all of it and reduces in place.
+   */
+  private reduceOverAxis(name: string, mean: boolean, a: TensorData, axis: number): TensorData {
+    const shape = a.shape;
+    const k = this.axisOf(shape, axis);
+    if (k === shape.length - 1) return this.reduceAxis(name, mean, a);
+
+    const axisLen = shape[k];
+    const inner = shape.slice(k + 1).reduce((x, y) => x * y, 1);
+    const outer = shape.slice(0, k).reduce((x, y) => x * y, 1);
+
+    /* [axis, inner] -> [inner, axis] makes the reduced axis contiguous, and the
+     * reduction then produces one value per inner position, which is the shape
+     * the caller wanted with dimension k removed. */
+    const plane = this.reshape(a, [outer, axisLen, inner]);
+    const t = this.transpose(plane);
+    const reduced = this.reduceAxis(name, mean, t);
+    const outShape = [...shape.slice(0, k), ...shape.slice(k + 1)];
+    return this.reshape(reduced, outShape.length ? outShape : [1]);
   }
 
-  mean(a: TensorData, axis?: number): TensorData {
+  /*
+   * keepdims is HONOURED, and ignoring it was a real bug rather than an
+   * omission: the caller reshapes the result assuming the reduced dimension is
+   * still there, so dropping it produced a rank-1 tensor where a rank-2 was
+   * expected and the failure surfaced as a reshape complaining about an element
+   * count -- which was true and pointed at the wrong operation.
+   */
+  private keep(t: TensorData, a: TensorData, axis: number, keepdims: boolean): TensorData {
+    if (!keepdims) return t;
+    const k = this.axisOf(a.shape, axis);
+    return this.reshape(t, [...a.shape.slice(0, k), 1, ...a.shape.slice(k + 1)]);
+  }
+
+  sum(a: TensorData, axis?: number, keepdims = false): TensorData {
+    if (axis === undefined) return this.reduceAll("sum", false, a);
+    return this.keep(this.reduceOverAxis("sum", false, a, axis), a, axis, keepdims);
+  }
+
+  mean(a: TensorData, axis?: number, keepdims = false): TensorData {
     if (axis === undefined) return this.reduceAll("mean", true, a);
-    if (this.axisOf(a.shape, axis) !== a.shape.length - 1)
-      this.unsupported("mean over a non-final axis");
-    return this.reduceAxis("mean", true, a);
+    return this.keep(this.reduceOverAxis("mean", true, a, axis), a, axis, keepdims);
   }
 
   // ── nn ───────────────────────────────────────────────────────────────────
@@ -346,13 +444,41 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * Swap the last two dimensions, keeping every leading one.
+   *
+   * Same shape-propagation bug matmul had, and worth fixing the same way: the
+   * first version returned [cols, rows] and dropped the batch entirely, so a
+   * [1,2,8,16] came back rank-2. The kernel is unchanged -- it transposes one
+   * matrix -- and the batch is handled by launching it once per leading index,
+   * which is a loop and is honest about being one.
+   */
   transpose(a: TensorData): TensorData {
-    const rows = a.shape[a.shape.length - 2] ?? 1;
-    const cols = a.shape[a.shape.length - 1] ?? 1;
+    const rank = a.shape.length;
+    const rows = a.shape[rank - 2] ?? 1;
+    const cols = a.shape[rank - 1] ?? 1;
+    const batch = shapeSize(a.shape) / (rows * cols);
     const da = this.device(a);
-    const out = this.make([cols, rows], "f32");
-    this.check(this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols),
-               "transpose");
+    const outShape = [...a.shape.slice(0, -2), cols, rows];
+    const out = this.make(outShape, "f32");
+
+    if (batch === 1) {
+      this.check(this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols),
+                 "transpose");
+      return out;
+    }
+
+    const one = this.make([rows, cols], "f32");
+    const oneOut = this.make([cols, rows], "f32");
+    const plane = rows * cols;
+    for (let bI = 0; bI < batch; bI++) {
+      one.buffer.floats.set(da.buffer.floats.subarray(bI * plane, (bI + 1) * plane));
+      this.check(this.hl.transpose(oneOut.buffer.handle, one.buffer.handle, rows, cols),
+                 "transpose");
+      out.buffer.floats.set(oneOut.buffer.floats.subarray(0, plane), bI * plane);
+    }
+    one.buffer.release(this.hl);
+    oneOut.buffer.release(this.hl);
     return out;
   }
 

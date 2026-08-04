@@ -157,13 +157,12 @@ describe("native backend parity with cpu_ref", () => {
      * Not a fallback, on purpose: an operation that quietly ran on the host
      * would be indistinguishable from one that works.
      *
-     * The case checked is a non-final reduction AXIS rather than a missing
+     * The case checked is a concatenation AXIS rather than a missing
      * operation, because there are no missing operations left -- every Backend
      * method is implemented. What remains unsupported is particular argument
      * shapes, and those have to fail as loudly as a missing kernel would.
      */
     const g = gpu!;
-    expect(() => g.sum(g.zeros([4, 4]), 0)).toThrow(/non-final axis/);
     expect(() => g.cat([g.zeros([4])], 1)).toThrow(/cat along axis 1/);
   });
 });
