@@ -126,6 +126,26 @@ describe("every Backend method, native vs cpu_ref, at model ranks", () => {
       B.cat([B.fromArray(V, [1, 8, 16]), B.fromArray(V, [1, 8, 16])], 2));
   });
 
+  it.runIf(() => gpu !== null)("softmax over rank-4 attention scores", () => {
+    /*
+     * The exact shape attention produces: [batch, heads, query, key]. Rank 3
+     * was covered and rank 4 was not, and rank is what was wrong in four
+     * earlier bugs -- so this is where the remaining gradient divergence was
+     * localised to before it was tested.
+     *
+     * Also with a causal mask applied, because that is how it is actually used:
+     * the masked entries are -inf, and a softmax that mishandles them produces
+     * a distribution that still sums to one over the wrong support.
+     */
+    both("softmax [1,2,8,8]", APPROX, (B) =>
+      B.softmax(B.fromArray(fill([1, 2, 8, 8], (i) => ((i % 13) - 6) * 0.4), [1, 2, 8, 8]), -1));
+
+    both("softmax of a masked row", APPROX, (B) => {
+      const scores = B.fromArray(fill([8, 8], (i) => ((i % 7) - 3) * 0.5), [8, 8]);
+      return B.softmax(B.add(scores, B.causalMask(8)), -1);
+    });
+  });
+
   it.runIf(() => gpu !== null)("normalisations keep rank and act per row", () => {
     both("softmax(-1)", APPROX, (B) => B.softmax(B.fromArray(V, [1, 8, 16]), -1));
     both("rmsNorm", APPROX, (B) =>
