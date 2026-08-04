@@ -155,6 +155,27 @@ const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 // FP16 high part plus an FP16 residual and accumulate high*high + high*low +
 // low*high in FP32. X32 keeps both slices tile-local; no global split buffers.
 const ENABLE_COOP_F16X3 = process.env.HELIOS_COOP_F16X3 === "1";
+function parseCoopF16x3BalanceExponent(): number {
+  const raw = process.env.HELIOS_COOP_F16X3_BALANCE_EXP?.trim() ?? "";
+  if (!raw) return 0;
+  const exponent = Number(raw);
+  if (!Number.isInteger(exponent) || Math.abs(exponent) > 120) {
+    throw new Error(
+      `HELIOS_COOP_F16X3_BALANCE_EXP must be an integer in [-120, 120], got ${JSON.stringify(raw)}`,
+    );
+  }
+  return exponent;
+}
+const COOP_F16X3_BALANCE_EXP = parseCoopF16x3BalanceExponent();
+if (COOP_F16X3_BALANCE_EXP !== 0 && !ENABLE_COOP_F16X3) {
+  throw new Error("HELIOS_COOP_F16X3_BALANCE_EXP requires HELIOS_COOP_F16X3=1");
+}
+
+function coopF16x3BalanceSuffix(): string {
+  if (COOP_F16X3_BALANCE_EXP === 0) return "";
+  const sign = COOP_F16X3_BALANCE_EXP < 0 ? "n" : "p";
+  return `_be${sign}${Math.abs(COOP_F16X3_BALANCE_EXP)}`;
+}
 
 function coopF16x3SharedBytes(
   coopM: number,
@@ -4903,7 +4924,7 @@ export class HeliosBackend implements Backend {
 
     const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
-    const emulationSuffix = useFp16x3 ? "_f16x3" : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix()}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
@@ -5173,7 +5194,7 @@ export class HeliosBackend implements Backend {
     const skPrefix = useSplitK ? "splitk_" : "";
     const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
-    const emulationSuffix = useFp16x3 ? "_f16x3" : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix()}` : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +

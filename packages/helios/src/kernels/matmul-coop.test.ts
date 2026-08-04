@@ -64,6 +64,19 @@ describe("cooperative matrix input-storage variants", () => {
     expect(countInstructions(emulated, Op.FSub)).toBeGreaterThan(0);
   });
 
+  it("emits reciprocal power-of-two balancing before FP16 decomposition", () => {
+    const unbalanced = getKernelSpirv("matmul_coop_basic_16_16_16_f16x3_km1", 64);
+    const positive = getKernelSpirv("matmul_coop_basic_16_16_16_f16x3_bep5_km1", 64);
+    const negative = getKernelSpirv("matmul_coop_basic_16_16_16_f16x3_ben5_km1", 64);
+    expect(countInstructions(positive, Op.FMul)).toBeGreaterThan(
+      countInstructions(unbalanced, Op.FMul),
+    );
+    expect(positive).not.toEqual(negative);
+    expect(countInstructions(positive, Op.OpCooperativeMatrixMulAddKHR)).toBe(
+      countInstructions(unbalanced, Op.OpCooperativeMatrixMulAddKHR),
+    );
+  });
+
   it("makes the encoded kMulti suffix authoritative", () => {
     const km1 = getKernelSpirv("matmul_coop_basic_16_16_16_km1", 64);
     const km2 = getKernelSpirv("matmul_coop_basic_16_16_16_km2", 64);
@@ -81,5 +94,13 @@ describe("cooperative matrix input-storage variants", () => {
       "matmul_coop_basic_16_16_16_f16acc_f16x3_km1",
       64,
     )).toThrow(/requires FP32 inputs and FP32 accumulation/);
+    expect(() => getKernelSpirv(
+      "matmul_coop_basic_16_16_16_bep5_km1",
+      64,
+    )).toThrow(/requires FP16x3 emulation/);
+    expect(() => getKernelSpirv(
+      "matmul_coop_basic_16_16_16_f16x3_bep121_km1",
+      64,
+    )).toThrow(/integer in \[-120, 120\]/);
   });
 });

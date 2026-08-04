@@ -489,15 +489,18 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
         }
       }
       // Cooperative matrix matmul — name encodes:
-      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
+      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_be{p|n}{N}][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(be([pn])(\d+)))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
         if (coopMatch) {
-          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = coopMatch;
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , balanceSign, balanceMagnitude, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
           const inputF16 = f16Suffix === "f16in";
           const accumF16 = f16AccSuffix === "f16acc";
           const emulateFp32 = f16x3Suffix === "f16x3";
+          const balanceExponent = balanceMagnitude
+            ? (balanceSign === "n" ? -1 : 1) * parseInt(balanceMagnitude)
+            : 0;
           const subgroupTilesX = Math.max(1, subgroupXS ? parseInt(subgroupXS) : 1);
           const subgroupTilesY = Math.max(1, subgroupYS ? parseInt(subgroupYS) : 1);
           const regTilesM = Math.max(1, regMStr ? parseInt(regMStr) : 1);
@@ -505,25 +508,28 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           const doubleBuf = dbSuffix === "db";
           const kMulti = kMultiS ? parseInt(kMultiS) : undefined;
           switch (variant) {
-            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
+            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
           }
         }
       }
       // Split-K cooperative matrix matmul — name encodes:
-      //   matmul_coop_splitk_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
+      //   matmul_coop_splitk_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_be{p|n}{N}][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
       if (!spirv) {
-        const skMatch = name.match(/^matmul_coop_splitk_(basic|transposed|transposed_a)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
+        const skMatch = name.match(/^matmul_coop_splitk_(basic|transposed|transposed_a)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(be([pn])(\d+)))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
         if (skMatch) {
-          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = skMatch;
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , balanceSign, balanceMagnitude, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = skMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
           const inputF16 = f16Suffix === "f16in";
           const accumF16 = f16AccSuffix === "f16acc";
           const emulateFp32 = f16x3Suffix === "f16x3";
+          const balanceExponent = balanceMagnitude
+            ? (balanceSign === "n" ? -1 : 1) * parseInt(balanceMagnitude)
+            : 0;
           const subgroupTilesX = Math.max(1, subgroupXS ? parseInt(subgroupXS) : 1);
           const subgroupTilesY = Math.max(1, subgroupYS ? parseInt(subgroupYS) : 1);
           const regTilesM = Math.max(1, regMStr ? parseInt(regMStr) : 1);
@@ -531,9 +537,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           const doubleBuf = dbSuffix === "db";
           const kMulti = kMultiS ? parseInt(kMultiS) : undefined;
           switch (variant) {
-            case "basic":        spirv = kernelCoopMatmulSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed":   spirv = kernelCoopMatmulTransposedSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
-            case "transposed_a": spirv = kernelCoopMatmulTransposedASplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, kMulti); break;
+            case "basic":        spirv = kernelCoopMatmulSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed":   spirv = kernelCoopMatmulTransposedSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a": spirv = kernelCoopMatmulTransposedASplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
           }
         }
       }
