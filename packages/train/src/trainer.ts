@@ -1569,8 +1569,21 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   let spikeSkips = 0;
   let clippedSteps = 0;
 
-  // Dynamic loss scaling for mixed precision training
-  const useLossScaling = !!deps.mixedPrecision;
+  // X54: loss scaling must follow *whether anything casts to FP16*, not the
+  // mixedPrecision flag alone.
+  //
+  // The cooperative backward path (HELIOS_ENABLE_COOP_BACKWARD=1) converts
+  // operands to FP16 tile-locally inside the shader, so it creates an FP16 cast
+  // site on runs where mixedPrecision is false. Gating loss scaling on
+  // mixedPrecision therefore left that path running at lossScale = 1.0.
+  //
+  // X53 measured what that costs: backward grad-outputs have median magnitude
+  // 4.725e-7 against FP16's smallest normal of 6.104e-5, so 99.518% land in
+  // subnormal range and 15.147% flush entirely to zero — about a seventh of the
+  // gradient signal destroyed every step. That is the mechanism behind X24's
+  // cooperative-backward trajectory reversing after step 125.
+  const enableCoopBackwardForScaling = process.env.HELIOS_ENABLE_COOP_BACKWARD === "1";
+  const useLossScaling = !!deps.mixedPrecision || enableCoopBackwardForScaling;
   const logEvery = Math.max(1, trainConfig.logEvery ?? 1);
   const shouldYieldForCallbacks = !!(onStep || deps.onCheckpoint || deps.onSamples);
   const callbackYieldEvery = readEnvInt("ALPHA_CALLBACK_YIELD_EVERY", 25, 1);
@@ -1621,7 +1634,13 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     ? trainConfig.lr / 10  // auto-calc: lr/10 (nanoGPT convention)
     : trainConfig.lrMin;
   const decayDenom = Math.max(1, totalIters - warmup);
-  let lossScale = useLossScaling ? 128.0 : 1.0; // start very safe, will auto-tune up
+  // X54: 128 is not a safe start for the cooperative backward path. X53 measured
+  // backward grad-outputs at median 4.725e-7, so a scale of 128 lifts them only to
+  // 6.05e-5 — still below FP16's smallest normal (6.104e-5). The tuner climbs on
+  // absence of overflow, but every step before it arrives is damaging gradients, and
+  // X24's reversal appeared by step 125. Start the coop-backward path at 2^13, which
+  // places them at ~3.9e-3, comfortably mid-range and still far from overflow.
+  let lossScale = useLossScaling ? (enableCoopBackwardForScaling ? 8192.0 : 128.0) : 1.0;
   let scaleSuccessCount = 0;
   const SCALE_GROWTH_INTERVAL = 200; // double scale after this many consecutive good steps
   let lossScaleReductions = 0;
