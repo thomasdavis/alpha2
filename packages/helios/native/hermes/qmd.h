@@ -64,8 +64,18 @@
  * `program` is a GPU virtual address and must be 256-byte aligned, because the
  * shifted-by-8 copy of it in the descriptor cannot represent anything finer.
  */
-void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU32 gridX, NvU32 gridY,
-                      NvU32 gridZ, NvU32 blockX, NvU32 blockY, NvU32 blockZ);
+/*
+ * `scratch` backs the four address pairs the descriptor carries. Even a kernel
+ * with no parameters and no shared memory has all four set in a real capture,
+ * so they are not optional -- but the captured VALUES are pointers into the
+ * traced process and must be replaced, not copied. Four 4 KiB regions are taken
+ * from `scratch`, which must therefore be at least 16 KiB and GPU-visible.
+ */
+void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
+                      NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
+                      NvU32 blockZ);
+
+#define HERMES_QMD_SCRATCH_BYTES (16 * 1024)
 
 /*
  * Emit the launch into the channel's pushbuffer.
@@ -107,13 +117,38 @@ void hermes_launch(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd);
  * GR_EXCEPTION until it was set. The value is ours to choose; it only has to
  * sit somewhere no real mapping does.
  */
-void hermes_compute_init(hermes_channel *c, NvU32 subchannel, NvU32 classId,
-                         NvU32 spaVersion, NvU64 sharedWindow);
+/*
+ * Everything the compute engine needs configured before a launch.
+ *
+ * LOCAL MEMORY is here because a kernel that uses none still needs it backed.
+ * The SM allocates per-thread local storage at launch, before any instruction
+ * retires, so an unbacked engine faults on a kernel consisting of a single EXIT
+ * -- which is exactly what was observed. The methods are
+ * SET_SHADER_LOCAL_MEMORY_A/B (the backing address),
+ * SET_SHADER_LOCAL_MEMORY_NON_THROTTLED_A/B/C (its size, and the SM count it is
+ * sized for), and SET_SHADER_LOCAL_MEMORY_WINDOW_A/B (the aperture base).
+ *
+ * Both WINDOWS are aperture bases for address decode, not storage. They are
+ * ours to choose and only have to sit where no real mapping does.
+ */
+typedef struct {
+  NvU32 classId;      /* AMPERE_COMPUTE_B — the raw class id */
+  NvU32 spaVersion;   /* HERMES_SPA_VERSION_SM86 */
+  NvU64 sharedWindow; /* shared-memory aperture base */
+  NvU64 localWindow;  /* local-memory aperture base */
+  NvU64 localMem;     /* GPU address backing per-thread local memory */
+  NvU64 localMemSize; /* bytes of that backing */
+  NvU32 smCount;      /* SMs the local memory is sized for */
+} hermes_compute_config;
+
+void hermes_compute_init(hermes_channel *c, NvU32 subchannel,
+                         const hermes_compute_config *cfg);
 
 /* An aperture base far above anything Gaia hands out (it allocates upward from
  * 0x04000000), so the window cannot overlap a real buffer. CUDA picks a high
  * address of the same shape. */
 #define HERMES_SHARED_WINDOW_DEFAULT 0x00007f0000000000ull
+#define HERMES_LOCAL_WINDOW_DEFAULT 0x00007e0000000000ull
 
 /* sm_86: SET_SPA_VERSION carries major 8, minor 6. */
 #define HERMES_SPA_VERSION_SM86 0x0806

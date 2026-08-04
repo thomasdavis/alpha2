@@ -214,9 +214,10 @@ static void test_gpu_runs_our_machine_code(void) {
     aether_device_close(&d); HT_END(); return;
   }
 
-  gaia_buffer code, out, qmdbuf;
+  gaia_buffer code, out, qmdbuf, lmem, scratch;
   memset(&code, 0, sizeof code); memset(&out, 0, sizeof out);
-  memset(&qmdbuf, 0, sizeof qmdbuf);
+  memset(&qmdbuf, 0, sizeof qmdbuf); memset(&lmem, 0, sizeof lmem);
+  memset(&scratch, 0, sizeof scratch);
 
   if ((rc = gaia_alloc(&d, &out, 4096, GAIA_SYSMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &out)) != 0 ||
@@ -234,6 +235,18 @@ static void test_gpu_runs_our_machine_code(void) {
       (rc = gaia_map_gpu(&d, &qmdbuf)) != 0) {
     HT_FAIL("qmd buffer: %s", aether_status_name((unsigned)rc)); goto done;
   }
+  if ((rc = gaia_alloc(&d, &scratch, 64 * 1024, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &scratch)) != 0) {
+    HT_FAIL("qmd scratch: %s", aether_status_name((unsigned)rc)); goto done;
+  }
+  /* Local-memory backing. Generous: the SM sizes its per-thread allocation from
+   * this, and being short is a fault rather than a slowdown. 4 MB failed with
+   * NV_ERR_NO_MEMORY -- gaia allocates CONTIGUOUS vidmem, and that is a real
+   * limit rather than a spelling mistake. */
+  if ((rc = gaia_alloc(&d, &lmem, 1024 * 1024, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &lmem)) != 0) {
+    HT_FAIL("local memory: %s", aether_status_name((unsigned)rc)); goto done;
+  }
 
   {
     hp_word prog[5];
@@ -248,11 +261,19 @@ static void test_gpu_runs_our_machine_code(void) {
 
   {
     NvU32 qmd[HERMES_QMD_DWORDS];
-    hermes_qmd_build(qmd, code.gpuAddr, 1, 1, 1, 1, 1, 1);
+    hermes_qmd_build(qmd, code.gpuAddr, scratch.gpuAddr, 1, 1, 1, 1, 1, 1);
 
     hermes_begin(&c);
-    hermes_compute_init(&c, 1, 0xc7c0u, HERMES_SPA_VERSION_SM86,
-                        HERMES_SHARED_WINDOW_DEFAULT);
+    hermes_compute_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.classId = 0xc7c0u; /* AMPERE_COMPUTE_B, raw class id */
+    cfg.spaVersion = HERMES_SPA_VERSION_SM86;
+    cfg.sharedWindow = HERMES_SHARED_WINDOW_DEFAULT;
+    cfg.localWindow = HERMES_LOCAL_WINDOW_DEFAULT;
+    cfg.localMem = lmem.gpuAddr;
+    cfg.localMemSize = lmem.size;
+    cfg.smCount = 46; /* RTX 3070 */
+    hermes_compute_init(&c, 1, &cfg);
     hermes_launch(&c, qmdbuf.gpuAddr, qmd);
     hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
     hermes_submit(&d, &c);
@@ -285,6 +306,8 @@ static void test_gpu_runs_our_machine_code(void) {
   }
 
 done:
+  gaia_free(&d, &scratch);
+  gaia_free(&d, &lmem);
   gaia_free(&d, &qmdbuf);
   gaia_free(&d, &code);
   gaia_free(&d, &out);
