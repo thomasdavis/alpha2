@@ -241,7 +241,7 @@ static void test_gpu_runs_our_machine_code(void) {
    * names where the hardware PUTS the descriptor it is handed inline; whether
    * it ever arrives there is a fact we have been assuming rather than
    * checking. */
-  memset(qmdbuf.hostPtr, 0xAA, 4096);
+  memset(qmdbuf.hostPtr, 0, 4096);
   if ((rc = gaia_alloc(&d, &scratch, HERMES_QMD_SCRATCH_BYTES, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &scratch)) != 0) {
     HT_FAIL("qmd scratch: %s", aether_status_name((unsigned)rc)); goto done;
@@ -265,12 +265,31 @@ static void test_gpu_runs_our_machine_code(void) {
      * (The ptxas control kernel cannot be used with banks off: even an empty
      * CUDA kernel opens with MOV R1, c[0x0][0x28].)
      */
+    /*
+     * The ptxas control, re-run.
+     *
+     * It was tried once before against a QMD that is now known to have been
+     * broken -- SASS_VERSION zero, no SM shared-memory partition -- so it
+     * proved nothing about the descriptor as it stands. A control experiment
+     * against a known-bad configuration is not a control.
+     *
+     * cuobjdump prints each instruction as (low, high); stored in that order.
+     */
+    static const uint64_t PTXAS[] = {
+        0x00000a0000017a02ull, 0x000fe40000000f00ull, /* MOV R1, c[0x0][0x28] */
+        0x000000000000794dull, 0x000fea0003800000ull, /* EXIT */
+        0xfffffff000007947ull, 0x000fc0000383ffffull, /* BRA self */
+    };
     hp_word prog[5];
+    if (getenv("HELIOS_PTXAS")) {
+      memcpy(prog, PTXAS, sizeof PTXAS);
+    } else {
     prog[0] = hp_mov_imm(0, (uint32_t)(out.gpuAddr & 0xffffffffu), hp_ctrl_safe());
     prog[1] = hp_mov_imm(1, (uint32_t)(out.gpuAddr >> 32), hp_ctrl_safe());
     prog[2] = hp_mov_imm(2, KERNEL_MAGIC, hp_ctrl_safe());
     prog[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
     prog[4] = hp_exit(hp_ctrl_safe());
+    }
 
     /*
      * Pad with EXIT rather than zeroing.
@@ -327,7 +346,16 @@ static void test_gpu_runs_our_machine_code(void) {
     /* PROBE: skip the launch. If the fence lands, compute_init is clean and the
      * launch is what faults; if it does not, one of the init methods is itself
      * the problem -- several were added on reasoning rather than evidence. */
-    if (!getenv("HELIOS_SKIP_LAUNCH")) hermes_launch(&c, qmdbuf.gpuAddr, qmd);
+    /* Write the descriptor into GPU memory ourselves, then launch by address --
+     * NVK's path. qmdbuf is host-mapped, so this is a plain memcpy. */
+    memcpy(qmdbuf.hostPtr, qmd, HERMES_QMD_BYTES);
+    __asm__ __volatile__("sfence" ::: "memory");
+    if (!getenv("HELIOS_SKIP_LAUNCH")) {
+      if (getenv("HELIOS_INLINE_QMD"))
+        hermes_launch_inline(&c, qmdbuf.gpuAddr, qmd);
+      else
+        hermes_launch(&c, qmdbuf.gpuAddr);
+    }
     hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
     hermes_submit(&d, &c);
 

@@ -103,7 +103,11 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  * `qmdAddr` is where the hardware stages the descriptor; it must be 256-byte
  * aligned GPU-visible memory.
  */
-void hermes_launch(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd);
+void hermes_launch_inline(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd);
+
+/* The PCAS launch: the descriptor is already in GPU memory at `qmdAddr` and the
+ * hardware is handed only the address. This is what Mesa's NVK emits. */
+void hermes_launch(hermes_channel *c, NvU64 qmdAddr);
 
 /*
  * Initialise the compute engine on this channel. Must precede the first launch.

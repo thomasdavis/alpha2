@@ -16,6 +16,9 @@
 #define NVC7C0_SET_SHADER_LOCAL_MEMORY_NON_THROTTLED_A 0x02e4
 #define NVC7C0_SET_SHADER_LOCAL_MEMORY_A 0x0790
 #define NVC7C0_SET_SHADER_LOCAL_MEMORY_WINDOW_A 0x07b0
+#define NVC7C0_SEND_PCAS_A 0x02b4
+#define NVC7C0_SEND_SIGNALING_PCAS2_B 0x02c0
+#define PCAS_ACTION_INVALIDATE_COPY_SCHEDULE 0x3
 
 /*
  * The descriptor is BUILT FROM ZERO, not copied.
@@ -127,7 +130,6 @@ static void qmd_set_cbuf(NvU32 *qmd, unsigned i, NvU64 addr, NvU32 size) {
 void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
                       NvU32 gridY, NvU32 gridZ, NvU32 blockX, NvU32 blockY,
                       NvU32 blockZ) {
-  (void)scratch; /* no constant buffers: the kernel reads none */
   memset(qmd, 0, HERMES_QMD_BYTES);
 
   /* Version, and the two enums NVK sets before anything else. */
@@ -159,6 +161,17 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
   qmd_set(qmd, MIN_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
   qmd_set(qmd, TARGET_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MIN_KB));
   qmd_set(qmd, MAX_SM_CONFIG_SHARED_MEM_SIZE, SMEM_HW(SM86_SMEM_MAX_KB));
+
+  /*
+   * Constant bank 0, even though this kernel reads no constants.
+   *
+   * NVK always binds at least one -- its root descriptor -- and a CUDA capture
+   * of an EMPTY kernel has banks 0, 1 and 7 valid. Two independent drivers
+   * never launching without one is a stronger signal than the observation that
+   * our kernel does not need it, so bank 0 gets bound to scratch. The size is
+   * the minimum constant-buffer alignment on this hardware.
+   */
+  if (scratch) qmd_set_cbuf(qmd, 0, scratch, 0x100);
   qmd_set(qmd, SHADER_LOCAL_MEMORY_LOW_SIZE, 0);
   qmd_set(qmd, SHADER_LOCAL_MEMORY_HIGH_SIZE, 0);
 }
@@ -211,10 +224,37 @@ void hermes_compute_init(hermes_channel *c, NvU32 subchannel,
   }
 }
 
-void hermes_launch(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd) {
+void hermes_launch_inline(hermes_channel *c, NvU64 qmdAddr, const NvU32 *qmd) {
   /* One header, 66 data words: the two address dwords followed by the QMD. */
   hermes_method(c, 1, NVC7C0_SET_INLINE_QMD_ADDRESS_A, 2 + HERMES_QMD_DWORDS);
   hermes_data(c, (NvU32)((qmdAddr >> 8) >> 32));
   hermes_data(c, (NvU32)((qmdAddr >> 8) & 0xffffffffu));
   for (int i = 0; i < HERMES_QMD_DWORDS; i++) hermes_data(c, qmd[i]);
+}
+
+/*
+ * The other launch path, and the one Mesa's NVK uses.
+ *
+ * Rather than carrying the descriptor inline, the caller writes it into GPU
+ * memory itself and hands the hardware only an address. Two methods:
+ *
+ *   SEND_PCAS_A             the QMD address, shifted right by 8
+ *   SEND_SIGNALING_PCAS2_B  PCAS_ACTION, as an IMMEDIATE method
+ *
+ * with action INVALIDATE_COPY_SCHEDULE (3) on Ampere -- NVK selects
+ * SEND_SIGNALING_PCAS_B with separate invalidate/schedule flags only for Turing
+ * and earlier.
+ *
+ * Worth having both: the inline path is what CUDA emits and the PCAS path is
+ * what NVK emits, so a fault that follows one and not the other says something,
+ * and a fault that follows both says the descriptor rather than its delivery.
+ */
+void hermes_launch(hermes_channel *c, NvU64 qmdAddr) {
+  hermes_method(c, 1, NVC7C0_SEND_PCAS_A, 1);
+  hermes_data(c, (NvU32)(qmdAddr >> 8));
+
+  /* IMMD_DATA_METHOD: the value rides in the header's count field and no data
+   * word follows. clc56f.h SEC_OP 4. */
+  *c->push++ = (4u << 29) | ((PCAS_ACTION_INVALIDATE_COPY_SCHEDULE & 0x1fffu) << 16) |
+               (1u << 13) | ((NVC7C0_SEND_SIGNALING_PCAS2_B >> 2) & 0xfffu);
 }

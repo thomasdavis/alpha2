@@ -28,6 +28,7 @@
 
 /* Opcodes, bits 0-11. Observed values, each seen in the captured corpus. */
 #define HP_OP_MOV 0xa02
+#define HP_OP_IMAD 0x424 /* IMAD.MOV.U32 is how ptxas materialises immediates */
 #define HP_OP_S2R 0x919
 #define HP_OP_IADD3 0x810
 #define HP_OP_STG 0x986
