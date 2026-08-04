@@ -85,14 +85,15 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
 
   /* The ring and the methods must be GPU-visible, so both go through Gaia.
    *
-   * VIDMEM rather than SYSMEM because that is the path proven end to end; the
-   * sysmem host mapping still returns NV_ERR_INVALID_ARGUMENT and has not been
-   * chased down. */
-  if ((rc = gaia_alloc(d, &c->gpfifo, GPFIFO_BYTES, GAIA_VIDMEM)) != 0) goto fail;
+   * SYSMEM, which is where drivers conventionally put these: the host writes
+   * them constantly and the GPU's fetch engine reads them. Video memory was
+   * used until the sysmem host mapping was fixed -- it needed /dev/nvidiactl
+   * rather than the device node. */
+  if ((rc = gaia_alloc(d, &c->gpfifo, GPFIFO_BYTES, GAIA_SYSMEM)) != 0) goto fail;
   if ((rc = gaia_map_gpu(d, &c->gpfifo)) != 0) goto fail;
   if ((rc = gaia_map_host(d, &c->gpfifo)) != 0) goto fail;
 
-  if ((rc = gaia_alloc(d, &c->pushbuffer, PUSHBUFFER_BYTES, GAIA_VIDMEM)) != 0) goto fail;
+  if ((rc = gaia_alloc(d, &c->pushbuffer, PUSHBUFFER_BYTES, GAIA_SYSMEM)) != 0) goto fail;
   if ((rc = gaia_map_gpu(d, &c->pushbuffer)) != 0) goto fail;
   if ((rc = gaia_map_host(d, &c->pushbuffer)) != 0) goto fail;
 

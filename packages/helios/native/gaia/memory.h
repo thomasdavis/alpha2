@@ -35,6 +35,7 @@ typedef struct {
   void *hostPtr;   /* host virtual address, NULL until mapped */
   int hostFd;      /* the fd the host mapping was made through; -1 if none */
   NvHandle vaHandle; /* the reserved VA range backing gpuAddr; 0 if none */
+  int location;      /* GAIA_SYSMEM or GAIA_VIDMEM — decides the mapping fd */
 } gaia_buffer;
 
 /* Where the bytes physically live. System memory is host RAM the GPU reaches

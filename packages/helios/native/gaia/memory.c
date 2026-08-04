@@ -125,6 +125,7 @@ static NvU64 gaia_va_take(NvU64 size) {
 int gaia_alloc_attr(aether_device *d, gaia_buffer *b, NvU64 size, NvU32 attr) {
   memset(b, 0, sizeof *b);
   b->hostFd = -1;
+  b->location = GAIA_VIDMEM;
   NV_MEMORY_ALLOCATION_PARAMS p;
   memset(&p, 0, sizeof p);
   p.owner = 0x48454c49;
@@ -164,6 +165,7 @@ int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where
   if (rc != 0) return rc;
 
   b->size = size;
+  b->location = where;   /* remembered: it decides the mapping fd */
   return 0;
 }
 
@@ -260,8 +262,25 @@ int gaia_map_host(aether_device *d, gaia_buffer *b) {
    * The lesson generalises past this call: NV_OK from RM means "the request
    * was accepted", not "you now have what you asked for".
    */
+  /*
+   * THE MAPPING FD MUST MATCH THE APERTURE. This took an ioctl interposer on a
+   * working CUDA process to find, and it is invisible in the headers:
+   *
+   *   video memory  -> /dev/nvidiaN   (the BAR1 aperture on that GPU)
+   *   system memory -> /dev/nvidiactl (the control node)
+   *
+   * Mapping system memory through the device node returns
+   * NV_ERR_INVALID_ARGUMENT for every combination of allocation attribute and
+   * map flag -- which reads as "bad parameters" and is really "wrong file
+   * descriptor". That single mistake made host-visible system memory look
+   * impossible for four rounds of probing.
+   */
   char path[32];
-  snprintf(path, sizeof path, "/dev/nvidia%d", d->index);
+  if (b->location == GAIA_SYSMEM) {
+    snprintf(path, sizeof path, "/dev/nvidiactl");
+  } else {
+    snprintf(path, sizeof path, "/dev/nvidia%d", d->index);
+  }
   int fd = open(path, O_RDWR | O_CLOEXEC);
   if (fd < 0) return -1;
 
