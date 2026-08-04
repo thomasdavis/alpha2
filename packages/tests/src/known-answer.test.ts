@@ -109,14 +109,19 @@ maybe("known-answer: softmax", () => {
   // Every row of a softmax sums to 1. This is not an approximation and holds for
   // any input, any width, any backend.
   //
-  // KNOWN FAILURE on the local software lane: rows sum to ~4 whenever
-  // dim % 4 == 0 and the tensor has >= 4096 elements total -- see X60. The vec4
-  // kernel is correct there; softmax_online and softmax_reg are not. Whether it
+  // KNOWN FAILURE on the local software lane: rows sum to ~4 -- see X60.
+  // softmax_vec4 is correct; softmax_online and softmax_reg are not. Whether it
   // reproduces on a discrete GPU is unverified, which is exactly why this test
-  // exists: it is cheap, device-independent, and will answer that question the
-  // first time it runs on real hardware.
-  for (const [rows, cols] of [[7, 33], [4, 128], [3, 129], [2, 2048], [1, 4096], [1, 12288]] as const) {
-    it(`softmax rows sum to 1 [${rows},${cols}]`, () => {
+  // exists: it is cheap, device-independent, and answers that question the first
+  // time it runs on real hardware.
+  //
+  // setMinGpuSize(1) is essential and was missing at first. DEFAULT_MIN_GPU_SIZE
+  // is 4096, so any tensor below that silently takes the CPU fallback. The
+  // original sweep therefore "passed" every small shape while testing no GPU
+  // kernel at all, and made the bug look size-dependent when it is not.
+  for (const [rows, cols] of [[7, 33], [4, 128], [3, 129], [1, 512], [2, 2048], [1, 4096], [1, 12288]] as const) {
+    it(`softmax rows sum to 1 [${rows},${cols}] (GPU path forced)`, () => {
+      b().setMinGpuSize(1);
       const x = filled(rows * cols, (i) => Math.sin(i * 0.7) * 4);
       const y = b().softmax(b().fromArray(x as never, [rows, cols]), -1).data as Float32Array;
       for (let r = 0; r < rows; r++) {
