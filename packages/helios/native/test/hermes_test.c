@@ -185,8 +185,11 @@ static void test_qmd_field_positions(void) {
   HT_CASE("QMD fields land where clc7c0qmd.h says");
   NvU32 q[HERMES_QMD_DWORDS];
 
-  /* Distinct values so no field can be confused with another. */
-  hermes_qmd_build(q, 0x800060000ull, 0, 3, 5, 13, 9, 11, 7);
+  /* Distinct values so no field can be confused with another. Shared memory is
+   * given a real size too: it is the one argument whose encoding is not the
+   * value itself but a hardware code, so passing zero would leave the only
+   * non-obvious field untested. */
+  hermes_qmd_build(q, 0x800060000ull, 0, 3, 5, 13, 9, 11, 7, 4096);
 
   HT_EQ_U64(q[12], 3);  /* CTA_RASTER_WIDTH   MW(415:384) */
   HT_EQ_U64(q[13], 5);  /* CTA_RASTER_HEIGHT  MW(431:416) */
@@ -205,12 +208,17 @@ static void test_qmd_field_positions(void) {
   HT_EQ_U64((q[17] >> 25) & 0x3f, 26);  /* MAX   100 KB */
   HT_EQ_U64((q[20] >> 17) & 0x3f, 5);   /* TARGET 16 KB */
 
+  /* SHARED_MEMORY_SIZE is bytes, rounded up to 256. The request was 4096, which
+   * is already a multiple, so this also pins that rounding does not silently
+   * inflate a value that needs none. */
+  HT_EQ_U64(q[17] & 0x3ffff, 4096);     /* SHARED_MEMORY_SIZE    MW(561:544) */
+
   /*
    * WIDTHS, not just offsets. CTA_RASTER_HEIGHT is sixteen bits; a value that
    * fits in sixteen must not disturb the upper half of its dword. Writing it as
    * a 32-bit field passes every check above and fails this one.
    */
-  hermes_qmd_build(q, 0x800060000ull, 0, 1, 0xffffu, 1, 1, 1, 1);
+  hermes_qmd_build(q, 0x800060000ull, 0, 1, 0xffffu, 1, 1, 1, 1, 0);
   HT_EQ_U64(q[13] & 0xffff, 0xffffu);
   HT_EQ_U64(q[13] >> 16, 0);
   HT_END();

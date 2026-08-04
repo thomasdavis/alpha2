@@ -1,338 +1,25 @@
 /*
- * registry.c — every kernel the stack can run, and what "correct" means for it.
+ * registry.c — every kernel the stack can run.
  *
- * WHY the expected answers are written as expressions rather than tables: an
- * expected value computed by the same code that drives the GPU is a comparison
- * against a second implementation, and two implementations agreeing proves
- * nothing when both are wrong. These are algebra — exp2(x), max(x,0), x*x + x —
- * evaluated in C on the host, which is a different machine doing different
- * arithmetic. That is as close to an independent oracle as this layer gets.
+ * WHAT: one table row per kernel, naming the code generator that emits it, the
+ * input it is fed, the constants it reads from the constant bank, and the
+ * oracle that judges its output.
  *
- * WHY the transcendentals get a tolerance and the rest do not: MUFU is the
- * multi-function unit and it is APPROXIMATE by design, roughly 22 bits for
- * exp2/log2 and 23 for reciprocal. Demanding exact equality there would be
- * demanding the hardware be something it is not. Everything else — adds,
- * multiplies, fused multiply-add, min/max, integer work — is exact, and is
- * checked exactly. A blanket tolerance would hide real bugs in the exact ops.
+ * WHY IT IS ONLY A TABLE: the three things a kernel needs -- how to build it,
+ * what to feed it, and what the answer is -- come from three different files on
+ * purpose. When they lived together it was possible to change a constant in the
+ * checker and have the kernel silently keep the old one, because both were one
+ * edit away from each other. Now the constant has exactly one definition, in
+ * oracle.h, and both sides read it.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: it computes nothing and expects nothing. A
+ * row is a claim about which pieces belong together, and no more.
  */
 #include "elementwise.h"
+#include "expect.h"
 #include "normalize.h"
+#include "oracle.h"
 #include "reduction.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
-NvU32 pr_f2u(float f) { NvU32 u; memcpy(&u, &f, 4); return u; }
-float pr_u2f(NvU32 u) { float f; memcpy(&f, &u, 4); return f; }
-
-/* ---- inputs ------------------------------------------------------------- */
-
-static void fill_ints(volatile NvU32 *a, volatile NvU32 *b) {
-  (void)b;
-  for (unsigned i = 0; i < PR_N; i++) a[i] = i + 1;
-}
-/* Strictly positive, so log2 and rsqrt are defined everywhere. */
-static void fill_pos(volatile NvU32 *a, volatile NvU32 *b) {
-  (void)b;
-  for (unsigned i = 0; i < PR_N; i++) a[i] = pr_f2u((float)(i + 1));
-}
-/* Alternating sign, so relu and negation have something to do. A relu tested
- * only on positive input tests nothing. */
-static void fill_signed(volatile NvU32 *a, volatile NvU32 *b) {
-  (void)b;
-  for (unsigned i = 0; i < PR_N; i++)
-    a[i] = pr_f2u((i & 1) ? -(float)(i + 1) : (float)(i + 1));
-}
-
-/* Two operands for the binary kernels: a[i] = i+1, b[i] = 2i+3. Distinct, both
- * non-zero so division is defined, and different enough that a kernel which
- * confuses its inputs fails rather than coincidentally agreeing. */
-static void fill_pair(volatile NvU32 *a, volatile NvU32 *b) {
-  for (unsigned i = 0; i < PR_N; i++) {
-    a[i] = pr_f2u((float)(i + 1));
-    b[i] = pr_f2u((float)(2 * i + 3));
-  }
-}
-static float in_a(unsigned i) { return (float)(i + 1); }
-static float in_b(unsigned i) { return (float)(2 * i + 3); }
-
-static float in_pos(unsigned i) { return (float)(i + 1); }
-static float in_signed(unsigned i) {
-  return (i & 1) ? -(float)(i + 1) : (float)(i + 1);
-}
-
-/* ---- checkers ----------------------------------------------------------- */
-
-static char g_msg[96];
-
-/* Exact integer comparison. */
-#define ICHECK(tag, expr)                                                      \
-  static const char *chk_##tag(const volatile NvU32 *o) {                      \
-    for (unsigned i = 0; i < PR_N; i++)                                        \
-      if (o[i] != (NvU32)(expr)) {                                             \
-        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%u want %u", i, o[i],      \
-                 (NvU32)(expr));                                               \
-        return g_msg;                                                          \
-      }                                                                        \
-    return NULL;                                                               \
-  }
-
-/* Exact float comparison — for operations the hardware computes exactly. */
-#define FCHECK(tag, in_fn, expr)                                               \
-  static const char *chk_##tag(const volatile NvU32 *o) {                      \
-    for (unsigned i = 0; i < PR_N; i++) {                                      \
-      const float x = in_fn(i);                                                \
-      (void)x;                                                                 \
-      if (pr_u2f(o[i]) != (expr)) {                                            \
-        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g", i,            \
-                 (double)pr_u2f(o[i]), (double)(expr));                        \
-        return g_msg;                                                          \
-      }                                                                        \
-    }                                                                          \
-    return NULL;                                                               \
-  }
-
-/*
- * Approximate float comparison, for MUFU.
- *
- * The bound is relative, generous enough for the unit's documented precision
- * and tight enough that a wrong function selector -- EX2 where LG2 was meant --
- * fails it by a mile.
- *
- * It also accepts a small ABSOLUTE error, because relative error is the wrong
- * measure near zero and gelu genuinely lands there. Its simplified form,
- * x*(1 - 1/(e+1)), subtracts two nearly equal numbers when x is a few units
- * negative: at x = -4 the true answer is -7.02e-5 and the kernel returns
- * -7.01e-5, an absolute error of 1.2e-8 and a RELATIVE error of 1.7e-3. That is
- * a real property of the algebra, not a bug, and it is the cost of turning a
- * tanh into one reciprocal. Recording it rather than quietly widening the
- * relative bound, which would also excuse errors that are not near zero.
- */
-#define MUFU_REL_TOLERANCE 1e-5f
-#define MUFU_ABS_TOLERANCE 1e-6f
-#define UCHECK(tag, in_fn, expr)                                               \
-  static const char *chk_##tag(const volatile NvU32 *o) {                      \
-    for (unsigned i = 0; i < PR_N; i++) {                                      \
-      const float x = in_fn(i);                                                \
-      const float want = (expr), got = pr_u2f(o[i]);                           \
-      const float abs_err = fabsf(got - want);                                 \
-      const float err = abs_err / (fabsf(want) + 1e-30f);                      \
-      if (!(err <= MUFU_REL_TOLERANCE || abs_err <= MUFU_ABS_TOLERANCE)) {     \
-        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g (rel %g)", i,   \
-                 (double)got, (double)want, (double)err);                      \
-        return g_msg;                                                          \
-      }                                                                        \
-    }                                                                          \
-    return NULL;                                                               \
-  }
-
-ICHECK(copy, i + 1)
-ICHECK(addidx, (i + 1) + i)
-ICHECK(addconst, (i + 1) + 0x1234u)
-ICHECK(index, i)
-
-FCHECK(fadd, in_pos, x + x)
-FCHECK(fmul, in_pos, x *x)
-FCHECK(ffma, in_pos, x *x + x)
-FCHECK(fneg, in_signed, -x)
-FCHECK(relu, in_signed, x > 0.0f ? x : 0.0f)
-
-/* Binary comparison: x is a[i] and y is b[i]. */
-#define BCHECK(tag, expr)                                                      \
-  static const char *chk_##tag(const volatile NvU32 *o) {                      \
-    for (unsigned i = 0; i < PR_N; i++) {                                      \
-      const float x = in_a(i), y = in_b(i);                                    \
-      (void)x; (void)y;                                                        \
-      if (pr_u2f(o[i]) != (expr)) {                                            \
-        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g", i,            \
-                 (double)pr_u2f(o[i]), (double)(expr));                        \
-        return g_msg;                                                          \
-      }                                                                        \
-    }                                                                          \
-    return NULL;                                                               \
-  }
-
-/* Same, with tolerance, for anything routed through MUFU. */
-#define BUCHECK(tag, expr)                                                     \
-  static const char *chk_##tag(const volatile NvU32 *o) {                      \
-    for (unsigned i = 0; i < PR_N; i++) {                                      \
-      const float x = in_a(i), y = in_b(i);                                    \
-      const float want = (expr), got = pr_u2f(o[i]);                           \
-      const float err = fabsf(got - want) / (fabsf(want) + 1e-30f);            \
-      if (!(err <= MUFU_REL_TOLERANCE)) {                                      \
-        snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g", i,            \
-                 (double)got, (double)want);                                   \
-        return g_msg;                                                          \
-      }                                                                        \
-    }                                                                          \
-    return NULL;                                                               \
-  }
-
-BCHECK(add, x + y)
-BCHECK(sub, x - y)
-BCHECK(mul, x *y)
-BUCHECK(div, x / y)
-
-/* scale multiplies by the scalar the kernel reads from the constant bank. */
-#define SCALE_BY 0.25f
-FCHECK(scale, in_pos, x *SCALE_BY)
-
-/* fills write a constant everywhere and read nothing. */
-#define FILL_VALUE 3.5f
-static const char *chk_fill(const volatile NvU32 *o) {
-  for (unsigned i = 0; i < PR_N; i++)
-    if (pr_u2f(o[i]) != FILL_VALUE) {
-      snprintf(g_msg, sizeof g_msg, "fill: o[%u]=%g", i, (double)pr_u2f(o[i]));
-      return g_msg;
-    }
-  return NULL;
-}
-static const char *chk_zeros(const volatile NvU32 *o) {
-  for (unsigned i = 0; i < PR_N; i++)
-    if (pr_u2f(o[i]) != 0.0f) return "zeros: not zero";
-  return NULL;
-}
-static const char *chk_ones(const volatile NvU32 *o) {
-  for (unsigned i = 0; i < PR_N; i++)
-    if (pr_u2f(o[i]) != 1.0f) return "ones: not one";
-  return NULL;
-}
-
-/* clamp is tested on signed input spanning both bounds, so both the max and the
- * min actually fire. Bounds chosen to bite in the middle of the range. */
-#define CLAMP_LO (-8.0f)
-#define CLAMP_HI 20.0f
-FCHECK(clamp, in_signed, x < CLAMP_LO ? CLAMP_LO : (x > CLAMP_HI ? CLAMP_HI : x))
-
-/* add-inplace reads the output it is about to write. The runner seeds the
- * output with a distinct sequence so "did it accumulate" is answerable. */
-static void seed_addinp(volatile NvU32 *o) {
-  for (unsigned i = 0; i < PR_N; i++) o[i] = pr_f2u((float)(100 + i));
-}
-static const char *chk_addinp(const volatile NvU32 *o) {
-  for (unsigned i = 0; i < PR_N; i++) {
-    const float want = (float)(i + 1) + (float)(100 + i);
-    if (pr_u2f(o[i]) != want) {
-      snprintf(g_msg, sizeof g_msg, "addinp: o[%u]=%g want %g", i,
-               (double)pr_u2f(o[i]), (double)want);
-      return g_msg;
-    }
-  }
-  return NULL;
-}
-
-/*
- * Reductions write ONE value, so only o[0] is checked.
- *
- * The tolerance is relative and small: the additions themselves are exact, but
- * a tree sums in a different ORDER than a sequential loop, and float addition
- * is not associative. Demanding bit-equality with a host loop would be
- * demanding the GPU reduce in an order it has no reason to use.
- */
-static const char *chk_sum(const volatile NvU32 *o) {
-  float want = 0;
-  for (unsigned i = 0; i < PR_N; i++) want += (float)(i + 1);
-  const float got = pr_u2f(o[0]);
-  if (fabsf(got - want) / want <= 1e-6f) return NULL;
-  snprintf(g_msg, sizeof g_msg, "sum: %g want %g", (double)got, (double)want);
-  return g_msg;
-}
-static const char *chk_mean(const volatile NvU32 *o) {
-  float want = 0;
-  for (unsigned i = 0; i < PR_N; i++) want += (float)(i + 1);
-  want /= (float)PR_N;
-  const float got = pr_u2f(o[0]);
-  if (fabsf(got - want) / want <= 1e-6f) return NULL;
-  snprintf(g_msg, sizeof g_msg, "mean: %g want %g", (double)got, (double)want);
-  return g_msg;
-}
-
-/* rmsNorm and softmax both go through MUFU, so both get a tolerance. Softmax
- * additionally sums in tree order, so its denominator differs from a host loop
- * in the last bits. */
-#define RMS_EPS 1e-5f
-static const char *chk_rms(const volatile NvU32 *o) {
-  float ss = 0;
-  for (unsigned i = 0; i < PR_N; i++) ss += in_signed(i) * in_signed(i);
-  const float inv = 1.0f / sqrtf(ss / (float)PR_N + RMS_EPS);
-  for (unsigned i = 0; i < PR_N; i++) {
-    const float want = in_signed(i) * inv, got = pr_u2f(o[i]);
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
-      snprintf(g_msg, sizeof g_msg, "rms: o[%u]=%g want %g", i, (double)got,
-               (double)want);
-      return g_msg;
-    }
-  }
-  return NULL;
-}
-
-static const char *chk_layer(const volatile NvU32 *o) {
-  float mean = 0;
-  for (unsigned i = 0; i < PR_N; i++) mean += in_signed(i);
-  mean /= (float)PR_N;
-  float var = 0;
-  for (unsigned i = 0; i < PR_N; i++) {
-    const float d = in_signed(i) - mean;
-    var += d * d;
-  }
-  var /= (float)PR_N;
-  const float inv = 1.0f / sqrtf(var + RMS_EPS);
-  for (unsigned i = 0; i < PR_N; i++) {
-    const float want = (in_signed(i) - mean) * inv, got = pr_u2f(o[i]);
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-3f) {
-      snprintf(g_msg, sizeof g_msg, "layerNorm: o[%u]=%g want %g", i,
-               (double)got, (double)want);
-      return g_msg;
-    }
-  }
-  return NULL;
-}
-
-static const char *chk_softmax(const volatile NvU32 *o) {
-  float mx = in_signed(0), sum = 0, total = 0;
-  for (unsigned i = 0; i < PR_N; i++)
-    if (in_signed(i) > mx) mx = in_signed(i);
-  for (unsigned i = 0; i < PR_N; i++) sum += expf(in_signed(i) - mx);
-  for (unsigned i = 0; i < PR_N; i++) {
-    const float want = expf(in_signed(i) - mx) / sum, got = pr_u2f(o[i]);
-    total += got;
-    if (fabsf(got - want) / (fabsf(want) + 1e-30f) > 1e-4f) {
-      snprintf(g_msg, sizeof g_msg, "softmax: o[%u]=%g want %g", i, (double)got,
-               (double)want);
-      return g_msg;
-    }
-  }
-  /* And it must be a distribution. A per-element check can pass while the
-   * whole thing is scaled wrong only if every element is wrong by the same
-   * factor, which this catches. */
-  if (fabsf(total - 1.0f) > 1e-4f) {
-    snprintf(g_msg, sizeof g_msg, "softmax: sums to %g", (double)total);
-    return g_msg;
-  }
-  return NULL;
-}
-
-UCHECK(silu, in_signed, x / (1.0f + expf(-x)))
-
-/* Reference gelu and softCap, written the way the maths is stated rather than
- * the way the kernel computes it -- an oracle that mirrors the kernel's own
- * simplification would validate the simplification against itself. */
-#define GELU_K0 0.7978845608028654f
-#define GELU_K1 0.044715f
-#define SOFTCAP_C 4.0f
-UCHECK(gelu, in_signed,
-       0.5f * x * (1.0f + tanhf(GELU_K0 * (x + GELU_K1 * x * x * x))))
-UCHECK(softcap, in_signed, SOFTCAP_C *tanhf(x / SOFTCAP_C))
-UCHECK(exp, in_pos, expf(x))
-UCHECK(logn, in_pos, logf(x))
-UCHECK(sqrt, in_pos, sqrtf(x))
-UCHECK(exp2, in_pos, exp2f(x))
-UCHECK(log2, in_pos, log2f(x))
-UCHECK(rcp, in_pos, 1.0f / x)
-UCHECK(rsq, in_pos, 1.0f / sqrtf(x))
-
-/* ---- builders ----------------------------------------------------------- */
 
 /* One thunk per operation. They exist only because a table needs function
  * pointers and pr_emit_elementwise needs its op; there is no logic here. */
@@ -399,8 +86,6 @@ static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
 
 /* Base conversions, named because 1.4426950408889634 in a table row tells the
  * reader nothing. */
-#define LOG2_E 1.4426950408889634f
-#define LN_2 0.6931471805599453f
 
 /*
  * The table.
@@ -419,95 +104,95 @@ static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
 #define K(...) {__VA_ARGS__}
 
 static const pr_kernel KERNELS[] = {
-    K(.name = "elementwise copy", .build = bld_copy, .fill = fill_ints,
+    K(.name = "elementwise copy", .build = bld_copy, .fill = pr_fill_ints,
       .check = chk_copy),
-    K(.name = "elementwise add index", .build = bld_addidx, .fill = fill_ints,
+    K(.name = "elementwise add index", .build = bld_addidx, .fill = pr_fill_ints,
       .check = chk_addidx),
     K(.name = "elementwise add constant", .build = bld_addconst,
-      .fill = fill_ints, .check = chk_addconst),
+      .fill = pr_fill_ints, .check = chk_addconst),
     K(.name = "elementwise index", .build = bld_index, .check = chk_index),
 
-    K(.name = "elementwise fadd", .build = bld_fadd, .fill = fill_pos,
+    K(.name = "elementwise fadd", .build = bld_fadd, .fill = pr_fill_pos,
       .check = chk_fadd),
-    K(.name = "elementwise fmul", .build = bld_fmul, .fill = fill_pos,
+    K(.name = "elementwise fmul", .build = bld_fmul, .fill = pr_fill_pos,
       .check = chk_fmul),
-    K(.name = "elementwise ffma", .build = bld_ffma, .fill = fill_pos,
+    K(.name = "elementwise ffma", .build = bld_ffma, .fill = pr_fill_pos,
       .check = chk_ffma),
-    K(.name = "elementwise negate", .build = bld_fneg, .fill = fill_signed,
+    K(.name = "elementwise negate", .build = bld_fneg, .fill = pr_fill_signed,
       .check = chk_fneg),
-    K(.name = "elementwise relu", .build = bld_relu, .fill = fill_signed,
+    K(.name = "elementwise relu", .build = bld_relu, .fill = pr_fill_signed,
       .check = chk_relu),
 
-    K(.name = "elementwise exp2", .build = bld_exp2, .fill = fill_pos,
+    K(.name = "elementwise exp2", .build = bld_exp2, .fill = pr_fill_pos,
       .check = chk_exp2),
-    K(.name = "elementwise log2", .build = bld_log2, .fill = fill_pos,
+    K(.name = "elementwise log2", .build = bld_log2, .fill = pr_fill_pos,
       .check = chk_log2),
-    K(.name = "elementwise reciprocal", .build = bld_rcp, .fill = fill_pos,
+    K(.name = "elementwise reciprocal", .build = bld_rcp, .fill = pr_fill_pos,
       .check = chk_rcp),
-    K(.name = "elementwise rsqrt", .build = bld_rsq, .fill = fill_pos,
+    K(.name = "elementwise rsqrt", .build = bld_rsq, .fill = pr_fill_pos,
       .check = chk_rsq),
 
-    K(.name = "elementwise add (a+b)", .build = bld_add, .fill = fill_pair,
+    K(.name = "elementwise add (a+b)", .build = bld_add, .fill = pr_fill_pair,
       .check = chk_add),
-    K(.name = "elementwise sub (a-b)", .build = bld_sub, .fill = fill_pair,
+    K(.name = "elementwise sub (a-b)", .build = bld_sub, .fill = pr_fill_pair,
       .check = chk_sub),
-    K(.name = "elementwise mul (a*b)", .build = bld_mul, .fill = fill_pair,
+    K(.name = "elementwise mul (a*b)", .build = bld_mul, .fill = pr_fill_pair,
       .check = chk_mul),
-    K(.name = "elementwise div (a/b)", .build = bld_div, .fill = fill_pair,
+    K(.name = "elementwise div (a/b)", .build = bld_div, .fill = pr_fill_pair,
       .check = chk_div),
 
-    K(.name = "elementwise scale", .build = bld_scale, .fill = fill_pos,
-      .check = chk_scale, .scalar = SCALE_BY),
-    K(.name = "elementwise exp", .build = bld_exp, .fill = fill_pos,
-      .check = chk_exp, .scalar = LOG2_E),
-    K(.name = "elementwise log", .build = bld_logn, .fill = fill_pos,
-      .check = chk_logn, .scalar = LN_2),
-    K(.name = "elementwise sqrt", .build = bld_sqrt, .fill = fill_pos,
+    K(.name = "elementwise scale", .build = bld_scale, .fill = pr_fill_pos,
+      .check = chk_scale, .scalar = PR_SCALE_BY),
+    K(.name = "elementwise exp", .build = bld_exp, .fill = pr_fill_pos,
+      .check = chk_exp, .scalar = PR_LOG2_E),
+    K(.name = "elementwise log", .build = bld_logn, .fill = pr_fill_pos,
+      .check = chk_logn, .scalar = PR_LN_2),
+    K(.name = "elementwise sqrt", .build = bld_sqrt, .fill = pr_fill_pos,
       .check = chk_sqrt),
 
     /* zeros, ones and full are one kernel with a different scalar, which is
      * what they are in the existing stack too. */
     K(.name = "fill (full)", .build = bld_fill, .check = chk_fill,
-      .scalar = FILL_VALUE),
+      .scalar = PR_FILL_VALUE),
     K(.name = "fill (zeros)", .build = bld_fill, .check = chk_zeros),
     K(.name = "fill (ones)", .build = bld_fill, .check = chk_ones,
       .scalar = 1.0f),
 
-    K(.name = "elementwise clamp", .build = bld_clamp, .fill = fill_signed,
-      .check = chk_clamp, .scalar = CLAMP_LO, .scalar2 = CLAMP_HI),
-    K(.name = "elementwise add in place", .build = bld_addinp, .fill = fill_pos,
-      .check = chk_addinp, .seed = seed_addinp),
-    K(.name = "elementwise silu", .build = bld_silu, .fill = fill_signed,
-      .check = chk_silu, .scalar = LOG2_E, .scalar2 = 1.0f),
-    K(.name = "elementwise gelu", .build = bld_gelu, .fill = fill_signed,
-      .check = chk_gelu, .scalar = GELU_K1,
-      .scalar2 = 2.0f * GELU_K0 * LOG2_E, .scalar3 = 1.0f),
-    K(.name = "elementwise softCap", .build = bld_softcap, .fill = fill_signed,
-      .check = chk_softcap, .scalar = 2.0f * LOG2_E / SOFTCAP_C,
-      .scalar2 = 1.0f, .scalar3 = SOFTCAP_C, .scalar4 = 2.0f),
+    K(.name = "elementwise clamp", .build = bld_clamp, .fill = pr_fill_signed,
+      .check = chk_clamp, .scalar = PR_CLAMP_LO, .scalar2 = PR_CLAMP_HI),
+    K(.name = "elementwise add in place", .build = bld_addinp, .fill = pr_fill_pos,
+      .check = chk_addinp, .seed = pr_seed_addinp),
+    K(.name = "elementwise silu", .build = bld_silu, .fill = pr_fill_signed,
+      .check = chk_silu, .scalar = PR_LOG2_E, .scalar2 = 1.0f),
+    K(.name = "elementwise gelu", .build = bld_gelu, .fill = pr_fill_signed,
+      .check = chk_gelu, .scalar = PR_GELU_K1,
+      .scalar2 = 2.0f * PR_GELU_K0 * PR_LOG2_E, .scalar3 = 1.0f),
+    K(.name = "elementwise softCap", .build = bld_softcap, .fill = pr_fill_signed,
+      .check = chk_softcap, .scalar = 2.0f * PR_LOG2_E / PR_SOFTCAP_C,
+      .scalar2 = 1.0f, .scalar3 = PR_SOFTCAP_C, .scalar4 = 2.0f),
 
     /*
      * Reductions. One block covering every element, because a tree reduction
      * is within a block by construction -- crossing blocks needs a second pass
      * or atomics, which is a separate problem.
      */
-    K(.name = "reduce sum", .build = bld_sum, .fill = fill_pos,
+    K(.name = "reduce sum", .build = bld_sum, .fill = pr_fill_pos,
       .check = chk_sum, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4),
-    K(.name = "reduce mean", .build = bld_mean, .fill = fill_pos,
+    K(.name = "reduce mean", .build = bld_mean, .fill = pr_fill_pos,
       .check = chk_mean, .blockX = PR_N, .gridX = 1,
       .sharedBytes = PR_N * 4, .scalar = 1.0f / (float)PR_N),
 
     /* Normalisation: a reduction whose result every thread reads back. */
-    K(.name = "rmsNorm", .build = bld_rms, .fill = fill_signed,
+    K(.name = "rmsNorm", .build = bld_rms, .fill = pr_fill_signed,
       .check = chk_rms, .blockX = PR_N, .gridX = 1, .sharedBytes = PR_N * 4,
-      .scalar = 1.0f / (float)PR_N, .scalar2 = RMS_EPS),
-    K(.name = "softmax", .build = bld_softmax, .fill = fill_signed,
+      .scalar = 1.0f / (float)PR_N, .scalar2 = PR_RMS_EPS),
+    K(.name = "softmax", .build = bld_softmax, .fill = pr_fill_signed,
       .check = chk_softmax, .blockX = PR_N, .gridX = 1,
-      .sharedBytes = PR_N * 4, .scalar = LOG2_E),
-    K(.name = "layerNorm", .build = bld_layer, .fill = fill_signed,
+      .sharedBytes = PR_N * 4, .scalar = PR_LOG2_E),
+    K(.name = "layerNorm", .build = bld_layer, .fill = pr_fill_signed,
       .check = chk_layer, .blockX = PR_N, .gridX = 1, .sharedBytes = PR_N * 4,
-      .scalar = 1.0f / (float)PR_N, .scalar2 = RMS_EPS),
+      .scalar = 1.0f / (float)PR_N, .scalar2 = PR_RMS_EPS),
 };
 
 
