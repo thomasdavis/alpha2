@@ -75,6 +75,13 @@ char *pr_msg(void);
 /* How many times the loop probe goes round. Not a power of two and not equal
  * to any block or grid dimension, so a trip count confused with a thread index
  * gives a visibly wrong answer rather than an accidentally right one. */
+/* The default launch when a kernel does not name its own: 32 threads in each of
+ * 2 blocks, which is PR_N elements across more than one block and more than one
+ * warp. A single block of 64 would never exercise the block index, and a single
+ * warp would hide every intra-warp divergence. */
+#define PR_BLOCK 32
+#define PR_GRID (PR_N / PR_BLOCK)
+
 #define PR_LOOP_TRIPS 5
 
 /*

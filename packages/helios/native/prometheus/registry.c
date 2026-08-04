@@ -15,157 +15,12 @@
  * WHAT IT DELIBERATELY DOES NOT DO: it computes nothing and expects nothing. A
  * row is a claim about which pieces belong together, and no more.
  */
-#include "elementwise.h"
+#include "builders.h"
 #include "expect.h"
-#include "indexing.h"
-#include "loop.h"
-#include "mask.h"
-#include "matmul.h"
-#include "normalize.h"
-#include "optimizer.h"
 #include "oracle.h"
-#include "reduction.h"
 
 /* One thunk per operation. They exist only because a table needs function
  * pointers and pr_emit_elementwise needs its op; there is no logic here. */
-#define EW(tag, opv)                                                           \
-  static unsigned bld_##tag(hp_word *p, NvU64 out, NvU64 in) {                 \
-    (void)out;                                                                 \
-    (void)in;                                                                  \
-    return pr_emit_elementwise(p, opv);                                        \
-  }
-
-EW(copy, PR_EW_COPY)
-EW(addidx, PR_EW_ADD_INDEX)
-EW(addconst, PR_EW_ADD_CONST)
-EW(index, PR_EW_INDEX)
-EW(fadd, PR_EW_FADD)
-EW(fmul, PR_EW_FMUL)
-EW(ffma, PR_EW_FFMA)
-EW(fneg, PR_EW_FNEG)
-EW(relu, PR_EW_RELU)
-EW(exp2, PR_EW_EXP2)
-EW(log2, PR_EW_LOG2)
-EW(rcp, PR_EW_RCP)
-EW(rsq, PR_EW_RSQ)
-EW(add, PR_EW_ADD)
-EW(sub, PR_EW_SUB)
-EW(mul, PR_EW_MUL)
-EW(div, PR_EW_DIV)
-EW(scale, PR_EW_SCALE)
-EW(exp, PR_EW_EXP)
-EW(logn, PR_EW_LOG)
-EW(sqrt, PR_EW_SQRT)
-EW(fill, PR_EW_FILL)
-EW(clamp, PR_EW_CLAMP)
-EW(addinp, PR_EW_ADD_INPLACE)
-EW(silu, PR_EW_SILU)
-EW(gelu, PR_EW_GELU)
-EW(softcap, PR_EW_SOFTCAP)
-
-static unsigned bld_branch_nop(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_branch_nop(p, PR_BRANCH_PLAIN);
-}
-
-static unsigned bld_branch_nop_pred(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_branch_nop(p, PR_BRANCH_PREDICATED);
-}
-
-static unsigned bld_branch_skip(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_branch_nop(p, PR_BRANCH_SKIP);
-}
-
-static unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_loop_scale(p, PR_LOOP_TRIPS);
-}
-
-static unsigned bld_adamw(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_adamw(p);
-}
-
-static unsigned bld_causal(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_causal_mask(p, PR_MASK_N);
-}
-
-static unsigned bld_masked_fill(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_masked_fill(p);
-}
-
-static unsigned bld_transpose(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_transpose(p, PR_TR_ROWS, PR_TR_COLS);
-}
-
-static unsigned bld_embedding(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_embedding(p, PR_EMB_DIM);
-}
-
-static unsigned bld_matmul(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out;
-  (void)in;
-  return pr_emit_matmul(p, PR_MM_M, PR_MM_N, PR_MM_K);
-}
-
-static unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out; (void)in;
-  return pr_emit_reduction(p, PR_RED_SUM, PR_N);
-}
-static unsigned bld_rms(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out; (void)in;
-  return pr_emit_normalize(p, PR_NORM_RMS, PR_N);
-}
-static unsigned bld_softmax(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out; (void)in;
-  return pr_emit_normalize(p, PR_NORM_SOFTMAX, PR_N);
-}
-static unsigned bld_layer(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out; (void)in;
-  return pr_emit_normalize(p, PR_NORM_LAYER, PR_N);
-}
-static unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in) {
-  (void)out; (void)in;
-  return pr_emit_reduction(p, PR_RED_MEAN, PR_N);
-}
-
-/* ---- the table ---------------------------------------------------------- */
-
-#define BLOCK 32
-#define GRID (PR_N / BLOCK)
-
-/* Base conversions, named because 1.4426950408889634 in a table row tells the
- * reader nothing. */
-
-/*
- * The table.
- *
- * DESIGNATED INITIALISERS on purpose. A positional table has to be edited in
- * every row whenever a field is added, and gets silently wrong if two fields of
- * the same type are ever transposed -- which already happened once here, when a
- * scalar landed in the checker's slot and the compiler caught it only because
- * the types differed. Named fields make each row say what it means and make
- * adding a kernel a local change.
- *
- * Two blocks of 32 rather than one of 64, so every kernel exercises the block
- * index as well as the thread index; a grid of one would let a broken ctaid
- * pass everything here.
- */
 #define K(...) {__VA_ARGS__}
 
 static const pr_kernel KERNELS[] = {
@@ -304,8 +159,8 @@ const pr_kernel *pr_kernels(unsigned *count) {
   const unsigned n = sizeof KERNELS / sizeof KERNELS[0];
   for (unsigned i = 0; i < n; i++) {
     g_resolved[i] = KERNELS[i];
-    if (!g_resolved[i].blockX) g_resolved[i].blockX = BLOCK;
-    if (!g_resolved[i].gridX) g_resolved[i].gridX = GRID;
+    if (!g_resolved[i].blockX) g_resolved[i].blockX = PR_BLOCK;
+    if (!g_resolved[i].gridX) g_resolved[i].gridX = PR_GRID;
   }
   *count = n;
   return g_resolved;
