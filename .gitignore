@@ -30,3 +30,6 @@ third_party/
 # secrets — never commit real env files
 **/.env
 !**/.env.example
+
+# from-scratch GPU stack build output
+packages/helios/native/.build/
