@@ -28,7 +28,7 @@ import {
 
 import { appendFileSync } from "node:fs";
 
-import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo } from "./device.js";
+import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo, type NativeHostTiming } from "./device.js";
 import { getKernelSpirv } from "./kernels.js";
 import { loadStaticSlotPlan, type StaticSlotPlan } from "./static-slot-plan.js";
 import {
@@ -2316,6 +2316,20 @@ export class HeliosBackend implements Backend {
   setColumnSumRowLanes(v: ColumnSumRowLanes): void { this._columnSumRowLanes = v; }
   getColumnSumRowLanes(): ColumnSumRowLanes { return this._columnSumRowLanes; }
   get lastColumnSumKernel(): string | null { return this._lastColumnSumKernel; }
+
+  /**
+   * X39: disjoint native host-phase totals for the dispatch path.
+   * Returns null unless HELIOS_HOST_TIMING=1 gated the native accumulator.
+   */
+  getNativeHostTiming(): NativeHostTiming | null {
+    const vk: NativeAddon = getNative();
+    if (typeof vk.getHostTiming !== "function") return null;
+    return vk.getHostTiming();
+  }
+
+  resetNativeHostTiming(): void {
+    getNative().resetHostTiming?.();
+  }
 
   getMatmulCoopStats(): CoopMatmulStats {
     const hit = this._matmulDispatches > 0 ? this._coopDispatches / this._matmulDispatches : 0;

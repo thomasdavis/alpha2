@@ -2759,6 +2759,26 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           timing + ` kinds=${top(gpuStepStats.byKind, 12)} kernels=${top(gpuStepStats.byKernel, 16)}`,
         );
       }
+      // X39: native host-interval localization. Opt-in via HELIOS_HOST_TIMING=1,
+      // which also gates the native accumulator, so this is inert by default.
+      // Phases are disjoint and measured inside the native dispatch path;
+      // ring_wait is reported separately because it is a GPU-completion wait
+      // rather than host work and must not be counted as removable overhead.
+      if (process.env.HELIOS_HOST_TIMING === "1") {
+        const nativeTiming = (backend as any).getNativeHostTiming?.();
+        if (nativeTiming?.enabled) {
+          const ph = nativeTiming.phases as Record<string, { us: number; calls: number }>;
+          const parts = Object.entries(ph)
+            .filter(([, v]) => v.calls > 0)
+            .sort((a, b) => b[1].us - a[1].us)
+            .map(([k, v]) => `${k}=${(v.us / 1000).toFixed(2)}ms/${v.calls}`);
+          console.log(
+            `  [host_phases] batches=${nativeTiming.batches} dispatches=${nativeTiming.dispatches}` +
+            ` clock_reads=${nativeTiming.clockReads} ${parts.join(" ")}`,
+          );
+          (backend as any).resetNativeHostTiming?.();
+        }
+      }
       if (process.env.HELIOS_COOP_REPORT_SHAPES === "1") {
         const backendWithCoopStats = backend as any;
         if (typeof backendWithCoopStats.getMatmulCoopStats === "function") {

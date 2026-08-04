@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 // ── Vulkan type definitions (no SDK headers needed) ─────────────────────────
 
@@ -889,6 +890,73 @@ static PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr;
 // Push descriptors (VK_KHR_push_descriptor)
 static int hasPushDescriptors = 0;
 static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
+
+// ── Native host-interval instrumentation (X39) ──────────────────────────────
+// X38 rejected JS field packing as the location of the ~344 ms host interval:
+// a 3.57x faster encoder saved 0.0663% of it. The remaining interval must be
+// located in native Vulkan object lifecycle, descriptor work, command
+// recording, submission, or waits rather than assumed.
+//
+// This accumulator splits napi_batchExecuteAllImpl into disjoint phases. It is
+// opt-in via HELIOS_HOST_TIMING=1 so the default dispatch path is unchanged,
+// and it deliberately separates ring_wait (a GPU-completion wait, not host
+// work) from genuine host cost, because charging that interval to the host
+// would recreate exactly the misattribution X8 warned about.
+#define HT_RING_WAIT   0
+#define HT_POOL_RESET  1
+#define HT_CMD_BEGIN   2
+#define HT_DECODE      3
+#define HT_BARRIER     4
+#define HT_DESC_ALLOC  5
+#define HT_DESC_UPDATE 6
+#define HT_BIND        7
+#define HT_PUSH_CONST  8
+#define HT_CMD_DISPATCH 9
+#define HT_CMD_END     10
+#define HT_SUBMIT      11
+#define HT_PHASE_COUNT 12
+
+static const char* htPhaseNames[HT_PHASE_COUNT] = {
+  "ring_wait", "pool_reset", "cmd_begin", "decode", "barrier",
+  "desc_alloc", "desc_update", "bind", "push_const", "cmd_dispatch",
+  "cmd_end", "submit"
+};
+
+static int hostTimingEnabled = -1;      // -1 = not yet resolved from env
+static uint64_t htNs[HT_PHASE_COUNT];
+static uint64_t htCalls[HT_PHASE_COUNT];
+static uint64_t htBatches = 0;
+static uint64_t htDispatches = 0;
+static uint64_t htClockReads = 0;
+
+static inline uint64_t htNow(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static inline int htOn(void) {
+  if (hostTimingEnabled < 0) {
+    const char* e = getenv("HELIOS_HOST_TIMING");
+    hostTimingEnabled = (e && e[0] == '1') ? 1 : 0;
+  }
+  return hostTimingEnabled;
+}
+
+// Marks the start of a phase. Returns 0 when disabled so the caller's
+// arithmetic stays trivial and the branch is predictable.
+static inline uint64_t htBegin(void) {
+  if (!htOn()) return 0;
+  htClockReads++;
+  return htNow();
+}
+
+static inline void htEnd(int phase, uint64_t t0) {
+  if (!hostTimingEnabled || t0 == 0) return;
+  htClockReads++;
+  htNs[phase] += htNow() - t0;
+  htCalls[phase]++;
+}
 
 // Async transfer queue (separate DMA engine)
 static VkQueue transferQueue = NULL;
@@ -3917,6 +3985,8 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
   }
 
   // ── batchBegin logic (inlined) ──
+  uint64_t htT = htBegin();
+  if (htT) htBatches++;
   uint32_t slot = g_ringHead;
   if (g_ring[slot].timelineValue > 0) {
     uint64_t completed;
@@ -3925,18 +3995,23 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
       waitTimelineValue(g_ring[slot].timelineValue);
     }
   }
+  htEnd(HT_RING_WAIT, htT);
 
+  htT = htBegin();
   if (g_ring[slot].descPool) {
     fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
   }
+  htEnd(HT_POOL_RESET, htT);
   dispatchCacheValid = 0;
 
+  htT = htBegin();
   fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
   VkCommandBufferBeginInfo beginInfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
   fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+  htEnd(HT_CMD_BEGIN, htT);
 
   if (profile) {
     fp_vkCmdResetQueryPool(g_ring[slot].cmd, profileTimestampPool, 0, 2 + 2 * count);
@@ -3976,7 +4051,8 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
   VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
 
   for (uint32_t d = 0; d < count; d++) {
-    if (ptr + 12 > end) break;
+    uint64_t htD = htBegin();
+    if (ptr + 12 > end) { htEnd(HT_DECODE, htD); break; }
 
     int32_t pipeSlot;
     memcpy(&pipeSlot, ptr, 4); ptr += 4;
@@ -4015,8 +4091,11 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
       pushPtr = ptr;
       ptr += pushSize;
     }
+    htEnd(HT_DECODE, htD);
+    if (htD) htDispatches++;
 
     // Barriers
+    uint64_t htB = htBegin();
     if (batchDispatchCount > 0) {
       VkBufferMemoryBarrier bufBarriers[32];
       uint32_t barrierCount = 0;
@@ -4047,6 +4126,8 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
       }
     }
 
+    htEnd(HT_BARRIER, htB);
+
     // Write tracking
     for (uint32_t i = 0; i < bufCount; i++) {
       if ((writeMask >> i) & 1) {
@@ -4059,10 +4140,12 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
     VkDescriptorBufferInfo bufInfos[32];
     VkWriteDescriptorSet writes[32];
 
+    uint64_t htBind = htBegin();
     if (ps->pipeline != lastBoundPipeline) {
       fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
       lastBoundPipeline = ps->pipeline;
     }
+    htEnd(HT_BIND, htBind);
 
     if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
       for (uint32_t i = 0; i < bufCount; i++) {
@@ -4080,8 +4163,10 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
           .pBufferInfo = &bufInfos[i],
         };
       }
+      uint64_t htPd = htBegin();
       fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
         ps->layout, 0, bufCount, writes);
+      htEnd(HT_DESC_UPDATE, htPd);
     } else {
       VkDescriptorSetAllocateInfo dsAllocInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -4090,7 +4175,9 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
         .pSetLayouts = &ps->descLayout,
       };
       VkDescriptorSet descSet;
+      uint64_t htA = htBegin();
       VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      htEnd(HT_DESC_ALLOC, htA);
       if (res != VK_SUCCESS) {
         napi_throw_error(env, NULL, "batchExecuteAll: vkAllocateDescriptorSets failed");
         return NULL;
@@ -4110,19 +4197,27 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
           .pBufferInfo = &bufInfos[i],
         };
       }
+      uint64_t htU = htBegin();
       fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+      htEnd(HT_DESC_UPDATE, htU);
+      uint64_t htBd = htBegin();
       fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+      htEnd(HT_BIND, htBd);
     }
 
     if (pushSize > 0 && pushPtr) {
+      uint64_t htPc = htBegin();
       fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushPtr);
+      htEnd(HT_PUSH_CONST, htPc);
     }
     if (profile) {
       uint32_t queryBase = 2 + batchDispatchCount * 2;
       fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         profileTimestampPool, queryBase);
     }
+    uint64_t htDi = htBegin();
     fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
+    htEnd(HT_CMD_DISPATCH, htDi);
     if (profile) {
       uint32_t queryBase = 2 + batchDispatchCount * 2;
       fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -4136,11 +4231,15 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
     fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       profileTimestampPool, 1);
   }
+  uint64_t htE = htBegin();
   fp_vkEndCommandBuffer(g_ring[slot].cmd);
+  htEnd(HT_CMD_END, htE);
 
   uint64_t tv = 0;
+  uint64_t htS = htBegin();
   if (batchDispatchCount > 0) {
     tv = submitCmdBufAsync(g_ring[slot].cmd);
+    htEnd(HT_SUBMIT, htS);
     if (tv == 0) {
       batchRecording = 0;
       batchDispatchCount = 0;
@@ -4205,6 +4304,49 @@ static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info
   napi_set_named_property(env, result, "dispatchTimesUs", timesTypedArray);
   free(ticks);
   return result;
+}
+
+// ── X39 host-timing accessors ───────────────────────────────────────────────
+// getHostTiming() returns disjoint native phase totals in microseconds plus the
+// call counts that produced them, so a per-call mean can be derived rather than
+// inferred. clockReads and the measured per-read cost let the caller subtract
+// instrumentation overhead instead of assuming it is negligible.
+static napi_value napi_getHostTiming(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value result, phases, value;
+  napi_create_object(env, &result);
+  napi_create_object(env, &phases);
+  for (int i = 0; i < HT_PHASE_COUNT; i++) {
+    napi_value entry;
+    napi_create_object(env, &entry);
+    napi_create_double(env, (double)htNs[i] / 1000.0, &value);
+    napi_set_named_property(env, entry, "us", value);
+    napi_create_double(env, (double)htCalls[i], &value);
+    napi_set_named_property(env, entry, "calls", value);
+    napi_set_named_property(env, phases, htPhaseNames[i], entry);
+  }
+  napi_set_named_property(env, result, "phases", phases);
+  napi_get_boolean(env, htOn() ? true : false, &value);
+  napi_set_named_property(env, result, "enabled", value);
+  napi_create_double(env, (double)htBatches, &value);
+  napi_set_named_property(env, result, "batches", value);
+  napi_create_double(env, (double)htDispatches, &value);
+  napi_set_named_property(env, result, "dispatches", value);
+  napi_create_double(env, (double)htClockReads, &value);
+  napi_set_named_property(env, result, "clockReads", value);
+  return result;
+}
+
+static napi_value napi_resetHostTiming(napi_env env, napi_callback_info info) {
+  (void)info;
+  memset(htNs, 0, sizeof(htNs));
+  memset(htCalls, 0, sizeof(htCalls));
+  htBatches = 0;
+  htDispatches = 0;
+  htClockReads = 0;
+  napi_value undef;
+  napi_get_undefined(env, &undef);
+  return undef;
 }
 
 static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
@@ -5231,6 +5373,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "dgcGetCommandBuffer", NULL, napi_dgcGetCommandBuffer, NULL, NULL, NULL, napi_default, NULL },
     { "dgcGetBufferAddress", NULL, napi_dgcGetBufferAddress, NULL, NULL, NULL, napi_default, NULL },
     { "batchExecuteAllDGC", NULL, napi_batchExecuteAllDGC, NULL, NULL, NULL, napi_default, NULL },
+    { "getHostTiming",   NULL, napi_getHostTiming,   NULL, NULL, NULL, napi_default, NULL },
+    { "resetHostTiming", NULL, napi_resetHostTiming, NULL, NULL, NULL, napi_default, NULL },
   };
   napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;

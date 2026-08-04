@@ -62,6 +62,19 @@ export interface NativeDeviceInfo {
   hasDGC: boolean;
 }
 
+/**
+ * X39 native host-interval breakdown. Phases are disjoint segments of the
+ * native dispatch path. `ring_wait` is a GPU-completion wait rather than host
+ * work and must not be treated as removable overhead.
+ */
+export interface NativeHostTiming {
+  enabled: boolean;
+  batches: number;
+  dispatches: number;
+  clockReads: number;
+  phases: Record<string, { us: number; calls: number }>;
+}
+
 export interface NativeAddon {
   initDevice(): NativeDeviceInfo;
   createBuffer(byteLength: number, hostVisible?: number, temporary?: number): number;
@@ -105,6 +118,9 @@ export interface NativeAddon {
     dispatchTimesUs: Float64Array;
   };
   batchExecuteAllDGC?(packed: ArrayBuffer, count: number): number;
+  /** X39: disjoint native host-phase totals. Only populated when HELIOS_HOST_TIMING=1. */
+  getHostTiming?(): NativeHostTiming;
+  resetHostTiming?(): void;
   dgcSetup?(pipelineSlot: number, pushConstantSize: number, maxSequences: number): boolean;
   dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
   waitTimeline(value: number): void;
