@@ -138,6 +138,13 @@ static void test_class_ids(void) {
   /* sm_86 is GA10x, which is AMPERE_COMPUTE_B. AMPERE_COMPUTE_A (0xc6c0) is
    * GA100 and is NOT what a 3070/3080/3090 exposes. */
   HT_EQ_U64(AMPERE_COMPUTE_B, 0xc7c0);
+  /* Memory classes. These were transcribed WRONG first time round and the test
+   * agreed with the mistake, because it asserted against my transcription
+   * rather than the header. Hardware caught it: 0x3d produced
+   * NV_ERR_INVALID_CLASS and 0x3e produced NV_ERR_INVALID_ARGUMENT for a
+   * vidmem request, because 0x3e is SYSTEM. */
+  HT_EQ_U64(NV01_MEMORY_SYSTEM, 0x3e);     /* cl003e.h */
+  HT_EQ_U64(NV01_MEMORY_LOCAL_USER, 0x40); /* cl0040.h */
   HT_END();
 }
 

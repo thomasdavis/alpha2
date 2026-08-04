@@ -58,8 +58,24 @@ typedef uint64_t NvP64;
 #define NV01_ROOT_CLIENT 0x00000041   /* cl0000.h  — client, user-space variant */
 #define NV01_DEVICE_0 0x00000080      /* cl0080.h  — a GPU */
 #define NV20_SUBDEVICE_0 0x00002080   /* cl2080.h  — one GPU within a device */
-#define NV01_MEMORY_LOCAL_USER 0x0000003e /* cl003e.h — video memory */
-#define NV01_MEMORY_SYSTEM 0x0000003d     /* cl003d.h — system memory */
+/* CORRECTED against the vendor headers after hardware rejected both values.
+ * The originals were transcribed wrong: 0x3d is not a memory class at all
+ * (RM answered NV_ERR_INVALID_CLASS), and 0x3e is SYSTEM rather than
+ * LOCAL_USER, so a request labelled "vidmem" was really asking for system
+ * memory with video-memory attributes and got NV_ERR_INVALID_ARGUMENT.
+ *
+ * The lesson is about the test, not the constant: aether_test.c asserted these
+ * ids against my own transcription, so it agreed with the bug. Values that
+ * exist to match an external source have to be checked against that source. */
+#define NV01_MEMORY_LOCAL_USER 0x00000040 /* cl0040.h — video memory */
+#define NV01_MEMORY_SYSTEM 0x0000003e     /* cl003e.h — system memory */
+/* A reserved GPU virtual address range.
+ *
+ * NOTE the class/struct pairing, which cost an hour: NV_MEMORY_VIRTUAL_ALLOCATION_PARAMS
+ * is defined in cl0070.h and therefore belongs to class 0x70, NOT to
+ * NV50_MEMORY_VIRTUAL (0x50a0). Pairing that struct with 0x50a0 returns
+ * NV_ERR_INVALID_ARGUMENT. Match structs to the header they were declared in. */
+#define NV01_MEMORY_VIRTUAL 0x00000070    /* cl0070.h — a reserved VA range */
 #define FERMI_VASPACE_A 0x000090f1        /* cl90f1.h — a GPU address space */
 #define AMPERE_CHANNEL_GPFIFO_A 0x0000c56f /* clc56f.h — the submission channel */
 #define AMPERE_COMPUTE_B 0x0000c7c0        /* clc7c0.h — GA10x compute engine */
