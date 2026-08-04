@@ -1,6 +1,6 @@
 # CURRENT GOAL — execute the 2026-08-04 handoff program
 
-**Set:** 2026-08-04 · **Owner:** ajax + agent · **Status:** ACTIVE. Phase A in progress; Phase B unauthorized; no GPU rented.
+**Set:** 2026-08-04 · **Owner:** ajax + agent · **Status:** ACTIVE. **Phase A COMPLETE**; Phase B unauthorized; no GPU rented.
 
 **The goal is the handoff document.** Not a paraphrase of it, and not a sub-goal derived from it:
 
@@ -38,8 +38,8 @@ forever, a better model run."
 | 4. Reproduce the X38 microbenchmark before reinterpreting it | **done — X41** (3/3 byte-parity; 0.050–0.066% of host) |
 | 5. Instrument the native interval beneath JS packing | **done — X39** |
 | 6. Print host subintervals beside device dispatch time | **done — X39** (`[host_phases]`, env-gated) |
-| 7. Attack the currently binding constraint, then re-profile | in progress — X40 identifies it |
-| 8. Source-guided implementation only where the mechanism maps faithfully | not started |
+| 7. Attack the currently binding constraint, then re-profile | **done — X42.** Constraint is GPU arithmetic (78.37% of step); host-side implementation declined at 1.011x-1.033x |
+| 8. Source-guided implementation only where the mechanism maps faithfully | **done — X42.** None warranted locally; the mechanisms that address the constraint are X25-X31, implemented and blocked on physical parity |
 | 9. Keep ordinary math exact until X25–X31 parity is physical | holding |
 | 10. Verify whether `x10b_consumed_metric.py` is still an open question | **done — X41**; open, unrun, correctly ranked below host work (1.12x ceiling at S=1024) |
 
@@ -51,8 +51,10 @@ These are means, not ends, and are subordinate to the handoff:
   in part by the 3090 measurements recorded in the handoff overlay (active target 50,000 tok/s).
 - [GOAL-EXTREME-PERFORMANCE-2026-08-03.md](docs/resume/GOAL-EXTREME-PERFORMANCE-2026-08-03.md) — the
   four-factor cost decomposition.
-- [X40](docs/resume/X40-OPERATION-COUNT-IS-REDUCTIONS-NOT-GEMMS.md) — operation-count reduction target,
-  set 2026-08-04 as a Phase A item-7 candidate. **Subordinate.** Its own bound is ~1.15x end to end.
+- [X40](docs/resume/X40-OPERATION-COUNT-IS-REDUCTIONS-NOT-GEMMS.md) — operation-count reduction target.
+  **Its stated value was corrected by [X42](docs/resume/X42-THE-BOTTLENECK-MOVED-CORRECTING-X40.md)** to
+  1.021x-1.033x, and the implementation is declined on that basis. Held for a future device where host
+  becomes binding again.
 
 ---
 

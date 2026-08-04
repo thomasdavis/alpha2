@@ -107,7 +107,13 @@ reductions plus the optimizer are ~38% of the graph. Combined with X39's finding
   launch overhead and barrier stalls were real, which X39 could not measure on a physical device.
 - The 41.5% "top 5 pairs" figure double-counts overlapping candidates and is an upper bound only.
 
-**The honest expected value is a host-side win of up to ~1.15× end to end, not a transformative one.** It is
+**CORRECTED 2026-08-04 by [X42](X42-THE-BOTTLENECK-MOVED-CORRECTING-X40.md): this section's stated value
+was wrong.** ~1.15× is roughly the bound for eliminating *all* host build time, not the value of removing the
+253 dispatches identified here. The correct figures are **1.021×–1.033×** for `adamw_step` + `add` and
+**1.034×–1.054×** for the full same-kernel batching program. The measurements below stand; only the value
+attached to them was wrong, and X42 declines the implementation on that basis. The original sentence follows.
+
+~~**The honest expected value is a host-side win of up to ~1.15× end to end, not a transformative one.**~~ It is
 attractive because it is exact-arithmetic, locally implementable, and independent of the GEMM work already in
 flight — not because it is large.
 
