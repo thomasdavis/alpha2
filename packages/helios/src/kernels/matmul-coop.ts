@@ -111,6 +111,8 @@ function emitCoopMatrixMMA(
   varAccs: number[][],
   shmemPadA = 0,
   shmemPadB = 0,
+  tileALo?: number,
+  tileBLo?: number,
 ): void {
   const strideA = coopK + shmemPadA;
   const strideB = bTileStride + shmemPadB;
@@ -158,6 +160,25 @@ function emitCoopMatrixMMA(
       b.emit(Op.Store, [varAccs[rm][rn], newAcc]);
     }
   }
+
+  // FP16x3 precision emulation. The high/high product above is followed by
+  // high/low and low/high products. The omitted low/low term is below the
+  // FP32-accumulator noise floor in X32's discriminator. Recursive calls omit
+  // the low-tile arguments, so this emits exactly two additional MMA passes.
+  if (tileALo !== undefined && tileBLo !== undefined) {
+    emitCoopMatrixMMA(
+      b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc, tPtrSharedF16,
+      tileA, tileBLo, tileABase, tileBBase, constRowMajor,
+      coopM, coopN, coopK, regTilesM, regTilesN, bTileStride,
+      varAccs, shmemPadA, shmemPadB,
+    );
+    emitCoopMatrixMMA(
+      b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc, tPtrSharedF16,
+      tileALo, tileB, tileABase, tileBBase, constRowMajor,
+      coopM, coopN, coopK, regTilesM, regTilesN, bTileStride,
+      varAccs, shmemPadA, shmemPadB,
+    );
+  }
 }
 
 /**
@@ -185,10 +206,15 @@ function buildCoopMatmul(
   regTilesN = 1,
   doubleBuf = false,
   splitK = false,
+  emulateFp32 = false,
+  kMultiOverride?: number,
 ): Uint32Array {
+  if (emulateFp32 && (inputF16 || accumF16)) {
+    throw new Error("FP16x3 cooperative GEMM requires FP32 inputs and FP32 accumulation");
+  }
   const b = new SpirVBuilder();
   const coopDebugMode = process.env.HELIOS_COOP_DEBUG_MODE ?? "";
-  const useDirectF16Load = inputF16 && process.env.HELIOS_COOP_DIRECT_LOAD === "1";
+  const useDirectF16Load = inputF16 && !emulateFp32 && process.env.HELIOS_COOP_DIRECT_LOAD === "1";
   // Double buffering only applies to the shared memory path
   const useDoubleBuf = doubleBuf && !useDirectF16Load;
   // Super-tile swizzle for L2 cache reuse (0=disabled, 2/4/8=super-tile width)
@@ -200,7 +226,10 @@ function buildCoopMatmul(
   // Shared memory padding per row to avoid bank conflicts (0=disabled, 8=NVIDIA default for f16)
   const shmemPad = useDirectF16Load ? 0 : parseInt(process.env.HELIOS_COOP_SHMEM_PAD ?? "8", 10);
   // K-tile multiplier: load kMulti K-steps at once, reducing barrier overhead (1/2/4)
-  const kMulti = parseInt(process.env.HELIOS_COOP_K_MULTI ?? "4", 10);
+  const kMulti = kMultiOverride ?? parseInt(process.env.HELIOS_COOP_K_MULTI ?? "4", 10);
+  if (!Number.isInteger(kMulti) || kMulti < 1) {
+    throw new Error(`cooperative GEMM kMulti must be a positive integer, got ${kMulti}`);
+  }
   const kTileK = coopK * kMulti;
 
   // Capabilities
@@ -353,11 +382,15 @@ function buildCoopMatmul(
   const tArrayTileA = b.id(); b.typeArray(tArrayTileA, tF16, constTileASize);
   const tPtrSharedArrA = b.id(); b.typePointer(tPtrSharedArrA, StorageClass.Workgroup, tArrayTileA);
   const tileA = b.id(); b.variable(tPtrSharedArrA, tileA, StorageClass.Workgroup);
+  const tileALo = emulateFp32 ? b.id() : undefined;
+  if (tileALo !== undefined) b.variable(tPtrSharedArrA, tileALo, StorageClass.Workgroup);
 
   const constTileBSize = b.id(); b.constant(tU32, constTileBSize, halfSizeB * dbMul);
   const tArrayTileB = b.id(); b.typeArray(tArrayTileB, tF16, constTileBSize);
   const tPtrSharedArrB = b.id(); b.typePointer(tPtrSharedArrB, StorageClass.Workgroup, tArrayTileB);
   const tileB = b.id(); b.variable(tPtrSharedArrB, tileB, StorageClass.Workgroup);
+  const tileBLo = emulateFp32 ? b.id() : undefined;
+  if (tileBLo !== undefined) b.variable(tPtrSharedArrB, tileBLo, StorageClass.Workgroup);
 
   const tPtrSharedF16 = b.id();
   b.typePointer(tPtrSharedF16, StorageClass.Workgroup, tF16);
@@ -1400,12 +1433,12 @@ function buildCoopMatmul(
           b.emit(Op.BranchConditional, [inB, lblL, lblS]);
           b.emit(Op.Label, [lblL]);
           emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
-            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u);
+            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u, tileALo);
           b.emit(Op.Branch, [lblS]);
           b.emit(Op.Label, [lblS]);
         } else {
           emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
-            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u);
+            bufA, inputF16, curGlobalA, curSharedA, tileA, const0u, tileALo);
         }
       }
     } else {
@@ -1451,7 +1484,7 @@ function buildCoopMatmul(
         emitLoadTileA(b, tF32, tF16, tU32, tPtrSharedF16, bufA, inputF16,
           elemOffset, sharedOffset, kVal, globalRowBase, M, K, tileA,
           const0u, kTileK, constKTileKShift, constKTileKMask,
-          batchOffsetA, batched, transposedA);
+          batchOffsetA, batched, transposedA, undefined, undefined, tileALo);
       }
     }
 
@@ -1558,12 +1591,12 @@ function buildCoopMatmul(
           b.emit(Op.BranchConditional, [inB, lblL, lblS]);
           b.emit(Op.Label, [lblL]);
           emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
-            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u);
+            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u, tileBLo);
           b.emit(Op.Branch, [lblS]);
           b.emit(Op.Label, [lblS]);
         } else {
           emitFastLoad(b, tF32, tF16, tU32, tPtrSharedF16,
-            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u);
+            bufB, inputF16, curGlobalB, curSharedB, tileB, const0u, tileBLo);
         }
       }
     } else {
@@ -1609,7 +1642,7 @@ function buildCoopMatmul(
         emitLoadTileB(b, tF32, tF16, tU32, tPtrSharedF16, bufB, inputF16,
           elemOffset, sharedOffset, kVal, globalColBase, N, K, tileB,
           const0u, bTileStride, constBTileStrideShift, constBTileStrideMask,
-          batchOffsetB, batched, transposedB);
+          batchOffsetB, batched, transposedB, undefined, undefined, tileBLo);
       }
     }
 
@@ -1667,7 +1700,8 @@ function buildCoopMatmul(
         emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
           tPtrSharedF16, tileA, tileB, adjABase, adjBBase,
           constRowMajor, coopM, coopN, coopK,
-          regTilesM, regTilesN, bTileStride, varAccs, effectivePadADb, shmemPad);
+          regTilesM, regTilesN, bTileStride, varAccs, effectivePadADb, shmemPad,
+          tileALo, tileBLo);
       }
 
       b.emit(Op.Branch, [labelSkipMMA]);
@@ -1709,7 +1743,8 @@ function buildCoopMatmul(
         emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
           tPtrSharedF16, tileA, tileB, adjABase, adjBBase,
           constRowMajor, coopM, coopN, coopK,
-          regTilesM, regTilesN, bTileStride, varAccs, effectivePadA, shmemPad);
+          regTilesM, regTilesN, bTileStride, varAccs, effectivePadA, shmemPad,
+          tileALo, tileBLo);
       }
 
       // Barrier before next tile load
@@ -1778,7 +1813,8 @@ function buildCoopMatmul(
       emitCoopMatrixMMA(b, tF16, tU32, tCoopA, tCoopB, tCoopCAcc,
         tPtrSharedF16, tileA, tileB, adjABaseEpi, adjBBaseEpi,
         constRowMajor, coopM, coopN, coopK,
-        regTilesM, regTilesN, bTileStride, varAccs, effectivePadAEpi, shmemPad);
+        regTilesM, regTilesN, bTileStride, varAccs, effectivePadAEpi, shmemPad,
+        tileALo, tileBLo);
     }
   }
 
@@ -1858,8 +1894,10 @@ function emitFastLoad(
   inputF16: boolean,
   globalAddr: number, sharedAddr: number,
   tile: number, const0u: number,
+  residualTile?: number,
 ): void {
   let valF16: number;
+  let valF32: number | undefined;
   if (inputF16) {
     const ptr = b.id();
     b.emit(Op.AccessChain, [buf.tPtrF16!, ptr, buf.varId, const0u, globalAddr]);
@@ -1868,7 +1906,7 @@ function emitFastLoad(
   } else {
     const ptr = b.id();
     b.emit(Op.AccessChain, [buf.tPtrF32!, ptr, buf.varId, const0u, globalAddr]);
-    const valF32 = b.id();
+    valF32 = b.id();
     b.emit(Op.Load, [tF32, valF32, ptr]);
     valF16 = b.id();
     b.emit(Op.FConvert, [tF16, valF16, valF32]);
@@ -1876,6 +1914,18 @@ function emitFastLoad(
   const ptrShared = b.id();
   b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tile, sharedAddr]);
   b.emit(Op.Store, [ptrShared, valF16]);
+  if (residualTile !== undefined) {
+    if (valF32 === undefined) throw new Error("FP16x3 residual loads require FP32 storage");
+    const hiF32 = b.id();
+    b.emit(Op.FConvert, [tF32, hiF32, valF16]);
+    const residualF32 = b.id();
+    b.emit(Op.FSub, [tF32, residualF32, valF32, hiF32]);
+    const residualF16 = b.id();
+    b.emit(Op.FConvert, [tF16, residualF16, residualF32]);
+    const ptrResidual = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrResidual, residualTile, sharedAddr]);
+    b.emit(Op.Store, [ptrResidual, residualF16]);
+  }
 }
 
 /**
@@ -2063,6 +2113,7 @@ function emitLoadTileA(
   transposedA: boolean,
   precomputedLocalRow?: number,
   precomputedLocalCol?: number,
+  residualTile?: number,
 ): void {
   const constCoopK = b.id();
   b.constant(tU32, constCoopK, coopK);
@@ -2115,6 +2166,7 @@ function emitLoadTileA(
   }
 
   let valF16: number;
+  let valF32: number | undefined;
   if (inputF16) {
     // Load f16 directly from pre-cast storage buffer.
     const ptrA = b.id();
@@ -2125,7 +2177,7 @@ function emitLoadTileA(
     // Load f32 then convert to f16 for cooperative matrix tile.
     const ptrA = b.id();
     b.emit(Op.AccessChain, [bufA.tPtrF32!, ptrA, bufA.varId, const0u, aIdx]);
-    const valF32 = b.id();
+    valF32 = b.id();
     b.emit(Op.Load, [tF32, valF32, ptrA]);
     valF16 = b.id();
     b.emit(Op.FConvert, [tF16, valF16, valF32]);
@@ -2135,6 +2187,18 @@ function emitLoadTileA(
   const ptrShared = b.id();
   b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileA, sharedOffset]);
   b.emit(Op.Store, [ptrShared, valF16]);
+  if (residualTile !== undefined) {
+    if (valF32 === undefined) throw new Error("FP16x3 residual loads require FP32 storage");
+    const hiF32 = b.id();
+    b.emit(Op.FConvert, [tF32, hiF32, valF16]);
+    const residualF32 = b.id();
+    b.emit(Op.FSub, [tF32, residualF32, valF32, hiF32]);
+    const residualF16 = b.id();
+    b.emit(Op.FConvert, [tF16, residualF16, residualF32]);
+    const ptrResidual = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrResidual, residualTile, sharedOffset]);
+    b.emit(Op.Store, [ptrResidual, residualF16]);
+  }
 }
 
 /**
@@ -2161,6 +2225,7 @@ function emitLoadTileB(
   transposed: boolean,
   precomputedLocalRow?: number,
   precomputedLocalCol?: number,
+  residualTile?: number,
 ): void {
   const constCoopN = b.id();
   b.constant(tU32, constCoopN, coopN);
@@ -2212,6 +2277,7 @@ function emitLoadTileB(
   }
 
   let valF16: number;
+  let valF32: number | undefined;
   if (inputF16) {
     // Load f16 directly from pre-cast storage buffer.
     const ptrB = b.id();
@@ -2222,7 +2288,7 @@ function emitLoadTileB(
     // Load f32 then convert to f16 for cooperative matrix tile.
     const ptrB = b.id();
     b.emit(Op.AccessChain, [bufB.tPtrF32!, ptrB, bufB.varId, const0u, bIdx]);
-    const valF32 = b.id();
+    valF32 = b.id();
     b.emit(Op.Load, [tF32, valF32, ptrB]);
     valF16 = b.id();
     b.emit(Op.FConvert, [tF16, valF16, valF32]);
@@ -2232,6 +2298,18 @@ function emitLoadTileB(
   const ptrShared = b.id();
   b.emit(Op.AccessChain, [tPtrSharedF16, ptrShared, tileB, sharedOffset]);
   b.emit(Op.Store, [ptrShared, valF16]);
+  if (residualTile !== undefined) {
+    if (valF32 === undefined) throw new Error("FP16x3 residual loads require FP32 storage");
+    const hiF32 = b.id();
+    b.emit(Op.FConvert, [tF32, hiF32, valF16]);
+    const residualF32 = b.id();
+    b.emit(Op.FSub, [tF32, residualF32, valF32, hiF32]);
+    const residualF16 = b.id();
+    b.emit(Op.FConvert, [tF16, residualF16, residualF32]);
+    const ptrResidual = b.id();
+    b.emit(Op.AccessChain, [tPtrSharedF16, ptrResidual, residualTile, sharedOffset]);
+    b.emit(Op.Store, [ptrResidual, residualF16]);
+  }
 }
 
 // ── Exported kernel generators ──────────────────────────────────────────────
@@ -2242,8 +2320,10 @@ export function kernelCoopMatmulBasic(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulBatched(
@@ -2252,8 +2332,10 @@ export function kernelCoopMatmulBatched(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposed(
@@ -2262,8 +2344,10 @@ export function kernelCoopMatmulTransposed(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposedBatched(
@@ -2272,8 +2356,10 @@ export function kernelCoopMatmulTransposedBatched(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, true, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposedA(
@@ -2282,8 +2368,10 @@ export function kernelCoopMatmulTransposedA(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposedABatched(
@@ -2292,8 +2380,10 @@ export function kernelCoopMatmulTransposedABatched(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf);
+  return buildCoopMatmul(coopM, coopN, coopK, true, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, false, emulateFp32, kMulti);
 }
 
 // ── Split-K variants (non-batched only) ─────────────────────────────────────
@@ -2306,8 +2396,10 @@ export function kernelCoopMatmulSplitK(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposedSplitK(
@@ -2316,8 +2408,10 @@ export function kernelCoopMatmulTransposedSplitK(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
+  return buildCoopMatmul(coopM, coopN, coopK, false, true, false, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true, emulateFp32, kMulti);
 }
 
 export function kernelCoopMatmulTransposedASplitK(
@@ -2326,6 +2420,8 @@ export function kernelCoopMatmulTransposedASplitK(
   subgroupTilesX = 1, subgroupTilesY = 1,
   regTilesM = 1, regTilesN = 1,
   doubleBuf = false,
+  emulateFp32 = false,
+  kMulti?: number,
 ): Uint32Array {
-  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true);
+  return buildCoopMatmul(coopM, coopN, coopK, false, false, true, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, true, emulateFp32, kMulti);
 }

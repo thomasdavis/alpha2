@@ -151,6 +151,29 @@ if (MATMUL_TILE_OVERRIDE_ENV) {
 }
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
+// Opt-in FP32 emulation on tensor cores: decompose each FP32 operand into an
+// FP16 high part plus an FP16 residual and accumulate high*high + high*low +
+// low*high in FP32. X32 keeps both slices tile-local; no global split buffers.
+const ENABLE_COOP_F16X3 = process.env.HELIOS_COOP_F16X3 === "1";
+
+function coopF16x3SharedBytes(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  kMulti: number,
+  subgroupTilesX: number,
+  subgroupTilesY: number,
+  regTilesM: number,
+  regTilesN: number,
+): number {
+  const parsedPad = parseInt(process.env.HELIOS_COOP_SHMEM_PAD ?? "8", 10);
+  const pad = Number.isFinite(parsedPad) && parsedPad >= 0 ? parsedPad : 8;
+  const kTile = coopK * kMulti;
+  const aElements = coopM * regTilesM * (kTile + pad) * subgroupTilesY;
+  const bElements = kTile * (coopN * regTilesN + pad) * subgroupTilesX;
+  // Two-byte FP16 elements, doubled for high and residual tiles.
+  return 4 * (aElements + bElements);
+}
 // The cooperative shader can either consume pre-cast f16 SSBOs or load f32
 // operands and narrow each reusable tile into f16 workgroup memory.  The
 // pre-cast path wins isolated GEMM microbenchmarks, but a training graph pays
@@ -4703,6 +4726,8 @@ export class HeliosBackend implements Backend {
     M: number, N: number, K: number,
     aBatch: number[], batchSize: number, transposed: boolean,
   ): TensorData {
+    const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
+      a.dtype === "f32" && b.dtype === "f32";
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -4813,7 +4838,29 @@ export class HeliosBackend implements Backend {
     // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    const normalKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    // FP16x3 doubles the shared operand tiles. Cap K packing and disable
+    // double buffering below so the common s2x2 path stays within Ada's
+    // workgroup shared-memory budget.
+    let localKMulti = useFp16x3 ? Math.min(normalKMulti, 2) : normalKMulti;
+    if (useFp16x3) {
+      const maxShared = this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0;
+      while (localKMulti > 1 && coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      ) > maxShared) {
+        localKMulti = Math.max(1, Math.floor(localKMulti / 2));
+      }
+      const requiredShared = coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      );
+      if (maxShared <= 0 || requiredShared > maxShared) {
+        throw new Error(
+          `Helios FP16x3 requires ${requiredShared} bytes of shared memory; device exposes ${maxShared}`,
+        );
+      }
+    }
     const kTileK = this._coopK * localKMulti;
 
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
@@ -4842,7 +4889,7 @@ export class HeliosBackend implements Backend {
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
-    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF && !useFp16x3 ? "_db" : "";
     const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
 
     let variant: string;
@@ -4854,12 +4901,14 @@ export class HeliosBackend implements Backend {
         : (batchSize > 1 ? "batched" : "basic");
     }
 
-    const usePrecastF16Inputs = this.coopUsesPrecastF16Inputs(a, b);
+    const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
+    const emulationSuffix = useFp16x3 ? "_f16x3" : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      emulationSuffix +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     this.recordCoopShape(kernelName, M, N, K, batchSize, false, transposed);
     if (DEBUG_COOP) {
@@ -4974,6 +5023,8 @@ export class HeliosBackend implements Backend {
     outM: number, N: number, loopK: number,
     aBatch: number[], batchSize: number,
   ): TensorData {
+    const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
+      a.dtype === "f32" && b.dtype === "f32";
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -5075,7 +5126,26 @@ export class HeliosBackend implements Backend {
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles
     // outweigh the occupancy penalty since many waves keep SMs busy.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    const normalKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    let localKMulti = useFp16x3 ? Math.min(normalKMulti, 2) : normalKMulti;
+    if (useFp16x3) {
+      const maxShared = this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0;
+      while (localKMulti > 1 && coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      ) > maxShared) {
+        localKMulti = Math.max(1, Math.floor(localKMulti / 2));
+      }
+      const requiredShared = coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      );
+      if (maxShared <= 0 || requiredShared > maxShared) {
+        throw new Error(
+          `Helios FP16x3 requires ${requiredShared} bytes of shared memory; device exposes ${maxShared}`,
+        );
+      }
+    }
     const kTileK = this._coopK * localKMulti;
     let splitK = 1;
     if (COOP_SPLIT_K !== 0 && batchSize === 1) {
@@ -5098,14 +5168,16 @@ export class HeliosBackend implements Backend {
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
-    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF && !useFp16x3 ? "_db" : "";
     const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
-    const usePrecastF16Inputs = this.coopUsesPrecastF16Inputs(a, b);
+    const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
     const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
+    const emulationSuffix = useFp16x3 ? "_f16x3" : "";
     const kernelName =
       `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      emulationSuffix +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
     this.recordCoopShape(kernelName, outM, N, loopK, batchSize, true, false);
     if (DEBUG_COOP) {
