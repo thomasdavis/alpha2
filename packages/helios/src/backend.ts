@@ -1162,7 +1162,11 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 // ── Compute graph / lazy evaluation ──────────────────────────────────────────
 
-const MAX_PENDING_OPS = 2048; // auto-flush when this many ops are pending
+const MAX_PENDING_OPS = 2048;
+// X49: flush-boundary split so a long DGC-eligible run can actually use the
+// DGC path. Opt-out via HELIOS_DISABLE_DGC_SPLIT_RUNS=1.
+const DGC_SPLIT_RUNS = process.env.HELIOS_DISABLE_DGC_SPLIT_RUNS !== "1";
+const DGC_RUN_MIN = Number(process.env.HELIOS_DGC_RUN_MIN ?? "16"); // auto-flush when this many ops are pending
 
 type PendingOpKind = "binary" | "unary" | "softmax" | "softmax_online" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
 
@@ -1367,6 +1371,8 @@ export interface GpuStepStats {
  */
 class ComputeGraph {
   private pending: PendingOp[] = [];
+  /** X49: length of the trailing DGC-eligible run in `pending`. */
+  private _pendingTrailingEligible = 0;
   private pendingPackedBytes = 0;
   private vk: NativeAddon | null = null;
   private _lastFlushTimeline = 0;
@@ -1529,6 +1535,37 @@ class ComputeGraph {
       });
     }
 
+    // X49: split the flush at the end of a long DGC-eligible run.
+    //
+    // The DGC fast path requires EVERY op in a flush to be eligible. A real
+    // training flush carries ~243 mixed ops, so that condition is essentially
+    // never true and every recorded profile shows dgc=0 — an implemented,
+    // device-supported capability that can never fire.
+    //
+    // The real graph has exactly one long eligible run (127 consecutive `add`
+    // ops, verified in the preserved RTX 3090 trace; all other eligible ops are
+    // isolated singletons). Flushing the prefix separately leaves that run as
+    // the whole pending queue, so `allEligible` becomes true and DGC fires.
+    //
+    // This changes only WHERE a flush boundary falls. Multiple flushes per step
+    // are already the normal path (5–7 observed), and ordering is preserved
+    // because the flushes are sequential, so no dispatch mechanics change.
+    if (DGC_SPLIT_RUNS && this.dgcReady && !PROFILE_GPU_TIMESTAMPS) {
+      const eligible = this.isDgcEligibleOp(op);
+      if (!eligible && this._pendingTrailingEligible >= DGC_RUN_MIN) {
+        const runLen = this._pendingTrailingEligible;
+        const trail = this.pending.splice(this.pending.length - runLen, runLen);
+        let trailBytes = 0;
+        for (const t of trail) trailBytes += t.packedBytes ?? 0;
+        this.pendingPackedBytes -= trailBytes;
+        this.flush();                       // prefix: mixed ops, regular path
+        this.pending = trail;               // run alone: allEligible -> DGC
+        this.pendingPackedBytes = trailBytes;
+        this.flush();
+      }
+      this._pendingTrailingEligible = eligible ? this._pendingTrailingEligible + 1 : 0;
+    }
+
     this.pending.push(op);
     this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
@@ -1538,6 +1575,13 @@ class ComputeGraph {
       this.opsByKernelThisStep.set(op.kernel, (this.opsByKernelThisStep.get(op.kernel) ?? 0) + 1);
     }
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
+  }
+
+  /** X49: same eligibility test the DGC fast path applies at flush time. */
+  private isDgcEligibleOp(op: PendingOp): boolean {
+    return this.dgcEligiblePipelines.has(op.pipeline)
+      && op.inputBufs.length === 2
+      && !op.allBufs;
   }
 
   resetStepStats(): void {
@@ -1629,6 +1673,7 @@ class ComputeGraph {
     const vk = this.vk;
     const ops = this.pending;
     this.pending = [];
+    this._pendingTrailingEligible = 0;   // X49: pending cleared, run ends here
     const packedTotalBytes = this.pendingPackedBytes;
     this.pendingPackedBytes = 0;
     this.flushesThisStep++;
