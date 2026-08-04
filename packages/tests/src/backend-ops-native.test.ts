@@ -168,6 +168,49 @@ describe("every Backend method, native vs cpu_ref, at model ranks", () => {
     both("clone", EXACT, (B) => B.clone(B.fromArray(V, [1, 8, 16])));
   });
 
+  /*
+   * The pool is unique to this backend and nothing above it knows it exists,
+   * so its hazards are invisible to a comparison against cpu_ref -- which has
+   * no pool. These probe it directly.
+   *
+   * The embedding backward is the reason: it asks for zeros and then
+   * ACCUMULATES into the returned view by hand. If a recycled buffer arrives
+   * carrying a previous tensor's values, the gradient is that garbage plus the
+   * real contribution -- finite, plausible, and wrong.
+   */
+  it.runIf(() => gpu !== null)("zeros is zero even on a recycled buffer", () => {
+    const g = gpu!;
+    /* Dirty a buffer, release it, and ask for zeros of the same size: the pool
+     * hands the same memory back. */
+    const dirty = g.full([64], 7.5) as { data: ArrayLike<number> };
+    expect(dirty.data[0]).toBe(7.5);
+    const dev = dirty as unknown as { buffer: { release(hl: unknown): void } };
+    (g as unknown as { hl: unknown }).hl;
+    dev.buffer.release((g as unknown as { hl: unknown }).hl);
+
+    const fresh = g.zeros([64]);
+    const f = fresh.data as ArrayLike<number>;
+    for (let i = 0; i < 64; i++) {
+      if (f[i] !== 0) throw new Error(`zeros[${i}] = ${f[i]} on a recycled buffer`);
+    }
+  });
+
+  it.runIf(() => gpu !== null)("a host write into a tensor is visible to the next kernel", () => {
+    const g = gpu!;
+    /* This is what the embedding backward does: allocate, write from the host,
+     * then hand the tensor to an operation. If the write did not reach device
+     * memory before the launch, the kernel reads stale values. */
+    const t = g.zeros([64]) as { data: Float32Array };
+    for (let i = 0; i < 64; i++) t.data[i] = i + 1;
+    const doubled = g.add(t as never, t as never);
+    const d = doubled.data as ArrayLike<number>;
+    for (let i = 0; i < 64; i++) {
+      if (d[i] !== 2 * (i + 1)) {
+        throw new Error(`host write not visible: [${i}] = ${d[i]}, want ${2 * (i + 1)}`);
+      }
+    }
+  });
+
   it.runIf(() => gpu !== null)("element-wise unaries keep rank", () => {
     const pos = fill([1, 8, 16], (i) => (i % 9) + 1);
     for (const [n, f] of [
