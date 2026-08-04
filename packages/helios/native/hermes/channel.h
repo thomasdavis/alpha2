@@ -46,6 +46,37 @@ typedef struct {
   NvU32 *push; /* write cursor into the pushbuffer */
 } hermes_channel;
 
+/*
+ * The error notifier.
+ *
+ * hObjectError on BOTH the channel group and the channel takes a memory object
+ * handle, and RM writes NvNotification records into it. Attaching one is not
+ * optional for development: without it a channel fault produces no signal at
+ * all, and inside a container there is no dmesg either, so every call returns
+ * NV_OK and nothing happens.
+ *
+ * Observed on an RTX 3070 after a submission that did not execute -- record 1
+ * of the notifier buffer:
+ *
+ *   18c89c9f da551460 00000004 ffff0000
+ *   \_______ ______/  \__ __/  \__ __/
+ *           v            v        v
+ *      timestamp      info32    status
+ *
+ * The timestamp is real, which is the useful part: it proves the GPU side
+ * wrote into memory we allocated, so the notifier plumbing is correct and the
+ * hardware is reachable.
+ *
+ * Do NOT read more into info32 than that. nverror.h defines no robust-channel
+ * error 4, so this is not an RC code, and interpreting it as one would be
+ * inventing a diagnosis.
+ *
+ * NOTE also: NVA06F_CTRL_CMD_SET_ERROR_NOTIFIER takes NVA06F_CTRL_SET_ERROR_NOTIFIER_PARAMS
+ * { NvBool bNotifyEachChannelInTSG } -- a single byte. Passing an NvU32 gives
+ * NV_ERR_INVALID_ARGUMENT. Attaching via hObjectError at allocation time is
+ * what actually works and is sufficient.
+ */
+
 /* Allocate a channel and everything it needs. */
 int hermes_channel_open(aether_device *d, hermes_channel *c);
 
