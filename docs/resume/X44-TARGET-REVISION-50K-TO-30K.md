@@ -88,16 +88,20 @@ already begun, rather than requiring an invention.
 
 **To justify 50,000, one of these would have to become true**, and none is currently supported:
 
-1. **Attention dKV work-partition redesign.** dKV was 15.9% of dispatch in the earlier profile; both prior
-   attempts are falsified (X22), so this needs a genuinely different mechanism.
+1. ~~**Attention dKV work-partition redesign.**~~ **CLOSED 2026-08-04 by [X47](X47-DKV-CLOSED-ALL-CANDIDATES-EXHAUSTED.md).**
+   dKV would have to be 49.3% of warmed dispatch for total elimination alone to supply 1.63x; the top three
+   GEMMs are already 67.28%. At any plausible share it caps at 1.09x-1.31x, and elimination is impossible
+   since dKV is required gradient work.
 2. ~~**Sequence packing.**~~ **CLOSED 2026-08-04 by [X46](X46-SEQUENCE-PACKING-IS-VOID.md).** Both batch
    paths in the pretraining loader are already padding-free by construction and no pad token exists. The
    mechanism it would remove is not present, so it yields nothing. **No identified candidate for the residual
    1.63x now remains.**
-3. **Larger effective batch.** Improves GEMM efficiency; bounded by 24 GB and by the gradient noise scale,
-   which is already 2.3× oversized at batch 24.
-4. **Arithmetic below FP16 inputs.** Ampere has int8/int4 tensor cores, but the quality gate for backward
-   arithmetic has already been failed once at FP16 (X24).
+3. ~~**Larger effective batch.**~~ **CLOSED** — batch is already 2.30x above the measured gradient noise
+   scale (X6), so raising it costs tokens-to-target rather than saving them.
+4. ~~**Arithmetic below FP16 inputs.**~~ **CLOSED** — the backward quality gate already failed at FP16 (X24),
+   reversing after step 125; going below FP16 makes that strictly worse.
+
+**All four candidates are now closed. There is no identified mechanism that could supply the residual 1.63x.**
 
 ## 6. Separately: physical measurement was attempted and blocked
 
