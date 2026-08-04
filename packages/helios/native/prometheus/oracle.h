@@ -30,6 +30,8 @@ void pr_fill_signed(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_pair(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_embedding(volatile NvU32 *table, volatile NvU32 *ids);
 NvU32 pr_emb_id(unsigned i);
+void pr_fill_mask(volatile NvU32 *a, volatile NvU32 *mask);
+int pr_mask_set(unsigned i);
 
 float pr_in_a(unsigned i);
 float pr_in_b(unsigned i);
@@ -73,6 +75,13 @@ char *pr_msg(void);
  * that returned its input unchanged -- or that swapped the wrong pair of
  * dimensions -- cannot pass. A square shape would let both through.
  */
+/* The causal mask is square -- it has to be, it is a token-by-token relation. */
+#define PR_MASK_N 8
+
+/* What masked_fill writes where the mask is set. Distinctive and not a value
+ * any input takes, so a fill that never fired is visible. */
+#define PR_MASK_FILL (-42.0f)
+
 #define PR_TR_ROWS 4
 #define PR_TR_COLS 16
 

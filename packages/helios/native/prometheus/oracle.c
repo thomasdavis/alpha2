@@ -65,3 +65,21 @@ void pr_fill_embedding(volatile NvU32 *table, volatile NvU32 *ids) {
 }
 
 NvU32 pr_emb_id(unsigned i) { return (5u * i + 3u) % PR_EMB_ROWS; }
+
+/*
+ * The fill mask: set on every third element.
+ *
+ * Every third rather than alternate, because an alternating mask is exactly the
+ * pattern a warp-level bug would also produce, and because a period that does
+ * not divide the warp size puts set and clear lanes in different places in
+ * different warps. Both halves are non-empty in every warp, which is what makes
+ * the predication actually get exercised.
+ */
+int pr_mask_set(unsigned i) { return (i % 3u) == 0u; }
+
+void pr_fill_mask(volatile NvU32 *a, volatile NvU32 *mask) {
+  for (unsigned i = 0; i < PR_N; i++) {
+    a[i] = pr_f2u((float)(i + 1));
+    mask[i] = pr_mask_set(i) ? 1u : 0u;
+  }
+}

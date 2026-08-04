@@ -19,6 +19,7 @@
 #include "expect.h"
 #include "indexing.h"
 #include "loop.h"
+#include "mask.h"
 #include "matmul.h"
 #include "normalize.h"
 #include "oracle.h"
@@ -83,6 +84,18 @@ static unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;
   return pr_emit_loop_scale(p, PR_LOOP_TRIPS);
+}
+
+static unsigned bld_causal(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_causal_mask(p, PR_MASK_N);
+}
+
+static unsigned bld_masked_fill(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_masked_fill(p);
 }
 
 static unsigned bld_transpose(hp_word *p, NvU64 out, NvU64 in) {
@@ -232,6 +245,11 @@ static const pr_kernel KERNELS[] = {
      * with a branch, so when both fail it says which suspect to look at. */
     K(.name = "loop scale", .build = bld_loop_scale, .fill = pr_fill_pos,
       .check = chk_loop_scale),
+
+    K(.name = "causal mask 8x8", .build = bld_causal, .blockX = PR_MASK_N,
+      .gridX = PR_MASK_N, .fill = pr_fill_pos, .check = chk_causal),
+    K(.name = "masked fill", .build = bld_masked_fill, .fill = pr_fill_mask,
+      .check = chk_masked_fill, .scalar = PR_MASK_FILL),
 
     K(.name = "transpose 4x16", .build = bld_transpose, .blockX = PR_TR_COLS,
       .gridX = PR_TR_ROWS, .fill = pr_fill_pos, .check = chk_transpose),
