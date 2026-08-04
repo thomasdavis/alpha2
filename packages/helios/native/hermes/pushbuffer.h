@@ -54,7 +54,14 @@ void hermes_semaphore_release(hermes_channel *c, NvU64 gpuAddr, NvU32 payload);
 /* Close the segment, append the GPFIFO entry, and advance put. */
 int hermes_submit(aether_device *d, hermes_channel *c);
 
-/* USERD is 512 bytes (mapping it larger returns NV_ERR_INVALID_LIMIT). */
+/* USERD is 512 bytes (mapping it larger returns NV_ERR_INVALID_LIMIT).
+ *
+ * It also sits at a NON-ZERO OFFSET inside its page: RM returns
+ * pLinear = 0xbfef0800 on this GPU, a BAR address whose low bits are 0x800.
+ * Whether mmap() hands back the page base (so USERD is at +0x800) or the object
+ * itself (so it is at +0) is UNRESOLVED -- both were tried and neither causes
+ * the GPU to fetch. Recorded because the offset is real and any future attempt
+ * has to decide which it is. */
 #define HERMES_USERD_BYTES 512
 #define HERMES_USERD_GP_PUT 0x40
 
