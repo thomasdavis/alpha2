@@ -31,6 +31,15 @@ typedef enum {
  * width: every thread contributes exactly one element. */
 unsigned pr_emit_reduction(hp_word *prog, pr_red_op op, unsigned elements);
 
+/*
+ * One value per BLOCK, for tensors larger than a block. Never scales -- a mean
+ * divides by the total count once, at the end, and averaging per-block averages
+ * is wrong as soon as one block is short.
+ *
+ * Declared after pr_combine below, which it takes; the declaration is at the
+ * bottom of this header for that reason.
+ */
+
 /* How a tree step combines two values. */
 typedef enum {
   PR_COMBINE_ADD,
@@ -50,5 +59,8 @@ typedef enum {
  */
 unsigned pr_emit_tree(hp_word *prog, unsigned elements, pr_combine how,
                       unsigned tid, unsigned lhs, unsigned rhs);
+
+unsigned pr_emit_reduction_partial(hp_word *p, pr_combine how,
+                                  unsigned elements);
 
 #endif /* HELIOS_PROMETHEUS_REDUCTION_H */

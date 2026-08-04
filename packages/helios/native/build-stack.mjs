@@ -39,7 +39,7 @@ const LAYERS = [
   "chronos",     // fences and timeline
   "hephaestus",  // SASS assembler
   "prometheus",  // kernel IR and codegen
-  "helios",      // facade
+  "helios",      // the facade: context, program cache, dispatch
 ];
 
 const CFLAGS = [
