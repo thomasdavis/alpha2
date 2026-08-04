@@ -96,6 +96,29 @@ typedef struct {
  * honours one we name. */
 #define GAIA_VA_BASE 0x200000ULL
 
+/*
+ * GPU virtual addresses are handed out by a bump allocator.
+ *
+ * The first version mapped every buffer at GAIA_VA_BASE, which works for
+ * exactly one buffer and then silently aliases: the second allocation lands on
+ * the first. It surfaced as the channel failing to open, because a channel
+ * needs three GPU-visible buffers at once -- a single-buffer test could never
+ * have caught it.
+ *
+ * Bump-only, no reuse. Freed ranges are not recycled, which is fine while
+ * allocation counts are small and honest about being a placeholder.
+ */
+static NvU64 g_vaNext = GAIA_VA_BASE;
+
+static NvU64 gaia_va_take(NvU64 size) {
+  /* 64 KiB granularity keeps every mapping comfortably page-aligned for any
+   * page size RM might choose. */
+  const NvU64 align = 64 * 1024;
+  NvU64 at = (g_vaNext + align - 1) & ~(align - 1);
+  g_vaNext = at + ((size + align - 1) & ~(align - 1));
+  return at;
+}
+
 int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where) {
   memset(b, 0, sizeof *b);
   b->hostFd = -1;
@@ -185,11 +208,12 @@ int gaia_map_gpu_at(aether_device *d, gaia_buffer *b, NvHandle hDma, NvU64 at) {
 int gaia_map_gpu(aether_device *d, gaia_buffer *b) {
   /* Two steps, because GPU mapping genuinely is two things: reserve an address
    * range, then place physical pages at a named address inside it. */
+  const NvU64 at = gaia_va_take(b->size);
   NvHandle va = 0;
-  int rc = gaia_reserve_va(d, &va, GAIA_VA_BASE, b->size);
+  int rc = gaia_reserve_va(d, &va, at, b->size);
   if (rc != 0) return rc;
 
-  rc = gaia_map_gpu_at(d, b, va, GAIA_VA_BASE);
+  rc = gaia_map_gpu_at(d, b, va, at);
   if (rc != 0) {
     aether_free(d, va);
     return rc;
