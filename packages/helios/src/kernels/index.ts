@@ -6,6 +6,9 @@
 
 import { Op, GLSLstd450 } from "./helpers.js";
 
+export { kernelQkvHeadMajorRope, kernelQkvHeadMajorRopeBackward } from "./qkv-layout.js";
+import { kernelQkvHeadMajorRope, kernelQkvHeadMajorRopeBackward } from "./qkv-layout.js";
+
 // Elementwise kernels
 export {
   kernelAdd, kernelSub, kernelMul, kernelDiv, kernelNeg, kernelScale,
@@ -250,6 +253,8 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "residual_add_rmsnorm": spirv = kernelResidualAddRmsNorm(wgSize); break;
     case "rmsnorm_backward": spirv = kernelRmsNormBackward(wgSize); break;
     case "rope": spirv = kernelRope(wgSize); break;
+    case "qkv_head_major_rope": spirv = kernelQkvHeadMajorRope(wgSize); break;
+    case "qkv_head_major_rope_backward": spirv = kernelQkvHeadMajorRopeBackward(wgSize); break;
     case "silu":      spirv = kernelSilu(wgSize); break;
     case "silu_vec4": spirv = kernelSiluVec4(wgSize); break;
     case "silu_vec4x2": spirv = kernelSiluVec4x2(wgSize); break;

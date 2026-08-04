@@ -12,7 +12,7 @@ import {
   Variable, Tape, DropoutRng,
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
-  sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
+  sliceQkv, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
@@ -324,63 +324,86 @@ function transformerBlock(
   // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
   const qkvFlat = matmulTransposed(ctx, q3d, layer.attn.wqkv); // [B*T, 3*nEmbd]
-  const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
-  const q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
-  const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
-  const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
-  if (ctx.backend.flashAttention) {
-    // Flash attention path: causal masking + softcap are handled inside the kernel.
-    // q/k/v are [B, T, nEmbd] with memory layout [B][T][nHead][headDim]. The flash
-    // kernel indexes contiguous [B*nHead, T, headDim] as head-major — a contiguous
-    // [T, headDim] block per (batch, head). A PLAIN reshape to [B*nHead, T, headDim]
-    // would reinterpret the [B][T][nHead][headDim] buffer without moving data, so
-    // for nHead>1 the (batch,head) rows and time positions are scrambled (and RoPE
-    // would then rotate by wrong positions). Reshape→transpose(1,2)→reshape lays
-    // the data out head-major, matching the standard path exactly. [defect P1]
-    let qFA = reshape(ctx, transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    let kFA = reshape(ctx, transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    const vFA = reshape(ctx, transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    // RoPE rotates q/k (per-head, per-position) before attention; flash kernel unchanged.
-    if (ropeOn) {
-      qFA = rope(ctx, qFA, headDim, 0, ropeTheta);
-      kFA = rope(ctx, kFA, headDim, 0, ropeTheta);
-    }
+  const fusedQkvLayout = ropeOn
+    && !!ctx.backend.flashAttention
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackward;
+  if (fusedQkvLayout) {
+    // The QKV projection is token-major [B*T,3*H*D], whereas flash attention
+    // consumes head-major [B*H,T,D]. Cross that boundary once and rotate Q/K
+    // in the same dispatch instead of materialising slice, transpose, and RoPE
+    // intermediates. The backend retains a matched compositional control.
+    const [qFA, kFA, vFA] = qkvHeadMajorRope(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+    );
     const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
     attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
   } else {
-    // Standard multi-dispatch attention (CPU fallback)
-    let qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
-    let kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
-    const vH = transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
+    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
+    const q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
+    const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
+    const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
-    // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
-    // axis), then reshape back to [B, nHead, T, headDim] for attention.
-    if (ropeOn) {
-      qH = reshape(ctx, rope(ctx, reshape(ctx, qH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
-      kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+    if (ctx.backend.flashAttention) {
+      // Flash attention path: causal masking + softcap are handled inside the kernel.
+      // q/k/v are [B, T, nEmbd] with memory layout [B][T][nHead][headDim]. The flash
+      // kernel indexes contiguous [B*nHead, T, headDim] as head-major — a contiguous
+      // [T, headDim] block per (batch, head). A PLAIN reshape to [B*nHead, T, headDim]
+      // would reinterpret the [B][T][nHead][headDim] buffer without moving data, so
+      // for nHead>1 the (batch,head) rows and time positions are scrambled (and RoPE
+      // would then rotate by wrong positions). Reshape→transpose(1,2)→reshape lays
+      // the data out head-major, matching the standard path exactly. [defect P1]
+      let qFA = reshape(ctx, transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      let kFA = reshape(ctx, transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      const vFA = reshape(ctx, transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      // RoPE rotates q/k (per-head, per-position) before attention; flash kernel unchanged.
+      if (ropeOn) {
+        qFA = rope(ctx, qFA, headDim, 0, ropeTheta);
+        kFA = rope(ctx, kFA, headDim, 0, ropeTheta);
+      }
+      const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
+      attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
+    } else {
+      // Standard multi-dispatch attention (CPU fallback)
+      let qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
+      let kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
+      const vH = transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
+
+      // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
+      // axis), then reshape back to [B, nHead, T, headDim] for attention.
+      if (ropeOn) {
+        qH = reshape(ctx, rope(ctx, reshape(ctx, qH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+        kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+      }
+
+      const kT = transpose(ctx, kH, 2, 3);
+      const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+      const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
+
+      const maskedScores = new Variable(
+        ctx.backend.maskedFill(scores.data, mask, -1e9),
+        true,
+      );
+      ctx.tape.record({
+        output: maskedScores,
+        inputs: [scores],
+        backward: (g, B) => [B.maskedFill(g, mask, 0)],
+      });
+
+      const attnWeights = softmax(ctx, maskedScores, -1);
+      const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
+      const attnOut = matmul(ctx, attnDrop, vH);
+      attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
     }
-
-    const kT = transpose(ctx, kH, 2, 3);
-    const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
-    const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
-
-    const maskedScores = new Variable(
-      ctx.backend.maskedFill(scores.data, mask, -1e9),
-      true,
-    );
-    ctx.tape.record({
-      output: maskedScores,
-      inputs: [scores],
-      backward: (g, B) => [B.maskedFill(g, mask, 0)],
-    });
-
-    const attnWeights = softmax(ctx, maskedScores, -1);
-    const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
-    const attnOut = matmul(ctx, attnDrop, vH);
-    attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
   }
   const projected = reshape(ctx, matmulTransposed(ctx, attnConcat, layer.attn.wo), [Batch, T, nEmbd]);
   let ln2Out: Variable;

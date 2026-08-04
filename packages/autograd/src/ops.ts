@@ -882,6 +882,80 @@ export function rope(ctx: Ctx, x: Variable, headDim: number, posOffset: number, 
   });
 }
 
+/**
+ * Convert grouped token-major QKV [B*T,3*H*D] directly to the head-major
+ * [B*H,T,D] representation consumed by flash attention, applying HF-Llama
+ * RoPE to Q and K along the way. Backends without the paired forward/backward
+ * hooks retain the exact established slice → transpose → rope graph.
+ */
+export function qkvHeadMajorRope(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+): [Variable, Variable, Variable] {
+  const modelDim = heads * headDim;
+  const expectedShape = [batch * sequence, 3 * modelDim];
+  if (qkv.data.shape.length !== 2
+    || qkv.data.shape[0] !== expectedShape[0]
+    || qkv.data.shape[1] !== expectedShape[1]) {
+    throw new Error(`qkvHeadMajorRope: expected [${expectedShape}], got [${qkv.data.shape}]`);
+  }
+  if (headDim <= 0 || (headDim & 1) !== 0) {
+    throw new Error(`qkvHeadMajorRope: headDim must be positive and even, got ${headDim}`);
+  }
+
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope || !B.qkvHeadMajorRopeBackward) {
+    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkv);
+    const toHeadMajor = (value: Variable): Variable => reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, value, [batch, sequence, heads, headDim]), 1, 2),
+      [batch * heads, sequence, headDim],
+    );
+    return [
+      rope(ctx, toHeadMajor(qFlat), headDim, 0, theta),
+      rope(ctx, toHeadMajor(kFlat), headDim, 0, theta),
+      toHeadMajor(vFlat),
+    ];
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data,
+    cos,
+    sin,
+    batch,
+    sequence,
+    heads,
+    headDim,
+  );
+  const branch = (data: TensorData, which: 0 | 1 | 2): Variable => record(
+    ctx,
+    data,
+    [qkv],
+    (grad, backwardBackend) => {
+      if (!backwardBackend.qkvHeadMajorRopeBackward) {
+        throw new Error("qkvHeadMajorRope backward hook disappeared after forward");
+      }
+      return [backwardBackend.qkvHeadMajorRopeBackward(
+        grad,
+        cos,
+        negSin,
+        batch,
+        sequence,
+        heads,
+        headDim,
+        which,
+      )];
+    },
+  );
+  return [branch(qData, 0), branch(kData, 1), branch(vData, 2)];
+}
+
 export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Variable {
   if (!training || p === 0) return a;
   const aData = a.data;

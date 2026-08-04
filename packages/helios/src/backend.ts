@@ -74,6 +74,11 @@ const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
 // the physical implementation changes from one dispatch back to add+rmsnorm.
 const DISABLE_RESIDUAL_ADD_RMSNORM =
   process.env.HELIOS_DISABLE_RESIDUAL_ADD_RMSNORM === "1";
+// Matched-control switch for grouped-QKV unpack + head-major layout + RoPE.
+// The public hooks and autograd topology remain unchanged; the disabled path
+// composes the established slice/transpose/rope kernels on the same backend.
+const DISABLE_QKV_HEAD_MAJOR_ROPE =
+  process.env.HELIOS_DISABLE_QKV_HEAD_MAJOR_ROPE === "1";
 // An offline, warmup-excluded lifetime trace can be compiled into a fixed set
 // of reusable VkBuffer handles. Physical r6 testing found that a complete plan
 // can preserve loss while corrupting backward gradients before structural
@@ -6672,6 +6677,228 @@ export class HeliosBackend implements Backend {
       graphLazyTensor(vk, outShape, r1),
       graphLazyTensor(vk, outShape, r2),
     ];
+  }
+
+  qkvHeadMajorRope(
+    qkv: TensorData,
+    cos: TensorData,
+    sin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): [TensorData, TensorData, TensorData] {
+    const modelDim = heads * headDim;
+    const rows = batch * sequence;
+    if (headDim <= 0 || (headDim & 1) !== 0) {
+      throw new Error(`qkvHeadMajorRope: headDim must be positive and even, got ${headDim}`);
+    }
+    if (qkv.shape.length !== 2 || qkv.shape[0] !== rows || qkv.shape[1] !== 3 * modelDim) {
+      throw new Error(
+        `qkvHeadMajorRope: expected [${rows},${3 * modelDim}], got [${qkv.shape}]`,
+      );
+    }
+    if (cos.shape[0] !== sequence || cos.shape[1] !== headDim / 2
+      || sin.shape[0] !== sequence || sin.shape[1] !== headDim / 2) {
+      throw new Error(
+        `qkvHeadMajorRope: expected cos/sin [${sequence},${headDim / 2}], got `
+          + `[${cos.shape}] and [${sin.shape}]`,
+      );
+    }
+
+    if (DISABLE_QKV_HEAD_MAJOR_ROPE) {
+      const [qFlat, kFlat, vFlat] = this.sliceQkv(qkv);
+      const toHeadMajor = (x: TensorData): TensorData => this.reshape(
+        this.transpose(this.reshape(x, [batch, sequence, heads, headDim]), 1, 2),
+        [batch * heads, sequence, headDim],
+      );
+      return [
+        this.rope(toHeadMajor(qFlat), cos, sin),
+        this.rope(toHeadMajor(kFlat), cos, sin),
+        toHeadMajor(vFlat),
+      ];
+    }
+
+    const outputShape: Shape = [batch * heads, sequence, headDim];
+    const outputSize = shapeSize(outputShape);
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const qkvBuffer = ensureGpu(vk, qkv);
+      const cosBuffer = ensureGpu(vk, cos);
+      const sinBuffer = ensureGpu(vk, sin);
+      const qRegion = acquireOutputRegion(vk, outputSize * 4);
+      const kRegion = acquireOutputRegion(vk, outputSize * 4);
+      const vRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(5);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize >>> 1;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      const pipeline = getPipeline(vk, "qkv_head_major_rope", 6, 5 * 4);
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope",
+        pipeline,
+        inputBufs: [],
+        outputRegion: qRegion,
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
+        push,
+        pushSize: 5 * 4,
+        shape: outputShape,
+        allBufs: [
+          qkvBuffer,
+          cosBuffer,
+          sinBuffer,
+          qRegion.handle,
+          kRegion.handle,
+          vRegion.handle,
+        ],
+        writeMask: 0b111000,
+      });
+      return [
+        graphLazyTensor(vk, outputShape, qRegion),
+        graphLazyTensor(vk, outputShape, kRegion),
+        graphLazyTensor(vk, outputShape, vRegion),
+      ];
+    }
+
+    this.checkFallback("qkvHeadMajorRope");
+    const source = qkv.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const sinData = sin.data as Float32Array;
+    const qOut = new Float32Array(outputSize);
+    const kOut = new Float32Array(outputSize);
+    const vOut = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const sourceBase = (b * sequence + t) * (3 * modelDim) + h * headDim;
+          const outputBase = ((b * heads + h) * sequence + t) * headDim;
+          const tableBase = t * half;
+          for (let i = 0; i < half; i++) {
+            const c = cosData[tableBase + i];
+            const s = sinData[tableBase + i];
+            const qA = source[sourceBase + i];
+            const qB = source[sourceBase + i + half];
+            const kA = source[sourceBase + modelDim + i];
+            const kB = source[sourceBase + modelDim + i + half];
+            qOut[outputBase + i] = qA * c - qB * s;
+            qOut[outputBase + i + half] = qB * c + qA * s;
+            kOut[outputBase + i] = kA * c - kB * s;
+            kOut[outputBase + i + half] = kB * c + kA * s;
+            vOut[outputBase + i] = source[sourceBase + 2 * modelDim + i];
+            vOut[outputBase + i + half] = source[sourceBase + 2 * modelDim + i + half];
+          }
+        }
+      }
+    }
+    return [
+      makeTensor(outputShape, qkv.dtype, qOut),
+      makeTensor(outputShape, qkv.dtype, kOut),
+      makeTensor(outputShape, qkv.dtype, vOut),
+    ];
+  }
+
+  qkvHeadMajorRopeBackward(
+    grad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+    which: 0 | 1 | 2,
+  ): TensorData {
+    const modelDim = heads * headDim;
+    const expectedGradShape: Shape = [batch * heads, sequence, headDim];
+    if (!this.shapesEqual(grad.shape, expectedGradShape)) {
+      throw new Error(
+        `qkvHeadMajorRopeBackward: expected grad [${expectedGradShape}], got [${grad.shape}]`,
+      );
+    }
+    if (which !== 0 && which !== 1 && which !== 2) {
+      throw new Error(`qkvHeadMajorRopeBackward: invalid branch ${which}`);
+    }
+    const outputShape: Shape = [batch * sequence, 3 * modelDim];
+    const outputSize = shapeSize(outputShape);
+
+    if (DISABLE_QKV_HEAD_MAJOR_ROPE) {
+      const unrotated = which < 2 ? this.rope(grad, cos, inverseSin) : grad;
+      const tokenMajor = this.reshape(
+        this.transpose(this.reshape(unrotated, [batch, heads, sequence, headDim]), 1, 2),
+        [batch * sequence, modelDim],
+      );
+      return this.scatterSlice(
+        tokenMajor,
+        outputShape,
+        [0, which * modelDim],
+        [batch * sequence, (which + 1) * modelDim],
+      );
+    }
+
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const gradBuffer = ensureGpu(vk, grad);
+      const cosBuffer = ensureGpu(vk, cos);
+      const inverseSinBuffer = ensureGpu(vk, inverseSin);
+      const outputRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(6);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      pushU[5] = which;
+      const pipeline = getPipeline(vk, "qkv_head_major_rope_backward", 4, 6 * 4);
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion,
+        groups: [Math.ceil(outputSize / WG_SIZE), 1, 1],
+        push,
+        pushSize: 6 * 4,
+        shape: outputShape,
+        allBufs: [gradBuffer, cosBuffer, inverseSinBuffer, outputRegion.handle],
+      });
+      return graphLazyTensor(vk, outputShape, outputRegion);
+    }
+
+    this.checkFallback("qkvHeadMajorRopeBackward");
+    const gradData = grad.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const inverseSinData = inverseSin.data as Float32Array;
+    const output = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const gradBase = ((b * heads + h) * sequence + t) * headDim;
+          const outputBase = (b * sequence + t) * (3 * modelDim)
+            + which * modelDim + h * headDim;
+          const tableBase = t * half;
+          for (let i = 0; i < half; i++) {
+            const gA = gradData[gradBase + i];
+            const gB = gradData[gradBase + i + half];
+            if (which < 2) {
+              const c = cosData[tableBase + i];
+              const sInv = inverseSinData[tableBase + i];
+              output[outputBase + i] = gA * c - gB * sInv;
+              output[outputBase + i + half] = gB * c + gA * sInv;
+            } else {
+              output[outputBase + i] = gA;
+              output[outputBase + i + half] = gB;
+            }
+          }
+        }
+      }
+    }
+    return makeTensor(outputShape, grad.dtype, output);
   }
 
   scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {

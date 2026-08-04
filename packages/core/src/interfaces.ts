@@ -204,6 +204,32 @@ export interface Backend {
   // fused 3-way column slice: [rows, 3*D] → 3×[rows, D] in single dispatch
   sliceQkv?(a: TensorData): [TensorData, TensorData, TensorData];
 
+  /** Fused grouped-QKV unpack, token-major → head-major layout conversion,
+   *  and HF-Llama RoPE on Q/K. The three outputs are [B*H,T,headDim]. */
+  qkvHeadMajorRope?(
+    qkv: TensorData,
+    cos: TensorData,
+    sin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): [TensorData, TensorData, TensorData];
+  /** Exact branch backward for qkvHeadMajorRope. inverseSin is the negated
+   *  forward sine table, so Q/K use the transpose RoPE rotation. The result
+   *  has the original grouped [B*T,3*nEmbd] layout; non-selected segments are
+   *  zero so ordinary tape accumulation combines the Q, K, and V branches. */
+  qkvHeadMajorRopeBackward?(
+    grad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+    which: 0 | 1 | 2,
+  ): TensorData;
+
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
   scatterSlice?(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData;
