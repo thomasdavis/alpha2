@@ -152,6 +152,11 @@ Flash Attention now writes token-major O directly and reads token-major O/dO
 in backward, removing the remaining two output-layout transposes per layer:
 another 36 dispatches and 1.758 GiB, or 288 dispatches and 21.094 GiB across
 X28-X30 in static accounting.
+Flash backward now writes Q/K/V directly into the final grouped projection
+gradient, applying inverse RoPE in the Q/K stores and removing the separate
+assembly kernel plus staged gradients: another 18 dispatches and 2.637 GiB, or
+306 dispatches and 23.730 GiB across X28-X31 in static accounting. Its partial
+in-place output also has an explicit, regression-tested static lifetime.
 Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
@@ -164,7 +169,9 @@ and the grouped layout fusion in
 with the one-tape combined backward in
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`,
 and the direct output layout in
-`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`.
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`,
+and the direct grouped backward in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X31-DIRECT-GROUPED-FLASH-BACKWARD.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
