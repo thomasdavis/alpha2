@@ -5874,9 +5874,11 @@ export class HeliosBackend implements Backend {
   flashAttentionBackward(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData } {
-    return this.flashAttentionBackwardImpl(
+    const result = this.flashAttentionBackwardImpl(
       Q, K, V, O, dO, lse, T, scale, softCap, 1, Q.shape[0], false,
     );
+    if ("groupedQkv" in result) throw new Error("unexpected grouped Flash backward result");
+    return result;
   }
 
   flashAttentionBackwardTokenMajor(Q: TensorData, K: TensorData, V: TensorData,
@@ -5903,18 +5905,56 @@ export class HeliosBackend implements Backend {
       }
       return result;
     }
-    return this.flashAttentionBackwardImpl(
+    const result = this.flashAttentionBackwardImpl(
       Q, K, V, O, dO, lse, T, scale, softCap, batch, heads, true,
     );
+    if ("groupedQkv" in result) throw new Error("unexpected grouped Flash backward result");
+    return result;
+  }
+
+  flashAttentionBackwardGroupedQkv(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    cos: TensorData, inverseSin: TensorData,
+    T: number, batch: number, heads: number, headDim: number,
+    scale: number, softCap: number): TensorData {
+    if (Q.shape[0] !== batch * heads || Q.shape[2] !== headDim) {
+      throw new Error("flashAttentionBackwardGroupedQkv shape contract mismatch");
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_GROUPED_QKV_BACKWARD === "1") {
+      const { dQ, dK, dV } = this.flashAttentionBackwardTokenMajor(
+        Q, K, V, O, dO, lse, T, batch, heads, scale, softCap,
+      );
+      const grouped = this.qkvHeadMajorRopeBackwardCombined(
+        dQ, dK, dV, cos, inverseSin, batch, T, heads, headDim,
+      );
+      releaseGpuBufferFor(dQ);
+      releaseGpuBufferFor(dK);
+      releaseGpuBufferFor(dV);
+      return grouped;
+    }
+    const result = this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, batch, heads, true,
+      cos, inverseSin,
+    );
+    if (!("groupedQkv" in result)) throw new Error("missing grouped Flash backward result");
+    return result.groupedQkv;
   }
 
   private flashAttentionBackwardImpl(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number, batch: number, heads: number,
-    tokenMajorOutput: boolean): { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    tokenMajorOutput: boolean, groupedCos?: TensorData, groupedInverseSin?: TensorData):
+    { dQ: TensorData; dK: TensorData; dV: TensorData } | { groupedQkv: TensorData } {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
+    const groupedQkvOutput = groupedCos !== undefined && groupedInverseSin !== undefined;
+    if ((groupedCos === undefined) !== (groupedInverseSin === undefined)) {
+      throw new Error("grouped Flash backward requires both cosine and inverse-sine tables");
+    }
+    if (groupedQkvOutput && D % 8 !== 0) {
+      throw new Error("grouped Flash backward requires head dimension divisible by 8");
+    }
     const requestedBr = parseInt(process.env.HELIOS_FLASH_BWD_BR ?? "32", 10);
     const requestedBrDKV = parseInt(process.env.HELIOS_FLASH_BWD_BR_DKV ?? "32", 10);
     const requestedBcDQ = parseInt(process.env.HELIOS_FLASH_BWD_BC_DQ ?? "16", 10);
@@ -5925,6 +5965,7 @@ export class HeliosBackend implements Backend {
     const BcDKV = safeFlashTile(T, requestedBcDKV);
     const scSuffix = softCap > 0 ? "_sc" : "";
     const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const groupedQkvSuffix = groupedQkvOutput ? "_gqkv" : "";
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -5932,6 +5973,8 @@ export class HeliosBackend implements Backend {
     const bufO = ensureGpu(vk, O);
     const bufDO = ensureGpu(vk, dO);
     const bufLSE = ensureGpu(vk, lse);
+    const bufCos = groupedQkvOutput ? ensureGpu(vk, groupedCos!) : 0;
+    const bufInverseSin = groupedQkvOutput ? ensureGpu(vk, groupedInverseSin!) : 0;
 
     // Step 1: dQ kernel computes D_precomp inline (saves 2 dispatch calls ~60µs)
     // D_precomp: [BH, T] — Di = dot(dO[i,:], O[i,:]), computed inside dQ kernel
@@ -5939,10 +5982,14 @@ export class HeliosBackend implements Backend {
     const dPreRegion = acquireOutputRegion(vk, dPreBytes);
 
     // dQ kernel: bindings [Q, K, V, dO, O, LSE, Dpre_out, dQ_out]
-    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}${tokenMajorSuffix}`;
-    const dqPipeline = getPipeline(vk, dqKernel, 8, 16);
+    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}${tokenMajorSuffix}${groupedQkvSuffix}`;
+    const dqBindingCount = groupedQkvOutput ? 10 : 8;
+    const dqPipeline = getPipeline(vk, dqKernel, dqBindingCount, 16);
     const dqBytes = BH * T * D * 4;
-    const dqRegion = acquireOutputRegion(vk, dqBytes);
+    const groupedRegion = groupedQkvOutput
+      ? acquireOutputRegion(vk, 3 * dqBytes)
+      : null;
+    const dqRegion = groupedRegion ?? acquireOutputRegion(vk, dqBytes);
     const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
 
     graph.record({
@@ -5954,8 +6001,10 @@ export class HeliosBackend implements Backend {
       groups: [Math.ceil(T / Br), BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
+      shape: groupedQkvOutput ? [batch * T, 3 * heads * D] : [BH, T, D],
+      allBufs: groupedQkvOutput
+        ? [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle, bufCos, bufInverseSin]
+        : [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
       writeMask: 0b11000000, // Dpre and dQ are both written
     });
 
@@ -5964,15 +6013,20 @@ export class HeliosBackend implements Backend {
     // per loop body. Keep it opt-in until a physical device profile proves
     // that the extra registers/code size beat the selected scalar kernel.
     const dkvVariant = !tokenMajorOutput && process.env.HELIOS_FLASH_BWD_DKV_V2 === "1" ? "_v2" : "";
-    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}${tokenMajorSuffix}`;
-    const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
+    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}${tokenMajorSuffix}${groupedQkvSuffix}`;
+    const dkvBindingCount = groupedQkvOutput ? 9 : 8;
+    const dkvPipeline = getPipeline(vk, dkvKernel, dkvBindingCount, 16);
     const dkBytes = BH * T * D * 4;
-    const dkRegion = acquireOutputRegion(vk, dkBytes);
+    const dkRegion = groupedRegion ?? acquireOutputRegion(vk, dkBytes);
     const dvBytes = BH * T * D * 4;
-    const dvRegion = acquireOutputRegion(vk, dvBytes);
+    const dvRegion = groupedRegion ?? acquireOutputRegion(vk, dvBytes);
 
     graph.record({
-      kind: "backward",
+      // The grouped path fills the K/V ranges of the buffer whose Q range was
+      // produced above. Mark it as an in-place continuation so static-slot
+      // analysis retains one value lifetime instead of inventing a second
+      // fresh allocation for the same physical buffer.
+      kind: groupedQkvOutput ? "inplace" : "backward",
       kernel: dkvKernel,
       pipeline: dkvPipeline,
       inputBufs: [],
@@ -5980,9 +6034,11 @@ export class HeliosBackend implements Backend {
       groups: [Math.ceil(T / BcDKV), BH, 1],
       push: push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0),
       pushSize: 16,
-      shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
-      writeMask: 0b11000000, // dK and dV are both written
+      shape: groupedQkvOutput ? [batch * T, 3 * heads * D] : [BH, T, D],
+      allBufs: groupedQkvOutput
+        ? [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, bufCos, bufInverseSin]
+        : [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
+      writeMask: groupedQkvOutput ? 0b1000000 : 0b11000000,
     });
 
     // Release intermediate D_precomp buffer — only needed between dQ and dKV kernels.
@@ -5990,6 +6046,9 @@ export class HeliosBackend implements Backend {
     // hitting Vulkan's live allocation limit and corrupting training.
     graph.deferRelease(dPreRegion);
 
+    if (groupedRegion) {
+      return { groupedQkv: graphLazyTensor(vk, [batch * T, 3 * heads * D], groupedRegion) };
+    }
     const dQ = graphLazyTensor(vk, [BH, T, D], dqRegion);
     const dK = graphLazyTensor(vk, [BH, T, D], dkRegion);
     const dV = graphLazyTensor(vk, [BH, T, D], dvRegion);

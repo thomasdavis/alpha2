@@ -272,6 +272,13 @@ export interface Backend {
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, batch: number, heads: number, scale: number, softCap: number):
     { dQ: TensorData; dK: TensorData; dV: TensorData };
+  /** Token-major Flash backward whose dQ/dK/dV kernels write their disjoint
+   *  final grouped-QKV segments directly, including inverse RoPE for Q/K. */
+  flashAttentionBackwardGroupedQkv?(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    cos: TensorData, inverseSin: TensorData,
+    T: number, batch: number, heads: number, headDim: number,
+    scale: number, softCap: number): TensorData;
 
   // rotary position embedding (optional) — applies HF-Llama rotate_half rotation.
   // x: [B*H, T, D] (head-major); cos/sin: [T, D/2] precomputed per position.

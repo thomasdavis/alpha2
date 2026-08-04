@@ -25,6 +25,7 @@ class ReferenceFlashBackend extends CpuRefBackend {
   qkvCombinedBackwardCalls = 0;
   tokenMajorForwardCalls = 0;
   tokenMajorBackwardCalls = 0;
+  groupedFlashBackwardCalls = 0;
 
   qkvHeadMajorRope(
     qkv: TensorData,
@@ -344,6 +345,62 @@ class ReferenceFlashBackend extends CpuRefBackend {
       sequence, attentionScale, softCap,
     );
   }
+
+  flashAttentionBackwardGroupedQkv(
+    q: TensorData,
+    k: TensorData,
+    v: TensorData,
+    output: TensorData,
+    outputGrad: TensorData,
+    lse: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    sequence: number,
+    batch: number,
+    heads: number,
+    headDim: number,
+    attentionScale: number,
+    softCap: number,
+  ): TensorData {
+    this.groupedFlashBackwardCalls++;
+    const { dQ, dK, dV } = this.flashAttentionBackwardTokenMajor(
+      q, k, v, output, outputGrad, lse,
+      sequence, batch, heads, attentionScale, softCap,
+    );
+    // Independent scalar oracle for the direct GPU write contract: the two
+    // Flash backward stages fill disjoint Q, K, and V ranges of one final
+    // token-major grouped tensor, with inverse RoPE applied only to Q/K.
+    const branches = [dQ, dK, dV] as const;
+    const modelDim = heads * headDim;
+    const half = headDim / 2;
+    const grouped = new Float32Array(batch * sequence * 3 * modelDim);
+    const cosData = cos.data as Float32Array;
+    const inverseSinData = inverseSin.data as Float32Array;
+    for (let b = 0; b < batch; b++) for (let h = 0; h < heads; h++) {
+      for (let t = 0; t < sequence; t++) {
+        const sourceBase = ((b * heads + h) * sequence + t) * headDim;
+        for (let branch = 0; branch < 3; branch++) {
+          const source = branches[branch].data as Float32Array;
+          const outputBase = (b * sequence + t) * 3 * modelDim
+            + branch * modelDim + h * headDim;
+          for (let pair = 0; pair < half; pair++) {
+            const first = source[sourceBase + pair];
+            const second = source[sourceBase + pair + half];
+            if (branch < 2) {
+              const c = cosData[t * half + pair];
+              const sInv = inverseSinData[t * half + pair];
+              grouped[outputBase + pair] = first * c - second * sInv;
+              grouped[outputBase + pair + half] = second * c + first * sInv;
+            } else {
+              grouped[outputBase + pair] = first;
+              grouped[outputBase + pair + half] = second;
+            }
+          }
+        }
+      }
+    }
+    return { shape: [batch * sequence, 3 * modelDim], dtype: "f32", data: grouped };
+  }
 }
 
 function expectArraysClose(actual: number[], expected: number[], digits = 5): void {
@@ -419,7 +476,8 @@ describe("one-tape grouped-QKV Flash Attention", () => {
     expectArraysClose(tokenMajor.gradient, headMajor.gradient, 6);
     expect(tokenMajor.backend.tokenMajorForwardCalls).toBe(1);
     expect(tokenMajor.backend.tokenMajorBackwardCalls).toBe(1);
-    expect(tokenMajor.backend.qkvCombinedBackwardCalls).toBe(1);
+    expect(tokenMajor.backend.groupedFlashBackwardCalls).toBe(1);
+    expect(tokenMajor.backend.qkvCombinedBackwardCalls).toBe(0);
   });
 
   it("matches the compositional output and complete grouped gradient", () => {
@@ -529,9 +587,10 @@ describe("one-tape grouped-QKV Flash Attention", () => {
       expectArraysClose(fused.params[tensor].gradient, baseline.params[tensor].gradient, 4);
     }
     expect(backend.qkvForwardCalls).toBe(config.nLayer);
-    expect(backend.qkvCombinedBackwardCalls).toBe(config.nLayer);
+    expect(backend.qkvCombinedBackwardCalls).toBe(0);
     expect(backend.qkvBranchBackwardCalls).toBe(0);
     expect(backend.tokenMajorForwardCalls).toBe(config.nLayer);
     expect(backend.tokenMajorBackwardCalls).toBe(config.nLayer);
+    expect(backend.groupedFlashBackwardCalls).toBe(config.nLayer);
   });
 });

@@ -1527,14 +1527,34 @@ export function qkvFlashAttentionTokenMajor(
   };
 
   return record(ctx, output, [qkv], (grad, backwardBackend, release) => {
-    if (!backwardBackend.flashAttentionBackwardTokenMajor
+    if ((!backwardBackend.flashAttentionBackwardGroupedQkv
+      && !backwardBackend.flashAttentionBackwardTokenMajor)
       || !backwardBackend.qkvHeadMajorRopeBackwardCombined) {
       throw new Error("qkvFlashAttentionTokenMajor backward hooks disappeared after forward");
     }
     if (!qForBackward || !kForBackward || !vForBackward || !lseForBackward) {
       throw new Error("qkvFlashAttentionTokenMajor backward state was released before use");
     }
-    const { dQ, dK, dV } = backwardBackend.flashAttentionBackwardTokenMajor(
+    if (backwardBackend.flashAttentionBackwardGroupedQkv) {
+      const grouped = backwardBackend.flashAttentionBackwardGroupedQkv(
+        qForBackward,
+        kForBackward,
+        vForBackward,
+        output,
+        grad,
+        lseForBackward,
+        cos,
+        negSin,
+        sequence,
+        batch,
+        heads,
+        headDim,
+        scaleValue,
+        softCapValue,
+      );
+      return [grouped];
+    }
+    const { dQ, dK, dV } = backwardBackend.flashAttentionBackwardTokenMajor!(
       qForBackward,
       kForBackward,
       vForBackward,

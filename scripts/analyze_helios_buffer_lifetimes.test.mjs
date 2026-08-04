@@ -20,13 +20,31 @@ function analyze(rows, args = []) {
   }
 }
 
-function op(order, bufferIds, bufferBytes, writeMask, kernel = `k${order}`) {
+function op(order, bufferIds, bufferBytes, writeMask, kernel = `k${order}`, kind = "matmul") {
   return {
-    event: "op", order, kind: "matmul", kernel,
+    event: "op", order, kind, kernel,
     bufferCount: bufferIds.length, bufferIds, bufferBytes, writeMask,
     groups: [1, 1, 1], pushSize: 0, shape: [1], elementCount: null,
   };
 }
+
+test("keeps a partially filled output in one static slot across an in-place continuation", () => {
+  const result = analyze([{
+    step: 1,
+    events: [
+      op(0, [0, 1, 2], [256, 64, 768], 0b100, "produce-q"),
+      op(1, [3, 2], [64, 768], 0b10, "fill-kv", "inplace"),
+      op(2, [2, 4], [768, 128], 0b10, "consume"),
+    ],
+  }], ["--emit-plan"]);
+  const row = result.analyses[0];
+  const groupedAssignments = row.staticSlotPlan.assignments.filter(
+    ({ logicalBytes }) => logicalBytes === 768,
+  );
+  assert.equal(groupedAssignments.length, 1);
+  assert.equal(groupedAssignments[0].producerOperation, 0);
+  assert.equal(groupedAssignments[0].lastUse, 2);
+});
 
 function hostRead(order, operationCount, bufferId, bufferBytes) {
   return { event: "host_read", order, operationCount, bufferId, bufferBytes };

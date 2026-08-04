@@ -1111,7 +1111,14 @@ export function kernelFlashAttentionBackwardDQ(
   D: number,
   useSoftCap: boolean = true,
   tokenMajorOutput: boolean = false,
+  groupedQkvOutput: boolean = false,
 ): Uint32Array {
+  if (groupedQkvOutput && !tokenMajorOutput) {
+    throw new Error("grouped QKV backward requires token-major O/dO addressing");
+  }
+  if (groupedQkvOutput && D % 8 !== 0) {
+    throw new Error("grouped QKV backward requires head dimension divisible by 8");
+  }
   const D4 = D >>> 2;
   const b = new SpirVBuilder();
   const p = preamble(b, Br, 1, 1);
@@ -1129,6 +1136,12 @@ export function kernelFlashAttentionBackwardDQ(
   const bufLSE  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 5, true);
   const bufDpre = declareStorageBuffer(b, p.tF32, p.tU32, 0, 6, false, true);
   const bufDQ   = declareStorageBufferVec4(b, tVec4F32, 0, 7, false, true);
+  const bufCos = groupedQkvOutput
+    ? declareStorageBufferVec4(b, tVec4F32, 0, 8, true)
+    : null;
+  const bufInverseSin = groupedQkvOutput
+    ? declareStorageBufferVec4(b, tVec4F32, 0, 9, true)
+    : null;
 
   const pc = declareParamsPushConstant(b, p.tF32, 4);
 
@@ -1506,14 +1519,57 @@ export function kernelFlashAttentionBackwardDQ(
   b.emit(Op.Branch, [labelLoopHead]);
   b.emit(Op.Label, [labelLoopMerge]);
 
-  // Write regDQ to output
-  const dqBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, dqBase4, baseOff4, qRowD4]);
-  for (let d4 = 0; d4 < D4; d4++) {
-    const ptrRegDQd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDQd4, regDQ, constD4Idx[d4]]);
-    const regDQVec = b.id(); b.emit(Op.Load, [tVec4F32, regDQVec, ptrRegDQd4]);
-    const dqIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dqIdx, dqBase4, constD4Idx[d4]]);
-    const ptrOut = b.id(); b.emit(Op.AccessChain, [bufDQ.tPtrVec4, ptrOut, bufDQ.varId, p.const0u, dqIdx]);
-    b.emit(Op.Store, [ptrOut, regDQVec]);
+  // Write regDQ either head-major or directly into the grouped token-major Q
+  // segment while applying inverse RoPE in vec4 half-split pairs.
+  if (groupedQkvOutput) {
+    const halfD4 = D4 >>> 1;
+    const constHalfD4 = b.id(); b.constant(p.tU32, constHalfD4, halfD4);
+    const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, bhIdx, outputHeads]);
+    const head = b.id(); b.emit(Op.UMod, [p.tU32, head, bhIdx, outputHeads]);
+    const batchTimesT = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesT, batch, T]);
+    const groupedRow = b.id(); b.emit(Op.IAdd, [p.tU32, groupedRow, batchTimesT, qRow]);
+    const modelD4 = b.id(); b.emit(Op.IMul, [p.tU32, modelD4, outputHeads, constD4]);
+    const groupedWidth4 = b.id();
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    b.emit(Op.IMul, [p.tU32, groupedWidth4, modelD4, const3u]);
+    const groupedRowBase4 = b.id(); b.emit(Op.IMul, [p.tU32, groupedRowBase4, groupedRow, groupedWidth4]);
+    const headBase4 = b.id(); b.emit(Op.IMul, [p.tU32, headBase4, head, constD4]);
+    const qOutBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qOutBase4, groupedRowBase4, headBase4]);
+    const tableBase4 = b.id(); b.emit(Op.IMul, [p.tU32, tableBase4, qRow, constHalfD4]);
+
+    for (let d4 = 0; d4 < halfD4; d4++) {
+      const secondD4 = d4 + halfD4;
+      const ptrFirst = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrFirst, regDQ, constD4Idx[d4]]);
+      const first = b.id(); b.emit(Op.Load, [tVec4F32, first, ptrFirst]);
+      const ptrSecond = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrSecond, regDQ, constD4Idx[secondD4]]);
+      const second = b.id(); b.emit(Op.Load, [tVec4F32, second, ptrSecond]);
+      const tableIdx = b.id(); b.emit(Op.IAdd, [p.tU32, tableIdx, tableBase4, constD4Idx[d4]]);
+      const ptrCos = b.id(); b.emit(Op.AccessChain, [bufCos!.tPtrVec4, ptrCos, bufCos!.varId, p.const0u, tableIdx]);
+      const cosVec = b.id(); b.emit(Op.Load, [tVec4F32, cosVec, ptrCos]);
+      const ptrSin = b.id(); b.emit(Op.AccessChain, [bufInverseSin!.tPtrVec4, ptrSin, bufInverseSin!.varId, p.const0u, tableIdx]);
+      const sinVec = b.id(); b.emit(Op.Load, [tVec4F32, sinVec, ptrSin]);
+      const firstCos = b.id(); b.emit(Op.FMul, [tVec4F32, firstCos, first, cosVec]);
+      const secondSin = b.id(); b.emit(Op.FMul, [tVec4F32, secondSin, second, sinVec]);
+      const rotatedFirst = b.id(); b.emit(Op.FSub, [tVec4F32, rotatedFirst, firstCos, secondSin]);
+      const secondCos = b.id(); b.emit(Op.FMul, [tVec4F32, secondCos, second, cosVec]);
+      const firstSin = b.id(); b.emit(Op.FMul, [tVec4F32, firstSin, first, sinVec]);
+      const rotatedSecond = b.id(); b.emit(Op.FAdd, [tVec4F32, rotatedSecond, secondCos, firstSin]);
+      const firstOutIdx = b.id(); b.emit(Op.IAdd, [p.tU32, firstOutIdx, qOutBase4, constD4Idx[d4]]);
+      const secondOutIdx = b.id(); b.emit(Op.IAdd, [p.tU32, secondOutIdx, qOutBase4, constD4Idx[secondD4]]);
+      const ptrOutFirst = b.id(); b.emit(Op.AccessChain, [bufDQ.tPtrVec4, ptrOutFirst, bufDQ.varId, p.const0u, firstOutIdx]);
+      const ptrOutSecond = b.id(); b.emit(Op.AccessChain, [bufDQ.tPtrVec4, ptrOutSecond, bufDQ.varId, p.const0u, secondOutIdx]);
+      b.emit(Op.Store, [ptrOutFirst, rotatedFirst]);
+      b.emit(Op.Store, [ptrOutSecond, rotatedSecond]);
+    }
+  } else {
+    const dqBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, dqBase4, baseOff4, qRowD4]);
+    for (let d4 = 0; d4 < D4; d4++) {
+      const ptrRegDQd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDQd4, regDQ, constD4Idx[d4]]);
+      const regDQVec = b.id(); b.emit(Op.Load, [tVec4F32, regDQVec, ptrRegDQd4]);
+      const dqIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dqIdx, dqBase4, constD4Idx[d4]]);
+      const ptrOut = b.id(); b.emit(Op.AccessChain, [bufDQ.tPtrVec4, ptrOut, bufDQ.varId, p.const0u, dqIdx]);
+      b.emit(Op.Store, [ptrOut, regDQVec]);
+    }
   }
 
   b.emit(Op.Branch, [labelEnd]);
@@ -1540,7 +1596,14 @@ export function kernelFlashAttentionBackwardDKV(
   D: number,
   useSoftCap: boolean = true,
   tokenMajorOutput: boolean = false,
+  groupedQkvOutput: boolean = false,
 ): Uint32Array {
+  if (groupedQkvOutput && !tokenMajorOutput) {
+    throw new Error("grouped QKV backward requires token-major O/dO addressing");
+  }
+  if (groupedQkvOutput && D % 8 !== 0) {
+    throw new Error("grouped QKV backward requires head dimension divisible by 8");
+  }
   if (Br % Bc !== 0) {
     throw new Error(`dKV query tile Br=${Br} must be an integer multiple of key tile Bc=${Bc}`);
   }
@@ -1558,7 +1621,18 @@ export function kernelFlashAttentionBackwardDKV(
   const bufLSE  = declareStorageBuffer(b, p.tF32, p.tU32, 0, 4, true);
   const bufDpre = declareStorageBuffer(b, p.tF32, p.tU32, 0, 5, true);
   const bufDK   = declareStorageBufferVec4(b, tVec4F32, 0, 6, false, true);
-  const bufDV   = declareStorageBufferVec4(b, tVec4F32, 0, 7, false, true);
+  // In grouped mode dK and dV occupy disjoint ranges of one final QKV buffer.
+  // Use one descriptor binding so the graph and Vulkan hazard tracker see one
+  // partially-mutated physical allocation rather than two apparent outputs.
+  const bufDV = groupedQkvOutput
+    ? bufDK
+    : declareStorageBufferVec4(b, tVec4F32, 0, 7, false, true);
+  const bufCos = groupedQkvOutput
+    ? declareStorageBufferVec4(b, tVec4F32, 0, 7, true)
+    : null;
+  const bufInverseSin = groupedQkvOutput
+    ? declareStorageBufferVec4(b, tVec4F32, 0, 8, true)
+    : null;
 
   const pc = declareParamsPushConstant(b, p.tF32, 4);
 
@@ -1921,20 +1995,72 @@ export function kernelFlashAttentionBackwardDKV(
   b.emit(Op.Branch, [labelLoopHead]);
   b.emit(Op.Label, [labelLoopMerge]);
 
-  // Write regDK, regDV to output
-  const dkBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, dkBase4, baseOff4, kRowD4]);
-  for (let d4 = 0; d4 < D4; d4++) {
-    const ptrRegDKd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDKd4, regDK, constD4Idx[d4]]);
-    const regDKVec = b.id(); b.emit(Op.Load, [tVec4F32, regDKVec, ptrRegDKd4]);
-    const dkIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dkIdx, dkBase4, constD4Idx[d4]]);
-    const ptrOutDK = b.id(); b.emit(Op.AccessChain, [bufDK.tPtrVec4, ptrOutDK, bufDK.varId, p.const0u, dkIdx]);
-    b.emit(Op.Store, [ptrOutDK, regDKVec]);
+  // Write regDK/regDV either head-major or directly into the grouped
+  // token-major K/V segments. K receives inverse RoPE; V is copied.
+  if (groupedQkvOutput) {
+    const halfD4 = D4 >>> 1;
+    const constHalfD4 = b.id(); b.constant(p.tU32, constHalfD4, halfD4);
+    const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, bhIdx, outputHeads]);
+    const head = b.id(); b.emit(Op.UMod, [p.tU32, head, bhIdx, outputHeads]);
+    const batchTimesT = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesT, batch, T]);
+    const groupedRow = b.id(); b.emit(Op.IAdd, [p.tU32, groupedRow, batchTimesT, kRow]);
+    const modelD4 = b.id(); b.emit(Op.IMul, [p.tU32, modelD4, outputHeads, constD4]);
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const groupedWidth4 = b.id(); b.emit(Op.IMul, [p.tU32, groupedWidth4, modelD4, const3u]);
+    const groupedRowBase4 = b.id(); b.emit(Op.IMul, [p.tU32, groupedRowBase4, groupedRow, groupedWidth4]);
+    const headBase4 = b.id(); b.emit(Op.IMul, [p.tU32, headBase4, head, constD4]);
+    const qSegmentBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, qSegmentBase4, groupedRowBase4, headBase4]);
+    const kOutBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, kOutBase4, qSegmentBase4, modelD4]);
+    const twoModelD4 = b.id(); b.emit(Op.IAdd, [p.tU32, twoModelD4, modelD4, modelD4]);
+    const vOutBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, vOutBase4, qSegmentBase4, twoModelD4]);
+    const tableBase4 = b.id(); b.emit(Op.IMul, [p.tU32, tableBase4, kRow, constHalfD4]);
 
-    const ptrRegDVd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDVd4, regDV, constD4Idx[d4]]);
-    const regDVVec = b.id(); b.emit(Op.Load, [tVec4F32, regDVVec, ptrRegDVd4]);
-    const dvIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dvIdx, dkBase4, constD4Idx[d4]]);
-    const ptrOutDV = b.id(); b.emit(Op.AccessChain, [bufDV.tPtrVec4, ptrOutDV, bufDV.varId, p.const0u, dvIdx]);
-    b.emit(Op.Store, [ptrOutDV, regDVVec]);
+    for (let d4 = 0; d4 < halfD4; d4++) {
+      const secondD4 = d4 + halfD4;
+      const ptrFirst = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrFirst, regDK, constD4Idx[d4]]);
+      const first = b.id(); b.emit(Op.Load, [tVec4F32, first, ptrFirst]);
+      const ptrSecond = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrSecond, regDK, constD4Idx[secondD4]]);
+      const second = b.id(); b.emit(Op.Load, [tVec4F32, second, ptrSecond]);
+      const tableIdx = b.id(); b.emit(Op.IAdd, [p.tU32, tableIdx, tableBase4, constD4Idx[d4]]);
+      const ptrCos = b.id(); b.emit(Op.AccessChain, [bufCos!.tPtrVec4, ptrCos, bufCos!.varId, p.const0u, tableIdx]);
+      const cosVec = b.id(); b.emit(Op.Load, [tVec4F32, cosVec, ptrCos]);
+      const ptrSin = b.id(); b.emit(Op.AccessChain, [bufInverseSin!.tPtrVec4, ptrSin, bufInverseSin!.varId, p.const0u, tableIdx]);
+      const sinVec = b.id(); b.emit(Op.Load, [tVec4F32, sinVec, ptrSin]);
+      const firstCos = b.id(); b.emit(Op.FMul, [tVec4F32, firstCos, first, cosVec]);
+      const secondSin = b.id(); b.emit(Op.FMul, [tVec4F32, secondSin, second, sinVec]);
+      const rotatedFirst = b.id(); b.emit(Op.FSub, [tVec4F32, rotatedFirst, firstCos, secondSin]);
+      const secondCos = b.id(); b.emit(Op.FMul, [tVec4F32, secondCos, second, cosVec]);
+      const firstSin = b.id(); b.emit(Op.FMul, [tVec4F32, firstSin, first, sinVec]);
+      const rotatedSecond = b.id(); b.emit(Op.FAdd, [tVec4F32, rotatedSecond, secondCos, firstSin]);
+      const firstOutIdx = b.id(); b.emit(Op.IAdd, [p.tU32, firstOutIdx, kOutBase4, constD4Idx[d4]]);
+      const secondOutIdx = b.id(); b.emit(Op.IAdd, [p.tU32, secondOutIdx, kOutBase4, constD4Idx[secondD4]]);
+      const ptrOutFirst = b.id(); b.emit(Op.AccessChain, [bufDK.tPtrVec4, ptrOutFirst, bufDK.varId, p.const0u, firstOutIdx]);
+      const ptrOutSecond = b.id(); b.emit(Op.AccessChain, [bufDK.tPtrVec4, ptrOutSecond, bufDK.varId, p.const0u, secondOutIdx]);
+      b.emit(Op.Store, [ptrOutFirst, rotatedFirst]);
+      b.emit(Op.Store, [ptrOutSecond, rotatedSecond]);
+    }
+    for (let d4 = 0; d4 < D4; d4++) {
+      const ptrRegDVd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDVd4, regDV, constD4Idx[d4]]);
+      const regDVVec = b.id(); b.emit(Op.Load, [tVec4F32, regDVVec, ptrRegDVd4]);
+      const dvIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dvIdx, vOutBase4, constD4Idx[d4]]);
+      const ptrOutDV = b.id(); b.emit(Op.AccessChain, [bufDV.tPtrVec4, ptrOutDV, bufDV.varId, p.const0u, dvIdx]);
+      b.emit(Op.Store, [ptrOutDV, regDVVec]);
+    }
+  } else {
+    const dkBase4 = b.id(); b.emit(Op.IAdd, [p.tU32, dkBase4, baseOff4, kRowD4]);
+    for (let d4 = 0; d4 < D4; d4++) {
+      const ptrRegDKd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDKd4, regDK, constD4Idx[d4]]);
+      const regDKVec = b.id(); b.emit(Op.Load, [tVec4F32, regDKVec, ptrRegDKd4]);
+      const dkIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dkIdx, dkBase4, constD4Idx[d4]]);
+      const ptrOutDK = b.id(); b.emit(Op.AccessChain, [bufDK.tPtrVec4, ptrOutDK, bufDK.varId, p.const0u, dkIdx]);
+      b.emit(Op.Store, [ptrOutDK, regDKVec]);
+
+      const ptrRegDVd4 = b.id(); b.emit(Op.AccessChain, [tPtrFnVec4, ptrRegDVd4, regDV, constD4Idx[d4]]);
+      const regDVVec = b.id(); b.emit(Op.Load, [tVec4F32, regDVVec, ptrRegDVd4]);
+      const dvIdx = b.id(); b.emit(Op.IAdd, [p.tU32, dvIdx, dkBase4, constD4Idx[d4]]);
+      const ptrOutDV = b.id(); b.emit(Op.AccessChain, [bufDV.tPtrVec4, ptrOutDV, bufDV.varId, p.const0u, dvIdx]);
+      b.emit(Op.Store, [ptrOutDV, regDVVec]);
+    }
   }
 
   b.emit(Op.Branch, [labelEnd]);

@@ -371,21 +371,22 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           spirv = kernelLayerNormRegUnrolled(wgSize, iters);
         }
       }
-      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}[_tm]
+      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}[_tm][_gqkv]
       // Optional _sc suffix enables soft-capping (tanh clamping). Without _sc, softcap code
       // is physically absent from the SPIR-V, eliminating ~25 ops/iter in forward, ~35 in backward.
       if (!spirv) {
-        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)(_tm)?$/);
+        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)(_tm)?(_gqkv)?$/);
         if (flashMatch) {
-          const [, variant, scSuffix, brS, bcS, dS, tokenMajorSuffix] = flashMatch;
+          const [, variant, scSuffix, brS, bcS, dS, tokenMajorSuffix, groupedQkvSuffix] = flashMatch;
           const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
           const useSoftCap = scSuffix === "_sc";
           const tokenMajorOutput = tokenMajorSuffix === "_tm";
+          const groupedQkvOutput = groupedQkvSuffix === "_gqkv";
           switch (variant) {
             case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
             case "fwd_v2":     spirv = kernelFlashAttentionForwardV2(Br, Bc, D); break;
-            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
-            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
+            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap, tokenMajorOutput, groupedQkvOutput); break;
+            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap, tokenMajorOutput, groupedQkvOutput); break;
             case "bwd_dq_v2":  spirv = kernelFlashAttentionBackwardDQV2(Br, Bc, D); break;
             case "bwd_dkv_v2": spirv = kernelFlashAttentionBackwardDKVV2(Br, Bc, D); break;
           }

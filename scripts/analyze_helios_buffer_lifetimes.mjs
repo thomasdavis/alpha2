@@ -191,7 +191,14 @@ function analyzeStep(row) {
       }
 
       const persistentMutation = operation.kind === "optimizer" || operation.kind === "inplace";
-      if (value && persistentMutation) value.lastUse = Math.max(value.lastUse, currentOperationIndex);
+      // In-place work mutates the value already occupying the allocation; it
+      // does not create a fresh value or a fresh static-slot assignment. This
+      // matters for partially filled transient outputs: later consumers must
+      // keep the original slot live through the continuation and final read.
+      if (value && persistentMutation) {
+        value.lastUse = Math.max(value.lastUse, currentOperationIndex);
+        continue;
+      }
       newValue({
         physicalId,
         bytes,
