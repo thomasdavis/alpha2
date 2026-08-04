@@ -88,6 +88,18 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * Resolve a possibly-negative axis against a rank.
+   *
+   * -1 means the last dimension, which is how attention and every loss in the
+   * model spell it. Comparing a raw axis against rank-1 rejects -1 as
+   * "non-final" -- which is what the first version did, and it read as a
+   * missing kernel when the kernel was there and the index was a convention.
+   */
+  private axisOf(shape: Shape, axis: number): number {
+    return axis < 0 ? shape.length + axis : axis;
+  }
+
   private check(ok: boolean, op: string): void {
     if (!ok) throw new Error(`helios-native: ${op} failed on the device`);
   }
@@ -261,13 +273,15 @@ export class NativeHeliosBackend implements Backend {
 
   sum(a: TensorData, axis?: number): TensorData {
     if (axis === undefined) return this.reduceAll("sum", false, a);
-    if (axis !== a.shape.length - 1) this.unsupported("sum over a non-final axis");
+    if (this.axisOf(a.shape, axis) !== a.shape.length - 1)
+      this.unsupported("sum over a non-final axis");
     return this.reduceAxis("sum", false, a);
   }
 
   mean(a: TensorData, axis?: number): TensorData {
     if (axis === undefined) return this.reduceAll("mean", true, a);
-    if (axis !== a.shape.length - 1) this.unsupported("mean over a non-final axis");
+    if (this.axisOf(a.shape, axis) !== a.shape.length - 1)
+      this.unsupported("mean over a non-final axis");
     return this.reduceAxis("mean", true, a);
   }
 
@@ -293,7 +307,7 @@ export class NativeHeliosBackend implements Backend {
   }
 
   softmax(a: TensorData, axis?: number): TensorData {
-    if (axis !== undefined && axis !== a.shape.length - 1)
+    if (axis !== undefined && this.axisOf(a.shape, axis) !== a.shape.length - 1)
       this.unsupported("softmax over a non-final axis");
     return this.normalized("softmax", this.hl.op.softmax, a, 0);
   }
@@ -371,18 +385,61 @@ export class NativeHeliosBackend implements Backend {
     return this.unary("clone", this.hl.op.copy, a);
   }
 
+  /**
+   * A sub-block of a row-major tensor, any rank.
+   *
+   * One dimension uses the kernel. More than one copies RUNS between the two
+   * mapped views, and that is not a shortcut: a slice performs no arithmetic,
+   * and its innermost dimension is contiguous in a row-major layout, so the
+   * whole operation is a sequence of contiguous copies at memory bandwidth. A
+   * kernel would add a launch to do exactly what the copy does.
+   *
+   * The run length is the product of the sliced extents from the first
+   * FULL-WIDTH trailing dimension inward. Slicing only the outer dimensions --
+   * which is what taking a batch or a head does, and what the model actually
+   * asks for -- makes that the entire inner block, so it is one copy per outer
+   * index rather than one per element.
+   */
   slice(a: TensorData, starts: number[], ends: number[]): TensorData {
-    /* One dimension, because that is what the kernel takes and what every
-     * slice reduces to once the shape is flattened. A multi-dimensional slice
-     * needs the offset and stride computed from the shapes, which is host
-     * arithmetic that has not been written rather than a missing kernel. */
-    if (starts.length !== 1 || ends.length !== 1)
-      this.unsupported(`slice over ${starts.length} dimensions`);
-    const count = ends[0] - starts[0];
+    const shape = a.shape;
+    if (starts.length !== shape.length || ends.length !== shape.length)
+      throw new Error(
+        `helios-native: slice needs one bound per dimension, got ` +
+          `${starts.length} for shape ${shape}`,
+      );
+    const extents = ends.map((e, i) => e - starts[i]);
     const da = this.device(a);
-    const out = this.make([count], "f32");
-    this.check(this.hl.slice(out.buffer.handle, da.buffer.handle, count,
-                             starts[0], 1), "slice");
+    const out = this.make(extents, "f32");
+
+    if (shape.length === 1) {
+      this.check(this.hl.slice(out.buffer.handle, da.buffer.handle, extents[0],
+                               starts[0], 1), "slice");
+      return out;
+    }
+
+    /* How many trailing dimensions are taken whole: those form one contiguous
+     * run in the source and can move in a single copy. */
+    let runDims = 0;
+    while (runDims < shape.length &&
+           extents[shape.length - 1 - runDims] === shape[shape.length - 1 - runDims])
+      runDims++;
+    const run = extents.slice(shape.length - runDims).reduce((x, y) => x * y, 1);
+
+    const srcStride: number[] = new Array(shape.length).fill(1);
+    for (let i = shape.length - 2; i >= 0; i--) srcStride[i] = srcStride[i + 1] * shape[i + 1];
+
+    const outer = extents.slice(0, shape.length - runDims);
+    const total = outer.reduce((x, y) => x * y, 1);
+    const idx = new Array(outer.length).fill(0);
+    for (let n = 0; n < total; n++) {
+      let src = 0;
+      for (let d = 0; d < outer.length; d++) src += (starts[d] + idx[d]) * srcStride[d];
+      out.buffer.floats.set(da.buffer.floats.subarray(src, src + run), n * run);
+      for (let d = outer.length - 1; d >= 0; d--) {
+        if (++idx[d] < outer[d]) break;
+        idx[d] = 0;
+      }
+    }
     return out;
   }
 
@@ -448,7 +505,8 @@ export class NativeHeliosBackend implements Backend {
    * none here.
    */
   cat(tensors: TensorData[], axis: number): TensorData {
-    if (axis !== 0) this.unsupported(`cat along axis ${axis}`);
+    if (this.axisOf(tensors[0].shape, axis) !== 0)
+      this.unsupported(`cat along axis ${axis}`);
     const total = tensors.reduce((n, t) => n + shapeSize(t.shape), 0);
     const rest = tensors[0].shape.slice(1);
     const out = this.make([total / (shapeSize(rest) || 1), ...rest], "f32");
@@ -468,7 +526,8 @@ export class NativeHeliosBackend implements Backend {
    * addressing pattern and is not pretended to be this one.
    */
   gather(a: TensorData, axis: number, indices: TensorData): TensorData {
-    if (axis !== 0) this.unsupported(`gather along axis ${axis}`);
+    if (this.axisOf(a.shape, axis) !== 0)
+      this.unsupported(`gather along axis ${axis}`);
     return this.embedding(a, indices);
   }
 
