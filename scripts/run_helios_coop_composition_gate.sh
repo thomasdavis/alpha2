@@ -14,6 +14,9 @@ steps="${STEPS:-3}"
 batch="${BATCH:-10}"
 eval_interval="${EVAL_INTERVAL:-0}"
 eval_iters="${EVAL_ITERS:-1}"
+learning_rate="${LEARNING_RATE:-0.002}"
+minimum_learning_rate="${MINIMUM_LEARNING_RATE:-0.0002}"
+warmup_iters="${WARMUP_ITERS:-790}"
 control_shapes="${CONTROL_SHAPES:-}"
 skip_baseline="${SKIP_BASELINE:-0}"
 mkdir -p "$output_root"
@@ -112,8 +115,8 @@ run_row() {
       --vocabSize=12288 --block=1024 --layers=18 --dim=640 --heads=10 --dropout=0 \
       --activation=swiglu --ffnDim=1728 --normType=rmsnorm --posEnc=rope --ropeTheta=10000 \
       --tieEmbeddings=true --backend=helios --gpuProfile=none --optim=adamw \
-      --batch="$batch" --accumSteps=1 --steps="$steps" --lr=0.002 --lrMin=0.0002 \
-      --warmupIters=790 --beta1=0.9 --beta2=0.95 --eps=0.00000001 --weightDecay=0.1 \
+      --batch="$batch" --accumSteps=1 --steps="$steps" --lr="$learning_rate" --lrMin="$minimum_learning_rate" \
+      --warmupIters="$warmup_iters" --beta1=0.9 --beta2=0.95 --eps=0.00000001 --weightDecay=0.1 \
       --gradClip=1.0 --spikeThreshold=50 --evalInterval="$eval_interval" --checkpointInterval=1000000 \
       --evalIters="$eval_iters" --sampleInterval=0 --logEvery=1 --seed=42 --strictPlanning=false \
       --remote=false --fp16=false --minGpuSize=1 --no-fallback=true --packed=true \
