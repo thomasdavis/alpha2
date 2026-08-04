@@ -96,7 +96,8 @@ Current source map and implementation record:
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X29-COMBINED-QKV-FLASH-BACKWARD.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X30-TOKEN-MAJOR-FLASH-OUTPUT.md`;
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X31-DIRECT-GROUPED-FLASH-BACKWARD.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X33-RECIPROCAL-FP16X3-BALANCING.md`.
 
 The exact-path series now implements the following native mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
@@ -130,6 +131,10 @@ products in FP32. It reduced median offline arithmetic error 31.1x over ordinary
 one-product FP16 in 16 sampled non-stress GEMMs; reciprocally balanced samples
 reached 428.2x, though balancing is not yet implemented in the shader. This is
 not a GPU timing or training-quality result and remains disabled by default.
+X33 now emits reciprocal power-of-two A/B scaling before that decomposition
+when an explicit signed exponent is supplied. The scales cancel without an
+output transform and are encoded in the kernel name. Automatic measured
+per-operation exponent selection remains open; no physical claim is added.
 These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.

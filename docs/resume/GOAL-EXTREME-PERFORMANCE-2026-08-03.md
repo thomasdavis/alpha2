@@ -185,6 +185,15 @@ and trajectory gates. The same change fixes authoritative `_kmN` cooperative
 kernel selection. Canonical record:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X32-FP16-RESIDUAL-COOPERATIVE-GEMM.md`.
 
+Commit `c1647407842e6f6615d02bfc82092f0a2c34dba0` subsequently implements the
+reciprocal scaling operation inside the cooperative shader. The experimenter
+supplies an explicit signed power-of-two exponent, which becomes part of the
+kernel identity; A and B receive cancelling scales before FP16 high/residual
+decomposition. Automatic exponent selection remains open because a permanent
+range reduction or readback could erase the gain, and one exponent is not valid
+for every operand role. Canonical record:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X33-RECIPROCAL-FP16X3-BALANCING.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.
