@@ -6847,7 +6847,7 @@ export class HeliosBackend implements Backend {
       const outputRegion = acquireOutputRegion(vk, outputSize * 4);
       const push = new Float32Array(6);
       const pushU = new Uint32Array(push.buffer);
-      pushU[0] = outputSize;
+      pushU[0] = outputSize >>> 1;
       pushU[1] = sequence;
       pushU[2] = heads;
       pushU[3] = headDim;
@@ -6860,7 +6860,7 @@ export class HeliosBackend implements Backend {
         pipeline,
         inputBufs: [],
         outputRegion,
-        groups: [Math.ceil(outputSize / WG_SIZE), 1, 1],
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
         push,
         pushSize: 6 * 4,
         shape: outputShape,

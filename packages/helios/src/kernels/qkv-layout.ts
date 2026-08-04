@@ -182,9 +182,9 @@ export function kernelQkvHeadMajorRope(wgSize = 256): Uint32Array {
 
 /**
  * Bindings: 0=branch grad [B*H,T,D], 1=cos, 2=inverseSin, 3=grouped grad.
- * Push u32: [totalGroupedElements, T, H, headDim, modelDim, which].
- * All grouped elements are written. The selected Q/K/V segment receives the
- * inverse layout/rotation; the other two segments receive exact zero.
+ * Push u32: [totalGroupedPairs, T, H, headDim, modelDim, which].
+ * One invocation writes a half-split pair. The selected Q/K/V segment receives
+ * the inverse layout/rotation; the other two segments receive exact zero.
  */
 export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const b = new SpirVBuilder();
@@ -219,10 +219,23 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const headDim = loadPushU32(b, p.tU32, pc, 3);
   const modelDim = loadPushU32(b, p.tU32, pc, 4);
   const which = loadPushU32(b, p.tU32, pc, 5);
+  const half = b.id(); b.emit(Op.UDiv, [p.tU32, half, headDim, p.const2u]);
   const groupedWidth = b.id(); b.emit(Op.IMul, [p.tU32, groupedWidth, modelDim, three]);
-  const tokenRow = b.id(); b.emit(Op.UDiv, [p.tU32, tokenRow, gid, groupedWidth]);
-  const groupedCol = b.id(); b.emit(Op.UMod, [p.tU32, groupedCol, gid, groupedWidth]);
-  const segment = b.id(); b.emit(Op.UDiv, [p.tU32, segment, groupedCol, modelDim]);
+  const groupedPairWidth = b.id(); b.emit(Op.UDiv, [p.tU32, groupedPairWidth, groupedWidth, p.const2u]);
+  const segmentPairWidth = b.id(); b.emit(Op.UDiv, [p.tU32, segmentPairWidth, modelDim, p.const2u]);
+  const tokenRow = b.id(); b.emit(Op.UDiv, [p.tU32, tokenRow, gid, groupedPairWidth]);
+  const groupedPairCol = b.id(); b.emit(Op.UMod, [p.tU32, groupedPairCol, gid, groupedPairWidth]);
+  const segment = b.id(); b.emit(Op.UDiv, [p.tU32, segment, groupedPairCol, segmentPairWidth]);
+  const localPair = b.id(); b.emit(Op.UMod, [p.tU32, localPair, groupedPairCol, segmentPairWidth]);
+  const head = b.id(); b.emit(Op.UDiv, [p.tU32, head, localPair, half]);
+  const pair = b.id(); b.emit(Op.UMod, [p.tU32, pair, localPair, half]);
+  const tokenRowBase = b.id(); b.emit(Op.IMul, [p.tU32, tokenRowBase, tokenRow, groupedWidth]);
+  const segmentBase = b.id(); b.emit(Op.IMul, [p.tU32, segmentBase, segment, modelDim]);
+  const headBase = b.id(); b.emit(Op.IMul, [p.tU32, headBase, head, headDim]);
+  const rowSegmentBase = b.id(); b.emit(Op.IAdd, [p.tU32, rowSegmentBase, tokenRowBase, segmentBase]);
+  const outputHeadBase = b.id(); b.emit(Op.IAdd, [p.tU32, outputHeadBase, rowSegmentBase, headBase]);
+  const outputA = b.id(); b.emit(Op.IAdd, [p.tU32, outputA, outputHeadBase, pair]);
+  const outputB = b.id(); b.emit(Op.IAdd, [p.tU32, outputB, outputA, half]);
   const isSelectedSegment = b.id(); b.emit(Op.IEqual, [p.tBool, isSelectedSegment, segment, which]);
   const selectedBody = b.id();
   const zeroBody = b.id();
@@ -234,17 +247,13 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   // the incoming head-major gradient or RoPE tables. This keeps each branch's
   // traffic equivalent to one scatter plus one inverse-layout transform.
   b.emit(Op.Label, [zeroBody]);
-  storeF32(b, p.const0u, out, gid, p.const0f);
+  storeF32(b, p.const0u, out, outputA, p.const0f);
+  storeF32(b, p.const0u, out, outputB, p.const0f);
   b.emit(Op.Branch, [branchEnd]);
 
   b.emit(Op.Label, [selectedBody]);
-  const local = b.id(); b.emit(Op.UMod, [p.tU32, local, groupedCol, modelDim]);
-  const head = b.id(); b.emit(Op.UDiv, [p.tU32, head, local, headDim]);
-  const dimension = b.id(); b.emit(Op.UMod, [p.tU32, dimension, local, headDim]);
   const batch = b.id(); b.emit(Op.UDiv, [p.tU32, batch, tokenRow, sequence]);
   const token = b.id(); b.emit(Op.UMod, [p.tU32, token, tokenRow, sequence]);
-  const half = b.id(); b.emit(Op.UDiv, [p.tU32, half, headDim, p.const2u]);
-  const pair = b.id(); b.emit(Op.UMod, [p.tU32, pair, dimension, half]);
 
   const batchTimesH = b.id(); b.emit(Op.IMul, [p.tU32, batchTimesH, batch, heads]);
   const batchHead = b.id(); b.emit(Op.IAdd, [p.tU32, batchHead, batchTimesH, head]);
@@ -255,8 +264,6 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const gradBIndex = b.id(); b.emit(Op.IAdd, [p.tU32, gradBIndex, gradAIndex, half]);
   const gA = loadF32(b, p.tF32, p.const0u, grad, gradAIndex);
   const gB = loadF32(b, p.tF32, p.const0u, grad, gradBIndex);
-  const secondHalf = b.id();
-  b.emit(Op.UGreaterThanEqual, [p.tBool, secondHalf, dimension, half]);
   const isRotatedBranch = b.id(); b.emit(Op.ULessThan, [p.tBool, isRotatedBranch, which, p.const2u]);
   const rotateBody = b.id();
   const rawBody = b.id();
@@ -277,15 +284,15 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const bCos = b.id(); b.emit(Op.FMul, [p.tF32, bCos, gB, c]);
   const aSin = b.id(); b.emit(Op.FMul, [p.tF32, aSin, gA, sInv]);
   const inverseB = b.id(); b.emit(Op.FAdd, [p.tF32, inverseB, bCos, aSin]);
-  const rotated = b.id(); b.emit(Op.Select, [p.tF32, rotated, secondHalf, inverseB, inverseA]);
-  storeF32(b, p.const0u, out, gid, rotated);
+  storeF32(b, p.const0u, out, outputA, inverseA);
+  storeF32(b, p.const0u, out, outputB, inverseB);
   b.emit(Op.Branch, [selectedEnd]);
 
-  // V has no rotary transform. Select the already-loaded pair member and do
-  // not touch the cosine/sine tables at all.
+  // V has no rotary transform. Write the already-loaded pair and do not touch
+  // the cosine/sine tables at all.
   b.emit(Op.Label, [rawBody]);
-  const raw = b.id(); b.emit(Op.Select, [p.tF32, raw, secondHalf, gB, gA]);
-  storeF32(b, p.const0u, out, gid, raw);
+  storeF32(b, p.const0u, out, outputA, gA);
+  storeF32(b, p.const0u, out, outputB, gB);
   b.emit(Op.Branch, [selectedEnd]);
 
   b.emit(Op.Label, [selectedEnd]);
