@@ -1,0 +1,143 @@
+{
+  "arch": "sm_86",
+  "corpusSize": 144,
+  "fields": [
+    {
+      "mnemonic": "S2R",
+      "operand": 0,
+      "kind": "reg",
+      "pairs": 13,
+      "unionBits": [
+        "18:16"
+      ],
+      "variants": [
+        {
+          "bits": "16,18",
+          "pairs": 4
+        },
+        {
+          "bits": "17",
+          "pairs": 4
+        },
+        {
+          "bits": "18:16",
+          "pairs": 5
+        }
+      ],
+      "example": "S2R R5, SR_TID.X  /  S2R R0, SR_TID.X"
+    },
+    {
+      "mnemonic": "IMAD.MOV.U32",
+      "operand": 0,
+      "kind": "reg",
+      "pairs": 10,
+      "unionBits": [
+        "19:16"
+      ],
+      "variants": [
+        {
+          "bits": "19:17",
+          "pairs": 2
+        },
+        {
+          "bits": "19:16",
+          "pairs": 2
+        },
+        {
+          "bits": "16",
+          "pairs": 2
+        },
+        {
+          "bits": "16,19:18",
+          "pairs": 1
+        },
+        {
+          "bits": "17:16",
+          "pairs": 1
+        },
+        {
+          "bits": "17",
+          "pairs": 1
+        },
+        {
+          "bits": "19:18",
+          "pairs": 1
+        }
+      ],
+      "example": "IMAD.MOV.U32 R6, RZ, RZ, R0  /  IMAD.MOV.U32 R8, RZ, RZ, R0"
+    },
+    {
+      "mnemonic": "STG.E",
+      "operand": 1,
+      "kind": "reg",
+      "pairs": 3,
+      "unionBits": [
+        "34:32"
+      ],
+      "variants": [
+        {
+          "bits": "32,34",
+          "pairs": 2
+        },
+        {
+          "bits": "34:33",
+          "pairs": 1
+        }
+      ],
+      "example": "STG.E [R2.64+0x4], R5  /  STG.E [R2.64+0x4], R0"
+    },
+    {
+      "mnemonic": "LDG.E",
+      "operand": 0,
+      "kind": "reg",
+      "pairs": 3,
+      "unionBits": [
+        "16",
+        "18"
+      ],
+      "variants": [
+        {
+          "bits": "16,18",
+          "pairs": 3
+        }
+      ],
+      "example": "LDG.E R0, [R2.64]  /  LDG.E R5, [R2.64]"
+    },
+    {
+      "mnemonic": "IMAD.MOV.U32",
+      "operand": 3,
+      "kind": "reg",
+      "pairs": 2,
+      "unionBits": [
+        "66:65"
+      ],
+      "variants": [
+        {
+          "bits": "66:65",
+          "pairs": 1
+        },
+        {
+          "bits": "66",
+          "pairs": 1
+        }
+      ],
+      "example": "IMAD.MOV.U32 R9, RZ, RZ, R6  /  IMAD.MOV.U32 R9, RZ, RZ, R0"
+    },
+    {
+      "mnemonic": "S2R",
+      "operand": 1,
+      "kind": "sreg",
+      "pairs": 2,
+      "unionBits": [
+        "74"
+      ],
+      "variants": [
+        {
+          "bits": "74",
+          "pairs": 2
+        }
+      ],
+      "example": "S2R R5, SR_TID.X  /  S2R R5, SR_CTAID.X"
+    }
+  ]
+}

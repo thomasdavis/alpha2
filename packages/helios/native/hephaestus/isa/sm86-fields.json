@@ -1,0 +1,273 @@
+{
+  "arch": "sm_86",
+  "fields": [
+    {
+      "name": "mov_dst_reg",
+      "varied": [
+        2,
+        3,
+        4,
+        5,
+        8,
+        16
+      ],
+      "bits": [],
+      "samples": [
+        {
+          "value": 2,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 3,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 4,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 5,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 8,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 16,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        }
+      ]
+    },
+    {
+      "name": "mov_imm32",
+      "varied": [
+        1,
+        2,
+        4,
+        256,
+        65536,
+        16777216
+      ],
+      "bits": [
+        "34:32",
+        "40",
+        "48",
+        "56"
+      ],
+      "samples": [
+        {
+          "value": 1,
+          "text": "MOV R0, 0x1",
+          "word": "0x003fde0000000f000000000100007802"
+        },
+        {
+          "value": 2,
+          "text": "MOV R0, 0x2",
+          "word": "0x003fde0000000f000000000200007802"
+        },
+        {
+          "value": 4,
+          "text": "MOV R0, 0x4",
+          "word": "0x003fde0000000f000000000400007802"
+        },
+        {
+          "value": 256,
+          "text": "MOV R0, 0x100",
+          "word": "0x003fde0000000f000000010000007802"
+        },
+        {
+          "value": 65536,
+          "text": "MOV R0, 0x10000",
+          "word": "0x003fde0000000f000001000000007802"
+        },
+        {
+          "value": 16777216,
+          "text": "MOV R0, 0x1000000",
+          "word": "0x003fde0000000f000100000000007802"
+        }
+      ]
+    },
+    {
+      "name": "iadd_srcA",
+      "varied": [
+        2,
+        3,
+        5,
+        9
+      ],
+      "bits": [],
+      "samples": [
+        {
+          "value": 2,
+          "text": "IADD3 R0, R0, 0x7, RZ",
+          "word": "0x003fde0007ffe0ff0000000700007810"
+        },
+        {
+          "value": 3,
+          "text": "IADD3 R0, R0, 0x7, RZ",
+          "word": "0x003fde0007ffe0ff0000000700007810"
+        },
+        {
+          "value": 5,
+          "text": "IADD3 R0, R0, 0x7, RZ",
+          "word": "0x003fde0007ffe0ff0000000700007810"
+        },
+        {
+          "value": 9,
+          "text": "IADD3 R0, R0, 0x7, RZ",
+          "word": "0x003fde0007ffe0ff0000000700007810"
+        }
+      ]
+    },
+    {
+      "name": "iadd_imm",
+      "varied": [
+        1,
+        2,
+        4,
+        1024
+      ],
+      "bits": [
+        "34:32",
+        "42"
+      ],
+      "samples": [
+        {
+          "value": 1,
+          "text": "IADD3 R0, R0, 0x1, RZ",
+          "word": "0x003fde0007ffe0ff0000000100007810"
+        },
+        {
+          "value": 2,
+          "text": "IADD3 R0, R0, 0x2, RZ",
+          "word": "0x003fde0007ffe0ff0000000200007810"
+        },
+        {
+          "value": 4,
+          "text": "IADD3 R0, R0, 0x4, RZ",
+          "word": "0x003fde0007ffe0ff0000000400007810"
+        },
+        {
+          "value": 1024,
+          "text": "IADD3 R0, R0, 0x400, RZ",
+          "word": "0x003fde0007ffe0ff0000040000007810"
+        }
+      ]
+    },
+    {
+      "name": "s2r_index",
+      "varied": [
+        "%tid.x",
+        "%tid.y",
+        "%tid.z",
+        "%ctaid.x",
+        "%ctaid.y"
+      ],
+      "bits": [
+        "74:72"
+      ],
+      "samples": [
+        {
+          "value": "%tid.x",
+          "text": "S2R R0, SR_TID.X",
+          "word": "0x00321e00000021000000000000007919"
+        },
+        {
+          "value": "%tid.y",
+          "text": "S2R R0, SR_TID.Y",
+          "word": "0x00321e00000022000000000000007919"
+        },
+        {
+          "value": "%tid.z",
+          "text": "S2R R0, SR_TID.Z",
+          "word": "0x00321e00000023000000000000007919"
+        },
+        {
+          "value": "%ctaid.x",
+          "text": "S2R R0, SR_CTAID.X",
+          "word": "0x00321e00000025000000000000007919"
+        },
+        {
+          "value": "%ctaid.y",
+          "text": "S2R R0, SR_CTAID.Y",
+          "word": "0x00321e00000026000000000000007919"
+        }
+      ]
+    },
+    {
+      "name": "const_offset",
+      "varied": [
+        0,
+        4,
+        8,
+        64
+      ],
+      "bits": [],
+      "samples": [
+        {
+          "value": 0,
+          "text": "MOV R1, c[0x0][0x28]",
+          "word": "0x003fde0000000f0000000a0000017a02"
+        },
+        {
+          "value": 4,
+          "text": "MOV R1, c[0x0][0x28]",
+          "word": "0x003fde0000000f0000000a0000017a02"
+        },
+        {
+          "value": 8,
+          "text": "MOV R1, c[0x0][0x28]",
+          "word": "0x003fde0000000f0000000a0000017a02"
+        },
+        {
+          "value": 64,
+          "text": "MOV R1, c[0x0][0x28]",
+          "word": "0x003fde0000000f0000000a0000017a02"
+        }
+      ]
+    },
+    {
+      "name": "sts_offset",
+      "varied": [
+        0,
+        4,
+        16,
+        128
+      ],
+      "bits": [],
+      "samples": [
+        {
+          "value": 0,
+          "text": "STS [R0], R2",
+          "word": "0x0033de00000008000000000200007388"
+        },
+        {
+          "value": 4,
+          "text": "STS [R0], R2",
+          "word": "0x0033de00000008000000000200007388"
+        },
+        {
+          "value": 16,
+          "text": "STS [R0], R2",
+          "word": "0x0033de00000008000000000200007388"
+        },
+        {
+          "value": 128,
+          "text": "STS [R0], R2",
+          "word": "0x0033de00000008000000000200007388"
+        }
+      ]
+    },
+    {
+      "name": "pred_reg",
+      "error": "target instruction not found in output"
+    }
+  ]
+}
