@@ -87,6 +87,22 @@ static inline hp_control hp_ctrl_wait(unsigned barrier) {
  * wrong value rather than as a stall, which is the worst way for a race to
  * present.
  */
+/*
+ * Wait on one barrier and set another.
+ *
+ * A variable-latency instruction that CONSUMES a variable-latency result needs
+ * both: MUFU reading a loaded value must wait for the load, and its own result
+ * is not ready when it issues either. Using only setbar looks right and is not:
+ * the instruction issues immediately and reads whatever was in the register.
+ * That failure is silent and plausible -- MUFU.EX2 on a stale zero returns 1.0,
+ * which is a perfectly reasonable-looking answer to exp2 of something.
+ */
+static inline hp_control hp_ctrl_wait_setbar(unsigned waitBar,
+                                             unsigned setBar) {
+  hp_control c = {15, 0, setBar, HP_NO_BARRIER, 1u << waitBar, 0};
+  return c;
+}
+
 static inline hp_control hp_ctrl_waitmask(unsigned mask) {
   hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, mask & 0x3f, 0};
   return c;

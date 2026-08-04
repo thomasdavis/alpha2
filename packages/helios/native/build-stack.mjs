@@ -72,7 +72,10 @@ function build(layer, upto) {
   const bin = join(OUT, `${layer}_test`);
   mkdirSync(OUT, { recursive: true });
 
-  execFileSync("gcc", [...CFLAGS, "-o", bin, test, harness, ...libs], {
+  /* -lm: the checkers evaluate exp2f/log2f/sqrtf on the host as an independent
+   * oracle. Deliberately not reimplemented — a hand-rolled expected value is a
+   * second implementation, and two implementations agreeing proves nothing. */
+  execFileSync("gcc", [...CFLAGS, "-o", bin, test, harness, ...libs, "-lm"], {
     stdio: "inherit",
   });
   return bin;

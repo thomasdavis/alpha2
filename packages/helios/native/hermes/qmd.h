@@ -205,6 +205,11 @@ void hermes_compute_init(hermes_channel *c, NvU32 subchannel,
 /* sm_86: SET_SPA_VERSION carries major 8, minor 6 (fields MINOR 7:0, MAJOR
  * 15:8). SASS_VERSION is the QMD's own field and is a single byte, 0x86 -- both
  * are required and they are not interchangeable. */
+/* AMPERE_COMPUTE_B, and the SM count of the part we develop on. Named here so
+ * a caller does not have to repeat magic numbers to launch anything. */
+#define HERMES_COMPUTE_CLASS 0xc7c0u
+#define HERMES_SM_COUNT_SM86 46u
+
 #define HERMES_SPA_VERSION_SM86 0x0806
 #define HERMES_SASS_VERSION_SM86 0x86u
 
