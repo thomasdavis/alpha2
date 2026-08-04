@@ -163,6 +163,10 @@ describe("native backend parity with cpu_ref", () => {
      * shapes, and those have to fail as loudly as a missing kernel would.
      */
     const g = gpu!;
-    expect(() => g.cat([g.zeros([4])], 1)).toThrow(/cat along axis 1/);
+    /* cat and the reductions now handle every axis, so what remains genuinely
+     * unsupported is a rank-3 right operand to matmul -- each batch having its
+     * own matrix on BOTH sides, which needs the kernel to offset b by the batch
+     * index rather than a host loop over one of them. */
+    expect(() => g.reshape(g.zeros([4, 4]), [3, 3])).toThrow(/element count/);
   });
 });

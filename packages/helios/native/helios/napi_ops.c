@@ -21,6 +21,7 @@
 #include "dispatch.h"
 #include "../prometheus/elementwise.h"
 #include "../prometheus/normalize.h"
+#include "../prometheus/shapes.h"
 
 /* Declared in napi.c, which owns the context and the argument helpers. */
 NvU32 hl_arg_u32(napi_env env, napi_callback_info info, size_t i);
@@ -187,5 +188,30 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   OP("layerNorm", PR_NORM_LAYER);
 #undef OP
   napi_set_named_property(env, exports, "op", ops);
+
+  /*
+   * The FOLDED constants each kernel expects, exported by name.
+   *
+   * These were written out a second time in TypeScript and drifted: gelu's two
+   * scalars ended up swapped and silu's was negated, so both computed something
+   * plausible and wrong. The kernels do not evaluate the textbook formula --
+   * they evaluate an algebraically equal one with fewer instructions, and which
+   * constant goes in which slot is a property of THAT rearrangement. It belongs
+   * next to the rearrangement, exported, not restated by every caller.
+   */
+  napi_value sc;
+  napi_create_object(env, &sc);
+  napi_value d;
+#define SCALAR(name, value)                                                    \
+  napi_create_double(env, (value), &d);                                        \
+  napi_set_named_property(env, sc, name, d)
+  SCALAR("log2e", PR_LOG2_E);
+  SCALAR("ln2", PR_LN_2);
+  SCALAR("geluK1", PR_GELU_K1);
+  SCALAR("geluFolded", 2.0 * PR_GELU_K0 * PR_LOG2_E);
+  SCALAR("softCapFolded", 2.0 * PR_LOG2_E / PR_SOFTCAP_C);
+  SCALAR("softCapC", PR_SOFTCAP_C);
+#undef SCALAR
+  napi_set_named_property(env, exports, "scalar", sc);
   return exports;
 }

@@ -241,14 +241,22 @@ export class NativeHeliosBackend implements Backend {
   clamp(a: TensorData, lo: number, hi: number): TensorData {
     return this.unary("clamp", this.hl.op.clamp, a, lo, hi);
   }
+  /*
+   * The folded constants come from the ADDON, not from here.
+   *
+   * They were restated in TypeScript once and drifted -- gelu's two ended up
+   * swapped and silu's negated, so both produced plausible wrong numbers that
+   * nothing caught until a per-operation test looked at gelu directly. The
+   * kernels evaluate an algebraically equal rearrangement of the textbook
+   * formula, and which constant goes in which slot is a property of THAT
+   * rearrangement, so it lives with it.
+   */
   gelu(a: TensorData): TensorData {
-    /* The kernel wants the folded constants, not the textbook ones -- see
-     * elementwise_ops.c for why the tanh becomes one reciprocal. */
     return this.unary("gelu", this.hl.op.gelu, a,
-                      2 * 0.7978845608028654 * Math.LOG2E, 0.044715, 1, 1);
+                      this.hl.scalar.geluK1, this.hl.scalar.geluFolded, 1, 1);
   }
   silu(a: TensorData): TensorData {
-    return this.unary("silu", this.hl.op.silu, a, -Math.LOG2E, 1);
+    return this.unary("silu", this.hl.op.silu, a, this.hl.scalar.log2e, 1);
   }
   /**
    * a^k.
@@ -505,12 +513,27 @@ export class NativeHeliosBackend implements Backend {
     const ids = this.make([rows], "i32");
     const src = targets.data as ArrayLike<number>;
     for (let i = 0; i < rows; i++) ids.buffer.ints[i] = src[i] | 0;
-    const out = this.make([rows], "f32");
-    this.check(this.hl.crossEntropy(out.buffer.handle, dl.buffer.handle,
+    const perRow = this.make([rows], "f32");
+    this.check(this.hl.crossEntropy(perRow.buffer.handle, dl.buffer.handle,
                                     ids.buffer.handle, rows, classes),
                "crossEntropy");
     ids.buffer.release(this.hl);
-    return out;
+    /*
+     * The kernel produces one loss per ROW; the interface returns a SCALAR --
+     * the mean over rows. Returning the per-row vector was the contract
+     * disagreement behind a 1.2% loss mismatch that survived a green suite,
+     * because nothing tested the loss function itself. Coverage that stops
+     * before the thing being measured is not coverage.
+     */
+    const out = this.reduceAll("crossEntropy mean", true, perRow) as NativeTensor;
+    perRow.buffer.release(this.hl);
+    const scalar: NativeTensor = {
+      shape: [],
+      dtype: "f32",
+      data: out.data,
+      buffer: out.buffer,
+    };
+    return scalar;
   }
 
   /**

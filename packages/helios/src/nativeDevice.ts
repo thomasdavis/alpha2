@@ -41,6 +41,8 @@ export interface NativeAddon {
     programs: number;
   };
   readonly op: NativeOps;
+  /** The folded constants the kernels expect, by name — see nativeBackend. */
+  readonly scalar: NativeOps;
 
   elementwise(
     op: number, out: number, a: number, b: number, n: number,
