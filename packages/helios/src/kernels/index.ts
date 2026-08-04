@@ -48,11 +48,11 @@ import {
 
 // Reduction kernels
 export {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumReduceBDA, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 import {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumReduceBDA, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
@@ -239,6 +239,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
     case "gelu_vec4x2": spirv = kernelGeluVec4x2(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
+    case "sum_reduce_bda": spirv = kernelSumReduceBDA(wgSize); break;
     case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
     case "sum_sq_reduce_stride": spirv = kernelSumOfSquaresStride(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
