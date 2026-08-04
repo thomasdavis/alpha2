@@ -4,6 +4,7 @@
 #include "channel.h"
 #include "../aether/ioctl.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* alloc_channel.h */
@@ -157,7 +158,8 @@ int hermes_channel_open(aether_device *d, hermes_channel *c) {
     /* hVASpace ZERO on the group. A working CUDA process passes
      *   hObjectError=0 hObjectEccError=0 hVASpace=0 engineType=1
      * -- the group takes the DEVICE's address space, and naming one explicitly
-     * is not what a working driver does. */
+     * is not what a working driver does. Setting it to our VA space instead was
+     * tried as a probe and changes nothing, so the two are not in conflict. */
     g.engineType = HERMES_ENGINE_GRAPHICS;
     if ((rc = aether_alloc(d, d->device, &c->group, KEPLER_CHANNEL_GROUP_A,
                            &g, sizeof g)) != 0)

@@ -233,9 +233,15 @@ static void test_gpu_runs_our_machine_code(void) {
     HT_FAIL("code buffer: %s", aether_status_name((unsigned)rc)); goto done;
   }
   if ((rc = gaia_alloc(&d, &qmdbuf, 4096, GAIA_VIDMEM)) != 0 ||
-      (rc = gaia_map_gpu(&d, &qmdbuf)) != 0) {
+      (rc = gaia_map_gpu(&d, &qmdbuf)) != 0 ||
+      (rc = gaia_map_host(&d, &qmdbuf)) != 0) {
     HT_FAIL("qmd buffer: %s", aether_status_name((unsigned)rc)); goto done;
   }
+  /* Host-mapped so the staged QMD can be read back. SET_INLINE_QMD_ADDRESS
+   * names where the hardware PUTS the descriptor it is handed inline; whether
+   * it ever arrives there is a fact we have been assuming rather than
+   * checking. */
+  memset(qmdbuf.hostPtr, 0xAA, 4096);
   if ((rc = gaia_alloc(&d, &scratch, HERMES_QMD_SCRATCH_BYTES, GAIA_VIDMEM)) != 0 ||
       (rc = gaia_map_gpu(&d, &scratch)) != 0) {
     HT_FAIL("qmd scratch: %s", aether_status_name((unsigned)rc)); goto done;
@@ -286,7 +292,6 @@ static void test_gpu_runs_our_machine_code(void) {
   {
     NvU32 qmd[HERMES_QMD_DWORDS];
     hermes_qmd_build(qmd, code.gpuAddr, scratch.gpuAddr, 1, 1, 1, 1, 1, 1);
-    if (getenv("HELIOS_NO_CBANK")) qmd[20] &= ~0xffu; /* CONSTANT_BUFFER_VALID */
 
     hermes_begin(&c);
     hermes_compute_config cfg;
@@ -325,6 +330,22 @@ static void test_gpu_runs_our_machine_code(void) {
              fence, u[HERMES_USERD_GP_GET / 4], u[HERMES_USERD_GP_PUT / 4],
              (unsigned long long)code.gpuAddr,
              (unsigned long long)qmdbuf.gpuAddr);
+      {
+        const NvU32 *st = (const NvU32 *)qmdbuf.hostPtr;
+        /* Diff the STAGED descriptor against what we built. The hardware
+         * writes back the QMD it consumed, so any word that differs is a word
+         * the hardware changed -- which is information we cannot get any other
+         * way. */
+        printf("      staged QMD @0x%llx, words differing from ours:\n",
+               (unsigned long long)qmdbuf.gpuAddr);
+        int ndiff = 0;
+        for (int w = 0; w < HERMES_QMD_DWORDS; w++) {
+          if (st[w] == qmd[w]) continue;
+          printf("        [%2d] ours %08x  staged %08x\n", w, qmd[w], st[w]);
+          ndiff++;
+        }
+        if (!ndiff) printf("        (none -- staged byte-identical)\n");
+      }
       printf("      errnotif: %08x %08x %08x %08x\n",
              ((NvU32 *)c.errnotif.hostPtr)[0], ((NvU32 *)c.errnotif.hostPtr)[1],
              ((NvU32 *)c.errnotif.hostPtr)[2], ((NvU32 *)c.errnotif.hostPtr)[3]);

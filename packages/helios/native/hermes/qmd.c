@@ -4,6 +4,7 @@
 #include "qmd.h"
 #include "pushbuffer.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* Instruction-set version the SM is told to decode. clc7c0qmd.h calls this
@@ -176,7 +177,9 @@ void hermes_compute_init(hermes_channel *c, NvU32 subchannel,
   hermes_data(c, (NvU32)(cfg->sharedWindow & 0xffffffffu));
 
   /* Local memory: where it lives, how much there is, and where the aperture
-   * sits. All three are needed — an address with no size is as unusable as a
+   * sits. NOTE that a CUDA process does NOT emit these on the compute
+   * subchannel -- omitting them was tried and behaves identically -- but a
+   * kernel that spills needs the backing, so they stay. All three are needed — an address with no size is as unusable as a
    * size with no address. ADDRESS_UPPER is 16:0, so the high half is masked to
    * 17 bits rather than passed whole. */
   hermes_method(c, subchannel, NVC7C0_SET_SHADER_LOCAL_MEMORY_A, 2);

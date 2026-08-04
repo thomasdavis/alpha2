@@ -6,6 +6,7 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -98,6 +99,9 @@ typedef struct {
  * out addresses from 0x200000 -- which MAPS fine, but mapping succeeding is not
  * the same as the fetch engine being able to read from there. Moved to match
  * the reference range. */
+/* A high base (0x800000000, matching the shape of CUDA's addresses) was tried
+ * as a probe and behaves identically, so the GR fault is not about address
+ * range. Kept low: it is easier to read in a hex dump. */
 #define GAIA_VA_BASE 0x04000000ULL
 
 /*
@@ -112,9 +116,10 @@ typedef struct {
  * Bump-only, no reuse. Freed ranges are not recycled, which is fine while
  * allocation counts are small and honest about being a placeholder.
  */
-static NvU64 g_vaNext = GAIA_VA_BASE;
+static NvU64 g_vaNext;
 
 static NvU64 gaia_va_take(NvU64 size) {
+  if (!g_vaNext) g_vaNext = GAIA_VA_BASE;
   /* 64 KiB granularity keeps every mapping comfortably page-aligned for any
    * page size RM might choose. */
   const NvU64 align = 64 * 1024;
