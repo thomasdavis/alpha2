@@ -100,9 +100,9 @@ logical tape retention at the batch-10 shape for one extra elementwise pass
 whose preserved 3090 price is about 4.418 ms. The classifier's scalar loss now
 stays device-resident through backward graph construction, and tiny loss
 scaling/addition no longer falls through to CPU solely because the tensor has
-one element. The intra-block attention residual and following RMSNorm now share
-one two-output dispatch, eliminating 18 operations and 450 MiB of logical
-forward traffic at the batch-10/18-layer shape. These are local implementations,
+one element. Eligible intra- and cross-block residuals and following RMSNorms
+now share exact two-output dispatches, eliminating 36 operations and 900 MiB
+of logical forward traffic at the selected batch-10/18-layer shape. These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
 
