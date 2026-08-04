@@ -179,6 +179,10 @@ static void test_open_without_gpu_is_clean(void) {
   if (rc == 0) {
     /* A real GPU is present — then the chain must be fully built. */
     HT_TRUE(d.client != 0);
+    /* RM rewrites the root client handle rather than accepting ours, so the
+     * value we get back must NOT be the one we asked for. Verified on an RTX
+     * 3070: requested 0xcafe0000, received 0xc1d71ea9. */
+    HT_TRUE(d.client != 0xcafe0000u);
     HT_TRUE(d.device != 0);
     HT_TRUE(d.subdevice != 0);
     HT_TRUE(d.vaspace != 0);

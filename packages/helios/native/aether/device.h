@@ -17,10 +17,18 @@
  * are Gaia and Hermes. This file gets us to the point where those are possible
  * and no further.
  *
- * On handles: RM does not hand them out. The caller invents them, and they only
- * have to be unique within a client. We allocate sequentially from a counter --
- * see aether_next_handle() -- because a colliding handle is an
- * NV_ERR_INSERT_DUPLICATE_NAME at best and an aliased object at worst.
+ * On handles: for most objects RM does not hand them out -- the caller invents
+ * them, and they only have to be unique within a client. We allocate
+ * sequentially from a counter (aether_next_handle) because a colliding handle
+ * is an NV_ERR_INSERT_DUPLICATE_NAME at best and an aliased object at worst.
+ *
+ * THE ROOT CLIENT IS THE EXCEPTION, and hardware taught us this rather than the
+ * headers. Allocating NV01_ROOT_CLIENT with hObjectNew = 0xcafe0000 returns
+ * NV_OK but with hObjectNew REWRITTEN to something of RM's choosing -- observed
+ * 0xc1d71ea9 on an RTX 3070. So the client handle must be read back out of the
+ * parameter block after the call, never assumed. Code that trusted its
+ * requested value would address a non-existent object on every subsequent call,
+ * and would do so without any error at the point of the mistake.
  */
 #ifndef HELIOS_AETHER_DEVICE_H
 #define HELIOS_AETHER_DEVICE_H
