@@ -303,7 +303,27 @@ static void test_gpu_runs_our_machine_code(void) {
     cfg.localMem = lmem.gpuAddr;
     cfg.localMemSize = lmem.size;
     cfg.smCount = 46; /* RTX 3070 */
+    /*
+     * Engine init goes in its OWN submission, fully consumed before the launch.
+     *
+     * A CUDA process does it that way -- init is one pushbuffer, launches are
+     * others -- and we had been emitting all of it, including 64 CWD
+     * reference-counter writes, immediately ahead of the launch in a single
+     * stream. Whether the compute work distributor tolerates that is not
+     * something to assume.
+     */
+    hermes_begin(&c);
     hermes_compute_init(&c, 1, &cfg);
+    hermes_semaphore_release(&c, out.gpuAddr + 128, 0x1111u);
+    hermes_submit(&d, &c);
+    {
+      volatile NvU32 *pg = (volatile NvU32 *)c.userd.hostPtr;
+      hermes_ring(&c, pg, c.doorbell, c.token);
+      const NvU64 dl = now_ns() + 1000000000ull;
+      while (now_ns() < dl && ((volatile NvU32 *)out.hostPtr)[32] != 0x1111u) {}
+      printf("      init fence = 0x%08x\n", ((volatile NvU32 *)out.hostPtr)[32]);
+    }
+    hermes_begin(&c);
     /* PROBE: skip the launch. If the fence lands, compute_init is clean and the
      * launch is what faults; if it does not, one of the init methods is itself
      * the problem -- several were added on reasoning rather than evidence. */

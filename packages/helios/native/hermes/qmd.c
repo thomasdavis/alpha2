@@ -32,6 +32,14 @@
  * A real QMD, captured from a CUDA launch on an RTX 3070 (sm_86, driver
  * 580.95.05), with the launch-specific fields zeroed.
  *
+ * SHADER_LOCAL_MEMORY_HIGH_SIZE (MW(1623:1600), word 50) is ZEROED rather than
+ * copied. The capture holds 1600, which is 1600 bytes PER THREAD -- and the SM
+ * reserves that for maximum occupancy, so 1600 x 1536 threads x 46 SMs is about
+ * 113 MB of backing. CUDA's local-memory allocation is sized for that; ours is
+ * 1 MB. Copying a per-thread resource claim out of another process's launch
+ * without owning the memory it implies is the same category of mistake as
+ * copying its addresses.
+ *
  * One deliberate change from the capture: word 5 bits 30 and 31
  * (INVALIDATE_INSTRUCTION_CACHE, INVALIDATE_SHADER_CONSTANT_CACHE) are set,
  * making 0x3c000000 into 0xfc000000. CUDA leaves them clear because it uploads
@@ -83,7 +91,7 @@ static const NvU32 QMD_SKELETON[HERMES_QMD_DWORDS] = {
     /* 36 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 40 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 44 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
-    /* 48 */ 0x00000000, 0x00000000, 0x00000640, 0x00000000,
+    /* 48 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 52 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 56 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     /* 60 */ 0x00000000, 0x00000000, 0x00000000, 0x00000000,
