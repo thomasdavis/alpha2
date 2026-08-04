@@ -89,16 +89,20 @@ promoted to training until whole-step and trajectory parity clear. Evidence:
 Current source map and implementation record:
 
 - `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/LLMC-SOURCE-MECHANISM-MAP-2026-08-04.md`;
-- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`.
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X26-DEVICE-RESIDENT-LAZY-TRAINING-LOSS.md`;
+- `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`.
 
-The first pass now implements three native exact-path mechanisms: combined
+The first pass now implements four native exact-path mechanisms: combined
 ordinary/masked training classifiers that avoid a full probability tensor, and
 selective SwiGLU product rematerialization. The latter removes 1,215 MiB of
 logical tape retention at the batch-10 shape for one extra elementwise pass
 whose preserved 3090 price is about 4.418 ms. The classifier's scalar loss now
 stays device-resident through backward graph construction, and tiny loss
 scaling/addition no longer falls through to CPU solely because the tensor has
-one element. These are local implementations,
+one element. The intra-block attention residual and following RMSNorm now share
+one two-output dispatch, eliminating 18 operations and 450 MiB of logical
+forward traffic at the batch-10/18-layer shape. These are local implementations,
 not new physical throughput results; Vulkan submission-boundary reuse and
 complete-step performance remain explicit future gates.
 

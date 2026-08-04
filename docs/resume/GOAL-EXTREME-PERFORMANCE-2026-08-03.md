@@ -135,11 +135,16 @@ ordinary/masked training classifiers and selective SwiGLU product
 rematerialization. The classifier loss also stays device-resident until after
 backward graph construction, removing a forced forward submit-and-wait boundary;
 microbatch loss scaling and accumulation now remain on-device as intended.
+The attention residual addition and immediately following RMSNorm now share an
+exact two-output dispatch, removing 18 graph operations and 450 MiB of logical
+forward traffic at the batch-10/18-layer shape.
 Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
 VRAM and complete-step effects remain unmeasured. Canonical record:
-`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`.
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X25-LLMC-DERIVED-EXACT-PATH-IMPLEMENTATION.md`,
+with the two-output fusion recorded separately in
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X27-RESIDUAL-ADD-RMSNORM-FUSION.md`.
 
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
