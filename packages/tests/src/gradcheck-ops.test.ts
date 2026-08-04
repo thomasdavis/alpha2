@@ -524,6 +524,38 @@ describe("gradcheck: nn", () => {
     tape.clear((tensor) => released.push(tensor));
     expect(released).toContain(cachedGrad);
   });
+
+  it("crossEntropy training fusion does not force a lazy loss read before backward", () => {
+    const B = new CpuRefBackend();
+    const targets: TensorData = { shape: [2], dtype: "i32", data: Int32Array.from([0, 1]) };
+    const cachedGrad: TensorData = {
+      shape: [2, 4], dtype: "f32", data: new Float32Array(8),
+    };
+    let scalarReads = 0;
+    const lazyLoss: TensorData = {
+      shape: [],
+      dtype: "f32",
+      get data(): Float32Array {
+        scalarReads++;
+        return Float32Array.from([1.25]);
+      },
+    };
+    const extensible = B as CpuRefBackend & Pick<Backend, "crossEntropyForwardBackward">;
+    extensible.crossEntropyForwardBackward = () => ({ loss: lazyLoss, gradLogits: cachedGrad });
+
+    const tape = new Tape();
+    const logits = new Variable(B.fromArray(rnd(58, 8), [2, 4]), true);
+    const loss = crossEntropy({ tape, backend: extensible }, logits, targets, true);
+    expect(scalarReads).toBe(0);
+
+    tape.backward(loss, extensible);
+    expect(scalarReads).toBe(0);
+    expect(logits.grad).not.toBeNull();
+
+    // The metric remains readable when a caller eventually requests it.
+    expect((loss.data.data as Float32Array)[0]).toBe(1.25);
+    expect(scalarReads).toBe(1);
+  });
 });
 
 // ── Masked cross-entropy (assistant-only SFT) ────────────────────────────────

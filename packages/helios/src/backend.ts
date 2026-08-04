@@ -2532,7 +2532,12 @@ export class HeliosBackend implements Backend {
   }
 
   scale(a: TensorData, s: number): TensorData {
-    if (shapeSize(a.shape) >= this._minGpuSize) return this.gpuUnaryOp(a, "scale", s);
+    // A tiny tensor produced by the pending GPU graph must stay on-device.
+    // Falling through to cpuUnary would access .data, force a submit+wait, and
+    // split the static training graph merely to scale a scalar loss.
+    if (shapeSize(a.shape) >= this._minGpuSize || (a.dtype === "f32" && gpuResidence.has(a))) {
+      return this.gpuUnaryOp(a, "scale", s);
+    }
     return this.cpuUnary(a, (x) => x * s);
   }
 
@@ -5192,7 +5197,12 @@ export class HeliosBackend implements Backend {
 
   addInplace(a: TensorData, b: TensorData): void {
     const size = shapeSize(a.shape);
-    if (size >= this._minGpuSize) {
+    // Preserve device residency for scalar loss accumulation. The historical
+    // size-only gate made the trainer's nominally GPU-side accumulation read
+    // every microbatch loss back to the host before backward.
+    const residentScalars = a.dtype === "f32" && b.dtype === "f32"
+      && gpuResidence.has(a) && gpuResidence.has(b);
+    if (size >= this._minGpuSize || residentScalars) {
       const vk = this.init();
       const bufA = ensureGpu(vk, a);
       const bufB = ensureGpu(vk, b);
@@ -5986,9 +5996,15 @@ export class HeliosBackend implements Backend {
     const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
     const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
     const totalLoss = this.gpuReduceSum(perRowLosses, false);
-    const total = (totalLoss.data as Float32Array)[0];
+    // Keep the scalar lazy. Reading totalLoss.data here used to force the
+    // entire forward graph to submit and wait before backward could even be
+    // constructed. scale() recognizes a device-resident scalar and records a
+    // tiny GPU op instead of falling through to CPU.
+    const meanLoss = this.scale(totalLoss, 1 / N);
+    releaseGpuBufferFor(perRowLosses);
+    if (totalLoss !== perRowLosses) releaseGpuBufferFor(totalLoss);
     return {
-      loss: makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / N])),
+      loss: meanLoss,
       gradLogits,
     };
   }
@@ -6040,9 +6056,11 @@ export class HeliosBackend implements Backend {
     const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
     const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
     const totalLoss = this.gpuReduceSum(perRowLosses, false);
-    const total = (totalLoss.data as Float32Array)[0];
+    const meanLoss = this.scale(totalLoss, 1 / denominator);
+    releaseGpuBufferFor(perRowLosses);
+    if (totalLoss !== perRowLosses) releaseGpuBufferFor(totalLoss);
     return {
-      loss: makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / denominator])),
+      loss: meanLoss,
       gradLogits,
     };
   }

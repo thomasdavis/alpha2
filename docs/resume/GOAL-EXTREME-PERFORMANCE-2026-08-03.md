@@ -132,7 +132,10 @@ the primary L2/L3 research candidate alongside the L5 static graph/arena work.
 source was pinned at `f1e2ace651495b74ae22d45d1723443fd00ecd3a` and used as a
 mechanism oracle without launching a control or GPU run. Helios now has combined
 ordinary/masked training classifiers and selective SwiGLU product
-rematerialization. Closed-form savings are 1,440 MiB of classifier traffic per
+rematerialization. The classifier loss also stays device-resident until after
+backward graph construction, removing a forced forward submit-and-wait boundary;
+microbatch loss scaling and accumulation now remain on-device as intended.
+Closed-form savings are 1,440 MiB of classifier traffic per
 training call and 1,215 MiB of logical activation retention across 18 layers at
 batch 10. Local gradients and release/rematerialization behavior pass; physical
 VRAM and complete-step effects remain unmeasured. Canonical record:
