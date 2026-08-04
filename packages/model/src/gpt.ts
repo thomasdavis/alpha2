@@ -289,7 +289,14 @@ export interface GPTForwardResult {
   };
 }
 
-/** Single transformer block: LN → Attention → Residual, LN → MLP → Residual. */
+type TransformerBlockResult = {
+  output: Variable;
+  normalizedForNext?: Variable;
+};
+
+/** Single transformer block: LN → Attention → Residual, LN → MLP → Residual.
+ *  A caller may provide the first normalized view from a preceding fused
+ *  residual boundary and request the next normalized view as a side output. */
 function transformerBlock(
   ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng },
   x: Variable,
@@ -299,7 +306,9 @@ function transformerBlock(
   T: number,
   mask: TensorData,
   training: boolean,
-): Variable {
+  normalizedInput?: Variable,
+  nextNorm?: NormLayer,
+): TransformerBlockResult {
   const { nHead, nEmbd } = config;
   const headDim = nEmbd / nHead;
   const ropeOn = (config.posEnc ?? "learned") === "rope";
@@ -310,7 +319,7 @@ function transformerBlock(
   const useSoftCap = softCapVal !== undefined && softCapVal > 0;
 
   // 1) Norm → Attention → Residual
-  const ln1Out = applyNorm(ctx, x, layer.ln1, config, 1e-5);
+  const ln1Out = normalizedInput ?? applyNorm(ctx, x, layer.ln1, config, 1e-5);
 
   // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
@@ -440,7 +449,19 @@ function transformerBlock(
   }
 
   const mlpOut = reshape(ctx, mlpH, [Batch, T, nEmbd]);
-  return residualDropoutAdd(ctx, x, mlpOut, config.dropout, training);
+  if (nextNorm && (config.normType ?? "layernorm") === "rmsnorm") {
+    const fused = residualDropoutAddRmsNorm(
+      ctx,
+      x,
+      mlpOut,
+      nextNorm.weight,
+      1e-5,
+      config.dropout,
+      training,
+    );
+    return { output: fused.residual, normalizedForNext: fused.normalized };
+  }
+  return { output: residualDropoutAdd(ctx, x, mlpOut, config.dropout, training) };
 }
 
 /**
@@ -511,8 +532,21 @@ export function gptForward(
     causalMaskCache.set(T, mask);
   }
 
+  // The non-checkpointed FP32 RMSNorm path can carry the normalized side
+  // output of each MLP residual directly into the next block (and the final
+  // head), exposing the second set of exact residual+RMSNorm fusion boundaries.
+  // Activation checkpointing currently has a single-output contract, while
+  // inter-layer mixed precision intentionally rounds x through f16 before the
+  // next norm; either condition therefore keeps the established path.
+  const carryNormalized = (config.normType ?? "layernorm") === "rmsnorm"
+    && !!backend.residualAddRmsNorm
+    && !(activationCheckpointing && training)
+    && !(mixedPrecision && training);
+  let normalizedForNext: Variable | undefined;
+
   // Transformer blocks
-  for (const layer of params.layers) {
+  for (let layerIndex = 0; layerIndex < params.layers.length; layerIndex++) {
+    const layer = params.layers[layerIndex];
     // Mixed precision: cast inter-layer activations to f16 for VRAM savings
     if (mixedPrecision && training) x = castToF16(ctx, x);
 
@@ -525,17 +559,33 @@ export function gptForward(
         const innerCtxWithRng = { ...innerCtx, dropoutRng };
         // Cast f16 input back to f32 for compute within the block
         const f32Inp = mixedPrecision ? castToF32(innerCtxWithRng, inp) : inp;
-        return transformerBlock(innerCtxWithRng, f32Inp, layer, config, B, T, mask, training);
+        return transformerBlock(innerCtxWithRng, f32Inp, layer, config, B, T, mask, training).output;
       }, x);
     } else {
       // Cast f16 input back to f32 for compute within the block
       if (mixedPrecision && training) x = castToF32(ctx, x);
-      x = transformerBlock(ctx, x, layer, config, B, T, mask, training);
+      const nextNorm = carryNormalized
+        ? (layerIndex + 1 < params.layers.length ? params.layers[layerIndex + 1].ln1 : params.lnF)
+        : undefined;
+      const block = transformerBlock(
+        ctx,
+        x,
+        layer,
+        config,
+        B,
+        T,
+        mask,
+        training,
+        normalizedForNext,
+        nextNorm,
+      );
+      x = block.output;
+      normalizedForNext = block.normalizedForNext;
     }
   }
 
   // Final norm (LayerNorm or RMSNorm per config)
-  x = applyNorm(ctx, x, params.lnF, config, 1e-5);
+  x = normalizedForNext ?? applyNorm(ctx, x, params.lnF, config, 1e-5);
 
   // Language model head: [B, T, nEmbd] → [B, T, vocabSize]
   const flat = reshape(ctx, x, [B * T, nEmbd]);

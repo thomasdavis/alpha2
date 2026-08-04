@@ -240,7 +240,9 @@ describe("gradcheck: tiny GPT (Llama-form: rmsnorm + rope + tied + swiglu)", () 
     const baseline = run(new CpuRefBackend());
     const fusedBackend = new FusedModelBackend();
     const actual = run(fusedBackend);
-    expect(fusedBackend.fusedCalls).toBe(config.nLayer);
+    // One attention-residual fusion plus one MLP-residual/next-norm fusion per
+    // block (the final block feeds the model's final RMSNorm).
+    expect(fusedBackend.fusedCalls).toBe(config.nLayer * 2);
     expect(actual.loss).toBe(baseline.loss);
     expect(actual.grads).toEqual(baseline.grads);
   });
