@@ -22,7 +22,7 @@ export {
 export { sample } from "./sample.js";
 export {
   assessHeliosTrainingDevice, gpuVendorName, repairTerminalValidationMetric, train,
-  shouldEvaluateStep, validateCheckpointModelCompatibility,
+  shouldEvaluateStep, shouldUseCoopBackwardAtStep, validateCheckpointModelCompatibility,
   type TrainerDeps, type StepMetrics, type HeliosTrainingDeviceAssessment,
   type HeliosTrainingDeviceCapabilities,
 } from "./trainer.js";

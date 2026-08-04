@@ -359,11 +359,31 @@ export interface StepMetrics {
   symbio_mutation_applied?: string;
   // Per-layer gradient norms (JSON: Record<layerIndex, norm>)
   per_layer_grad_norms?: string;
+  /** 1 when this step uses the exact scalar backward sentinel path. */
+  coop_backward_exact_sentinel?: number;
 }
 
 /** Validation is cadence-based, but the terminal model must always be evaluated. */
 export function shouldEvaluateStep(step: number, evalInterval: number, totalIters: number): boolean {
   return evalInterval > 0 && (step % evalInterval === 0 || step === totalIters);
+}
+
+/**
+ * Decide whether the current step may use cooperative arithmetic in backward.
+ * A positive exact cadence starts with an exact sentinel at step 1 and repeats
+ * every `exactEvery` steps.  Forward cooperative arithmetic is unaffected.
+ */
+export function shouldUseCoopBackwardAtStep(
+  enabled: boolean,
+  exactEvery: number,
+  step: number,
+): boolean {
+  if (!enabled) return false;
+  if (!Number.isInteger(exactEvery) || exactEvery <= 0) return true;
+  if (!Number.isInteger(step) || step < 1) {
+    throw new Error(`cooperative backward schedule requires a positive integer step; received ${step}`);
+  }
+  return (step - 1) % exactEvery !== 0;
 }
 
 /** Add a separately computed terminal validation loss without changing prior metric bytes. */
@@ -1563,6 +1583,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   // activations can exceed f16 range. Enabling this flag is a falsifiable
   // performance/trajectory experiment, not an implicit production change.
   const enableCoopBackward = process.env.HELIOS_ENABLE_COOP_BACKWARD === "1";
+  const coopBackwardExactEvery = readEnvInt("HELIOS_COOP_BACKWARD_EXACT_EVERY", 0, 0);
   // Bounded performance sweeps should not create multi-gigabyte terminal
   // checkpoints. Full model runs leave this unset and preserve normal cadence.
   const disableCheckpoints = process.env.ALPHA_DISABLE_CHECKPOINTS === "1";
@@ -1571,6 +1592,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   }
   if (enableCoopBackward) {
     console.warn("[helios:experimental] cooperative matmul is enabled during backward");
+    if (coopBackwardExactEvery > 0) {
+      console.warn(
+        `[helios:experimental] exact scalar backward sentinel starts at step 1 and repeats every ${coopBackwardExactEvery} steps`,
+      );
+    }
   }
   if (disableCheckpoints) {
     console.warn("[alpha:diagnostic] checkpoint writes are disabled for this run");
@@ -1729,6 +1755,11 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
   for (let step = startStep; step < totalIters; step++) {
     const stepStart = performance.now();
     const stepNum = step + 1;
+    const useCoopBackwardThisStep = shouldUseCoopBackwardAtStep(
+      enableCoopBackward,
+      coopBackwardExactEvery,
+      stepNum,
+    );
 
     // Learning rate schedule: linear warmup + cosine decay to lrMin
     let baseLr: number;
@@ -1835,7 +1866,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       // Pause cooperative matmul during backward to avoid f16 precision loss
       // on large gradient values that can overflow f16 range (>65504).
       const backendAnyBw = backend as any;
-      if (!enableCoopBackward && typeof backendAnyBw.coopMatmulPaused === "boolean") {
+      if (!useCoopBackwardThisStep && typeof backendAnyBw.coopMatmulPaused === "boolean") {
         backendAnyBw.coopMatmulPaused = true;
       }
       // Loss scaling: pass scaled initial gradient for backward.
@@ -1850,7 +1881,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       }
       if (phaseSyncProfile && syncGpuFn) syncGpuFn();
       if (deps.rcrUl) positiveBwdMs += performance.now() - _positiveBwd0;
-      if (!enableCoopBackward && typeof backendAnyBw.coopMatmulPaused === "boolean") {
+      if (!useCoopBackwardThisStep && typeof backendAnyBw.coopMatmulPaused === "boolean") {
         backendAnyBw.coopMatmulPaused = false;
       }
       if (!useGpuLossAccum) {
@@ -1961,7 +1992,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
           }
         }
 
-        if (!enableCoopBackward && typeof backendAnyBw.coopMatmulPaused === "boolean") backendAnyBw.coopMatmulPaused = true;
+        if (!useCoopBackwardThisStep && typeof backendAnyBw.coopMatmulPaused === "boolean") {
+          backendAnyBw.coopMatmulPaused = true;
+        }
         // Always provide an explicit upstream gradient, including exact zero
         // for C0. This is the matched-control invariant: no skipped branch.
         const branchScale = deps.rcrUl.weight * lossScale;
@@ -1969,7 +2002,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
         const _negativeBwd0 = performance.now();
         trainTape.backward(ulLoss, backend, releaseFn, ulInitialGrad);
         negativeBwdMs += performance.now() - _negativeBwd0;
-        if (!enableCoopBackward && typeof backendAnyBw.coopMatmulPaused === "boolean") backendAnyBw.coopMatmulPaused = false;
+        if (!useCoopBackwardThisStep && typeof backendAnyBw.coopMatmulPaused === "boolean") {
+          backendAnyBw.coopMatmulPaused = false;
+        }
 
         if (!useGpuLossAccum) {
           negativeUlLossVal = (ulLossDataRef!.data as Float32Array)[0];
@@ -2764,6 +2799,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       clip_coef: clipCoef,
       clip_pct: (clippedSteps / stepNum) * 100,
     };
+    if (enableCoopBackward) {
+      metrics.coop_backward_exact_sentinel = useCoopBackwardThisStep ? 0 : 1;
+    }
     if (deps.rcrUl) {
       metrics.positive_ce_loss = positiveCeLossVal;
       metrics.negative_ul_loss = negativeUlLossVal;
@@ -3157,6 +3195,9 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
     const clipStr = clipCoef < 1.0 ? ` clip=${clipCoef.toFixed(4)}` : "";
     const gradNormStr = needsGradNorm ? gradNorm.toFixed(3) : "n/a";
     const scaleStr = useLossScaling ? ` | scale=${lossScale}` : "";
+    const coopBackwardStr = enableCoopBackward
+      ? ` | coop_bw=${useCoopBackwardThisStep ? "shadow" : "exact-sentinel"}`
+      : "";
     const shouldLogStep = metrics.step === 1 ||
       metrics.step === totalIters ||
       metrics.valLoss !== undefined ||
@@ -3165,7 +3206,7 @@ export async function train(deps: TrainerDeps): Promise<{ params: GPTParams; mod
       console.log(
         `step ${metrics.step}/${totalIters} | loss=${lossStr}${valStr}${rcrUlStr} ` +
         `| lr=${lr.toExponential(2)} | grad_norm=${gradNormStr}${clipStr} ` +
-        `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}`
+        `| ${metrics.ms_per_iter.toFixed(0)}ms/it | ${toksStr} tok/s${gpuStr}${scaleStr}${coopBackwardStr}`
       );
     }
 
