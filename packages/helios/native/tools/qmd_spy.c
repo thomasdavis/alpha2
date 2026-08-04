@@ -190,10 +190,42 @@ static const char *method_name(uint32_t m) {
 /*
  * Walk the method stream rather than hex-dumping it.
  *
- * A pushbuffer is self-describing -- each header says how many data words
- * follow -- so decoding it is exact, and the launch stops being something to
- * pattern-match for and becomes something the walk simply arrives at.
+ * A pushbuffer is self-describing, but only if the opcodes are decoded
+ * correctly, and two details in clc56f.h make the naive version wrong:
+ *
+ *   NVC56F_DMA_METHOD_ADDRESS   11:0   (12:2 is _ADDRESS_OLD, a different era)
+ *   NVC56F_DMA_SEC_OP           31:29
+ *     0 GRP0_USE_TERT   2 GRP2_USE_TERT   6 RESERVED
+ *     1 INC_METHOD      3 NON_INC_METHOD  5 ONE_INC    -> count data words
+ *     4 IMMD_DATA_METHOD                  -> NO data words; the count FIELD
+ *                                            (28:16) is itself the datum
+ *     7 END_PB_SEGMENT                    -> stop
+ *
+ * The first version advanced by 1 + count for every opcode. One immediate
+ * method -- and drivers emit them constantly, since any single-dword method is
+ * cheaper that way -- desynchronises the walk, after which every "header" is
+ * really a data word and the decode is noise. That is why walking CUDA's
+ * pushbuffers surfaced plenty of plausible setup methods and never once reached
+ * a launch: the walk was already lost by the time it got there.
  */
+#define SEC_OP_GRP0 0u
+#define SEC_OP_INC 1u
+#define SEC_OP_GRP2 2u
+#define SEC_OP_NON_INC 3u
+#define SEC_OP_IMMD 4u
+#define SEC_OP_ONE_INC 5u
+#define SEC_OP_END_SEG 7u
+
+/* Data words following a header, given its opcode. */
+static int data_words(uint32_t op, uint32_t count) {
+  switch (op) {
+    case SEC_OP_INC:
+    case SEC_OP_NON_INC:
+    case SEC_OP_ONE_INC: return (int)count;
+    case SEC_OP_IMMD: return 0; /* the count field IS the data */
+    default: return -1;         /* unknown or end: stop walking */
+  }
+}
 static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
   const uint32_t *p = (const uint32_t *)(uintptr_t)addr;
   if (dwords > 512) dwords = 512;
@@ -204,17 +236,34 @@ static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
     const uint32_t op = h >> 29;
     const uint32_t count = (h >> 16) & 0x1fffu;
     const uint32_t sub = (h >> 13) & 7u;
-    const uint32_t method = (h & 0x1fffu) * 4;
-    if (op == 0 || i + 1 + count > dwords) {
-      fprintf(L, "      +0x%03x  %08x  (not a header, stopping)\n", i * 4, h);
+    const uint32_t method = (h & 0xfffu) * 4;
+    const int nd = data_words(op, count);
+    if (nd < 0 || i + 1 + (uint32_t)nd > dwords) {
+      fprintf(L, "      +0x%03x  %08x  op=%u (stop)\n", i * 4, h, op);
       break;
     }
     const char *nm = method_name(method);
     fprintf(L, "      +0x%03x  op=%u sub=%u method=0x%04x count=%-3u %s\n",
             i * 4, op, sub, method, count, nm ? nm : "");
 
-    /* The QMD, printed whole when the walk reaches it. */
-    if (method == 0x0320 && count >= 0x20) {
+    /*
+     * The QMD arrives as an inline-to-memory upload, not as LOAD_INLINE_QMD_DATA.
+     *
+     * CUDA emits OFFSET_OUT (a 64-bit GPU address) + LINE_LENGTH_IN + LAUNCH_DMA
+     * + LOAD_INLINE_DATA, which writes the payload into GPU memory through the
+     * I2M path, and only then points SET_INLINE_QMD_ADDRESS_A at it. So the QMD
+     * is carried as bulk data inside a DMA method, which is why watching for the
+     * QMD-named methods found the address setter and never the contents.
+     */
+    if (method == 0x01b4 && count >= 0x20) {
+      fprintf(L, "        *** INLINE DATA (%u dwords) ***\n", count);
+      for (uint32_t k = 0; k < count; k += 8) {
+        fprintf(L, "        +0x%02x ", k * 4);
+        for (uint32_t q = 0; q < 8 && k + q < count; q++)
+          fprintf(L, "%08x ", p[i + 1 + k + q]);
+        fprintf(L, "\n");
+      }
+    } else if ((method == 0x0320 || method == 0x0318) && count >= 0x20) {
       fprintf(L, "        *** QMD (%u dwords) ***\n", count);
       for (uint32_t k = 0; k < count; k += 8) {
         fprintf(L, "        +0x%02x ", k * 4);
@@ -222,12 +271,12 @@ static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
           fprintf(L, "%08x ", p[i + 1 + k + q]);
         fprintf(L, "\n");
       }
-    } else if (count <= 6) {
+    } else if (nd > 0 && nd <= 6) {
       fprintf(L, "        data:");
-      for (uint32_t k = 0; k < count; k++) fprintf(L, " %08x", p[i + 1 + k]);
+      for (int k = 0; k < nd; k++) fprintf(L, " %08x", p[i + 1 + k]);
       fprintf(L, "\n");
     }
-    i += 1 + count;
+    i += 1 + (uint32_t)nd;
   }
 }
 
@@ -242,9 +291,11 @@ static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
  * it is a strong one, because a launch is a specific method address arrived at
  * by walking a self-describing stream rather than matched against raw bytes.
  */
+static uint32_t hist[0x1000];
+
 static int scan_once(void) {
   load_regions();
-  int found = 0;
+  int found = 0, seen = 0;
   for (int i = 0; i < nregions && found < 2; i++) {
     const uint32_t *w = (const uint32_t *)(uintptr_t)regions[i].lo;
     const uint64_t n = (regions[i].hi - regions[i].lo) / 4;
@@ -260,10 +311,24 @@ static int scan_once(void) {
       for (uint32_t k = 0; k < len;) {
         const uint32_t h = pb[k];
         const uint32_t op = h >> 29, cnt = (h >> 16) & 0x1fffu;
-        const uint32_t m = (h & 0x1fffu) * 4;
-        if (op == 0 || k + 1 + cnt > len) break;
-        if (m == 0x0320 || m == 0x02b4) { has_launch = 1; break; }
-        k += 1 + cnt;
+        const uint32_t m = (h & 0xfffu) * 4;
+        const int nd = data_words(op, cnt);
+        if (nd < 0 || k + 1 + (uint32_t)nd > len) break;
+        if (m == 0x0318 || m == 0x0320 || m == 0x02b4) { has_launch = 1; break; }
+        k += 1 + (uint32_t)nd;
+      }
+      seen++;
+      /* Histogram every method seen across every pushbuffer. A launch either
+       * appears in it or it does not, and that is a fact about the whole scan
+       * rather than about the handful of samples that got printed. */
+      for (uint32_t k = 0; k < len;) {
+        const uint32_t h = pb[k];
+        const uint32_t op = h >> 29, cnt = (h >> 16) & 0x1fffu;
+        const int nd = data_words(op, cnt);
+        if (nd < 0 || k + 1 + (uint32_t)nd > len) break;
+        const uint32_t m = (h & 0xfffu) * 4;
+        if (m < 0x4000) hist[m / 4]++;
+        k += 1 + (uint32_t)nd;
       }
       if (!has_launch) continue;
 
@@ -271,6 +336,15 @@ static int scan_once(void) {
               regions[i].lo + j * 4, addr, len);
       dump_pushbuffer(addr, len);
       found++;
+    }
+  }
+  if (seen) {
+    fprintf(L, "\n(%d pushbuffers walked, %d launches) methods seen:\n", seen,
+            found);
+    for (uint32_t m = 0; m < 0x1000; m++) {
+      if (!hist[m]) continue;
+      const char *nm = method_name(m * 4);
+      fprintf(L, "   0x%04x x%-6u %s\n", m * 4, hist[m], nm ? nm : "");
     }
   }
   return found;
