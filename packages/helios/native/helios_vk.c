@@ -3409,42 +3409,54 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     // Must wait for any in-flight dispatch to finish before re-recording cmd buffer
     waitTimelineValue(lastDispatchTimeline);
 
-    // Reset persistent descriptor pool (frees all prior sets)
-    fp_vkResetDescriptorPool(device, singleDescPool, 0);
+    // X56: a buffer-device-address kernel declares ZERO descriptor bindings and
+    // reaches its operands through 64-bit addresses in push constants. Writing
+    // bufCount descriptors into a set whose layout has no bindings faults, which
+    // is why sum_reduce_bda could not be executed on this path at all.
+    //
+    // Buffers are still passed by the caller and still matter -- they keep the
+    // allocations resident and drive barriers -- they are simply not bound.
+    const int usesDescriptors = (ps->numBindings > 0);
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
 
-    // Allocate descriptor set from persistent pool
-    VkDescriptorSetAllocateInfo dsAllocInfo = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-      .descriptorPool = singleDescPool,
-      .descriptorSetCount = 1,
-      .pSetLayouts = &ps->descLayout,
-    };
-    VkDescriptorSet descSet;
-    VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
-    if (res != VK_SUCCESS) {
-      napi_throw_error(env, NULL, "vkAllocateDescriptorSets failed");
-      return NULL;
-    }
+    if (usesDescriptors) {
+      // Reset persistent descriptor pool (frees all prior sets)
+      fp_vkResetDescriptorPool(device, singleDescPool, 0);
 
-    // Write descriptors (stack arrays — no malloc)
-    VkDescriptorBufferInfo bufInfos[32];
-    VkWriteDescriptorSet writes[32];
-    for (uint32_t i = 0; i < bufCount; i++) {
-      bufInfos[i] = (VkDescriptorBufferInfo){
-        .buffer = buffers[bufSlots[i]].buffer,
-        .offset = 0,
-        .range = VK_WHOLE_SIZE,
+      // Allocate descriptor set from persistent pool
+      VkDescriptorSetAllocateInfo dsAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = singleDescPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &ps->descLayout,
       };
-      writes[i] = (VkWriteDescriptorSet){
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = descSet,
-        .dstBinding = i,
-        .descriptorCount = 1,
-        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .pBufferInfo = &bufInfos[i],
-      };
+      VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      if (res != VK_SUCCESS) {
+        napi_throw_error(env, NULL, "vkAllocateDescriptorSets failed");
+        return NULL;
+      }
+
+      // Write descriptors (stack arrays — no malloc)
+      VkDescriptorBufferInfo bufInfos[32];
+      VkWriteDescriptorSet writes[32];
+      uint32_t writeCount = bufCount < ps->numBindings ? bufCount : ps->numBindings;
+      for (uint32_t i = 0; i < writeCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = descSet,
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkUpdateDescriptorSets(device, writeCount, writes, 0, NULL);
     }
-    fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
 
     // Reset and re-record dispatch command buffer (no ONE_TIME_SUBMIT — reusable)
     fp_vkResetCommandBuffer(dispatchCmdBuf, 0);
@@ -3453,7 +3465,9 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     };
     fp_vkBeginCommandBuffer(dispatchCmdBuf, &beginInfo);
     fp_vkCmdBindPipeline(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
-    fp_vkCmdBindDescriptorSets(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    if (usesDescriptors) {
+      fp_vkCmdBindDescriptorSets(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    }
     if (pushSize > 0) {
       fp_vkCmdPushConstants(dispatchCmdBuf, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushData);
     }
