@@ -93,17 +93,32 @@ static char g_msg[96];
     return NULL;                                                               \
   }
 
-/* Approximate float comparison, for MUFU. The bound is relative and generous
- * enough for the unit's documented precision, and tight enough that a wrong
- * function selector — EX2 where LG2 was meant — fails it by a mile. */
+/*
+ * Approximate float comparison, for MUFU.
+ *
+ * The bound is relative, generous enough for the unit's documented precision
+ * and tight enough that a wrong function selector -- EX2 where LG2 was meant --
+ * fails it by a mile.
+ *
+ * It also accepts a small ABSOLUTE error, because relative error is the wrong
+ * measure near zero and gelu genuinely lands there. Its simplified form,
+ * x*(1 - 1/(e+1)), subtracts two nearly equal numbers when x is a few units
+ * negative: at x = -4 the true answer is -7.02e-5 and the kernel returns
+ * -7.01e-5, an absolute error of 1.2e-8 and a RELATIVE error of 1.7e-3. That is
+ * a real property of the algebra, not a bug, and it is the cost of turning a
+ * tanh into one reciprocal. Recording it rather than quietly widening the
+ * relative bound, which would also excuse errors that are not near zero.
+ */
 #define MUFU_REL_TOLERANCE 1e-5f
+#define MUFU_ABS_TOLERANCE 1e-6f
 #define UCHECK(tag, in_fn, expr)                                               \
   static const char *chk_##tag(const volatile NvU32 *o) {                      \
     for (unsigned i = 0; i < PR_N; i++) {                                      \
       const float x = in_fn(i);                                                \
       const float want = (expr), got = pr_u2f(o[i]);                           \
-      const float err = fabsf(got - want) / (fabsf(want) + 1e-30f);            \
-      if (!(err <= MUFU_REL_TOLERANCE)) {                                      \
+      const float abs_err = fabsf(got - want);                                 \
+      const float err = abs_err / (fabsf(want) + 1e-30f);                      \
+      if (!(err <= MUFU_REL_TOLERANCE || abs_err <= MUFU_ABS_TOLERANCE)) {     \
         snprintf(g_msg, sizeof g_msg, #tag ": o[%u]=%g want %g (rel %g)", i,   \
                  (double)got, (double)want, (double)err);                      \
         return g_msg;                                                          \
@@ -299,6 +314,16 @@ static const char *chk_softmax(const volatile NvU32 *o) {
 }
 
 UCHECK(silu, in_signed, x / (1.0f + expf(-x)))
+
+/* Reference gelu and softCap, written the way the maths is stated rather than
+ * the way the kernel computes it -- an oracle that mirrors the kernel's own
+ * simplification would validate the simplification against itself. */
+#define GELU_K0 0.7978845608028654f
+#define GELU_K1 0.044715f
+#define SOFTCAP_C 4.0f
+UCHECK(gelu, in_signed,
+       0.5f * x * (1.0f + tanhf(GELU_K0 * (x + GELU_K1 * x * x * x))))
+UCHECK(softcap, in_signed, SOFTCAP_C *tanhf(x / SOFTCAP_C))
 UCHECK(exp, in_pos, expf(x))
 UCHECK(logn, in_pos, logf(x))
 UCHECK(sqrt, in_pos, sqrtf(x))
@@ -343,6 +368,8 @@ EW(fill, PR_EW_FILL)
 EW(clamp, PR_EW_CLAMP)
 EW(addinp, PR_EW_ADD_INPLACE)
 EW(silu, PR_EW_SILU)
+EW(gelu, PR_EW_GELU)
+EW(softcap, PR_EW_SOFTCAP)
 
 static unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
@@ -452,6 +479,12 @@ static const pr_kernel KERNELS[] = {
       .check = chk_addinp, .seed = seed_addinp),
     K(.name = "elementwise silu", .build = bld_silu, .fill = fill_signed,
       .check = chk_silu, .scalar = LOG2_E, .scalar2 = 1.0f),
+    K(.name = "elementwise gelu", .build = bld_gelu, .fill = fill_signed,
+      .check = chk_gelu, .scalar = GELU_K1,
+      .scalar2 = 2.0f * GELU_K0 * LOG2_E, .scalar3 = 1.0f),
+    K(.name = "elementwise softCap", .build = bld_softcap, .fill = fill_signed,
+      .check = chk_softcap, .scalar = 2.0f * LOG2_E / SOFTCAP_C,
+      .scalar2 = 1.0f, .scalar3 = SOFTCAP_C, .scalar4 = 2.0f),
 
     /*
      * Reductions. One block covering every element, because a tree reduction

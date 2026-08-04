@@ -18,6 +18,9 @@ enum {
   R_TEMP = 14,
   R_SCALAR2 = 15,
   R_TEMP2 = 16,
+  R_SCALAR3 = 17,
+  R_SCALAR4 = 18,
+  R_TEMP3 = 19,
 };
 
 /* Bytes per element. Everything here is 32-bit. */
@@ -47,10 +50,20 @@ static int reads_b(pr_ew_op op) {
 /* Does it read the scalar from the constant bank? */
 static int reads_scalar(pr_ew_op op) {
   return op == PR_EW_SCALE || op == PR_EW_EXP || op == PR_EW_LOG ||
-         op == PR_EW_FILL || op == PR_EW_CLAMP || op == PR_EW_SILU;
+         op == PR_EW_FILL || op == PR_EW_CLAMP || op == PR_EW_SILU ||
+         op == PR_EW_GELU || op == PR_EW_SOFTCAP;
 }
 static int reads_scalar2(pr_ew_op op) {
-  return op == PR_EW_CLAMP || op == PR_EW_SILU;
+  return op == PR_EW_CLAMP || op == PR_EW_SILU || op == PR_EW_GELU ||
+         op == PR_EW_SOFTCAP;
+}
+/* NOTE the three predicates below must agree with what each case actually
+ * reads. gelu and softCap were added to reads_scalar2 and reads_scalar34 but
+ * not to reads_scalar, so their first constant was never loaded and the
+ * register held whatever the last kernel left there -- a wrong answer with no
+ * fault and no obvious cause. Adding an operation means checking all three. */
+static int reads_scalar34(pr_ew_op op) {
+  return op == PR_EW_GELU || op == PR_EW_SOFTCAP;
 }
 
 /* ADD_INPLACE reads the OUTPUT array as well as writing it, which is the whole
@@ -166,6 +179,41 @@ static unsigned emit_op(hp_word *p, pr_ew_op op) {
      * Five instructions for one activation, which is what it costs when the
      * only transcendental is exp2 and the only divide is a reciprocal.
      */
+    /*
+     * gelu(x) = x * (1 - 1/(exp2(s1*(x + s0*x^3)) + 1))
+     *
+     * FFMA does the cubic term in one instruction: s0*x^3 + x. The rest is the
+     * same shape as silu, which is not a coincidence -- both are x times a
+     * sigmoid of something, and both cost a reciprocal.
+     */
+    case PR_EW_GELU:
+      p[0] = hp_fmul(R_TEMP, R_VALUE, R_VALUE, after_load);
+      p[1] = hp_fmul(R_TEMP, R_TEMP, R_VALUE, hp_ctrl_safe());
+      p[2] = hp_ffma(R_TEMP, R_TEMP, R_SCALAR, R_VALUE, hp_ctrl_safe());
+      p[3] = hp_fmul(R_TEMP, R_TEMP, R_SCALAR2, hp_ctrl_safe());
+      p[4] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+      p[5] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR3, hp_ctrl_wait(BAR_MUFU));
+      p[6] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
+      p[7] = hp_fneg(R_TEMP3, R_TEMP2, hp_ctrl_wait(BAR_MUFU));
+      p[8] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
+      p[9] = hp_fmul(R_RESULT, R_VALUE, R_TEMP3, hp_ctrl_safe());
+      return 10;
+
+    /*
+     * softCap(x) = c * tanh(x/c) = c * (1 - 2/(exp2(s0*x) + 1))
+     * with s0 = 2*log2(e)/c, s1 = 1, s2 = c, s3 = 2.
+     */
+    case PR_EW_SOFTCAP:
+      p[0] = hp_fmul(R_TEMP, R_VALUE, R_SCALAR, after_load);
+      p[1] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+      p[2] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR2, hp_ctrl_wait(BAR_MUFU));
+      p[3] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
+      p[4] = hp_fmul(R_TEMP2, R_TEMP2, R_SCALAR4, hp_ctrl_wait(BAR_MUFU));
+      p[5] = hp_fneg(R_TEMP3, R_TEMP2, hp_ctrl_safe());
+      p[6] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR2, hp_ctrl_safe());
+      p[7] = hp_fmul(R_RESULT, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
+      return 8;
+
     case PR_EW_SILU:
       p[0] = hp_fneg(R_TEMP, R_VALUE, after_load);
       p[1] = hp_fmul(R_TEMP, R_TEMP, R_SCALAR, hp_ctrl_safe());
@@ -246,6 +294,10 @@ unsigned pr_emit_elementwise(hp_word *p, pr_ew_op op) {
     p[n++] = hp_mov_const(R_SCALAR, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
   if (reads_scalar2(op))
     p[n++] = hp_mov_const(R_SCALAR2, 0, HERMES_CBUF0_SCALAR2, hp_ctrl_safe());
+  if (reads_scalar34(op)) {
+    p[n++] = hp_mov_const(R_SCALAR3, 0, HERMES_CBUF0_SCALAR_N(2), hp_ctrl_safe());
+    p[n++] = hp_mov_const(R_SCALAR4, 0, HERMES_CBUF0_SCALAR_N(3), hp_ctrl_safe());
+  }
 
   n += emit_op(&p[n], op);
 

@@ -106,6 +106,11 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  * encoding that has not been verified against ptxas. */
 #define HERMES_CBUF0_SCALAR (0x160 + 24)
 #define HERMES_CBUF0_SCALAR2 (0x160 + 28)
+/* Four in total. gelu needs three constants and softCap four, and folding
+ * several into one where the algebra allows it is done at the HOST, not by
+ * emitting arithmetic the GPU would repeat for every element. */
+#define HERMES_CBUF0_SCALAR_N(i) (0x160 + 24 + (i) * 4)
+#define HERMES_CBUF0_SCALAR_COUNT 4
 #define HERMES_CBUF0_BYTES 0x1000
 
 #define HERMES_QMD_SCRATCH_BYTES (256 * 1024)

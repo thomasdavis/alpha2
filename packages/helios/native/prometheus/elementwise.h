@@ -80,6 +80,28 @@ typedef enum {
   PR_EW_ADD_INPLACE, /* out[i] += a[i] — reads its own output */
   PR_EW_SILU,      /* a / (1 + exp(-a))                  */
 
+  /*
+   * gelu, tanh approximation:  0.5x(1 + tanh(k0(x + k1 x^3)))
+   *
+   * Simplified before emitting anything, because tanh(y) = 1 - 2/(e^{2y}+1)
+   * turns the whole expression into  x * (1 - 1/(e^{2y}+1)) -- no half, no
+   * addition of one, one reciprocal instead of a divide. Constants are folded
+   * on the HOST: the 2, the k0 and the log2(e) the hardware's exp2 needs all
+   * collapse into a single multiplier rather than three instructions the GPU
+   * would repeat for every element.
+   *
+   *   s0 = k1 = 0.044715
+   *   s1 = 2 * k0 * log2(e)
+   *   s2 = 1.0
+   */
+  PR_EW_GELU,
+
+  /*
+   * softCap: c * tanh(x / c), the same tanh identity with the cap folded in.
+   *   s0 = 2 * log2(e) / c    s1 = 1.0    s2 = c    s3 = 2.0
+   */
+  PR_EW_SOFTCAP,
+
   PR_EW_COUNT,
 } pr_ew_op;
 

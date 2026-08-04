@@ -72,7 +72,7 @@ typedef struct {
    * scale, and the base conversions inside exp and log -- read it from there,
    * which is how a real kernel receives a scalar. Last in the struct so the
    * registry table reads name, code, geometry, data, expectation. */
-  float scalar, scalar2;
+  float scalar, scalar2, scalar3, scalar4;
 
   /* Seed the OUTPUT before launch, for kernels that read what they write.
    * Accumulate-style operations are only meaningfully tested against a known
