@@ -90,8 +90,10 @@ already begun, rather than requiring an invention.
 
 1. **Attention dKV work-partition redesign.** dKV was 15.9% of dispatch in the earlier profile; both prior
    attempts are falsified (X22), so this needs a genuinely different mechanism.
-2. **Sequence packing.** Removing padding waste raises useful tokens per step without touching the kernels.
-   Never measured for this corpus; the only item here with no evidence against it.
+2. ~~**Sequence packing.**~~ **CLOSED 2026-08-04 by [X46](X46-SEQUENCE-PACKING-IS-VOID.md).** Both batch
+   paths in the pretraining loader are already padding-free by construction and no pad token exists. The
+   mechanism it would remove is not present, so it yields nothing. **No identified candidate for the residual
+   1.63x now remains.**
 3. **Larger effective batch.** Improves GEMM efficiency; bounded by 24 GB and by the gradient noise scale,
    which is already 2.3× oversized at batch 24.
 4. **Arithmetic below FP16 inputs.** Ampere has int8/int4 tensor cores, but the quality gate for backward
@@ -122,5 +124,6 @@ computed first.
 1. Retry the rental when 3090 stock recovers, or accept a different Ampere part and note the device change.
 2. Run each X25–X31 stage through the **X43 local lane first**, then measure only throughput on hardware.
 3. Ride along `HELIOS_HOST_TIMING=1` (X39) and the X40 trace scan at near-zero cost.
-4. Measure sequence packing — §5 item 2 is the only unexplored lever with no evidence against it.
+4. ~~Measure sequence packing~~ — **closed by X46**; the loader is already padding-free. No identified
+   candidate for the residual 1.63x remains, so any route to 50,000 needs a new mechanism first.
 5. Report progress against **30,000**, and state the residual to 50,000 every time.
