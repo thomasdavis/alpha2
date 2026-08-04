@@ -9,7 +9,11 @@
 /* Big enough for the largest program any emitter produces, with room. A
  * program that outgrew this would be silently truncated, so the launch checks
  * rather than trusting. */
-#define CODE_BYTES 65536
+/* Room for every program that can be outstanding at once: a queued launch's
+ * code must survive until the GPU has run it, so one shared code buffer would
+ * be overwritten by the next enqueue. */
+#define PROGRAM_BYTES 8192
+#define CODE_BYTES (PROGRAM_BYTES * HELIOS_RING_SLOTS)
 #define LAUNCH_TIMEOUT_NS 5000000000ull
 
 #define FAIL(stage)                                                            \
@@ -71,9 +75,12 @@ int helios_context_open(helios_context *ctx, int index) {
   if (hermes_channel_open(&ctx->device, &ctx->channel) != 0)
     FAIL(ctx->channel.failStage ? ctx->channel.failStage : "channel");
 
-  if (alloc_shared(ctx, &ctx->scratch, HERMES_CBUF0_BYTES) != 0) FAIL("scratch");
+  if (alloc_shared(ctx, &ctx->scratch,
+                   (NvU64)HERMES_CBUF0_BYTES * HELIOS_RING_SLOTS) != 0)
+    FAIL("scratch");
   if (alloc_shared(ctx, &ctx->code, CODE_BYTES) != 0) FAIL("code");
-  if (alloc_shared(ctx, &ctx->qmd, HERMES_QMD_BYTES) != 0) FAIL("qmd");
+  if (alloc_shared(ctx, &ctx->qmd, (NvU64)HERMES_QMD_BYTES * HELIOS_RING_SLOTS) != 0)
+    FAIL("qmd");
   if (alloc_shared(ctx, &ctx->fence, 4096) != 0) FAIL("fence");
 
   /* Local memory lives in video memory and is never touched by the host. */
@@ -83,7 +90,7 @@ int helios_context_open(helios_context *ctx, int index) {
 
   if (init_engine(ctx) != 0) FAIL("compute init");
 
-  memset(ctx->scratch.hostPtr, 0, HERMES_CBUF0_BYTES);
+  memset(ctx->scratch.hostPtr, 0, (size_t)HERMES_CBUF0_BYTES * HELIOS_RING_SLOTS);
   memset(ctx->fence.hostPtr, 0, 4096);
   return 0;
 }
@@ -106,66 +113,75 @@ static NvU64 now_ns(void) {
   return (NvU64)ts.tv_sec * 1000000000ull + (NvU64)ts.tv_nsec;
 }
 
-/*
- * Fill the code buffer.
- *
- * The whole buffer is filled with EXIT first, then the program copied over it.
- * The padding matters: instruction fetch runs ahead of execution, so it will
- * read past a program's last instruction, and what it finds there had better be
- * a legal encoding. Leaving the tail as whatever the previous program wrote is
- * usually harmless and occasionally a fault in a kernel that looks unrelated.
- */
-static void write_code(gaia_buffer *code, const hp_word *prog, unsigned count) {
-  const hp_word pad = hp_exit(hp_ctrl_safe());
-  hp_word *slot = (hp_word *)code->hostPtr;
-  for (NvU64 i = 0; i < code->size / sizeof(hp_word); i++) slot[i] = pad;
-  memcpy(code->hostPtr, prog, count * sizeof(hp_word));
-}
 
-int helios_launch(helios_context *ctx, const hp_word *program, unsigned count,
-                  NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
-                  const NvU64 *buffers, unsigned nbuffers, const NvU32 *scalars,
-                  unsigned nscalars) {
-  if (count * sizeof(hp_word) > ctx->code.size) return -1;
+int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
+                   NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                   const NvU64 *buffers, unsigned nbuffers,
+                   const NvU32 *scalars, unsigned nscalars) {
+  if (count * sizeof(hp_word) > PROGRAM_BYTES) return -1;
   if (nbuffers > HERMES_CBUF0_PARAM_COUNT) return -1;
   if (nscalars > HERMES_CBUF0_SCALAR_COUNT) return -1;
 
-  /* Constant bank 0, in CUDA's layout: the block dimension, then the buffer
-   * pointers, then the scalars. */
-  volatile NvU8 *cb = (volatile NvU8 *)ctx->scratch.hostPtr;
+  /* A full ring must drain before its oldest slot can be reused. */
+  if (ctx->pending >= HELIOS_RING_SLOTS && helios_flush(ctx) != 0) return -1;
+
+  const unsigned slot = ctx->ringNext;
+  volatile NvU8 *cb =
+      (volatile NvU8 *)ctx->scratch.hostPtr + (size_t)slot * HERMES_CBUF0_BYTES;
+  const NvU64 cbAddr = ctx->scratch.gpuAddr + (NvU64)slot * HERMES_CBUF0_BYTES;
+
   *(volatile NvU32 *)(cb + HERMES_CBUF0_NTID_X) = blockX;
   for (unsigned i = 0; i < nbuffers; i++)
     *(volatile NvU64 *)(cb + HERMES_CBUF0_PARAM_N(i)) = buffers[i];
   for (unsigned i = 0; i < nscalars; i++)
     *(volatile NvU32 *)(cb + HERMES_CBUF0_SCALAR_N(i)) = scalars[i];
 
-  write_code(&ctx->code, program, count);
+  const NvU64 codeAddr = ctx->code.gpuAddr + (NvU64)slot * PROGRAM_BYTES;
+  hp_word *slotCode =
+      (hp_word *)((NvU8 *)ctx->code.hostPtr + (size_t)slot * PROGRAM_BYTES);
+  const hp_word pad = hp_exit(hp_ctrl_safe());
+  for (unsigned i = count; i < PROGRAM_BYTES / sizeof(hp_word); i++)
+    slotCode[i] = pad;
+  memcpy(slotCode, program, count * sizeof(hp_word));
 
   NvU32 qmd[HERMES_QMD_DWORDS];
-  hermes_qmd_build(qmd, ctx->code.gpuAddr, ctx->scratch.gpuAddr, gridX, 1, 1,
-                   blockX, 1, 1, sharedBytes, count * (NvU32)sizeof(hp_word));
-  memcpy(ctx->qmd.hostPtr, qmd, HERMES_QMD_BYTES);
-
-  /* The stores above are to write-combined memory; the fence makes them visible
-   * before the doorbell tells the GPU to go looking. */
+  hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, 1, 1, blockX, 1, 1, sharedBytes,
+                   count * (NvU32)sizeof(hp_word));
+  memcpy((NvU8 *)ctx->qmd.hostPtr + (size_t)slot * HERMES_QMD_BYTES, qmd,
+         HERMES_QMD_BYTES);
   __asm__ __volatile__("sfence" ::: "memory");
 
   /*
-   * A fresh fence value per launch.
+   * SUBMIT here, ring and wait in flush.
    *
-   * Reusing one value means a wait can be satisfied by the PREVIOUS launch's
-   * release, which returns immediately and reports success while the kernel is
-   * still running. The bug surfaces as a race that only appears under load,
-   * which is the worst kind to find later.
+   * The pushbuffer is segmented and hermes_submit pushes one GPFIFO entry for
+   * the segment just written -- so queuing many launches and submitting once
+   * submits only the LAST of them, and every earlier kernel silently never
+   * runs. The expensive parts are the doorbell and the fence wait, and those
+   * are what batching removes; writing a GPFIFO entry per launch costs a few
+   * stores.
    */
+  hermes_begin(&ctx->channel);
+  hermes_launch(&ctx->channel, ctx->qmd.gpuAddr + (NvU64)slot * HERMES_QMD_BYTES);
+  if (hermes_submit(&ctx->device, &ctx->channel) != 0) return -1;
+  ctx->ringNext = (slot + 1) % HELIOS_RING_SLOTS;
+  ctx->pending++;
+  return 0;
+}
+
+int helios_flush(helios_context *ctx) {
+  if (ctx->pending == 0) return 0;
+
+  /* ONE semaphore for the whole batch: the channel runs its pushbuffer in
+   * order, so the last kernel retiring means all of them have. */
   const NvU32 want = ++ctx->fenceValue;
   volatile NvU32 *fence = (volatile NvU32 *)ctx->fence.hostPtr;
   *fence = 0;
+  __asm__ __volatile__("sfence" ::: "memory");
 
   hermes_begin(&ctx->channel);
-  hermes_launch(&ctx->channel, ctx->qmd.gpuAddr);
   hermes_semaphore_release(&ctx->channel, ctx->fence.gpuAddr, want);
-  hermes_submit(&ctx->device, &ctx->channel);
+  if (hermes_submit(&ctx->device, &ctx->channel) != 0) return -1;
   hermes_ring(&ctx->channel, (volatile NvU32 *)ctx->channel.userd.hostPtr,
               ctx->channel.doorbell, ctx->channel.token);
 
@@ -173,9 +189,23 @@ int helios_launch(helios_context *ctx, const hp_word *program, unsigned count,
   while (*fence != want) {
     if (now_ns() > deadline) {
       ctx->lastError = ((volatile NvU32 *)ctx->channel.errnotif.hostPtr)[2];
+      ctx->pending = 0;
       return -1;
     }
   }
   ctx->lastError = 0;
+  ctx->pending = 0;
   return 0;
+}
+
+/* The synchronous form, kept for callers that want one launch and its result:
+ * queue it and drain immediately. */
+int helios_launch(helios_context *ctx, const hp_word *program, unsigned count,
+                  NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                  const NvU64 *buffers, unsigned nbuffers, const NvU32 *scalars,
+                  unsigned nscalars) {
+  if (helios_enqueue(ctx, program, count, gridX, blockX, sharedBytes, buffers,
+                     nbuffers, scalars, nscalars) != 0)
+    return -1;
+  return helios_flush(ctx);
 }

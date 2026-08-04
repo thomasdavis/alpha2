@@ -73,10 +73,34 @@ export class NativeHeliosBackend implements Backend {
     );
   }
 
+  /**
+   * A tensor whose `data` DRAINS THE QUEUE when it is read.
+   *
+   * Operations are asynchronous now, so a view read before the kernel has run
+   * shows whatever was in the buffer beforehand -- plausible numbers, silently
+   * wrong. Every read site cannot be found by inspection: the autograd tape,
+   * the model and every test touch `.data` directly, and one missed site is a
+   * bug with no symptom at the call that caused it.
+   *
+   * So the barrier goes on the property rather than at the call sites. A getter
+   * satisfies `readonly data`, and flushing is nearly free when nothing is
+   * pending -- the cost is one predictable branch on a path that is already
+   * about to touch memory.
+   */
   private make(shape: Shape, dtype: Dtype = "f32"): NativeTensor {
     const n = shapeSize(shape);
     const buffer = NativeBuffer.alloc(this.hl, n);
-    return { shape, dtype, data: buffer.floats.subarray(0, n), buffer };
+    const hl = this.hl;
+    const view = buffer.floats.subarray(0, n);
+    return {
+      shape,
+      dtype,
+      get data() {
+        hl.flush();
+        return view;
+      },
+      buffer,
+    } as NativeTensor;
   }
 
   /** Upload a host tensor, or pass a device one straight through. */
@@ -98,6 +122,19 @@ export class NativeHeliosBackend implements Backend {
    */
   private axisOf(shape: Shape, axis: number): number {
     return axis < 0 ? shape.length + axis : axis;
+  }
+
+  /*
+   * Drain the queue before the host reads device memory.
+   *
+   * Operations ENQUEUE and return immediately, which is what turns a
+   * 150-operation step from 150 round trips into a handful. The cost is that a
+   * tensor's `data` view is only meaningful after a flush, so every path here
+   * that touches host memory calls this first. Missing one would read the
+   * values that were there before the kernel ran -- plausible numbers, wrong.
+   */
+  private sync(): void {
+    this.hl.flush();
   }
 
   private check(ok: boolean, op: string): void {
@@ -173,6 +210,7 @@ export class NativeHeliosBackend implements Backend {
      * destination computing each element's source index. Contiguous runs fall
      * out of it naturally when the trailing dimensions already match. */
     const out = this.make(shape, "f32");
+    this.sync();
     const src = dt.buffer.floats;
     const pad = shape.length - t.shape.length;
     const sStride: number[] = new Array(shape.length).fill(0);
@@ -321,6 +359,7 @@ export class NativeHeliosBackend implements Backend {
       const batch = shapeSize(b.shape) / (K * N);
       const da = this.device(a), db = this.device(b);
       const out = this.make([...a.shape.slice(0, -1), N], "f32");
+      this.sync();
       const la = this.make([M0, K], "f32"), lb = this.make([K, N], "f32");
       const lo = this.make([M0, N], "f32");
       for (let i = 0; i < batch; i++) {
@@ -328,6 +367,7 @@ export class NativeHeliosBackend implements Backend {
         lb.buffer.floats.set(db.buffer.floats.subarray(i * K * N, (i + 1) * K * N));
         this.check(this.hl.matmul(lo.buffer.handle, la.buffer.handle,
                                   lb.buffer.handle, M0, N, K), "matmul");
+        this.sync();
         out.buffer.floats.set(lo.buffer.floats.subarray(0, M0 * N), i * M0 * N);
       }
       la.buffer.release(this.hl);
@@ -350,6 +390,7 @@ export class NativeHeliosBackend implements Backend {
   }
 
   private reduceAll(name: string, mean: boolean, a: TensorData): TensorData {
+    this.sync(); /* the scratch is cleared on the HOST just below */
     const da = this.device(a);
     const n = shapeSize(a.shape);
     const out = this.make([1], "f32");
@@ -371,6 +412,7 @@ export class NativeHeliosBackend implements Backend {
    * common case. For now the loop is honest about being a loop.
    */
   private reduceAxis(name: string, mean: boolean, a: TensorData): TensorData {
+    this.sync(); /* the loop below copies rows on the HOST between launches */
     const width = a.shape[a.shape.length - 1] ?? 1;
     const rows = shapeSize(a.shape) / width;
     const da = this.device(a);
@@ -386,6 +428,10 @@ export class NativeHeliosBackend implements Backend {
                        this.scratch.handle, width),
         name,
       );
+      /* The reduce above only ENQUEUED; reading its result needs the queue
+       * drained. Inside the loop, because each row's answer is consumed before
+       * the next row is queued. */
+      this.sync();
       out.buffer.floats[r] = rowOut.buffer.floats[0];
     }
     rowIn.buffer.release(this.hl);
@@ -581,6 +627,7 @@ export class NativeHeliosBackend implements Backend {
       return out;
     }
 
+    this.sync();
     const one = this.make([rows, cols], "f32");
     const oneOut = this.make([cols, rows], "f32");
     const plane = rows * cols;
@@ -588,6 +635,7 @@ export class NativeHeliosBackend implements Backend {
       one.buffer.floats.set(da.buffer.floats.subarray(bI * plane, (bI + 1) * plane));
       this.check(this.hl.transpose(oneOut.buffer.handle, one.buffer.handle, rows, cols),
                  "transpose");
+      this.sync();
       out.buffer.floats.set(oneOut.buffer.floats.subarray(0, plane), bI * plane);
     }
     one.buffer.release(this.hl);
@@ -725,6 +773,7 @@ export class NativeHeliosBackend implements Backend {
    * deliver one bit. They are also test-path operations, not step-path ones.
    */
   equal(a: TensorData, b: TensorData): boolean {
+    this.sync();
     if (shapeSize(a.shape) !== shapeSize(b.shape)) return false;
     const x = this.device(a).data as ArrayLike<number>;
     const y = this.device(b).data as ArrayLike<number>;
@@ -733,6 +782,7 @@ export class NativeHeliosBackend implements Backend {
   }
 
   allClose(a: TensorData, b: TensorData, atol = 1e-5, rtol = 1e-5): boolean {
+    this.sync();
     if (shapeSize(a.shape) !== shapeSize(b.shape)) return false;
     const x = this.device(a).data as ArrayLike<number>;
     const y = this.device(b).data as ArrayLike<number>;
@@ -777,6 +827,7 @@ export class NativeHeliosBackend implements Backend {
     const out = this.make(outShape, "f32");
     const outSlab = outShape[k] * inner;
 
+    this.sync();
     const devs = tensors.map((t) => this.device(t));
     for (let o = 0; o < outer; o++) {
       let at = o * outSlab;
@@ -815,6 +866,7 @@ export class NativeHeliosBackend implements Backend {
   argmax(a: TensorData, axis?: number): TensorData {
     const width = axis === undefined ? shapeSize(a.shape) : (a.shape[a.shape.length - 1] ?? 1);
     const rows = shapeSize(a.shape) / width;
+    this.sync();
     const src = this.device(a).buffer.floats;
     const out = this.make(rows === 1 ? [1] : [rows], "i32");
     for (let r = 0; r < rows; r++) {
@@ -829,6 +881,7 @@ export class NativeHeliosBackend implements Backend {
   topk(a: TensorData, k: number, axis?: number): { values: TensorData; indices: TensorData } {
     const width = axis === undefined ? shapeSize(a.shape) : (a.shape[a.shape.length - 1] ?? 1);
     const rows = shapeSize(a.shape) / width;
+    this.sync();
     const src = this.device(a).buffer.floats;
     const values = this.make(rows === 1 ? [k] : [rows, k], "f32");
     const indices = this.make(rows === 1 ? [k] : [rows, k], "i32");
@@ -849,6 +902,7 @@ export class NativeHeliosBackend implements Backend {
     const shape = a.shape;
     const outShape = shape.slice();
     [outShape[d0], outShape[d1]] = [outShape[d1], outShape[d0]];
+    this.sync();
     const da = this.device(a);
     const out = this.make(outShape, "f32");
 
@@ -891,6 +945,12 @@ export class NativeHeliosBackend implements Backend {
     if (isNative(t) && !t.buffer.released) t.buffer.release(this.hl);
   }
 
+  /** Drain the queue. Callers reading a tensor's `data` directly must call
+   * this first — the operations are asynchronous now. */
+  sync_(): void {
+    this.sync();
+  }
+
   /** Device identity, for the NVIDIA gate. Null until the context is open. */
   deviceInfo(): ReturnType<NativeAddon["deviceInfo"]> {
     return this.hl.deviceInfo();
@@ -899,6 +959,7 @@ export class NativeHeliosBackend implements Backend {
   /** Pool and program statistics, for confirming a step reuses rather than
    * reallocates. `allocations` should stop growing after the first step. */
   stats(): { live: number; pooled: number; allocations: number; programs: number } {
+    this.sync();
     return this.hl.stats();
   }
 }

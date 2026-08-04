@@ -43,6 +43,8 @@ export interface NativeAddon {
   readonly op: NativeOps;
   /** The folded constants the kernels expect, by name — see nativeBackend. */
   readonly scalar: NativeOps;
+  /** Drain the launch queue. Must precede any host read of device memory. */
+  flush(): boolean;
   /** Device identity in the shape the NVIDIA gate checks: vendorId 0x10de, and
    * channelLive, which distinguishes "ran on a GPU" from "ran at all". */
   deviceInfo(): {

@@ -38,10 +38,24 @@
 typedef struct {
   aether_device device;
   hermes_channel channel;
-  gaia_buffer scratch; /* constant bank 0 */
+  /*
+   * A RING of constant banks and QMDs, not one of each.
+   *
+   * One bank means one launch can be in flight: the host must wait for the GPU
+   * to read it before writing the next launch's parameters. That made a
+   * 150-operation step into 150 round trips, and measured 88 tokens/second
+   * against Vulkan's 601 -- the gap was almost entirely this, not the kernels.
+   *
+   * With a ring, N launches queue into one submission and the host waits once.
+   * The ring size bounds how many can be outstanding; when it fills, the next
+   * enqueue flushes first, which is correctness rather than policy.
+   */
+  gaia_buffer scratch; /* HELIOS_RING_SLOTS constant banks, back to back */
   gaia_buffer fence;   /* the semaphore the host polls */
   gaia_buffer code;    /* the program currently loaded */
-  gaia_buffer qmd;     /* the launch descriptor */
+  gaia_buffer qmd;     /* HELIOS_RING_SLOTS launch descriptors */
+  unsigned ringNext;   /* the slot the next enqueue will use */
+  unsigned pending;    /* launches queued and not yet waited on */
   /*
    * Backing store for per-thread local memory.
    *
@@ -65,6 +79,26 @@ typedef struct {
 int helios_context_open(helios_context *ctx, int index);
 
 void helios_context_close(helios_context *ctx);
+
+/* How many launches may be outstanding before a flush is forced. */
+#define HELIOS_RING_SLOTS 64
+
+/*
+ * Queue a launch. Does NOT wait.
+ *
+ * The channel executes its pushbuffer in order, so a kernel queued after
+ * another sees its output -- no dependency tracking is needed, and that is what
+ * makes batching safe here. What is NOT safe is the host reading a result
+ * before flushing, which is why every path that touches device memory from the
+ * host calls helios_flush first.
+ */
+int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
+                   NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                   const NvU64 *buffers, unsigned nbuffers,
+                   const NvU32 *scalars, unsigned nscalars);
+
+/* Submit everything queued and wait for it. A no-op when nothing is pending. */
+int helios_flush(helios_context *ctx);
 
 /*
  * Launch `program` over the given grid, with up to four buffers and six

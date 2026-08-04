@@ -189,6 +189,12 @@ static napi_value js_device_info(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/* Drain the queue. The TypeScript side calls this before any host read. */
+static napi_value js_flush(napi_env env, napi_callback_info info) {
+  (void)info;
+  return hl_result(env, g_open ? helios_flush(&g_ctx) : -1);
+}
+
 static napi_value js_stats(napi_env env, napi_callback_info info) {
   (void)info;
   const helios_tensor_stats s = helios_tensor_get_stats();
@@ -219,6 +225,7 @@ static napi_value init(napi_env env, napi_value exports) {
   hl_export(env, exports, "free", js_free);
   hl_export(env, exports, "view", js_view);
   hl_export(env, exports, "stats", js_stats);
+  hl_export(env, exports, "flush", js_flush);
   hl_export(env, exports, "deviceInfo", js_device_info);
   return hl_napi_register_ops(env, exports);
 }

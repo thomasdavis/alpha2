@@ -33,6 +33,21 @@ static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
     addrs[i] = helios_tensor_addr(ts[i]);
     if (addrs[i] == 0) return -1;
   }
+  /*
+   * SYNCHRONOUS for now, deliberately.
+   *
+   * The batching machinery below it -- a ring of constant banks, a QMD per
+   * slot, one fence for the whole batch -- is built and compiles, and switching
+   * this line to helios_enqueue turns it on. It is off because with it on the
+   * channel HANGS: the fence never lands. That is a real bug in how multiple
+   * segments reach the GPU, not a tuning question, and shipping a stack that
+   * deadlocks would be worse than shipping a slow one.
+   *
+   * This costs the throughput: every launch waits for its own fence, so a
+   * 150-operation step is 150 round trips and measures 88 tokens/second against
+   * Vulkan's 601 on the same box and the same config. The gap is almost
+   * entirely this, and closing it is the next real work.
+   */
   return helios_launch(ctx, p->code, p->count, p->gridX, p->blockX,
                        p->sharedBytes, addrs, nts, scalars, nscalars);
 }
