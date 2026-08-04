@@ -143,10 +143,67 @@ export class NativeHeliosBackend implements Backend {
 
   // ── element-wise ─────────────────────────────────────────────────────────
 
+  /**
+   * Expand `t` to `shape` by NumPy's rules, if it is not already that shape.
+   *
+   * Broadcasting was refused at first, on the reasoning that shape rules belong
+   * to the tensor library and a backend inventing them would be making
+   * decisions the layer above already made. That was wrong, and the model
+   * proved it: the autograd tape emits a backward sum over the broadcast axis,
+   * which only makes sense if the forward broadcast happened. Refusing the
+   * forward while accepting the backward is not a stricter contract, it is an
+   * inconsistent one.
+   *
+   * The expansion is a COPY between two mapped views and performs no
+   * arithmetic, so it does not put a FLOP anywhere but our own SASS. It costs
+   * bandwidth, and a kernel that indexed the smaller operand modularly would
+   * cost none -- that is the optimisation to make once this is correct.
+   */
+  private expand(t: TensorData, shape: Shape): NativeTensor {
+    const dt = this.device(t);
+    const want = shapeSize(shape);
+    const have = shapeSize(t.shape);
+    if (have === want) return dt;
+    if (want % have !== 0)
+      throw new Error(
+        `helios-native: cannot broadcast ${t.shape} to ${shape}`,
+      );
+
+    /* Align the shapes from the RIGHT, as broadcasting does, and walk the
+     * destination computing each element's source index. Contiguous runs fall
+     * out of it naturally when the trailing dimensions already match. */
+    const out = this.make(shape, "f32");
+    const src = dt.buffer.floats;
+    const pad = shape.length - t.shape.length;
+    const sStride: number[] = new Array(shape.length).fill(0);
+    let acc = 1;
+    for (let i = t.shape.length - 1; i >= 0; i--) {
+      sStride[i + pad] = t.shape[i] === 1 ? 0 : acc;
+      acc *= t.shape[i];
+    }
+    const idx = new Array(shape.length).fill(0);
+    for (let n = 0; n < want; n++) {
+      let si = 0;
+      for (let d = 0; d < shape.length; d++) si += idx[d] * sStride[d];
+      out.buffer.floats[n] = src[si];
+      for (let d = shape.length - 1; d >= 0; d--) {
+        if (++idx[d] < shape[d]) break;
+        idx[d] = 0;
+      }
+    }
+    return out;
+  }
+
+  /** The shape a binary operation produces: the larger of the two operands. */
+  private resultShape(a: Shape, b: Shape): Shape {
+    return shapeSize(a) >= shapeSize(b) ? a : b;
+  }
+
   private binary(name: string, opId: number, a: TensorData, b: TensorData): TensorData {
-    const da = this.device(a), db = this.device(b);
-    const n = shapeSize(a.shape);
-    const out = this.make(a.shape, "f32");
+    const shape = this.resultShape(a.shape, b.shape);
+    const da = this.expand(a, shape), db = this.expand(b, shape);
+    const n = shapeSize(shape);
+    const out = this.make(shape, "f32");
     this.check(
       this.hl.elementwise(opId, out.buffer.handle, da.buffer.handle,
                           db.buffer.handle, n, 0, 0, 0, 0, 0, 0, 0),
@@ -453,8 +510,29 @@ export class NativeHeliosBackend implements Backend {
    * matrix -- and the batch is handled by launching it once per leading index,
    * which is a loop and is honest about being one.
    */
-  transpose(a: TensorData): TensorData {
+  transpose(a: TensorData, dim0?: number, dim1?: number): TensorData {
     const rank = a.shape.length;
+
+    /*
+     * The interface takes the two dimensions to swap, and ignoring them was a
+     * silent wrong answer rather than a missing feature.
+     *
+     * This always swapped the LAST TWO, which is right for a matrix and wrong
+     * for attention: swapping heads and positions on a [B,H,T,D] is
+     * transpose(1,2), and doing (2,3) instead produced a tensor of the right
+     * SIZE with its axes interleaved. Nothing downstream objected until a
+     * gradient came back the wrong rank, three operations later, in the
+     * backward of a reshape that had nothing to do with it.
+     *
+     * A general permutation is a strided copy and does no arithmetic, so it
+     * runs here rather than as a kernel; the last-two case still uses the
+     * kernel because it is the hot one and it already exists.
+     */
+    const d0 = dim0 === undefined ? rank - 2 : this.axisOf(a.shape, dim0);
+    const d1 = dim1 === undefined ? rank - 1 : this.axisOf(a.shape, dim1);
+    if (!(d0 === rank - 2 && d1 === rank - 1) && !(d0 === rank - 1 && d1 === rank - 2))
+      return this.permuteSwap(a, d0, d1);
+
     const rows = a.shape[rank - 2] ?? 1;
     const cols = a.shape[rank - 1] ?? 1;
     const batch = shapeSize(a.shape) / (rows * cols);
@@ -696,6 +774,36 @@ export class NativeHeliosBackend implements Backend {
       }
     }
     return { values, indices };
+  }
+
+  /** Swap two arbitrary axes by a strided copy. No arithmetic, so no kernel. */
+  private permuteSwap(a: TensorData, d0: number, d1: number): NativeTensor {
+    const shape = a.shape;
+    const outShape = shape.slice();
+    [outShape[d0], outShape[d1]] = [outShape[d1], outShape[d0]];
+    const da = this.device(a);
+    const out = this.make(outShape, "f32");
+
+    const srcStride: number[] = new Array(shape.length).fill(1);
+    for (let i = shape.length - 2; i >= 0; i--) srcStride[i] = srcStride[i + 1] * shape[i + 1];
+
+    const n = shapeSize(shape);
+    const idx = new Array(outShape.length).fill(0);
+    for (let o = 0; o < n; o++) {
+      /* The destination index walks in order; the source index is the same
+       * coordinates with the two axes exchanged. */
+      let si = 0;
+      for (let d = 0; d < outShape.length; d++) {
+        const sd = d === d0 ? d1 : d === d1 ? d0 : d;
+        si += idx[d] * srcStride[sd];
+      }
+      out.buffer.floats[o] = da.buffer.floats[si];
+      for (let d = outShape.length - 1; d >= 0; d--) {
+        if (++idx[d] < outShape[d]) break;
+        idx[d] = 0;
+      }
+    }
+    return out;
   }
 
   /** Pool and program statistics, for confirming a step reuses rather than
