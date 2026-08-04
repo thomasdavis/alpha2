@@ -93,6 +93,26 @@ int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
   (void)rows; /* one block per row is the launch; the emitter sees only width */
   const helios_key k = {HL_NORMALIZE, op, width, 0};
   const helios_tensor ts[2] = {out, a};
+
+  /*
+   * The scalars differ BY OPERATION, and getting that wrong is subtle enough to
+   * be worth spelling out.
+   *
+   * rmsNorm and layerNorm read 1/N and epsilon. Softmax reads neither -- it
+   * needs log2(e), because the hardware provides exp2 and the kernel converts
+   * the base. Passing 1/N where log2(e) belongs was the first version of this
+   * function, and the result still SUMMED TO ONE: softmax divides by its own
+   * total, so a wrong exponent base rescales every term and the distribution
+   * renormalises itself into something plausible and entirely wrong.
+   *
+   * That is why the parity check compares element by element against the
+   * definition and not only against the "is it a distribution" property. The
+   * property held throughout.
+   */
+  if (op == PR_NORM_SOFTMAX) {
+    const NvU32 s[1] = {bits(1.4426950408889634f)}; /* log2(e) */
+    return run(ctx, k, ts, 2, s, 1);
+  }
   const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
   return run(ctx, k, ts, 2, s, 2);
 }
