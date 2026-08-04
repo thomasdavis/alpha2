@@ -694,8 +694,20 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * The mask BROADCASTS, and not expanding it was a silent partial mask.
+   *
+   * Attention applies an [8,8] causal mask to [1,2,8,8] scores -- one mask,
+   * every head. Reading it flat meant head 0 masked correctly and head 1 read
+   * past the end of the mask entirely, so half the attention saw the future.
+   * The forward loss barely moved; the gradients came back with the wrong sign.
+   *
+   * Found by a differential trace with its threshold set ABOVE the accumulated
+   * MUFU noise: at noise level the trace stops on the first harmless difference
+   * and never reaches this one.
+   */
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData {
-    const dm = this.device(mask);
+    const dm = this.expand(mask, a.shape);
     const da = this.device(a);
     const out = this.make(a.shape, "f32");
     this.check(this.hl.maskedFill(out.buffer.handle, da.buffer.handle,

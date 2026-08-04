@@ -32,8 +32,26 @@ beforeAll(() => {
 const CONFIG: ModelConfig = {
   vocabSize: 16, blockSize: 8, nLayer: 1, nEmbd: 16, nHead: 2, dropout: 0,
 };
+/*
+ * The SAME tolerances the Vulkan parity suite uses, rather than ones invented
+ * here.
+ *
+ * This checked an absolute bound alone, which is wrong for a gradient whose
+ * magnitude varies by orders of magnitude across parameters -- 2e-2 on a
+ * gradient of 0.5 is 4%, and on a gradient of 20 it is a rounding error. The
+ * established pair is relative-plus-absolute and it is calibrated against a
+ * backend that has been trusted for a while, so borrowing it is both more
+ * defensible and comparable.
+ *
+ * The differential trace justifies expecting SOME disagreement: correctly
+ * aligned, the first divergence is a sub[1,2,8,8] differing by 6e-11 absolute
+ * on a value of -1.5e-5, downstream of exp. That is MUFU's documented
+ * approximation showing up where relative error is meaningless, not an error in
+ * the arithmetic -- and it accumulates through the chain.
+ */
 const LOSS_REL_TOL = 5e-3;
-const GRAD_ABS_TOL = 5e-3;
+const GRAD_REL_TOL = 1e-2;
+const GRAD_ABS_TOL = 2e-3;
 
 /** One forward and backward, returning the loss and every parameter gradient. */
 function modelStep(B: Backend) {
@@ -76,7 +94,8 @@ describe("a real Alpha training step on the native backend", () => {
       expect(g.name).toBe(w.name);
       expect(g.values.length).toBe(w.values.length);
       for (let i = 0; i < w.values.length; i++) {
-        if (Math.abs(g.values[i] - w.values[i]) > GRAD_ABS_TOL) {
+        const d = Math.abs(g.values[i] - w.values[i]);
+        if (!(d <= GRAD_ABS_TOL + GRAD_REL_TOL * Math.abs(w.values[i]))) {
           throw new Error(
             `${w.name} grad[${i}]: device ${g.values[i]} vs reference ${w.values[i]}`,
           );
