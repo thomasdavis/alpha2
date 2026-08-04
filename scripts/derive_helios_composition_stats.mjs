@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 function fail(message) {
@@ -127,8 +127,9 @@ if (!rootArg) {
 const root = resolve(rootArg);
 const baseline = 'baseline_fp32';
 const baselineMetrics = readMetrics(root, baseline);
-const controlMetrics = readMetrics(root, control);
 const candidateMetrics = readMetrics(root, candidate);
+const controlMetricsPath = join(root, control, 'metrics.jsonl');
+const controlMetrics = existsSync(controlMetricsPath) ? readMetrics(root, control) : null;
 
 const report = {
   schema: 'alpha-helios-composition-paired-analysis-v1',
@@ -136,10 +137,14 @@ const report = {
   artifact_root: basename(root),
   rows: { baseline, control, candidate },
   steps: candidateMetrics.length,
-  baseline_to_control: pairedComparison(baselineMetrics, controlMetrics),
   baseline_to_candidate: pairedComparison(baselineMetrics, candidateMetrics),
-  control_to_candidate: pairedComparison(controlMetrics, candidateMetrics),
 };
+if (controlMetrics) {
+  report.baseline_to_control = pairedComparison(baselineMetrics, controlMetrics);
+  report.control_to_candidate = pairedComparison(controlMetrics, candidateMetrics);
+} else {
+  report.rows.control = null;
+}
 
 const output = join(root, 'DERIVED-STATS.json');
 writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`);

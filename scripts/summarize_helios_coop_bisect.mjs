@@ -73,10 +73,9 @@ const rowNames = readdirSync(root)
   })
   .sort();
 
-if (!rowNames.includes("baseline_fp32")) throw new Error("baseline_fp32 row is required");
 const rows = rowNames.map((name) => parseRow(root, name));
 const baseline = rows.find((row) => row.name === "baseline_fp32");
-const baselineByStep = new Map(baseline.steps.map((step) => [step.step, step]));
+const baselineByStep = new Map((baseline?.steps ?? []).map((step) => [step.step, step]));
 
 for (const row of rows) {
   row.comparison = {

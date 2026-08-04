@@ -15,6 +15,7 @@ batch="${BATCH:-10}"
 eval_interval="${EVAL_INTERVAL:-0}"
 eval_iters="${EVAL_ITERS:-1}"
 control_shapes="${CONTROL_SHAPES:-}"
+skip_baseline="${SKIP_BASELINE:-0}"
 mkdir -p "$output_root"
 cd "$repo_root"
 
@@ -123,7 +124,9 @@ run_row() {
   printf '%s\n' "$status" > "$row_root/exit-code.txt"
 }
 
-run_row baseline_fp32 off "" default
+if [[ "$skip_baseline" != "1" ]]; then
+  run_row baseline_fp32 off "" default
+fi
 if [[ -n "$control_shapes" ]]; then
   run_row control_composition on "$control_shapes" default
 fi
