@@ -147,6 +147,7 @@ static const pr_kernel KERNELS[] = {
 
     K(.name = "adamw step", .build = bld_adamw, .fill = pr_fill_adam,
       .fillC = pr_fill_adam_v, .seed = pr_seed_adam, .check = chk_adamw,
+      .checkAux = chk_adamw_moments,
       .scalar = 1.0f - PR_ADAM_B1, .scalar2 = 1.0f - PR_ADAM_B2,
       .scalar3 = PR_ADAM_LR, .scalar4 = PR_ADAM_EPS, .scalar5 = PR_ADAM_WD),
 

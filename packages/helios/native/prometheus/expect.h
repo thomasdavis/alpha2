@@ -11,6 +11,8 @@
 #include "oracle.h"
 
 const char *chk_adamw(const volatile NvU32 *o);
+const char *chk_adamw_moments(const volatile NvU32 *m_out,
+                              const volatile NvU32 *v_out);
 const char *chk_add(const volatile NvU32 *o);
 const char *chk_addconst(const volatile NvU32 *o);
 const char *chk_addidx(const volatile NvU32 *o);

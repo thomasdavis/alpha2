@@ -49,6 +49,8 @@
  *   LD_PRELOAD=./qmd_spy.so python3 -c "import torch; ..."
  */
 #define _GNU_SOURCE
+#include "spy.h"
+
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -60,71 +62,10 @@
 #define PCAS_A_ADDR (0x02b4u >> 2)      /* 0xad — SEND_PCAS_A */
 #define INLINE_QMD_ADDR (0x0320u >> 2)  /* 0xc8 — LOAD_INLINE_QMD_DATA(0) */
 
-/* The band CUDA maps GPU buffers into. Deliberately generous: precision comes
- * from the consequence check, not from this. */
-#define GPU_VA_LO 0x100000000ull
-#define GPU_VA_HI 0x1000000000ull
-
-#define MAX_REGIONS 512
-static struct { uint64_t lo, hi; } regions[MAX_REGIONS];
-static int nregions;
-static FILE *L;
-
-static int in_gpu_region(uint64_t a, uint64_t len) {
-  for (int i = 0; i < nregions; i++)
-    if (a >= regions[i].lo && a + len <= regions[i].hi) return 1;
-  return 0;
-}
-
-static void load_regions(void) {
-  nregions = 0;
-  FILE *m = fopen("/proc/self/maps", "r");
-  if (!m) return;
-  char line[512];
-  while (nregions < MAX_REGIONS && fgets(line, sizeof line, m)) {
-    uint64_t lo, hi;
-    char perms[8];
-    if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
-    if (perms[0] != 'r' || perms[1] != 'w') continue;
-    /*
-     * GPU-visible regions only, and this restriction is not optional.
-     *
-     * Dropping it while hunting for the (wrong) PCAS signature seemed harmless;
-     * re-running with the correct inline-QMD signature over ALL memory then
-     * produced hits whose "QMD" was uniformly high-entropy -- random heap that
-     * happens to match 13 bits of address and a plausible count. A pushbuffer
-     * is by definition memory the GPU reads, so it is in the band. Signature
-     * AND provenance; neither alone is enough.
-     */
-    if (lo < GPU_VA_LO || lo >= GPU_VA_HI) continue;
-    if (hi - lo > (256u << 20)) continue;
-    regions[nregions].lo = lo;
-    regions[nregions].hi = hi;
-    nregions++;
-  }
-  fclose(m);
-}
-
-/*
- * Read our own memory through /proc/self/mem rather than by dereferencing.
- *
- * Scanning every writable region directly killed the traced process: some of
- * those mappings fault on read (guard pages, device mappings with restricted
- * access), and a SIGSEGV inside the scanner thread takes the whole program with
- * it. pread on /proc/self/mem returns -1 for exactly those pages instead, which
- * turns an unreadable region into a skipped region.
- */
-static int memfd = -1;
-
-static long read_self(uint64_t addr, void *dst, size_t len) {
-  if (memfd < 0) memfd = open("/proc/self/mem", O_RDONLY);
-  if (memfd < 0) return -1;
-  return pread(memfd, dst, len, (off_t)addr);
-}
 
 static void dump_qmd(uint64_t qmd) {
   uint32_t buf[64];
-  if (read_self(qmd, buf, sizeof buf) != (long)sizeof buf) {
+  if (spy_read_self(qmd, buf, sizeof buf) != (long)sizeof buf) {
     fprintf(L, "    QMD @ 0x%lx unreadable\n", qmd);
     return;
   }
@@ -167,7 +108,7 @@ static int plausible_entry(const uint32_t *e) {
   const uint64_t addr = ((uint64_t)(e[1] & 0xffu) << 32) | (e[0] & 0xfffffffcu);
   const uint32_t len = (e[1] >> 10) & 0x1fffffu;
   if (!addr || !len || len > 0x10000u) return 0;
-  return in_gpu_region(addr, (uint64_t)len * 4);
+  return spy_in_gpu_region(addr, (uint64_t)len * 4);
 }
 
 /*
@@ -185,11 +126,11 @@ static uint32_t hist[0x1000];
 static int printed_init;
 
 static int scan_once(void) {
-  load_regions();
+  spy_load_regions();
   int found = 0, seen = 0;
-  for (int i = 0; i < nregions && found < 2; i++) {
-    const uint32_t *w = (const uint32_t *)(uintptr_t)regions[i].lo;
-    const uint64_t n = (regions[i].hi - regions[i].lo) / 4;
+  for (int i = 0; i < spy_nregions && found < 2; i++) {
+    const uint32_t *w = (const uint32_t *)(uintptr_t)spy_regions[i].lo;
+    const uint64_t n = (spy_regions[i].hi - spy_regions[i].lo) / 4;
     for (uint64_t j = 0; j + 2 <= n && found < 2; j += 2) {
       if (!plausible_entry(&w[j])) continue;
       const uint64_t addr =
@@ -203,7 +144,7 @@ static int scan_once(void) {
         const uint32_t h = pb[k];
         const uint32_t op = h >> 29, cnt = (h >> 16) & 0x1fffu;
         const uint32_t m = (h & 0xfffu) * 4;
-        const int nd = data_words(op, cnt);
+        const int nd = spy_data_words(op, cnt);
         if (nd < 0 || k + 1 + (uint32_t)nd > len) break;
         if (m == 0x0700 || m == 0x0418 || m == 0x0400) { has_launch = 1; break; }
         k += 1 + (uint32_t)nd;
@@ -215,7 +156,7 @@ static int scan_once(void) {
       for (uint32_t k = 0; k < len;) {
         const uint32_t h = pb[k];
         const uint32_t op = h >> 29, cnt = (h >> 16) & 0x1fffu;
-        const int nd = data_words(op, cnt);
+        const int nd = spy_data_words(op, cnt);
         if (nd < 0 || k + 1 + (uint32_t)nd > len) break;
         const uint32_t m = (h & 0xfffu) * 4;
         if (m < 0x4000) hist[m / 4]++;
@@ -228,15 +169,15 @@ static int scan_once(void) {
         if (!printed_init && len > 8 && (pb[0] & 0xfffu) == 0 &&
             (pb[0] >> 29) == 1u && pb[1] == 0xc7c0u) {
           fprintf(L, "\nCOMPUTE INIT pushbuffer 0x%lx (%u dwords)\n", addr, len);
-          dump_pushbuffer(addr, len);
+          spy_dump_pushbuffer(addr, len);
           printed_init = 1;
         }
         continue;
       }
 
       fprintf(L, "\nLAUNCH: entry at 0x%lx -> pushbuffer 0x%lx (%u dwords)\n",
-              regions[i].lo + j * 4, addr, len);
-      dump_pushbuffer(addr, len);
+              spy_regions[i].lo + j * 4, addr, len);
+      spy_dump_pushbuffer(addr, len);
       found++;
     }
   }
@@ -245,7 +186,7 @@ static int scan_once(void) {
             found);
     for (uint32_t m = 0; m < 0x1000; m++) {
       if (!hist[m]) continue;
-      const char *nm = method_name(m * 4);
+      const char *nm = spy_method_name(m * 4);
       fprintf(L, "   0x%04x x%-6u %s\n", m * 4, hist[m], nm ? nm : "");
     }
   }
@@ -258,17 +199,17 @@ static void *scanner(void *unused) {
   int peak = 0;
   for (int i = 0; i < 600; i++) {
     if (scan_once()) { fprintf(L, "\n-- done --\n"); return NULL; }
-    if (nregions > peak) {
-      peak = nregions;
-      fprintf(L, "pass %d: %d GPU regions", i, nregions);
-      for (int r = 0; r < nregions && r < 6; r++)
-        fprintf(L, "  [0x%lx,0x%lx)", regions[r].lo, regions[r].hi);
+    if (spy_nregions > peak) {
+      peak = spy_nregions;
+      fprintf(L, "pass %d: %d GPU regions", i, spy_nregions);
+      for (int r = 0; r < spy_nregions && r < 6; r++)
+        fprintf(L, "  [0x%lx,0x%lx)", spy_regions[r].lo, spy_regions[r].hi);
       fprintf(L, "\n");
     }
     struct timespec ts = { 0, 20 * 1000 * 1000 };
     nanosleep(&ts, NULL);
   }
-  fprintf(L, "no launch found (last pass saw %d GPU regions)\n", nregions);
+  fprintf(L, "no launch found (last pass saw %d GPU regions)\n", spy_nregions);
   return NULL;
 }
 

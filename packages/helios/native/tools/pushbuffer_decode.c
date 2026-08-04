@@ -15,7 +15,7 @@
 #include "spy.h"
 
 /* The compute methods worth naming when they appear. clc7c0.h. */
-static const char *method_name(uint32_t m) {
+const char *spy_method_name(uint32_t m) {
   switch (m) {
     case 0x0000: return "SET_OBJECT";
     case 0x0180: return "LINE_LENGTH_IN";
@@ -61,7 +61,7 @@ static const char *method_name(uint32_t m) {
 #define SEC_OP_END_SEG 7u
 
 /* Data words following a header, given its opcode. */
-static int data_words(uint32_t op, uint32_t count) {
+int spy_data_words(uint32_t op, uint32_t count) {
   switch (op) {
     case SEC_OP_INC:
     case SEC_OP_NON_INC:
@@ -70,7 +70,7 @@ static int data_words(uint32_t op, uint32_t count) {
     default: return -1;         /* unknown or end: stop walking */
   }
 }
-static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
+void spy_dump_pushbuffer(uint64_t addr, uint32_t dwords) {
   const uint32_t *p = (const uint32_t *)(uintptr_t)addr;
   if (dwords > 512) dwords = 512;
   fprintf(L, "    pushbuffer 0x%lx (%u dwords):\n", addr, dwords);
@@ -81,12 +81,12 @@ static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
     const uint32_t count = (h >> 16) & 0x1fffu;
     const uint32_t sub = (h >> 13) & 7u;
     const uint32_t method = (h & 0xfffu) * 4;
-    const int nd = data_words(op, count);
+    const int nd = spy_data_words(op, count);
     if (nd < 0 || i + 1 + (uint32_t)nd > dwords) {
       fprintf(L, "      +0x%03x  %08x  op=%u (stop)\n", i * 4, h, op);
       break;
     }
-    const char *nm = method_name(method);
+    const char *nm = spy_method_name(method);
     fprintf(L, "      +0x%03x  op=%u sub=%u method=0x%04x count=%-3u %s\n",
             i * 4, op, sub, method, count, nm ? nm : "");
 

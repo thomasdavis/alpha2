@@ -96,6 +96,40 @@ const only = process.argv[2];
 let ran = 0;
 let failed = 0;
 
+/*
+ * The dev tools, compiled but not run.
+ *
+ * They are LD_PRELOAD libraries and standalone probes -- they need a live
+ * driver and a CUDA process to do anything, so there is nothing to assert here.
+ * What there IS to catch is that they still BUILD. qmd_spy had drifted out of
+ * compiling entirely: spy.h declared spy_data_words while the definition was
+ * static in another file under a different name, and nothing noticed because
+ * nothing built it. A tool that does not compile is not a tool.
+ */
+function buildTools() {
+  const dir = join(HERE, "tools");
+  const srcs = readdirSync(dir).filter((f) => f.endsWith(".c"));
+  /* Every spy shares spy.h and the pieces behind it, so they link as one
+   * library rather than as separate objects that would each need their own
+   * copy of the region table. */
+  const shared = ["spy_memory.c", "pushbuffer_decode.c"].map((f) => join(dir, f));
+  const preload = ["qmd_spy.c", "rm_spy.c"].filter((f) => srcs.includes(f));
+  for (const f of preload) {
+    execFileSync("gcc", ["-std=gnu11", "-fPIC", "-shared", "-O1", "-o",
+                         join(OUT, f.replace(".c", ".so")), join(dir, f),
+                         ...shared, "-ldl", "-lpthread"], { stdio: "inherit" });
+  }
+  const standalone = srcs.filter(
+    (f) => !preload.includes(f) && !shared.some((s) => s.endsWith(f)));
+  for (const f of standalone) {
+    execFileSync("gcc", [...CFLAGS, "-o", join(OUT, f.replace(".c", "")),
+                         join(dir, f), ...sources("aether"), ...sources("gaia"),
+                         ...sources("hermes"), ...sources("hephaestus"),
+                         ...sources("prometheus"), "-lm"], { stdio: "inherit" });
+  }
+  console.log(`  tools: ${preload.length + standalone.length} built`);
+}
+
 for (let i = 0; i < LAYERS.length; i++) {
   const layer = LAYERS[i];
   if (only && layer !== only) continue;
@@ -122,5 +156,7 @@ if (ran === 0) {
   console.error("no test binaries built — nothing was verified");
   process.exit(1);
 }
+buildTools();
+
 console.log(`\n${ran} layer suite(s), ${failed} failing`);
 process.exit(failed === 0 ? 0 : 1);

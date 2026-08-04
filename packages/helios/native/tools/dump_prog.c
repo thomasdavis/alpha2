@@ -11,7 +11,7 @@
  * silently predicated.
  *
  * Usage on the box:
- *   gcc -o dump tools/dump_prog.c hephaestus/*.c && ./dump
+ *   node native/build-stack.mjs   (builds it into native/.build/)
  *   nvdisasm -b SM86 /tmp/ours.bin
  */
 #include "../hephaestus/sm86.h"

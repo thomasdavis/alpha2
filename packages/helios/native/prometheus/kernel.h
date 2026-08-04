@@ -67,6 +67,17 @@ typedef struct {
   /* Inspect the output. NULL means correct; anything else is the reason, and
    * should say what was wrong rather than that something was. */
   const char *(*check)(const volatile NvU32 *o);
+  /*
+   * Judges the tensors a kernel writes BESIDES the output buffer.
+   *
+   * AdamW writes three tensors -- the parameter, and both moment estimates --
+   * and a checker that reads only the output would pass a kernel that computed
+   * the right parameter while storing the moments to the wrong place. The
+   * parameter depends on both moments, so wrong VALUES were already caught;
+   * wrong destinations were not, and on the second step they become wrong
+   * values too. Given the two input buffers a kernel may have written back.
+   */
+  const char *(*checkAux)(const volatile NvU32 *b, const volatile NvU32 *c);
 
   /* A scalar operand, placed in the constant bank. Kernels that take one --
    * scale, and the base conversions inside exp and log -- read it from there,

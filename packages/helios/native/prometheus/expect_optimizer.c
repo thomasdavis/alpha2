@@ -7,12 +7,12 @@
  * mirrored the kernel's rearrangement would agree with it even if the
  * rearrangement were wrong.
  *
- * Only the PARAMETER is checked, and that is a real limitation worth stating:
- * the kernel also writes m and v back, the test harness reads only the output
- * buffer, and so a kernel that computed the right parameter while corrupting
- * the moments would pass. The parameter depends on both moments, so a
- * corruption that changes their VALUES is caught; one that computes them
- * correctly and stores them to the wrong place is not.
+ * BOTH moments are checked as well as the parameter, in chk_adamw_moments.
+ * Checking only the parameter was the earlier state and it left a real hole:
+ * the parameter depends on both moments, so wrong VALUES were caught, but a
+ * kernel that computed them correctly and stored them to the wrong place was
+ * not -- and on the second step that becomes a wrong value too, in a run where
+ * nothing points back at the optimizer.
  */
 #include "expect.h"
 
@@ -34,6 +34,35 @@ const char *chk_adamw(const volatile NvU32 *o) {
     if (!(err <= 1e-4f)) {
       snprintf(pr_msg(), PR_MSG_SIZE, "adamw: o[%u]=%g want %g", i, (double)got,
                (double)want);
+      return pr_msg();
+    }
+  }
+  return NULL;
+}
+
+/*
+ * The updated moments, in the buffers the kernel wrote them back to.
+ *
+ * Same expressions as above, evaluated a second time rather than shared with
+ * the parameter check. Sharing them would mean one expression proving both the
+ * moment and the parameter that depends on it, and a single wrong constant
+ * would then move both sides together and cancel out.
+ */
+const char *chk_adamw_moments(const volatile NvU32 *m_out,
+                              const volatile NvU32 *v_out) {
+  for (unsigned i = 0; i < PR_N; i++) {
+    const float g = pr_adam_grad(i);
+    const float m = PR_ADAM_B1 * pr_adam_m(i) + (1.0f - PR_ADAM_B1) * g;
+    const float v = PR_ADAM_B2 * pr_adam_v(i) + (1.0f - PR_ADAM_B2) * (g * g);
+    /* Exact: these are adds and multiplies, with no MUFU anywhere. */
+    if (pr_u2f(m_out[i]) != m) {
+      snprintf(pr_msg(), PR_MSG_SIZE, "adamw m: [%u]=%g want %g", i,
+               (double)pr_u2f(m_out[i]), (double)m);
+      return pr_msg();
+    }
+    if (pr_u2f(v_out[i]) != v) {
+      snprintf(pr_msg(), PR_MSG_SIZE, "adamw v: [%u]=%g want %g", i,
+               (double)pr_u2f(v_out[i]), (double)v);
       return pr_msg();
     }
   }
