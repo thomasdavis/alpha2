@@ -874,6 +874,23 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * Return a tensor's memory to the pool.
+   *
+   * The tape and the model both accept a `release` callback and call it on
+   * every intermediate they finish with. Not passing it does not leak in the
+   * usual sense -- the pool still owns the memory -- but nothing is ever
+   * REUSED, so a training loop allocates a fresh buffer per operation per step
+   * until the slot table runs out. Twenty steps of a two-layer model exhausted
+   * it, which is how this was found: a benchmark, not a correctness test.
+   *
+   * Safe on anything: a tensor that is not ours, or a handle already freed, is
+   * ignored rather than double-freed.
+   */
+  release(t: TensorData): void {
+    if (isNative(t) && !t.buffer.released) t.buffer.release(this.hl);
+  }
+
   /** Device identity, for the NVIDIA gate. Null until the context is open. */
   deviceInfo(): ReturnType<NativeAddon["deviceInfo"]> {
     return this.hl.deviceInfo();

@@ -9,10 +9,17 @@
  *                        and submits through its own ioctl path -- no Vulkan,
  *                        no vendor compiler in the runtime
  *
- * The Vulkan one is still the default and is kept ONLY as a diffing oracle
- * while the native one is brought to parity. It is the sole independent
- * implementation of these kernels that exists, and deleting it before parity
- * would throw that away for nothing. It goes at P5, not before.
+ * BOTH ARE PERMANENT. The Vulkan backend is not scheduled for removal (operator
+ * decision, 2026-08-04) and the from-scratch plan's "delete Vulkan at P5" step
+ * is withdrawn.
+ *
+ * It earns its place: it is the only INDEPENDENT implementation of these
+ * kernels that exists, and independence is what makes a disagreement
+ * informative. It is what caught a maskedFill that did not broadcast -- head 0
+ * masked correctly, head 1 read past the end of the mask, and the forward loss
+ * barely moved while the gradients came back with the wrong sign. Nothing in
+ * the native stack could have found that alone, because a stack compared only
+ * against itself agrees with its own assumptions.
  *
  * Architecture:
  *   native/helios_vk.c  → Vulkan device/buffer/pipeline/dispatch (C, ~600 lines)

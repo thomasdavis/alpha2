@@ -5,7 +5,12 @@
 
 #include <string.h>
 
-#define MAX_TENSORS 4096
+/* Generous, because nothing frees intermediates yet: the tape offers a release
+ * callback and wiring it naively frees tensors the graph still references, so
+ * until that is done properly a step allocates one buffer per operation and a
+ * loop needs headroom. The pool still RECYCLES across steps once buffers do get
+ * freed; this only bounds how many can be live at once. */
+#define MAX_TENSORS 65536
 #define INDEX_BITS 16
 #define INDEX_MASK ((1u << INDEX_BITS) - 1u)
 
