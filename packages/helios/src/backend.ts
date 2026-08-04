@@ -1173,6 +1173,7 @@ const DGC_SPLIT_RUNS = process.env.HELIOS_DISABLE_DGC_SPLIT_RUNS !== "1";
 // real hardware. Set HELIOS_SUMSQ_SLOT_REDUCE=1 to enable.
 const SUMSQ_SLOT_REDUCE = process.env.HELIOS_SUMSQ_SLOT_REDUCE === "1";
 const SUMSQ_BDA_PUSH_BYTES = 24;   // u64 src + u64 dst + u32 len + u32 outOffset
+const STRIDE_THRESHOLD = 65536;    // grid-stride reduction above 64K elements
 const EMPTY_PUSH = new Float32Array(0);
 
 /** Pack the BDA reduction push block as exact u32 words (see PendingOp.pushU32). */
@@ -3070,7 +3071,8 @@ export class HeliosBackend implements Backend {
   sumOfSquares(data: TensorData): TensorData {
     const totalSize = shapeSize(data.shape);
     if (totalSize >= this._minGpuSize) {
-      return this.gpuReduceSumOfSquares(data);
+      // Without a slot destination this never returns null.
+      return this.gpuReduceSumOfSquares(data)!;
     }
     // CPU fallback: sum of element-wise squares
     this.checkFallback("sumOfSquares");
@@ -3145,10 +3147,11 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     if (typeof vk.dgcGetBufferAddress !== "function") return null;
 
-    // Every tensor must be large enough to reduce on GPU, or the mix of CPU and
-    // GPU partials defeats the point.
+    // Every tensor must take the grid-stride path, which is the only one whose
+    // final pass can be retargeted at a slot. Checking up front means we never
+    // record a partial result and then bail.
     for (const t of tensors) {
-      if (shapeSize(t.shape) < this._minGpuSize) return null;
+      if (shapeSize(t.shape) < STRIDE_THRESHOLD) return null;
     }
 
     const n = tensors.length;
@@ -3160,35 +3163,13 @@ export class HeliosBackend implements Backend {
       return null;
     }
 
-    const bdaPipe = getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES);
-
+    // Each tensor reduces straight into its slot: the BDA write REPLACES that
+    // tensor's final reduction pass rather than adding one.
     for (let i = 0; i < n; i++) {
-      // Reduce tensor i to a single scalar in its own region, exactly as before...
-      const scalar = this.gpuReduceSumOfSquares(tensors[i]);
-      const srcBuf = ensureGpu(vk, scalar);
-      let srcAddr: [number, number];
-      try {
-        srcAddr = vk.dgcGetBufferAddress(srcBuf) as [number, number];
-      } catch {
-        return null;
-      }
-
-      // ...then move it into slot i with a 1-element BDA reduction. This is the
-      // op that replaces this tensor's participation in the tree.
-      graph.record({
-        kind: "reduce_sum",
-        kernel: "sum_reduce_bda",
-        pipeline: bdaPipe,
-        inputBufs: [],
-        outputRegion: slotsRegion,
-        groups: [1, 1, 1],
-        push: EMPTY_PUSH,
-        pushU32: bdaPush(srcAddr, slotsAddr, 1, i),
-        pushSize: SUMSQ_BDA_PUSH_BYTES,
-        shape: [n],
-        allBufs: [srcBuf, slotsRegion.handle],
+      const leftover = this.gpuReduceSumOfSquares(tensors[i], {
+        addr: slotsAddr, handle: slotsRegion.handle, index: i,
       });
-      releaseGpuBufferFor(scalar);
+      if (leftover !== null) return null;   // dest not honoured — abandon
     }
 
     // One reduction over the n contiguous slots.
@@ -3203,7 +3184,7 @@ export class HeliosBackend implements Backend {
     graph.record({
       kind: "reduce_sum",
       kernel: "sum_reduce_bda",
-      pipeline: bdaPipe,
+      pipeline: getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES),
       inputBufs: [],
       outputRegion: outRegion,
       groups: [1, 1, 1],
@@ -3218,13 +3199,15 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, [], outRegion);
   }
 
-  private gpuReduceSumOfSquares(a: TensorData): TensorData {
+  private gpuReduceSumOfSquares(
+    a: TensorData,
+    dest?: { addr: [number, number]; handle: number; index: number },
+  ): TensorData | null {
     const vk = this.init();
     const totalSize = shapeSize(a.shape);
 
     // For large inputs, use grid-stride kernel: fewer WGs, each thread loops
     // over many elements. Reduces 3 passes to 2 for ~8.5M elements.
-    const STRIDE_THRESHOLD = 65536; // Use stride kernel above 64K elements
     const STRIDE_WGS = 256;        // Fixed number of workgroups for stride kernel
 
     if (totalSize >= STRIDE_THRESHOLD) {
@@ -3298,9 +3281,38 @@ export class HeliosBackend implements Backend {
           remaining = nextGroups;
         }
 
+        const finalInput = src;
+
+        // Final pass. With a slot destination this writes into the caller's
+        // shared partials buffer through the BDA reduction and returns null --
+        // there is no per-tensor scalar to hand back, which is the point.
+        if (dest) {
+          let srcAddr: [number, number] | null = null;
+          try {
+            srcAddr = vk.dgcGetBufferAddress!(finalInput.handle) as [number, number];
+          } catch { srcAddr = null; }
+          if (srcAddr) {
+            graph.record({
+              kind: "reduce_sum",
+              kernel: "sum_reduce_bda",
+              pipeline: getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES),
+              inputBufs: [],
+              outputRegion: { handle: dest.handle, byteSize: 4, readyValue: 0 },
+              groups: [1, 1, 1],
+              push: EMPTY_PUSH,
+              pushU32: bdaPush(srcAddr, dest.addr, remaining, dest.index),
+              pushSize: SUMSQ_BDA_PUSH_BYTES,
+              shape: [],
+              allBufs: [finalInput.handle, dest.handle],
+            });
+            graph.deferRelease(region1);
+            if (level && level !== region1) graph.deferRelease(level);
+            return null;
+          }
+        }
+
         const region2 = acquireOutputRegion(vk, 4);
         const push2 = push2Memo(remaining, 0);
-        const finalInput = src;
 
         graph.record({
           kind: "reduce_sum",
@@ -3320,6 +3332,8 @@ export class HeliosBackend implements Backend {
         return graphLazyTensor(vk, [], region2);
       }
 
+      // numGroups == 1: no final pass to retarget, so dest is not honoured.
+      // Returning a tensor (not null) tells the caller so.
       return graphLazyTensor(vk, [], region1);
     }
 

@@ -19,6 +19,8 @@
  */
 
 import { HeliosBackend } from "../packages/helios/dist/backend.js";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const TOL = 2e-5;   // f32 reductions in different orders
 
@@ -73,23 +75,41 @@ async function main() {
     { n: 17,  size: 99991, label: "17 tensors x 99991 (odd count + odd size)" },
   ];
 
+  // HELIOS_SUMSQ_SLOT_REDUCE is read at module load, so the two arms cannot be
+  // toggled in-process. An earlier version of this file set it after import;
+  // both arms then took the same path and reported a perfect 0.00e+0 agreement
+  // that meant nothing. Each arm now runs in its own process.
+  if (process.env.X58_ARM) {
+    const c = JSON.parse(process.env.X58_CASE);
+    const arrays = makeTensors(c.n, c.size, 12345 + c.n);
+    const backend = new HeliosBackend();
+    process.stdout.write("RESULT " + run(backend, arrays, c.size) + "\n");
+    return;
+  }
+
+  const self = fileURLToPath(import.meta.url);
+  const arm = (slot, c) => {
+    const r = spawnSync(process.execPath, [self], {
+      env: { ...process.env, X58_ARM: "1", X58_CASE: JSON.stringify(c),
+             HELIOS_SUMSQ_SLOT_REDUCE: slot },
+      encoding: "utf8", maxBuffer: 1 << 26,
+    });
+    const m = /RESULT ([-\d.e+]+)/.exec(r.stdout ?? "");
+    if (!m) throw new Error(`arm slot=${slot} produced no result:\n${r.stdout}\n${r.stderr}`);
+    return Number(m[1]);
+  };
+
   let failures = 0;
   for (const c of cases) {
     const arrays = makeTensors(c.n, c.size, 12345 + c.n);
     const want = cpuSumSq(arrays);
-
-    process.env.HELIOS_SUMSQ_SLOT_REDUCE = "0";
-    const treeBackend = new HeliosBackend();
-    const tree = run(treeBackend, arrays, c.size);
-
-    process.env.HELIOS_SUMSQ_SLOT_REDUCE = "1";
-    const slotBackend = new HeliosBackend();
-    const slot = run(slotBackend, arrays, c.size);
+    const tree = arm("0", c);
+    const slot = arm("1", c);
 
     const relTree = Math.abs(tree - want) / Math.abs(want);
     const relSlot = Math.abs(slot - want) / Math.abs(want);
     const relPair = Math.abs(slot - tree) / Math.abs(tree);
-    const ok = relSlot <= TOL && relPair <= TOL;
+    const ok = relTree <= TOL && relSlot <= TOL && relPair <= TOL;
     if (!ok) failures++;
 
     console.log(`  ${ok ? "PASS" : "FAIL"}  ${c.label}`);
