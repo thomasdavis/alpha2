@@ -223,6 +223,21 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const tokenRow = b.id(); b.emit(Op.UDiv, [p.tU32, tokenRow, gid, groupedWidth]);
   const groupedCol = b.id(); b.emit(Op.UMod, [p.tU32, groupedCol, gid, groupedWidth]);
   const segment = b.id(); b.emit(Op.UDiv, [p.tU32, segment, groupedCol, modelDim]);
+  const isSelectedSegment = b.id(); b.emit(Op.IEqual, [p.tBool, isSelectedSegment, segment, which]);
+  const selectedBody = b.id();
+  const zeroBody = b.id();
+  const branchEnd = b.id();
+  b.emit(Op.SelectionMerge, [branchEnd, 0]);
+  b.emit(Op.BranchConditional, [isSelectedSegment, selectedBody, zeroBody]);
+
+  // The branch writes all non-selected Q/K/V segments as zero without reading
+  // the incoming head-major gradient or RoPE tables. This keeps each branch's
+  // traffic equivalent to one scatter plus one inverse-layout transform.
+  b.emit(Op.Label, [zeroBody]);
+  storeF32(b, p.const0u, out, gid, p.const0f);
+  b.emit(Op.Branch, [branchEnd]);
+
+  b.emit(Op.Label, [selectedBody]);
   const local = b.id(); b.emit(Op.UMod, [p.tU32, local, groupedCol, modelDim]);
   const head = b.id(); b.emit(Op.UDiv, [p.tU32, head, local, headDim]);
   const dimension = b.id(); b.emit(Op.UMod, [p.tU32, dimension, local, headDim]);
@@ -259,11 +274,10 @@ export function kernelQkvHeadMajorRopeBackward(wgSize = 256): Uint32Array {
   const raw = loadF32(b, p.tF32, p.const0u, grad, rawDimensionIndex);
   const isRotatedBranch = b.id(); b.emit(Op.ULessThan, [p.tBool, isRotatedBranch, which, p.const2u]);
   const selectedValue = b.id(); b.emit(Op.Select, [p.tF32, selectedValue, isRotatedBranch, rotated, raw]);
-  const isSelectedSegment = b.id(); b.emit(Op.IEqual, [p.tBool, isSelectedSegment, segment, which]);
-  const outputValue = b.id();
-  b.emit(Op.Select, [p.tF32, outputValue, isSelectedSegment, selectedValue, p.const0f]);
-  storeF32(b, p.const0u, out, gid, outputValue);
+  storeF32(b, p.const0u, out, gid, selectedValue);
+  b.emit(Op.Branch, [branchEnd]);
 
+  b.emit(Op.Label, [branchEnd]);
   b.emit(Op.Branch, [end]);
   b.emit(Op.Label, [end]);
   b.emit(Op.Return, []);
