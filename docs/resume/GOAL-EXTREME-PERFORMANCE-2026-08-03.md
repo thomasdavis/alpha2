@@ -194,6 +194,13 @@ range reduction or readback could erase the gain, and one exponent is not valid
 for every operand role. Canonical record:
 `/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X33-RECIPROCAL-FP16X3-BALANCING.md`.
 
+Measured-plan machinery is now implemented without adding permanent range
+reductions. Bounded calibration records tensor-deduplicated operand maxima,
+then an offline compiler emits checkpoint- and ordered-graph-fingerprinted
+per-operation reciprocal exponents. Application fails closed on graph drift.
+No GPU timing or training-quality result is claimed. Evidence:
+`/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/X34-GRAPH-FINGERPRINTED-FP16X3-CALIBRATION.md`.
+
 **Portfolio obligation added 2026-08-03.** The operator wants every one of X17's
 100 directions to receive a faithful attempt, not only the agent's preferred
 candidates. X18 defines the evidence ladder and machine-auditable SQLite ledger.
