@@ -17,6 +17,7 @@
  */
 #include "elementwise.h"
 #include "expect.h"
+#include "indexing.h"
 #include "loop.h"
 #include "matmul.h"
 #include "normalize.h"
@@ -82,6 +83,18 @@ static unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;
   return pr_emit_loop_scale(p, PR_LOOP_TRIPS);
+}
+
+static unsigned bld_transpose(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_transpose(p, PR_TR_ROWS, PR_TR_COLS);
+}
+
+static unsigned bld_embedding(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_embedding(p, PR_EMB_DIM);
 }
 
 static unsigned bld_matmul(hp_word *p, NvU64 out, NvU64 in) {
@@ -219,6 +232,11 @@ static const pr_kernel KERNELS[] = {
      * with a branch, so when both fail it says which suspect to look at. */
     K(.name = "loop scale", .build = bld_loop_scale, .fill = pr_fill_pos,
       .check = chk_loop_scale),
+
+    K(.name = "transpose 4x16", .build = bld_transpose, .blockX = PR_TR_COLS,
+      .gridX = PR_TR_ROWS, .fill = pr_fill_pos, .check = chk_transpose),
+    K(.name = "embedding lookup", .build = bld_embedding, .blockX = PR_EMB_DIM,
+      .gridX = PR_EMB_TOKENS, .fill = pr_fill_embedding, .check = chk_embedding),
 
     /* One block per row, one thread per column -- NOT the default launch, and
      * the registry is where that is said, because the kernel cannot see it. */

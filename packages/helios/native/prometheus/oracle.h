@@ -28,6 +28,8 @@ void pr_fill_ints(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_pos(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_signed(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_pair(volatile NvU32 *a, volatile NvU32 *b);
+void pr_fill_embedding(volatile NvU32 *table, volatile NvU32 *ids);
+NvU32 pr_emb_id(unsigned i);
 
 float pr_in_a(unsigned i);
 float pr_in_b(unsigned i);
@@ -65,6 +67,21 @@ char *pr_msg(void);
  * to any block or grid dimension, so a trip count confused with a thread index
  * gives a visibly wrong answer rather than an accidentally right one. */
 #define PR_LOOP_TRIPS 5
+
+/*
+ * The indexing shapes. Rectangular on purpose, and rows != cols, so a transpose
+ * that returned its input unchanged -- or that swapped the wrong pair of
+ * dimensions -- cannot pass. A square shape would let both through.
+ */
+#define PR_TR_ROWS 4
+#define PR_TR_COLS 16
+
+/* Embedding: 8 tokens of 8 features, from a table with more rows than tokens so
+ * a lookup that ignored the id and used the position would read the wrong row. */
+#define PR_EMB_TOKENS 8
+#define PR_EMB_DIM 8
+/* The table has PR_N entries, so PR_N / PR_EMB_DIM rows. */
+#define PR_EMB_ROWS (PR_N / PR_EMB_DIM)
 
 #define PR_MM_M 8
 #define PR_MM_N 8

@@ -47,3 +47,21 @@ float pr_in_signed(unsigned i) {
 
 static char g_msg[PR_MSG_SIZE];
 char *pr_msg(void) { return g_msg; }
+
+/*
+ * Token ids for the embedding lookup: table row (5*i + 3) mod PR_EMB_ROWS.
+ *
+ * Written as raw INTEGERS, not floats -- they are used directly as an index, so
+ * a float bit pattern here would address somewhere absurd and the failure would
+ * be a fault instead of a wrong answer, which is a worse thing to debug.
+ *
+ * The stride of 5 against 8 tokens is coprime, so every id is distinct and none
+ * equals its own position. A lookup that ignored the id and used the thread's
+ * block index would therefore be caught, which the identity mapping would hide.
+ */
+void pr_fill_embedding(volatile NvU32 *table, volatile NvU32 *ids) {
+  for (unsigned i = 0; i < PR_N; i++) table[i] = pr_f2u((float)(i + 1));
+  for (unsigned i = 0; i < PR_EMB_TOKENS; i++) ids[i] = pr_emb_id(i);
+}
+
+NvU32 pr_emb_id(unsigned i) { return (5u * i + 3u) % PR_EMB_ROWS; }
