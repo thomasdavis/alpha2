@@ -292,6 +292,7 @@ static void dump_pushbuffer(uint64_t addr, uint32_t dwords) {
  * by walking a self-describing stream rather than matched against raw bytes.
  */
 static uint32_t hist[0x1000];
+static int printed_init;
 
 static int scan_once(void) {
   load_regions();
@@ -330,7 +331,18 @@ static int scan_once(void) {
         if (m < 0x4000) hist[m / 4]++;
         k += 1 + (uint32_t)nd;
       }
-      if (!has_launch) continue;
+      if (!has_launch) {
+        /* The compute-engine INIT pushbuffer is the one that begins with
+         * SET_OBJECT, and it is as important as the launch: a launch into an
+         * uninitialised engine raises GR_EXCEPTION. Print it whole. */
+        if (!printed_init && len > 8 && (pb[0] & 0xfffu) == 0 &&
+            (pb[0] >> 29) == 1u && pb[1] == 0xc7c0u) {
+          fprintf(L, "\nCOMPUTE INIT pushbuffer 0x%lx (%u dwords)\n", addr, len);
+          dump_pushbuffer(addr, len);
+          printed_init = 1;
+        }
+        continue;
+      }
 
       fprintf(L, "\nLAUNCH: entry at 0x%lx -> pushbuffer 0x%lx (%u dwords)\n",
               regions[i].lo + j * 4, addr, len);

@@ -22,6 +22,11 @@
  */
 #include "../hephaestus/sm86.h"
 #include "harness.h"
+#include "../aether/ioctl.h"
+#include "../hermes/pushbuffer.h"
+#include "../hermes/qmd.h"
+
+#include <time.h>
 
 /* Captured from ptxas -arch=sm_86, via nvdisasm -c -hex. */
 #define REF_EXIT_LO 0x000000000000794dULL /* EXIT */
@@ -156,6 +161,138 @@ static void test_field_placement_primitives(void) {
   HT_END();
 }
 
+/*
+ * WHERE THIS TEST LIVES, and why it is not in the hermes suite.
+ *
+ * It was written there first and would not link: hephaestus sits ABOVE hermes,
+ * so a hermes test binary cannot reach the assembler. That is standard 4 doing
+ * its job -- the layering is checked by the link graph rather than by review,
+ * and it answered a question about test placement without anyone having to
+ * remember the rule.
+ */
+static NvU64 now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (NvU64)ts.tv_sec * 1000000000ull + (NvU64)ts.tv_nsec;
+}
+
+/*
+ * The real gate: our own machine code, assembled by Hephaestus, executed by the
+ * GPU.
+ *
+ * The kernel is the smallest program that can prove it ran — put a recognisable
+ * constant at an address we chose:
+ *
+ *   MOV R0, lo32(target)
+ *   MOV R1, hi32(target)
+ *   MOV R2, 0xCAFEF00D
+ *   STG.E [R0], R2
+ *   EXIT
+ *
+ * No parameters, so no constant banks; the address is immediate. That removes
+ * the one part of the QMD whose encoding is least established, which matters:
+ * if this fails, the failure should be about the launch, not about a field we
+ * could have avoided setting.
+ */
+#define KERNEL_MAGIC 0xcafef00du
+
+static void test_gpu_runs_our_machine_code(void) {
+  HT_CASE("GPU executes a kernel Hephaestus assembled");
+
+  aether_device d;
+  if (aether_device_open(&d, 0) != 0) {
+    if (d.failStage == NULL) { printf("skip (no NVIDIA driver)\n"); ht_case_failed = 0; return; }
+    HT_FAIL("device open failed at %s", d.failStage);
+    HT_END(); return;
+  }
+
+  hermes_channel c;
+  int rc = hermes_channel_open(&d, &c);
+  if (rc != 0) {
+    HT_FAIL("channel bring-up failed at %s: %s", c.failStage,
+            aether_status_name((unsigned)c.failStatus));
+    aether_device_close(&d); HT_END(); return;
+  }
+
+  gaia_buffer code, out, qmdbuf;
+  memset(&code, 0, sizeof code); memset(&out, 0, sizeof out);
+  memset(&qmdbuf, 0, sizeof qmdbuf);
+
+  if ((rc = gaia_alloc(&d, &out, 4096, GAIA_SYSMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &out)) != 0 ||
+      (rc = gaia_map_host(&d, &out)) != 0) {
+    HT_FAIL("output buffer: %s", aether_status_name((unsigned)rc)); goto done;
+  }
+  ((volatile NvU32 *)out.hostPtr)[0] = 0;
+
+  if ((rc = gaia_alloc(&d, &code, 4096, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &code)) != 0 ||
+      (rc = gaia_map_host(&d, &code)) != 0) {
+    HT_FAIL("code buffer: %s", aether_status_name((unsigned)rc)); goto done;
+  }
+  if ((rc = gaia_alloc(&d, &qmdbuf, 4096, GAIA_VIDMEM)) != 0 ||
+      (rc = gaia_map_gpu(&d, &qmdbuf)) != 0) {
+    HT_FAIL("qmd buffer: %s", aether_status_name((unsigned)rc)); goto done;
+  }
+
+  {
+    hp_word prog[5];
+    prog[0] = hp_mov_imm(0, (uint32_t)(out.gpuAddr & 0xffffffffu), hp_ctrl_safe());
+    prog[1] = hp_mov_imm(1, (uint32_t)(out.gpuAddr >> 32), hp_ctrl_safe());
+    prog[2] = hp_mov_imm(2, KERNEL_MAGIC, hp_ctrl_safe());
+    prog[3] = hp_stg(0, 2, 0, hp_ctrl_safe());
+    prog[4] = hp_exit(hp_ctrl_safe());
+    memset(code.hostPtr, 0, 4096);
+    memcpy(code.hostPtr, prog, sizeof prog);
+  }
+
+  {
+    NvU32 qmd[HERMES_QMD_DWORDS];
+    hermes_qmd_build(qmd, code.gpuAddr, 1, 1, 1, 1, 1, 1);
+
+    hermes_begin(&c);
+    hermes_compute_init(&c, 1, 0xc7c0u, HERMES_SPA_VERSION_SM86,
+                        HERMES_SHARED_WINDOW_DEFAULT);
+    hermes_launch(&c, qmdbuf.gpuAddr, qmd);
+    hermes_semaphore_release(&c, out.gpuAddr + 64, 0x5eeeeeedu);
+    hermes_submit(&d, &c);
+
+    volatile NvU32 *page = (volatile NvU32 *)c.userd.hostPtr;
+    hermes_ring(&c, page, c.doorbell, c.token);
+
+    const NvU64 deadline = now_ns() + 2000000000ull;
+    while (now_ns() < deadline) {
+      if (((volatile NvU32 *)out.hostPtr)[16] == 0x5eeeeeedu) break;
+    }
+
+    const NvU32 got = ((volatile NvU32 *)out.hostPtr)[0];
+    const NvU32 fence = ((volatile NvU32 *)out.hostPtr)[16];
+    volatile NvU32 *u = page + c.userdSlot / 4;
+    if (got != KERNEL_MAGIC) {
+      HT_FAIL("kernel did not run: got 0x%08x, want 0x%08x", got, KERNEL_MAGIC);
+      /* The fence distinguishes "the channel never got there" from "it ran the
+       * launch and the kernel did nothing". */
+      printf("      fence=0x%08x GP_GET=%u GP_PUT=%u code@0x%llx qmd@0x%llx\n",
+             fence, u[HERMES_USERD_GP_GET / 4], u[HERMES_USERD_GP_PUT / 4],
+             (unsigned long long)code.gpuAddr,
+             (unsigned long long)qmdbuf.gpuAddr);
+      printf("      errnotif: %08x %08x %08x %08x\n",
+             ((NvU32 *)c.errnotif.hostPtr)[0], ((NvU32 *)c.errnotif.hostPtr)[1],
+             ((NvU32 *)c.errnotif.hostPtr)[2], ((NvU32 *)c.errnotif.hostPtr)[3]);
+    } else {
+      HT_EQ_U64(got, KERNEL_MAGIC);
+    }
+  }
+
+done:
+  gaia_free(&d, &qmdbuf);
+  gaia_free(&d, &code);
+  gaia_free(&d, &out);
+  hermes_channel_close(&d, &c);
+  aether_device_close(&d);
+  HT_END();
+}
+
 void ht_run(void) {
   printf("\nhephaestus — sm_86 encoder vs ptxas\n");
   test_field_placement_primitives();
@@ -166,4 +303,5 @@ void ht_run(void) {
   test_mov_const();
   test_iadd3();
   test_memory();
+  test_gpu_runs_our_machine_code();
 }
