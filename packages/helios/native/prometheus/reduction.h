@@ -70,4 +70,32 @@ unsigned pr_emit_tree(hp_word *prog, unsigned elements, pr_combine how,
 unsigned pr_emit_reduction_partial(hp_word *p, pr_combine how,
                                   unsigned elements);
 
+/*
+ * ============================ THE WARP REDUCTION ============================
+ *
+ * The same reduction with the warp doing its own share in REGISTERS, via
+ * SHFL.BFLY, so a 640-wide row costs ONE block barrier instead of ten.
+ *
+ * The measurement that motivates it is in reduction.c above the implementation:
+ * rmsNorm and layerNorm differ by exactly one reduction and by 28 us at
+ * [1536,640], which prices the tree directly.
+ *
+ * `pr_emit_tree_warp_reg` takes the contribution in `acc` and leaves the TOTAL
+ * in `acc`, in every thread — no slot 0, no final broadcast, because BFLY is
+ * symmetric and every lane already holds the answer. `t0` is one scratch register, the
+ * shuffle destination, and MUST NOT alias `acc`.
+ *
+ * It requires shared memory of at least `elements` floats holding one value per
+ * thread (which every caller has already written) and a barrier before the
+ * call, because the cross-warp step overwrites the first `elements/32` slots.
+ *
+ * ⚠️ ONLY for widths divisible by 32 — pr_reduce_wants_warp is the guard, and
+ * every caller must ask. A partial last warp puts inactive lanes inside a SHFL,
+ * whose results are undefined.
+ */
+int pr_reduce_wants_warp(unsigned elements);
+
+unsigned pr_emit_tree_warp_reg(hp_word *p, unsigned elements, pr_combine how,
+                               unsigned tid, unsigned acc, unsigned t0);
+
 #endif /* HELIOS_PROMETHEUS_REDUCTION_H */

@@ -135,6 +135,28 @@
 #define HP_LUT_XOR 0x3c /* a ^ b, c ignored */
 #define HP_LUT_AND 0xc0 /* a & b, c ignored */
 
+/*
+ * SHFL — warp shuffle. Captured in tools/shfl_capture.cu.
+ *
+ * THE OPCODE DEPENDS ON WHICH OPERANDS ARE IMMEDIATE, which is unusual here and
+ * is why there are two constants rather than one. Across the captures:
+ *
+ *   SHFL.BFLY PT, R5, R0, 0x1, 0x1f   lane imm, c imm    low12 = 0xf89
+ *   SHFL.IDX  PT, R5, R0, R5,  0x1f   lane REG, c imm    low12 = 0x589
+ *   SHFL.UP   PT, R5, R0, 0x2, RZ     lane imm, c REG    low12 = 0x989
+ *
+ * so bits 9-11 select the operand FORM and 0x189 is the part they share. Only
+ * the both-immediate form is encoded, because that is the only one a reduction
+ * needs: the lane offsets of a butterfly are 16, 8, 4, 2, 1 and the segment
+ * mask is a property of the kernel, never of the data. The other two are
+ * declared as stubs in sm86_stub.c so the gap is named rather than discovered.
+ *
+ * The MODE lives at bits 58-59 and is orthogonal to all of that.
+ */
+#define HP_OP_SHFL_II 0xf89 /* lane and c both immediate — the reduction form */
+#define HP_OP_SHFL_RI 0x589 /* lane in a register, c immediate — NOT ENCODED  */
+#define HP_OP_SHFL_IR 0x989 /* lane immediate, c in a register — NOT ENCODED  */
+
 #define HP_OP_F2FP 0x23e
 #define HP_OP_HADD2 0x230
 #define HP_HALF_LO 0

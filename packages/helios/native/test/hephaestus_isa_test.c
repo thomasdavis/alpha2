@@ -157,6 +157,107 @@ static void test_control_flow(void) {
               0x000800000504783bULL);
   }
 
+  HT_END();
+}
+
+/*
+ * SHFL gets its own case rather than riding along inside the control-flow one.
+ *
+ * Not cosmetic: HT_CASE is what a failure reports, and this stack has already
+ * lost time to a suite that passed while exercising nothing. A run that prints
+ * "SHFL matches ptxas ok" is evidence the encoder was checked; twenty-four
+ * assertions accumulating under someone else's heading is not.
+ */
+static void test_shfl(void) {
+  HT_CASE("SHFL matches ptxas, and no field reaches its neighbour");
+
+  /*
+   * SHFL, against every capture in tools/shfl_capture.cu.
+   *
+   * The captures were taken from eleven different kernels and ptxas gave them
+   * different write barriers and stalls, so the control field is masked off and
+   * everything below it is asserted exactly — the same treatment LDSM gets
+   * above, for the same reason.
+   *
+   * WHAT THE GROUPS PROVE, in order: that each field is where it is claimed to
+   * be, and then — the part a single capture can never show — that no field
+   * reaches into its neighbour.
+   */
+  {
+    const uint64_t ctl = 0xffffffffULL; /* the encoding, without the schedule */
+
+    /* THE LANE IMMEDIATE. Five captures at 1, 2, 4, 8 and 16 with every other
+     * operand fixed, so the only thing that may move is bits 53-57. */
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 1, 0x1f, hp_ctrl_safe())),
+              0x0c201f0000057f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 16, 0x1f, hp_ctrl_safe())),
+              0x0e001f0000057f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 4, 7, 2, 0x1f, hp_ctrl_safe())),
+              0x0c401f0007047f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 7, 2, 4, 0x1f, hp_ctrl_safe())),
+              0x0c801f0002077f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 2, 5, 8, 0x1f, hp_ctrl_safe())),
+              0x0d001f0005027f89ULL);
+
+    /* THE OPERAND REGISTERS. Same instruction, different dst and src. */
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 9, 6, 8, 0x1f, hp_ctrl_safe())),
+              0x0d001f0006097f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 12, 16, 0x1f, hp_ctrl_safe())),
+              0x0e001f000c057f89ULL);
+
+    /* THE MODE, bits 58-59. DOWN and IDX against BFLY at the same operands. */
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_DOWN, 5, 0, 2, 0x1f, hp_ctrl_safe())),
+              0x08401f0000057f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_IDX, 5, 0, 7, 0x1f, hp_ctrl_safe())),
+              0x00e01f0000057f89ULL);
+
+    /* THE `c` OPERAND IS THIRTEEN BITS, not five. The width-8 capture is the
+     * only evidence for that, and without it a five-bit field would encode
+     * every full-warp shuffle correctly and every segmented one wrongly. */
+    HT_EQ_U64(hp_shfl_segment(32), 0x1fULL);
+    HT_EQ_U64(hp_shfl_segment(8), 0x181fULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 1, hp_shfl_segment(8),
+                            hp_ctrl_safe())),
+              0x0c381f0000057f89ULL);
+
+    /* THE DESTINATION PREDICATE, bits 81-83, which is 0x0e0000 in the high word
+     * and is present on every capture. It is a different field from the guard
+     * predicate at bits 12-14 and asserting the high word is what shows it. */
+    HT_EQ_U64(hi_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 1, 0x1f, hp_ctrl_safe())) & ctl,
+              0x000e0000ULL);
+    HT_EQ_U64(hi_of(hp_shfl(HP_SHFL_IDX, 9, 3, 0, 0x1f, hp_ctrl_safe())) & ctl,
+              0x000e0000ULL);
+
+    /*
+     * NO FIELD REACHES ITS NEIGHBOUR — the check a capture cannot make, because
+     * a capture only ever shows one combination. Each pair below differs in
+     * exactly one operand, so the words must differ; and each field is driven
+     * to its maximum against a neighbour held at zero, which is where an
+     * off-by-one shift shows up.
+     */
+    HT_TRUE(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 1, 0x1f, hp_ctrl_safe())) !=
+            lo_of(hp_shfl(HP_SHFL_BFLY, 6, 0, 1, 0x1f, hp_ctrl_safe())));
+    HT_TRUE(lo_of(hp_shfl(HP_SHFL_BFLY, 5, 0, 1, 0x1f, hp_ctrl_safe())) !=
+            lo_of(hp_shfl(HP_SHFL_BFLY, 5, 1, 1, 0x1f, hp_ctrl_safe())));
+    /* lane 31 with c 0 against lane 0 with c 0x1fff: the two fields are
+     * adjacent, so a one-bit error would make one of these collide with a
+     * shifted version of the other. */
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_IDX, 0, 0, 31, 0, hp_ctrl_safe())),
+              0x03e0000000007f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_IDX, 0, 0, 0, 0x1fff, hp_ctrl_safe())),
+              0x001fff0000007f89ULL);
+    /* And the mode must not reach the lane: BFLY at lane 0 is exactly the two
+     * mode bits and nothing else. */
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_BFLY, 0, 0, 0, 0, hp_ctrl_safe())),
+              0x0c00000000007f89ULL);
+    HT_EQ_U64(lo_of(hp_shfl(HP_SHFL_IDX, 0, 0, 0, 0, hp_ctrl_safe())),
+              0x0000000000007f89ULL);
+  }
+  HT_END();
+}
+
+static void test_isetp_fields(void) {
+  HT_CASE("ISETP's predicate, comparison and signedness are separate fields");
   /* The destination predicate must not leak into the comparison, and the
    * comparison must not leak into the destination. Changing one and asserting
    * the other is unmoved is the only way to tell overlapping fields apart. */
@@ -230,6 +331,8 @@ static void test_bitwise(void) {
 
 void hp_isa_tests(void) {
   test_control_flow();
+  test_shfl();
+  test_isetp_fields();
   test_imad_immediate();
   test_mufu_functions();
   test_half_conversion();

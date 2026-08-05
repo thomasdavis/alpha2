@@ -166,3 +166,51 @@ hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
   hp_put(&w, 72, 8, 0x48);
   return w;
 }
+
+/*
+ * SHFL — warp shuffle, the both-immediate form. Captured in
+ * tools/shfl_capture.cu; see HP_OP_SHFL_II in isa.h for why the opcode depends
+ * on which operands are immediate.
+ *
+ * WHY IT IS IN THIS FILE: SHFL is a data exchange through the same crossbar
+ * LDS uses, and it shares LDS's dangerous property — it is VARIABLE LATENCY and
+ * there is no interlock. The vendor compiler's control field on every capture
+ * decodes to stall 2, yield 1, WRITE BARRIER 0, which says plainly that a
+ * consumer must wait on a barrier rather than on a stall count. Emitting
+ * `hp_shfl(..., hp_ctrl_safe())` and reading the result on the next instruction
+ * assembles, runs, and returns whatever the register held before — the exact
+ * failure mode control.h opens by warning about. Use hp_ctrl_setbar() here and
+ * hp_ctrl_wait() on the consumer, the way the reduction's LDS pairs already do.
+ *
+ * FIELD DERIVATION, each from two captures that differ in exactly one thing:
+ *   bits 16-23  destination      R5 vs R9 with everything else fixed
+ *   bits 24-31  source           R0 vs R12 vs R6
+ *   bits 40-52  the `c` operand  0x1f vs 0x181f — THIRTEEN bits, not five: the
+ *                                width-8 form puts 0x18 above the 0x1f, and a
+ *                                five-bit read would silently drop it
+ *   bits 53-57  lane immediate   0x1 -> 0x20, 0x2 -> 0x40, 0x10 -> 0x200
+ *   bits 58-59  mode             IDX 0, UP 1, DOWN 2, BFLY 3
+ *   bits 81-83  dest predicate   0xe at bits 80-87 on EVERY capture = PT
+ *
+ * The `c` operand packs two things: its low five bits are the clamp/max lane
+ * and bits 8-12 are the segment mask. hp_shfl_segment() builds it.
+ */
+hp_word hp_shfl(unsigned mode, unsigned dst, unsigned src, unsigned laneImm,
+                unsigned cImm, hp_control c) {
+  hp_word w = hp_base(HP_OP_SHFL_II, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, src);
+  /* SRCB stays CLEAR rather than RZ. With an immediate lane the register slot
+   * is unused and every capture shows 0x00 there; the register-lane form is
+   * what puts a register number in it. Filling it with RZ is the mistake
+   * hp_mov_const's comment records having made once already. */
+  hp_put(&w, 40, 13, cImm);
+  hp_put(&w, 53, 5, laneImm);
+  hp_put(&w, 58, 2, mode);
+  /* The predicate DESTINATION — SHFL reports whether the source lane was in
+   * range. PT discards it, which is what every capture does. This is not the
+   * guard predicate at bits 12-14; both being "PT" is a coincidence of naming
+   * and writing one into the other's field costs an afternoon. */
+  hp_put(&w, 81, 3, HP_PT);
+  return w;
+}

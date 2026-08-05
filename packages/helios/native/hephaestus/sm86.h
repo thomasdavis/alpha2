@@ -125,6 +125,48 @@ hp_word hp_red_add_f32(unsigned addrReg, unsigned dataReg, uint32_t offset,
                        hp_control c);
 
 /*
+ * SHFL.<mode> PT, Rd, Ra, <lane imm>, <c imm> — warp shuffle.
+ *
+ * Every lane sends Ra and receives the Ra of another lane, chosen by `mode` and
+ * `lane`. No memory, no barrier, no shared allocation: it is the register file
+ * read across the warp's crossbar.
+ *
+ * WHY IT EXISTS HERE: every reduction in prometheus/ — layerNorm's mean and
+ * variance, rmsNorm, softmax's max and sum, cross entropy, the column sum —
+ * runs a shared-memory tree whose every step ends in a BLOCK-WIDE BAR.SYNC.
+ * A 640-wide layer norm is a fold plus nine halving steps, twice, so twenty
+ * block barriers to move 7.9 MB; it measures 91 us where this card's bandwidth
+ * says 17.5, and its backward 189 against 26. Five SHFL.BFLY steps reduce a
+ * whole warp with no barrier at all.
+ *
+ * ⚠️ VARIABLE LATENCY, NO INTERLOCK. Reading `dst` on the next instruction
+ * returns whatever it held before. The producer needs hp_ctrl_setbar() and the
+ * consumer hp_ctrl_wait(), exactly as LDS does — this is not a stall-count
+ * dependency and no stall value makes it safe.
+ *
+ * BFLY is the reduction step: lane ^= laneImm, so after 16, 8, 4, 2, 1 EVERY
+ * lane holds the total. That is the reason to prefer it over DOWN, which leaves
+ * the answer only in lane 0 and then needs a broadcast to undo it.
+ */
+#define HP_SHFL_IDX 0u  /* every lane reads lane `laneImm`         */
+#define HP_SHFL_UP 1u   /* lane -= laneImm, clamped                */
+#define HP_SHFL_DOWN 2u /* lane += laneImm, clamped                */
+#define HP_SHFL_BFLY 3u /* lane ^= laneImm — the butterfly         */
+
+hp_word hp_shfl(unsigned mode, unsigned dst, unsigned src, unsigned laneImm,
+                unsigned cImm, hp_control c);
+
+/*
+ * The `c` operand, built rather than spelt. Its low five bits are the clamp and
+ * bits 8-12 are the segment mask, so a full warp is 0x1f and a width-8 segment
+ * is 0x181f — a thirteen-bit value that looks like a five-bit one until the
+ * width is not 32.
+ */
+static inline unsigned hp_shfl_segment(unsigned width) {
+  return ((32u - width) << 8) | 0x1fu;
+}
+
+/*
  * LDG.E.{64,128} — one global load filling TWO or FOUR consecutive registers.
  *
  * `words` is 2 or 4; `dst` must be aligned to it, and the ADDRESS must be
