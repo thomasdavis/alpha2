@@ -24,6 +24,39 @@ typedef enum {
   PR_NORM_RMS,
   /* out[i] = exp(a[i] - max(a)) / sum(exp(a - max)) */
   PR_NORM_SOFTMAX,
+  /*
+   * Attention's whole score chain in ONE pass: scale, causal mask, softmax.
+   *
+   * The composed form is three kernels, and each of them reads a [B,H,T,T]
+   * tensor and writes another — 23.6 MB of traffic per layer to do arithmetic
+   * that is one multiply and one predicated move per element. Fused it is 7.9,
+   * and it removes two launches per layer in each direction at a point where
+   * 72% of launches already wait for the queue to drain.
+   *
+   * Slot 2 is the mask, TILED: it is [T,T] while the scores are [B,H,T,T], and
+   * the kernel wraps the index at T*T rather than making the caller materialise
+   * a copy. Scalar 1 is log2(e) as usual and scalar 2 the score scale.
+   */
+  PR_NORM_SOFTMAX_MASKED,
+  /*
+   * The same, with attention's SOFT CAP folded in as well — and this is the
+   * variant the model actually runs, because softCap defaults to 30 whenever
+   * RoPE is off.
+   *
+   * The chain composed is FOUR kernels over the same [B,H,T,T] tensor: scale,
+   * softCap, causal mask, softmax. Fused it is one.
+   *
+   * The score scale does not appear as a multiply at all: softCap evaluates
+   * c*(1 - 2/(exp2(s0*x) + 1)), and c*tanh(scale*x/c) is the same expression
+   * with s0 = 2*log2(e)*scale/c. So the scale rides in a constant the kernel
+   * was already going to load. That also keeps the BACKWARD cheap — softCap's
+   * gradient then takes the raw scores, which the tape already holds, instead
+   * of a scaled intermediate this kernel no longer materialises.
+   *
+   * Scalar 1 is s0 and scalar 2 is c. log2(e) for the softmax's own exp2 is an
+   * immediate, because both constant slots are spoken for and it never varies.
+   */
+  PR_NORM_SOFTMAX_MASKED_CAP,
   /* out[i] = (a[i] - mean(a)) / sqrt(var(a) + eps) */
   PR_NORM_LAYER,
   /*

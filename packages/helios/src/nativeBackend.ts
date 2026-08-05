@@ -802,7 +802,15 @@ export class NativeHeliosBackend implements Backend {
    * second. The kernel's `a` is x and its `b` is g, which is the binary
    * convention in elementwise_ops.c.
    */
-  softCapBackward(g: TensorData, a: TensorData, cap: number): TensorData {
+  /*
+   * `scale` folds the score scale in, for the fused attention chain.
+   *
+   * d/dx[cap*tanh(s*x/cap)] = s*(1 - tanh^2(s*x/cap)). The first factor rides
+   * in s0, exactly as the forward's does; the leading s rides in the slot that
+   * otherwise carries the constant 4. So the gradient can be taken against the
+   * RAW scores, and the scaled intermediate never has to exist.
+   */
+  softCapBackward(g: TensorData, a: TensorData, cap: number, scale = 1): TensorData {
     /* s0 = 2*log2(e)/cap, s1 = 1, s2 = 4 — recovered from the addon's folded
      * pair for its own default c rather than restated here, for the reason
      * gelu's constants are: which constant belongs in which slot is a property
@@ -813,7 +821,8 @@ export class NativeHeliosBackend implements Backend {
     this.check(
       this.hl.elementwise(this.hl.op.softCapGrad, out.buffer.handle,
                           da.buffer.handle, dg.buffer.handle,
-                          shapeSize(a.shape), twoLog2e / cap, 4, 2, 0, 0, 0, 3),
+                          shapeSize(a.shape), twoLog2e * scale / cap,
+                          4 * scale, 2, 0, 0, 0, 3),
       "softCapBackward", da, dg,
     );
     if (da !== a && da !== out) da.buffer.release(this.hl);
@@ -1383,6 +1392,33 @@ export class NativeHeliosBackend implements Backend {
     this.check(this.hl.normalizeAffine(opId, out.buffer.handle, dx.buffer.handle,
                                        dw.buffer.handle, db.buffer.handle,
                                        width, rows, eps), name);
+    return out;
+  }
+
+  /*
+   * ATTENTION'S SCORE CHAIN IN ONE LAUNCH: scale, causal mask, softmax.
+   *
+   * Composed, it is three kernels over the same [B,H,T,T] tensor — 23.6 MB of
+   * traffic per layer to apply one multiply and one predicated move per
+   * element, plus a materialised copy of the mask before the fix that tiled it.
+   * Fused it is 7.9 MB and one launch, at a point where 72% of launches already
+   * wait for the queue to drain.
+   *
+   * Returns null when the shape does not fit the kernel, and the caller keeps
+   * the composed path: the mask index wraps at T*T with an AND, so T has to be
+   * a power of two, and the row must fit one block.
+   */
+  softmaxMasked(a: TensorData, mask: TensorData, scale: number,
+                cap = 0): TensorData | null {
+    const width = a.shape[a.shape.length - 1] ?? 1;
+    const rows = shapeSize(a.shape) / width;
+    if (width > 1024 || (width & (width - 1)) !== 0) return null;
+    if (shapeSize(mask.shape) !== width * width) return null;
+    const da = this.device(a), dm = this.device(mask);
+    const out = this.make(a.shape, "f32");
+    this.check(this.hl.softmaxMasked(out.buffer.handle, da.buffer.handle,
+                                     dm.buffer.handle, width, rows, scale, cap),
+               "softmaxMasked", da, dm);
     return out;
   }
 

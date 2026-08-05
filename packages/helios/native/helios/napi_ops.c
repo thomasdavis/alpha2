@@ -66,6 +66,13 @@ static napi_value js_column_sum(napi_env env, napi_callback_info info) {
   return hl_result(env, hl_column_sum(ctx, U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
+/* (out, a, mask, width, rows, scale, cap) — cap 0 means no soft cap. */
+static napi_value js_softmax_masked(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_softmax_masked(ctx, U32(0), U32(1), U32(2), U32(3),
+                                          U32(4), F32(5), F32(6)));
+}
+
 /* (op, out, a, weight, bias, width, rows, eps) */
 static napi_value js_normalize_affine(napi_env env, napi_callback_info info) {
   CTX;
@@ -247,6 +254,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "reduce", js_reduce);
   hl_export(env, exports, "reduceRows", js_reduce_rows);
   hl_export(env, exports, "columnSum", js_column_sum);
+  hl_export(env, exports, "softmaxMasked", js_softmax_masked);
   hl_export(env, exports, "normalizeAffine", js_normalize_affine);
   hl_export(env, exports, "normalize", js_normalize);
   hl_export(env, exports, "layerNormBackward", js_layer_norm_backward);

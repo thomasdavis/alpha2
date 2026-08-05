@@ -154,6 +154,15 @@ export interface Backend {
   // mask
   causalMask(size: number): TensorData;
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData;
+  /*
+   * Attention's score chain in one launch: scale, causal mask, softmax.
+   *
+   * Optional, and it returns null rather than throwing when the shape does not
+   * suit the kernel — so a caller tests the RESULT, not only the method's
+   * existence. The mask is [T,T] and tiled across [B,H,T,T].
+   */
+  softmaxMasked?(a: TensorData, mask: TensorData, scale: number,
+                 cap?: number): TensorData | null;
 
   // backward (GPU-optimized, optional)
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
@@ -192,7 +201,9 @@ export interface Backend {
   /* s * (g - sum_j g_j s_j) over the last axis, in one pass. */
   softmaxBackward?(s: TensorData, g: TensorData): TensorData;
   softCap?(input: TensorData, cap: number): TensorData;
-  softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
+  /* `scale` folds a score scale into the constants so the gradient can be taken
+   * against the RAW input, without a scaled intermediate. */
+  softCapBackward?(g: TensorData, a: TensorData, cap: number, scale?: number): TensorData;
 
   // fused ops (GPU-optimized, optional)
   residualDropoutAdd?(residual: TensorData, projected: TensorData, mask: TensorData): TensorData;

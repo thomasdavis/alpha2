@@ -36,6 +36,14 @@ enum {
    */
   R_AFF_W = 17,
   R_AFF_B = 18,
+  /* The masked softmax only. Shares the affine forward's window, which is safe
+   * because no kernel is ever both. */
+  R_MASK = 17,
+  R_MIDX = 18,
+  R_WRAPC = 19,
+  R_MASK_ADDR = 20, /* R20:R21 — aliases R_ADDR_WA, same reason */
+  R_CAPT = 22,      /* the soft cap's running temporary */
+  R_CONST = 23,     /* an immediate, materialised */
   R_ADDR_WA = 20, /* R20:R21 */
   R_ADDR_BA = 22, /* R22:R23 */
   /* The chunked softmax only: a row wider than a block. */
@@ -90,6 +98,15 @@ enum {
 #define NORM_MAX_THREADS 1024u
 #define NORM_INSTR_BYTES 16
 #define P_OOR 2   /* set when this thread's column is past the row */
+#define P_MASKED 4 /* the fused softmax: this position is forbidden */
+/* -1e9, as bits. See emit_softmax_masked for why the value cannot matter. */
+#define SOFTMAX_MASK_FILL 0xce6e6b28u
+/* log2(e) and the two small constants the soft cap needs, as f32 bit patterns.
+ * Immediates rather than constant-bank slots because both slots carry values
+ * that VARY (the folded scale and the cap) and these never do. */
+#define F32_LOG2E 0x3fb8aa3bu
+#define F32_ONE   0x3f800000u
+#define F32_TWO   0x40000000u
 #define P_CHUNK 3 /* set when a chunk loop has run its course */
 
 /* Threads a normalize block runs. Only softmax can cover a row wider than the
@@ -403,6 +420,93 @@ static unsigned emit_softmax(hp_word *p, unsigned elements) {
 }
 
 /*
+ * softmax with attention's scale and causal mask folded in.
+ *
+ * The three used to be separate kernels over the same [B,H,T,T] tensor. Fusing
+ * them is worth more than the arithmetic suggests because the arithmetic was
+ * never the cost: each pass read 3.93 MB and wrote 3.93 MB to apply one
+ * multiply, or one predicated move, per element.
+ *
+ * ORDER MATTERS AND IS PRESERVED: scale, then mask, then the reduction. The
+ * composed path scaled before masking, so the fill lands in SCALED units, and
+ * doing it the other way round would change which value the maximum picks.
+ *
+ * THE FILL IS A COMPILE-TIME CONSTANT and that costs nothing, because its exact
+ * value cannot reach the answer. It has to be below every real score so the
+ * maximum ignores it, and far enough below that exp2 of the difference
+ * underflows to exactly zero — which -1e9 is, by an enormous margin, at any
+ * score this model produces. Both scalar slots are spoken for (log2(e) and the
+ * score scale), and inventing a third to carry a number that does not affect
+ * the result would be worse than naming it here.
+ */
+static unsigned emit_softmax_masked(hp_word *p, unsigned elements, int cap) {
+  unsigned n = emit_load(p, elements);
+
+  if (cap) {
+    /*
+     * softCap with the score scale folded into its exponent constant:
+     *   c*tanh(s*x/c) = c*(1 - 2/(exp2(s0*x) + 1)),  s0 = 2*log2(e)*s/c
+     * The caller computes s0; here it is simply scalar 1, and c is scalar 2.
+     */
+    p[n++] = hp_mov_const(R_S0, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
+    p[n++] = hp_mov_const(R_S1, 0, HERMES_CBUF0_SCALAR2, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_CAPT, R_X, R_S0, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_mufu(R_CAPT, R_CAPT, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+    p[n++] = hp_mov_imm(R_CONST, F32_ONE, hp_ctrl_safe());
+    p[n++] = hp_fadd(R_CAPT, R_CAPT, R_CONST, hp_ctrl_wait(BAR_MUFU));
+    p[n++] = hp_mufu(R_CAPT, R_CAPT, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
+    p[n++] = hp_mov_imm(R_TMP, F32_TWO, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_CAPT, R_CAPT, R_TMP, hp_ctrl_wait(BAR_MUFU));
+    p[n++] = hp_fneg(R_CAPT, R_CAPT, hp_ctrl_safe());
+    p[n++] = hp_fadd(R_CAPT, R_CAPT, R_CONST, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_X, R_CAPT, R_S1, hp_ctrl_safe());
+  } else {
+    /* Scale only, matching the composed order. */
+    p[n++] = hp_mov_const(R_S1, 0, HERMES_CBUF0_SCALAR2, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_X, R_X, R_S1, hp_ctrl_wait(BAR_LOAD));
+  }
+
+  /*
+   * The mask is [T,T] and the scores are [B,H,T,T], so the index wraps at T*T.
+   * The row width IS T here — softmax runs over the last axis — so the wrap is
+   * elements*elements, a power of two whenever T is, which lets it be an AND
+   * rather than a division.
+   */
+  p[n++] = hp_mov_imm(R_WRAPC, elements * elements - 1u, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_MIDX, R_IDX, R_WRAPC, HP_LUT_AND, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_MASK_ADDR, R_MIDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_MASK, R_MASK_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_isetp_gt_imm(P_MASKED, R_MASK, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n] = hp_predicated(hp_mov_imm(R_X, SOFTMAX_MASK_FILL, hp_ctrl_safe()),
+                       P_MASKED, 0);
+  n++;
+
+  /* Pass one: the maximum. */
+  p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_MAX);
+
+  /* log2(e) as an IMMEDIATE: both constant slots carry values that vary and
+   * this one never does. */
+  p[n++] = hp_mov_imm(R_S0, F32_LOG2E, hp_ctrl_safe());
+  p[n++] = hp_fneg(R_TMP, R_RED, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_fmul(R_X, R_X, R_S0, hp_ctrl_safe());
+  p[n++] = hp_mufu(R_X, R_X, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+
+  p[n++] = hp_bar_sync(hp_ctrl_wait(BAR_MUFU));
+
+  /* Pass two: the sum of those exponentials. */
+  p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+
+  p[n++] = hp_mufu(R_TMP, R_RED, HP_MUFU_RCP, hp_ctrl_wait_setbar(BAR_LDS, BAR_MUFU));
+  p[n++] = hp_fmul(R_X, R_X, R_TMP, hp_ctrl_wait(BAR_MUFU));
+  n += emit_store(&p[n], hp_ctrl_safe());
+  return n;
+}
+
+/*
  * layerNorm: (x - mean) / sqrt(var + eps).
  *
  * Two reductions, and deliberately the two-pass formulation rather than the
@@ -668,6 +772,8 @@ unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
   switch (op) {
     case PR_NORM_RMS: return emit_rms(p, elements, 0);
     case PR_NORM_RMS_AFFINE: return emit_rms(p, elements, 1);
+    case PR_NORM_SOFTMAX_MASKED: return emit_softmax_masked(p, elements, 0);
+    case PR_NORM_SOFTMAX_MASKED_CAP: return emit_softmax_masked(p, elements, 1);
     case PR_NORM_SOFTMAX:
       return elements > NORM_MAX_THREADS ? emit_softmax_chunked(p, elements)
                                          : emit_softmax(p, elements);

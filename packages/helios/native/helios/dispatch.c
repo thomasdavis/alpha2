@@ -159,6 +159,37 @@ int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
   return run(ctx, k, ts, b ? 3 : 2, 0, 0);
 }
 
+int hl_softmax_masked(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor mask, unsigned width, unsigned rows,
+                      float scale, float cap) {
+  /*
+   * `cap` of zero means no soft cap and the scale is applied as a multiply;
+   * anything else selects the variant that folds BOTH into softCap's exponent
+   * constant, which is what the model runs (softCap defaults to 30 whenever
+   * RoPE is off).
+   *
+   * s0 = 2*log2(e)*scale/cap, because the kernel evaluates
+   * cap*(1 - 2/(exp2(s0*x) + 1)) and that IS cap*tanh(scale*x/cap). Which
+   * constant belongs in which slot is a property of the rearrangement, not of
+   * the textbook formula — the same reason gelu's and softCap's own folded
+   * constants come from the addon rather than being restated by callers.
+   *
+   * Getting the two slots the wrong way round still SUMS TO ONE, because a
+   * softmax renormalises whatever it is handed. The check that catches it is
+   * element-by-element against the composed chain, not a property test.
+   */
+  const int capped = cap > 0.0f;
+  const helios_key k = {HL_NORMALIZE,
+                        capped ? PR_NORM_SOFTMAX_MASKED_CAP : PR_NORM_SOFTMAX_MASKED,
+                        width, rows};
+  const helios_tensor ts[3] = {out, a, mask};
+  const float twoLog2e = 2.0f * 1.4426950408889634f;
+  const NvU32 s[2] = {capped ? bits(twoLog2e * scale / cap)
+                             : bits(1.4426950408889634f),
+                      capped ? bits(cap) : bits(scale)};
+  return run(ctx, k, ts, 3, s, 2);
+}
+
 int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
                         helios_tensor a, helios_tensor weight,
                         helios_tensor bias, unsigned width, unsigned rows,

@@ -69,6 +69,17 @@ int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
                         helios_tensor bias, unsigned width, unsigned rows,
                         float eps);
 
+/*
+ * Attention's score chain in one launch: scale, causal mask, softmax.
+ *
+ * The mask is [width, width] and TILED across the rows; the kernel wraps at
+ * width*width, which needs `width` to be a power of two. Callers whose T is not
+ * one keep the composed path.
+ */
+int hl_softmax_masked(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor mask, unsigned width, unsigned rows,
+                      float scale, float cap);
+
 /* out = normalise(a) over rows of `width`, one block per row. */
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);

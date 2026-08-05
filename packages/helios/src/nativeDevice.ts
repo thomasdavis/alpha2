@@ -96,6 +96,10 @@ export interface NativeAddon {
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
   /* Normalise and apply the per-feature affine in one launch. `bias` is ignored
    * by the rmsNorm form but must still be a valid handle. */
+  /* Attention's score chain in one launch: scale, causal mask, softmax. The
+   * mask is [width,width] and tiled across the rows. */
+  softmaxMasked(out: number, a: number, mask: number, width: number, rows: number,
+                scale: number, cap: number): boolean;
   normalizeAffine(op: number, out: number, a: number, weight: number, bias: number,
                   width: number, rows: number, eps: number): boolean;
   /* dx and xhat together; dw and db reduce down the other axis and are the

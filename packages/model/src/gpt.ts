@@ -463,20 +463,94 @@ function transformerBlock(
       // fused backward is also better shaped: dL/dA = G @ B and dL/dB = G^T @ A
       // both go straight to a GEMM, where the transpose route recorded a
       // separate permute to differentiate through.
-      const rawScores = scale(ctx, matmulTransposed(ctx, qH, kH), 1 / Math.sqrt(headDim));
-      const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
+      const invSqrt = 1 / Math.sqrt(headDim);
+      const qk = matmulTransposed(ctx, qH, kH);
 
-      const maskedScores = new Variable(
-        ctx.backend.maskedFill(scores.data, mask, -1e9),
-        true,
-      );
-      ctx.tape.record({
-        output: maskedScores,
-        inputs: [scores],
-        backward: (g, B) => [B.maskedFill(g, mask, 0)],
-      });
+      // Scale, causal mask and softmax are ONE kernel when the backend has it.
+      //
+      // Composed they are three passes over the same [B,H,T,T] tensor — 23.6 MB
+      // of traffic per layer to apply one multiply and one predicated move per
+      // element. The fused form returns null when the shape does not suit it
+      // (T must be a power of two and a row must fit one block), and softCap
+      // takes the composed path because it belongs between the scale and the
+      // mask.
+      // softmaxBackward is part of the gate, not just softmaxMasked: the fused
+      // forward's gradient goes back through the softmax, and a backend with
+      // one and not the other would fuse and then fail in the backward pass,
+      // which is a long way from where the decision was made.
+      // The soft cap rides INSIDE the fused kernel, folded into softCap's
+      // exponent constant, so the composed chain's four passes become one.
+      // softCap defaults to 30 whenever RoPE is off, which is this model — an
+      // earlier version of this gated the fusion OFF when it was set and
+      // therefore never ran at all.
+      const smBackward = ctx.backend.softmaxBackward?.bind(ctx.backend);
+      const capBackward = ctx.backend.softCapBackward?.bind(ctx.backend);
+      const capVal = useSoftCap ? softCapVal! : 0;
+      const fused = !smBackward || (useSoftCap && !capBackward)
+        ? null
+        : ctx.backend.softmaxMasked?.(qk.data, mask, invSqrt, capVal);
+      let attnWeights: Variable;
+      if (fused && smBackward) {
+        /* Bound to a local so the closure below keeps the narrowing — an
+         * optional method read inside a callback is `possibly undefined` again
+         * however the caller guarded it. */
+        const softmaxBack = smBackward;
+        const out = new Variable(fused, true);
+        ctx.tape.record({
+          output: out,
+          inputs: [qk],
+          // The chain in reverse: through the softmax, then the mask, then the
+          // scale. Still three operations, because only the FORWARD is fused —
+          // the composed backward is what it always was, so this cannot be a
+          // regression on that side.
+          // The chain in reverse. Only the FORWARD is fused, so this is the
+          // same composed backward as before minus one pass: softCap's
+          // gradient takes the RAW scores, which the tape holds, because the
+          // scale lives in a constant rather than in a materialised
+          // intermediate. Without the cap there is nothing to differentiate
+          // through and the scale is a plain multiply.
+          //
+          // EVERY TEMPORARY HERE IS RELEASED, and the third argument is how.
+          // The composed ops in ops.ts are handed this callback and use it; a
+          // hand-written backward that ignores it leaks one full [B,H,T,T]
+          // tensor per operation per layer per step — 141 MB a step at this
+          // shape, which exhausted the card during warmup at step 16 and
+          // surfaced as "allocation of 983040 floats failed", a size rather
+          // than a cause.
+          backward: (g, B, release) => {
+            const dSoft = softmaxBack(out.data, g);
+            const dCap = B.maskedFill(dSoft, mask, 0);
+            release?.(dSoft);
+            if (!useSoftCap) {
+              const dx = B.scale(dCap, invSqrt);
+              release?.(dCap);
+              return [dx];
+            }
+            // d/dx[cap*tanh(s*x/cap)] = s*(1 - tanh^2(s*x/cap)); the kernel's
+            // own scale slot absorbs the leading s, so this takes the RAW
+            // scores and no scaled intermediate has to exist.
+            const dx = capBackward!(dCap, qk.data, capVal, invSqrt);
+            release?.(dCap);
+            return [dx];
+          },
+        });
+        attnWeights = out;
+      } else {
+        const rawScores = scale(ctx, qk, invSqrt);
+        const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
 
-      const attnWeights = softmax(ctx, maskedScores, -1);
+        const maskedScores = new Variable(
+          ctx.backend.maskedFill(scores.data, mask, -1e9),
+          true,
+        );
+        ctx.tape.record({
+          output: maskedScores,
+          inputs: [scores],
+          backward: (g, B) => [B.maskedFill(g, mask, 0)],
+        });
+
+        attnWeights = softmax(ctx, maskedScores, -1);
+      }
       const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
       const attnOut = matmul(ctx, attnDrop, vH);
       attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
