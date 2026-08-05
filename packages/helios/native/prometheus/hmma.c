@@ -549,7 +549,20 @@ enum {
  * paying global latency once and paying it six times. */
 #define R_TEMP_COUNT (8u * HMMA_TM + 4u * HMMA_TN)
 #define ALIGN4(x) (((x) + 3u) & ~3u)
-#define R_ACC ALIGN4(R_TEMP_BASE + R_TEMP_COUNT)
+/*
+ * THE STAGED PATH DOES NOT USE THE DIRECT PATH'S TEMPORARIES, and placing the
+ * accumulator above them cost it 8*TM + 4*TN registers it never touched — 32 at
+ * the shipping tile and 48 at a 4x4 one, which is the difference between three
+ * blocks an SM and two.
+ *
+ * Both emitters are compiled whatever HMMA_SHARED is, because the choice is a
+ * runtime branch over a compile-time constant, so the map has to be valid for
+ * whichever one actually runs. When the staged path is the one that runs, the
+ * accumulator starts just above the staged path's own highest register (63) and
+ * the direct path's window is simply not there.
+ */
+#define R_STAGED_TOP 64u
+#define R_ACC (HMMA_SHARED ? R_STAGED_TOP : ALIGN4(R_TEMP_BASE + R_TEMP_COUNT))
 /*
  * THE ACCUMULATOR WINDOW IS SIZED FOR f32 EVEN WHEN IT HOLDS f16, and the spare
  * half is where the f16 epilogue's unpack temporaries go.
@@ -667,14 +680,31 @@ _Static_assert(!HMMA_F16ACC || R_ACC + ACC_WINDOW <= R_AFRAG,
  * So the bound is asserted rather than assumed. A tile that needs more temps is
  * a build error, not a wrong matrix.
  */
-#define ST_A(i) (24u + (i))
-#define ST_B(i) (32u + (i))
+/*
+ * DERIVED FROM THE TILE, not hardcoded — which is what a 4x4 tile needed.
+ *
+ * These used to be fixed eight-register windows at 24 and 32, and the static
+ * assert below turned any tile needing more into a build error. That was the
+ * right guard (TM=2/TN=8 once ran off the end of them and wrote over the
+ * epilogue's store addresses, failing every known-answer case with no fault),
+ * but it also stopped the sweep at the tile it was written for.
+ *
+ * Registers 16 through 39 are free in the STAGED path: 16 upward is the direct
+ * path's address block and its per-fragment temporaries, and the staged path
+ * has neither — it addresses through R_ADDR_SA/SB at 60 and stages through
+ * these. Twenty-four registers, which is exactly what a 4x4 tile asks for.
+ */
+#define ST_BASE 16u
+#define ST_SLOTS 24u
+#define ST_A(i) (ST_BASE + (i))
+#define ST_B(i) (ST_BASE + 2u * STAGE_ITERS_A + (i))
 #define STAGE_ITERS_A ((MMA_M * HMMA_TM * HMMA_WARPS_M) * (MMA_K / 2u) / (32u * HMMA_WARPS))
 #define STAGE_ITERS_B ((MMA_N * HMMA_TN * HMMA_WARPS_N) * (MMA_K / 2u) / (32u * HMMA_WARPS))
-_Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_A <= 8u,
-               "staged A needs more load temporaries than ST_A reserves");
-_Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_B <= 8u,
-               "staged B needs more load temporaries than ST_B reserves");
+_Static_assert(!HMMA_SHARED ||
+                   2u * (STAGE_ITERS_A + STAGE_ITERS_B) <= ST_SLOTS,
+               "staged tiles need more load temporaries than ST_BASE reserves");
+_Static_assert(!HMMA_SHARED || ST_BASE + ST_SLOTS <= 40u,
+               "the staging window overruns the staged path's own registers");
 
 /* Where lane-owned pieces live within the tile. */
 #define ACC_OF(tm, tn) (R_ACC + ACC_WORDS * ((tm) * HMMA_TN + (tn)))
