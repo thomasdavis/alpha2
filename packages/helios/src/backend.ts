@@ -78,6 +78,47 @@ const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1"
 // for ahead-of-time graph compilation and command replay.
 const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
 const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
+
+/*
+ * WHICH allocations are never handed back — a census, not a counter.
+ *
+ * gpuMemStats already says the backend leaks: at 105M seq 64 batch 1 it holds
+ * 203 more live buffers after every step than before, 62.7 MB a step, forever,
+ * and at batch 16 that is what makes vkAllocateMemory fail on an 8 GB card.
+ * A counter can say how much; it cannot say WHERE, and the native leak that
+ * looked identical turned out to sit one frame below the line everyone
+ * suspected — the fix aimed at the visible temporary moved nothing.
+ *
+ * So record a stack per residency and drop it on release; what remains at the
+ * end of a step is the leak with its call site attached. gpuResidence is a
+ * WeakMap and cannot be walked, hence the parallel Map. It holds its keys
+ * alive, which is exactly wrong for production and exactly right here: a
+ * census that lets its subjects be collected under-reports.
+ *
+ * Off unless HELIOS_LEAK_CENSUS=1.
+ */
+const LEAK_CENSUS = process.env.HELIOS_LEAK_CENSUS === "1";
+const leakCensus = new Map<object, string>();
+function censusAdd(info: object): void {
+  if (!LEAK_CENSUS) return;
+  const st = new Error().stack ?? "";
+  /* Frame 0 is Error, 1 is censusAdd, 2 is the residency site — the caller of
+   * that is what distinguishes one allocation from another. */
+  leakCensus.set(info, st.split("\n").slice(2, 7).join("\n"));
+}
+function censusDrop(info: object): void {
+  if (LEAK_CENSUS) leakCensus.delete(info);
+}
+/** Aggregate the surviving stacks, commonest first. */
+export function heliosLeakCensus(top = 8): string {
+  if (!LEAK_CENSUS) return "HELIOS_LEAK_CENSUS=1 not set — nothing recorded";
+  const byStack = new Map<string, number>();
+  for (const st of leakCensus.values()) byStack.set(st, (byStack.get(st) ?? 0) + 1);
+  return [...byStack.entries()].sort((a, b) => b[1] - a[1]).slice(0, top)
+    .map(([st, n]) => `  ${String(n).padStart(5)} x\n${st}`).join("\n\n");
+}
+/** Forget everything recorded so far, so one step can be read in isolation. */
+export function heliosLeakCensusReset(): void { leakCensus.clear(); }
 // Matched-control switch for the residual-add + RMSNorm fusion. The public
 // backend hook remains available so the autograd topology is identical; only
 // the physical implementation changes from one dispatch back to add+rmsnorm.
@@ -586,7 +627,7 @@ function ensureGpuRawBits(vk: NativeAddon, td: TensorData): number {
       i32AsF32(Int32Array.from(td.data as ArrayLike<number>, (v) => v | 0)));
   }
   const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
-  gpuResidence.set(td, info);
+  gpuResidence.set(td, info); censusAdd(info);
   gpuCleanup.register(td, info);
   return handle;
 }
@@ -980,7 +1021,7 @@ function ensureGpu(vk: NativeAddon, td: TensorData): number {
   }
   vk.uploadBuffer(handle, uploadData);
   const info: GpuHandle = { handle, byteSize: rounded, refs: 1, released: false };
-  gpuResidence.set(td, info);
+  gpuResidence.set(td, info); censusAdd(info);
   gpuCleanup.register(td, info);
   _flowEnsureGpuUploads++;
   return handle;
@@ -991,7 +1032,7 @@ function shareGpuResidence(src: TensorData, dst: TensorData): void {
   const gpuInfo = gpuResidence.get(src);
   if (gpuInfo) {
     gpuInfo.refs++;
-    gpuResidence.set(dst, gpuInfo);
+    gpuResidence.set(dst, gpuInfo); censusAdd(gpuInfo);
     gpuCleanup.register(dst, gpuInfo);
   }
 }
@@ -1011,6 +1052,7 @@ function releaseGpuBufferFor(td: TensorData): void {
   if (!info || info.released) return;
   info.refs--;
   gpuResidence.delete(td);
+  censusDrop(info);
   _diagReleasesThisStep++;
   if (info.staticSlotId !== undefined) {
     if (info.refs <= 0) info.released = true;
@@ -1985,7 +2027,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
     },
   };
   // Track GPU residence so subsequent ops can find this buffer
-  gpuResidence.set(td, gpuInfo);
+  gpuResidence.set(td, gpuInfo); censusAdd(gpuInfo);
   gpuCleanup.register(td, gpuInfo);
   _diagAllocsThisStep++;
   return td;
@@ -2014,7 +2056,7 @@ function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion)
       return new Uint16Array(f32.buffer, f32.byteOffset, size);
     },
   };
-  gpuResidence.set(td, gpuInfo);
+  gpuResidence.set(td, gpuInfo); censusAdd(gpuInfo);
   gpuCleanup.register(td, gpuInfo);
   return td;
 }
@@ -2353,7 +2395,33 @@ export class HeliosBackend implements Backend {
    */
   releaseGpuTensor(td: TensorData): void {
     releaseGpuBufferFor(td);
-    this._coopF16InputCache.delete(td);
+    /*
+     * RELEASE THE CAST, not just the map entry — this line WAS the leak.
+     *
+     * Every operand of a cooperative-matrix matmul gets an f16 copy cached
+     * here against the source TensorData. Deleting the entry without freeing
+     * the buffer orphans it: the map no longer knows about it, so the eviction
+     * pass that exists precisely to free these
+     * (evictCoopF16InputCacheForCompletedBatch) finds nothing, and the
+     * allocation lives until the process does. Every intermediate is released
+     * every step, so every step orphaned its casts.
+     *
+     * Measured at 105M seq 64 batch 1: 203 buffers and 62.7 MB leaked per
+     * step, and the leak census attributed ALL of them to castDtype via
+     * getCoopInputBuffer — 73 from matmul, 73 from matmulTransposed, 54 from
+     * flash attention. That is what made batch 8 fail to allocate on an 8 GB
+     * card while batch 1 ran fine.
+     *
+     * Safe: releaseGpuBufferFor defers the actual free to the next graph
+     * flush via the timeline semaphore, so a cast still referenced by queued
+     * work outlives the queue — the same guarantee the source tensor gets one
+     * line above.
+     */
+    const casted = this._coopF16InputCache.get(td);
+    if (casted !== undefined) {
+      releaseGpuBufferFor(casted);
+      this._coopF16InputCache.delete(td);
+    }
   }
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
@@ -3565,7 +3633,7 @@ export class HeliosBackend implements Backend {
     f32u16.set(u16);
     vk.uploadBuffer(handle, f32);
     const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
-    gpuResidence.set(td, info);
+    gpuResidence.set(td, info); censusAdd(info);
     gpuCleanup.register(td, info);
     return handle;
   }

@@ -29,7 +29,7 @@
  *   src/backend.ts       → HeliosBackend implementing @alpha/core Backend
  */
 
-export { HeliosBackend, type GpuDeviceInfo } from "./backend.js";
+export { HeliosBackend, type GpuDeviceInfo, heliosLeakCensus, heliosLeakCensusReset } from "./backend.js";
 export { NativeHeliosBackend, type NativeTensor } from "./nativeBackend.js";
 export { nativeAddon, NativeBuffer, type NativeAddon as HeliosNativeAddon } from "./nativeDevice.js";
 export { initDevice, destroyDevice, getDeviceInfo, getNative, getNativeAddonPath, type NativeAddon, type NativeDeviceInfo } from "./device.js";
