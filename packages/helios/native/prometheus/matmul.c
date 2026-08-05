@@ -98,8 +98,23 @@ enum {
    * matmul, and it is why the GPU half of a 105M step sustains 0.54% of peak.
    * Giving a block several rows lets one B load feed several FFMAs.
    */
-  R_ACC0 = 32, R_ACC1 = 33,
-  R_AV0 = 34, R_AV1 = 35,
+  /*
+   * ONE SET PER ROW, not two alternating.
+   *
+   * Alternating between two sets is enough for two rows and not for four: row 2
+   * reuses row 0's registers about seven instructions after row 0's store
+   * issued, which is inside the window where the store has not yet taken its
+   * operands. It presented as N=1023 wrong at ROWS=4 while every shape had been
+   * right at ROWS=2 — the same hazard, at a shorter distance.
+   */
+  R_ACC0 = 32, R_ACC1 = 33, R_ACC2 = 34, R_ACC3 = 35,
+  R_AV0 = 36, R_AV1 = 37, R_AV2 = 38, R_AV3 = 39,
+  /* Numbered so that the ROWS actually used stay low: at two rows the highest
+   * touched is R45, which leaves slack under a 48-register declaration. A
+   * declaration with no slack above the highest register used raises
+   * GR_EXCEPTION — that is the third time this file has learned it. */
+  R_SV0 = 40, R_SV1 = 41, R_SV2 = 50, R_SV3 = 51,
+  R_O0 = 42, R_O1 = 44, R_O2 = 46, R_O3 = 48, /* pairs */
   /*
    * A store value and an output address PER ROW.
    *
@@ -110,8 +125,7 @@ enum {
    * store has taken its operand is a timing question: N=1025 failed while
    * N=1920 with the same chunk count and the same guard passed.
    */
-  R_STOREVAL1 = 36,
-  R_OUT_B = 38, /* R38:R39 */
+
   R_STG_IDX_B = 23,
   R_STG_ADDR_B = 24, /* R24:R25 */
   R_STG_VAL_B = 26,
@@ -141,8 +155,30 @@ enum {
  */
 #define MATMUL_TILE_MAX_K 1024u
 
-/* The tiled form, on. Flip to 0 to compare against one row per block. */
-#define TILED_MATMUL 1
+/*
+ * OFF, and REFUTED — the commit that introduced it claimed 12% and that was one
+ * favourable sample, not a result. A/B on one build, three runs each:
+ *
+ *     105M seq 64, GPU ms/step
+ *       two rows a block   355  361  372
+ *       one row  a block   342  360  355
+ *
+ * The same, within the spread. Four rows is worse still (345 ms and 56 declared
+ * registers, which is one block an SM).
+ *
+ * WHY THE REASONING FAILED, which is the part worth keeping: the case for
+ * tiling was that a block owning one output row re-reads all of B once per row
+ * — 4.9 MB read 64 times for one matmul. That counts re-reads as DRAM traffic,
+ * and they are not. B is 4.9 MB against this card's 4 MB L2, and 64 blocks
+ * reading the same matrix concurrently hit in L2 for almost all of it. The
+ * reuse tiling would provide was already there.
+ *
+ * So the GPU half sustaining 0.54% of peak is NOT explained by B's traffic, and
+ * the next attempt should measure where that time actually goes before
+ * proposing a structure to fix it. Kept and unwired because the kernel is
+ * correct at every model shape and is the structure HMMA would slot into.
+ */
+#define TILED_MATMUL 0
 
 /* How many cooperative rounds it takes N threads to stage K elements. The last
  * one is short whenever N does not divide K, and it is PREDICATED. */
@@ -241,6 +277,21 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
  * halves B's traffic, and it is the one that can be checked against cpu_ref
  * shape by shape before anything larger is attempted.
  */
+/*
+ * TWO, and four is measured slower.
+ *
+ * Four halves B's traffic again and costs the registers that hide latency:
+ * ACC, staged A, store value and output address per row is 56 declared, which
+ * is one block an SM and not enough warps in flight.
+ *
+ *     105M seq 64, GPU time per step
+ *       one row  354 ms      two rows  301 ms      four rows  345 ms
+ *
+ * So the win is not monotone in the tile, and the ceiling here is occupancy
+ * rather than bandwidth. Four becomes right when a row costs fewer registers —
+ * which is what a proper register-blocked GEMM, or HMMA's accumulator layout,
+ * changes.
+ */
 #define MATMUL_TILE_ROWS 2u
 
 int pr_matmul_tiled(unsigned M, unsigned N, unsigned K) {
@@ -273,8 +324,10 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   const unsigned BW = pr_matmul_block(N);
   const unsigned chunks = (N + BW - 1u) / BW;
   const int guard_col = chunks * BW > N;
-  const unsigned ACC[2] = {R_ACC0, R_ACC1};
-  const unsigned AV[2] = {R_AV0, R_AV1};
+  const unsigned ACC[4] = {R_ACC0, R_ACC1, R_ACC2, R_ACC3};
+  const unsigned AV[4] = {R_AV0, R_AV1, R_AV2, R_AV3};
+  const unsigned SV[4] = {R_SV0, R_SV1, R_SV2, R_SV3};
+  const unsigned OA[4] = {R_O0, R_O1, R_O2, R_O3};
 
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
@@ -353,8 +406,8 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   for (unsigned r = 0; r < ROWS; r++) {
     /* Per row, because the stores are consecutive and nothing interlocks the
      * next one's operand setup against this one's read. See R_STOREVAL1. */
-    const unsigned sv = (r & 1u) ? R_STOREVAL1 : R_STOREVAL;
-    const unsigned outAddr = (r & 1u) ? R_OUT_B : R_OUT;
+    const unsigned sv = SV[r];
+    const unsigned outAddr = OA[r];
     p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());
     p[n++] = hp_iadd3_imm(R_OIDX, R_OIDX, (int)(r * N), hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * N, HP_RZ, hp_ctrl_safe());
