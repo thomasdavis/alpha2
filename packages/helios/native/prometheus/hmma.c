@@ -745,6 +745,22 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
              * Slot s reuses its registers only after four intervening units and
              * behind the wait on `bar` that the loop above already applies.
              */
+            /*
+             * ⚠️ TWO SLOTS' WORTH OF THESE OVERLAP THE ACCUMULATOR, and that is
+             * a KNOWN REMAINING DEFECT rather than an oversight left unstated.
+             * The nvdisasm dump of a 1x1 f16 build shows R_ACC at R36 while
+             * ST_B spans R32-R39, so slots two and three unpack straight over
+             * accumulator registers that later units still have to read. A 1x1
+             * tile has only two units and never reaches those slots, which is
+             * why the 1x1 failure is a DIFFERENT bug and why this one hid.
+             *
+             * Moving them above R_HIGHEST was tried and is WRONG: the kernel's
+             * declared register count is derived from R_HIGHEST, so the new
+             * temporaries were never allocated and failures went 21 -> 60. The
+             * fix has to either raise the declared count — which costs
+             * occupancy, and +64 registers was measured at 3.6% — or find four
+             * genuinely dead pairs below it. Neither is a guess away.
+             */
             v0 = ST_B(2u * slot); v1 = ST_B(2u * slot + 1u);
             p[n++] = hp_half_to_float(v0, acc + half, HP_HALF_LO, hp_ctrl_safe());
             p[n++] = hp_half_to_float(v1, acc + half, HP_HALF_HI, hp_ctrl_safe());
