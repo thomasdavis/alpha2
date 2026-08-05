@@ -33,6 +33,34 @@ enum {
   /* The column-chunk loop, so a transpose is not capped at 1024 columns. */
   R_TID = 24,
   R_CHUNK = 25,
+  /*
+   * TWO value registers, alternated between chunks.
+   *
+   * A chunk loads into a register and stores from it, and the next chunk loads
+   * into the same one. There is no write-after-read interlock on this hardware:
+   * the store holds its operand until the pipe accepts it, and the next load can
+   * overwrite the register first. The result is a transpose that disagrees with
+   * ITSELF run to run — which is how it was found, by checksumming every
+   * operation across two identical forward passes.
+   *
+   * The same hazard has now appeared three times: twice in normalize.c and once
+   * in the staged matmul. Alternating removes it by construction rather than by
+   * ordering, which is why the chunk loops below are UNROLLED — a runtime loop
+   * cannot alternate a register.
+   */
+  R_VALUE_B = 26,
+  /*
+   * ...and the ADDRESS pairs too, which is the half that was missed first.
+   *
+   * Alternating only the value left the store's ADDRESS exposed: chunk t+1
+   * recomputes R_OUT while chunk t's store has issued but not yet read its
+   * operands, so the write lands somewhere else. It shows as 7% of elements
+   * wrong and 89% of them varying run to run — a store that mostly goes to the
+   * right place. Every register a store still needs has to alternate, not just
+   * the obvious one.
+   */
+  R_ADDR_B = 28, /* R28:R29 */
+  R_OUT_B = 30,  /* R30:R31 */
   R_ROW = 0,
   R_COL = 1,
   R_SRC_IDX = 2,
@@ -93,57 +121,45 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-
-  /*
-   * BATCHED, by taking the plane from the block's Y index.
-   *
-   * This transposed one matrix and the caller looped, copying each plane
-   * through the host and DRAINING the launch queue to do it -- so a
-   * four-head attention transpose was four round trips, and after batching
-   * went in those drains were most of what was left. One launch over a
-   * two-dimensional grid removes the loop and the drains together.
-   *
-   * Source is row-major over cols; destination is row-major over rows, which
-   * is the same thing with the two dimensions exchanged. Both are offset by
-   * the plane, which is the same size in either layout.
-   */
   p[n++] = hp_imad_imm(R_PLANE, R_BATCH, rows * cols, HP_RZ,
                        hp_ctrl_wait(BAR_ID));
 
-  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
-  const unsigned chunk_top = n;
-  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_safe());
-  if (guard_col)
-    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, cols - 1, hp_ctrl_safe());
+  /*
+   * UNROLLED over the column chunks, alternating the value register.
+   *
+   * One thread per column capped a transpose at 1024 wide; threads cover the
+   * row in chunks instead. The unrolling is not for speed — it is what lets
+   * consecutive chunks use DIFFERENT value registers, which is the only thing
+   * standing between chunk t+1's load and chunk t's store. See R_VALUE_B.
+   */
+  for (unsigned t = 0; t < chunks; t++) {
+    const unsigned val = (t & 1u) ? R_VALUE_B : R_VALUE;
+    const unsigned addr = (t & 1u) ? R_ADDR_B : R_ADDR;
+    const unsigned out = (t & 1u) ? R_OUT_B : R_OUT;
+    p[n++] = hp_iadd3_imm(R_COL, R_TID, t * BW, hp_ctrl_safe());
+    if (guard_col)
+      p[n++] = hp_isetp_gt_imm(P_COL, R_COL, cols - 1, hp_ctrl_safe());
 
-  p[n++] = hp_imad_imm(R_SRC_IDX, R_ROW, cols, R_COL, hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_SRC_IDX, R_SRC_IDX, R_PLANE, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_DST_IDX, R_COL, rows, R_ROW, hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_DST_IDX, R_DST_IDX, R_PLANE, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SRC_IDX, R_ROW, cols, R_COL, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_SRC_IDX, R_SRC_IDX, R_PLANE, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_DST_IDX, R_COL, rows, R_ROW, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_DST_IDX, R_DST_IDX, R_PLANE, hp_ctrl_safe());
 
-  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  {
-    /* An overhanging thread must not touch memory at either end: the load would
-     * read the next row and the store would write into a live column. */
-    hp_word ld = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+    p[n++] = hp_imad_wide_const(addr, R_SRC_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      /* An overhanging thread must touch memory at neither end: the load would
+       * read the next row and the store would land in a live column. */
+      hp_word ld = hp_ldg(val, addr, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+    }
+    p[n++] = hp_imad_wide_const(out, R_DST_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(out, val, 0, hp_ctrl_wait(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+    }
   }
-  p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
-  {
-    hp_word st = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
-  }
-
-  if (chunks > 1) {
-    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
-    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
-    const int back = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
-    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
-    n++;
-  }
-
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }
@@ -313,47 +329,43 @@ unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
  */
 unsigned pr_emit_slice_rows(hp_word *p, unsigned W, unsigned srcW) {
   unsigned n = 0;
-  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-
-  /* One thread per column capped the row at the block width; threads walk the
-   * columns in chunks instead, exactly as transpose and matmul do. */
   const unsigned BW = pr_row_block(W);
   const unsigned chunks = BW ? (W + BW - 1u) / BW : 1u;
   const int guard_col = chunks * BW > W;
-  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
-  const unsigned chunk_top = n;
-  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_wait(BAR_ID));
-  if (guard_col)
-    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  /* dst = row*W + c */
-  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
-  /* src = row*srcW + start + c */
-  p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, srcW, R_TMP2, hp_ctrl_safe());
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
 
-  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  {
-    hp_word ld = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
-  }
-  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
-  {
-    hp_word st = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
-  }
+  /* Unrolled over the column chunks, alternating the value AND both address
+   * pairs — see R_VALUE_B. A runtime loop cannot alternate a register, and
+   * without alternating them the next chunk clobbers a store still reading. */
+  for (unsigned t = 0; t < chunks; t++) {
+    const unsigned val = (t & 1u) ? R_VALUE_B : R_VALUE;
+    const unsigned addr = (t & 1u) ? R_ADDR_B : R_ADDR;
+    const unsigned out = (t & 1u) ? R_OUT_B : R_OUT;
+    p[n++] = hp_iadd3_imm(R_COL, R_TID, t * BW, hp_ctrl_safe());
+    if (guard_col)
+      p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  if (chunks > 1) {
-    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
-    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
-    const int back = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
-    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
-    n++;
+    /* dst = row*W + c ; src = row*srcW + start + c */
+    p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
+    p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, srcW, R_TMP2, hp_ctrl_safe());
+
+    p[n++] = hp_imad_wide_const(addr, R_SRC2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      hp_word ld = hp_ldg(val, addr, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+    }
+    p[n++] = hp_imad_wide_const(out, R_DST2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(out, val, 0, hp_ctrl_wait(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+    }
   }
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
@@ -375,45 +387,42 @@ unsigned pr_emit_slice_rows(hp_word *p, unsigned W, unsigned srcW) {
  */
 unsigned pr_emit_broadcast(hp_word *p, unsigned mode, unsigned W) {
   unsigned n = 0;
-  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-
-  /* One thread per column capped the row at the block width; threads walk the
-   * columns in chunks instead, exactly as transpose and matmul do. */
   const unsigned BW = pr_row_block(W);
   const unsigned chunks = BW ? (W + BW - 1u) / BW : 1u;
   const int guard_col = chunks * BW > W;
-  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
-  const unsigned chunk_top = n;
-  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_wait(BAR_ID));
-  if (guard_col)
-    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
-  /* The source is one coordinate or the other; that IS the broadcast. */
-  p[n++] = hp_imad_imm(R_SRC2, mode ? R_PLANE_ID : R_COL, 1, HP_RZ,
-                       hp_ctrl_safe());
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
 
-  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  {
-    hp_word ld = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
-  }
-  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
-  {
-    hp_word st = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
-  }
+  /* Unrolled over the column chunks, alternating the value AND both address
+   * pairs — see R_VALUE_B. A runtime loop cannot alternate a register, and
+   * without alternating them the next chunk clobbers a store still reading. */
+  for (unsigned t = 0; t < chunks; t++) {
+    const unsigned val = (t & 1u) ? R_VALUE_B : R_VALUE;
+    const unsigned addr = (t & 1u) ? R_ADDR_B : R_ADDR;
+    const unsigned out = (t & 1u) ? R_OUT_B : R_OUT;
+    p[n++] = hp_iadd3_imm(R_COL, R_TID, t * BW, hp_ctrl_safe());
+    if (guard_col)
+      p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  if (chunks > 1) {
-    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
-    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
-    const int back = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
-    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
-    n++;
+    p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
+    /* The source is one coordinate or the other; that IS the broadcast. */
+    p[n++] = hp_imad_imm(R_SRC2, mode ? R_PLANE_ID : R_COL, 1, HP_RZ,
+                         hp_ctrl_safe());
+
+    p[n++] = hp_imad_wide_const(addr, R_SRC2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      hp_word ld = hp_ldg(val, addr, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+    }
+    p[n++] = hp_imad_wide_const(out, R_DST2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(out, val, 0, hp_ctrl_wait(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+    }
   }
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
@@ -434,47 +443,43 @@ unsigned pr_emit_broadcast(hp_word *p, unsigned mode, unsigned W) {
  */
 unsigned pr_emit_cat_rows(hp_word *p, unsigned W, unsigned dstW) {
   unsigned n = 0;
-  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-
-  /* One thread per column capped the row at the block width; threads walk the
-   * columns in chunks instead, exactly as transpose and matmul do. */
   const unsigned BW = pr_row_block(W);
   const unsigned chunks = BW ? (W + BW - 1u) / BW : 1u;
   const int guard_col = chunks * BW > W;
-  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
-  const unsigned chunk_top = n;
-  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_wait(BAR_ID));
-  if (guard_col)
-    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  /* src = row*W + c */
-  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
-  /* dst = row*dstW + start + c */
-  p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, dstW, R_TMP2, hp_ctrl_safe());
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
 
-  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  {
-    hp_word ld = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
-  }
-  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
-  {
-    hp_word st = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
-    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
-  }
+  /* Unrolled over the column chunks, alternating the value AND both address
+   * pairs — see R_VALUE_B. A runtime loop cannot alternate a register, and
+   * without alternating them the next chunk clobbers a store still reading. */
+  for (unsigned t = 0; t < chunks; t++) {
+    const unsigned val = (t & 1u) ? R_VALUE_B : R_VALUE;
+    const unsigned addr = (t & 1u) ? R_ADDR_B : R_ADDR;
+    const unsigned out = (t & 1u) ? R_OUT_B : R_OUT;
+    p[n++] = hp_iadd3_imm(R_COL, R_TID, t * BW, hp_ctrl_safe());
+    if (guard_col)
+      p[n++] = hp_isetp_gt_imm(P_COL, R_COL, W - 1, hp_ctrl_safe());
 
-  if (chunks > 1) {
-    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
-    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
-    const int back = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
-    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
-    n++;
+    /* src = row*W + c ; dst = row*dstW + start + c */
+    p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, W, R_COL, hp_ctrl_safe());
+    p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, dstW, R_TMP2, hp_ctrl_safe());
+
+    p[n++] = hp_imad_wide_const(addr, R_SRC2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      hp_word ld = hp_ldg(val, addr, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+    }
+    p[n++] = hp_imad_wide_const(out, R_DST2, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(out, val, 0, hp_ctrl_wait(BAR_LOAD));
+      p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+    }
   }
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
