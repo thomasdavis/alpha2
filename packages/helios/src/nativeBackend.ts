@@ -1170,7 +1170,21 @@ export class NativeHeliosBackend implements Backend {
     }
 
     const plane = this.reshape(a, [outer, axisLen, inner]); /* a view of `a` */
-    const t = this.transpose(plane);
+    /*
+     * REDUCING THE LAST AXIS NEEDS NO TRANSPOSE, and it was doing one.
+     *
+     * The route below moves the reduced axis to the end so reduceAxis can walk
+     * a row. When the axis IS the last one, `inner` is 1 — and transposing
+     * [outer, axisLen, 1] into [outer, 1, axisLen] leaves every element exactly
+     * where it was: (o, a, 0) is at o*axisLen + a either way. So the transpose
+     * is a full-size COPY that changes nothing, plus a launch, plus a tensor.
+     *
+     * softmax's backward reduces the last axis once per layer, and at 18 layers
+     * `transpose` was 218 calls a step against a ~5.7 us floor. A reshape is a
+     * view: no copy, no launch, no allocation.
+     */
+    const t = inner === 1 ? this.reshape(plane, [outer, 1, axisLen])
+                          : this.transpose(plane);
     const reduced = this.reduceAxis(name, mean, t);
     drop(t);
     const outShape = [...shape.slice(0, k), ...shape.slice(k + 1)];
