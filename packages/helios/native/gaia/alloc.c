@@ -60,6 +60,22 @@ typedef struct {
 #define ATTR_LOCATION_VIDMEM 0
 #define ATTR_LOCATION_PCI 1
 #define ATTR_PHYSICALITY_CONTIGUOUS 2
+/*
+ * NVOS32_ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS.
+ *
+ * Contiguity is a real constraint and a small one: the kernel will not hand out
+ * more than MAX_ORDER of physically adjacent pages, which is 4 MiB here, and
+ * that is where SLAB_BYTES comes from. It is fine for a slab and fatal for a
+ * TENSOR that is bigger than one -- a 105M-parameter model's embedding table is
+ * 12,288 x 640 floats, 31.5 MB, and it simply cannot be allocated contiguously:
+ * "helios: allocation of 7864320 floats failed", with nothing wrong but the
+ * request.
+ *
+ * Nothing needs the contiguity. The GPU reaches this memory through page tables
+ * that NVOS46 fills in, and scattered pages are what those are for; only a
+ * caller doing physical addressing would care, and there is none.
+ */
+#define ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS 3
 #define ATTR_COHERENCY_CACHED 1
 #define ATTR_COHERENCY_WRITE_COMBINE 2
 
@@ -129,8 +145,13 @@ int gaia_alloc_cached(aether_device *d, gaia_buffer *b, NvU64 size,
       (where == GAIA_VIDMEM) ? ATTR_LOCATION_VIDMEM : ATTR_LOCATION_PCI;
   /* Contiguous keeps the first bridge simple: one physical range, one GPU
    * mapping, no scatter-gather to get wrong. */
+  /* Contiguous while it is cheap, scattered when it must be. Small allocations
+   * keep the proven path exactly; only requests past the kernel's contiguity
+   * ceiling change, and for those the alternative is failing. */
+  const NvU32 physicality = size > (4ull << 20) ? ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS
+                                                : ATTR_PHYSICALITY_CONTIGUOUS;
   p.attr = (location << ATTR_LOCATION_SHIFT) |
-           (ATTR_PHYSICALITY_CONTIGUOUS << ATTR_PHYSICALITY_SHIFT) |
+           (physicality << ATTR_PHYSICALITY_SHIFT) |
            ((cached ? ATTR_COHERENCY_CACHED : ATTR_COHERENCY_WRITE_COMBINE)
             << ATTR_COHERENCY_SHIFT);
 
