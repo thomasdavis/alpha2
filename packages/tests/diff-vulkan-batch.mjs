@@ -37,6 +37,26 @@ import { CpuRefBackend } from "/workspace/alpha2/packages/tensor/dist/index.js";
  *
  * So the bug reproduces at batch 1 with one sequence: small, fast and
  * deterministic. Debug it there.
+ *
+ * WHAT PINNING THEM REVEALED, and where to look next. Two more operations
+ * diverge once the GPU path is actually taken, and not by rounding:
+ *
+ *     embedding [16,8] by [2,4]     2.52e+0
+ *     crossEntropy [2,8,16]         2.17e-1
+ *     matmul (real shapes)          1.8e-2
+ *
+ * Embedding is the FIRST operation in the model and 2.52 absolute is garbage,
+ * not precision. Both diverging operations take INTEGER inputs — token ids and
+ * targets — and both are given them here through fromArray, which stores f32.
+ * The native backend converts ids to raw integer words explicitly and says why:
+ * "a float bit pattern used as an index addresses somewhere absurd". One shared
+ * suspect for both, and it fits the size gate, since small lookups take the CPU
+ * path and agree.
+ *
+ * NOT YET CONFIRMED as the model's fault: an error this large should move the
+ * loss much further than 4.1904 -> 4.1795, so either the model feeds ids
+ * differently or this is partly an artifact of how these two cases are built.
+ * Settle that first — it is one experiment — before fixing anything.
  */
 const V = new HeliosBackend();
 if (V.setMinGpuSize) V.setMinGpuSize(0);
