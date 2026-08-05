@@ -134,10 +134,12 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_PERMUTE:
-      /* One block per (b,t,h) plane on the Y index, one thread per feature. */
+      /* h on X, (b,t) on Y, one thread per feature. h being a grid index is
+       * what frees the head count from having to be a power of two — see
+       * pr_emit_permute. The caller supplies B*T as the plane count. */
       p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);
       p->blockX = key->arg2;
-      p->gridX = 1;
+      p->gridX = key->arg1;
       p->gridY = 0; /* the caller supplies the plane count at launch */
       return 0;
 

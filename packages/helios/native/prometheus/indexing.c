@@ -273,29 +273,51 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
  * coalesced, which is the property the two-transpose decomposition could not
  * have, since one of its halves is always strided.
  */
+/*
+ * TAKE h FROM THE GRID instead of decoding it, and H stops needing to be a
+ * power of two.
+ *
+ * This decomposed one plane index into (b, t, h) with shifts and masks, so it
+ * required H, T and D all to be powers of two -- and the caller's guard said
+ * so. Every shape this model produces is, went the reasoning. A 10-HEAD model
+ * is not: 105M is 640 wide over 10 heads, so H = 10, the guard failed, and
+ * EVERY attention permute took the host fallback. That path must READ device
+ * memory, which drains the queue, so the cost is not only the copy -- it is a
+ * synchronisation in the middle of a step, times four per layer, times 18
+ * layers.
+ *
+ * Nothing here ever divided by D; D is only ever a multiplier, so its
+ * power-of-two guard was never needed either. That left H and T. Launching one
+ * block per (t-major plane, h) pair -- h on the grid's X index, b*T+t on Y --
+ * means h arrives already decoded and only T is divided. And the source index
+ * needs no decode at all, because the Y index IS b*T+t:
+ *
+ *     src = (plane*H + h)*D + d
+ *     dst = ((b*H + h)*T + t)*D + d
+ *
+ * So the requirement drops from "H, T and D all powers of two" to "T a power
+ * of two" -- satisfied by any sequence length this model uses -- and the head
+ * count becomes free.
+ */
 unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
   unsigned n = 0;
-  unsigned lgH = 0, lgT = 0;
-  while ((1u << lgH) < H) lgH++;
+  unsigned lgT = 0;
   while ((1u << lgT) < T) lgT++;
 
+  /* Y is b*T + t, X is h, and the thread is the feature. */
   p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_H, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
 
-  /* h = plane & (H-1) */
-  p[n++] = hp_mov_imm(R_MASK, H - 1u, hp_ctrl_safe());
-  p[n++] = hp_lop3(R_H, R_PLANE_ID, R_MASK, 0xc0, hp_ctrl_wait(BAR_ID));
-  /* t = (plane >> lgH) & (T-1) */
-  p[n++] = hp_shr_imm(R_TMP2, R_PLANE_ID, lgH, hp_ctrl_safe());
+  /* t = plane & (T-1), b = plane >> lgT. One wait covers all three S2Rs: the
+   * barrier counts outstanding writes, it is not a flag. */
   p[n++] = hp_mov_imm(R_MASK, T - 1u, hp_ctrl_safe());
-  p[n++] = hp_lop3(R_T, R_TMP2, R_MASK, 0xc0, hp_ctrl_safe());
-  /* b = plane >> (lgH + lgT) */
-  p[n++] = hp_shr_imm(R_B, R_PLANE_ID, lgH + lgT, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_T, R_PLANE_ID, R_MASK, 0xc0, hp_ctrl_wait(BAR_ID));
+  p[n++] = hp_shr_imm(R_B, R_PLANE_ID, lgT, hp_ctrl_safe());
 
-  /* src = (((b*T) + t)*H + h)*D + d */
-  p[n++] = hp_imad_imm(R_SRC2, R_B, T, R_T, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_SRC2, R_SRC2, H, R_H, hp_ctrl_safe());
+  /* src = (plane*H + h)*D + d — plane already IS b*T + t. */
+  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, H, R_H, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_SRC2, R_SRC2, D, R_COL, hp_ctrl_safe());
   /* dst = (((b*H) + h)*T + t)*D + d */
   p[n++] = hp_imad_imm(R_DST2, R_B, H, R_H, hp_ctrl_safe());

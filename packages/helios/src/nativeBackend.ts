@@ -1699,18 +1699,24 @@ export class NativeHeliosBackend implements Backend {
      * memory, where the GPU reads at a measured 19.7 GB/s against ~448 from its
      * own — so removing it is worth more than the 75 ms it costs directly.
      *
-     * The kernel decomposes the plane index with shifts and masks, sm_86 having
-     * no integer divide, so it requires T, H and D to be POWERS OF TWO. Every
-     * shape this model produces is; anything else keeps the host path below
-     * rather than being quietly given a kernel that cannot address it.
+     * sm_86 has no integer divide, so the kernel decodes its indices with
+     * shifts and masks — and this used to require T, H AND D to be powers of
+     * two. "Every shape this model produces is" was wrong the moment the model
+     * had 10 heads: 105M is 640 wide over 10, so H = 10, this guard failed,
+     * and every attention permute took the host fallback below — a queue drain
+     * four times a layer, eighteen layers deep.
+     *
+     * The kernel now takes h from the grid's X index rather than decoding it,
+     * and never divided by D in the first place, so only T must be a power of
+     * two. D bounds the block instead.
      */
     const pow2 = (v: number) => v > 0 && (v & (v - 1)) === 0;
     if (d1 === d0 + 1 && shape.length === 4 && d0 === 1 &&
-        pow2(shape[1]) && pow2(shape[2]) && pow2(shape[3])) {
+        pow2(shape[1]) && shape[3] <= 1024) {
       const [B, T, H, D] = shape;
       const dat = this.device(a);
       const o = this.make(outShape, "f32");
-      this.check(this.hl.permute(o.buffer.handle, dat.buffer.handle, T, H, D, B * T * H),
+      this.check(this.hl.permute(o.buffer.handle, dat.buffer.handle, T, H, D, B * T),
                  "permute", dat);
       return o;
     }
