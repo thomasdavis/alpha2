@@ -632,6 +632,19 @@ export class NativeHeliosBackend implements Backend {
    * history if they are wanted as a specification of the arithmetic.
    */
 
+  /**
+   * Broadcast to `shape` — the name autograd probes for.
+   *
+   * Without it, ops.ts broadcasts in JavaScript: softmax's backward alone spent
+   * 11 ms a step at batch 128 doing by hand what expand() does. Exposing it was
+   * not worth doing before — expand walked elements too, so it would have been
+   * the same loop under a different name. Now that expand copies runs, it is
+   * simply the faster path, and the method the interface asks for.
+   */
+  broadcast(t: TensorData, shape: Shape): TensorData {
+    return this.expand(t, shape);
+  }
+
   softmax(a: TensorData, axis?: number): TensorData {
     if (axis !== undefined && this.axisOf(a.shape, axis) !== a.shape.length - 1)
       this.unsupported("softmax over a non-final axis");
