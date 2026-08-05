@@ -39,6 +39,18 @@ typedef enum {
    * again. dw and db reduce over the OTHER axis and are the caller's job.
    */
   PR_NORM_LAYER_BACKWARD,
+  /*
+   * softmax's backward, fused: out = s * (g - sum_j g_j s_j).
+   *
+   * ops.ts composes it from mul, sum, broadcast, sub and mul — five passes over
+   * a [B,H,T,T] tensor for one row-wise reduction and one write. The
+   * elementwise half of a step already runs at the card's bandwidth ceiling, so
+   * the only way to make it cheaper is to do less of it.
+   *
+   * Two inputs: param 1 is the softmax OUTPUT and param 2 the incoming
+   * gradient. One block per row, as every reduction here is.
+   */
+  PR_NORM_SOFTMAX_BACKWARD,
 } pr_norm_op;
 
 unsigned pr_emit_normalize(hp_word *prog, pr_norm_op op, unsigned elements);

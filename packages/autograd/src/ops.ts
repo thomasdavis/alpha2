@@ -1148,6 +1148,17 @@ export function residualDropoutAddRmsNorm(
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   const out = ctx.backend.softmax(a.data, axis);
   return record(ctx, out, [a], (g, B, release) => {
+    /*
+     * ONE PASS when the backend has it. The composition below is five — mul,
+     * sum, broadcast, sub, mul — each reading and writing the whole tensor to
+     * express a single row reduction and a single write.
+     *
+     * Only for the last axis, which is the only one the fused kernel covers and
+     * the only one softmax is taken over in this model.
+     */
+    const lastAxis = axis === undefined || axis === -1 ||
+                     axis === out.shape.length - 1;
+    if (lastAxis && B.softmaxBackward) return [B.softmaxBackward(out, g)];
     // dsoftmax: s * (g - sum(g * s))
     const sg = B.mul(out, g);
     const sumSg = B.sum(sg, axis ?? -1, true);

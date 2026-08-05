@@ -998,6 +998,31 @@ export class NativeHeliosBackend implements Backend {
     return true;
   }
 
+  /**
+   * softmax's backward, fused: s * (g - sum_j g_j s_j) over each row.
+   *
+   * ops.ts composes it from mul, sum, broadcast, sub and mul — five passes over
+   * a [B,H,T,T] tensor to express one row reduction and one write. The
+   * elementwise half of a step already runs at 340-417 GB/s against a 448 GB/s
+   * card, so it cannot be made faster; it can only be made LESS.
+   *
+   * Only over the LAST axis, which is the only one softmax is taken over here.
+   */
+  softmaxBackward(s: TensorData, g: TensorData): TensorData {
+    const width = s.shape[s.shape.length - 1] ?? 1;
+    const rows = shapeSize(s.shape) / width;
+    const ds = this.device(s), dg = this.device(g);
+    const out = this.make(s.shape, "f32");
+    this.check(
+      this.hl.softmaxBackward!(out.buffer.handle, ds.buffer.handle,
+                               dg.buffer.handle, width, rows),
+      "softmaxBackward", ds, dg,
+    );
+    if (ds !== s && ds !== out) ds.buffer.release(this.hl);
+    if (dg !== g && dg !== out) dg.buffer.release(this.hl);
+    return out;
+  }
+
   /** A^T @ B the old way, for shapes the tensor-core tile does not divide. */
   private transposeThenMatmul(a: TensorData, b: TensorData): TensorData {
     const t = this.transpose(a, a.shape.length - 2, a.shape.length - 1);

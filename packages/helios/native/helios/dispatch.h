@@ -78,6 +78,10 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
                          helios_tensor b, unsigned M, unsigned N, unsigned K,
                          unsigned batch);
 
+/* out = s * (g - sum_j g_j s_j) over each row: softmax's backward, fused. */
+int hl_softmax_backward(helios_context *ctx, helios_tensor out, helios_tensor s,
+                        helios_tensor g, unsigned width, unsigned rows);
+
 /* C[M,N] += A @ B. `layout` is 0 for A@B, 1 for A@B^T, 2 for A^T@B. Returns -1
  * when the shape cannot use the tensor-core path. */
 int hl_matmul_accumulate(helios_context *ctx, helios_tensor out, helios_tensor a,

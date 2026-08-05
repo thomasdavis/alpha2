@@ -81,8 +81,28 @@ enum {
 /* Threads a normalize block runs. Only softmax can cover a row wider than the
  * block; the others hold one element per thread by construction. */
 unsigned pr_normalize_block(pr_norm_op op, unsigned elements) {
-  if (op == PR_NORM_SOFTMAX && elements > NORM_MAX_THREADS)
+  if ((op == PR_NORM_SOFTMAX || op == PR_NORM_SOFTMAX_BACKWARD) &&
+      elements > NORM_MAX_THREADS)
     return NORM_MAX_THREADS;
+  /*
+   * THE REDUCTION TREE NEEDS A POWER OF TWO, and the softmax backward is the
+   * first op here to be handed a row width that is not one.
+   *
+   * emit_reduce halves a block repeatedly; at a width of 7 or 129 or 640 the
+   * halving skips elements and the row sum is wrong — which is a plausible
+   * number, not a crash. The diff test caught exactly those three widths and
+   * passed 8, 64 and 1024, which is the signature.
+   *
+   * Rounding UP is safe because the extra threads are predicated out of both
+   * the accumulate and the store, and zero is the identity for a sum. The
+   * existing ops keep their behaviour: they are only ever given widths that are
+   * already powers of two, and changing what they launch is not this change.
+   */
+  if (op == PR_NORM_SOFTMAX_BACKWARD) {
+    unsigned w = 1;
+    while (w < elements && w < NORM_MAX_THREADS) w *= 2;
+    return w;
+  }
   return elements;
 }
 
@@ -494,6 +514,108 @@ static unsigned emit_layer_backward(hp_word *p, unsigned elements) {
   return n;
 }
 
+/*
+ * out[i] = s[i] * (g[i] - sum_j g[j]*s[j]) — softmax's backward in one pass.
+ *
+ * Structure copied from emit_softmax_chunked rather than invented: one block
+ * per row, a chunk loop so a row wider than a block still works, emit_reduce
+ * for the row sum, and a second chunk loop that writes. Copying a proven shape
+ * is deliberate — the silent-wrong-answer bugs this file records were all in
+ * the interaction between a chunk loop, a reduction and a store, and none of
+ * them were visible in the output's shape or magnitude.
+ *
+ * The DOT PRODUCT has to be complete before any element is written, which is
+ * what makes this a reduction rather than an elementwise op. Zero is the
+ * identity for a sum, so the overhang is predicated out of the accumulate and
+ * needs no special value.
+ *
+ * Param 1 is the softmax OUTPUT and param 2 the incoming gradient; param 0 is
+ * the result. R_MAXV and R_S1 are unused by this op and carry g and the negated
+ * dot product.
+ */
+static unsigned emit_softmax_backward(hp_word *p, unsigned elements) {
+  unsigned n = 0;
+  const unsigned BW = pr_normalize_block(PR_NORM_SOFTMAX_BACKWARD, elements);
+  const unsigned chunks = (elements + BW - 1u) / BW;
+  const int guard = chunks * BW > elements;
+
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_TID));
+  p[n++] = hp_imad_imm(R_ROWBASE, R_ROW, elements, HP_RZ, hp_ctrl_safe());
+
+  /* Pass one: this thread's share of sum_j g[j]*s[j]. */
+  p[n++] = hp_mov_imm(R_SUM, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  {
+    const unsigned top = n;
+    p[n++] = hp_imad_imm(R_IDX, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+    if (guard)
+      p[n++] = hp_isetp_gt_imm(P_OOR, R_IDX, elements - 1, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_IDX, R_IDX, R_ROWBASE, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+    {
+      hp_word ls = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      hp_word lg = hp_ldg(R_MAXV, R_OUT, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(ls, P_OOR, 1) : ls;
+      p[n++] = guard ? hp_predicated(lg, P_OOR, 1) : lg;
+    }
+    p[n++] = hp_fmul(R_TMP, R_X, R_MAXV, hp_ctrl_wait(BAR_LOAD));
+    {
+      hp_word acc = hp_fadd(R_SUM, R_SUM, R_TMP, hp_ctrl_safe());
+      p[n++] = guard ? hp_predicated(acc, P_OOR, 1) : acc;
+    }
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - top) * NORM_INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_iadd3_imm(R_ACC, R_SUM, 0, hp_ctrl_safe());
+  n += emit_reduce(&p[n], BW, PR_COMBINE_ADD);
+  /* Negated once here rather than per element below. */
+  p[n++] = hp_fneg(R_S1, R_RED, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  /* Pass two: s * (g - dot), over the row. */
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  {
+    const unsigned top = n;
+    p[n++] = hp_imad_imm(R_IDX, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+    if (guard)
+      p[n++] = hp_isetp_gt_imm(P_OOR, R_IDX, elements - 1, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_IDX, R_IDX, R_ROWBASE, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+    {
+      hp_word ls = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      hp_word lg = hp_ldg(R_MAXV, R_OUT, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(ls, P_OOR, 1) : ls;
+      p[n++] = guard ? hp_predicated(lg, P_OOR, 1) : lg;
+    }
+    p[n++] = hp_fadd(R_TMP, R_MAXV, R_S1, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_fmul(R_TMP, R_TMP, R_X, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(R_OUT, R_TMP, 0, hp_ctrl_safe());
+      p[n++] = guard ? hp_predicated(st, P_OOR, 1) : st;
+    }
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - top) * NORM_INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
 unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
   switch (op) {
     case PR_NORM_RMS: return emit_rms(p, elements);
@@ -502,6 +624,7 @@ unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
                                          : emit_softmax(p, elements);
     case PR_NORM_LAYER: return emit_layer(p, elements);
     case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements);
+    case PR_NORM_SOFTMAX_BACKWARD: return emit_softmax_backward(p, elements);
   }
   return 0;
 }

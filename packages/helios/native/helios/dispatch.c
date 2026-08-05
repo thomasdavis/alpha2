@@ -273,6 +273,23 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
  * Refuses when the tensor path does not apply — the scalar kernel has no
  * accumulating form — so the caller keeps its old two-step route.
  */
+/*
+ * out = s * (g - sum_j g_j s_j), one block per row.
+ *
+ * The row count is part of the KEY as well as the launch, for the reason
+ * hl_layer_norm_backward records: a program built for one row and launched over
+ * many would have every block writing row zero.
+ *
+ * ORDER: slot 0 out, 1 the softmax OUTPUT, 2 the gradient. Nothing checks it,
+ * and swapping 1 and 2 computes g*(s - dot) — a plausible wrong gradient.
+ */
+int hl_softmax_backward(helios_context *ctx, helios_tensor out, helios_tensor s,
+                        helios_tensor g, unsigned width, unsigned rows) {
+  const helios_key k = {HL_NORMALIZE, PR_NORM_SOFTMAX_BACKWARD, width, rows};
+  const helios_tensor ts[3] = {out, s, g};
+  return run(ctx, k, ts, 3, NULL, 0);
+}
+
 int hl_matmul_accumulate(helios_context *ctx, helios_tensor out, helios_tensor a,
                          helios_tensor b, unsigned M, unsigned N, unsigned K,
                          unsigned batch, unsigned layout) {

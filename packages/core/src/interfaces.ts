@@ -189,6 +189,8 @@ export interface Backend {
    * which is the caller's cue to matmul-then-add as before. */
   matmulAccumulate?(dest: TensorData, a: TensorData, b: TensorData,
                     layout: 0 | 1 | 2): boolean;
+  /* s * (g - sum_j g_j s_j) over the last axis, in one pass. */
+  softmaxBackward?(s: TensorData, g: TensorData): TensorData;
   softCap?(input: TensorData, cap: number): TensorData;
   softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
 

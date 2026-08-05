@@ -39,6 +39,9 @@ export interface NativeAddon {
   /* C += A@B. `layout` is 0 for A@B, 1 for A@B^T, 2 for A^T@B. */
   matmulAccumulate?(out: number, a: number, b: number, M: number, N: number,
                     K: number, batch: number, layout: number): boolean;
+  /* out = s * (g - sum_j g_j s_j) over each row. */
+  softmaxBackward?(out: number, s: number, g: number, width: number,
+                   rows: number): boolean;
   /* Host-mapped whatever the residency policy is. Optional so a stale addon
    * still loads — without it VIDMEM simply has nowhere to stage. */
   allocHost?(bytes: number): number;
