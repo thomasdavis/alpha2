@@ -255,6 +255,22 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "enqueued", v);
   napi_create_uint32(env, g_ctx.statFlushed, &v);
   napi_set_named_property(env, out, "flushes", v);
+  /*
+   * How many of those launches had to wait for the queue to go idle first.
+   *
+   * The barrier is emitted only when a launch touches a buffer something still
+   * in flight touched, and the test is conservative: every buffer counts as
+   * both READ and WRITTEN, so two launches that merely read the same weight are
+   * serialised as if one wrote it. Against `enqueued`, this is the fraction of
+   * the step that cannot overlap — and it is the difference between the GEMM's
+   * isolated rate and the rate a step gets out of it.
+   */
+  napi_create_uint32(env, g_ctx.statBarriers, &v);
+  napi_set_named_property(env, out, "barriers", v);
+  /* How many barriers a rule that distinguished reads from writes would have
+   * emitted. The gap between this and `barriers` is the upside. */
+  napi_create_uint32(env, g_ctx.statWouldBarrier, &v);
+  napi_set_named_property(env, out, "barriersIfRW", v);
   /* Nanoseconds the host spent spinning on the fence — the GPU half of the
    * step. Everything else is host. A double carries it exactly to 2^53 ns,
    * which is 104 days of spinning. */

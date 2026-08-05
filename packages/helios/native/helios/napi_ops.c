@@ -66,6 +66,13 @@ static napi_value js_column_sum(napi_env env, napi_callback_info info) {
   return hl_result(env, hl_column_sum(ctx, U32(0), U32(1), U32(2), U32(3)));
 }
 
+/* (op, out, a, weight, bias, width, rows, eps) */
+static napi_value js_normalize_affine(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_normalize_affine(ctx, U32(0), U32(1), U32(2), U32(3),
+                                            U32(4), U32(5), U32(6), F32(7)));
+}
+
 /* (op, out, a, width, rows, eps) */
 static napi_value js_normalize(napi_env env, napi_callback_info info) {
   CTX;
@@ -240,6 +247,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "reduce", js_reduce);
   hl_export(env, exports, "reduceRows", js_reduce_rows);
   hl_export(env, exports, "columnSum", js_column_sum);
+  hl_export(env, exports, "normalizeAffine", js_normalize_affine);
   hl_export(env, exports, "normalize", js_normalize);
   hl_export(env, exports, "layerNormBackward", js_layer_norm_backward);
   hl_export(env, exports, "matmul", js_matmul);
@@ -296,6 +304,8 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   OP("rmsNorm", PR_NORM_RMS);
   OP("softmax", PR_NORM_SOFTMAX);
   OP("layerNorm", PR_NORM_LAYER);
+  OP("rmsNormAffine", PR_NORM_RMS_AFFINE);
+  OP("layerNormAffine", PR_NORM_LAYER_AFFINE);
 #undef OP
   napi_set_named_property(env, exports, "op", ops);
 

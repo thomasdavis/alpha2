@@ -1356,20 +1356,42 @@ export class NativeHeliosBackend implements Backend {
    * stays valid until helios_end_step, so the kernels just enqueued still read
    * it. Same reasoning as the materialised broadcasts in `binary`.
    */
-  rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
-    const n = this.normalized("rmsNorm", this.hl.op.rmsNorm, x, eps);
-    const out = this.mul(n, weight);
-    n.buffer.release(this.hl);
+  /*
+   * THE AFFINE IS PART OF THE NORM, not two more passes over the tensor.
+   *
+   * These used to be three launches: normalise, broadcast-multiply by the
+   * weight, broadcast-add the bias. The multiply and the add each read a full
+   * [1536,640] tensor and write another — 7.9 MB of traffic apiece to apply one
+   * number per COLUMN, which every thread of a row-per-block kernel already
+   * holds. Thirty-seven layer norms a step is 74 of those passes and 74
+   * launches, at a point where 69% of launches already wait for the queue to
+   * drain.
+   *
+   * The intermediates went with them, which was the other cost: the release
+   * callback the tape passes around only ever sees the RESULT, so the two
+   * temporaries here leaked once per norm per step until they were released by
+   * hand. A kernel that never allocates them cannot leak them.
+   */
+  private normalizedAffine(name: string, opId: number, x: TensorData,
+                           weight: TensorData, bias: TensorData | null,
+                           eps: number): NativeTensor {
+    const width = x.shape[x.shape.length - 1] ?? 1;
+    const rows = shapeSize(x.shape) / width;
+    const dx = this.device(x), dw = this.device(weight);
+    const db = bias ? this.device(bias) : dw;
+    const out = this.make(x.shape, "f32");
+    this.check(this.hl.normalizeAffine(opId, out.buffer.handle, dx.buffer.handle,
+                                       dw.buffer.handle, db.buffer.handle,
+                                       width, rows, eps), name);
     return out;
   }
 
+  rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
+    return this.normalizedAffine("rmsNorm", this.hl.op.rmsNormAffine, x, weight, null, eps);
+  }
+
   layerNorm(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData {
-    const n = this.normalized("layerNorm", this.hl.op.layerNorm, x, eps);
-    const scaled = this.mul(n, weight);
-    n.buffer.release(this.hl);
-    const out = this.add(scaled, bias);
-    if (isNative(scaled)) scaled.buffer.release(this.hl);
-    return out;
+    return this.normalizedAffine("layerNorm", this.hl.op.layerNormAffine, x, weight, bias, eps);
   }
 
   /*

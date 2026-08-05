@@ -27,6 +27,24 @@ typedef enum {
   /* out[i] = (a[i] - mean(a)) / sqrt(var(a) + eps) */
   PR_NORM_LAYER,
   /*
+   * The same two, WITH the affine folded in — the form the model actually uses.
+   *
+   *   PR_NORM_RMS_AFFINE     out = a/rms(a) * w[c]
+   *   PR_NORM_LAYER_AFFINE   out = (a-mean)/std * w[c] + b[c]
+   *
+   * A layer norm was three launches: normalise, then a broadcast multiply, then
+   * a broadcast add. The multiply and the add each read a full [1536,640]
+   * tensor and write another — 7.9 MB of traffic apiece to apply one number per
+   * COLUMN, which every thread of a row-per-block kernel already has in hand.
+   * There are 37 layer norms in a step and 74 of those extra passes.
+   *
+   * Slot 2 is the weight and slot 3 the bias, both indexed by feature. They are
+   * read at the very start, beside the input, so their latency hides under two
+   * reductions instead of under nothing.
+   */
+  PR_NORM_RMS_AFFINE,
+  PR_NORM_LAYER_AFFINE,
+  /*
    * layerNorm's backward, for dx and xhat.
    *
    * FOUR reductions and THREE inputs, which is why it does not fit the shape

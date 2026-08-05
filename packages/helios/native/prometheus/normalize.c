@@ -24,6 +24,20 @@ enum {
    * added. The kernels still ran and read from somewhere near enough to look
    * like data. */
   R_IDX = 16,
+  /*
+   * The AFFINE FORWARD only: this feature's weight and bias, and an address
+   * pair each. A pair per memory operation and even-aligned, like everything
+   * else here.
+   *
+   * They sit at 17-23, which the backward pass and the chunked softmax also
+   * use — safely, because no kernel is ever both. What they must NOT do is run
+   * past 31: REGISTER_COUNT_V is 32 and under-requesting raises GR_EXCEPTION.
+   * The first draft put the bias address at R32:R33 and would have.
+   */
+  R_AFF_W = 17,
+  R_AFF_B = 18,
+  R_ADDR_WA = 20, /* R20:R21 */
+  R_ADDR_BA = 22, /* R22:R23 */
   /* The chunked softmax only: a row wider than a block. */
   R_ROWBASE = 24, /* row * elements — this row's first value */
   R_CHUNK = 25,   /* which chunk of BW columns this pass is on */
@@ -163,14 +177,45 @@ static unsigned emit_store(hp_word *p, hp_control c) {
 }
 
 /*
+ * Load this feature's weight, and its bias when there is one.
+ *
+ * Issued immediately after the input load and BEFORE the reductions, so two
+ * dependent tree reductions stand between the load and its use. The affine is
+ * then free of latency at the point it is applied, which is the whole reason
+ * this is a fold rather than two more kernels.
+ */
+static unsigned emit_affine_load(hp_word *p, int withBias) {
+  unsigned n = 0;
+  p[n++] = hp_imad_wide_const(R_ADDR_WA, R_TID, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_AFF_W, R_ADDR_WA, 0, hp_ctrl_setbar(BAR_LOAD));
+  if (withBias) {
+    p[n++] = hp_imad_wide_const(R_ADDR_BA, R_TID, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(3), hp_ctrl_safe());
+    p[n++] = hp_ldg(R_AFF_B, R_ADDR_BA, 0, hp_ctrl_setbar(BAR_LOAD));
+  }
+  return n;
+}
+
+/* x = x * w (+ b). BAR_LOAD covers both loads; the normalisation that precedes
+ * this has already waited on it for the input. */
+static unsigned emit_affine_apply(hp_word *p, int withBias) {
+  unsigned n = 0;
+  p[n++] = hp_fmul(R_X, R_X, R_AFF_W, hp_ctrl_wait(BAR_LOAD));
+  if (withBias) p[n++] = hp_fadd(R_X, R_X, R_AFF_B, hp_ctrl_safe());
+  return n;
+}
+
+/*
  * rmsNorm: x / sqrt(mean(x^2) + eps).
  *
  * The reciprocal square root is the natural primitive here -- the hardware has
  * rsqrt directly, so normalising is a multiply rather than a divide, which is
  * why the formula is written with a reciprocal in the first place.
  */
-static unsigned emit_rms(hp_word *p, unsigned elements) {
+static unsigned emit_rms(hp_word *p, unsigned elements, int affine) {
   unsigned n = emit_load(p, elements);
+  if (affine) n += emit_affine_load(&p[n], 0);
   p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_wait(BAR_LOAD));
   n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
 
@@ -181,6 +226,7 @@ static unsigned emit_rms(hp_word *p, unsigned elements) {
   p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
   p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
   p[n++] = hp_fmul(R_X, R_X, R_TMP, hp_ctrl_wait(BAR_MUFU));
+  if (affine) n += emit_affine_apply(&p[n], 0);
   n += emit_store(&p[n], hp_ctrl_safe());
   return n;
 }
@@ -366,8 +412,9 @@ static unsigned emit_softmax(hp_word *p, unsigned elements) {
  * rounding error. Computing the deviations first costs one more pass over the
  * data and is the reason this kernel is trustworthy at all.
  */
-static unsigned emit_layer(hp_word *p, unsigned elements) {
+static unsigned emit_layer(hp_word *p, unsigned elements, int affine) {
   unsigned n = emit_load(p, elements);
+  if (affine) n += emit_affine_load(&p[n], 1);
 
   /* Pass one: the mean. */
   p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
@@ -391,6 +438,7 @@ static unsigned emit_layer(hp_word *p, unsigned elements) {
   p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
   p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
   p[n++] = hp_fmul(R_X, R_X, R_TMP, hp_ctrl_wait(BAR_MUFU));
+  if (affine) n += emit_affine_apply(&p[n], 1);
   n += emit_store(&p[n], hp_ctrl_safe());
   return n;
 }
@@ -618,11 +666,13 @@ static unsigned emit_softmax_backward(hp_word *p, unsigned elements) {
 
 unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
   switch (op) {
-    case PR_NORM_RMS: return emit_rms(p, elements);
+    case PR_NORM_RMS: return emit_rms(p, elements, 0);
+    case PR_NORM_RMS_AFFINE: return emit_rms(p, elements, 1);
     case PR_NORM_SOFTMAX:
       return elements > NORM_MAX_THREADS ? emit_softmax_chunked(p, elements)
                                          : emit_softmax(p, elements);
-    case PR_NORM_LAYER: return emit_layer(p, elements);
+    case PR_NORM_LAYER: return emit_layer(p, elements, 0);
+    case PR_NORM_LAYER_AFFINE: return emit_layer(p, elements, 1);
     case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements);
     case PR_NORM_SOFTMAX_BACKWARD: return emit_softmax_backward(p, elements);
   }

@@ -57,6 +57,18 @@ int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
 int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
                   unsigned rows, unsigned cols);
 
+/*
+ * The affine forms: normalise, then scale by a per-feature weight and (for a
+ * layer norm) add a per-feature bias, all in the one launch.
+ *
+ * `bias` is ignored for rmsNorm and may be zero. Separate from hl_normalize
+ * because that one passes exactly two tensors.
+ */
+int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
+                        helios_tensor a, helios_tensor weight,
+                        helios_tensor bias, unsigned width, unsigned rows,
+                        float eps);
+
 /* out = normalise(a) over rows of `width`, one block per row. */
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);

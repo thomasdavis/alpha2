@@ -224,6 +224,47 @@ int helios_enqueue3(helios_context *ctx, const hp_word *program, unsigned count,
    * counts as both read and written, so this skips the barrier only for
    * launches that share no buffer with anything still in flight.
    */
+  /*
+   * WHAT A READ/WRITE-AWARE RULE WOULD COST, counted but NOT acted on.
+   *
+   * 69% of a step's launches wait here, and the test above is conservative by
+   * construction: every buffer counts as both read and written, so two launches
+   * that merely READ the same weight serialise as if one had written it. The
+   * backward pass does that constantly — dX = G @ W and dW = A^T @ G both read
+   * G and write different things, and they could overlap.
+   *
+   * Building the finer rule needs an nWritten parameter on every enqueue, which
+   * is a change to every caller. So it is PRICED first: the barrier emitted is
+   * still the conservative one, and this only counts how many a rule that knew
+   * about writes would have emitted. buffer[0] is the output everywhere in this
+   * stack (layerNormBackward and adamw write more, which makes this an
+   * UNDER-count and therefore an optimistic bound — the right direction for a
+   * decision about whether to bother).
+   *
+   * Measuring it by simply removing the barriers is not available: the ring has
+   * a fixed slot count and the barrier is what bounds `pending`, so a
+   * barrier-free run faults the channel at 0x1f rather than running fast and
+   * wrong.
+   */
+  int wouldBarrier = 0;
+  if (ctx->pending > 0) {
+    if (ctx->writtenCount + 1u > HELIOS_TOUCH_SLOTS) {
+      wouldBarrier = 1;
+    } else {
+      /* A real dependency is: I touch something in flight that was WRITTEN, or
+       * I write something in flight that was touched at all. */
+      for (unsigned i = 0; i < nbuffers && !wouldBarrier; i++)
+        for (unsigned j = 0; j < ctx->writtenCount; j++)
+          if (ctx->written[j] == buffers[i]) { wouldBarrier = 1; break; }
+      if (!wouldBarrier && nbuffers > 0)
+        for (unsigned j = 0; j < ctx->touchedCount; j++)
+          if (ctx->touched[j] == buffers[0]) { wouldBarrier = 1; break; }
+    }
+  }
+  if (wouldBarrier) { ctx->statWouldBarrier++; ctx->writtenCount = 0; }
+  if (nbuffers > 0 && ctx->writtenCount < HELIOS_TOUCH_SLOTS)
+    ctx->written[ctx->writtenCount++] = buffers[0];
+
   int needBarrier = 0;
   if (ctx->pending > 0) {
     if (ctx->touchedCount + nbuffers > HELIOS_TOUCH_SLOTS) {

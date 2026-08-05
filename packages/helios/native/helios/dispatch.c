@@ -157,6 +157,19 @@ int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
   return run(ctx, k, ts, 2, 0, 0);
 }
 
+int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
+                        helios_tensor a, helios_tensor weight,
+                        helios_tensor bias, unsigned width, unsigned rows,
+                        float eps) {
+  const helios_key k = {HL_NORMALIZE, op, width, rows};
+  /* The ORDER is the kernel's parameter order and nothing checks it: slot 0
+   * out, 1 a, 2 weight, 3 bias. rmsNorm never reads slot 3, but it is still
+   * passed so both forms share one launch shape. */
+  const helios_tensor ts[4] = {out, a, weight, bias ? bias : weight};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 4, s, 2);
+}
+
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps) {
   /* The row count is part of the KEY, not just the launch: a program built for

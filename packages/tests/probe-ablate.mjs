@@ -57,14 +57,21 @@ function step() {
 function measure(label) {
   const t0 = Date.now();
   while (Date.now() - t0 < 4000) step();
-  const spin0 = B.hl.stats().spinNs;
+  const s0 = B.hl.stats();
+  const spin0 = s0.spinNs, enq0 = s0.enqueued, bar0 = s0.barriers ?? 0, rw0 = s0.barriersIfRW ?? 0;
   const w0 = process.hrtime.bigint();
   const N = 9;
   for (let i = 0; i < N; i++) step();
   const wall = Number(process.hrtime.bigint() - w0) / 1e6 / N;
-  const gpu = (B.hl.stats().spinNs - spin0) / 1e6 / N;
+  const s1 = B.hl.stats();
+  const gpu = (s1.spinNs - spin0) / 1e6 / N;
+  const enq = (s1.enqueued - enq0) / N, bar = ((s1.barriers ?? 0) - bar0) / N;
+  const rw = ((s1.barriersIfRW ?? 0) - rw0) / N;
   console.log(`  ${label.padEnd(28)} GPU ${gpu.toFixed(1).padStart(6)} ms   wall ${wall.toFixed(1).padStart(6)} ms` +
-              `   ${(BATCH * SEQ / (wall / 1000)).toFixed(0).padStart(6)} tok/s`);
+              `   ${(BATCH * SEQ / (wall / 1000)).toFixed(0).padStart(6)} tok/s` +
+              `   ${enq.toFixed(0).padStart(5)} launches, ${bar.toFixed(0).padStart(5)} barriers` +
+              ` (${(bar / Math.max(1, enq) * 100).toFixed(0)}%), read/write-aware would be` +
+              ` ${rw.toFixed(0)} (${(rw / Math.max(1, enq) * 100).toFixed(0)}%)`);
   return gpu;
 }
 

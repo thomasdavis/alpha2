@@ -107,7 +107,12 @@ typedef struct {
    */
   NvU64 touched[HELIOS_TOUCH_SLOTS];
   unsigned touchedCount;
+  /* The same set restricted to OUTPUTS, for pricing a read/write-aware barrier
+   * rule against the conservative one actually in force. See context.c. */
+  NvU64 written[HELIOS_TOUCH_SLOTS];
+  unsigned writtenCount;
   NvU32 statBarriers;
+  NvU32 statWouldBarrier;
   NvU32 statEnqueued;
   NvU32 statFlushed;
   /*

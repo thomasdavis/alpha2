@@ -60,6 +60,8 @@ export interface NativeAddon {
     programs: number;
     enqueued: number;
     flushes: number;
+    /* Launches that had to wait for the queue to drain first. */
+    barriers: number;
   };
   readonly op: NativeOps;
   /** The folded constants the kernels expect, by name — see nativeBackend. */
@@ -91,6 +93,10 @@ export interface NativeAddon {
   /* out[c] = sum over rows of a[r][c] — the bias-shaped gradient. */
   columnSum(out: number, a: number, rows: number, cols: number): boolean;
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
+  /* Normalise and apply the per-feature affine in one launch. `bias` is ignored
+   * by the rmsNorm form but must still be a valid handle. */
+  normalizeAffine(op: number, out: number, a: number, weight: number, bias: number,
+                  width: number, rows: number, eps: number): boolean;
   /* dx and xhat together; dw and db reduce down the other axis and are the
    * caller's job. Slot order is the kernel's and is not checked. */
   layerNormBackward(dx: number, xhat: number, x: number, g: number, w: number,
