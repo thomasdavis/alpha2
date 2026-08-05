@@ -57,6 +57,10 @@ export class NativeHeliosBackend implements Backend {
    */
   private readonly scratch: NativeBuffer;
 
+  /** Tensors already released, so a second offer of the same one is ignored
+   * rather than decrementing its buffer's reference count twice. */
+  private readonly freed = new WeakSet<object>();
+
   constructor(deviceIndex = 0) {
     this.hl = nativeAddon(deviceIndex);
     this.scratch = NativeBuffer.alloc(this.hl, 1024);
@@ -563,6 +567,8 @@ export class NativeHeliosBackend implements Backend {
      */
     const out = this.reduceAll("crossEntropy mean", true, perRow) as NativeTensor;
     perRow.buffer.release(this.hl);
+    /* Same memory, second tensor — see reshape. */
+    out.buffer.retain();
     const scalar: NativeTensor = {
       shape: [],
       dtype: "f32",
@@ -658,6 +664,9 @@ export class NativeHeliosBackend implements Backend {
     const da = this.device(a);
     const hl = this.hl;
     const buffer = da.buffer;
+    /* A second tensor now points at this memory, and the tape will release both
+     * of them. Without this the first release frees it under the other. */
+    buffer.retain();
     const view = buffer.floats.subarray(0, shapeSize(shape));
     return {
       shape,
@@ -949,8 +958,41 @@ export class NativeHeliosBackend implements Backend {
    * ignored rather than double-freed.
    */
   release(t: TensorData): void {
-    if (isNative(t) && !t.buffer.released) t.buffer.release(this.hl);
+    if (!isNative(t)) return;
+    /* ONE decrement per TENSOR, however many times it is offered.
+     *
+     * The buffer counts how many tensors point at it, so a tensor released
+     * twice would decrement for a reference that never existed and free memory
+     * a live view still holds. The tape guards its own double-releases; this
+     * guards everyone else's, and it is a WeakSet so remembering costs nothing
+     * once the tensor is gone. */
+    if (this.freed.has(t)) return;
+    this.freed.add(t);
+    t.buffer.release(this.hl);
   }
+
+  /*
+   * `releaseGpuTensor` IS DELIBERATELY NOT DEFINED HERE, and that is a bug
+   * being left in place on purpose rather than an oversight.
+   *
+   * trainer.ts builds its release callback with
+   * `typeof backend.releaseGpuTensor === "function"` and this backend spells the
+   * method `release`, so the probe fails, releaseFn stays undefined, and a real
+   * training run reclaims nothing. That is a genuine defect: `carved` climbs
+   * ~283 a step forever and a long run exhausts the tensor table.
+   *
+   * Defining the alias is a one-line fix and it is not yet a safe one. Turning
+   * it on hands the tape a release path that still fails: with reference
+   * counting in place a naive policy gets further than it did -- past matmul's
+   * backward -- and then dies in gradient accumulation, so at least one
+   * lifetime is still wrong somewhere between the tape and this backend. Adding
+   * the alias would convert a trainer that is leaky and CORRECT into one that is
+   * tidy and wrong, and the wrongness would arrive as a failed dispatch in the
+   * middle of a long run.
+   *
+   * So the leak stays until the release path is proven, which is what
+   * packages/tests/micro-release-recycles.mjs exists to do.
+   */
 
   /** Drain the queue. Callers reading a tensor's `data` directly must call
    * this first — the operations are asynchronous now. */

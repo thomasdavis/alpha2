@@ -123,7 +123,21 @@ export class NativeBuffer {
   readonly handle: number;
   readonly floats: Float32Array;
   readonly ints: Int32Array;
-  private live = true;
+  /*
+   * HOW MANY TENSORS POINT HERE, not whether one does.
+   *
+   * A reshape is a different view of the SAME memory, and so is the scalar
+   * cross-entropy returns -- two TensorData objects, one buffer. A plain
+   * live/dead flag made releasing either of them free the memory the other was
+   * still using, which is why tensor.c says wiring the tape's release callback
+   * "naively frees tensors the graph still references". It is not the tape
+   * being naive; it is the buffer not knowing it is shared.
+   *
+   * The failure is at least loud: the generation check rejects the stale
+   * handle, helios_tensor_addr returns 0 and the dispatch fails rather than
+   * reading somebody else's tensor.
+   */
+  private rc = 1;
 
   private constructor(handle: number, buffer: ArrayBuffer) {
     this.handle = handle;
@@ -139,13 +153,17 @@ export class NativeBuffer {
     return new NativeBuffer(handle, view);
   }
 
+  /** Another tensor now points at this memory and must release it in turn. */
+  retain(): void {
+    if (this.rc > 0) this.rc++;
+  }
+
   release(hl: NativeAddon): void {
-    if (!this.live) return;
-    this.live = false;
-    hl.free(this.handle);
+    if (this.rc <= 0) return;
+    if (--this.rc === 0) hl.free(this.handle);
   }
 
   get released(): boolean {
-    return !this.live;
+    return this.rc <= 0;
   }
 }
