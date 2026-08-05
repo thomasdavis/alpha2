@@ -217,10 +217,32 @@ int helios_enqueue3(helios_context *ctx, const hp_word *program, unsigned count,
    * are what batching removes; writing a GPFIFO entry per launch costs a few
    * stores.
    */
+  /*
+   * A BARRIER ONLY WHEN THIS LAUNCH TOUCHES SOMETHING A QUEUED ONE DID.
+   *
+   * See helios_context.touched. Conservative by construction: every buffer
+   * counts as both read and written, so this skips the barrier only for
+   * launches that share no buffer with anything still in flight.
+   */
+  int needBarrier = 0;
+  if (ctx->pending > 0) {
+    if (ctx->touchedCount + nbuffers > HELIOS_TOUCH_SLOTS) {
+      needBarrier = 1;
+    } else {
+      for (unsigned i = 0; i < nbuffers && !needBarrier; i++)
+        for (unsigned j = 0; j < ctx->touchedCount; j++)
+          if (ctx->touched[j] == buffers[i]) { needBarrier = 1; break; }
+    }
+  }
+
   hermes_begin(&ctx->channel);
-  /* Drain before this launch if anything is already queued: the kernels in a
-   * batch routinely consume each other's output, and dispatches pipeline. */
-  if (ctx->pending > 0) hermes_barrier(&ctx->channel);
+  if (needBarrier) {
+    hermes_barrier(&ctx->channel);
+    ctx->touchedCount = 0;
+    ctx->statBarriers++;
+  }
+  for (unsigned i = 0; i < nbuffers && ctx->touchedCount < HELIOS_TOUCH_SLOTS; i++)
+    ctx->touched[ctx->touchedCount++] = buffers[i];
   hermes_launch(&ctx->channel, ctx->qmd.gpuAddr + (NvU64)slot * HERMES_QMD_BYTES);
   if (hermes_submit(&ctx->device, &ctx->channel) != 0) return -1;
   ctx->ringNext = (slot + 1) % HELIOS_RING_SLOTS;
@@ -245,6 +267,9 @@ int helios_enqueue3(helios_context *ctx, const hp_word *program, unsigned count,
  */
 int helios_flush(helios_context *ctx) {
   if (ctx->pending == 0) return 0;
+  /* A drain completes everything queued, so nothing is in flight to depend on
+   * and the dependency set starts empty again. */
+  ctx->touchedCount = 0;
   ctx->statFlushed++;
 
   /* ONE semaphore for the whole batch: the channel runs its pushbuffer in

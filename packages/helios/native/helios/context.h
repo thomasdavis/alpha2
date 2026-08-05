@@ -28,6 +28,13 @@
 #include "../hermes/qmd.h"
 #include "../hephaestus/sm86.h"
 
+/* How many launches may be outstanding before a flush is forced. */
+#define HELIOS_RING_SLOTS 64
+
+/* Distinct buffers tracked between barriers. Beyond this the barrier is taken
+ * unconditionally, which is the safe direction. */
+#define HELIOS_TOUCH_SLOTS 48
+
 /*
  * The scratch buffer holds constant bank 0: the block dimension, the buffer
  * pointers, and the scalars. Every launch rewrites it, so it is per-context
@@ -73,6 +80,34 @@ typedef struct {
   /* Counters, not state: the ratio of launches queued to queue drains is the
    * batching factor, and it is the only way to tell a batching design that is
    * working from one that is silently flushing per operation. */
+  /*
+   * THE BUFFERS TOUCHED SINCE THE LAST BARRIER, so the next launch can decide
+   * whether it needs one.
+   *
+   * A dispatch does not wait for its predecessor — the channel executes its
+   * PUSHBUFFER in order but the dispatches within it pipeline — so a kernel
+   * reading what the previous one wrote needs an explicit WAIT_FOR_IDLE. That
+   * barrier used to be unconditional, which made it the floor on every small
+   * operation: an elementwise kernel over 1,024 elements measures 5.7 us where
+   * the arithmetic and the memory together are under a microsecond, and it is
+   * flat at 5.7 all the way to 65,536 elements. A step runs ~1,474 launches.
+   *
+   * Worse than the floor, nothing ever OVERLAPS: a kernel that could hide
+   * behind a larger one never does.
+   *
+   * So the barrier is now conditional on a real dependency. The rule is
+   * deliberately conservative — every buffer a launch names counts as both read
+   * and written, so a barrier is skipped only when two launches share NO buffer
+   * at all. That is sound because a kernel reaches memory ONLY through the
+   * pointers in its constant bank, which are exactly these, and because a
+   * tensor owns its whole size class so a launch cannot write past its own
+   * buffer into another's.
+   *
+   * The set is small and overflow is safe: a full table forces the barrier.
+   */
+  NvU64 touched[HELIOS_TOUCH_SLOTS];
+  unsigned touchedCount;
+  NvU32 statBarriers;
   NvU32 statEnqueued;
   NvU32 statFlushed;
   /*
@@ -99,9 +134,6 @@ typedef struct {
 int helios_context_open(helios_context *ctx, int index);
 
 void helios_context_close(helios_context *ctx);
-
-/* How many launches may be outstanding before a flush is forced. */
-#define HELIOS_RING_SLOTS 64
 
 /* The hardware's threads-per-block limit. Exceeding it is an invalid launch,
  * not a rejected one, so helios_enqueue checks rather than letting the channel
