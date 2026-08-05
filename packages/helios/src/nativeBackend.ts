@@ -758,6 +758,19 @@ export class NativeHeliosBackend implements Backend {
      *     benchmark shape   54,575 -> 51,431 tok/s   (-5.8%)
      *     105M seq 64           78 -> 76 tok/s       (-3%, 7.31 -> 7.09 GB)
      *
+     * RE-MEASURED at batch 8, once the step's memory was bounded and M was 512
+     * instead of 64 — on the theory that eliminating the separate transpose
+     * (11.7% of GPU time by then) would outweigh 5.8%. It does not, and the
+     * gap is far wider than at batch 1:
+     *
+     *     105M seq 64 batch 8   767 -> 402 tok/s     (-48%, GPU 462 -> 1046 ms)
+     *
+     * The penalty GROWS with M, which is what the access pattern predicts:
+     * every block issues 32 separate transactions where one would do, so the
+     * cost scales with block count while the saving — one transpose launch per
+     * call — does not. Unlike the row-tiled and column-blocked kernels, this
+     * one was never parallelism-starved; it is simply uncoalesced.
+     *
      * Because the access pattern inverts. Untransposed, B[k][col] is `k*N+col`
      * and adjacent threads read adjacent addresses — one coalesced transaction.
      * Transposed, it is `col*K+k`, so adjacent threads are K elements apart and
