@@ -66,22 +66,10 @@ const evictL2 = () => { B.addInplace(scrubA, scrubB); };
  * its own process: 3.28 against 3.42, and 4.01 against 4.11. The layouts were
  * never different. The FIRST case in a process was, every time.
  *
- * ⚠️ SIX SECONDS OF PRE-RAMP DOES NOT FIX IT, so the clock is not the cause
- * either — and the cause is still unknown. What IS established:
- *
- *   one case per process    B^T 3.33   fwd 3.40    (and 4.01 / 4.11 at mlp fc)
- *   both in one process     B^T 3.34   fwd 15.52
- *
- * The FIRST case measured in a process reads ~4.5x slow, whichever case it is,
- * and every later one reads fast. So a first-case number is not comparable to a
- * later one, and the only safe comparison is ONE CASE PER PROCESS (ONLY=...).
- *
- * Which figure is true? The MODEL says the fast one: a step does 296 GFLOP of
- * matmul in ~24 ms, which is 12.2 TFLOP/s, and no arrangement of 3.4 TFLOP/s
- * calls fits inside a 46 ms step. So ~15 TFLOP/s isolated is the real rate and
- * the first-case reading is the artifact. Finding out why is worth doing —
- * something that persists across rate() calls, since the pool, the program
- * cache and the clock have all been ruled out.
+ * The clock is NOT what produced the first-case anomaly — six seconds of ramp
+ * did not remove it. It was the POOL, and the fix is below in the timed loop's
+ * dry run. Kept because a cold card is still a 4.9x error on anything measured
+ * in the first second, which the benchmark harness also guards against.
  */
 {
   const t0 = process.hrtime.bigint();
@@ -168,6 +156,28 @@ function rate(name, M, N, K, transposed) {
   }
 
   const ITERS = 30;
+  /*
+   * FILL THE POOL WITH EXACTLY WHAT THE TIMED LOOP WILL ASK FOR.
+   *
+   * The timed loop allocates one output per iteration and only RELEASES them —
+   * a release marks, and nothing is reusable until helios_end_step — so thirty
+   * iterations need thirty distinct buffers. The warmup retires every step, so
+   * it only ever carves one, and the timed loop then pays TWENTY-NINE FRESH
+   * CARVES: 802 us each against 1.0 us from the pool, inside the measurement.
+   *
+   * That is the first-case anomaly. Whichever case runs first in a process pays
+   * it and every later one finds the pool already holding thirty buffers of the
+   * right class, which is why the gap followed POSITION and not layout.
+   *
+   * One dry run of exactly ITERS iterations, then a retire, leaves the pool in
+   * the state the timed loop expects.
+   */
+  for (let i = 0; i < ITERS; i++) {
+    const c = transposed ? B.matmulTransposed(a, b) : B.matmul(a, b);
+    B.releaseGpuTensor?.(c);
+  }
+  drain();
+  B.finishStepOps?.();
   evictL2();
   drain();
   const s0 = spin(), t0 = process.hrtime.bigint();
