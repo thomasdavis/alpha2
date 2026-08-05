@@ -370,6 +370,38 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
  * which is what a proper register-blocked GEMM, or HMMA's accumulator layout,
  * changes.
  */
+/*
+ * IT FAULTS AT THE SMALLEST SHAPE IN THE SUITE — [8,8] x [8,8], batch 1.
+ *
+ * That is the single most useful fact about this kernel and it took far too
+ * long to establish, because every earlier attempt measured it on the model's
+ * shapes or on the geometry probe and concluded "slower" or "hangs". It does
+ * not hang: the fence times out at 5000 ms and the next staging read reports
+ * `channel error 0xd`, which is a FAULT. And it is not shape-dependent — at
+ * M=K=N=8 there is no predication (partial is false, guard_col is false), one
+ * staging round, one chunk, four blocks of eight threads and 64 bytes of
+ * shared memory. So the defect is STRUCTURAL, in the part of the kernel that
+ * runs for every shape.
+ *
+ * Ruled out, by measurement or inspection, so the next attempt need not:
+ *
+ *   - register pairs do not overlap   (R_O0/1/2/3 = 42/44/46/48)
+ *   - registers are in range          (max R46 at ROWS=2, REGISTER_COUNT_V=48)
+ *   - shared memory is in bounds      (max LDS byte 508 of 512 at the probe
+ *                                      shape; 64 bytes allocated at 8x8x8)
+ *   - the instruction budget          (~60 emitted of PR_MAX_INSTRUCTIONS 256)
+ *   - the launch geometry             (gridX = M/ROWS = 4, blockX = 8, and
+ *                                      program.c selects tiled_shared correctly)
+ *   - the staging alternation         (fixed: it keyed on the round index `t`,
+ *                                      so at rounds==1 both rows took set A and
+ *                                      row 1 rewrote an address pair row 0's
+ *                                      LDG was still reading)
+ *
+ * What remains unexamined is the main loop and the two-row epilogue at their
+ * simplest: two accumulators, UNROLL=2, two stores. Start there, at 8x8x8,
+ * with diff-matmul-tiled.mjs — it faults on its first case, so the cycle is
+ * seconds rather than minutes.
+ */
 #define MATMUL_TILE_ROWS 2u
 
 int pr_matmul_tiled(unsigned M, unsigned N, unsigned K) {
