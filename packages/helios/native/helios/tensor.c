@@ -487,6 +487,29 @@ void helios_tensor_retire(void) {
 
 helios_tensor_stats helios_tensor_get_stats(void) { return g_stats; }
 
+/*
+ * How many LIVE slots there are of each size class, and how many bytes.
+ *
+ * The JavaScript census names the allocation SITE of every buffer it did not
+ * see released — which is not the same as naming what the pool is still
+ * holding, and reading it as if it were sent an afternoon at the wrong
+ * function. Removing 84 MB of fallback transposes it had fingered moved the
+ * leak by exactly zero.
+ *
+ * This asks the allocator instead. A class is a power of two, so the histogram
+ * IDENTIFIES the tensors: at 18 layers, 640 embd, vocab 12,288 there is exactly
+ * one shape per class that the model allocates in quantity.
+ */
+void helios_tensor_live_by_class(unsigned *counts, NvU64 *bytes) {
+  for (int c = 0; c < NUM_CLASSES; c++) { counts[c] = 0; bytes[c] = 0; }
+  for (unsigned i = 0; i < g_used; i++) {
+    const slot *s = &g_slots[i];
+    if (!s->inUse || s->pendingFree) continue;
+    counts[s->classIndex]++;
+    bytes[s->classIndex] += 1ull << (MIN_CLASS_SHIFT + s->classIndex);
+  }
+}
+
 void helios_tensor_release_all(helios_context *ctx) {
   /* The SLABS own the memory now, so they are what goes back to the driver.
    * Freeing per slot would hand RM an address it never issued. */

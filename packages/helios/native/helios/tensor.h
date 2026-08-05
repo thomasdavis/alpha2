@@ -135,6 +135,11 @@ typedef struct {
 
 helios_tensor_stats helios_tensor_get_stats(void);
 
+/* Live slots and bytes per size class. Classes are powers of two from 4 KiB, so
+ * the histogram identifies WHICH tensors the pool is holding — which the
+ * allocation-site census cannot. `counts` and `bytes` must hold 20 entries. */
+void helios_tensor_live_by_class(unsigned *counts, NvU64 *bytes);
+
 /* Move buffers freed during the last batch into circulation. Called by the
  * context when the queue drains -- until then a freed buffer may still be read
  * by a kernel that has not run. */

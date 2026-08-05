@@ -265,6 +265,20 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
    * want opposite investigations. */
   napi_create_uint32(env, g_ctx.lastError, &v);
   napi_set_named_property(env, out, "lastError", v);
+  /* Live slots by size class — what the pool is actually holding. */
+  {
+    unsigned counts[20];
+    NvU64 bytes[20];
+    helios_tensor_live_by_class(counts, bytes);
+    napi_value arr;
+    napi_create_array_with_length(env, 20, &arr);
+    for (unsigned i = 0; i < 20; i++) {
+      napi_value e;
+      napi_create_uint32(env, counts[i], &e);
+      napi_set_element(env, arr, i, e);
+    }
+    napi_set_named_property(env, out, "liveByClass", arr);
+  }
   return out;
 }
 
