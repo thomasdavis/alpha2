@@ -260,6 +260,11 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
    * which is 104 days of spinning. */
   napi_create_double(env, (double)g_ctx.statSpinNs, &v);
   napi_set_named_property(env, out, "spinNs", v);
+  /* The channel's error notifier, or zero. A dispatch that fails after a
+   * TIMEOUT and one rejected outright look identical from JavaScript, and they
+   * want opposite investigations. */
+  napi_create_uint32(env, g_ctx.lastError, &v);
+  napi_set_named_property(env, out, "lastError", v);
   return out;
 }
 

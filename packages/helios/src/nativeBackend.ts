@@ -44,6 +44,10 @@ function isNative(t: TensorData): t is NativeTensor {
   return (t as NativeTensor).buffer !== undefined;
 }
 
+/* Debug: drain and report after every dispatch, so an asynchronous MMU fault
+ * is attributed to the kernel that caused it rather than the one that noticed. */
+const TRACE_OPS = !!process.env.HELIOS_TRACE_OPS;
+
 export class NativeHeliosBackend implements Backend {
   readonly name = "helios-native";
   private readonly hl: NativeAddon;
@@ -233,15 +237,39 @@ export class NativeHeliosBackend implements Backend {
     /* Every dispatch in this file passes through here, which is what makes one
      * flag sufficient. */
     this.pending = true;
+    /*
+     * A drain after EVERY operation, when asked, because an MMU fault is
+     * asynchronous and therefore mis-attributed by default.
+     *
+     * The channel reports the fault whenever the host next looks, which is at
+     * some flush well after the kernel that caused it -- so "layerNorm failed
+     * on the device (channel error 0x1f)" names the operation that noticed, not
+     * the one that faulted. Draining per operation collapses the two.
+     *
+     * Debug only: it removes the batching entirely and costs an order of
+     * magnitude.
+     */
+    if (TRACE_OPS) {
+      const drained = this.hl.flush();
+      const err = (this.hl.stats() as { lastError?: number }).lastError ?? 0;
+      if (!drained || err)
+        console.error(`[helios] ${op}: flush=${drained} lastError=0x${err.toString(16)}`);
+      else console.error(`[helios] ${op} ok`);
+    }
     if (ok) return;
     const dead = operands
       .map((t, i) => (t && isNative(t) && t.buffer.released ? `#${i} ${JSON.stringify(t.shape)}` : null))
       .filter(Boolean);
+    /* The channel's error notifier separates a dispatch the driver refused from
+     * one that was accepted and then never signalled -- a timeout. Without it
+     * both arrive as the same sentence and the next hour goes to guessing. */
+    const err = (this.hl.stats() as { lastError?: number }).lastError ?? 0;
+    const why = err ? ` (channel error 0x${err.toString(16)})` : " (channel clean — dispatch refused or timed out)";
     throw new Error(
       dead.length
         ? `helios-native: ${op} was given RELEASED operand(s) ${dead.join(", ")} — ` +
           `something freed a tensor the graph still references`
-        : `helios-native: ${op} failed on the device`,
+        : `helios-native: ${op} failed on the device${why}`,
     );
   }
 
