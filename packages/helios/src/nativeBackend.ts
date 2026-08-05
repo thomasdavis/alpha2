@@ -270,7 +270,47 @@ export class NativeHeliosBackend implements Backend {
       sStride[i + pad] = t.shape[i] === 1 ? 0 : acc;
       acc *= t.shape[i];
     }
+    /*
+     * A BROADCAST REPEATS A RUN. Copy the run, not its elements.
+     *
+     * The trailing axes that are NOT being broadcast are contiguous in the
+     * source and land contiguously in the destination, so they move whole. Every
+     * broadcast this model performs is of that form -- a bias or a norm weight
+     * of shape [C] tiled across [B,T,C], or a per-row mean of [B,T,1] repeated
+     * along C -- and the element loop was recomputing a full multi-dimensional
+     * index for each of 262,144 elements to move runs of 64 that were already
+     * in order.
+     *
+     * The run is the longest trailing span whose source strides are exactly the
+     * contiguous ones; a zero stride marks a broadcast axis and ends it. When
+     * the broadcast reaches the last axis the run is 1 and this degrades to the
+     * old loop, which is correct and is what [B,T,1] -> [B,T,C] does.
+     *
+     * layerNorm and maskedFill are the callers that made this matter: 42.2 and
+     * 39.9 ms a step at batch 128, all of it addressing.
+     */
+    let run = 1;
+    let runDim = shape.length;
+    while (runDim > 0 && sStride[runDim - 1] === run && shape[runDim - 1] > 0) {
+      run *= shape[runDim - 1];
+      runDim--;
+    }
+
     const idx = new Array(shape.length).fill(0);
+    if (run > 1) {
+      const total = want / run;
+      for (let n = 0; n < total; n++) {
+        let si = 0;
+        for (let d = 0; d < runDim; d++) si += idx[d] * sStride[d];
+        out.buffer.floats.set(src.subarray(si, si + run), n * run);
+        for (let d = runDim - 1; d >= 0; d--) {
+          if (++idx[d] < shape[d]) break;
+          idx[d] = 0;
+        }
+      }
+      return out;
+    }
+
     for (let n = 0; n < want; n++) {
       let si = 0;
       for (let d = 0; d < shape.length; d++) si += idx[d] * sStride[d];
