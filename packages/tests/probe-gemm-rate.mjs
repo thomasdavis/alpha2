@@ -32,17 +32,87 @@ const BN = Number(process.argv[3] ?? 128);  /* pr_hmma_block_cols() */
 const B = new NativeHeliosBackend(0);
 const rng = new SeededRng(7);
 
+/*
+ * EVICT L2 BEFORE EACH TIMED RUN, or the answer is about the previous case.
+ *
+ * This card's L2 is 4 MB and a qkv operand is 4.9 — so a shape measured right
+ * after one of the SAME SIZE finds its buffers already resident, because the
+ * pool hands the same memory back. That is the whole of this file's previous
+ * headline: "untransposed-B runs at a quarter of transposed" survived a
+ * reordering by REVERSING, and the results alternated slow/fast by POSITION,
+ * with the fast one always being the second of a same-shape pair.
+ *
+ * There is no layout gap. There was a cache-state gap, and the probe was
+ * measuring its own ordering.
+ *
+ * Streaming 32 MB through an elementwise copy is enough to evict 4 MB of L2 and
+ * costs about 150 us, outside the timed region.
+ */
+const SCRUB = 8 << 20; /* elements: 32 MB */
+const scrubA = B.zeros([SCRUB]), scrubB = B.zeros([SCRUB]);
+const evictL2 = () => { B.addInplace(scrubA, scrubB); };
+
+/*
+ * RAMP THE CLOCK ONCE, BEFORE ANY CASE IS MEASURED.
+ *
+ * This card idles at 210 MHz against 2,100 and nvidia-smi cannot lock clocks
+ * inside a RunPod container. A per-case warmup of 2.5 s is not enough from
+ * COLD, and the consequence is not noise — it is a systematic error that lands
+ * entirely on whichever case runs first.
+ *
+ * That is what produced this file's previous headline. "Untransposed-B runs at
+ * a quarter of transposed" reversed when the list was reordered, alternated
+ * slow/fast by POSITION, and vanished completely when each case was measured in
+ * its own process: 3.28 against 3.42, and 4.01 against 4.11. The layouts were
+ * never different. The FIRST case in a process was, every time.
+ *
+ * ⚠️ SIX SECONDS OF PRE-RAMP DOES NOT FIX IT, so the clock is not the cause
+ * either — and the cause is still unknown. What IS established:
+ *
+ *   one case per process    B^T 3.33   fwd 3.40    (and 4.01 / 4.11 at mlp fc)
+ *   both in one process     B^T 3.34   fwd 15.52
+ *
+ * The FIRST case measured in a process reads ~4.5x slow, whichever case it is,
+ * and every later one reads fast. So a first-case number is not comparable to a
+ * later one, and the only safe comparison is ONE CASE PER PROCESS (ONLY=...).
+ *
+ * Which figure is true? The MODEL says the fast one: a step does 296 GFLOP of
+ * matmul in ~24 ms, which is 12.2 TFLOP/s, and no arrangement of 3.4 TFLOP/s
+ * calls fits inside a 46 ms step. So ~15 TFLOP/s isolated is the real rate and
+ * the first-case reading is the artifact. Finding out why is worth doing —
+ * something that persists across rate() calls, since the pool, the program
+ * cache and the clock have all been ruled out.
+ */
+{
+  const t0 = process.hrtime.bigint();
+  while (Number(process.hrtime.bigint() - t0) / 1e6 < 6000) {
+    for (let i = 0; i < 8; i++) B.addInplace(scrubA, scrubB);
+    scrubA.data[0];
+  }
+}
+
 /* The shapes a 105M step actually runs, at batch 8 (512 rows). Named, because
  * a rate without a shape is not comparable to anything. */
+/*
+ * INTERLEAVED, and ordered so the TRANSPOSED case of each shape comes FIRST.
+ *
+ * They used to be grouped — every untransposed shape, then every transposed one
+ * — and that put the whole of one layout at the START of the run. This card
+ * idles at 210 MHz against 2100 and cannot be clock-locked in a container; the
+ * benchmark harness warms by TIME for exactly this reason, having measured a
+ * 4.9x error between a cold process and a warm one. A grouped order cannot
+ * distinguish "this layout is slower" from "this layout was measured first",
+ * and the gap it reported was 4x.
+ */
 const SHAPES = [
-  ["qkv        fwd", 512, 1920, 640, false],
-  ["attn proj  fwd", 512, 640, 640, false],
-  ["mlp fc     fwd", 512, 2560, 640, false],
-  ["mlp proj   fwd", 512, 640, 2560, false],
-  ["lm head    fwd", 512, 12288, 640, false],
   ["qkv        B^T", 512, 1920, 640, true],
+  ["qkv        fwd", 512, 1920, 640, false],
   ["mlp fc     B^T", 512, 2560, 640, true],
+  ["mlp fc     fwd", 512, 2560, 640, false],
   ["lm head    B^T", 512, 12288, 640, true],
+  ["lm head    fwd", 512, 12288, 640, false],
+  ["attn proj  fwd", 512, 640, 640, false],
+  ["mlp proj   fwd", 512, 640, 2560, false],
 ];
 
 const spin = () => B.hl.stats().spinNs;
@@ -64,7 +134,27 @@ function rate(name, M, N, K, transposed) {
    * Reading an element of the result goes through the tensor's `data` getter,
    * which is where the queue drain lives, so it cannot be optional.
    */
-  const drain = (c) => c.data[0];
+  /*
+   * DRAIN THROUGH A ONE-ELEMENT TENSOR, not through the result.
+   *
+   * The barrier has to be a read, because this backend has no flushAndWait —
+   * but reading the RESULT copies the whole thing to the host, and under
+   * HELIOS_VIDMEM that is a multi-megabyte PCIe transfer INSIDE the timed
+   * region. At [512,1920] it is 3.9 MB, which is hundreds of microseconds
+   * against measurements of 91 to 426.
+   *
+   * That is what produced this file's previous headline — "untransposed-B runs
+   * at a quarter of transposed" — which reversed the moment the shapes were
+   * reordered, and alternated slow/fast BY POSITION rather than by layout. The
+   * copy is charged to whichever call happens to trigger the staging
+   * allocation; the layouts are not different at all.
+   *
+   * Any read drains the whole queue, because `sync()` flushes everything
+   * pending. So read four bytes instead of four megabytes: the wait is the
+   * same and the transfer is not.
+   */
+  const beacon = B.zeros([1]);
+  const drain = () => beacon.data[0];
 
   /* Warm by TIME: this card idles at 210 MHz against 2100 and cannot be
    * clock-locked in a container, so a cold measurement understates by up to
@@ -72,12 +162,14 @@ function rate(name, M, N, K, transposed) {
   const warmStart = process.hrtime.bigint();
   while (Number(process.hrtime.bigint() - warmStart) / 1e6 < 2500) {
     const c = transposed ? B.matmulTransposed(a, b) : B.matmul(a, b);
-    drain(c);
+    drain();
     B.releaseGpuTensor?.(c);
     B.finishStepOps?.();
   }
 
   const ITERS = 30;
+  evictL2();
+  drain();
   const s0 = spin(), t0 = process.hrtime.bigint();
   let last = null;
   for (let i = 0; i < ITERS; i++) {
@@ -104,10 +196,14 @@ function rate(name, M, N, K, transposed) {
     `  ${(bytes / secs / 1e9).toFixed(0).padStart(5)} GB/s implied` +
     `  ${(secs * 1e6 / ITERS).toFixed(0).padStart(6)} us/call`);
 
-  B.releaseGpuTensor?.(a); B.releaseGpuTensor?.(b);
+  B.releaseGpuTensor?.(a); B.releaseGpuTensor?.(b); B.releaseGpuTensor?.(beacon);
   B.finishStepOps?.();
 }
 
 console.log(`GEMM rate, tensor-core tile ${BM} rows x ${BN} cols`);
 console.log(`ceilings: 45.5 TFLOP/s from registers, 24-32 cuBLAS here, 448 GB/s DRAM\n`);
-for (const [name, M, N, K, t] of SHAPES) rate(name, M, N, K, t);
+/* ONE CASE PER PROCESS when asked, which is the only way to be sure a number
+ * is about the case and not about what ran before it. */
+const only = process.env.ONLY;
+for (const [name, M, N, K, t] of SHAPES)
+  if (!only || name.replace(/\s+/g, "").startsWith(only)) rate(name, M, N, K, t);
