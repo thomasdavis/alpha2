@@ -49,6 +49,12 @@ hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
  *             MUFU.LG2 R8,R6  0x0000000600087308 0x000e640000000c00 */
 hp_word hp_mufu(unsigned dst, unsigned src, unsigned fn, hp_control c);
 
+/* HMMA.16816.F32: warp-level C += A*B, f16 operands, f32 accumulate. Register
+ * arguments name the FIRST of each fragment's consecutive registers (4 for the
+ * accumulator and A, 2 for B). See isa/hmma-sm86.md. */
+hp_word hp_hmma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c);
+
 /* FMNMX Rd, Ra, Rb — minimum when `wantMax` is 0, maximum when non-zero.
  * The choice is a predicate operand: PT selects min, !PT selects max, and the
  * negation is one bit. Reference (max): FMNMX R9, RZ, R0, !PT
@@ -132,6 +138,12 @@ hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
  * References: MUFU.EX2 R7,R0  0x0000000000077308 0x000e240000000800
  *             MUFU.LG2 R8,R6  0x0000000600087308 0x000e640000000c00 */
 hp_word hp_mufu(unsigned dst, unsigned src, unsigned fn, hp_control c);
+
+/* HMMA.16816.F32: warp-level C += A*B, f16 operands, f32 accumulate. Register
+ * arguments name the FIRST of each fragment's consecutive registers (4 for the
+ * accumulator and A, 2 for B). See isa/hmma-sm86.md. */
+hp_word hp_hmma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c);
 
 /* FMNMX Rd, Ra, Rb — minimum when `wantMax` is 0, maximum when non-zero.
  * The choice is a predicate operand: PT selects min, !PT selects max, and the

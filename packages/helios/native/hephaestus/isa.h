@@ -44,6 +44,9 @@
 #define HP_OP_FMUL 0x220
 #define HP_OP_FFMA 0x223
 #define HP_OP_MUFU 0x308     /* transcendentals: EX2, LG2, RCP, RSQ */
+/* HMMA.16816.F32 — the tensor cores. Captured from nvcc 12.8 for sm_86; the
+ * capture and its decode live in isa/hmma-sm86.md. */
+#define HP_OP_HMMA 0x23c
 #define HP_OP_FMNMX 0x209    /* FMNMX Rd, Ra, Rb, {PT|!PT} — min or max */
 #define HP_OP_LDS 0x984      /* LDS Rd, [Ra.X4+off] — shared memory load  */
 #define HP_OP_STS 0x388      /* STS [Ra.X4+off], Rb — shared memory store */

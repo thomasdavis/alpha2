@@ -38,6 +38,37 @@ hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
   return w;
 }
 
+/*
+ * HMMA.16816.F32 — one warp, one 16x8 tile of C += A*B, f16 in, f32 out.
+ *
+ * WARP-LEVEL, which is the whole difficulty and none of it is here. The 32
+ * lanes cooperatively hold the operands: `dst` names the FIRST of four
+ * consecutive accumulator registers, `srcA` the first of four holding this
+ * lane's slice of A, `srcB` the first of two holding its slice of B, and
+ * `srcC` the first of four to accumulate from (RZ for a fresh product). Which
+ * lane owns which matrix ELEMENT is not expressed in the encoding at all, and
+ * getting it wrong produces a finite, plausible, wrong matrix rather than a
+ * fault — the same failure mode as the first tiled attempt, and one no NaN
+ * check catches. Establish it with a known-answer probe, by measurement, the
+ * way the LDS/LDG byte-offset question was settled. See isa/hmma-sm86.md.
+ *
+ * The 0x18 at bit 72 is fixed in the capture and is carried verbatim rather
+ * than guessed at; the reference is
+ *
+ *     HMMA.16816.F32 R8, R8, R6, RZ
+ *         0x000000060808723c   0x004fe400000018ff
+ */
+hp_word hp_hmma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                hp_control c) {
+  hp_word w = hp_base(HP_OP_HMMA, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 8, srcC);
+  hp_put(&w, 72, 8, 0x18);
+  return w;
+}
+
 /* MUFU's operand sits in the srcB slot at bit 32, not srcA at bit 24. The
  * reference MUFU.LG2 R8, R6 carries 0x06 at bits 32..39, and every other
  * captured MUFU reads R0, which is zero in both slots and so proves nothing --
