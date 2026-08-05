@@ -40,6 +40,20 @@ typedef struct {
                       * CACHING_TYPE the host mapping asks for */
   NvU32 mapFlags;    /* override for gaia_map_host; 0 means "use the default
                       * for this location". Registers need their own. */
+  /*
+   * Chunks 1..n-1 of a gaia_alloc_large buffer. Chunk 0 is `handle`, so a
+   * single-chunk buffer leaves this empty and behaves exactly as before.
+   * Capped rather than grown: 64 chunks at 4 MiB is 256 MiB, which is far past
+   * any single tensor this stack allocates, and a fixed array keeps gaia_free
+   * free of ownership questions.
+   */
+  NvHandle chunks[64];
+  unsigned chunkCount;
+  /* The stride the chunks were placed at. Stored rather than recomputed from
+   * the total: the last chunk is short when the size does not divide, so the
+   * average chunk length is NOT the stride and an unmap at the wrong offset
+   * silently leaves a mapping behind. */
+  NvU64 chunkBytes;
 } gaia_buffer;
 
 /* Where the bytes physically live. System memory is host RAM the GPU reaches
@@ -115,6 +129,34 @@ int gaia_reserve_va(aether_device *d, NvHandle *out, NvU64 base, NvU64 size);
 
 /* Map into this process's address space; fills in b->hostPtr. */
 int gaia_map_host(aether_device *d, gaia_buffer *b);
+
+/*
+ * A buffer LARGER than the kernel will give in one physically contiguous piece.
+ *
+ * gaia_alloc asks RM for contiguous pages and the kernel's MAX_ORDER stops it
+ * at 4 MiB — tools/slab_probe.c walks the sizes and everything from 8 MiB up
+ * fails outright. That is not a memory-capacity limit and it was mistaken for
+ * one: a 105M model at batch 28 needs a [28,64,640] activation, 4.59 MB in one
+ * piece, and it failed on an 8 GiB card holding 4.75 GiB. So the CARD had three
+ * gigabytes free and the request was refused anyway.
+ *
+ * The fix is what a real driver does: reserve one VA range of the full size,
+ * then allocate several chunks and place them at consecutive addresses inside
+ * it with gaia_map_gpu_at. The GPU sees one contiguous buffer because its MMU
+ * says so; nothing physical is contiguous beyond a chunk.
+ *
+ * `b` describes the whole range: b->gpuAddr is the base and b->size the total.
+ * b->handle is the FIRST chunk, and the rest are held internally so gaia_free
+ * can release them — which is why this must be freed through gaia_free_large.
+ *
+ * VIDMEM ONLY and no host mapping, which is the only place it is needed and
+ * keeps the chunk bookkeeping out of the host-mapping path.
+ */
+int gaia_alloc_large(aether_device *d, gaia_buffer *b, NvU64 size,
+                     NvU64 chunkBytes);
+
+/* Release a buffer made by gaia_alloc_large, chunks and VA range included. */
+void gaia_free_large(aether_device *d, gaia_buffer *b);
 
 /* Release everything the buffer holds. Safe on a partially constructed one. */
 void gaia_free(aether_device *d, gaia_buffer *b);

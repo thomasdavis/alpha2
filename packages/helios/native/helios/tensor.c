@@ -124,6 +124,10 @@ static NvU64 class_size(int c) {
 typedef struct {
   gaia_buffer buf;
   NvU64 used;
+  /* Backed by several chunks in one VA range rather than one allocation, so it
+   * must be released through gaia_free_large. See the large-allocation branch
+   * in new_slab. */
+  int large;
   /*
    * Whether this slab is mapped into the host's address space.
    *
@@ -371,7 +375,40 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset, int hostVisible
     /* Partially constructed is the normal case here -- the allocation may have
      * succeeded and a mapping failed -- and gaia_free is safe on that. */
     gaia_free(&ctx->device, &s->buf);
-    if (want <= size) return -1;
+    if (want <= size) {
+      /*
+       * ONE CONTIGUOUS BLOCK IS NOT THE ONLY WAY TO GET THE BYTES, and this is
+       * where that used to be assumed.
+       *
+       * The halving loop's floor is the request itself, so a dedicated carve
+       * larger than the kernel's MAX_ORDER ceiling reached here and returned -1
+       * — "allocation of 1146880 floats failed". That reads as a full card and
+       * it is not: the failing request was 4.59 MB on an 8 GiB card holding
+       * 4.75. gaia_alloc asks RM for physically CONTIGUOUS pages, and 4 MiB is
+       * all the kernel will give in one piece whatever else is free.
+       *
+       * So the batch this stack could run was capped at 24 by the size of a
+       * single activation, [24,64,640] being 3.93 MB and [28,64,640] being
+       * 4.59, and it looked like a memory-capacity limit for as long as nobody
+       * subtracted.
+       *
+       * gaia_alloc_large reserves one VA range and places several chunks at
+       * consecutive addresses inside it. The GPU sees one contiguous buffer
+       * because its MMU says so. Video memory only, and dedicated only: a
+       * shared slab is 4 MiB by construction and never needs this.
+       */
+      if (!dedicated || where != GAIA_VIDMEM) return -1;
+      if (gaia_alloc_large(&ctx->device, &s->buf, size, SLAB_BYTES) != 0) {
+        if (getenv("HELIOS_TRACE_ALLOC"))
+          fprintf(stderr, "[helios] large alloc %llu KiB vidmem failed\n",
+                  (unsigned long long)(size / 1024));
+        return -1;
+      }
+      s->hostVisible = 0;
+      s->large = 1;
+      want = size;
+      break;
+    }
     want >>= 1;
     if (want < size) want = size;
   }
@@ -571,9 +608,15 @@ void helios_tensor_live_by_class(unsigned *counts, NvU64 *bytes) {
 
 void helios_tensor_release_all(helios_context *ctx) {
   /* The SLABS own the memory now, so they are what goes back to the driver.
-   * Freeing per slot would hand RM an address it never issued. */
-  for (unsigned i = 0; i < g_slabCount; i++)
-    gaia_free(&ctx->device, &g_slabs[i].buf);
+   * Freeing per slot would hand RM an address it never issued.
+   *
+   * A large slab holds several chunks in one VA range and only the first is
+   * `handle`; gaia_free would release that one and leak the rest along with
+   * their mappings. */
+  for (unsigned i = 0; i < g_slabCount; i++) {
+    if (g_slabs[i].large) gaia_free_large(&ctx->device, &g_slabs[i].buf);
+    else gaia_free(&ctx->device, &g_slabs[i].buf);
+  }
   memset(g_slots, 0, sizeof g_slots);
   memset(g_slabs, 0, sizeof g_slabs);
   memset(&g_stats, 0, sizeof g_stats);

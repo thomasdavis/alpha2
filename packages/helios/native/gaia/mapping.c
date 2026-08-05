@@ -17,6 +17,9 @@
 #include "memory.h"
 #include "../aether/ioctl.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -185,6 +188,116 @@ int gaia_map_host(aether_device *d, gaia_buffer *b) {
   b->hostPtr = p;
   b->hostFd = fd;
   return 0;
+}
+
+/*
+ * ONE VA RANGE, SEVERAL PHYSICAL CHUNKS. See the header for why this exists.
+ *
+ * The order is: reserve the whole range first, then allocate and place each
+ * chunk inside it. Reserving first is what makes the addresses consecutive —
+ * gaia_map_gpu_at needs DMA_OFFSET_FIXED and RM will not choose an address, so
+ * without a range to place them in there is nothing to be consecutive within.
+ *
+ * A chunk is allocated with the same call an ordinary buffer uses, so it is
+ * subject to the same MAX_ORDER ceiling; `chunkBytes` is the caller's promise
+ * that it is small enough. The last chunk is short when the size does not
+ * divide, and is allocated at its real length rather than padded — a partial
+ * chunk still maps at the right offset and mapping bytes that were never
+ * allocated is how a plausible wrong answer gets read out of another tensor.
+ */
+int gaia_alloc_large(aether_device *d, gaia_buffer *b, NvU64 size,
+                     NvU64 chunkBytes) {
+  memset(b, 0, sizeof *b);
+  b->hostFd = -1;
+  b->location = GAIA_VIDMEM;
+
+  const NvU64 n = (size + chunkBytes - 1) / chunkBytes;
+  if (n == 0 || n > sizeof b->chunks / sizeof b->chunks[0] + 1) return -1;
+
+  const NvU64 base = gaia_va_take(size);
+  NvHandle va = 0;
+  int rc = gaia_reserve_va(d, &va, base, size);
+  if (rc != 0) {
+    if (getenv("HELIOS_TRACE_ALLOC"))
+      fprintf(stderr, "[gaia] large reserve_va %llu KiB at 0x%llx failed rc=%d\n",
+              (unsigned long long)(size / 1024), (unsigned long long)base, rc);
+    return rc;
+  }
+
+  for (NvU64 i = 0; i < n; i++) {
+    const NvU64 want = (i + 1 == n) ? size - i * chunkBytes : chunkBytes;
+    gaia_buffer chunk;
+    /* NOT cached: `cached` asks for a host-cacheable mapping, and video memory
+     * here is deliberately never host-mapped — the ordinary vidmem slab passes
+     * 0 for the same reason. Asking for it is rejected outright. */
+    rc = gaia_alloc_cached(d, &chunk, want, GAIA_VIDMEM, 0);
+    if (rc != 0) {
+      if (getenv("HELIOS_TRACE_ALLOC"))
+        fprintf(stderr, "[gaia] large chunk %llu/%llu alloc %llu KiB failed rc=%d\n",
+                (unsigned long long)i, (unsigned long long)n,
+                (unsigned long long)(want / 1024), rc);
+      goto fail;
+    }
+    rc = gaia_map_gpu_at(d, &chunk, va, base + i * chunkBytes);
+    if (rc != 0) {
+      if (getenv("HELIOS_TRACE_ALLOC"))
+        fprintf(stderr, "[gaia] large chunk %llu/%llu map at 0x%llx failed rc=%d\n",
+                (unsigned long long)i, (unsigned long long)n,
+                (unsigned long long)(base + i * chunkBytes), rc);
+      aether_free(d, chunk.handle);
+      goto fail;
+    }
+    /* Set before the next iteration can fail: gaia_free_large unmaps at
+     * multiples of it, and a zero stride would unmap the base repeatedly and
+     * leave every real chunk mapped. */
+    b->chunkBytes = chunkBytes;
+    b->gpuAddr = base;
+    b->vaHandle = va;
+    if (i == 0) {
+      b->handle = chunk.handle;
+    } else {
+      b->chunks[b->chunkCount++] = chunk.handle;
+    }
+  }
+
+  b->size = size;
+  b->gpuAddr = base;
+  b->vaHandle = va;
+  b->chunkBytes = chunkBytes;
+  return 0;
+
+fail:
+  /* Everything placed so far. gaia_free_large releases the chunks, then the
+   * base chunk and the VA range through gaia_free. b is re-zeroed so a second
+   * free is harmless. */
+  b->size = size;
+  gaia_free_large(d, b);
+  memset(b, 0, sizeof *b);
+  b->hostFd = -1;
+  return rc;
+}
+
+void gaia_free_large(aether_device *d, gaia_buffer *b) {
+  /* Unmap every chunk from the range before releasing either. The base chunk
+   * goes through gaia_free, which already does mapping-then-object in the right
+   * order and owns the VA handle. */
+  for (unsigned i = 0; i < b->chunkCount; i++) {
+    if (!b->chunks[i]) continue;
+    NVOS46_PARAMETERS p;
+    memset(&p, 0, sizeof p);
+    p.hClient = d->client;
+    p.hDevice = d->device;
+    p.hDma = d->vaspace;
+    p.hMemory = b->chunks[i];
+    /* Chunk i sits at base + (i+1)*stride: `chunks` holds chunks 1..n-1, chunk 0
+     * being `handle`. */
+    p.dmaOffset = b->gpuAddr + (NvU64)(i + 1) * b->chunkBytes;
+    aether_ioctl(d->ctlFd, NV_ESC_RM_UNMAP_MEMORY_DMA, &p, sizeof p);
+    aether_free(d, b->chunks[i]);
+    b->chunks[i] = 0;
+  }
+  b->chunkCount = 0;
+  gaia_free(d, b);
 }
 
 void gaia_free(aether_device *d, gaia_buffer *b) {
