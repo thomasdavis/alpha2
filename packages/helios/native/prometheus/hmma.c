@@ -616,6 +616,13 @@ _Static_assert(R_ACC % 4u == 0, "HMMA accumulator quad must be 4-aligned");
 _Static_assert(R_AFRAG % 4u == 0, "HMMA A fragment quad must be 4-aligned");
 _Static_assert(R_BFRAG % 2u == 0, "HMMA B fragment pair must be 2-aligned");
 _Static_assert(R_HIGHEST < 250u, "HMMA tile exceeds the register file");
+/* The transposed-A staging lays threads along m, so a pass must cover a whole
+ * number of tile rows. THREADS is 128 and BM is 64 at every geometry that
+ * survives the sweep; a tile where it does not divide would silently give some
+ * threads a row from the next k-pair. */
+_Static_assert(!HMMA_SHARED ||
+                   (32u * HMMA_WARPS) % (MMA_M * HMMA_TM * HMMA_WARPS_M) == 0,
+               "transposed-A staging needs THREADS to be a multiple of BM");
 /* The epilogue rotates over four slots of two registers each; the spare half of
  * the accumulator window has to cover all eight or a slot unpacks over a
  * fragment a later unit still has to read. This is the defect that survived two
@@ -867,7 +874,7 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
 typedef struct {
   unsigned M, N, K;
   int transposedA, transposedB;
-  unsigned aIters, bIters, threads, wpr, bn;
+  unsigned aIters, bIters, threads, wpr, bn, bm;
 } stage_params;
 
 static unsigned emit_stage_loads(hp_word *p, const stage_params *sp, int guard) {
@@ -881,9 +888,18 @@ static unsigned emit_stage_loads(hp_word *p, const stage_params *sp, int guard) 
   p[n++] = hp_imad_wide_const(R_ADDR_SA, R_TMP, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   for (unsigned i = 0; i < sp->aIters; i++) {
-    /* Iteration i is `threads` words on, which is threads/wpr rows on. */
-    const unsigned rowStep = (sp->threads / sp->wpr) * i;
-    const unsigned o = sp->transposedA ? rowStep * 4u : rowStep * K * 4u;
+    /*
+     * Iteration i is `threads` words on, and WHICH AXIS those words advance
+     * along is the layout's business.
+     *
+     * Untransposed A is [M,K] and the threads are laid along k, so an iteration
+     * is threads/wpr ROWS on. Transposed A is [K,M] and they are laid along m
+     * — see the assignment in emit_hmma_staged — so an iteration is
+     * threads/bm K-PAIRS on, and a k-pair is 2*M elements.
+     */
+    const unsigned o = sp->transposedA
+        ? (sp->threads / sp->bm) * i * 2u * M * 4u
+        : (sp->threads / sp->wpr) * i * K * 4u;
     const unsigned pairOff = sp->transposedA ? M * 4u : 4u;
     /*
      * ONE 64-BIT LOAD WHERE THE PAIR IS ADJACENT. A thread's two k are next to
@@ -944,6 +960,7 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   const unsigned B_ITERS = (BN * WPR) / THREADS;
   unsigned lgWPR = 0; while ((1u << lgWPR) < WPR) lgWPR++;
   unsigned lgBN = 0;  while ((1u << lgBN) < BN) lgBN++;
+  unsigned lgBM = 0;  while ((1u << lgBM) < BM) lgBM++;
   unsigned lgWN = 0;  while ((1u << lgWN) < HMMA_WARPS_N) lgWN++;
 
   p[n++] = hp_s2r(R_CTA_M, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
@@ -961,11 +978,30 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
                        hp_ctrl_safe());
   p[n++] = hp_iadd3_imm(R_WARP, R_TMP, 0, hp_ctrl_safe());
 
-  /* This thread's row and k-pair within the A tile: row = tid >> lgWPR and
-   * kpair = tid - row*WPR. Constant across iterations, because THREADS is a
-   * multiple of WPR. */
-  p[n++] = hp_shr_imm(R_SROW, R_TID, lgWPR, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_SKP, R_SROW, (uint32_t)-(int)WPR, R_TID, hp_ctrl_safe());
+  /*
+   * This thread's row and k-pair within the A tile, AND THE DECOMPOSITION
+   * DEPENDS ON THE LAYOUT, for the same reason B's already did: COALESCING.
+   *
+   * Untransposed A is [M,K], a thread's word is a pair of adjacent k in one
+   * row, so laying threads along k makes consecutive threads read consecutive
+   * addresses. Transposed A is [K,M] and the pair is M elements apart — with
+   * the same decomposition, consecutive threads read addresses 2*M elements
+   * apart and a warp issues 32 transactions where it should issue two.
+   *
+   * MEASURED, not reasoned: at matched shapes the transposed-A form ran
+   * 12.2-16.4 TFLOP/s against the forward layout's 19-22, and it is 109 calls
+   * and ~22 ms of a step. So the threads are laid along m instead, exactly as
+   * the untransposed-B branch below lays them along n, and only the SHARED
+   * index has to be rearranged — which it is not, because row*stride + kpair is
+   * already written in terms of both.
+   */
+  if (transposedA) {
+    p[n++] = hp_shr_imm(R_SKP, R_TID, lgBM, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SROW, R_SKP, (uint32_t)-(int)BM, R_TID, hp_ctrl_safe());
+  } else {
+    p[n++] = hp_shr_imm(R_SROW, R_TID, lgWPR, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SKP, R_SROW, (uint32_t)-(int)WPR, R_TID, hp_ctrl_safe());
+  }
   /* A's shared STORE word: row*TILE_STRIDE + kpair. It was simply `tid` while
    * the stride equalled the words per row; padding breaks that identity. */
   p[n++] = hp_imad_imm(R_SHA, R_SROW, TILE_STRIDE, R_SKP, hp_ctrl_safe());
@@ -1075,7 +1111,7 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
    * faults the channel rather than returning nonsense.
    */
   const stage_params sp = {M, N, K, transposedA, transposedB,
-                           A_ITERS, B_ITERS, THREADS, WPR, BN};
+                           A_ITERS, B_ITERS, THREADS, WPR, BN, BM};
   n += emit_stage_loads(&p[n], &sp, 0);
   const unsigned loop_top = n;
 
@@ -1109,7 +1145,12 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   {
     int firstStore = 1;
     for (unsigned i = 0; i < A_ITERS; i++) {
-      p[n++] = hp_sts(R_SHA, ST_A(i), i * (THREADS / WPR) * TILE_STRIDE * 4u,
+      /* Matching the load's axis: rows on for untransposed A, k-pairs on for
+       * transposed — and a k-pair is one WORD in the shared tile, where a row
+       * is a whole stride. */
+      const unsigned so = transposedA ? (THREADS / BM) * i * 4u
+                                      : i * (THREADS / WPR) * TILE_STRIDE * 4u;
+      p[n++] = hp_sts(R_SHA, ST_A(i), so,
                       firstStore ? hp_ctrl_safe() : hp_ctrl_stall(1));
       firstStore = 0;
     }

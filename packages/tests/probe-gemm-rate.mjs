@@ -332,6 +332,47 @@ const only = process.env.ONLY;
 for (const [name, M, N, K, t] of SHAPES)
   if (!only || name.replace(/\s+/g, "").startsWith(only)) rate(name, M, N, K, t);
 
+/*
+ * THE WEIGHT-GRADIENT LAYOUT, measured against the forward one at MATCHED
+ * arithmetic.
+ *
+ * dW = A^T @ B reads A stored [K,M], and the step profile puts every one of
+ * these at ~14.5 TFLOP/s where the forward shapes reach 19-22. The suspicion is
+ * the staging load: a thread owns (row, k-pair) with the k-pair varying fastest,
+ * which is contiguous when A is [M,K] and strides by M when it is [K,M] — so 32
+ * lanes of a warp read 32 locations 2*M elements apart.
+ *
+ * Matched means the same M, N and K, so the FLOPs are identical and any gap is
+ * the layout. Anything else would be comparing two different problems.
+ */
+console.log();
+console.log("weight-gradient layout (A stored [K,M]) against the forward, matched shapes");
+for (const [name, m, n, k] of [
+  ["mlp fc   dW", 640, 2560, 1536],
+  ["qkv      dW", 640, 1920, 1536],
+  ["attn proj dW", 640, 640, 1536],
+]) {
+  const a = B.randn([k, m], rng), b = B.randn([k, n], rng);
+  const beacon = B.zeros([1]); const drain = () => beacon.data[0];
+  const warm = process.hrtime.bigint();
+  while (Number(process.hrtime.bigint() - warm) / 1e6 < 2000) {
+    const c = B.matmulTransposedA(a, b); drain(); B.releaseGpuTensor?.(c); B.finishStepOps?.();
+  }
+  const ITERS = 30;
+  for (let i = 0; i < ITERS; i++) B.releaseGpuTensor?.(B.matmulTransposedA(a, b));
+  drain(); B.finishStepOps?.(); evictL2(); drain();
+  const t0 = process.hrtime.bigint();
+  let last = null;
+  for (let i = 0; i < ITERS; i++) { if (last) B.releaseGpuTensor?.(last); last = B.matmulTransposedA(a, b); }
+  drain();
+  const secs = Number(process.hrtime.bigint() - t0) / 1e9;
+  B.releaseGpuTensor?.(last); B.finishStepOps?.();
+  console.log(`  ${name}  m${String(m).padEnd(4)} n${String(n).padEnd(5)} k${String(k).padEnd(5)}` +
+              `  ${(2 * m * n * k * ITERS / secs / 1e12).toFixed(2).padStart(6)} TFLOP/s` +
+              `  ${(secs * 1e6 / ITERS).toFixed(0).padStart(6)} us/call`);
+  B.releaseGpuTensor?.(a); B.releaseGpuTensor?.(b); B.releaseGpuTensor?.(beacon);
+}
+
 console.log();
 console.log("attention, batched — 240 independent 64x64 problems, not one big one");
 for (const [name, batch, M2, K2, N2] of BATCHED) rateBatched(name, batch, M2, K2, N2);
