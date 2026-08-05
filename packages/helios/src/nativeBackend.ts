@@ -595,6 +595,31 @@ export class NativeHeliosBackend implements Backend {
     const axisLen = shape[k];
     const inner = shape.slice(k + 1).reduce((x, y) => x * y, 1);
     const outer = shape.slice(0, k).reduce((x, y) => x * y, 1);
+
+    /*
+     * SUMMING DOWN A LONG AXIS IS A MATMUL WITH A VECTOR OF ONES.
+     *
+     * The route below transposes the axis to the end and reduces a row, and the
+     * row reduction puts the whole axis in ONE BLOCK — so it fails outright
+     * above PR_MAX_BLOCK. That is not hypothetical: `sum(x, 0)` over a
+     * [B*T, C] gradient is 4,096 rows at batch 128, and it is what broke every
+     * attempt at a fused layerNorm backward, in three separate sessions, always
+     * as an unexplained "matmul failed on the device" one operation later.
+     *
+     * ones[1,R] x a[R,C] is the same sum, in one launch, at any size. It is only
+     * used when the axis is too long for a block, because for short axes the
+     * reduction is the cheaper shape -- a matmul of one row does far more work
+     * than it needs to.
+     */
+    if (k === 0 && outer === 1 && axisLen > 1024) {
+      const ones = this.full([1, axisLen], 1);
+      const summed = this.matmul(ones, this.reshape(a, [axisLen, inner]));
+      const flat = this.reshape(summed, [inner]);
+      const outShape0 = shape.slice(1);
+      const res = mean ? this.scale(flat, 1 / axisLen) : flat;
+      return this.reshape(res, outShape0.length ? outShape0 : [1]);
+    }
+
     const plane = this.reshape(a, [outer, axisLen, inner]);
     const t = this.transpose(plane);
     const reduced = this.reduceAxis(name, mean, t);
