@@ -75,6 +75,11 @@ enum {
   R_STG_IDX_A = 19,
   R_STG_ADDR_A = 20, /* R20:R21 */
   R_STG_VAL_A = 22,
+  /* The chunk loop, added when N stopped being bounded by the block width. */
+  R_TID = 27,   /* threadIdx.x, kept because R_COL now moves */
+  R_CHUNK = 28, /* which chunk of BW columns this pass is computing */
+  R_AROW = 29,  /* A's row start incl. batch plane — invariant across chunks */
+  R_BPLANE = 30, /* B's batch plane offset — likewise */
   R_STG_IDX_B = 23,
   R_STG_ADDR_B = 24, /* R24:R25 */
   R_STG_VAL_B = 26,
@@ -84,6 +89,8 @@ enum {
 #define BAR_LOAD 1 /* BOTH loads -- see the accumulate below */
 #define P_DONE 0   /* set when the loop has run its course */
 #define P_TILE 1   /* set when a thread is past the end of a short stage round */
+#define P_COL 2    /* clear when this thread's column is inside N */
+#define P_CHUNK 3  /* set when the chunk loop has run its course */
 #define INSTR_BYTES 16
 
 /*
@@ -104,8 +111,32 @@ enum {
 
 /* How many cooperative rounds it takes N threads to stage K elements. The last
  * one is short whenever N does not divide K, and it is PREDICATED. */
+/*
+ * THE BLOCK IS AT MOST 1024 THREADS, whatever N is.
+ *
+ * One thread per output column was a clean design and it made N un-runnable
+ * past the hardware's limit. A block now runs min(N, 1024) threads and each
+ * thread walks its column in strides of that width, so the launch geometry is
+ * the same for N = 64 and N = 12288 and the only thing that grows is how many
+ * times the inner loop runs.
+ */
+#define MATMUL_MAX_THREADS 1024u
+
+unsigned pr_matmul_block(unsigned N) {
+  return N < MATMUL_MAX_THREADS ? N : MATMUL_MAX_THREADS;
+}
+
+/* How many passes of BW columns cover N. */
+static unsigned col_chunks(unsigned N) {
+  const unsigned bw = pr_matmul_block(N);
+  return bw ? (N + bw - 1u) / bw : 1u;
+}
+
+/* How many cooperative rounds it takes BW threads to stage K elements. The last
+ * one is short whenever BW does not divide K, and it is PREDICATED. */
 static unsigned tile_rounds(unsigned N, unsigned K) {
-  return (K + N - 1u) / N;
+  const unsigned bw = pr_matmul_block(N);
+  return (K + bw - 1u) / bw;
 }
 
 /*
@@ -150,19 +181,32 @@ unsigned pr_matmul_shared_bytes(unsigned N, unsigned K) {
 unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   unsigned n = 0;
 
+  const unsigned BW = pr_matmul_block(N);
+  const unsigned chunks = col_chunks(N);
+  /* Only when the chunks overhang N: for 12288 over 1024 they do not, and the
+   * guard is not emitted at all. */
+  const int guard_col = chunks * BW > N;
+
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
-  p[n++] = hp_mov_imm(R_ACC, 0, hp_ctrl_safe());
-  p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+  /* R_COL is the staging index until the chunk loop opens, and the column
+   * after. Staging reads it as "which element of A's row am I fetching", which
+   * is the thread id, so they agree there. */
+  p[n++] = hp_iadd3_imm(R_COL, R_TID, 0, hp_ctrl_wait(BAR_ID));
 
   /* A[row][0] is element row*K, and B[0][col] is element col. Both indices then
    * only ever need adding to, which is why they are set up outside the loop:
    * the multiply is loop-invariant and doing it inside would be paying for it K
    * times to get the same answer. */
-  p[n++] = hp_imad_imm(R_AIDX, R_ROW, K, HP_RZ, hp_ctrl_wait(BAR_ID));
-  p[n++] = hp_iadd3_imm(R_BIDX, R_COL, 0, hp_ctrl_safe());
+  /* A's row start, including the batch plane. It does not depend on the column,
+   * so it is computed once and copied into R_AIDX at the top of every chunk. */
+  p[n++] = hp_imad_imm(R_AROW, R_ROW, K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_AROW, R_AROW, R_TMP, hp_ctrl_safe());
+  /* B's batch plane, likewise. */
+  p[n++] = hp_imad_imm(R_BPLANE, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
 
   /*
    * BATCHED, by taking the plane from the block's Y index.
@@ -176,10 +220,6 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
    * queue and copied out -- four round trips for four attention heads, and
    * after batching went in those drains were most of what remained.
    */
-  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_AIDX, R_AIDX, R_TMP, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_TMP, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_BIDX, R_BIDX, R_TMP, hp_ctrl_safe());
 
   /*
    * Stage A's row in shared memory, cooperatively.
@@ -216,7 +256,11 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
       const unsigned rVal = (t & 1u) ? R_STG_VAL_B : R_STG_VAL_A;
 
       p[n++] = hp_iadd3_imm(rIdx, R_COL, base, hp_ctrl_safe());
-      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AIDX, rIdx, hp_ctrl_safe());
+      /* R_AROW, not R_AIDX: the walking index is reset per chunk and the chunk
+       * loop has not opened yet. Reading R_AIDX here staged from whatever it
+       * held — zero for row 0, which is why only row 1 reported a wrong dot
+       * product and row 0 looked fine. */
+      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AROW, rIdx, hp_ctrl_safe());
       p[n++] = hp_imad_wide_const(rAddr, R_LOAD_IDX, R_ESIZE, 0,
                                   HERMES_CBUF0_PARAM_N(1),
                                   hp_ctrl_safe());
@@ -232,6 +276,25 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
     p[n++] = hp_bar_sync(hp_ctrl_safe());
   }
 
+  /*
+   * THE CHUNK LOOP: this thread's columns are tid, tid+BW, tid+2BW, ...
+   *
+   * Everything below it was the whole kernel when a thread owned exactly one
+   * column. It is re-entered per chunk with the accumulator, the counter and
+   * both indices reset, which is why those moves live here and not in the
+   * prologue. A's row is staged once, outside, because it does not depend on
+   * the column.
+   */
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  const unsigned chunk_top = n;
+  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+  if (guard_col)
+    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, N - 1, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_ACC, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_AIDX, R_AROW, 0, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
+
   const unsigned loop_top = n;
 
   /* A[row][k] -- from shared memory when staged, from global when not. */
@@ -246,7 +309,13 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   /* B[k][col] */
   p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
-  p[n++] = hp_ldg(R_BVAL, R_BADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  {
+    /* A thread whose column overhangs N must not LOAD either: B[k][col] past
+     * the last column is the next row's data, and on the final k it is past the
+     * tensor entirely. Predicated off, no address is formed. */
+    hp_word bl = hp_ldg(R_BVAL, R_BADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard_col ? hp_predicated(bl, P_COL, 1) : bl;
+  }
 
   /*
    * The accumulate waits on ONE barrier covering both loads.
@@ -283,7 +352,24 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   p[n++] = hp_iadd3_reg(R_OIDX, R_OIDX, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_OIDX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
-  p[n++] = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());
+  {
+    /* The overhanging threads computed a dot product from data they were not
+     * allowed to read; the store is where that has to stop. */
+    hp_word st = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());
+    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+  }
+
+  /* Next chunk of columns, if there is one. Emitted only when there is: for
+   * every shape at or below the block width this is one pass and the branch
+   * would be a loop that always exits. */
+  if (chunks > 1) {
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int cback = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(cback, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }

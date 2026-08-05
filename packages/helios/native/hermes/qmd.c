@@ -153,7 +153,14 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * the right trade, because the failure mode of guessing low is a fault and
    * the failure mode of guessing high is slower.
    */
-  qmd_set(qmd, REGISTER_COUNT_V, 32);
+  /*
+   * 40 since matmul walks columns in chunks: the chunk loop keeps A's row start
+   * and B's batch plane live across it (R29, R30), which is 31 registers, and
+   * 32 leaves nothing between the highest one used and the declaration. Ampere
+   * allocates in units of 8, so this is the next size up and it costs occupancy
+   * rather than correctness — the trade this comment already describes.
+   */
+  qmd_set(qmd, REGISTER_COUNT_V, 40);
   /*
    * ONE BARRIER, always.
    *

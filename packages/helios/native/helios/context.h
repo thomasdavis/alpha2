@@ -103,6 +103,11 @@ void helios_context_close(helios_context *ctx);
 /* How many launches may be outstanding before a flush is forced. */
 #define HELIOS_RING_SLOTS 64
 
+/* The hardware's threads-per-block limit. Exceeding it is an invalid launch,
+ * not a rejected one, so helios_enqueue checks rather than letting the channel
+ * fault asynchronously. */
+#define HELIOS_MAX_BLOCK_THREADS 1024u
+
 /*
  * Queue a launch. Does NOT wait.
  *

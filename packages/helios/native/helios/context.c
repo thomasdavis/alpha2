@@ -123,6 +123,23 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
                    const NvU64 *buffers, unsigned nbuffers,
                    const NvU32 *scalars, unsigned nscalars) {
   if (count * sizeof(hp_word) > PROGRAM_BYTES) return -1;
+  /*
+   * A BLOCK CANNOT HAVE MORE THAN 1024 THREADS, and asking for more is not a
+   * clean failure — it is an invalid launch, which raises GR_EXCEPTION on the
+   * channel and is reported at whatever flushes next.
+   *
+   * Most kernels here take their block width from a model dimension: one thread
+   * per output column, per class, per feature. That is fine up to the limit and
+   * silently catastrophic past it, and a 105M-parameter model goes past it in
+   * several places at once (vocab 12,288, qkv 1,920, FFN 1,728). matmul now
+   * walks its columns in chunks; the rest do not yet, and until they do this is
+   * what tells you which one you hit instead of "layerNorm failed" three
+   * operations later.
+   */
+  if (blockX > HELIOS_MAX_BLOCK_THREADS) {
+    ctx->failStage = "launch: block width over 1024 threads";
+    return -1;
+  }
   if (nbuffers > HERMES_CBUF0_PARAM_COUNT) return -1;
   if (nscalars > HERMES_CBUF0_SCALAR_COUNT) return -1;
 

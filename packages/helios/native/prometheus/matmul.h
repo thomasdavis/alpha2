@@ -25,4 +25,19 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K);
  * can be staged and zero when it cannot. The launch must match. */
 unsigned pr_matmul_shared_bytes(unsigned N, unsigned K);
 
+/*
+ * How many threads a matmul block runs — min(N, 1024).
+ *
+ * One thread per output column was the design, and it put a hard ceiling on N
+ * at the hardware's threads-per-block limit: a 105M-parameter model needs
+ * N = 1728, 1920 and 12288 for its FFN, qkv and LM head, and every one of them
+ * faulted the channel with a compute exception (0xd). The launch is invalid, so
+ * the failure is not a wrong answer, but it arrives asynchronously and is
+ * reported at whatever flushes next.
+ *
+ * Threads now walk COLUMNS IN CHUNKS instead, so N is unbounded and the launch
+ * geometry never changes. See pr_emit_matmul.
+ */
+unsigned pr_matmul_block(unsigned N);
+
 #endif /* PROMETHEUS_MATMUL_H */
