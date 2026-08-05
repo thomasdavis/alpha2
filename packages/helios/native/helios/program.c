@@ -283,6 +283,15 @@ static int emit(const helios_key *key, helios_program *p) {
       p->sharedBytes = pr_cross_entropy_block(key->arg0) * 4;
       return 0;
 
+    case HL_CROSS_ENTROPY_BACKWARD:
+      /* Same block shape as the forward: one block per row, shared memory
+       * holding per-thread partials rather than the row. */
+      p->count = pr_emit_cross_entropy_backward(p->code, key->arg0);
+      p->blockX = pr_cross_entropy_block(key->arg0);
+      p->gridX = key->arg1;
+      p->sharedBytes = pr_cross_entropy_block(key->arg0) * 4;
+      return 0;
+
     case HL_RESIDUAL_RMS:
       p->count = pr_emit_residual_rms(p->code, key->arg0);
       p->blockX = key->arg0;

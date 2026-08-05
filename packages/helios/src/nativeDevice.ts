@@ -113,6 +113,7 @@ export interface NativeAddon {
   cast(toF16: number, out: number, a: number, n: number): boolean;
   dropoutMask(out: number, n: number, seed: number, counter: number, p: number): boolean;
   crossEntropy(out: number, logits: number, targets: number, rows: number, classes: number): boolean;
+  crossEntropyBackward(out: number, logits: number, targets: number, rows: number, classes: number, scale: number): boolean;
   residualRms(out: number, x: number, res: number, w: number, width: number, rows: number, eps: number): boolean;
   residualDropout(out: number, x: number, res: number, mask: number, width: number, rows: number, scale: number): boolean;
   adamw(param: number, grad: number, m: number, v: number, n: number,

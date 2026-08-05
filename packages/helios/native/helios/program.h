@@ -66,6 +66,7 @@ typedef enum {
   HL_CAST_TO_F32,
   HL_DROPOUT,
   HL_CROSS_ENTROPY,   /* arg0 = classes */
+  HL_CROSS_ENTROPY_BACKWARD, /* arg0 = classes, arg1 = rows */
   HL_RESIDUAL_RMS,    /* arg0 = elements */
   HL_RESIDUAL_DROPOUT,
   HL_ADAMW,

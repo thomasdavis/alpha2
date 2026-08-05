@@ -1732,6 +1732,41 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /*
+   * The gradient, in one kernel: (softmax(logits) - onehot(targets)) * scale.
+   *
+   * WHY THIS OVERRIDE EXISTS: autograd's fallback for it is four operations,
+   * and the first of them builds the one-hot term as a HOST array — at this
+   * model's shape 512 x 12,288 floats, twenty-five megabytes written element by
+   * element in JavaScript and uploaded every step — before a full-size softmax,
+   * subtract and scale combine it with a tensor that is zero in all but 512
+   * places. None of that is arithmetic the GPU could not do without being told.
+   *
+   * `g` is read on the host, as the composed path also does. It is the gradient
+   * of a scalar loss: one float, and in practice the constant 1.
+   */
+  crossEntropyBackward(logits: TensorData, targets: TensorData,
+                       g: TensorData): TensorData {
+    const classes = logits.shape[logits.shape.length - 1] ?? 1;
+    const rows = shapeSize(logits.shape) / classes;
+    const dl = this.device(logits);
+    const ids = this.make([rows], "i32");
+    const src = targets.data as ArrayLike<number>;
+    const idsInts = ids.buffer.ints;
+    for (let i = 0; i < rows; i++) idsInts[i] = src[i] | 0;
+    /* Built here and handed straight to the kernel, so the write-back is
+     * explicit — same as the forward. */
+    ids.buffer.commit();
+    const gScalar = (g.data as ArrayLike<number>)[0] ?? 1;
+    const out = this.make(logits.shape.slice(), "f32");
+    this.check(this.hl.crossEntropyBackward(out.buffer.handle, dl.buffer.handle,
+                                            ids.buffer.handle, rows, classes,
+                                            gScalar / rows),
+               "crossEntropyBackward");
+    ids.buffer.release(this.hl);
+    return out;
+  }
+
   crossEntropy(logits: TensorData, targets: TensorData): TensorData {
     const classes = logits.shape[logits.shape.length - 1] ?? 1;
     const rows = shapeSize(logits.shape) / classes;

@@ -452,6 +452,16 @@ int hl_cross_entropy(helios_context *ctx, helios_tensor out,
   return run(ctx, k, ts, 3, s, 2);
 }
 
+int hl_cross_entropy_backward(helios_context *ctx, helios_tensor out,
+                              helios_tensor logits, helios_tensor targets,
+                              unsigned rows, unsigned classes, float scale) {
+  const helios_key k = {HL_CROSS_ENTROPY_BACKWARD, classes, rows, 0};
+  const helios_tensor ts[3] = {out, logits, targets};
+  /* log2(e) for the exponential, and the caller's already-divided scale. */
+  const NvU32 s[2] = {bits(1.4426950408889634f), bits(scale)};
+  return run(ctx, k, ts, 3, s, 2);
+}
+
 int hl_residual_rms(helios_context *ctx, helios_tensor out, helios_tensor x,
                     helios_tensor residual, helios_tensor weight,
                     unsigned width, unsigned rows, float eps) {

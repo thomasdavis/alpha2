@@ -136,6 +136,10 @@ int hl_cross_entropy(helios_context *ctx, helios_tensor out,
                      helios_tensor logits, helios_tensor targets, unsigned rows,
                      unsigned classes);
 
+int hl_cross_entropy_backward(helios_context *ctx, helios_tensor out,
+                              helios_tensor logits, helios_tensor targets,
+                              unsigned rows, unsigned classes, float scale);
+
 int hl_residual_rms(helios_context *ctx, helios_tensor out, helios_tensor x,
                     helios_tensor residual, helios_tensor weight,
                     unsigned width, unsigned rows, float eps);

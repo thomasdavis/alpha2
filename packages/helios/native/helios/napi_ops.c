@@ -192,6 +192,14 @@ static napi_value js_cross_entropy(napi_env env, napi_callback_info info) {
       env, hl_cross_entropy(ctx, U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
+/* (out, logits, targets, rows, classes, scale) */
+static napi_value js_cross_entropy_backward(napi_env env,
+                                            napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_cross_entropy_backward(ctx, U32(0), U32(1), U32(2),
+                                                  U32(3), U32(4), F32(5)));
+}
+
 /* (out, x, residual, weight, width, rows, eps) */
 static napi_value js_residual_rms(napi_env env, napi_callback_info info) {
   CTX;
@@ -236,6 +244,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "cast", js_cast);
   hl_export(env, exports, "dropoutMask", js_dropout_mask);
   hl_export(env, exports, "crossEntropy", js_cross_entropy);
+  hl_export(env, exports, "crossEntropyBackward", js_cross_entropy_backward);
   hl_export(env, exports, "residualRms", js_residual_rms);
   hl_export(env, exports, "residualDropout", js_residual_dropout);
   hl_export(env, exports, "adamw", js_adamw);
