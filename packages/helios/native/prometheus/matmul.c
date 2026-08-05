@@ -107,6 +107,10 @@ enum {
    * operands. It presented as N=1023 wrong at ROWS=4 while every shape had been
    * right at ROWS=2 — the same hazard, at a shorter distance.
    */
+  /* The K-unrolled loop reuses these when the tiled path is off; the two are
+   * mutually exclusive by construction. */
+  R_UA0 = 32, R_UA1 = 33, R_UA2 = 34, R_UA3 = 35,
+  R_UB0 = 36, R_UB1 = 37, R_UB2 = 38, R_UB3 = 39,
   R_ACC0 = 32, R_ACC1 = 33, R_ACC2 = 34, R_ACC3 = 35,
   R_AV0 = 36, R_AV1 = 37, R_AV2 = 38, R_AV3 = 39,
   /* Numbered so that the ROWS actually used stay low: at two rows the highest
@@ -554,6 +558,53 @@ unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
   else
     p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
 
+  /*
+   * UNROLLED BY FOUR when K allows, because the loop was nine instructions per
+   * FFMA — about 11% of issued instructions doing arithmetic, which is the
+   * shape of a GEMM sustaining 0.54% of peak.
+   *
+   * Both immediates are BYTE offsets (tools/shared_offset_probe.c measured LDS
+   * and LDG), so four loads share one computed address and the four index
+   * updates collapse to two. That is 4 FFMAs per 17 instructions against 1 per
+   * 9 — issue efficiency roughly doubles without touching the memory pattern.
+   */
+  const int unroll = (K % 4u == 0) && (K >= 4u);
+  if (unroll) {
+    const unsigned UA[4] = {R_UA0, R_UA1, R_UA2, R_UA3};
+    const unsigned UB[4] = {R_UB0, R_UB1, R_UB2, R_UB3};
+    const unsigned loop_top4 = n;
+
+    if (tiled) {
+      for (unsigned j = 0; j < 4; j++)
+        p[n++] = hp_lds(UA[j], R_K, j * 4u, hp_ctrl_setbar(BAR_LOAD));
+    } else {
+      p[n++] = hp_imad_wide_const(R_AADDR, R_AIDX, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+      for (unsigned j = 0; j < 4; j++)
+        p[n++] = hp_ldg(UA[j], R_AADDR, j * 4u, hp_ctrl_setbar(BAR_LOAD));
+    }
+    p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+    for (unsigned j = 0; j < 4; j++) {
+      /* B walks DOWN a column, N elements a step — or along a row when B is
+       * transposed, one element a step. */
+      const unsigned off = transposedB ? j * 4u : j * N * 4u;
+      p[n++] = hp_ldg(UB[j], R_BADDR, off, hp_ctrl_setbar(BAR_LOAD));
+    }
+    for (unsigned j = 0; j < 4; j++)
+      p[n++] = hp_ffma(R_ACC, UA[j], UB[j], R_ACC,
+                       j == 0 ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+
+    p[n++] = hp_iadd3_imm(R_AIDX, R_AIDX, 4, hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, transposedB ? 4 : (int)(4u * N),
+                          hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(R_K, R_K, 4, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1, hp_ctrl_safe());
+    const int back4 = -(int)((n + 1 - loop_top4) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back4, hp_ctrl_branch()), P_DONE, 1);
+    n++;
+  } else {
+
   const unsigned loop_top = n;
 
   /* A[row][k] -- from shared memory when staged, from global when not. */
@@ -605,6 +656,7 @@ unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
   const int back = -(int)((n + 1 - loop_top) * INSTR_BYTES);
   p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
   n++;
+  }
 
   /* C[row][col] is element row*N + col. */
   p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());

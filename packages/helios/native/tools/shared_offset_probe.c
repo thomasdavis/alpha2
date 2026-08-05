@@ -78,7 +78,7 @@ static unsigned build(hp_word *p) {
   p[n++] = hp_sts(R_TID, R_VAL, 0, safe());
   p[n++] = hp_bar_sync(safe());
 
-  /* The question. */
+  /* The question, for shared memory. */
   p[n++] = hp_lds(R_VAL, R_TID, OFFSET, hp_ctrl_setbar(1));
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_TID, R_ESIZE, 0,
@@ -160,11 +160,63 @@ int main(void) {
   const NvU32 asBytes = (0 + OFFSET / 4u) * 10u;
   const NvU32 asElements = (0 + OFFSET) * 10u;
   if (host[0] == asBytes)
-    printf("\nVERDICT: the immediate is a BYTE offset — address is reg*4 + imm\n");
+    printf("\nLDS VERDICT: the immediate is a BYTE offset — address is reg*4 + imm\n");
   else if (host[0] == asElements)
-    printf("\nVERDICT: the immediate is an ELEMENT offset — address is (reg + imm)*4\n");
+    printf("\nLDS VERDICT: the immediate is an ELEMENT offset — address is (reg + imm)*4\n");
   else
-    printf("\nVERDICT: neither (%d) — the encoding does something else again\n",
-           (int)host[0]);
+    printf("\nLDS VERDICT: neither (%d)\n", (int)host[0]);
+
+  /*
+   * AND THE SAME QUESTION FOR GLOBAL MEMORY, because the answer decides whether
+   * a K loop can be unrolled cheaply.
+   *
+   * Unrolling the matmul's inner loop is worth ~2x on issue efficiency — 4
+   * FFMAs per 17 instructions against 1 per 9 — but only if the four B loads
+   * can share one computed address and differ by an immediate. If the immediate
+   * is not a byte offset, each load needs its own IMAD.WIDE and most of the win
+   * goes with it.
+   *
+   * LDG takes a 64-bit register PAIR, not a scaled index, so there is no .X4 to
+   * reason about and the immediate is almost certainly bytes — "almost
+   * certainly" being the phrase that cost an attempt last time.
+   */
+  for (unsigned i = 0; i < THREADS; i++) host[i] = 0xffffffffu;
+  host[64] = 0;
+  {
+    unsigned m = 0;
+    hp_word g[64];
+    enum { G_TID = 0, G_VAL = 1, G_ESIZE = 2, G_ADDR = 4 };
+    g[m++] = hp_s2r(G_TID, HP_SR_TID_X, hp_ctrl_setbar(0));
+    g[m++] = hp_mov_imm(G_ESIZE, 4, hp_ctrl_wait(0));
+    /* Address of out[tid], then read out[tid] back with an immediate of 4. The
+     * buffer still holds 0xffffffff everywhere, so first write a pattern. */
+    g[m++] = hp_imad_wide_const(G_ADDR, G_TID, G_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), safe());
+    g[m++] = hp_imad_imm(G_VAL, G_TID, 10, HP_RZ, safe());
+    g[m++] = hp_stg(G_ADDR, G_VAL, 0, safe());
+    g[m++] = hp_bar_sync(safe());
+    g[m++] = hp_ldg(G_VAL, G_ADDR, OFFSET, hp_ctrl_setbar(1));
+    g[m++] = hp_stg(G_ADDR, G_VAL, 0, hp_ctrl_wait(1));
+    g[m++] = hp_exit(safe());
+    memcpy(code.hostPtr, g, m * sizeof(hp_word));
+    hermes_qmd_build(q, code.gpuAddr, cbuf.gpuAddr, 1, 1, 1, THREADS, 1, 1, 256,
+                     m * (NvU32)sizeof(hp_word));
+    hermes_qmd_set_cbuf(q, 0, cbuf.gpuAddr, 6400);
+    memcpy(qmd.hostPtr, q, HERMES_QMD_BYTES);
+    __asm__ __volatile__("sfence" ::: "memory");
+    hermes_begin(&c);
+    hermes_launch(&c, qmd.gpuAddr);
+    hermes_semaphore_release(&c, out.gpuAddr + 256, 0x5eed5eedu);
+    hermes_submit(&d, &c);
+    hermes_ring(&c, (volatile NvU32 *)c.userd.hostPtr, c.doorbell, c.token);
+    const NvU64 dl = now_ns() + 2000000000ull;
+    while (now_ns() < dl && host[64] != 0x5eed5eedu) {}
+    if (host[64] != 0x5eed5eedu) { printf("LDG probe TIMED OUT\n"); return 1; }
+    printf("\nglobal offset probe: out[tid] = tid*10, then LDG(&out[tid], %u)\n", OFFSET);
+    for (unsigned i = 0; i < 4; i++) printf("  tid %u -> %d\n", i, (int)host[i]);
+    if (host[0] == 10) printf("\nLDG VERDICT: BYTE offset — one address serves an unrolled loop\n");
+    else if (host[0] == 40) printf("\nLDG VERDICT: ELEMENT offset\n");
+    else printf("\nLDG VERDICT: neither (%d)\n", (int)host[0]);
+  }
   return 0;
 }
