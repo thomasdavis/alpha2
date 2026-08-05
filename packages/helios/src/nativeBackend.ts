@@ -157,12 +157,15 @@ export class NativeHeliosBackend implements Backend {
      * mirror is refreshed against the device epoch: a view captured before a
      * kernel ran would be the bytes from before it ran.
      */
+    /* Mapped memory can cache the view: it never moves. Device-resident memory
+     * cannot, because the getter is what refreshes the mirror. */
+    const cached = buffer.mapped ? buffer.floats.subarray(0, n) : null;
     return {
       shape,
       dtype,
       get data() {
         self.sync();
-        return buffer.floats.subarray(0, n);
+        return cached ?? buffer.floats.subarray(0, n);
       },
       buffer,
     } as NativeTensor;
@@ -1147,12 +1150,13 @@ export class NativeHeliosBackend implements Backend {
      * system-memory mirror under video residency, and a reshape is the one
      * operation that is supposed to cost nothing at all. */
     const n = shapeSize(shape);
+    const cached = buffer.mapped ? buffer.floats.subarray(0, n) : null;
     return {
       shape,
       dtype: da.dtype,
       get data() {
         self.sync();
-        return buffer.floats.subarray(0, n);
+        return cached ?? buffer.floats.subarray(0, n);
       },
       buffer,
     } as NativeTensor;

@@ -225,6 +225,23 @@ export class NativeBuffer {
     this.elements = elements;
     this.direct = buffer ? new Float32Array(buffer) : null;
     this.directInts = buffer ? new Int32Array(buffer) : null;
+    /*
+     * SHADOW THE GETTERS WITH OWN FIELDS when the memory is mapped.
+     *
+     * `floats` has to be a getter for the device-resident case, and making it
+     * one cost the DEFAULT path 10-20%: it is read inside every host copy loop
+     * in the backend, and a prototype accessor is a call where a field is an
+     * inline-cached load. Defining an own data property here shadows the
+     * accessor for these instances, so the mapped path gets its field back and
+     * the device-resident path keeps the getter.
+     *
+     * defineProperty rather than assignment: the prototype accessor has no
+     * setter, so `this.floats = view` would throw.
+     */
+    if (buffer) {
+      Object.defineProperty(this, "floats", { value: this.direct, enumerable: false });
+      Object.defineProperty(this, "ints", { value: this.directInts, enumerable: false });
+    }
   }
 
   static alloc(hl: NativeAddon, elements: number): NativeBuffer {

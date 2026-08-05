@@ -46,6 +46,38 @@ enum {
   R_BATCH = 16,
   R_TMP = 17,
   R_LOAD_IDX = 18,
+
+  /*
+   * TWO SETS OF STAGING REGISTERS, ALTERNATED BY ROUND.
+   *
+   * The cooperative stage is unrolled, and every round used to compute its
+   * index into R_TMP, its address into R_AADDR and its value into R_AVAL. Round
+   * t+1 therefore overwrote registers round t's STS may not have read yet: a
+   * shared-memory store holds its operands until the memory pipe accepts them,
+   * and this stack has no interlock for write-after-read.
+   *
+   * It survived because only one shape in the model ever staged more than once
+   * -- the MLP down-projection, K=256 over N=64, four rounds -- and system
+   * memory's latencies happened to hide it. Video memory's do not:
+   *
+   *     [1024,256]x[256,64]   sysmem  6.20e-6 against cpu_ref   ok
+   *     [1024,256]x[256,64]   vidmem  1.98e+1                   garbage
+   *
+   * while the one-round shapes (qkv K=64 N=192, MLP up K=64 N=256) are correct
+   * under both, which is exactly the split a multi-round hazard predicts.
+   *
+   * Alternating two sets means round t+1 touches nothing round t is still
+   * using, and round t+2 is separated from round t by the intervening round's
+   * issue. Removing the hazard by construction rather than ordering it with
+   * barriers is the same choice normalize.c made for the same reason, and the
+   * address registers are even-aligned because they are pairs.
+   */
+  R_STG_IDX_A = 19,
+  R_STG_ADDR_A = 20, /* R20:R21 */
+  R_STG_VAL_A = 22,
+  R_STG_IDX_B = 23,
+  R_STG_ADDR_B = 24, /* R24:R25 */
+  R_STG_VAL_B = 26,
 };
 
 #define BAR_ID 0   /* the two S2Rs */
@@ -177,13 +209,19 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
       if (partial)
         p[n++] = hp_isetp_gt_imm(P_TILE, R_COL, (K - base) - 1u, hp_ctrl_safe());
 
-      p[n++] = hp_iadd3_imm(R_TMP, R_COL, base, hp_ctrl_safe());
-      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AIDX, R_TMP, hp_ctrl_safe());
-      p[n++] = hp_imad_wide_const(R_AADDR, R_LOAD_IDX, R_ESIZE, 0,
+      /* Alternate the register set so this round cannot disturb the last one's
+       * store while it is still reading. See the enum. */
+      const unsigned rIdx = (t & 1u) ? R_STG_IDX_B : R_STG_IDX_A;
+      const unsigned rAddr = (t & 1u) ? R_STG_ADDR_B : R_STG_ADDR_A;
+      const unsigned rVal = (t & 1u) ? R_STG_VAL_B : R_STG_VAL_A;
+
+      p[n++] = hp_iadd3_imm(rIdx, R_COL, base, hp_ctrl_safe());
+      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AIDX, rIdx, hp_ctrl_safe());
+      p[n++] = hp_imad_wide_const(rAddr, R_LOAD_IDX, R_ESIZE, 0,
                                   HERMES_CBUF0_PARAM_N(1),
                                   hp_ctrl_safe());
-      hp_word load = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-      hp_word store = hp_sts(R_TMP, R_AVAL, 0, hp_ctrl_wait(BAR_LOAD));
+      hp_word load = hp_ldg(rVal, rAddr, 0, hp_ctrl_setbar(BAR_LOAD));
+      hp_word store = hp_sts(rIdx, rVal, 0, hp_ctrl_wait(BAR_LOAD));
       if (partial) {
         load = hp_predicated(load, P_TILE, 1);
         store = hp_predicated(store, P_TILE, 1);

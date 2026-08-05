@@ -288,22 +288,45 @@ static void test_slab_carves_do_not_overlap(void) {
   HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
   HT_EQ_U64(helios_tensor_get_stats().carved, N);
 
+  /*
+   * "BOTH address spaces" IS ONE ADDRESS SPACE UNDER HELIOS_VIDMEM.
+   *
+   * The header above assumes the two are "two mappings of one range", which is
+   * true of system memory and deliberately false of video memory: a device
+   * slab is not mapped to the host at all, precisely so nothing reads through
+   * the 256 MiB BAR aperture by accident, and helios_tensor_host returns NULL.
+   * Asserting a 4,096-byte host stride then compares NULL against NULL and
+   * fails, and the stamping below would write through it.
+   *
+   * So the GPU-side disjointness is checked always and the host-side only when
+   * there IS a host side. Skipping it silently would be worse than the failure
+   * it replaces -- the whole point of this case is that a carve moving one
+   * mapping and not the other is invisible to arithmetic -- so it says which
+   * half it ran.
+   */
+  const int mapped = helios_tensor_host(t[0]) != NULL;
+  if (!mapped) printf("(gpu addresses only, slabs are unmapped) ");
+
   for (unsigned i = 1; i < N; i++) {
     const NvU64 dGpu = helios_tensor_addr(t[i]) - helios_tensor_addr(t[i - 1]);
-    const NvU64 dHost = (NvU64)((NvU8 *)helios_tensor_host(t[i]) -
-                                (NvU8 *)helios_tensor_host(t[i - 1]));
     HT_EQ_U64(dGpu, 4096);
-    HT_EQ_U64(dHost, 4096);
+    if (mapped) {
+      const NvU64 dHost = (NvU64)((NvU8 *)helios_tensor_host(t[i]) -
+                                  (NvU8 *)helios_tensor_host(t[i - 1]));
+      HT_EQ_U64(dHost, 4096);
+    }
   }
 
   /* And the bytes really are separate: stamp each with its own index and read
    * them all back. An overlap makes an earlier tensor carry a later one's
    * value, which no address arithmetic would have caught if the mapping were
    * wrong rather than the offset. */
-  for (unsigned i = 0; i < N; i++)
-    *(volatile NvU32 *)helios_tensor_host(t[i]) = 0xA5A50000u + i;
-  for (unsigned i = 0; i < N; i++)
-    HT_EQ_U64(*(volatile NvU32 *)helios_tensor_host(t[i]), 0xA5A50000u + i);
+  if (mapped) {
+    for (unsigned i = 0; i < N; i++)
+      *(volatile NvU32 *)helios_tensor_host(t[i]) = 0xA5A50000u + i;
+    for (unsigned i = 0; i < N; i++)
+      HT_EQ_U64(*(volatile NvU32 *)helios_tensor_host(t[i]), 0xA5A50000u + i);
+  }
 
   /* Freed and retired, the same memory comes back rather than more slab being
    * spent -- so `carved` stops rising, which is the property that makes a long
