@@ -32,11 +32,29 @@ typedef struct {
   NvU32 generation;
   int inUse;
   int classIndex;
-  int nextFree; /* -1 terminates; links the free list of its class */
+  int nextFree;    /* -1 terminates; links the free list of its class */
+  int pendingFree; /* freed, but queued work may still read it */
 } slot;
 
 static slot g_slots[MAX_TENSORS];
 static int g_freeHead[NUM_CLASSES];
+/*
+ * Buffers released while launches are still queued.
+ *
+ * A freed buffer cannot go straight back into circulation: a kernel that was
+ * enqueued and has not run may still read it, and handing it to the next
+ * allocation lets the host overwrite that kernel's input. The result is a
+ * finite, plausible, wrong number from an operation that looks unrelated.
+ *
+ * The synchronous design could not express this -- every free happened after
+ * the reader had retired. Under batching it is the difference between a working
+ * stack and one that stalls, and the cheap fix (drain on every allocation)
+ * removes the batching entirely: it fires once per operation.
+ *
+ * So: freed buffers wait here, and helios_tensor_retire moves them to the free
+ * list when the queue drains. One list walk per flush, not per allocation.
+ */
+static int g_pendingHead = -1;
 static unsigned g_used; /* high-water mark of slots ever created */
 static helios_tensor_stats g_stats;
 static int g_init;
@@ -127,8 +145,9 @@ void helios_tensor_free(helios_tensor t) {
   s->generation++;
   s->inUse = 0;
   const int index = (int)((t & INDEX_MASK) - 1u);
-  s->nextFree = g_freeHead[s->classIndex];
-  g_freeHead[s->classIndex] = index;
+  s->pendingFree = 1;
+  s->nextFree = g_pendingHead;
+  g_pendingHead = index;
   g_stats.live--;
   g_stats.pooled++;
 }
@@ -148,6 +167,19 @@ NvU64 helios_tensor_bytes(helios_tensor t) {
   return s ? s->requested : 0;
 }
 
+void helios_tensor_retire(void) {
+  int i = g_pendingHead;
+  while (i >= 0) {
+    slot *s = &g_slots[i];
+    const int next = s->nextFree;
+    s->pendingFree = 0;
+    s->nextFree = g_freeHead[s->classIndex];
+    g_freeHead[s->classIndex] = i;
+    i = next;
+  }
+  g_pendingHead = -1;
+}
+
 helios_tensor_stats helios_tensor_get_stats(void) { return g_stats; }
 
 void helios_tensor_release_all(helios_context *ctx) {
@@ -155,6 +187,7 @@ void helios_tensor_release_all(helios_context *ctx) {
   memset(g_slots, 0, sizeof g_slots);
   memset(&g_stats, 0, sizeof g_stats);
   g_used = 0;
+  g_pendingHead = -1;
   g_init = 0;
   init_once();
 }

@@ -66,8 +66,8 @@ static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
    * healthy step shows many enqueues per flush, and the operation after the
    * last flush is the one that did not complete.
    */
-  return helios_launch(ctx, p->code, p->count, p->gridX, p->blockX,
-                       p->sharedBytes, addrs, nts, scalars, nscalars);
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, p->blockX,
+                        p->sharedBytes, addrs, nts, scalars, nscalars);
 }
 
 int hl_elementwise(helios_context *ctx, unsigned op, helios_tensor out,

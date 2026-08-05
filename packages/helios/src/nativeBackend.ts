@@ -88,6 +88,10 @@ export class NativeHeliosBackend implements Backend {
    * about to touch memory.
    */
   private make(shape: Shape, dtype: Dtype = "f32"): NativeTensor {
+    /* No drain here. A freed buffer only re-enters circulation when the queue
+     * drains (see tensor.c), so a fresh allocation cannot alias one that queued
+     * work still reads. Draining per allocation would fire once per operation
+     * and remove the batching entirely. */
     const n = shapeSize(shape);
     const buffer = NativeBuffer.alloc(this.hl, n);
     const hl = this.hl;
@@ -703,6 +707,11 @@ export class NativeHeliosBackend implements Backend {
                                starts[0], 1), "slice");
       return out;
     }
+
+    /* The source is read on the HOST below, so whatever produced it must have
+     * run. Missing this gives a slice of the values that were in the buffer
+     * before the producing kernel wrote them. */
+    this.sync();
 
     /* How many trailing dimensions are taken whole: those form one contiguous
      * run in the source and can move in a single copy. */

@@ -73,6 +73,11 @@ typedef struct {
 
 helios_tensor_stats helios_tensor_get_stats(void);
 
+/* Move buffers freed during the last batch into circulation. Called by the
+ * context when the queue drains -- until then a freed buffer may still be read
+ * by a kernel that has not run. */
+void helios_tensor_retire(void);
+
 /* Release everything back to the driver. For shutdown and for tests. */
 void helios_tensor_release_all(helios_context *ctx);
 

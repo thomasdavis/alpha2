@@ -2,6 +2,7 @@
  * context.c — see context.h.
  */
 #include "context.h"
+#include "tensor.h"
 
 #include <string.h>
 #include <time.h>
@@ -222,6 +223,9 @@ int helios_flush(helios_context *ctx) {
   }
   ctx->lastError = 0;
   ctx->pending = 0;
+  /* Everything queued has run, so buffers freed during the batch are now safe
+   * to hand out again. */
+  helios_tensor_retire();
   return 0;
 }
 
