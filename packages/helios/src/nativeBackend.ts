@@ -1655,6 +1655,38 @@ export class NativeHeliosBackend implements Backend {
 
     const drop = (t: TensorData) => { if (isNative(t)) t.buffer.release(this.hl); };
 
+    /*
+     * THE SCATTER, which is what this gradient actually is: for each token,
+     * add its row of g into dW at the row its id names. Reads about 2 MB where
+     * the one-hot below moves 75 MB seven times over and then multiplies out at
+     * 24 GFLOP to recover a table that is zero in all but `tokens` of its rows.
+     *
+     * It needs an atomic — two tokens can share an id, and on this hardware the
+     * loser of that race does not fault, it silently wins — which is the only
+     * reason the cheap form was not written before RED.E.ADD.F32 was captured.
+     *
+     * dW is zeroed first because the kernel only ADDS and only visits rows that
+     * appear in ids; every other row is never addressed, so whatever the pool
+     * last left there would survive.
+     *
+     * Capped at a block, exactly as the forward gather is: one block per token,
+     * one thread per column.
+     */
+    if (this.hl.embeddingScatter && dim <= 1024) {
+      const out = this.zeros([vocabSize, dim], "f32") as NativeTensor;
+      const ids = this.make([tokens], "i32");
+      const src = indices.data as ArrayLike<number>;
+      const idsInts = ids.buffer.ints;
+      for (let i = 0; i < tokens; i++) idsInts[i] = src[i] | 0;
+      ids.buffer.commit();
+      const g = this.device(this.reshape(gradOutput, [tokens, dim]));
+      this.check(this.hl.embeddingScatter(out.buffer.handle, g.buffer.handle,
+                                          ids.buffer.handle, tokens, dim),
+                 "embeddingScatter");
+      ids.buffer.release(this.hl);
+      return out;
+    }
+
     /* Each token's id spread across its row, against the column's own index
      * tiled down every row. */
     const idxRow = this.expand(this.reshape(indices, [tokens, 1]), wide);

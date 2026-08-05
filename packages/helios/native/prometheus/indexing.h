@@ -52,4 +52,8 @@ unsigned pr_permute_rows(unsigned T, unsigned D);
  * Launch one block per token, dim threads each. */
 unsigned pr_emit_embedding(hp_word *p, unsigned dim);
 
+/* dW[ids[i]][d] += g[i][d], one block per token, dim threads. The caller
+ * zeroes dW: this kernel only adds, and never addresses an unused row. */
+unsigned pr_emit_embedding_scatter(hp_word *p, unsigned dim);
+
 #endif /* PROMETHEUS_INDEXING_H */

@@ -283,6 +283,14 @@ static int emit(const helios_key *key, helios_program *p) {
       p->sharedBytes = pr_cross_entropy_block(key->arg0) * 4;
       return 0;
 
+    case HL_EMBEDDING_SCATTER:
+      /* One block per token, one thread per column — the forward's geometry,
+       * which is why `dim` is capped at a block there and here. */
+      p->count = pr_emit_embedding_scatter(p->code, key->arg0);
+      p->blockX = key->arg0;
+      p->gridX = key->arg1;
+      return 0;
+
     case HL_CROSS_ENTROPY_BACKWARD:
       /* Same block shape as the forward: one block per row, shared memory
        * holding per-thread partials rather than the row. */

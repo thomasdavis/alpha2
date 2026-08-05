@@ -452,6 +452,14 @@ int hl_cross_entropy(helios_context *ctx, helios_tensor out,
   return run(ctx, k, ts, 3, s, 2);
 }
 
+int hl_embedding_scatter(helios_context *ctx, helios_tensor grad_table,
+                         helios_tensor grad_out, helios_tensor ids,
+                         unsigned tokens, unsigned dim) {
+  const helios_key k = {HL_EMBEDDING_SCATTER, dim, tokens, 0};
+  const helios_tensor ts[3] = {grad_table, grad_out, ids};
+  return run(ctx, k, ts, 3, 0, 0);
+}
+
 int hl_cross_entropy_backward(helios_context *ctx, helios_tensor out,
                               helios_tensor logits, helios_tensor targets,
                               unsigned rows, unsigned classes, float scale) {

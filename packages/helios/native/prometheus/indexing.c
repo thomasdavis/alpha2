@@ -76,6 +76,9 @@ enum {
 
 #define BAR_ID 0
 #define BAR_LOAD 1
+/* The scatter issues its two loads together and needs to wait on them
+ * separately: the id decides an ADDRESS, the gradient is the DATA. */
+#define BAR_VALUE 4
 #define P_COL 2   /* clear when this thread's column is inside `cols` */
 #define P_CHUNK 3 /* set when the column-chunk loop has run its course */
 #define INSTR_BYTES 16
@@ -247,6 +250,57 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
   p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/*
+ * pr_emit_embedding_scatter — the embedding gradient, straight.
+ *
+ *     dW[ids[i]][d] += g[i][d]
+ *
+ * It is the forward kernel with the load and the store exchanged: the gather
+ * reads table[ids[row]][col] and writes a contiguous row, this reads a
+ * contiguous row and writes to table[ids[row]][col]. The one difference that
+ * matters is that the write must be an ATOMIC add, because the gather's
+ * many-to-one mapping runs backwards as one-to-many: two tokens sharing a
+ * vocabulary id write the same address, and on this hardware the loser of that
+ * race does not fault, it silently wins.
+ *
+ * WHAT IT REPLACES: the same gradient computed as onehot^T @ g, where the
+ * one-hot is built out of arithmetic through seven full-size elementwise passes
+ * over a [tokens, vocab] tensor — 75 MB apiece at this model's batch — and then
+ * multiplied out at 24 GFLOP to recover a table that is zero in all but
+ * `tokens` of its rows. That form was chosen over a HOST loop, which it
+ * comfortably beats; it was never measured against a device scatter, which
+ * reads about 2 MB and needed only an atomic that the encoder did not have.
+ *
+ * The caller must ZERO dW first. This kernel only adds, and it visits exactly
+ * the rows that appear in ids — every other row of the output is never
+ * addressed, so whatever is in it survives.
+ */
+unsigned pr_emit_embedding_scatter(hp_word *p, unsigned dim) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+
+  /* ids[i] and this token's gradient row are INDEPENDENT loads, so they issue
+   * together on separate barriers rather than one waiting for the other. Only
+   * the destination address needs the id. */
+  p[n++] = hp_imad_wide_const(R_ADDR, R_ROW, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_wait(BAR_ID));
+  p[n++] = hp_ldg(R_TABLE_ROW, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_imm(R_DST_IDX, R_ROW, dim, R_COL, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_OUT, 0, hp_ctrl_setbar(BAR_VALUE));
+
+  p[n++] = hp_imad_imm(R_SRC_IDX, R_TABLE_ROW, dim, R_COL,
+                       hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_red_add_f32(R_ADDR, R_VALUE, 0, hp_ctrl_wait(BAR_VALUE));
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }

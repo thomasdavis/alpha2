@@ -136,6 +136,10 @@ int hl_cross_entropy(helios_context *ctx, helios_tensor out,
                      helios_tensor logits, helios_tensor targets, unsigned rows,
                      unsigned classes);
 
+int hl_embedding_scatter(helios_context *ctx, helios_tensor grad_table,
+                         helios_tensor grad_out, helios_tensor ids,
+                         unsigned tokens, unsigned dim);
+
 int hl_cross_entropy_backward(helios_context *ctx, helios_tensor out,
                               helios_tensor logits, helios_tensor targets,
                               unsigned rows, unsigned classes, float scale);

@@ -59,6 +59,7 @@ typedef enum {
   HL_CAT_ROWS,    /* arg0 = piece width, arg1 = destination width */
   HL_PERMUTE,     /* arg0 = T, arg1 = H, arg2 = D — swaps the middle two axes */
   HL_EMBEDDING,   /* arg0 = dim */
+  HL_EMBEDDING_SCATTER, /* arg0 = dim, arg1 = tokens */
   HL_SLICE,
   HL_CAUSAL_MASK, /* arg0 = cols */
   HL_MASKED_FILL,
