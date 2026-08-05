@@ -24,6 +24,7 @@
 #include "harness.h"
 
 void hp_isa_tests(void);
+void hp_coverage_tests(void);
 
 
 /* Captured from ptxas -arch=sm_86, via nvdisasm -c -hex. */
@@ -213,6 +214,7 @@ static void test_field_placement_primitives(void) {
 void ht_run(void) {
   printf("\nhephaestus — sm_86 encoder vs ptxas\n");
   hp_isa_tests();
+  hp_coverage_tests();
   test_field_placement_primitives();
   test_control_roundtrip();
   test_control_lives_above_bit_105();

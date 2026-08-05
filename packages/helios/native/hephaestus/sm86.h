@@ -167,6 +167,33 @@ static inline unsigned hp_shfl_segment(unsigned width) {
 }
 
 /*
+ * ===================== WHAT THIS ASSEMBLER CANNOT EMIT =====================
+ *
+ * The forms below are DECLARED and NOT ENCODED. Each aborts with the capture
+ * recipe and with what its absence costs; none returns a word, because a wrong
+ * encoding on this hardware does not fault, it executes a different instruction.
+ *
+ * The full register — every mnemonic ptxas emits for kernels of this shape,
+ * with its state and what it gates — is hephaestus/coverage.h, and
+ * packages/tests/audit-isa-coverage.mjs fails when the captured catalogue grows
+ * a mnemonic that has neither an encoder nor a recorded reason.
+ *
+ * They are declared rather than simply absent because a missing encoder is an
+ * absent THOUGHT: the reduction went through shared memory with a barrier per
+ * step for months, and nothing anywhere said "there is no warp shuffle".
+ */
+hp_word hp_shfl_reg(unsigned mode, unsigned dst, unsigned src, unsigned laneReg,
+                    unsigned cImm, hp_control c);
+hp_word hp_ldgsts(unsigned sharedAddrReg, unsigned globalAddrReg,
+                  uint32_t offset, unsigned bytes, hp_control c);
+hp_word hp_hfma2(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                 hp_control c);
+hp_word hp_fsetp(unsigned destPred, unsigned srcA, unsigned srcB, unsigned cmp,
+                 hp_control c);
+hp_word hp_i2f(unsigned dst, unsigned src, hp_control c);
+hp_word hp_f2i(unsigned dst, unsigned src, hp_control c);
+
+/*
  * LDG.E.{64,128} — one global load filling TWO or FOUR consecutive registers.
  *
  * `words` is 2 or 4; `dst` must be aligned to it, and the ADDRESS must be
