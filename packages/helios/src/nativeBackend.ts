@@ -61,6 +61,26 @@ export class NativeHeliosBackend implements Backend {
    * rather than decrementing its buffer's reference count twice. */
   private readonly freed = new WeakSet<object>();
 
+  /*
+   * IS THERE ANYTHING TO WAIT FOR? Tracked here so the answer is free.
+   *
+   * The barrier lives on every tensor's `data` getter, which is what makes it
+   * impossible to miss a read site. The cost is that autograd's inner loops
+   * touch it per ELEMENT -- `grad.data[i] += g.data[i]` is two getter calls an
+   * iteration -- and at batch 128 a step made 1,052,759 of them. Each was a
+   * napi crossing into a C function that looked at a counter and returned, so
+   * ~100 ms of a 499 ms step was spent asking "anything pending?" across the
+   * language boundary.
+   *
+   * The flag answers it on this side. It is set by check(), which every
+   * dispatch goes through, and cleared when the queue is drained. Its error is
+   * one-sided by construction: the C ring also flushes itself when it fills, so
+   * the flag can be true when nothing is queued -- costing one wasted flush --
+   * and cannot be false while work is outstanding, which is the direction that
+   * would return stale data.
+   */
+  private pending = false;
+
   constructor(deviceIndex = 0) {
     this.hl = nativeAddon(deviceIndex);
     this.scratch = NativeBuffer.alloc(this.hl, 1024);
@@ -98,13 +118,13 @@ export class NativeHeliosBackend implements Backend {
      * and remove the batching entirely. */
     const n = shapeSize(shape);
     const buffer = NativeBuffer.alloc(this.hl, n);
-    const hl = this.hl;
+    const self = this;
     const view = buffer.floats.subarray(0, n);
     return {
       shape,
       dtype,
       get data() {
-        hl.flush();
+        self.sync();
         return view;
       },
       buffer,
@@ -142,7 +162,9 @@ export class NativeHeliosBackend implements Backend {
    * values that were there before the kernel ran -- plausible numbers, wrong.
    */
   private sync(): void {
+    if (!this.pending) return;
     this.hl.flush();
+    this.pending = false;
   }
 
   /*
@@ -155,6 +177,9 @@ export class NativeHeliosBackend implements Backend {
    * operand is the difference between a day of bisecting and a minute.
    */
   private check(ok: boolean, op: string, ...operands: (TensorData | undefined)[]): void {
+    /* Every dispatch in this file passes through here, which is what makes one
+     * flag sufficient. */
+    this.pending = true;
     if (ok) return;
     const dead = operands
       .map((t, i) => (t && isNative(t) && t.buffer.released ? `#${i} ${JSON.stringify(t.shape)}` : null))
@@ -720,7 +745,7 @@ export class NativeHeliosBackend implements Backend {
         `helios-native: reshape ${a.shape} -> ${shape} changes the element count`,
       );
     const da = this.device(a);
-    const hl = this.hl;
+    const self = this;
     const buffer = da.buffer;
     /* A second tensor now points at this memory, and the tape will release both
      * of them. Without this the first release frees it under the other. */
@@ -730,7 +755,7 @@ export class NativeHeliosBackend implements Backend {
       shape,
       dtype: da.dtype,
       get data() {
-        hl.flush();
+        self.sync();
         return view;
       },
       buffer,
@@ -1058,6 +1083,7 @@ export class NativeHeliosBackend implements Backend {
    */
   finishStepOps(): void {
     this.hl.endStep();
+    this.pending = false;
   }
 
   /** Also the trainer's spelling: it probes for `syncGpu`. */
