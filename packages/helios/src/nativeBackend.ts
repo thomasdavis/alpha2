@@ -277,17 +277,42 @@ export class NativeHeliosBackend implements Backend {
     const rowsOut = want / W;
     const srcLast = t.shape[t.shape.length - 1] ?? 1;
 
-    if (W > 0 && rowsOut > 0 && Number.isInteger(rowsOut)) {
-      if (have === W && srcLast === W) {          /* [.., W] tiled down rows */
-        this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 0, W, rowsOut),
-                   "broadcast", dt);
-        return out;
-      }
-      if (have === rowsOut && srcLast === 1) {    /* [.., 1] spread along a row */
-        this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 1, W, rowsOut),
-                   "broadcast", dt);
-        return out;
-      }
+    /*
+     * TILE A BLOCK, not just a row.
+     *
+     * Matching only a [C] vector repeated down the rows missed the causal mask:
+     * [T,T] tiled across [B,H,T,T] repeats a whole 1,024-element BLOCK, and fell
+     * to the host — 39.8 ms a step inside maskedFill.
+     *
+     * The kernel already does this. Tiling is `src = column`, and nothing in it
+     * cares whether the column indexes a row of C or a block of T*T; only the
+     * block has to fit one launch. So the condition is the general one: the
+     * source repeats a whole number of times and its size is a legal block.
+     */
+    const MAX_BLOCK = 1024;
+    /*
+     * A TILE REQUIRES THE SOURCE TO MATCH THE DESTINATION'S TRAILING AXES.
+     *
+     * `want % have === 0` is not that condition, and the difference is a wrong
+     * answer rather than a slow one: [B,T,1] -> [B,T,C] also divides evenly, and
+     * it is a row SPREAD — each value repeated across a row, not the block
+     * repeated end to end. Matching on divisibility alone sent it down the tile
+     * path and the suite caught it, which is the whole reason these guards
+     * describe the mapping rather than the sizes.
+     */
+    const tilePad = shape.length - t.shape.length;
+    const isTile = tilePad >= 0 && t.shape.every((d, i) => d === shape[i + tilePad]);
+    if (isTile && have > 0 && have <= MAX_BLOCK && want % have === 0) {
+      this.check(
+        this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 0, have, want / have),
+        "broadcast", dt);
+      return out;
+    }
+    if (W > 0 && rowsOut > 0 && Number.isInteger(rowsOut) && W <= MAX_BLOCK &&
+        have === rowsOut && srcLast === 1) {      /* [.., 1] spread along a row */
+      this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 1, W, rowsOut),
+                 "broadcast", dt);
+      return out;
     }
 
     this.sync();
