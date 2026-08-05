@@ -283,17 +283,32 @@
  * low, not at a different number entirely, and it would degrade with K rather
  * than fail at [64,16]x[16,64] where the loop runs once.
  *
- * WHAT IS UNVERIFIED IS THE D-FRAGMENT PACKING. The epilogue below assumes
- * register `half` holds this row's two column-adjacent results, low half first
- * — the natural reading of "four f32 become two f16 pairs" — so that r0 is
- * (row g, col 2l) and (row g, col 2l+1) and r1 is the same for row g+8. The
- * alternative the failures are consistent with is a pairing ACROSS the rows,
- * r0 = (row g, row g+8) at col 2l and r1 the same at col 2l+1. That is one bit
- * of information and it is CAPTURABLE the way everything else here was: emit
- * the f16 form from nvcc with known operands and read which lane holds what.
- * Do that before touching anything else in this file — do not guess the second
- * arrangement and see if the tests go green, because two wrong layouts can
- * agree on a symmetric case.
+ * THE D-FRAGMENT PACKING WAS THE SUSPECT AND IT HAS BEEN CLEARED.
+ * tools/hmma_f16_layout.cu builds a product whose every element is distinct —
+ * D[r][c] = r*8 + c + 1, all 128 values, all exact in f16 — and has each lane
+ * report what it holds. The answer is exactly what the epilogue below assumes:
+ *
+ *     lane (g = lane>>2, l = lane&3)
+ *       reg0.lo = (row g,   col 2l)      reg0.hi = (row g,   col 2l+1)
+ *       reg1.lo = (row g+8, col 2l)      reg1.hi = (row g+8, col 2l+1)
+ *
+ * — the f32 layout with each row's pair packed into one register, low half
+ * first. So the unpack in the epilogue is right, and the 27 failures are
+ * SOMEWHERE ELSE. That is worth as much as a fix: it was the only hypothesis on
+ * the table, and guessing the alternative would have been a day spent making a
+ * correct thing wrong.
+ *
+ * WHAT THE REMAINING EVIDENCE SAYS. [64,16]x[16,64] fails, and at K=16 the
+ * k-loop runs ONCE, so no accumulation has happened yet — which rules out the
+ * numerics and rules out anything that only manifests across iterations. The
+ * failures are at [0,16] (tile column 2) and [8,9] (tile column 1, the g+8
+ * row), so more than one tn is wrong and both row halves are involved. Look
+ * next at what ACC_WORDS changed that is NOT the epilogue: the accumulator
+ * zeroing runs over ACC_WORDS*TM*TN registers in BOTH emitters, but only the
+ * staged emitter's hp_hmma call was given the f16acc flag — the direct path
+ * still emits the F32 form while ACC_OF and the epilogue have moved to the f16
+ * stride. HMMA_SHARED selects between them, and pr_emit_hmma dispatches before
+ * either sees the flag.
  */
 #ifndef HMMA_F16ACC
 #define HMMA_F16ACC 0
