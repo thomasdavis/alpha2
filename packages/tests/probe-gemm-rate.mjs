@@ -79,6 +79,12 @@ const evictL2 = () => { B.addInplace(scrubA, scrubB); };
   }
 }
 
+/* M defaults to the batch-8 row count these were first written against; the
+ * gate now runs batch 24, which is 1,536 rows, and this kernel's rate tracks
+ * BLOCK COUNT — so the row count is not a detail of the benchmark, it is a
+ * variable the answer depends on. `M=1536 node probe-gemm-rate.mjs`. */
+const M = Number(process.env.M ?? 512);
+
 /* The shapes a 105M step actually runs, at batch 8 (512 rows). Named, because
  * a rate without a shape is not comparable to anything. */
 /*
@@ -93,14 +99,14 @@ const evictL2 = () => { B.addInplace(scrubA, scrubB); };
  * and the gap it reported was 4x.
  */
 const SHAPES = [
-  ["qkv        B^T", 512, 1920, 640, true],
-  ["qkv        fwd", 512, 1920, 640, false],
-  ["mlp fc     B^T", 512, 2560, 640, true],
-  ["mlp fc     fwd", 512, 2560, 640, false],
-  ["lm head    B^T", 512, 12288, 640, true],
-  ["lm head    fwd", 512, 12288, 640, false],
-  ["attn proj  fwd", 512, 640, 640, false],
-  ["mlp proj   fwd", 512, 640, 2560, false],
+  ["qkv        B^T", M, 1920, 640, true],
+  ["qkv        fwd", M, 1920, 640, false],
+  ["mlp fc     B^T", M, 2560, 640, true],
+  ["mlp fc     fwd", M, 2560, 640, false],
+  ["lm head    B^T", M, 12288, 640, true],
+  ["lm head    fwd", M, 12288, 640, false],
+  ["attn proj  fwd", M, 640, 640, false],
+  ["mlp proj   fwd", M, 640, 2560, false],
 ];
 
 const spin = () => B.hl.stats().spinNs;

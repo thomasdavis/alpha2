@@ -151,6 +151,35 @@
 #endif
 
 /*
+ * ⭐ WHERE THIS KERNEL'S REMAINING GAP IS, measured at the shapes the gate
+ * actually runs (batch 24, m1536 — the earlier m512 numbers were distorted by
+ * wave quantisation and made the narrow shapes look far worse than they are):
+ *
+ *     qkv     B^T  19.29 TFLOP/s      lm head B^T  20.00
+ *     mlp fc  B^T  19.05              attn proj    14.75
+ *     mlp fc  fwd  18.19              mlp proj     16.76
+ *
+ * So ~19 against a 45.5 instruction ceiling: 42%, and about 65-75% of cuBLAS.
+ * Every geometric explanation has been measured and refuted — register tile
+ * (three sweeps), warp count (2x4 and 4x2 both lose), occupancy (+64 registers
+ * costs 3.6%), the tile barriers (3-5%), bank-conflict padding (worse under
+ * ldmatrix), instruction-issue spacing (~1%).
+ *
+ * WHAT IS LEFT IS THE INSTRUCTION MIX, and it points at one thing. Per k-step a
+ * warp now issues 6 LDSM and 8 HMMA — but around those sit the staging: a
+ * global load per operand element, an F2FP pack per PAIR, and a shared store.
+ * The tensor instructions are under a third of what issues, and 42% of the
+ * ceiling is about what that predicts.
+ *
+ * ⇒ KEEP THE OPERANDS AS f16 IN MEMORY. It halves the global load count, it
+ * deletes the packs outright, and — this is the part that makes it worth doing
+ * before anything else — IT CHANGES NO ARITHMETIC. The kernel already converts
+ * both operands to f16 before multiplying, so the same f16 values reach the
+ * tensor cores either way; the only question is whether the conversion happens
+ * once when the tensor is written or on every one of its reads. Every other
+ * remaining lever (f16 ACCUMULATE, which doubles the ceiling to 90.3) moves the
+ * loss. This one does not.
+ *
  * HMMA_LDSM — load fragments with ldmatrix instead of four LDS apiece.
  *
  * Per k-step a warp issues sixteen shared loads to feed eight tensor
