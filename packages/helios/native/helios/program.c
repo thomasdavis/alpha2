@@ -7,6 +7,7 @@
 #include "../prometheus/hmma.h"
 #include "../prometheus/normalize.h"
 #include "../prometheus/colsum.h"
+#include "../prometheus/mask.h"
 #include "../prometheus/indexing.h"
 
 #include <string.h>
@@ -262,7 +263,11 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_MASKED_FILL:
-      p->count = pr_emit_masked_fill(p->code);
+      /* arg0 is the mask's element count when the mask is TILED, and 0 when it
+       * has already been materialised to the value's size. Part of the key, so
+       * the two forms cannot share a cached program. */
+      p->count = key->arg0 ? pr_emit_masked_fill_tiled(p->code, key->arg0)
+                           : pr_emit_masked_fill(p->code);
       p->blockX = ew_block(n);
       p->gridX = (n + p->blockX - 1) / p->blockX;
       return 0;

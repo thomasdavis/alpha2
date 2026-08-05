@@ -183,7 +183,7 @@ static napi_value js_causal_mask(napi_env env, napi_callback_info info) {
 static napi_value js_masked_fill(napi_env env, napi_callback_info info) {
   CTX;
   return hl_result(
-      env, hl_masked_fill(ctx, U32(0), U32(1), U32(2), U32(3), F32(4)));
+      env, hl_masked_fill(ctx, U32(0), U32(1), U32(2), U32(3), F32(4), U32(5)));
 }
 
 /* (toF16, out, a, n) */

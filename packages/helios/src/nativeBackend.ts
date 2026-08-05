@@ -2150,17 +2150,35 @@ export class NativeHeliosBackend implements Backend {
    * MUFU noise: at noise level the trace stops on the first harmless difference
    * and never reaches this one.
    */
+  /*
+   * THE MASK IS TILED BY THE KERNEL, not by an allocation.
+   *
+   * This used to call `expand` first, because the kernel indexed the mask with
+   * the same flat index as the value and therefore needed them the same size.
+   * The causal mask is [T,T] — 16 KB at T=64, and permanently resident in L2 —
+   * while the scores are [B,H,T,T] at 3.93 MB. So every call allocated 3.93 MB
+   * and wrote it in full to reproduce 16 KB of data, thirty-six times a step,
+   * in an allocator where a step's PEAK is the bytes it allocates rather than
+   * the bytes it holds live.
+   *
+   * The kernel now wraps the mask index at the mask's own size. That needs the
+   * size to be a power of two, so the wrap is an AND rather than a division —
+   * a [T,T] mask with T a power of two always is. Anything else keeps the old
+   * route, which is still correct and is what the general case wants.
+   */
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData {
-    const dm = this.expand(mask, a.shape);
+    const n = shapeSize(a.shape);
+    const maskN = shapeSize(mask.shape);
+    const tiled = maskN < n && n % maskN === 0 && (maskN & (maskN - 1)) === 0;
+    const dm = tiled ? this.device(mask) : this.expand(mask, a.shape);
     const da = this.device(a);
     const out = this.make(a.shape, "f32");
     this.check(this.hl.maskedFill(out.buffer.handle, da.buffer.handle,
-                                  dm.buffer.handle, shapeSize(a.shape), value),
+                                  dm.buffer.handle, n, value, tiled ? maskN : 0),
                "maskedFill");
-    /* The tiled mask is this function's own, exactly as in `binary`: the causal
-     * mask is [T,T] and every call broadcasts it across [B,H,T,T], so without
-     * this a step leaks one full attention-sized tensor per layer. */
-    if (dm !== mask) dm.buffer.release(this.hl);
+    /* Only the materialised mask is this function's own. The tiled one IS the
+     * caller's tensor and releasing it would take a live buffer away. */
+    if (!tiled && dm !== mask) dm.buffer.release(this.hl);
     return out;
   }
 

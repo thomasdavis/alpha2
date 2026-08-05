@@ -438,8 +438,12 @@ int hl_causal_mask(helios_context *ctx, helios_tensor out, helios_tensor a,
 }
 
 int hl_masked_fill(helios_context *ctx, helios_tensor out, helios_tensor a,
-                   helios_tensor mask, unsigned n, float value) {
-  const helios_key k = {HL_MASKED_FILL, 0, n, 0};
+                   helios_tensor mask, unsigned n, float value,
+                   unsigned maskWrap) {
+  /* maskWrap is the mask's element count when it is TILED and 0 when it has
+   * already been materialised to `n`. It is part of the key: the two forms emit
+   * different programs and a cache hit across them would apply the wrong one. */
+  const helios_key k = {HL_MASKED_FILL, maskWrap, n, 0};
   const helios_tensor ts[3] = {out, a, mask};
   const NvU32 s[1] = {bits(value)};
   return run(ctx, k, ts, 3, s, 1);

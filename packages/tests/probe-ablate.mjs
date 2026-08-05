@@ -86,3 +86,27 @@ B.addInplace = origAdd;
 console.log(`\n  addInplace's real marginal cost: ${(base - noAdd).toFixed(1)} ms of GPU` +
             `  (${((base - noAdd) / base * 100).toFixed(1)}% of the step)`);
 console.log(`  the per-op profiler charged it 25.1 ms; isolation says 2.5 ms.`);
+
+/*
+ * IS THE FUSED ACCUMULATE STILL PAYING FOR ITSELF?
+ *
+ * matmulAccumulate folds C += A*B into the GEMM epilogue, so a weight gradient
+ * costs one extra READ of the destination instead of a whole read-add-write
+ * pass. It was landed as net ~0 on the wall clock — addInplace fell 14.1 -> 6.2
+ * ms while matmul rose 16.5 -> 21.2 — and kept because the structure is right.
+ *
+ * Since then addInplace's real marginal cost has been measured at 1.1 ms for
+ * the WHOLE step, so the thing the fusion was buying is nearly gone while the
+ * epilogue read it costs is not: 55 calls at 273 us against matmulTransposedA's
+ * 140 for comparable work. Hiding the method sends autograd down its
+ * compositional path, which is the same arithmetic, so this comparison is
+ * between two CORRECT arms and the loss must not move.
+ */
+const origAcc = B.matmulAccumulate?.bind(B);
+if (origAcc) {
+  B.matmulAccumulate = undefined;
+  const noAcc = measure("matmulAccumulate hidden");
+  B.matmulAccumulate = origAcc;
+  console.log(`\n  fused accumulate is worth ${(noAcc - base).toFixed(1)} ms of GPU` +
+              ` (positive means the fusion helps)`);
+}

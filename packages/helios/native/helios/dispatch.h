@@ -146,7 +146,8 @@ int hl_causal_mask(helios_context *ctx, helios_tensor out, helios_tensor a,
                    unsigned rows, unsigned cols);
 
 int hl_masked_fill(helios_context *ctx, helios_tensor out, helios_tensor a,
-                   helios_tensor mask, unsigned n, float value);
+                   helios_tensor mask, unsigned n, float value,
+                   unsigned maskWrap);
 
 int hl_cast(helios_context *ctx, int toF16, helios_tensor out, helios_tensor a,
             unsigned n);

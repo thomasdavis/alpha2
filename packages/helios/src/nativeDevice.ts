@@ -117,7 +117,10 @@ export interface NativeAddon {
   embedding(out: number, table: number, ids: number, tokens: number, dim: number): boolean;
   slice(out: number, a: number, count: number, offset: number, stride: number): boolean;
   causalMask(out: number, a: number, rows: number, cols: number): boolean;
-  maskedFill(out: number, a: number, mask: number, n: number, value: number): boolean;
+  /* `maskWrap` is the mask's element count when it is TILED across the value,
+   * and 0 when the mask has already been materialised to the value's size. */
+  maskedFill(out: number, a: number, mask: number, n: number, value: number,
+             maskWrap: number): boolean;
   cast(toF16: number, out: number, a: number, n: number): boolean;
   dropoutMask(out: number, n: number, seed: number, counter: number, p: number): boolean;
   crossEntropy(out: number, logits: number, targets: number, rows: number, classes: number): boolean;

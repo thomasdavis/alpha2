@@ -31,6 +31,9 @@ enum {
   R_VALUE = 10,
   R_MASK = 11,
   R_OUT = 14, /* R14:R15 */
+  /* The tiled masked fill only: the wrap constant and the wrapped index. */
+  R_WRAP = 12,
+  R_MASK_IDX = 13,
 };
 
 #define BAR_ID 0
@@ -98,6 +101,39 @@ unsigned pr_emit_masked_fill(hp_word *p) {
                               HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
   p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
   p[n++] = hp_imad_wide_const(R_MASK_ADDR, R_INDEX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_MASK, R_MASK_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+
+  p[n++] = hp_isetp_gt_imm(P_MASKED, R_MASK, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n] = hp_predicated(
+      hp_mov_const(R_VALUE, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe()), P_MASKED,
+      0);
+  n++;
+
+  p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
+                              hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+unsigned pr_emit_masked_fill_tiled(hp_word *p, unsigned maskWrap) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  p[n++] = hp_imad_const(R_INDEX, R_ROW, 0, HERMES_CBUF0_NTID_X, R_COL,
+                         hp_ctrl_wait(BAR_ID));
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  /* The mask index WRAPS at its own size. maskWrap is a power of two, so this
+   * is an AND against maskWrap-1 rather than a division — and the constant goes
+   * through a register because LOP3's second operand is one. */
+  p[n++] = hp_mov_imm(R_WRAP, maskWrap - 1u, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_MASK_IDX, R_INDEX, R_WRAP, HP_LUT_AND, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_MASK_ADDR, R_MASK_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
   p[n++] = hp_ldg(R_MASK, R_MASK_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
 

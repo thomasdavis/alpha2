@@ -133,6 +133,7 @@
 #define HP_OP_SHF_R 0x819
 #define HP_OP_LOP3 0x212
 #define HP_LUT_XOR 0x3c /* a ^ b, c ignored */
+#define HP_LUT_AND 0xc0 /* a & b, c ignored */
 
 #define HP_OP_F2FP 0x23e
 #define HP_OP_HADD2 0x230
