@@ -407,40 +407,34 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /**
-   * Along the LAST axis: one reduction per row, launched one row at a time.
+   * Along the LAST axis, in ONE launch.
    *
-   * Row at a time rather than one launch over all of them, because the
-   * reduction kernel writes its answer to element zero of its output and has no
-   * notion of which row it is on. Fixing that is a kernel change -- a row index
-   * added to the store address -- and it is worth making once rows are the
-   * common case. For now the loop is honest about being a loop.
+   * This looped a row at a time, copying each into a scratch buffer and
+   * draining the queue to read the answer back -- so an eight-row reduction was
+   * eight round trips, and the drains were the single largest cost left after
+   * batching went in.
+   *
+   * The kernel to do it in one launch already existed: the PARTIAL reduction
+   * writes one value per BLOCK, so launching one block per row with the row
+   * width as the block size is exactly a row-wise reduction. It was written for
+   * the first pass of a whole-tensor sum and happens to be the same shape of
+   * computation.
+   *
+   * A mean scales afterwards rather than inside, because the partial never
+   * scales -- see reduction.c, where that restraint exists so a short final
+   * block cannot make a whole-tensor mean wrong.
    */
   private reduceAxis(name: string, mean: boolean, a: TensorData): TensorData {
-    this.sync(); /* the loop below copies rows on the HOST between launches */
     const width = a.shape[a.shape.length - 1] ?? 1;
     const rows = shapeSize(a.shape) / width;
     const da = this.device(a);
     const outShape = a.shape.slice(0, -1);
     const out = this.make(outShape.length ? outShape : [1], "f32");
-    const rowIn = this.make([width], "f32");
-    const rowOut = this.make([1], "f32");
-    for (let r = 0; r < rows; r++) {
-      rowIn.buffer.floats.set(da.buffer.floats.subarray(r * width, (r + 1) * width));
-      this.scratch.floats.fill(0);
-      this.check(
-        this.hl.reduce(mean ? 1 : 0, rowOut.buffer.handle, rowIn.buffer.handle,
-                       this.scratch.handle, width),
-        name,
-      );
-      /* The reduce above only ENQUEUED; reading its result needs the queue
-       * drained. Inside the loop, because each row's answer is consumed before
-       * the next row is queued. */
-      this.sync();
-      out.buffer.floats[r] = rowOut.buffer.floats[0];
-    }
-    rowIn.buffer.release(this.hl);
-    rowOut.buffer.release(this.hl);
-    return out;
+    this.check(
+      this.hl.reduceRows(out.buffer.handle, da.buffer.handle, width, rows),
+      name,
+    );
+    return mean ? this.scale(out, 1 / width) : out;
   }
 
   /**
@@ -448,13 +442,9 @@ export class NativeHeliosBackend implements Backend {
    *
    * The kernel reduces a contiguous row, so an interior axis has to be made
    * contiguous before it can be reduced. Viewing the tensor as
-   * [outer, axis, inner] and transposing the [axis, inner] plane does exactly
-   * that, and both the transpose and the reduction stay on the device -- which
-   * matters, because summing on the host would be arithmetic done somewhere
-   * other than our own SASS, and that is the one thing this stack exists to
-   * avoid.
-   *
-   * A trailing axis skips all of it and reduces in place.
+   * [outer, axis, inner] and transposing the [axis, inner] plane does that, and
+   * both steps stay on the device -- summing on the host would be arithmetic
+   * done somewhere other than our own SASS.
    */
   private reduceOverAxis(name: string, mean: boolean, a: TensorData, axis: number): TensorData {
     const shape = a.shape;
@@ -464,10 +454,6 @@ export class NativeHeliosBackend implements Backend {
     const axisLen = shape[k];
     const inner = shape.slice(k + 1).reduce((x, y) => x * y, 1);
     const outer = shape.slice(0, k).reduce((x, y) => x * y, 1);
-
-    /* [axis, inner] -> [inner, axis] makes the reduced axis contiguous, and the
-     * reduction then produces one value per inner position, which is the shape
-     * the caller wanted with dimension k removed. */
     const plane = this.reshape(a, [outer, axisLen, inner]);
     const t = this.transpose(plane);
     const reduced = this.reduceAxis(name, mean, t);
@@ -476,11 +462,11 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /*
-   * keepdims is HONOURED, and ignoring it was a real bug rather than an
-   * omission: the caller reshapes the result assuming the reduced dimension is
-   * still there, so dropping it produced a rank-1 tensor where a rank-2 was
-   * expected and the failure surfaced as a reshape complaining about an element
-   * count -- which was true and pointed at the wrong operation.
+   * keepdims is HONOURED. Ignoring it was a real bug: the caller reshapes the
+   * result assuming the reduced dimension is still there, so dropping it
+   * produced a rank-1 tensor where rank-2 was expected and surfaced as a
+   * reshape complaining about an element count -- true, and pointing at the
+   * wrong operation.
    */
   private keep(t: TensorData, a: TensorData, axis: number, keepdims: boolean): TensorData {
     if (!keepdims) return t;

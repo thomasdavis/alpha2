@@ -53,6 +53,12 @@ static napi_value js_reduce(napi_env env, napi_callback_info info) {
       env, hl_reduce(ctx, (int)U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
+/* (out, a, width, rows) */
+static napi_value js_reduce_rows(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_reduce_rows(ctx, U32(0), U32(1), U32(2), U32(3)));
+}
+
 /* (op, out, a, width, rows, eps) */
 static napi_value js_normalize(napi_env env, napi_callback_info info) {
   CTX;
@@ -144,6 +150,7 @@ static napi_value js_adamw(napi_env env, napi_callback_info info) {
 napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "elementwise", js_elementwise);
   hl_export(env, exports, "reduce", js_reduce);
+  hl_export(env, exports, "reduceRows", js_reduce_rows);
   hl_export(env, exports, "normalize", js_normalize);
   hl_export(env, exports, "matmul", js_matmul);
   hl_export(env, exports, "transpose", js_transpose);

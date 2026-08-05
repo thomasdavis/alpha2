@@ -63,6 +63,8 @@ export interface NativeAddon {
     nscalars: number,
   ): boolean;
   reduce(mean: number, out: number, a: number, scratch: number, n: number): boolean;
+  /** One value per row: one block per row, `width` threads each. */
+  reduceRows(out: number, a: number, width: number, rows: number): boolean;
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
   matmul(out: number, a: number, b: number, M: number, N: number, K: number): boolean;
   transpose(out: number, a: number, rows: number, cols: number): boolean;

@@ -43,6 +43,10 @@ int hl_elementwise(helios_context *ctx, unsigned op, helios_tensor out,
 int hl_reduce(helios_context *ctx, int mean, helios_tensor out,
               helios_tensor a, helios_tensor scratch, unsigned n);
 
+/* out[r] = sum of row r, one block per row. The mean scales afterwards. */
+int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                   unsigned width, unsigned rows);
+
 /* out = normalise(a) over rows of `width`, one block per row. */
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);

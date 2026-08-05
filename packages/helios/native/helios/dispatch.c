@@ -121,6 +121,16 @@ int hl_reduce(helios_context *ctx, int mean, helios_tensor out, helios_tensor a,
   return run(ctx, fk, fts, 2, s, mean ? 1 : 0);
 }
 
+int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                   unsigned width, unsigned rows) {
+  /* The partial reduction writes one value per block, so one block per row IS a
+   * row-wise reduction -- the kernel written for the first pass of a
+   * whole-tensor sum, used for what it already was. */
+  const helios_key k = {HL_REDUCE_PARTIAL, PR_COMBINE_ADD, width, rows};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, NULL, 0);
+}
+
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps) {
   /* The row count is part of the KEY, not just the launch: a program built for
