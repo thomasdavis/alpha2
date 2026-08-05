@@ -549,11 +549,22 @@ export class NativeHeliosBackend implements Backend {
    * while a composition still costs ~20 launches at 20-50 us each. Fixing the
    * memory removed the motivation for the kernels.
    *
-   * What this does NOT say is that fused backwards are worthless. It says
-   * COMPOSED ones are, at this size, against a fallback this cheap. A single
-   * kernel per backward -- one launch, not twenty -- is a different proposition
-   * and remains open. The composition is in the history at this commit if it is
-   * wanted as a starting point.
+   * RETESTED AT SCALE, because the first test was at batch 1 and 16 where the
+   * fallback is cheapest and the comparison was therefore rigged in its favour.
+   * At batch 128 the layerNorm fallback alone costs 48.8 ms of drain a step on a
+   * JavaScript loop over 262,144 elements, so the economics should reverse: a
+   * fallback grows with the batch, a fixed number of launches does not.
+   *
+   * They do not reverse. layerNormBackward composed ON ITS OWN still lost --
+   * 3126 -> 2541 at batch 1, 7232 -> 6010 at batch 16 -- and failed outright at
+   * batch 128 with a dispatch error, which is a second bug the composition
+   * exposes somewhere in the large reductions it introduces.
+   *
+   * So: COMPOSED backwards are refuted at every batch measured, one at a time
+   * and all together. What is NOT refuted is a single fused KERNEL per backward
+   * -- one launch instead of twenty, which is a different proposition and the
+   * only remaining route to the fallbacks' ~110 ms. The compositions are in the
+   * history if they are wanted as a specification of the arithmetic.
    */
 
   softmax(a: TensorData, axis?: number): TensorData {
