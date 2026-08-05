@@ -58,7 +58,19 @@ unsigned pr_colsum_shared(void);
  * stride are both immediates, and the tail predicate needs the column bound.
  *
  * Parameter 0 is the output [cols], parameter 1 the input [rows, cols].
+ *
+ * `product` adds a SECOND input at parameter 2 and reduces the elementwise
+ * product instead: out[c] = sum_r a[r][c] * b[r][c].
+ *
+ * That exists because a layer norm's dw is sum_rows(g * xhat), and forming it
+ * as a separate multiply costs a full read-add-write pass over a [1536,640]
+ * tensor — 11.8 MB — to produce a value that is consumed immediately and only
+ * as a sum. The multiply is one instruction inside a loop that is already
+ * loading one of its two operands. It also removes the in-place trick the
+ * caller used to avoid a third allocation, and with it the aliasing question
+ * that made that trick need a paragraph of justification.
  */
-unsigned pr_emit_column_sum(hp_word *prog, unsigned rows, unsigned cols);
+unsigned pr_emit_column_sum(hp_word *prog, unsigned rows, unsigned cols,
+                            int product);
 
 #endif /* HELIOS_PROMETHEUS_COLSUM_H */

@@ -55,7 +55,7 @@ int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
  * completely different access pattern: coalesced along the axis it keeps.
  */
 int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
-                  unsigned rows, unsigned cols);
+                  helios_tensor b, unsigned rows, unsigned cols);
 
 /*
  * The affine forms: normalise, then scale by a per-feature weight and (for a

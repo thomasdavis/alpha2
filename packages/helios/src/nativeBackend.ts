@@ -1475,10 +1475,16 @@ export class NativeHeliosBackend implements Backend {
    * and db. See pr_emit_column_sum for why this is a kernel rather than either
    * of the two compositions that came before it.
    */
-  columnSum(a: TensorData, rows: number, cols: number): TensorData {
+  /* With `b`, the reduction is over the elementwise PRODUCT: out[c] =
+   * sum_r a[r][c] * b[r][c]. That is a layer norm's dw, and forming the product
+   * as its own pass costs a full read-add-write over the tensor to produce a
+   * value consumed immediately and only as a sum. */
+  columnSum(a: TensorData, rows: number, cols: number, b?: TensorData): TensorData {
     const da = this.device(a);
+    const db = b ? this.device(b) : null;
     const out = this.make([cols], "f32");
-    this.check(this.hl.columnSum(out.buffer.handle, da.buffer.handle, rows, cols),
+    this.check(this.hl.columnSum(out.buffer.handle, da.buffer.handle,
+                                 db ? db.buffer.handle : 0, rows, cols),
                "columnSum", da);
     return out;
   }
@@ -1540,27 +1546,25 @@ export class NativeHeliosBackend implements Backend {
      * 11 MiB a step, and `xhat` beside it at 21, while both looked released.
      */
     const flatG = this.reshape(g, [rows, width]);
-    const ones = this.onesRow(rows);
-    const sumRows = (x: TensorData) => this.columnSum(x, rows, width);
-    const db = sumRows(flatG);
+    const db = this.columnSum(flatG, rows, width);
     /*
-     * g * xhat IN PLACE, over xhat's own buffer.
+     * dw = sum_rows(g * xhat) IN ONE PASS — the multiply lives inside the
+     * reduction rather than before it.
      *
-     * `mul` would allocate a third full-size tensor a layer, and in this
-     * allocator a temporary is not free even when it is freed: a release only
-     * MARKS, so the buffer is not reusable until helios_end_step and a step
-     * costs what it ALLOCATES. xhat is dead the moment dw is formed, so the
-     * product can overwrite it.
+     * This used to form the product first, in place over xhat's own buffer, to
+     * avoid allocating a third full-size tensor: a release only MARKS here, so
+     * a step costs what it ALLOCATES and a temporary is not free even when it
+     * is freed. That was the right trade against `mul`, and it still cost a
+     * full read-add-write pass over [1536,640] — 11.8 MB — to produce a value
+     * consumed immediately and only as a sum.
      *
-     * Safe because the kernel is elementwise: each thread reads a[i] and b[i]
-     * and writes out[i] at the SAME index, so aliasing the output onto an input
-     * cannot race — a thread only ever overwrites the element it just read.
-     * That is not true of any kernel whose output index differs from its input
-     * index, which is why this is a private helper and not a general `mul`.
+     * The column sum was already loading one of the two operands, so the
+     * multiply is one instruction inside a loop that was going to run anyway.
+     * It also retires the in-place aliasing argument the old route needed: xhat
+     * is left intact and nothing is overwritten.
      */
     const flatXhat = this.reshape(xhat, [rows, width]);
-    this.mulInto(flatXhat, flatXhat, flatG);
-    const dw = sumRows(flatXhat);
+    const dw = this.columnSum(flatXhat, rows, width, flatG);
     /*
      * xhat AND the product are this method's OWN, and nothing else frees them.
      *

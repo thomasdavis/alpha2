@@ -51,6 +51,30 @@ for (const [rows, cols] of CASES) {
   const t = B.fromArray(Array.from(x), [rows, cols]);
   const got = B.columnSum(t, rows, cols).data;
 
+  /* The PRODUCT form, against its own reference. Its second operand is a
+   * DIFFERENT ramp: with two equal inputs the product is a square and a kernel
+   * that read the same operand twice would pass. */
+  const y = new Float32Array(rows * cols);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      y[r * cols + c] = ((c * 3 + 2) % 47) / 47 + ((r * 5 + 1) % 29) / 290;
+  const wantP = new Float64Array(cols);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) wantP[c] += x[r * cols + c] * y[r * cols + c];
+  const ty = B.fromArray(Array.from(y), [rows, cols]);
+  const gotP = B.columnSum(t, rows, cols, ty).data;
+  let worstP = 0, worstPAt = -1;
+  for (let c = 0; c < cols; c++) {
+    const rel = Math.abs(gotP[c] - wantP[c]) / Math.max(1, Math.abs(wantP[c]));
+    if (rel > worstP) { worstP = rel; worstPAt = c; }
+  }
+  if (!(Number.isFinite(worstP) && worstP < 1e-4)) {
+    failures++;
+    console.log(`  rows=${String(rows).padStart(4)} cols=${String(cols).padStart(4)} PRODUCT  ` +
+                `worst rel ${worstP.toExponential(2)} at column ${worstPAt}  ` +
+                `got ${gotP[worstPAt]} want ${wantP[worstPAt]}  WRONG`);
+  }
+
   let worst = 0, worstAt = -1;
   for (let c = 0; c < cols; c++) {
     const rel = Math.abs(got[c] - want[c]) / Math.max(1, Math.abs(want[c]));
@@ -70,4 +94,4 @@ if (failures) {
   console.log(`\nFAIL — ${failures} of ${CASES.length} shapes disagree`);
   process.exit(1);
 }
-console.log(`ok — ${CASES.length} shapes agree with the reference`);
+console.log(`ok — ${CASES.length} shapes x 2 forms agree with the reference`);

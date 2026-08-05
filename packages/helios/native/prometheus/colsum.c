@@ -18,17 +18,21 @@ enum {
   R_RHS = 10,
   R_SLOT = 11, /* this thread's shared-memory slot */
   /*
-   * ONE address pair here, and even-aligned, which is safe only because the
-   * loop WAITS on its own load before recomputing it.
+   * A SEPARATE ADDRESS PAIR PER MEMORY OPERATION, all even-aligned — the rule
+   * normalize.c states, and it is load-bearing here.
    *
-   * The rule normalize.c states — a separate pair per memory operation — exists
-   * because a global load holds its address registers until the memory pipe
-   * accepts them, not until it issued, and there is no write-after-read
-   * interlock. This loop's fadd waits on BAR_LOAD, so the next iteration's
-   * address computation cannot overtake the load that used it. Add a second
-   * load to the body and that stops being true.
+   * A global load holds its address registers until the memory pipe accepts
+   * them, not until it issued, and there is no write-after-read interlock. The
+   * plain form has one load and waits on it before recomputing the address, so
+   * a single pair would be safe; the PRODUCT form has two outstanding at once
+   * and a shared pair would be the hazard this stack has hit six times. Giving
+   * each its own removes it by construction rather than by an argument about
+   * ordering that stops being true the next time the loop grows.
    */
   R_ADDR = 12,  /* R12:R13 */
+  /* The product form only: the second operand and its own address pair. */
+  R_ADDR2 = 14, /* R14:R15 */
+  R_VALUE2 = 17,
   R_STOREIDX = 16, /* lane, or 1 when the column does not exist */
   R_OUT = 18,   /* R18:R19 */
 };
@@ -48,7 +52,8 @@ unsigned pr_colsum_grid(unsigned cols) {
 
 unsigned pr_colsum_shared(void) { return PR_COLSUM_BLOCK * 4u; }
 
-unsigned pr_emit_column_sum(hp_word *p, unsigned rows, unsigned cols) {
+unsigned pr_emit_column_sum(hp_word *p, unsigned rows, unsigned cols,
+                            int product) {
   unsigned n = 0;
 
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
@@ -125,7 +130,21 @@ unsigned pr_emit_column_sum(hp_word *p, unsigned rows, unsigned cols) {
     p[n++] = hp_imad_wide_const(R_ADDR, R_INDEX, R_ESIZE, 0,
                                 HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
     p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_fadd(R_ACC, R_ACC, R_VALUE, hp_ctrl_wait(BAR_LOAD));
+    if (product) {
+      /* Its OWN address pair. Both loads are outstanding at once and a global
+       * load holds its address registers until the memory pipe accepts them,
+       * not until it issued — sharing the pair is the write-after-read hazard
+       * this stack has hit six times now. One barrier still covers both: the
+       * scoreboard counts outstanding operations, so the wait below drains the
+       * pair rather than only the last. */
+      p[n++] = hp_imad_wide_const(R_ADDR2, R_INDEX, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+      p[n++] = hp_ldg(R_VALUE2, R_ADDR2, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_fmul(R_VALUE, R_VALUE, R_VALUE2, hp_ctrl_wait(BAR_LOAD));
+      p[n++] = hp_fadd(R_ACC, R_ACC, R_VALUE, hp_ctrl_safe());
+    } else {
+      p[n++] = hp_fadd(R_ACC, R_ACC, R_VALUE, hp_ctrl_wait(BAR_LOAD));
+    }
 
     p[n++] = hp_iadd3_imm(R_ROW, R_ROW, PR_COLSUM_LANES, hp_ctrl_safe());
     p[n++] = hp_isetp_gt_imm(P_DONE, R_ROW, rows - 1u, hp_ctrl_safe());

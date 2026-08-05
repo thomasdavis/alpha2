@@ -60,10 +60,10 @@ static napi_value js_reduce_rows(napi_env env, napi_callback_info info) {
   return hl_result(env, hl_reduce_rows(ctx, U32(0), U32(1), U32(2), U32(3)));
 }
 
-/* (out, a, rows, cols) */
+/* (out, a, b, rows, cols) — b = 0 for the plain sum. */
 static napi_value js_column_sum(napi_env env, napi_callback_info info) {
   CTX;
-  return hl_result(env, hl_column_sum(ctx, U32(0), U32(1), U32(2), U32(3)));
+  return hl_result(env, hl_column_sum(ctx, U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
 /* (op, out, a, weight, bias, width, rows, eps) */

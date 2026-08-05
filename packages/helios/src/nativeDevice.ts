@@ -90,8 +90,9 @@ export interface NativeAddon {
   reduce(mean: number, out: number, a: number, scratch: number, n: number): boolean;
   /** One value per row: one block per row, `width` threads each. */
   reduceRows(out: number, a: number, width: number, rows: number): boolean;
-  /* out[c] = sum over rows of a[r][c] — the bias-shaped gradient. */
-  columnSum(out: number, a: number, rows: number, cols: number): boolean;
+  /* out[c] = sum over rows of a[r][c], or of a[r][c]*b[r][c] when b is a
+   * handle rather than 0 — the bias-shaped gradient, and dw. */
+  columnSum(out: number, a: number, b: number, rows: number, cols: number): boolean;
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
   /* Normalise and apply the per-feature affine in one launch. `bias` is ignored
    * by the rmsNorm form but must still be a valid handle. */

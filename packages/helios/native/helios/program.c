@@ -123,7 +123,11 @@ static int emit(const helios_key *key, helios_program *p) {
     case HL_COLUMN_SUM:
       /* arg0 = rows, arg1 = cols. One block per 32 columns, 32 row-lanes deep;
        * the row axis is walked, not split, so the grid is in columns alone. */
-      p->count = pr_emit_column_sum(p->code, key->arg0, key->arg1);
+      /* arg2 selects the PRODUCT form, which takes a second input. Part of
+       * the key: the two emit different programs over different parameter
+       * counts, and a cache hit across them would read a parameter slot the
+       * launch never filled. */
+      p->count = pr_emit_column_sum(p->code, key->arg0, key->arg1, (int)key->arg2);
       p->blockX = PR_COLSUM_BLOCK;
       p->gridX = pr_colsum_grid(key->arg1);
       p->sharedBytes = pr_colsum_shared();

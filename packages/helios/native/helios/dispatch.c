@@ -151,10 +151,12 @@ int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
 }
 
 int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
-                  unsigned rows, unsigned cols) {
-  const helios_key k = {HL_COLUMN_SUM, rows, cols, 0};
-  const helios_tensor ts[2] = {out, a};
-  return run(ctx, k, ts, 2, 0, 0);
+                  helios_tensor b, unsigned rows, unsigned cols) {
+  /* `b` is optional: zero means the plain sum, anything else the sum of the
+   * elementwise product. */
+  const helios_key k = {HL_COLUMN_SUM, rows, cols, b ? 1u : 0u};
+  const helios_tensor ts[3] = {out, a, b};
+  return run(ctx, k, ts, b ? 3 : 2, 0, 0);
 }
 
 int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
