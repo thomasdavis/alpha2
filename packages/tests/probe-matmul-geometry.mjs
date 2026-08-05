@@ -56,15 +56,27 @@ function timeOp(fn, iters = 15) {
    * bench-scale.mjs already warms by time for exactly this reason. Two seconds
    * per case is enough to reach and hold boost.
    */
-  fn(); N.syncGpu();
+  /*
+   * RELEASE THE OUTPUT, or the probe dies before it answers.
+   *
+   * Every call allocates a fresh output and nothing freed it, so a two-second
+   * warmup of a sub-millisecond kernel carves thousands of them and the pool
+   * runs dry — this probe crashed on its THIRD case with "allocation of
+   * 1048576 floats failed", which reads like a device limit and is really this
+   * file's own litter. The three cases it never reached are the ones that
+   * separate N from K, i.e. the entire question it exists to answer.
+   */
+  const drop = (r) => { if (r && r.buffer) N.releaseGpuTensor?.(r); };
+  drop(fn()); N.syncGpu();
   const warmUntil = process.hrtime.bigint() + 2_000_000_000n;
-  while (process.hrtime.bigint() < warmUntil) { fn(); N.syncGpu(); N.finishStepOps?.(); }
+  while (process.hrtime.bigint() < warmUntil) { drop(fn()); N.syncGpu(); N.finishStepOps?.(); }
   const ms = [];
   for (let i = 0; i < iters; i++) {
     const t0 = process.hrtime.bigint();
-    fn();
+    const r = fn();
     N.syncGpu();
     ms.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    drop(r);
     N.finishStepOps?.();
   }
   ms.sort((a, b) => a - b);
@@ -91,6 +103,7 @@ for (const c of CASES) {
   try { t = timeOp(() => N.matmul(a, b)); }
   catch (e) { console.log(`  ${String(c.Ncols).padStart(8)} ${String(c.K).padStart(8)} ${String(c.M).padStart(9)}   ERROR ${e.message.slice(0, 28)}`); continue; }
   const gflops = (2 * FMA) / (t.med / 1000) / 1e9;
+  N.releaseGpuTensor?.(a); N.releaseGpuTensor?.(b); N.finishStepOps?.();
   console.log(`  ${String(c.Ncols).padStart(8)} ${String(c.K).padStart(8)} ${String(c.M).padStart(9)} ${t.med.toFixed(2).padStart(9)} ${(t.lo.toFixed(2) + "-" + t.hi.toFixed(2)).padStart(12)} ${gflops.toFixed(0).padStart(9)}   ${c.note}`);
 }
 console.log("\nAn RTX 3070 does ~20,000 Gflop/s f32 at peak.");

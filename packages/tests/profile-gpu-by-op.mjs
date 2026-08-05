@@ -22,6 +22,11 @@ import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index
  * removes the overlap that makes a step's total sensitive to clock ramp. A cold
  * first run still reads high — discard it. */
 const L = Number(process.argv[2] ?? 18), SEQ = Number(process.argv[3] ?? 64);
+/* BATCH matters to the share, not just the total. At batch 1 a matmul launches
+ * SEQ blocks and leaves most of the card idle, so the elementwise ops — which
+ * are bandwidth-bound and already wide — look disproportionately cheap. The
+ * shape that fills the card is the shape whose profile is worth acting on. */
+const BATCH = Number(process.argv[4] ?? 1);
 const C = { vocabSize: 12288, blockSize: SEQ, nLayer: L, nEmbd: 640, nHead: 10, dropout: 0 };
 const B = new NativeHeliosBackend(0);
 const P = initGPT(C, B, new SeededRng(7));
@@ -60,8 +65,8 @@ for (const m of METHODS) {
 /* Warm: programs compile on first use and this card ramps its clock. */
 for (let w = 0; w < 2; w++) {
   const tape = new Tape();
-  const tok = B.fromArray(Array.from({length:SEQ},(_,i)=>i%C.vocabSize),[1,SEQ]);
-  const tgt = B.fromArray(Array.from({length:SEQ},(_,i)=>(i+1)%C.vocabSize),[1,SEQ]);
+  const tok = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>i%C.vocabSize),[BATCH,SEQ]);
+  const tgt = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>(i+1)%C.vocabSize),[BATCH,SEQ]);
   const out = gptForward(C, P, B, tape, tok, tgt, true, false, false, undefined, rel);
   tape.backward(out.loss, B, rel);
   tape.clear(rel); B.finishStepOps?.();
@@ -70,8 +75,8 @@ for (let w = 0; w < 2; w++) {
 tracking = true;
 const t0 = Date.now();
 const tape = new Tape();
-const tok = B.fromArray(Array.from({length:SEQ},(_,i)=>i%C.vocabSize),[1,SEQ]);
-const tgt = B.fromArray(Array.from({length:SEQ},(_,i)=>(i+1)%C.vocabSize),[1,SEQ]);
+const tok = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>i%C.vocabSize),[BATCH,SEQ]);
+const tgt = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>(i+1)%C.vocabSize),[BATCH,SEQ]);
 const out = gptForward(C, P, B, tape, tok, tgt, true, false, false, undefined, rel);
 tape.backward(out.loss, B, rel);
 tracking = false;
@@ -79,7 +84,7 @@ tape.clear(rel); B.finishStepOps?.();
 
 let total = 0, calls = 0;
 for (const [, v] of cost) { total += v.us; calls += v.n; }
-console.log(`${L}L seq ${SEQ}: ${calls} operations, ${(total/1000).toFixed(1)} ms of GPU (drained per op), wall ${Date.now()-t0} ms\n`);
+console.log(`${L}L seq ${SEQ} batch ${BATCH}: ${calls} operations, ${(total/1000).toFixed(1)} ms of GPU (drained per op), wall ${Date.now()-t0} ms\n`);
 console.log("operation           calls    GPU ms    %     us/call");
 for (const [k, v] of [...cost.entries()].sort((a,b) => b[1].us - a[1].us).slice(0, 12))
   console.log(`${k.padEnd(18)} ${String(v.n).padStart(6)}  ${(v.us/1000).toFixed(1).padStart(8)}  ${(v.us/total*100).toFixed(1).padStart(5)}  ${(v.us/v.n).toFixed(0).padStart(8)}`);
