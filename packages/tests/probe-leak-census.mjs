@@ -54,8 +54,21 @@ NativeBuffer.alloc = (hl, elements) => {
 };
 const origRelease = NativeBuffer.prototype.release;
 NativeBuffer.prototype.release = function (hl) {
-  live.delete(this);
-  return origRelease.call(this, hl);
+  /*
+   * DROP IT ONLY IF THE MEMORY ACTUALLY WENT BACK, and this correction matters
+   * more than the census itself.
+   *
+   * `release` is REFCOUNTED: it decrements and frees only at zero, and returns
+   * immediately when the count is already zero. The first version of this
+   * wrapper deleted the entry before calling through, so every no-op release
+   * erased a buffer from the census that was still live in the pool — and the
+   * census then reported 0.01 MiB a step leaking while the allocator's own
+   * `live` counter climbed by 18 buffers a step in the same run. An instrument
+   * that under-reports a leak is worse than none: it closes the investigation.
+   */
+  const r = origRelease.call(this, hl);
+  if (this.released) live.delete(this);
+  return r;
 };
 
 const B = new NativeHeliosBackend(0);
