@@ -734,8 +734,21 @@ export class NativeHeliosBackend implements Backend {
      * that work starts from a kernel already proven correct.
      */
     if (!FUSED_MATMUL_TRANSPOSED || b.shape.length !== 2 ||
-        (b.shape[1] ?? K) !== K || !this.hl.matmulTransposed)
-      return this.matmul(a, this.transpose(b, b.shape.length - 2, b.shape.length - 1));
+        (b.shape[1] ?? K) !== K || !this.hl.matmulTransposed) {
+      /*
+       * THE TRANSPOSE IS THIS FUNCTION'S OWN, and it is weight-sized.
+       *
+       * Written as `return this.matmul(a, this.transpose(b, ...))` it is
+       * allocated, used as an operand and dropped — 4.9 MB for a qkv weight,
+       * once per projection per layer, and nobody downstream can free it
+       * because it never leaves this expression. The pool's size-class
+       * histogram put 87% of a 2.5 GB-per-step leak in exactly this class.
+       */
+      const t = this.transpose(b, b.shape.length - 2, b.shape.length - 1);
+      const out = this.matmul(a, t);
+      if (isNative(t)) t.buffer.release(this.hl);
+      return out;
+    }
     const N = b.shape[0] ?? 1;
     const M = shapeSize(a.shape) / K;
     const da = this.device(a), db = this.device(b);
