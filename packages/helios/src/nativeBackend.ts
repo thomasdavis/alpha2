@@ -423,7 +423,26 @@ export class NativeHeliosBackend implements Backend {
      * block has to fit one launch. So the condition is the general one: the
      * source repeats a whole number of times and its size is a legal block.
      */
-    const MAX_BLOCK = 1024;
+    /*
+     * 1024 WAS THE THREAD LIMIT, NOT THE KERNEL'S LIMIT, and the difference is
+     * a queue drain per layer.
+     *
+     * The note above records the causal mask as "a 1,024-element BLOCK" — true
+     * at sequence 32, where [T,T] is 32x32. At sequence 64 it is 4,096, the
+     * guard rejects it, and the tile falls back to the host path below, which
+     * READS device memory and therefore SYNCS. Profiling 105M put 692 ms of
+     * fence-spin under maskedFill -> expand, a drain in the middle of the
+     * attention block of every one of the eighteen layers.
+     *
+     * The kernel never had this restriction: pr_emit_broadcast computes
+     * `chunks = ceil(W / pr_row_block(W))` and unrolls over them with
+     * alternating value and address registers, exactly so a width can exceed
+     * one block of threads. Only this constant said otherwise.
+     *
+     * 8192 rather than unbounded because the unroll is real instructions —
+     * eight chunks of about eight against a 256-instruction program budget.
+     */
+    const MAX_BLOCK = 8192;
     /*
      * A TILE REQUIRES THE SOURCE TO MATCH THE DESTINATION'S TRAILING AXES.
      *
