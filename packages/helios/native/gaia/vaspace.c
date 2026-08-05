@@ -68,9 +68,24 @@ static NvU64 g_vaNext;
 
 NvU64 gaia_va_take(NvU64 size) {
   if (!g_vaNext) g_vaNext = GAIA_VA_BASE;
-  /* 64 KiB granularity keeps every mapping comfortably page-aligned for any
-   * page size RM might choose. */
-  const NvU64 align = 64 * 1024;
+  /*
+   * 64 KiB granularity keeps every mapping comfortably page-aligned for any
+   * page size RM might choose -- except the one it chooses for large VIDEO
+   * memory mappings, which is 2 MiB.
+   *
+   * A 4 MiB video-memory slab allocated cleanly and then failed NVOS46 with
+   * status 81 at a 64 KiB-aligned address, while smaller ones mapped fine. RM
+   * picks a big page for a mapping that size and then requires the virtual
+   * address to be aligned to it; a small mapping gets 4 KiB pages and never
+   * asks. The failure is silent about all of this -- it arrives as a status
+   * code on the mapping, three frames below the allocator, and the allocator's
+   * halving loop turns it into a slab too small to carve from, which surfaces
+   * as "layerNorm failed on the device".
+   *
+   * Aligning by size costs virtual address space and nothing else: the space is
+   * 40 bits and the slabs are megabytes.
+   */
+  const NvU64 align = size >= 2 * 1024 * 1024 ? 2 * 1024 * 1024 : 64 * 1024;
   NvU64 at = (g_vaNext + align - 1) & ~(align - 1);
   g_vaNext = at + ((size + align - 1) & ~(align - 1));
   return at;
