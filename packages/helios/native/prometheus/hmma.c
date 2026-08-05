@@ -298,17 +298,31 @@
  * the table, and guessing the alternative would have been a day spent making a
  * correct thing wrong.
  *
- * WHAT THE REMAINING EVIDENCE SAYS. [64,16]x[16,64] fails, and at K=16 the
- * k-loop runs ONCE, so no accumulation has happened yet — which rules out the
- * numerics and rules out anything that only manifests across iterations. The
- * failures are at [0,16] (tile column 2) and [8,9] (tile column 1, the g+8
- * row), so more than one tn is wrong and both row halves are involved. Look
- * next at what ACC_WORDS changed that is NOT the epilogue: the accumulator
- * zeroing runs over ACC_WORDS*TM*TN registers in BOTH emitters, but only the
- * staged emitter's hp_hmma call was given the f16acc flag — the direct path
- * still emits the F32 form while ACC_OF and the epilogue have moved to the f16
- * stride. HMMA_SHARED selects between them, and pr_emit_hmma dispatches before
- * either sees the flag.
+ * WHAT THE REMAINING EVIDENCE SAYS, and it is narrow.
+ *
+ *   - It IS NOT the numerics. [64,16]x[16,64] fails, and at K=16 the k-loop
+ *     runs ONCE — nothing has been accumulated yet. Eleven bits of mantissa
+ *     cannot be the explanation for a single product coming back wrong.
+ *   - It IS NOT the fragment layout. Captured above, and it is what the
+ *     epilogue assumes.
+ *   - It IS NOT tile-dependent, and this is the useful one. Built with
+ *     -DHMMA_TM=1 -DHMMA_TN=1 it STILL fails ([32,16]x[16,16] and up), so the
+ *     fault is in the minimal path: one fragment, two accumulator registers,
+ *     one HMMA, one unpack, two stores. That rules out register aliasing
+ *     between fragments and rules out anything that needs a second tn — which
+ *     between them were the whole of the plausible list.
+ *
+ * So the defect is in one of four things, all of which fit on a page: the
+ * accumulate-width bit itself (0x08 against 0x18 at bits 72-79 — captured, but
+ * a capture proves the ENCODING, not that nothing else must change alongside
+ * it); the two hp_half_to_float unpacks and their control; the two stores that
+ * follow; or the accumulator's initialisation, which writes ACC_WORDS*TM*TN
+ * registers of integer zero where the f16 form may want something else.
+ *
+ * Start by dumping the emitted program for a 1x1 f16 build through
+ * tools/hmma_dump.c and reading it against a ptxas-compiled equivalent. That is
+ * how the F32 form was got right, and at 1x1 the listing is short enough to
+ * check by eye.
  */
 #ifndef HMMA_F16ACC
 #define HMMA_F16ACC 0
