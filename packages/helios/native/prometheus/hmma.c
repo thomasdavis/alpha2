@@ -754,12 +754,16 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
              * tile has only two units and never reaches those slots, which is
              * why the 1x1 failure is a DIFFERENT bug and why this one hid.
              *
-             * Moving them above R_HIGHEST was tried and is WRONG: the kernel's
-             * declared register count is derived from R_HIGHEST, so the new
-             * temporaries were never allocated and failures went 21 -> 60. The
-             * fix has to either raise the declared count — which costs
-             * occupancy, and +64 registers was measured at 3.6% — or find four
-             * genuinely dead pairs below it. Neither is a guess away.
+             * Moving them above R_HIGHEST was tried TWICE and is wrong both
+             * times: bare, the kernel's declared register count is derived from
+             * R_HIGHEST so the new temporaries are never allocated (21 -> 60
+             * failures); and WITH the declaration widened by eight to cover
+             * them, still 60. So "past the declared count" was not the
+             * explanation either, and something else about that region is
+             * unusable here. Do not try it a third time without first dumping
+             * the emitted program and confirming the registers appear where
+             * they are expected — this is now two hypotheses spent on register
+             * placement and both were reasoned rather than read.
              */
             v0 = ST_B(2u * slot); v1 = ST_B(2u * slot + 1u);
             p[n++] = hp_half_to_float(v0, acc + half, HP_HALF_LO, hp_ctrl_safe());
