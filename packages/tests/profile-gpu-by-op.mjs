@@ -123,6 +123,83 @@ if (SHAPES) {
     console.log(`${k.padEnd(50)} ${String(v.n).padStart(5)}  ${(v.us / 1000).toFixed(1).padStart(8)}` +
                 `  ${(v.us / total * 100).toFixed(1).padStart(5)}  ${(v.us / v.n).toFixed(0).padStart(8)}`);
 
+  /*
+   * THE RATE EACH SHAPE ACTUALLY ACHIEVES, and the time it would give back at
+   * the best rate this kernel reaches anywhere.
+   *
+   * "GEMM is 72% of the step" does not say what to do. A shape at 22 TFLOP/s is
+   * finished; one at 12 has headroom worth naming. The last column is the
+   * decision: milliseconds recoverable if this shape ran at PEAK, summed over
+   * its calls.
+   */
+  const PEAK = 22.0;
+  const rows = [];
+  for (const [k, v] of shapeCost) {
+    const m = k.match(/^(matmul\w*) (\S+) \. (\S+)$/);
+    if (!m) continue;
+    const a = m[2].split("x").map(Number), b = m[3].split("x").map(Number);
+    if (a.some(Number.isNaN) || b.some(Number.isNaN) || a.length < 2) continue;
+    /* Leading axes are batch; the last two are the matrix. The operand shapes
+     * are as PASSED, so the contraction is a[-1] against whichever of b's last
+     * two axes matches — transposed forms store B as [N,K]. */
+    const batch = a.slice(0, -2).reduce((x, y) => x * y, 1);
+    let M, N, K;
+    if (m[1] === "matmulAccumulate") {
+      /* ⚠️ ITS FIRST ARGUMENT IS THE DESTINATION, not an operand — the wrapper
+       * logs args[0] and args[1] blindly, so for this one they are (dest, A)
+       * and the contraction is nowhere in them. dest is [M,N] and A is stored
+       * [K,M], which is the transposed-A form the weight gradient uses. Reading
+       * it as a plain (A, B) pair put this row at 7.0 TFLOP/s and top of the
+       * table; it is 16.8 and unremarkable. */
+      M = a[a.length - 2]; N = a[a.length - 1]; K = b[0];
+    } else if (m[1] === "matmulTransposedA") {
+      /* C = A^T @ B with A stored [K,M]: args are (A, B). */
+      K = a[a.length - 2]; M = a[a.length - 1]; N = b[b.length - 1];
+    } else {
+      M = a[a.length - 2]; K = a[a.length - 1];
+      const bl = b[b.length - 1], bp = b[b.length - 2];
+      N = m[1] === "matmulTransposed" ? bp : (bl === K ? bp : bl);
+    }
+    const gflop = 2 * batch * M * N * K / 1e9 * v.n;
+    const tflops = gflop / (v.us / 1e6) / 1e3;
+    if (!Number.isFinite(tflops) || tflops <= 0 || tflops > 60) continue;
+    rows.push({ k, n: v.n, ms: v.us / 1000, gflop, tflops,
+                recover: (v.us / 1000) * (1 - Math.min(1, tflops / PEAK)) });
+  }
+  rows.sort((x, y) => y.recover - x.recover);
+  console.log(`\nGEMM by shape — rate achieved, and ms recoverable at ${PEAK} TFLOP/s`);
+  console.log("operation / operands                              calls   GPU ms   GFLOP  TFLOP/s  recover");
+  let totalRecover = 0, totalMs = 0, totalG = 0;
+  for (const r of rows) {
+    totalRecover += r.recover; totalMs += r.ms; totalG += r.gflop;
+    console.log(`${r.k.padEnd(48)} ${String(r.n).padStart(5)} ${r.ms.toFixed(1).padStart(8)}` +
+                ` ${r.gflop.toFixed(1).padStart(7)} ${r.tflops.toFixed(1).padStart(8)}` +
+                ` ${r.recover.toFixed(1).padStart(8)}`);
+  }
+  console.log(`${"TOTAL".padEnd(48)} ${"".padStart(5)} ${totalMs.toFixed(1).padStart(8)}` +
+              ` ${totalG.toFixed(1).padStart(7)} ${(totalG / (totalMs / 1000) / 1e3).toFixed(1).padStart(8)}` +
+              ` ${totalRecover.toFixed(1).padStart(8)}`);
+
+  /*
+   * THE BUDGET, which is what the whole table is for.
+   *
+   * A target throughput fixes the step time, and the step time has to cover the
+   * GEMM before it covers anything else. When the GEMM alone exceeds the budget,
+   * no amount of fusion in the other half can reach the target and the only
+   * remaining lever is the GEMM's own rate.
+   */
+  const TARGET = Number(process.env.TARGET_TOKS ?? 30000);
+  const stepMs = BATCH * SEQ / TARGET * 1000;
+  /* The drained profile overstates, because draining removes the overlap a real
+   * step gets. Scale by the ratio the benchmark reports so the comparison is
+   * against real GPU time and not against this instrument's own total. */
+  const gemmMs = rows.reduce((a, r) => a + r.ms, 0);
+  console.log(`\nBUDGET at ${TARGET} tok/s: the step must be ${stepMs.toFixed(1)} ms.`);
+  console.log(`  GEMM alone is ${gemmMs.toFixed(1)} ms drained (${totalG.toFixed(0)} GFLOP at ` +
+              `${(totalG / (gemmMs / 1000) / 1e3).toFixed(1)} TFLOP/s).`);
+  console.log(`  ${TARGET} tok/s needs ${(totalG / (stepMs / 1000) / 1e3).toFixed(1)} TFLOP/s ` +
+              `sustained across the WHOLE step — every elementwise op, launch and barrier included.`);
+
   /* The two populations, summed. This is the number the next decision turns on. */
   let big = { n: 0, us: 0 }, small = { n: 0, us: 0 };
   for (const [k, v] of shapeCost) {

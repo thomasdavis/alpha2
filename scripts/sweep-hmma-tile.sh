@@ -51,7 +51,16 @@ echo
 # DRAM, L2, occupancy, issue and barriers are all spent. It trades against
 # occupancy, which is why it is a sweep and not a change.
 run "2x4 tile, 2x2 warps"  "-DHMMA_TM=2 -DHMMA_TN=4 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
-run "4x8 tile, 2x2 warps"  "-DHMMA_TM=4 -DHMMA_TN=8 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
+# SMALLER tiles, for the opposite reason to the bigger ones: BLOCK COUNT.
+# Every N=640 shape in the step runs at 10.9-14.8 TFLOP/s while every large-N
+# shape runs at 17.7-20.9, and N=640 with a 64-wide block tile is 240 blocks
+# against roughly 184 resident — 1.3 waves, so a third of the time most of the
+# card is idle. 240/(2*184) = 65%, which is what the slow shapes achieve. These
+# halve the tile in one direction to double the blocks; the cost is arithmetic
+# intensity per warp, which is why it has to be measured rather than assumed.
+run "2x2 tile, 2x2 warps"  "-DHMMA_TM=2 -DHMMA_TN=2 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
+run "1x4 tile, 2x2 warps"  "-DHMMA_TM=1 -DHMMA_TN=4 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
+run "1x8 tile, 2x2 warps"  "-DHMMA_TM=1 -DHMMA_TN=8 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
 run "4x2 tile, 2x2 warps"  "-DHMMA_TM=4 -DHMMA_TN=2 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
 run "4x4 tile, 2x2 warps"  "-DHMMA_TM=4 -DHMMA_TN=4 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
 run "2x8 tile, 2x2 warps"  "-DHMMA_TM=2 -DHMMA_TN=8 -DHMMA_WARPS_M=2 -DHMMA_WARPS_N=2"
