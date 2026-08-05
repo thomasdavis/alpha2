@@ -206,6 +206,47 @@
 #endif
 
 /*
+ * HMMA_NOPACK — a MEASUREMENT, not a mode, and the same instrument as
+ * HMMA_NOBAR above. It omits the F2FP conversions that turn each pair of f32
+ * operands into one f16 word, so the kernel stages whatever the load registers
+ * happened to hold and its answers are wrong. The only thing it produces is a
+ * number: what the packs cost.
+ *
+ * The question it settles is whether to keep the operands as f16 IN MEMORY.
+ * That change deletes all eight packs per k-step and halves the loads again —
+ * about 27% fewer instructions — and it is numerics-neutral, because the kernel
+ * already converts both operands to f16 before multiplying; the only question
+ * is whether that happens once when a tensor is written or on every read. But
+ * it is also a change to the staging addressing in both layouts, which is
+ * exactly where this kernel has produced finite, plausible, wrong matrices five
+ * times. Measure the prize before paying for it.
+ *
+ * MEASURED, at the shapes the gate runs, with the packs simply deleted:
+ *
+ *     qkv     B^T  21.02 -> 21.08 TFLOP/s   +0.3%    lm head B^T  21.63 -> 22.06  +2.0%
+ *     qkv     fwd  18.80 -> 19.50           +3.7     lm head fwd  20.39 -> 20.97  +2.8
+ *     mlp fc  B^T  20.46 -> 20.87           +2.0     attn proj    15.39 -> 15.59  +1.3
+ *     mlp fc  fwd  19.18 -> 19.75           +3.0     mlp proj     17.66 -> 18.17  +2.9
+ *
+ * ⇒ THE PACKS COST 1.3-3.7%, not the double-digit share the instruction count
+ * suggested. Adding the load halving — worth 5-9% when the pair-load went from
+ * two 32-bit to one 64-bit — puts the WHOLE f16-in-memory change at an upper
+ * bound near 7-8% on the GEMM, so about 5% on the step, for a rewrite of the
+ * staging addressing in both layouts plus an f16 tensor format through the
+ * stack.
+ *
+ * So this kernel is NOT purely issue-bound, and that closes the last cheap
+ * structural theory about its 45%. At 21-22 TFLOP/s it is now 65-90% of cuBLAS
+ * at these shapes. What remains between here and the 45.5 ceiling is not
+ * something the instruction mix explains, and the only lever with a factor
+ * rather than a percent behind it is f16 ACCUMULATE — ceiling 90.3 — which
+ * changes the arithmetic and therefore the loss.
+ */
+#ifndef HMMA_NOPACK
+#define HMMA_NOPACK 0
+#endif
+
+/*
  * Padding is still ALLOWED under ldmatrix, just not by one word: the stride has
  * to keep every row 16-byte aligned, so it moves in fours.
  *
@@ -866,12 +907,14 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
      * the wait for every load.
      */
     for (unsigned i = 0; i < A_ITERS; i++) {
+      if (HMMA_NOPACK) { if (first) { p[n++] = hp_iadd3_imm(ST_A(i), ST_A(i), 0, hp_ctrl_wait(BAR_LOAD)); first = 0; } continue; }
       p[n++] = hp_f2fp_pack(ST_A(i), ST_A(2 * i), ST_A(2 * i + 1),
                             first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_stall(1));
       first = 0;
     }
-    for (unsigned i = 0; i < B_ITERS; i++)
-      p[n++] = hp_f2fp_pack(ST_B(i), ST_B(2 * i), ST_B(2 * i + 1), hp_ctrl_stall(1));
+    if (!HMMA_NOPACK)
+      for (unsigned i = 0; i < B_ITERS; i++)
+        p[n++] = hp_f2fp_pack(ST_B(i), ST_B(2 * i), ST_B(2 * i + 1), hp_ctrl_stall(1));
   }
   /*
    * The stores are independent of each other and share one address register
