@@ -332,11 +332,24 @@ export class NativeBuffer {
   release(hl: NativeAddon): void {
     if (this.rc <= 0) return;
     if (--this.rc === 0) {
-      /* The mirror is this buffer's alone, so it dies with it. Leaving it would
-       * hold a system-memory buffer per tensor ever read on the host, which is
-       * a leak the pool cannot see -- the staging buffers are live allocations
-       * as far as it is concerned. */
-      if (this.staging) { this.staging.release(hl); this.staging = null; }
+      /*
+       * PUSH THE MIRROR FIRST: in this backend a release is deferred, so a
+       * released buffer is still readable and still gets used.
+       *
+       * helios_tensor_free only MARKS; the handle stays valid and the memory
+       * untouched until the step boundary, because the tape releases tensors it
+       * turns out to still reference. So a buffer released with host writes
+       * pending is not dead, it is a buffer whose writes have to land -- and
+       * dropping the mirror here made `commit()` a no-op afterwards, so those
+       * writes were silently lost and the loss came back near but not equal to
+       * cpu_ref, differently on each run as the release order varied.
+       *
+       * The staging buffer is released, not forgotten: its handle is deferred by
+       * exactly the same rule, so it stays valid for the rest of the step and a
+       * later read through it is as safe as a read through the parent.
+       */
+      this.commit();
+      if (this.staging) this.staging.release(hl);
       hl.free(this.handle);
     }
   }

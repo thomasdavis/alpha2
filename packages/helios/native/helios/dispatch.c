@@ -3,6 +3,8 @@
  */
 #include "dispatch.h"
 
+#include "../prometheus/elementwise.h"
+
 #include <string.h>
 
 /* Reinterpret a float as the word the constant bank actually stores. The bank
@@ -83,6 +85,22 @@ int hl_elementwise(helios_context *ctx, unsigned op, helios_tensor out,
    * costs nothing, while passing NONE would fail the resolve above. */
   const helios_tensor ts[3] = {out, a, b != HELIOS_TENSOR_NONE ? b : a};
   return run(ctx, k, ts, 3, s, nscalars);
+}
+
+/*
+ * Zero a freshly carved device buffer, with the fill kernel.
+ *
+ * Registered with the tensor pool at load time because the pool is below this
+ * file and cannot dispatch for itself. See helios_zero_fn in tensor.h for why
+ * video memory needs it and system memory does not.
+ */
+static int zero_tensor(helios_context *ctx, helios_tensor t, NvU64 bytes) {
+  const float zero = 0.0f;
+  return hl_elementwise(ctx, PR_EW_FILL, t, t, t, (unsigned)(bytes / 4), &zero, 1);
+}
+
+__attribute__((constructor)) static void register_zero_fn(void) {
+  helios_tensor_set_zero_fn(zero_tensor);
 }
 
 int hl_reduce(helios_context *ctx, int mean, helios_tensor out, helios_tensor a,

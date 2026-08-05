@@ -156,6 +156,10 @@ static unsigned g_used; /* high-water mark of slots ever created */
 static helios_tensor_stats g_stats;
 static int g_init;
 
+static helios_zero_fn g_zeroFn;
+
+void helios_tensor_set_zero_fn(helios_zero_fn fn) { g_zeroFn = fn; }
+
 static void init_once(void) {
   if (g_init) return;
   for (int i = 0; i < NUM_CLASSES; i++) g_freeHead[i][0] = g_freeHead[i][1] = -1;
@@ -379,7 +383,17 @@ static helios_tensor alloc_from(helios_context *ctx, NvU64 bytes, int hostVisibl
   const unsigned index = g_used++;
   g_stats.live++;
   g_stats.carved++;
-  return make_handle(index, s->generation);
+  const helios_tensor t = make_handle(index, s->generation);
+  /*
+   * A fresh carve out of video memory is not zero, and callers assume it is.
+   *
+   * Only on a CARVE: a buffer served from the free list holds the last tensor's
+   * bytes, which is exactly what system memory does too, so the two paths agree
+   * and the pool stays a pointer bump. Carves stop after the first step or two,
+   * so this is a few thousand fills once and nothing thereafter.
+   */
+  if (g_zeroFn && !g_slabs[si].hostVisible) g_zeroFn(ctx, t, size);
+  return t;
 }
 
 helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {

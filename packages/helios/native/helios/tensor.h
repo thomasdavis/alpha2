@@ -78,6 +78,25 @@ helios_tensor helios_tensor_alloc_host(helios_context *ctx, NvU64 bytes);
 /* Whether helios_tensor_host will return a pointer for this handle. */
 int helios_tensor_host_visible(helios_tensor t);
 
+/*
+ * How to zero a freshly carved device buffer, supplied from above.
+ *
+ * A NEW carve in system memory arrives zeroed, because the kernel zeroes pages
+ * before handing them to a process. Video memory does not: a fresh slab holds
+ * whatever the last tenant left. That difference is not academic -- several
+ * kernels read a little past a tensor's end into the slack of its size class,
+ * which the pool guarantees is untouched, and "untouched" silently meant "zero"
+ * on every path that had ever run. With video memory it means garbage, and the
+ * model's loss came back varying from step to step (4.1869 to 4.1935 against a
+ * bit-identical 4.190377 in system memory) with nothing in the code random.
+ *
+ * The zeroing needs a kernel and this file is below the dispatcher, so the
+ * dispatcher registers it. A null hook means no zeroing, which is correct for
+ * system memory and for any caller that never turns video memory on.
+ */
+typedef int (*helios_zero_fn)(helios_context *ctx, helios_tensor t, NvU64 bytes);
+void helios_tensor_set_zero_fn(helios_zero_fn fn);
+
 /* Return it to the pool. The handle is dead afterwards and any further use of
  * it is rejected rather than acted on. */
 void helios_tensor_free(helios_tensor t);
