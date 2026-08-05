@@ -60,14 +60,53 @@ static void test_control_roundtrip(void) {
   HT_EQ_U64(r.waitMask, 0x2a);
   HT_EQ_U64(r.reuse, 0x9);
 
-  /* The safe default must genuinely be maximally conservative: full stall, no
-   * barriers set. A default that silently allowed a race would undermine every
-   * kernel written before the scheduler exists. */
+  /*
+   * The safe default must clear every barrier, and its stall must cover the
+   * longest dependent latency it actually governs.
+   *
+   * This asserted stall == 15 and had to change when the default dropped to 7,
+   * which is worth being careful about: a test that pins a constant will always
+   * "fail" when the constant is tuned, and the temptation is to edit the number
+   * and move on. So it now states the PROPERTY instead -- at least the measured
+   * minimum for the slowest form this default is applied to, MOV c[] at 5
+   * (tools/stall_probe.c). That still fails if someone lowers it to 4 on the
+   * strength of the ALU figure alone, which is the mistake worth catching.
+   *
+   * ISETP is deliberately not covered here: it needs 13 and hp_ctrl_safe does
+   * not govern it -- sm86_flow.c clamps it, and the case below proves it.
+   */
   hp_control s = hp_ctrl_safe();
-  HT_EQ_U64(s.stall, 15);
+  HT_TRUE(s.stall >= 5);
   HT_EQ_U64(s.writeBarrier, HP_NO_BARRIER);
   HT_EQ_U64(s.readBarrier, HP_NO_BARRIER);
   HT_EQ_U64(s.waitMask, 0);
+  HT_END();
+}
+
+/*
+ * ISETP must carry its own stall, whatever it is handed.
+ *
+ * A predicate read too early does not fault. It masks the wrong elements or
+ * takes a loop the wrong number of times and returns a plausible number, and
+ * every ISETP in the tree is written `hp_ctrl_safe()` -- matmul's loop, all
+ * three reductions, the causal mask, dropout, cross-entropy. When that default
+ * dropped from 15 to 7 they would all have been handed 7, against a measured
+ * requirement of 13.
+ *
+ * So the emitter clamps, and this is the test that says so. It reads the stall
+ * back out of the encoded word rather than trusting the input, because the
+ * clamp is only worth anything if it reaches the instruction.
+ */
+static void test_isetp_keeps_its_own_stall(void) {
+  HT_CASE("ISETP clamps its stall regardless of what the caller passes");
+
+  hp_control reckless = {0, 0, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};
+  const hp_word a = hp_isetp_gt_imm(0, 4, 7, reckless);
+  const hp_word b = hp_isetp_reg(0, 4, 5, HP_CMP_LT, 0, hp_ctrl_safe());
+
+  /* The control field is the top 23 bits, from bit 105. */
+  HT_TRUE(hp_control_unpack((uint32_t)(a.hi >> (105 - 64))).stall >= 13);
+  HT_TRUE(hp_control_unpack((uint32_t)(b.hi >> (105 - 64))).stall >= 13);
   HT_END();
 }
 
@@ -177,6 +216,7 @@ void ht_run(void) {
   test_field_placement_primitives();
   test_control_roundtrip();
   test_control_lives_above_bit_105();
+  test_isetp_keeps_its_own_stall();
   test_zero_operand_instructions();
   test_s2r();
   test_mov_const();

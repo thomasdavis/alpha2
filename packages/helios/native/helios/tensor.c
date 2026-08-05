@@ -10,9 +10,30 @@
  * until that is done properly a step allocates one buffer per operation and a
  * loop needs headroom. The pool still RECYCLES across steps once buffers do get
  * freed; this only bounds how many can be live at once. */
-#define MAX_TENSORS 65536
-#define INDEX_BITS 16
+/*
+ * The handle is 20 bits of index and 12 of generation, and it used to be 16/16.
+ *
+ * 16 bits meant the table held 65,536 slots -- and the encoding SILENTLY WRAPPED
+ * at the last one. make_handle masks index+1 into the low bits, so slot 65,535
+ * produced a handle whose index field was zero and whose generation field was
+ * not, which is a non-zero handle that resolves to nothing. The caller's
+ * "did the allocation fail" check passes, and the failure surfaces one step
+ * later as "allocated handle has no view" -- a message about the view, from a
+ * bug in the index.
+ *
+ * That was reached because nothing frees intermediates, so a long enough run
+ * fills the table no matter how large it is. 20 bits buys a million slots and
+ * makes the boundary far away; it does not make it go away, which is why
+ * exhaustion now returns NONE honestly at the top of the range.
+ *
+ * 12 bits of generation still distinguishes 4,096 reuses of a slot before a
+ * stale handle could alias a live one. That is a real if distant limit, and it
+ * is the reason the generation is checked at all.
+ */
+#define MAX_TENSORS (1u << 20)
+#define INDEX_BITS 20
 #define INDEX_MASK ((1u << INDEX_BITS) - 1u)
+#define GENERATION_MASK ((1u << (32 - INDEX_BITS)) - 1u)
 
 /*
  * Size classes are powers of two from 4 KiB up.
@@ -134,12 +155,15 @@ static slot *resolve(helios_tensor t) {
   if (index >= MAX_TENSORS) return NULL;
   slot *s = &g_slots[index];
   if (!s->inUse) return NULL;
-  if ((t >> INDEX_BITS) != (s->generation & (0xffffu))) return NULL;
+  if ((t >> INDEX_BITS) != (s->generation & GENERATION_MASK)) return NULL;
   return s;
 }
 
+/* index+1 must fit the field, so the usable range stops one short of the mask.
+ * helios_tensor_alloc refuses beyond that rather than letting it wrap. */
 static helios_tensor make_handle(unsigned index, NvU32 generation) {
-  return ((index + 1u) & INDEX_MASK) | ((generation & 0xffffu) << INDEX_BITS);
+  return ((index + 1u) & INDEX_MASK) |
+         ((generation & GENERATION_MASK) << INDEX_BITS);
 }
 
 /*
@@ -178,7 +202,13 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
   NvU64 want = size > SLAB_BYTES ? size : SLAB_BYTES;
   for (;;) {
     memset(s, 0, sizeof *s);
-    if (gaia_alloc(&ctx->device, &s->buf, want, GAIA_SYSMEM) == 0 &&
+    /* CACHED, not write-combined. A tensor is read by the host constantly --
+     * every broadcast, slice, concatenation and permutation walks one, and so
+     * does every CPU fallback in autograd -- and a CPU read of write-combined
+     * memory bypasses the cache: 161x slower than ordinary memory, measured.
+     * The pushbuffer and the QMD keep write-combining, which is the trade they
+     * actually want. See gaia_alloc_cached. */
+    if (gaia_alloc_cached(&ctx->device, &s->buf, want, GAIA_SYSMEM, 1) == 0 &&
         gaia_map_gpu(&ctx->device, &s->buf) == 0 &&
         gaia_map_host(&ctx->device, &s->buf) == 0)
       break;
@@ -219,7 +249,9 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
     return make_handle((unsigned)index, s->generation);
   }
 
-  if (g_used >= MAX_TENSORS) return HELIOS_TENSOR_NONE;
+  /* One short of the mask: index+1 is what goes in the field, and letting it
+   * wrap is what produced a non-zero handle that resolved to nothing. */
+  if (g_used >= MAX_TENSORS - 1u) return HELIOS_TENSOR_NONE;
   slot *s = &g_slots[g_used];
   memset(s, 0, sizeof *s);
   const NvU64 size = 1ull << (MIN_CLASS_SHIFT + c);

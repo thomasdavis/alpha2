@@ -39,6 +39,7 @@ let flushN = 0, flushMs = 0;
 const DRAIN_US = 50;
 let drainN = 0, drainMs = 0;
 const drainBy = new Map();
+let sites = null; /* set during the measured window only — stacks are dear */
 let current = "(tape/model)";
 hl.flush = () => {
   const t = process.hrtime.bigint();
@@ -51,6 +52,18 @@ hl.flush = () => {
       const e = drainBy.get(current) ?? { n: 0, ms: 0 };
       e.n++; e.ms += us / 1000;
       drainBy.set(current, e);
+      /* A drain that no backend method was executing came from somebody
+       * reading `.data` directly. Naming the method row is not enough to fix
+       * it -- the call SITE is what has to change -- so take the stack. */
+      if (current === "(tape/model)" && sites) {
+        const st = (new Error().stack ?? "").split("\n").slice(2, 6)
+          .map((l) => l.trim().replace(/^at /, "").replace(/.*\/packages\//, "packages/"))
+          .filter((l) => !l.includes("profile-native-step"))
+          .join(" <- ");
+        const c = sites.get(st) ?? { n: 0, ms: 0 };
+        c.n++; c.ms += us / 1000;
+        sites.set(st, c);
+      }
     }
   }
 };
@@ -98,11 +111,21 @@ function step(params) {
 }
 
 const params = initGPT(C, B, new SeededRng(7));
-for (let i = 0; i < 10; i++) step(params);
+/* Warm up by TIME, for the same reason the benchmark does: this card idles at
+ * 210 MHz against 2100 max and cannot be clock locked inside the container. Ten
+ * steps is 0.85 s and leaves it part-ramped, which would have had me reading
+ * kernel costs that were mostly clock state and attributing them to code. */
+{
+  const t = process.hrtime.bigint();
+  let k = 0;
+  while (k < 10 || Number(process.hrtime.bigint() - t) / 1e6 < 3000) { step(params); k++; }
+  console.log(`warmup: ${k} steps`);
+}
 
 prof.clear();
 const before = B.stats();
 flushN = 0; flushMs = 0; drainN = 0; drainMs = 0; drainBy.clear();
+sites = new Map();
 const t0 = process.hrtime.bigint();
 const N = 10;
 for (let i = 0; i < N; i++) step(params);
@@ -121,6 +144,12 @@ console.log(`  of which REAL DRAINS (>${DRAIN_US}us): ${(drainN / N).toFixed(1)}
 const dr = [...drainBy.entries()].sort((a, b) => b[1].ms - a[1].ms);
 for (const [who, e] of dr)
   console.log(`    ${who.padEnd(16)} ${(e.n / N).toFixed(1).padStart(6)} drains/step ${(e.ms / N).toFixed(2).padStart(8)} ms/step`);
+const st = [...sites.entries()].sort((a, b) => b[1].ms - a[1].ms).slice(0, 6);
+if (st.length) {
+  console.log(`\n  who reads .data outside a backend method:`);
+  for (const [where, e] of st)
+    console.log(`    ${(e.n / N).toFixed(1).padStart(5)}/step ${(e.ms / N).toFixed(2).padStart(7)} ms  ${where}`);
+}
 console.log();
 
 const rows = [...prof.entries()]

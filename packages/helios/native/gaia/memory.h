@@ -36,6 +36,8 @@ typedef struct {
   int hostFd;      /* the fd the host mapping was made through; -1 if none */
   NvHandle vaHandle; /* the reserved VA range backing gpuAddr; 0 if none */
   int location;      /* GAIA_SYSMEM or GAIA_VIDMEM — decides the mapping fd */
+  int cached;        /* host-cacheable rather than write-combined; decides the
+                      * CACHING_TYPE the host mapping asks for */
   NvU32 mapFlags;    /* override for gaia_map_host; 0 means "use the default
                       * for this location". Registers need their own. */
 } gaia_buffer;
@@ -80,8 +82,19 @@ typedef enum {
  * matters, such as anything the GPU polls. */
 int gaia_alloc_attr(aether_device *d, gaia_buffer *b, NvU64 size, NvU32 attr);
 
-/* Allocate `size` bytes. The buffer has no addresses yet. */
+/* Allocate `size` bytes. The buffer has no addresses yet. Write-combined. */
 int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where);
+
+/*
+ * The same, with the host cacheability chosen.
+ *
+ * `cached` is for memory the HOST READS. Write-combining makes CPU reads bypass
+ * the cache — measured at 161x slower than ordinary memory over 2048 floats —
+ * which is the correct trade for a pushbuffer and the wrong one for a tensor.
+ * See the long comment in gaia_alloc_cached.
+ */
+int gaia_alloc_cached(aether_device *d, gaia_buffer *b, NvU64 size,
+                      gaia_location where, int cached);
 
 /* Map into the GPU virtual address space; fills in b->gpuAddr. */
 int gaia_map_gpu(aether_device *d, gaia_buffer *b);

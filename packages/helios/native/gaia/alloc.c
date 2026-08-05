@@ -86,7 +86,35 @@ int gaia_alloc_attr(aether_device *d, gaia_buffer *b, NvU64 size, NvU32 attr) {
   return 0;
 }
 
-int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where) {
+/*
+ * WRITE-COMBINED IS A ONE-WAY STREET, and which way matters enormously.
+ *
+ * Write-combining buffers CPU stores and flushes them in bursts, which is why
+ * it is the right choice for anything the host writes and the GPU reads -- the
+ * pushbuffer, the QMD, the constant bank. It says nothing kind about READS. A
+ * CPU read of write-combined memory bypasses the cache entirely: one bus
+ * transaction per access, no prefetch, no line reuse.
+ *
+ * Measured on this hardware over 2048 floats (micro-host-memory.mjs):
+ *
+ *     read  write-combined    225.7 us      plain memory   1.4 us    161x
+ *     copy  wc -> wc          387.9 us      plain          1.0 us    388x
+ *     write write-combined      1.2 us      plain          1.0 us    1.2x
+ *
+ * Writes are free; reads are not. TENSORS are read by the host constantly --
+ * every broadcast, slice, concatenation and permutation walks them, and so does
+ * every CPU fallback in autograd -- so a tensor wants the opposite trade from a
+ * pushbuffer.
+ *
+ * Cached is safe here for the same reason CUDA's pinned host memory is
+ * cacheable by default: on x86 the PCIe root complex snoops, so DMA in either
+ * direction is coherent with the CPU caches without explicit maintenance. That
+ * is a property of the platform, not of this code, which is why the known-answer
+ * suite -- host writes an input, kernel reads it, host reads the result -- is
+ * what actually proves it rather than this comment.
+ */
+int gaia_alloc_cached(aether_device *d, gaia_buffer *b, NvU64 size,
+                      gaia_location where, int cached) {
   memset(b, 0, sizeof *b);
   b->hostFd = -1;
 
@@ -103,7 +131,8 @@ int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where
    * mapping, no scatter-gather to get wrong. */
   p.attr = (location << ATTR_LOCATION_SHIFT) |
            (ATTR_PHYSICALITY_CONTIGUOUS << ATTR_PHYSICALITY_SHIFT) |
-           (ATTR_COHERENCY_WRITE_COMBINE << ATTR_COHERENCY_SHIFT);
+           ((cached ? ATTR_COHERENCY_CACHED : ATTR_COHERENCY_WRITE_COMBINE)
+            << ATTR_COHERENCY_SHIFT);
 
   const NvV32 cls =
       (where == GAIA_VIDMEM) ? NV01_MEMORY_LOCAL_USER : NV01_MEMORY_SYSTEM;
@@ -113,6 +142,13 @@ int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where
 
   b->size = size;
   b->location = where;   /* remembered: it decides the mapping fd */
+  b->cached = cached;    /* remembered: it decides the mapping's caching bits */
   return 0;
+}
+
+/* Write-combined, which is what every caller wanted before tensors needed to be
+ * read. Unchanged behaviour for all of them. */
+int gaia_alloc(aether_device *d, gaia_buffer *b, NvU64 size, gaia_location where) {
+  return gaia_alloc_cached(d, b, size, where, 0);
 }
 

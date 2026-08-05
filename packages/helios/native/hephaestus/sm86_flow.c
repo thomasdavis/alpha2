@@ -12,9 +12,40 @@
  */
 #include "encode.h"
 
+/*
+ * A PREDICATE COSTS FAR MORE THAN A REGISTER, and the floor is enforced here
+ * rather than at the call sites.
+ *
+ * tools/stall_probe.c sweeps the stall count on a producer whose consumer reads
+ * its result, and asks the hardware where the answer stops being right:
+ *
+ *     IADD3 / IMAD / FFMA / SHF+LOP3     4
+ *     MOV c[]                            5
+ *     IMAD.WIDE, HADD2                   0
+ *     ISETP -> @P                       13
+ *
+ * Thirteen, against four for everything else. That gap is why the general
+ * default could be lowered from 15 and this could not follow it: every ISETP in
+ * the tree is written `hp_ctrl_safe()` -- in matmul's loop, in all three
+ * reductions, in the causal mask, in dropout, in cross-entropy -- and each one
+ * would have been handed a stall of 7. A stale predicate does not fault. It
+ * masks the wrong elements, or takes the loop a different number of times, and
+ * returns a plausible number.
+ *
+ * So the emitter clamps rather than trusting what it is passed. 15 is 13 plus
+ * the same margin the ALU default carries, and it happens to be the maximum,
+ * which is the correct place for a value this close to the ceiling to sit.
+ */
+#define HP_ISETP_MIN_STALL 15
+
+static hp_control isetp_ctrl(hp_control c) {
+  if (c.stall < HP_ISETP_MIN_STALL) c.stall = HP_ISETP_MIN_STALL;
+  return c;
+}
+
 hp_word hp_isetp_gt_imm(unsigned destPred, unsigned srcA, uint32_t imm,
                         hp_control c) {
-  hp_word w = hp_base(HP_OP_ISETP_IMM, c);
+  hp_word w = hp_base(HP_OP_ISETP_IMM, isetp_ctrl(c));
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB, 32, imm);
   /* 0x03f04070 carries the comparison (GT), the type (U32), the combining
@@ -50,7 +81,7 @@ hp_word hp_bar_sync(hp_control c) { return hp_base(HP_OP_BAR, c); }
 
 hp_word hp_isetp_reg(unsigned destPred, unsigned srcA, unsigned srcB,
                      unsigned cmp, int isSigned, hp_control c) {
-  hp_word w = hp_base(HP_OP_ISETP_REG, c);
+  hp_word w = hp_base(HP_OP_ISETP_REG, isetp_ctrl(c));
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB, 8, srcB);
   /* 0x03f00070 is the immediate form's constant with the comparison nibble

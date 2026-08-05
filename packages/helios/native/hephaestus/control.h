@@ -50,17 +50,42 @@ typedef struct {
 #define HP_NO_BARRIER 7
 
 /*
- * The safe default: stall the maximum, set no barriers, wait on nothing.
+ * The safe default: stall long enough for a dependent consumer, set no
+ * barriers, wait on nothing.
  *
- * This is deliberately the most conservative encoding available and it is
- * slower than anything the vendor compiler would emit. That is the correct
- * trade for a stack whose scheduler does not exist yet: an unscheduled kernel
- * that is slow is a performance problem, an unscheduled kernel that races is an
- * undebuggable correctness problem. Speed comes back when the scheduler lands
- * and can prove the shorter stalls are safe.
+ * This was 15, the maximum, on the reasoning that an unscheduled kernel that is
+ * slow beats one that races. The reasoning stands; the CONSTANT was never
+ * measured, and it cost 30x. A step's 184 kernels spent ~32 ms on the GPU where
+ * the same count of a 1024-element add spends ~4, and the difference was issue
+ * latency rather than arithmetic -- fifteen cycles of nothing between every
+ * pair of instructions, in kernels too small to hide it behind other warps.
+ *
+ * tools/stall_probe.c asks the hardware instead. It builds a chain where each
+ * instruction reads what the one before it wrote, sweeps the stall down, and
+ * finds where the answer stops being right:
+ *
+ *     IADD3 / IMAD / FFMA / SHF+LOP3     4
+ *     MOV c[]                            5
+ *     IMAD.WIDE, HADD2                   0
+ *     ISETP -> @P                       13   <- see sm86_flow.c
+ *
+ * 7 is the worst of what this default actually governs (5) plus margin. ISETP
+ * is NOT governed by it: the gap is too large to cover with one number, so that
+ * emitter clamps its own stall and this default cannot lower it.
+ *
+ * WHY A SINGLE WARP IS THE WORST CASE, and therefore why a probe is enough:
+ * the stall spaces one warp's own instruction stream. Additional resident warps
+ * interleave their instructions between the pair and can only ADD delay. The
+ * probe runs one block of one thread, which is the least slack the hardware
+ * will ever offer.
+ *
+ * This is still not a scheduler. A scheduler would know which pairs are
+ * independent and stall 1 between them; this stalls as if every pair were
+ * dependent, because nothing here tracks registers. That remains on the table
+ * and is worth roughly another 2x on ALU-bound kernels.
  */
 static inline hp_control hp_ctrl_safe(void) {
-  hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};
+  hp_control c = {7, 0, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};
   return c;
 }
 
@@ -71,9 +96,14 @@ static inline hp_control hp_ctrl_setbar(unsigned barrier) {
   return c;
 }
 
-/* Wait for the given barrier before issuing. */
+/* Wait for the given barrier before issuing.
+ *
+ * The wait covers this instruction's INPUT; the stall covers its output, for
+ * whoever reads it next -- two different hazards on one instruction. So the
+ * stall here is the same measured ALU figure as hp_ctrl_safe and moves with it,
+ * while the wait mask does the job the barrier was set for. */
 static inline hp_control hp_ctrl_wait(unsigned barrier) {
-  hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, 1u << barrier, 0};
+  hp_control c = {7, 0, HP_NO_BARRIER, HP_NO_BARRIER, 1u << barrier, 0};
   return c;
 }
 
