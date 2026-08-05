@@ -21,6 +21,11 @@
  * N % (8*TN*WARPS); anything else falls back to matmul.c. */
 int pr_hmma_applies(unsigned M, unsigned N, unsigned K);
 
+/* Shared memory the staged kernel needs, in bytes; zero when it stages nothing.
+ * The launch must declare exactly this — a kernel that touches shared memory it
+ * did not ask for faults. */
+unsigned pr_hmma_shared(void);
+
 /* Launch geometry. gridX = M / rows, gridY = N / cols, gridZ = batch. */
 unsigned pr_hmma_block_rows(void);
 unsigned pr_hmma_block_cols(void);

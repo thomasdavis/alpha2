@@ -137,7 +137,7 @@ static int emit(const helios_key *key, helios_program *p) {
         p->blockX = pr_hmma_threads();
         p->gridX = key->arg0 / pr_hmma_block_rows();
         p->gridY = key->arg1 / pr_hmma_block_cols();
-        p->sharedBytes = 0;
+        p->sharedBytes = pr_hmma_shared();
         p->regs = pr_hmma_regs();
         return 0;
       }
