@@ -267,12 +267,15 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "lastError", v);
   /* Live slots by size class — what the pool is actually holding. */
   {
-    unsigned counts[20];
-    NvU64 bytes[20];
+    /* SIZED FROM THE ALLOCATOR, not from a literal. This was `[20]` against a
+     * count that became 80, which overran the stack on every stats call. */
+    const unsigned nc = helios_tensor_class_count();
+    unsigned counts[HELIOS_TENSOR_MAX_CLASSES];
+    NvU64 bytes[HELIOS_TENSOR_MAX_CLASSES];
     helios_tensor_live_by_class(counts, bytes);
     napi_value arr;
-    napi_create_array_with_length(env, 20, &arr);
-    for (unsigned i = 0; i < 20; i++) {
+    napi_create_array_with_length(env, nc, &arr);
+    for (unsigned i = 0; i < nc; i++) {
       napi_value e;
       napi_create_uint32(env, counts[i], &e);
       napi_set_element(env, arr, i, e);

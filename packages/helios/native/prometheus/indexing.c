@@ -301,25 +301,40 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
  */
 unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
   unsigned n = 0;
-  unsigned lgT = 0;
-  while ((1u << lgT) < T) lgT++;
 
-  /* Y is b*T + t, X is h, and the thread is the feature. */
-  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  /*
+   * ALL THREE INDICES COME FROM THE GRID — h on X, t on Y, b on Z — so nothing
+   * is decoded and NOTHING NEEDS TO BE A POWER OF TWO.
+   *
+   * This used to pack (b, t) into the Y index and recover t with a mask and b
+   * with a shift, which needs T to be a power of two. That guard sent the
+   * REVERSE attention permute — [B,H,T,D] back to [B,T,H,D], where the axis in
+   * the T position is the HEAD COUNT — down the host fallback, because 105M is
+   * 640 wide over 10 heads. The fallback reads device memory, so it drains the
+   * queue: measured at 105M seq 64 batch 4, 180 drains a step and 36.3 ms, the
+   * largest single entry in the host profile and a third of the whole step.
+   *
+   * The same guard had already been narrowed once for the same reason (h moved
+   * to the grid when H=10 broke it). Moving the last decoded index out too is
+   * what makes the kernel shape-agnostic instead of shape-agnostic-so-far, and
+   * it is possible only because the launch path grew a third grid dimension for
+   * the tensor-core GEMM. The two axes are symmetric — permuting [B,X,Y,D] to
+   * [B,Y,X,D] is this kernel with T=X and H=Y either way round — so one program
+   * now serves both directions.
+   */
   p[n++] = hp_s2r(R_H, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_T, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_B, HP_SR_CTAID_Z, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  /* One wait covers all four S2Rs: the barrier counts outstanding writes, it
+   * is not a flag. */
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
 
-  /* t = plane & (T-1), b = plane >> lgT. One wait covers all three S2Rs: the
-   * barrier counts outstanding writes, it is not a flag. */
-  p[n++] = hp_mov_imm(R_MASK, T - 1u, hp_ctrl_safe());
-  p[n++] = hp_lop3(R_T, R_PLANE_ID, R_MASK, 0xc0, hp_ctrl_wait(BAR_ID));
-  p[n++] = hp_shr_imm(R_B, R_PLANE_ID, lgT, hp_ctrl_safe());
-
-  /* src = (plane*H + h)*D + d — plane already IS b*T + t. */
-  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, H, R_H, hp_ctrl_safe());
+  /* src = ((b*T + t)*H + h)*D + d */
+  p[n++] = hp_imad_imm(R_SRC2, R_B, T, R_T, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SRC2, R_SRC2, H, R_H, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_SRC2, R_SRC2, D, R_COL, hp_ctrl_safe());
-  /* dst = (((b*H) + h)*T + t)*D + d */
+  /* dst = ((b*H + h)*T + t)*D + d */
   p[n++] = hp_imad_imm(R_DST2, R_B, H, R_H, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_DST2, R_DST2, T, R_T, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_DST2, R_DST2, D, R_COL, hp_ctrl_safe());

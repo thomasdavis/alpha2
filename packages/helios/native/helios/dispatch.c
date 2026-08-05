@@ -290,8 +290,15 @@ int hl_cat_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
                         p->sharedBytes, addrs, 2, s, 1);
 }
 
+/*
+ * `batch` is B, not B*T — the last argument changed MEANING when the kernel
+ * took its third grid dimension. It is not a new parameter, so a caller that
+ * was passing B*T still compiles and would launch T times too many blocks; the
+ * one caller was changed with it, and the head-permute diff test covers the
+ * result at shapes where the two differ.
+ */
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
-               unsigned T, unsigned H, unsigned D, unsigned planes) {
+               unsigned T, unsigned H, unsigned D, unsigned batch) {
   const helios_key k = {HL_PERMUTE, T, H, D};
   const helios_tensor ts[2] = {out, a};
   const helios_program *p = helios_program_get(k);
@@ -301,10 +308,11 @@ int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
     addrs[i] = helios_tensor_addr(ts[i]);
     if (addrs[i] == 0) return -1;
   }
-  /* The plane count is a LAUNCH parameter, not part of the key: the same code
-   * serves any batch, so a new batch size does not regenerate the program. */
-  return helios_enqueue(ctx, p->code, p->count, p->gridX, planes, p->blockX,
-                        p->sharedBytes, addrs, 2, NULL, 0);
+  /* The batch is a LAUNCH parameter, not part of the key: the same code serves
+   * any batch, so a new batch size does not regenerate the program. */
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 2,
+                         NULL, 0);
 }
 
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,

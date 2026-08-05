@@ -158,13 +158,14 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_PERMUTE:
-      /* h on X, (b,t) on Y, one thread per feature. h being a grid index is
-       * what frees the head count from having to be a power of two — see
-       * pr_emit_permute. The caller supplies B*T as the plane count. */
+      /* h on X, t on Y, b on Z, one thread per feature. Every index is a grid
+       * index, which is what frees the kernel from needing any dimension to be
+       * a power of two — see pr_emit_permute. The caller supplies the batch as
+       * the third dimension at launch. */
       p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);
-      p->blockX = key->arg2;
-      p->gridX = key->arg1;
-      p->gridY = 0; /* the caller supplies the plane count at launch */
+      p->blockX = key->arg2; /* D */
+      p->gridX = key->arg1;  /* H */
+      p->gridY = key->arg0;  /* T */
       return 0;
 
     case HL_TRANSPOSE:

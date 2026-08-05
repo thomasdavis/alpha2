@@ -135,9 +135,28 @@ typedef struct {
 
 helios_tensor_stats helios_tensor_get_stats(void);
 
-/* Live slots and bytes per size class. Classes are powers of two from 4 KiB, so
+/*
+ * How many size classes there are.
+ *
+ * EXPORTED because the count is not 20 any more and a caller that assumed it
+ * was overran a stack array by sixty entries — silently, on every stats call,
+ * until an unrelated allocation failed at step zero. The classes went from
+ * powers of two to quarter-octaves for memory reasons (tensor.c); the lesson is
+ * that a bound written into a comment is a bound nobody recompiles.
+ */
+unsigned helios_tensor_class_count(void);
+
+/* A compile-time upper bound, so a caller can size a stack array without
+ * calling the function first. Asserted against the real count in tensor.c. */
+#define HELIOS_TENSOR_MAX_CLASSES 128
+
+/* The byte size of a class, for a caller labelling a histogram. */
+unsigned long long helios_tensor_class_size(unsigned c);
+
+/* Live slots and bytes per size class. Both arrays must hold
+ * helios_tensor_class_count() entries. Classes are fine-grained, so
  * the histogram identifies WHICH tensors the pool is holding — which the
- * allocation-site census cannot. `counts` and `bytes` must hold 20 entries. */
+ * allocation-site census cannot. */
 void helios_tensor_live_by_class(unsigned *counts, NvU64 *bytes);
 
 /* Move buffers freed during the last batch into circulation. Called by the

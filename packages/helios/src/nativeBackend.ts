@@ -1113,7 +1113,24 @@ export class NativeHeliosBackend implements Backend {
     /* Down the row axis, so the gradients match weight's [width] shape. */
     const flatG = this.reshape(g, [rows, width]);
     const db = this.sum(flatG, 0, false);
-    const dw = this.sum(this.mul(flatG, this.reshape(xhat, [rows, width])), 0, false);
+    const prod = this.mul(flatG, this.reshape(xhat, [rows, width]));
+    const dw = this.sum(prod, 0, false);
+    /*
+     * xhat AND the product are this method's OWN, and nothing else frees them.
+     *
+     * ops.ts destructures dx, dw and db and ignores the fourth field, so the
+     * tape's release callback never sees xhat — and `prod` is not returned at
+     * all. Two full-size tensors a layer, thirty-seven layer norms a step: the
+     * fused arm could not survive eleven warmup steps at batch 8 before it
+     * exhausted the card, which read as "the kernel needs more memory than the
+     * fallback" and was really a leak.
+     *
+     * Releasing only MARKS — tensor.c keeps the buffer valid to the queued
+     * launch and to any reader until helios_end_step — so returning xhat for
+     * diagnosis stays sound.
+     */
+    (prod as NativeTensor).buffer.release(this.hl);
+    (xhat as NativeTensor).buffer.release(this.hl);
     /* xhat rides along beyond the interface's three gradients. ops.ts
      * destructures the three it wants and ignores this one; it is here because
      * it is the kernel's only observable intermediate, and telling "the two
@@ -1795,24 +1812,29 @@ export class NativeHeliosBackend implements Backend {
      * memory, where the GPU reads at a measured 19.7 GB/s against ~448 from its
      * own — so removing it is worth more than the 75 ms it costs directly.
      *
-     * sm_86 has no integer divide, so the kernel decodes its indices with
-     * shifts and masks — and this used to require T, H AND D to be powers of
-     * two. "Every shape this model produces is" was wrong the moment the model
-     * had 10 heads: 105M is 640 wide over 10, so H = 10, this guard failed,
-     * and every attention permute took the host fallback below — a queue drain
-     * four times a layer, eighteen layers deep.
+     * sm_86 has no integer divide, so the kernel decoded its indices with
+     * shifts and masks — and that required first T, H AND D to be powers of
+     * two, then (once h moved to the grid's X index) T alone. BOTH narrowings
+     * were made after a shape broke the guard, and the second one left the
+     * REVERSE permute still broken: attention goes [B,T,H,D] -> [B,H,T,D] on
+     * the way in and back on the way out, and on the way back the axis sitting
+     * in the T position is the HEAD COUNT. 105M has ten heads, so every return
+     * permute took the host fallback below — 180 queue drains and 36.3 ms a
+     * step at batch 4, the largest single entry in the host profile.
      *
-     * The kernel now takes h from the grid's X index rather than decoding it,
-     * and never divided by D in the first place, so only T must be a power of
-     * two. D bounds the block instead.
+     * The kernel now takes h, t and b from the three grid dimensions and
+     * decodes nothing, so NO dimension has to be a power of two and one program
+     * serves both directions. D bounds the block, which is the only limit left.
+     *
+     * The lesson worth keeping: a guard narrowed twice by shapes that broke it
+     * is a guard that should have been deleted, and the way to delete it was to
+     * stop dividing rather than to divide more cleverly.
      */
-    const pow2 = (v: number) => v > 0 && (v & (v - 1)) === 0;
-    if (d1 === d0 + 1 && shape.length === 4 && d0 === 1 &&
-        pow2(shape[1]) && shape[3] <= 1024) {
+    if (d1 === d0 + 1 && shape.length === 4 && d0 === 1 && shape[3] <= 1024) {
       const [B, T, H, D] = shape;
       const dat = this.device(a);
       const o = this.make(outShape, "f32");
-      this.check(this.hl.permute(o.buffer.handle, dat.buffer.handle, T, H, D, B * T),
+      this.check(this.hl.permute(o.buffer.handle, dat.buffer.handle, T, H, D, B),
                  "permute", dat);
       return o;
     }

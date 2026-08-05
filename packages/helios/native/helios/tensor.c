@@ -53,8 +53,43 @@
  * guard band and turned an over-read from a harmless zero into a plausible
  * wrong number, which is the failure mode this file is most afraid of.
  */
+/*
+ * QUARTER-OCTAVE size classes: 1.00, 1.25, 1.50 and 1.75 times each power of
+ * two, rather than powers of two alone.
+ *
+ * The classes exist so a freed buffer can be handed to the next request without
+ * asking the driver — 1.0 us against 802.3 — and rounding to a power of two is
+ * the cheapest way to make that work. It is also, at this model's shapes, the
+ * most expensive:
+ *
+ *     activation   512 x  640 x 4   1.25 MiB -> 2 MiB    60% wasted
+ *     mlp          512 x 2560 x 4   5.00     -> 8        60%
+ *     logits       512 x12288 x 4  24.00     ->32        33%
+ *
+ * A 105M model at batch 8 held 6.2 GB of an 8 GB card against a working set
+ * near 2.5, and the waste was the binding constraint on everything: batch 12
+ * would not run, the fused layerNorm backward could not be measured because it
+ * could not allocate, and the GEMM wants more rows than the memory allows.
+ *
+ * Quarters cut the worst case from 100% to 25% and, because these shapes are
+ * multiples of 640 rather than arbitrary, take the three above to ZERO — 1.25,
+ * 5.00 and 24.00 MiB are each exactly a class. The cost is four times as many
+ * free lists, which is four times as many pointers.
+ *
+ * The 4 KiB FLOOR and its guard-band reasoning above are unchanged: the
+ * smallest class is still 4 KiB and a tensor still owns its whole class.
+ */
 #define MIN_CLASS_SHIFT 12 /* 4 KiB */
-#define NUM_CLASSES 20     /* up to 2 GiB */
+#define CLASS_SUBS 4       /* steps within an octave */
+#define NUM_OCTAVES 20     /* up to 2 GiB */
+#define NUM_CLASSES (NUM_OCTAVES * CLASS_SUBS)
+
+/* (4 + sub) << (shift - 2 + octave): sub 0 is the octave itself, so class 0 is
+ * exactly the 4 KiB floor and every octave boundary lands on a power of two. */
+static NvU64 class_size(int c) {
+  return (NvU64)(CLASS_SUBS + (c % CLASS_SUBS))
+         << (MIN_CLASS_SHIFT - 2 + (c / CLASS_SUBS));
+}
 
 /*
  * How much memory one trip to the driver buys.
@@ -181,12 +216,8 @@ static int vidmem_enabled(void) {
 
 static int class_of(NvU64 bytes) {
   int c = 0;
-  NvU64 size = 1ull << MIN_CLASS_SHIFT;
-  while (size < bytes && c < NUM_CLASSES - 1) {
-    size <<= 1;
-    c++;
-  }
-  return size < bytes ? -1 : c;
+  while (class_size(c) < bytes && c < NUM_CLASSES - 1) c++;
+  return class_size(c) < bytes ? -1 : c;
 }
 
 /*
@@ -233,7 +264,23 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset, int hostVisible
    * from a slab the other had just been filling.
    */
   const int p = hostVisible ? 1 : 0;
-  if (g_current[p] >= 0) {
+  /*
+   * A LARGE REQUEST GETS ITS OWN SLAB, SIZED TO IT.
+   *
+   * The bump allocator keeps one open slab per pool and abandons its remainder
+   * the moment a request does not fit. With power-of-two classes that never
+   * happened — every class divided 4 MiB exactly, so a slab packed perfectly —
+   * and with quarter-octave classes it happens constantly: a 2.5 MiB carve
+   * takes a 4 MiB slab and strands 1.5 MiB, which is worse waste than the
+   * rounding the finer classes were introduced to remove.
+   *
+   * Anything over half a slab cannot share with another of its own size
+   * anyway, so it takes a dedicated allocation of exactly its class and strands
+   * nothing. Smaller carves keep packing, where a tail is at most a quarter of
+   * what the class already rounded to.
+   */
+  const int dedicated = size > SLAB_BYTES / 2;
+  if (!dedicated && g_current[p] >= 0) {
     slab *s = &g_slabs[g_current[p]];
     if (s->buf.size - s->used >= size) {
       *offset = s->used;
@@ -257,7 +304,7 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset, int hostVisible
    * The floor is the request itself: below that the carve cannot be satisfied
    * and -1 is the honest answer.
    */
-  NvU64 want = size > SLAB_BYTES ? size : SLAB_BYTES;
+  NvU64 want = dedicated ? size : SLAB_BYTES;
   for (;;) {
     memset(s, 0, sizeof *s);
     /* CACHED, not write-combined. A tensor is read by the host constantly --
@@ -334,7 +381,10 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset, int hostVisible
   *offset = 0;
   g_stats.allocations++;
   g_stats.bytesHeld += want;
-  g_current[p] = (int)g_slabCount;
+  /* A dedicated slab is FULL, so it must not become the open one — leaving it
+   * open would close whatever was being packed and strand that remainder, the
+   * very waste this branch exists to avoid. */
+  if (!dedicated) g_current[p] = (int)g_slabCount;
   return (int)g_slabCount++;
 }
 
@@ -367,7 +417,7 @@ static helios_tensor alloc_from(helios_context *ctx, NvU64 bytes, int hostVisibl
   if (g_used >= MAX_TENSORS - 1u) return HELIOS_TENSOR_NONE;
   slot *s = &g_slots[g_used];
   memset(s, 0, sizeof *s);
-  const NvU64 size = 1ull << (MIN_CLASS_SHIFT + c);
+  const NvU64 size = class_size(c);
   NvU64 offset = 0;
   const int si = carve(ctx, size, &offset, p);
   if (si < 0) return HELIOS_TENSOR_NONE;
@@ -500,13 +550,22 @@ helios_tensor_stats helios_tensor_get_stats(void) { return g_stats; }
  * IDENTIFIES the tensors: at 18 layers, 640 embd, vocab 12,288 there is exactly
  * one shape per class that the model allocates in quantity.
  */
+_Static_assert(NUM_CLASSES <= HELIOS_TENSOR_MAX_CLASSES,
+               "callers size their histograms with HELIOS_TENSOR_MAX_CLASSES");
+
+unsigned helios_tensor_class_count(void) { return NUM_CLASSES; }
+
+unsigned long long helios_tensor_class_size(unsigned c) {
+  return c < NUM_CLASSES ? (unsigned long long)class_size((int)c) : 0ull;
+}
+
 void helios_tensor_live_by_class(unsigned *counts, NvU64 *bytes) {
   for (int c = 0; c < NUM_CLASSES; c++) { counts[c] = 0; bytes[c] = 0; }
   for (unsigned i = 0; i < g_used; i++) {
     const slot *s = &g_slots[i];
     if (!s->inUse || s->pendingFree) continue;
     counts[s->classIndex]++;
-    bytes[s->classIndex] += 1ull << (MIN_CLASS_SHIFT + s->classIndex);
+    bytes[s->classIndex] += class_size(s->classIndex);
   }
 }
 
