@@ -150,6 +150,48 @@
 #define HMMA_NOBAR 0
 #endif
 
+/*
+ * HMMA_LDSM — load fragments with ldmatrix instead of four LDS apiece.
+ *
+ * Per k-step a warp issues sixteen shared loads to feed eight tensor
+ * instructions: four LDS for each of the two A fragments, two for each of the
+ * four B fragments. LDSM.16.M88.4 fetches a whole A fragment in one
+ * instruction, and .2 a whole B fragment, taking the sixteen to six.
+ *
+ * It works because ldmatrix's result layout IS the mma fragment layout: for
+ * .x4, the four 8x8 matrices addressed by lane groups 0-7, 8-15, 16-23 and
+ * 24-31 land in four consecutive registers in exactly the order m16n8k16 wants
+ * -- rows 0-7 at k 0-7, rows 8-15 at k 0-7, then the same two at k 8-15. That
+ * is the same set of four values the four LDS below fetch, which is what makes
+ * this a substitution rather than a rewrite.
+ *
+ * The addressing is NOT the same, though, and that is the whole subtlety. The
+ * LDS path has each lane read the element it will hold, so its address comes
+ * from the fragment layout: row g = lane>>2, k-pair l = lane&3. ldmatrix has
+ * each lane name a ROW, eight lanes per matrix, and gathers across the warp --
+ * so its address comes from lane&7 and lane>>3, and a lane's own address has
+ * almost nothing to do with the values it ends up holding.
+ */
+#ifndef HMMA_LDSM
+#define HMMA_LDSM 1
+#endif
+
+/*
+ * Padding is still ALLOWED under ldmatrix, just not by one word: the stride has
+ * to keep every row 16-byte aligned, so it moves in fours.
+ *
+ * MEASURED at 4, which is the smallest legal padding, and it is WORSE
+ * everywhere — 12.2 against 15.4 TFLOP/s on qkv, 12.5 against 18.0 on the mlp
+ * projection, 14.4 against 20.5 on the lm head. So the conflicts the padding
+ * exists to avoid are not what limits the gather: eight lanes naming eight rows
+ * is a different access than thirty-two lanes naming thirty-two words, and the
+ * wider stride only spends shared bandwidth. Zero is the right answer here, and
+ * the knob stays so the next person does not have to rediscover that.
+ */
+#ifndef LDSM_PAD
+#define LDSM_PAD 0
+#endif
+
 /* One HMMA covers 16 rows, 8 columns and 16 of K. Not tunable: they are the
  * instruction's shape. */
 #define MMA_M 16u
@@ -173,7 +215,26 @@
  * intensity, occupancy, exposed load latency and instruction issue spacing were
  * each measured and each moved it by ~1% or less.
  */
+/*
+ * THE PADDING AND ldmatrix ARE MUTUALLY EXCLUSIVE, and the hardware says so
+ * rather than the arithmetic: every lane address ldmatrix is given must be
+ * 16-byte aligned, because sixteen bytes is exactly one 8x8 matrix row of f16.
+ * A stride of nine words puts row r at byte 36r, and 36 is not a multiple of
+ * 16, so row 1 is already misaligned. Wired up over the padded layout it does
+ * not compute the wrong answer -- it FAULTS THE CHANNEL, sixty of sixty-five
+ * known-answer cases, which is the honest failure and a much easier one to read
+ * than a wrong number would have been.
+ *
+ * Giving the padding up costs little: it was the fifth hypothesis tried against
+ * the GEMM's MFU and it moved it by about one percent. ldmatrix addresses the
+ * conflict differently anyway -- eight lanes name eight rows and the hardware
+ * schedules the gather, rather than thirty-two lanes each naming a word.
+ */
+#if HMMA_LDSM
+#define TILE_STRIDE (MMA_K / 2u + LDSM_PAD)
+#else
 #define TILE_STRIDE (MMA_K / 2u + 1u)
+#endif
 
 unsigned pr_hmma_block_rows(void) { return MMA_M * HMMA_TM * HMMA_WARPS_M; }
 unsigned pr_hmma_block_cols(void) { return MMA_N * HMMA_TN * HMMA_WARPS_N; }
@@ -263,6 +324,12 @@ enum {
   R_AGB = 42, R_BGB = 43,       /* global staging bases, without k */
   R_SHA = 44, R_SHB = 45,       /* shared STORE word for this thread */
   R_SHFA = 56, R_SHFB = 57,     /* shared FRAGMENT base word for this warp */
+  /* ldmatrix's addressing, which is by ROW rather than by held element. Byte
+   * addresses, because LDSM has none of LDS's scaled-word mode. */
+  R_SHLA = 46, R_SHLB = 47,
+  R_LSEL = 48,   /* lane >> 3 — which of the four matrices this lane addresses */
+  R_LANE8 = 49,  /* lane & 7 — which row of it */
+  R_LROW = 50, R_LKOF = 51,
   R_BKP = 58, R_BCOL = 59,      /* B's staging decomposition, untransposed */
   R_ADDR_SA = 60, R_ADDR_SB = 62, /* pairs */
   R_OBASE = 13, /* the output index of this lane's first element */
@@ -662,6 +729,40 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   p[n++] = hp_imad_imm(R_TMP, R_WARPN, MMA_N * HMMA_TN, R_G, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_SHFB, R_TMP, TILE_STRIDE, R_L, hp_ctrl_safe());
 
+  if (HMMA_LDSM) {
+    /*
+     * ldmatrix's bases, computed once. A lane addresses ROW (lane&7) of matrix
+     * (lane>>3), and the four matrices of an A fragment are, in order, the top
+     * eight rows at low k, the bottom eight at low k, then both again at k+8.
+     * So bit 0 of the matrix index picks the row half and bit 1 picks the k
+     * half — which is the whole mapping.
+     *
+     * For B the fragment is only two matrices, so lanes 16-31 are ignored;
+     * they still compute an in-range address rather than a wild one, because
+     * an ignored address is not a licence to form a bad one.
+     */
+    p[n++] = hp_shr_imm(R_LSEL, R_LANE, 3, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_LANE8, R_LSEL, (uint32_t)-8, R_LANE, hp_ctrl_safe());
+    p[n++] = hp_shr_imm(R_LKOF, R_LSEL, 1, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_LROW, R_LKOF, (uint32_t)-2, R_LSEL, hp_ctrl_safe());
+
+    /* A: (warpM*BM_per_warp + lane8 + 8*rowHalf) * stride + 4*kHalf, in words,
+     * then scaled to bytes. */
+    p[n++] = hp_imad_imm(R_SHLA, R_WARP, MMA_M * HMMA_TM, R_LANE8, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHLA, R_LROW, 8, R_SHLA, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_TMP, R_LKOF, WPR / 2u, HP_RZ, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHLA, R_SHLA, TILE_STRIDE, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHLA, R_SHLA, 4, HP_RZ, hp_ctrl_safe());
+
+    /* B: the same, one k-half selector instead of two, plus A's tile ahead of
+     * it in shared. */
+    p[n++] = hp_imad_imm(R_SHLB, R_WARPN, MMA_N * HMMA_TN, R_LANE8, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_TMP, R_LROW, WPR / 2u, HP_RZ, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHLB, R_SHLB, TILE_STRIDE, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(R_SHLB, R_SHLB, A_WORDS, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHLB, R_SHLB, 4, HP_RZ, hp_ctrl_safe());
+  }
+
   for (unsigned i = 0; i < 4u * HMMA_TM * HMMA_TN; i++)
     p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
@@ -737,18 +838,29 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   n += emit_stage_loads(&p[n], &sp, 1);
 
   /* ---- fragments, from shared ---- */
-  for (unsigned tm = 0; tm < HMMA_TM; tm++) {
-    const unsigned a = AFRAG_OF(tm), base = tm * MMA_M * TILE_STRIDE * 4u;
-    p[n++] = hp_lds(a + 0, R_SHFA, base, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(a + 1, R_SHFA, base + 8u * TILE_STRIDE * 4u, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(a + 2, R_SHFA, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(a + 3, R_SHFA, base + 8u * TILE_STRIDE * 4u + (WPR / 2u) * 4u,
-                    hp_ctrl_setbar(BAR_LOAD));
-  }
-  for (unsigned tn = 0; tn < HMMA_TN; tn++) {
-    const unsigned b = BFRAG_OF(tn), base = SH_A_BYTES + tn * MMA_N * TILE_STRIDE * 4u;
-    p[n++] = hp_lds(b + 0, R_SHFB, base, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(b + 1, R_SHFB, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
+  if (HMMA_LDSM) {
+    for (unsigned tm = 0; tm < HMMA_TM; tm++)
+      p[n++] = hp_ldsm(AFRAG_OF(tm), R_SHLA, tm * MMA_M * TILE_STRIDE * 4u, 4, 0,
+                       hp_ctrl_setbar(BAR_LOAD));
+    for (unsigned tn = 0; tn < HMMA_TN; tn++)
+      p[n++] = hp_ldsm(BFRAG_OF(tn), R_SHLB, tn * MMA_N * TILE_STRIDE * 4u, 2, 0,
+                       hp_ctrl_setbar(BAR_LOAD));
+  } else {
+    for (unsigned tm = 0; tm < HMMA_TM; tm++) {
+      const unsigned a = AFRAG_OF(tm), base = tm * MMA_M * TILE_STRIDE * 4u;
+      p[n++] = hp_lds(a + 0, R_SHFA, base, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_lds(a + 1, R_SHFA, base + 8u * TILE_STRIDE * 4u,
+                      hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_lds(a + 2, R_SHFA, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_lds(a + 3, R_SHFA, base + 8u * TILE_STRIDE * 4u + (WPR / 2u) * 4u,
+                      hp_ctrl_setbar(BAR_LOAD));
+    }
+    for (unsigned tn = 0; tn < HMMA_TN; tn++) {
+      const unsigned b = BFRAG_OF(tn),
+                     base = SH_A_BYTES + tn * MMA_N * TILE_STRIDE * 4u;
+      p[n++] = hp_lds(b + 0, R_SHFB, base, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_lds(b + 1, R_SHFB, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
+    }
   }
   {
     int first = 1;

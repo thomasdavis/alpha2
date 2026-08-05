@@ -103,23 +103,26 @@ static void test_control_flow(void) {
    */
   {
     const uint64_t ctl = 0xffffffffULL; /* the encoding, without the schedule */
-    HT_EQ_U64(lo_of(hp_ldsm(4, 0, 4, 0, hp_ctrl_safe())), 0x000000000004783bULL);
-    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 4, 0, hp_ctrl_safe())) & ctl, 0x00000200ULL);
-    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 2, 0, hp_ctrl_safe())) & ctl, 0x00000100ULL);
-    HT_EQ_U64(lo_of(hp_ldsm(5, 0, 1, 0, hp_ctrl_safe())), 0x000000000005783bULL);
-    HT_EQ_U64(hi_of(hp_ldsm(5, 0, 1, 0, hp_ctrl_safe())) & ctl, 0x00000000ULL);
-    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 4, 1, hp_ctrl_safe())) & ctl, 0x00004200ULL);
+    HT_EQ_U64(lo_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())), 0x000000000004783bULL);
+    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())) & ctl, 0x00000200ULL);
+    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 0, 2, 0, hp_ctrl_safe())) & ctl, 0x00000100ULL);
+    HT_EQ_U64(lo_of(hp_ldsm(5, 0, 0, 1, 0, hp_ctrl_safe())), 0x000000000005783bULL);
+    HT_EQ_U64(hi_of(hp_ldsm(5, 0, 0, 1, 0, hp_ctrl_safe())) & ctl, 0x00000000ULL);
+    HT_EQ_U64(hi_of(hp_ldsm(4, 0, 0, 4, 1, hp_ctrl_safe())) & ctl, 0x00004200ULL);
 
     /* The count field must not reach the destination and the destination must
      * not reach the count -- the same both-directions check the predicate
      * fields get above, because a two-bit field in a word this sparse is
      * exactly where an off-by-one shift hides. */
-    HT_EQ_U64(lo_of(hp_ldsm(9, 3, 4, 0, hp_ctrl_safe())),
-              lo_of(hp_ldsm(9, 3, 1, 0, hp_ctrl_safe())));
-    HT_EQ_U64(hi_of(hp_ldsm(9, 3, 4, 0, hp_ctrl_safe())) & ctl,
-              hi_of(hp_ldsm(4, 0, 4, 0, hp_ctrl_safe())) & ctl);
+    HT_EQ_U64(lo_of(hp_ldsm(9, 3, 0, 4, 0, hp_ctrl_safe())),
+              lo_of(hp_ldsm(9, 3, 0, 1, 0, hp_ctrl_safe())));
+    HT_EQ_U64(hi_of(hp_ldsm(9, 3, 0, 4, 0, hp_ctrl_safe())) & ctl,
+              hi_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())) & ctl);
     /* And the address register is where every other instruction puts srcA. */
-    HT_EQ_U64(lo_of(hp_ldsm(4, 7, 4, 0, hp_ctrl_safe())), 0x000000000704783bULL);
+    HT_EQ_U64(lo_of(hp_ldsm(4, 7, 0, 4, 0, hp_ctrl_safe())), 0x000000000704783bULL);
+    /* The offset, from the fifth capture: LDSM.16.M88.4 R4, [R5+0x800]. */
+    HT_EQ_U64(lo_of(hp_ldsm(4, 5, 0x800, 4, 0, hp_ctrl_safe())),
+              0x000800000504783bULL);
   }
 
   /* The destination predicate must not leak into the comparison, and the

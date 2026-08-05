@@ -96,8 +96,8 @@ hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
  * loads per k-step to feed eight tensor instructions, and that ratio — not the
  * tile barriers, which were measured at 3-5% — is what the tensor pipe waits on.
  */
-hp_word hp_ldsm(unsigned dst, unsigned addrReg, unsigned count, int trans,
-                hp_control c);
+hp_word hp_ldsm(unsigned dst, unsigned addrReg, uint32_t offset,
+                unsigned count, int trans, hp_control c);
 
 /*
  * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.

@@ -93,11 +93,16 @@ hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
  * Unlike LDG and LDS there is no memory descriptor and no 0x48 addressing mode:
  * the high word is zero apart from these two fields and the scheduling control.
  */
-hp_word hp_ldsm(unsigned dst, unsigned addrReg, unsigned count, int trans,
-                hp_control c) {
+hp_word hp_ldsm(unsigned dst, unsigned addrReg, uint32_t offset,
+                unsigned count, int trans, hp_control c) {
   hp_word w = hp_base(HP_OP_LDSM, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, addrReg);
+  /* Byte offset, in the slot LDS uses for the same thing. Captured as
+   * `LDSM.16.M88.4 R4, [R5+0x800]` = 0x000800000504783b, which puts 0x800 at
+   * bit 40 exactly. Note the address register is in BYTES here, not the scaled
+   * words LDS takes -- LDSM carries none of LDS's 0x48 addressing mode. */
+  hp_put(&w, HP_F_SRCB + 8, 24, offset);
   hp_put(&w, 64 + 8, 2, count == 4u ? 2u : count == 2u ? 1u : 0u);
   if (trans) hp_put(&w, 64 + 14, 1, 1);
   return w;

@@ -63,3 +63,14 @@ extern "C" __global__ void k_x4_alt(unsigned *out, unsigned pad) {
                : "=r"(a), "=r"(b), "=r"(c), "=r"(d) : "r"(addr));
   out[threadIdx.x + 1] = a * b + c * d;
 }
+
+/* Does LDSM have an immediate offset field, the way LDS does? It decides
+ * whether the GEMM needs ONE fragment-address register or one per tile. */
+extern "C" __global__ void k_x4_off(unsigned *out) {
+  __shared__ unsigned s[4096];
+  unsigned a, b, c, d;
+  unsigned addr = __cvta_generic_to_shared(&s[threadIdx.x * 2]);
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4 + 2048];\n"
+               : "=r"(a), "=r"(b), "=r"(c), "=r"(d) : "r"(addr));
+  out[threadIdx.x] = a + b + c + d;
+}
