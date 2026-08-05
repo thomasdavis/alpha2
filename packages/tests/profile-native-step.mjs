@@ -18,8 +18,27 @@ import { SeededRng } from "/workspace/alpha2/packages/core/dist/index.js";
 import { Tape } from "/workspace/alpha2/packages/autograd/dist/index.js";
 import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index.js";
 
-const C = { vocabSize: 64, blockSize: 32, nLayer: 2, nEmbd: 64, nHead: 4, dropout: 0 };
+/*
+ * The SHAPE is an argument now, because the answer depends on it.
+ *
+ * This was hard-wired to 2 layers, 64 embd and 32 tokens — 0.11M parameters —
+ * and at that size a step is nearly all fixed overhead, so the ranking it
+ * produces is a ranking of per-call costs rather than of where a real step's
+ * time goes. The tensor-core GEMM moved the 105M step from 70% GPU to 47%, and
+ * the question "which host call holds the other 53%" cannot be asked at a shape
+ * whose host work is a different mix.
+ *
+ * Usage: node profile-native-step.mjs [batch] [nLayer] [nEmbd] [nHead] [vocab] [seq]
+ */
 const BATCH = Number(process.argv[2] ?? 1);
+const C = {
+  nLayer: Number(process.argv[3] ?? 2),
+  nEmbd: Number(process.argv[4] ?? 64),
+  nHead: Number(process.argv[5] ?? 4),
+  vocabSize: Number(process.argv[6] ?? 64),
+  blockSize: Number(process.argv[7] ?? 32),
+  dropout: 0,
+};
 const TOKENS = C.blockSize;
 
 const B = new NativeHeliosBackend(0);

@@ -122,6 +122,21 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
                    const NvU64 *buffers, unsigned nbuffers,
                    const NvU32 *scalars, unsigned nscalars);
 
+/*
+ * The same, with a THIRD grid dimension.
+ *
+ * Every kernel in this stack until the tensor-core GEMM was one- or
+ * two-dimensional: blocks over rows, and a second axis for the batch plane. A
+ * GEMM that tiles the OUTPUT needs both output axes, which leaves nowhere for
+ * the batch — so it takes the depth the QMD has always had (CTA_RASTER_DEPTH)
+ * and which nothing had asked for. helios_enqueue is this with gridZ = 1, so no
+ * existing caller changes.
+ */
+int helios_enqueue3(helios_context *ctx, const hp_word *program, unsigned count,
+                    NvU32 gridX, NvU32 gridY, NvU32 gridZ, NvU32 blockX,
+                    NvU32 sharedBytes, const NvU64 *buffers, unsigned nbuffers,
+                    const NvU32 *scalars, unsigned nscalars);
+
 /* Submit everything queued and wait for it. A no-op when nothing is pending. */
 int helios_flush(helios_context *ctx);
 

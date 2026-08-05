@@ -15,6 +15,7 @@
 #include "harness.h"
 
 void hl_batch_tests(void);
+void hl_hmma_tests(void);
 
 #include "../helios/context.h"
 #include "../helios/dispatch.h"
@@ -424,6 +425,7 @@ static void test_dispatch_chain(void) {
 
 void ht_run(void) {
   hl_batch_tests();
+  hl_hmma_tests();
   test_tensor_pool();
   test_slab_carves_do_not_overlap();
   test_dispatch_chain();

@@ -4,6 +4,7 @@
 #include "program.h"
 
 #include "../prometheus/builders.h"
+#include "../prometheus/hmma.h"
 #include "../prometheus/normalize.h"
 #include "../prometheus/indexing.h"
 
@@ -92,6 +93,24 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_MATMUL:
     case HL_MATMUL_T:
+      /*
+       * The TENSOR-CORE path, when the shape divides.
+       *
+       * Chosen here rather than by the caller so that one function decides both
+       * the code and the launch that must match it. The two disagreeing is not
+       * a wrong answer — it is an invalid launch, and those fault the channel
+       * asynchronously at whatever flushes next.
+       */
+      if (pr_hmma_applies(key->arg0, key->arg1, key->arg2)) {
+        p->count = pr_emit_hmma(p->code, key->arg0, key->arg1, key->arg2,
+                                key->kind == HL_MATMUL_T);
+        p->blockX = pr_hmma_threads();
+        p->gridX = key->arg0 / pr_hmma_block_rows();
+        p->gridY = key->arg1 / pr_hmma_block_cols();
+        p->sharedBytes = 0;
+        p->regs = pr_hmma_regs();
+        return 0;
+      }
       p->count = pr_emit_matmul_kind(p->code, key->arg0, key->arg1, key->arg2,
                                      key->kind == HL_MATMUL_T);
       p->sharedBytes = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)

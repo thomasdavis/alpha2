@@ -56,7 +56,7 @@
  * The bound is now generous, and the test allocates twice it with a sentinel
  * behind, so an overrun is DETECTED rather than fatal.
  */
-#define PR_MAX_INSTRUCTIONS 256
+#define PR_MAX_INSTRUCTIONS 512
 
 typedef struct {
   const char *name;

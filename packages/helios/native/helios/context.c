@@ -125,6 +125,14 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
                    NvU32 gridX, NvU32 gridY, NvU32 blockX, NvU32 sharedBytes,
                    const NvU64 *buffers, unsigned nbuffers,
                    const NvU32 *scalars, unsigned nscalars) {
+  return helios_enqueue3(ctx, program, count, gridX, gridY, 1, blockX,
+                         sharedBytes, buffers, nbuffers, scalars, nscalars);
+}
+
+int helios_enqueue3(helios_context *ctx, const hp_word *program, unsigned count,
+                    NvU32 gridX, NvU32 gridY, NvU32 gridZ, NvU32 blockX,
+                    NvU32 sharedBytes, const NvU64 *buffers, unsigned nbuffers,
+                    const NvU32 *scalars, unsigned nscalars) {
   if (count * sizeof(hp_word) > PROGRAM_BYTES) return -1;
   /*
    * A BLOCK CANNOT HAVE MORE THAN 1024 THREADS, and asking for more is not a
@@ -191,8 +199,8 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   memcpy(slotCode, program, count * sizeof(hp_word));
 
   NvU32 qmd[HERMES_QMD_DWORDS];
-  hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, gridY ? gridY : 1, 1, blockX, 1, 1,
-                   sharedBytes,
+  hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, gridY ? gridY : 1,
+                   gridZ ? gridZ : 1, blockX, 1, 1, sharedBytes,
                    count * (NvU32)sizeof(hp_word));
   hermes_qmd_set_regs(qmd, helios_program_last_regs());
   memcpy((NvU8 *)ctx->qmd.hostPtr + (size_t)slot * HERMES_QMD_BYTES, qmd,

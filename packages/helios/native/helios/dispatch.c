@@ -4,6 +4,7 @@
 #include "dispatch.h"
 
 #include "../prometheus/elementwise.h"
+#include "../prometheus/hmma.h"
 
 #include <string.h>
 
@@ -195,6 +196,26 @@ int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
   return run(ctx, k, ts, 5, s, 2);
 }
 
+/*
+ * The launch a matmul program wants, which now depends on which kernel it is.
+ *
+ * The scalar kernel tiles ROWS only, so the batch plane is the second grid
+ * dimension. The tensor-core kernel tiles both output axes, so the batch moves
+ * to the third — and its gridY comes from the program rather than the caller.
+ * Both callers pick this up from one place, because a launch that does not
+ * match its code is an invalid launch and faults asynchronously.
+ */
+static int matmul_launch(helios_context *ctx, const helios_program *p,
+                         unsigned M, unsigned N, unsigned K, unsigned batch,
+                         const NvU64 *addrs) {
+  const unsigned planes = batch ? batch : 1;
+  if (pr_hmma_applies(M, N, K))
+    return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY, planes,
+                           p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, planes, p->blockX,
+                        p->sharedBytes, addrs, 3, NULL, 0);
+}
+
 int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
               helios_tensor b, unsigned M, unsigned N, unsigned K,
               unsigned batch) {
@@ -207,8 +228,7 @@ int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
     addrs[i] = helios_tensor_addr(ts[i]);
     if (addrs[i] == 0) return -1;
   }
-  return helios_enqueue(ctx, p->code, p->count, p->gridX, batch ? batch : 1,
-                        p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
 }
 
 /* C = A @ B^T with B stored [N,K]. Same launch, different program; the key's
@@ -225,8 +245,7 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
     addrs[i] = helios_tensor_addr(ts[i]);
     if (addrs[i] == 0) return -1;
   }
-  return helios_enqueue(ctx, p->code, p->count, p->gridX, batch ? batch : 1,
-                        p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
 }
 
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
