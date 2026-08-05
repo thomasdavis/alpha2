@@ -1632,7 +1632,39 @@ export function qkvFlashAttentionTokenMajor(
 /** Slice a tensor: out = a[starts:ends] along each dimension. */
 export function slice(ctx: Ctx, a: Variable, starts: number[], ends: number[]): Variable {
   const origShape = [...a.data.shape];
-  return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release) => {
+  return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release, _ng, dests) => {
+    /*
+     * WHEN THE SLICE IS A COLUMN RANGE, WRITE IT WHERE IT BELONGS.
+     *
+     * q, k and v are three disjoint column ranges of one qkv projection, so
+     * their gradients TILE that tensor and must never be added together. Each
+     * was building its own full-width gradient — two zero tensors and a
+     * three-way cat — and the tape then accumulated the three. Per layer that
+     * is six zero fills, three full-width writes and two read-add-write passes,
+     * about 82 MB moved where the data is 6, and across eighteen layers it was
+     * the largest entry in the accumulation census by a factor of three: 637 MB
+     * of 849 a step.
+     *
+     * Given the destination the tape already offers, each writes its own range
+     * and returns that same tensor, which is how the tape is told the
+     * accumulation has happened. Only the first of the three to run allocates,
+     * and it zero-fills, because whether all three arrive is the caller's
+     * business — a branch with no gradient must leave zeros in its columns, not
+     * whatever the pool last held there.
+     *
+     * Restricted to a LAST-AXIS range of an otherwise whole tensor, which is
+     * the case that matters and the only one `writeColumns` describes: any
+     * other slice writes a non-contiguous region and needs a different kernel.
+     */
+    const ndimA = origShape.length;
+    const columnRange = B.writeColumns
+      && starts.every((v, d) => d === ndimA - 1 || v === 0)
+      && ends.every((v, d) => d === ndimA - 1 || v === origShape[d]);
+    if (columnRange) {
+      const into = dests?.[0] ?? B.zeros(origShape, g.dtype);
+      return [B.writeColumns!(into, g, starts[ndimA - 1])];
+    }
+
     // Fast path: use GPU scatterSlice if backend supports it
     if (B.scatterSlice) {
       return [B.scatterSlice(g, origShape, starts, ends)];
@@ -1680,30 +1712,41 @@ export function sliceQkv(ctx: Ctx, a: Variable): [Variable, Variable, Variable] 
   if (B.sliceQkv) {
     const [qData, kData, vData] = B.sliceQkv(data);
     const origShape = [...data.shape];
-    const q = record(ctx, qData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 0], [rows, D])];
+    /*
+     * THE THREE GRADIENTS TILE ONE TENSOR AND DO NOT OVERLAP, so they should
+     * never be added together. Each was building its own full-width gradient —
+     * two zero tensors and a three-way cat — and the tape then accumulated the
+     * three: per layer six zero fills, three full-width writes and two
+     * read-add-write passes, ~82 MB where the data is 6, and it was the single
+     * largest entry in the accumulation census (637 MB of 849 a step).
+     *
+     * Given the destination the tape already offers, each one writes its own
+     * third and returns that same tensor, which is how the tape is told the
+     * accumulation has happened. Only the FIRST of the three to run allocates,
+     * and it zero-fills because whether all three arrive is the caller's
+     * business, not this function's — a q with no gradient must still leave
+     * zeros where its columns are, not whatever the pool last held.
+     */
+    const scatter = (g: TensorData, B2: Backend, dest: TensorData | null | undefined,
+                     off: number, release?: (td: TensorData) => void): TensorData => {
+      if (B2.writeColumns) {
+        const into = dest ?? B2.zeros(origShape, g.dtype);
+        return B2.writeColumns(into, g, off);
+      }
+      if (B2.scatterSlice) return B2.scatterSlice(g, origShape, [0, off], [rows, off + D]);
       const z0 = B2.zeros([rows, D], g.dtype);
       const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([g, z0, z1], 1);
+      const parts = off === 0 ? [g, z0, z1] : off === D ? [z0, g, z1] : [z0, z1, g];
+      const res = B2.cat(parts, 1);
       if (release) { release(z0); release(z1); }
-      return [res];
-    });
-    const k = record(ctx, kData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, D], [rows, 2 * D])];
-      const z0 = B2.zeros([rows, D], g.dtype);
-      const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([z0, g, z1], 1);
-      if (release) { release(z0); release(z1); }
-      return [res];
-    });
-    const v = record(ctx, vData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 2 * D], [rows, 3 * D])];
-      const z0 = B2.zeros([rows, D], g.dtype);
-      const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([z0, z1, g], 1);
-      if (release) { release(z0); release(z1); }
-      return [res];
-    });
+      return res;
+    };
+    const q = record(ctx, qData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], 0, release)]);
+    const k = record(ctx, kData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], D, release)]);
+    const v = record(ctx, vData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], 2 * D, release)]);
     return [q, k, v];
   }
 

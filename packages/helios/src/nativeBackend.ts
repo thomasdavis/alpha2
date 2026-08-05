@@ -2124,6 +2124,37 @@ export class NativeHeliosBackend implements Backend {
    * memory movement between mapped views, at bandwidth, and a kernel would add
    * a launch to do the same thing.
    */
+  /*
+   * Write `src` into a column range of `dest`, in place, and return `dest`.
+   *
+   * WHY: q, k and v are three DISJOINT column ranges of one qkv projection, so
+   * their three gradients tile the same tensor without overlapping. The tape
+   * was reconstructing that by having each of them build its own full-width
+   * gradient — two zero tensors and a three-way cat apiece — and then adding
+   * the three together: per layer, six zero fills, three full-width writes, and
+   * two read-add-write passes, about 82 MB where the data is 6. Given the
+   * destination each one simply writes its own third.
+   *
+   * It is the same kernel `cat` already launches per piece, which is what makes
+   * this an exposure rather than a new capability: cat along the last axis IS a
+   * sequence of these, and the only thing missing was the ability to name a
+   * destination that already exists.
+   */
+  writeColumns(dest: TensorData, src: TensorData, colOffset: number): TensorData {
+    const dd = this.device(dest), ds = this.device(src);
+    const w = src.shape[src.shape.length - 1];
+    const outW = dest.shape[dest.shape.length - 1];
+    const rows = shapeSize(src.shape) / w;
+    if (shapeSize(dest.shape) / outW !== rows)
+      throw new Error("helios-native: writeColumns row mismatch");
+    if (colOffset + w > outW)
+      throw new Error("helios-native: writeColumns past the destination");
+    this.check(this.hl.catRows(dd.buffer.handle, ds.buffer.handle, w, outW,
+                               colOffset, rows),
+               "writeColumns", ds);
+    return dd;
+  }
+
   cat(tensors: TensorData[], axis: number): TensorData {
     if (tensors.length === 0) throw new Error("helios-native: cat of nothing");
     const shape = tensors[0].shape;

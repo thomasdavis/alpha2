@@ -257,6 +257,14 @@ export interface Backend {
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
   scatterSlice?(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData;
+  /**
+   * Write `src` into a column range of `dest`, in place, returning `dest`.
+   *
+   * For gradients that TILE a tensor rather than overlap it — q, k and v are
+   * three disjoint column ranges of one projection — so that three full-width
+   * tensors and two accumulations become three region writes.
+   */
+  writeColumns?(dest: TensorData, src: TensorData, colOffset: number): TensorData;
 
   // GPU dropout mask generation (GPU-optimized, optional)
   // Generates deterministic mask using splitmix32 hash (same as DropoutRng on CPU).

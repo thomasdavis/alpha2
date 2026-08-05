@@ -55,6 +55,16 @@ export class Variable {
   }
 }
 
+const ACCUM_CENSUS = typeof process !== "undefined" && process.env?.HELIOS_ACCUM_CENSUS === "1";
+const accumCensus = new Map<string, number>();
+
+/** The accumulation census, biggest first, and it clears as it reports. */
+export function drainAccumCensus(): Array<[string, number]> {
+  const rows = [...accumCensus.entries()].sort((a, b) => b[1] - a[1]);
+  accumCensus.clear();
+  return rows;
+}
+
 // ── Tape ───────────────────────────────────────────────────────────────────
 export class Tape {
   private entries: TapeEntry[] = [];
@@ -156,6 +166,23 @@ export class Tape {
         }
         if (input.grad) {
           // In-place accumulation: A += B without allocating a new tensor
+          if (ACCUM_CENSUS) {
+            /*
+             * WHICH gradients accumulate, by shape.
+             *
+             * addInplace is the second-largest item on the GPU after the GEMM —
+             * 166 calls and 17% of a step — and every one of them is a full
+             * read-add-write pass over a tensor that some kernel had JUST
+             * finished writing. matmul already avoids its share by computing
+             * into the destination and returning it, which the tape detects
+             * above; nothing else does. This says what "everything else" is,
+             * so the next accumulate-into-destination is aimed rather than
+             * guessed. Shape is the identifier because a tape entry carries no
+             * name, and in a transformer the shape is nearly as good as one.
+             */
+            const k = `[${g.shape}]`;
+            accumCensus.set(k, (accumCensus.get(k) ?? 0) + 1);
+          }
           if (backend.addInplace) {
             backend.addInplace(input.grad, g);
           } else {
