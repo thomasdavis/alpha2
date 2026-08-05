@@ -803,22 +803,44 @@ export class NativeHeliosBackend implements Backend {
      * before the producing kernel wrote them. */
     this.sync();
 
-    /* How many trailing dimensions are taken whole: those form one contiguous
-     * run in the source and can move in a single copy. */
-    let runDims = 0;
+    /*
+     * The INNERMOST dimension is always contiguous, whether or not it is taken
+     * whole, and that is the difference between one copy per row and one copy
+     * per ELEMENT.
+     *
+     * This counted only trailing dimensions taken in full. Slicing the last
+     * dimension -- which is what splitting qkv does, three times a layer -- made
+     * that count zero, so the run length was 1 and the loop below issued a
+     * separate `set` of a single float for every element. At batch 128 that is
+     * 262,144 calls to move 262,144 contiguous floats: 12.5 ms per slice, 75 ms
+     * a step, the second largest cost in the model.
+     *
+     * A partial extent along the last axis is still one contiguous span in the
+     * source, so the run starts at the last axis and grows outward through
+     * dimensions taken WHOLE -- only the outermost dimension of the run may be
+     * partial, because a gap in any inner one would break the span.
+     */
+    let runDims = 1;
     while (runDims < shape.length &&
-           extents[shape.length - 1 - runDims] === shape[shape.length - 1 - runDims])
+           extents[shape.length - runDims] === shape[shape.length - runDims])
       runDims++;
     const run = extents.slice(shape.length - runDims).reduce((x, y) => x * y, 1);
 
     const srcStride: number[] = new Array(shape.length).fill(1);
     for (let i = shape.length - 2; i >= 0; i--) srcStride[i] = srcStride[i + 1] * shape[i + 1];
 
+    /* The run may now begin part-way into its own dimensions, so its start
+     * offset counts too. It is zero whenever every dimension in the run is
+     * taken whole, which is the case this used to handle. */
+    const runStart = starts
+      .slice(shape.length - runDims)
+      .reduce((acc, st, i) => acc + st * srcStride[shape.length - runDims + i], 0);
+
     const outer = extents.slice(0, shape.length - runDims);
     const total = outer.reduce((x, y) => x * y, 1);
     const idx = new Array(outer.length).fill(0);
     for (let n = 0; n < total; n++) {
-      let src = 0;
+      let src = runStart;
       for (let d = 0; d < outer.length; d++) src += (starts[d] + idx[d]) * srcStride[d];
       out.buffer.floats.set(da.buffer.floats.subarray(src, src + run), n * run);
       for (let d = outer.length - 1; d >= 0; d--) {
