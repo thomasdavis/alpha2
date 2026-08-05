@@ -641,6 +641,42 @@ export class NativeHeliosBackend implements Backend {
     return this.unary("gelu", this.hl.op.gelu, a,
                       this.hl.scalar.geluK1, this.hl.scalar.geluFolded, 1, 1);
   }
+
+  /**
+   * c * tanh(x/c), in one launch — the kernel was already built and had no
+   * caller.
+   *
+   * ops.ts probes `if (ctx.backend.softCap)` and, not finding it, composes the
+   * same function out of scale, clamp, exp, ones, sub, add, div and scale. That
+   * fallback is not merely seven launches a layer instead of one: it allocates
+   * a tensor of ONES the size of the attention scores, wraps it in a Variable
+   * that requires no gradient, and therefore never hands it to the tape's
+   * release callback.
+   *
+   *     4 layers, batch 8, 8 steps: 32 buffers, 40 MiB held, 5.00 MiB a step
+   *     packages/autograd/ops.ts softCap  <-  model/gpt.ts attention
+   *
+   * — the largest entry in the allocation-site census, and the reason a 105M
+   * run held 4.5 GB. 327,680 floats is exactly [8,10,64,64], which is exactly
+   * the allocation that had been failing.
+   *
+   * The BACKWARD deliberately stays on ops.ts's composed path, which releases
+   * every temporary it makes (it is handed the release callback and uses it).
+   * A fused softCapBackward kernel is worth having and is not what this fixes.
+   *
+   * The folded constants come from the ADDON for the reason gelu's do: the
+   * kernel evaluates c*(1 - 2/(exp2(s0*x) + 1)), and which constant belongs in
+   * which slot is a property of that rearrangement rather than of the textbook
+   * formula. Only s0 and s2 depend on the cap, so they are recomputed here from
+   * the addon's value for c = PR_SOFTCAP_C rather than restated.
+   */
+  softCap(a: TensorData, cap: number): TensorData {
+    /* s0 = 2*log2(e)/cap, s1 = 1, s2 = cap, s3 = 2. The addon publishes the
+     * folded pair for its own default c, and the ratio recovers 2*log2(e). */
+    const twoLog2e = this.hl.scalar.softCapFolded * this.hl.scalar.softCapC;
+    return this.unary("softCap", this.hl.op.softCap, a,
+                      twoLog2e / cap, 1, cap, 2);
+  }
   silu(a: TensorData): TensorData {
     return this.unary("silu", this.hl.op.silu, a, this.hl.scalar.log2e, 1);
   }
@@ -932,18 +968,50 @@ export class NativeHeliosBackend implements Backend {
      */
     /* Too long for one block, OR not a power of two -- see reduceAxis for why
      * the second condition is not optional. */
+    /*
+     * THE INTERMEDIATES BELONG TO THIS FUNCTION AND NOTHING ELSE FREES THEM.
+     *
+     * Both routes allocate a full-size temporary that never leaves here: the
+     * matmul route a vector of ones and the product, the transpose route a
+     * whole transposed copy of the input. Neither reaches the tape, so neither
+     * reaches its release callback, and `sum(g, 0)` is how EVERY bias and
+     * weight gradient in the model is formed.
+     *
+     * Found through the fused layerNorm backward, which calls it twice a layer
+     * and could not survive 94 warmup steps at four layers before exhausting
+     * the card — read at first as "the fused kernel needs more memory than the
+     * fallback" and really a leak in a function both arms share. The fallback
+     * hid it by taking a different path.
+     *
+     * A release only MARKS: tensor.c keeps the buffer valid to any queued
+     * launch and to any reader until helios_end_step, so releasing a temporary
+     * that a queued kernel is still reading is safe by construction. What is
+     * NOT safe is releasing a RESHAPE, which shares its source's buffer — hence
+     * the care below about which handles own memory and which are views.
+     */
+    const drop = (t: TensorData | undefined) => {
+      if (t && isNative(t) && !t.buffer.released) t.buffer.release(this.hl);
+    };
+
+    /* Too long for one block, OR not a power of two -- see reduceAxis for why
+     * the second condition is not optional. */
     if (k === 0 && outer === 1 && (axisLen > 1024 || (axisLen & (axisLen - 1)) !== 0)) {
       const ones = this.full([1, axisLen], 1);
       const summed = this.matmul(ones, this.reshape(a, [axisLen, inner]));
       const flat = this.reshape(summed, [inner]);
       const outShape0 = shape.slice(1);
       const res = mean ? this.scale(flat, 1 / axisLen) : flat;
+      drop(ones);
+      /* `flat` is a VIEW of `summed`; when the result is not scaled it IS the
+       * result, so only the scaled branch may free it. */
+      if (res !== flat) drop(summed);
       return this.reshape(res, outShape0.length ? outShape0 : [1]);
     }
 
-    const plane = this.reshape(a, [outer, axisLen, inner]);
+    const plane = this.reshape(a, [outer, axisLen, inner]); /* a view of `a` */
     const t = this.transpose(plane);
     const reduced = this.reduceAxis(name, mean, t);
+    drop(t);
     const outShape = [...shape.slice(0, k), ...shape.slice(k + 1)];
     return this.reshape(reduced, outShape.length ? outShape : [1]);
   }

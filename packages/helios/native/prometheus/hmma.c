@@ -59,9 +59,18 @@
  * 4x4. The accumulator is TM*TN*4 registers and never leaves them until the
  * epilogue.
  */
+/* Overridable at build time (-DHMMA_TM=...) so the tile can be SWEPT rather
+ * than argued about: the loads-per-HMMA arithmetic says bigger is better and
+ * says nothing about where register pressure and occupancy turn it round. */
+#ifndef HMMA_TM
 #define HMMA_TM 2u
+#endif
+#ifndef HMMA_TN
 #define HMMA_TN 4u
+#endif
+#ifndef HMMA_WARPS
 #define HMMA_WARPS 4u
+#endif
 
 /* One HMMA covers 16 rows, 8 columns and 16 of K. Not tunable: they are the
  * instruction's shape. */

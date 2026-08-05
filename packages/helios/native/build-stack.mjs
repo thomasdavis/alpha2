@@ -52,6 +52,9 @@ const CFLAGS = [
   /* Padding in the RM ABI structs is deliberate and load-bearing; we assert the
    * offsets in tests rather than letting the compiler repack anything. */
   "-Wno-unused-parameter",
+  /* Extra flags from the environment, for sweeping a compile-time constant
+   * without editing the source between measurements. */
+  ...(process.env.HELIOS_CFLAGS ? process.env.HELIOS_CFLAGS.split(/\s+/).filter(Boolean) : []),
 ];
 
 /* The N-API bindings are not part of any layer library: they need Node's
@@ -129,7 +132,19 @@ function buildAddon() {
   const dir = join(HERE, "helios");
   const out = join(HERE, "helios_native.node");
   const libs = LAYERS.flatMap(sources);
-  execFileSync("gcc", ["-std=gnu11", "-O2", "-fPIC", "-shared", "-o", out,
+  /*
+   * THE EXTRA FLAGS BELONG HERE TOO, and leaving them out invalidated a whole
+   * experiment silently.
+   *
+   * The layer tests take CFLAGS and the addon had its own hardcoded list, so a
+   * sweep of -DHMMA_TM/-DHMMA_TN rebuilt the TESTS five times and shipped the
+   * same addon to the benchmark every time. Five tile shapes measured 89.4,
+   * 89.4, 89.4, 89.2 and 89.6 ms — a result so stable it looked like a finding
+   * about register blocking, and was a finding about the build.
+   */
+  const extra = process.env.HELIOS_CFLAGS
+    ? process.env.HELIOS_CFLAGS.split(/\s+/).filter(Boolean) : [];
+  execFileSync("gcc", ["-std=gnu11", "-O2", "-fPIC", "-shared", ...extra, "-o", out,
                        ...NAPI_SOURCES.map((f) => join(dir, f)), ...libs,
                        `-I${nodeDir}`, "-lm"], { stdio: "inherit" });
   console.log(`  addon: ${out}`);
