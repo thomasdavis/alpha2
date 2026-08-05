@@ -449,8 +449,21 @@ function transformerBlock(
         kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
       }
 
-      const kT = transpose(ctx, kH, 2, 3);
-      const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
+      // Q @ K^T through the FUSED entry point, not a materialised transpose.
+      //
+      // m16n8k16 is `row.col` — it reads A row-major and B column-major, so a
+      // transposed B is the orientation the instruction natively wants and the
+      // tensor-core path stages tiles through shared memory anyway. (The fused
+      // form was refuted twice for the older SCALAR kernel, where a transposed
+      // B is uncoalesced; that does not carry over and should not be re-tested
+      // a third time.)
+      //
+      // What it removes is a transpose of the whole [B,H,T,D] tensor — 3.93 MB
+      // read and written per layer, plus its counterpart in the backward. The
+      // fused backward is also better shaped: dL/dA = G @ B and dL/dB = G^T @ A
+      // both go straight to a GEMM, where the transpose route recorded a
+      // separate permute to differentiate through.
+      const rawScores = scale(ctx, matmulTransposed(ctx, qH, kH), 1 / Math.sqrt(headDim));
       const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
 
       const maskedScores = new Variable(
