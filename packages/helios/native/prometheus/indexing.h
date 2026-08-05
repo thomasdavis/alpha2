@@ -13,6 +13,10 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols);
  * invalid rather than slow; threads walk their columns in chunks instead. */
 unsigned pr_transpose_block(unsigned cols);
 
+/* Threads a row-copy block runs — min(W, 1024). slice, cat and broadcast all put
+ * one thread on each column and walk the row in chunks past that. */
+unsigned pr_row_block(unsigned W);
+
 /* out[i] = in[offset + i*stride], both from the constant bank as integers. */
 unsigned pr_emit_slice(hp_word *p);
 

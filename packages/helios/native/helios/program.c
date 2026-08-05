@@ -5,6 +5,7 @@
 
 #include "../prometheus/builders.h"
 #include "../prometheus/normalize.h"
+#include "../prometheus/indexing.h"
 
 #include <string.h>
 
@@ -106,21 +107,21 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_SLICE_ROWS:
       p->count = pr_emit_slice_rows(p->code, key->arg0, key->arg1);
-      p->blockX = key->arg0;
+      p->blockX = pr_row_block(key->arg0);
       p->gridX = 1;
       p->gridY = 0; /* rows supplied at launch */
       return 0;
 
     case HL_BROADCAST:
       p->count = pr_emit_broadcast(p->code, key->arg0, key->arg1);
-      p->blockX = key->arg1;
+      p->blockX = pr_row_block(key->arg1);
       p->gridX = 1;
       p->gridY = 0;
       return 0;
 
     case HL_CAT_ROWS:
       p->count = pr_emit_cat_rows(p->code, key->arg0, key->arg1);
-      p->blockX = key->arg0;
+      p->blockX = pr_row_block(key->arg0);
       p->gridX = 1;
       p->gridY = 0;
       return 0;
