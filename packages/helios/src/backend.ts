@@ -557,11 +557,33 @@ function ensureGpuRawBits(vk: NativeAddon, td: TensorData): number {
   if (existing) return existing.handle;
   const byteSize = td.data.length * 4;
   const handle = acquireBuffer(vk, byteSize);
-  // Upload raw bytes — don't convert int to float values
+  /*
+   * The shader reads these as u32, so what must reach it is INTEGER bits — and
+   * an index tensor does not always arrive holding them.
+   *
+   * An Int32Array is reinterpreted and is correct. Anything else took the
+   * `toF32` branch, which uploads float VALUES: the bits of 7.0 are 0x40E00000,
+   * so the shader read row 1,088,421,888 rather than row 7. Token ids and
+   * cross-entropy targets both reach this through fromArray, which stores f32,
+   * so every embedding lookup in the model addressed far outside its table and
+   * came back as row ZERO — every token receiving the same vector.
+   *
+   * It was invisible because it is size-gated. Every caller has a CPU fallback
+   * that reads `.data[i]` as a number and is correct, so shapes below the GPU
+   * threshold agreed with cpu_ref exactly and only larger ones were wrong. And
+   * the damage did not announce itself: at initialisation every row of an
+   * embedding table is a similar-scale random vector, so reading one row
+   * everywhere shifted the loss by 0.26% and looked like a precision question
+   * for eleven hypotheses.
+   *
+   * Converted HERE, in the one function all eleven call sites share, rather
+   * than at each of them.
+   */
   if (td.data instanceof Int32Array) {
     vk.uploadBuffer(handle, i32AsF32(td.data));
   } else {
-    vk.uploadBuffer(handle, toF32(td));
+    vk.uploadBuffer(handle,
+      i32AsF32(Int32Array.from(td.data as ArrayLike<number>, (v) => v | 0)));
   }
   const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
   gpuResidence.set(td, info);
@@ -6697,7 +6719,33 @@ export class HeliosBackend implements Backend {
     if (totalElements >= this._minGpuSize) {
       const vk = this.init();
       const bufWeight = ensureGpu(vk, weight);
-      const bufIndices = ensureGpuRawBits(vk, indices);
+      /*
+       * THE INDICES MUST BE INTEGER BITS, and the model does not supply them.
+       *
+       * ensureGpuRawBits uploads the tensor's bytes untouched, so the shader
+       * reads whatever bit pattern is there as a u32 row number. Token ids reach
+       * this through fromArray, which stores f32 — and the bits of 7.0 are
+       * 0x40E00000, not 7. Every lookup addressed far outside the table and came
+       * back as row ZERO, so every token in the model received the same
+       * embedding vector.
+       *
+       * The CPU fallback below reads `indices.data[i]` as a NUMBER and is
+       * therefore correct, which is what made this size-gated and invisible:
+       * small models took that path and agreed with cpu_ref exactly, and only
+       * shapes above _minGpuSize were wrong. It also explains why the resulting
+       * loss looked plausible rather than broken — at initialisation every row
+       * of the table is a similar-scale random vector, so reading one row
+       * everywhere is wrong by an amount that does not announce itself.
+       *
+       * Converted here rather than at the call sites: the interface takes an
+       * index tensor and says nothing about its dtype, so this is the layer that
+       * has to reconcile the two.
+       */
+      const idxAsInt = indices.dtype === "i32"
+        ? indices
+        : makeTensor(indices.shape, "i32",
+                     Int32Array.from(indices.data as ArrayLike<number>, (v) => v | 0));
+      const bufIndices = ensureGpuRawBits(vk, idxAsInt);
 
       const useVec4 = (dim & 3) === 0;
       const kernelName = useVec4 ? "embedding_forward_vec4" : "embedding_forward";
