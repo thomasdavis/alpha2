@@ -68,7 +68,13 @@ function step(batch) {
   const tape = new Tape();
   const tok = B.fromArray(Array.from({ length: n }, (_, i) => i % C.vocabSize), [batch, SEQ]);
   const tgt = B.fromArray(Array.from({ length: n }, (_, i) => (i + 1) % C.vocabSize), [batch, SEQ]);
-  const out = gptForward(C, params, B, tape, tok, tgt, true);
+  /* The release callback goes to the MODEL as well as the tape. The model
+   * creates intermediates the tape never records as entry outputs, so passing
+   * it only to backward left them live forever: 5,671 live tensors and 2,100
+   * slabs at batch 128, against a working set of a few hundred. Safe now that
+   * reclamation is deferred to the step boundary — a premature release keeps
+   * its memory valid until finishStepOps. */
+  const out = gptForward(C, params, B, tape, tok, tgt, true, false, false, undefined, rel);
   /* BEFORE backward: the tape releases each entry's forward output and nulls
    * its `.data`, and the loss is an entry output like any other. Reading it
    * afterwards works only when nothing is being released. */
@@ -117,6 +123,11 @@ for (const batch of BATCHES) {
   }
   ms.sort((a, b) => a - b);
   const med = ms[Math.floor(ms.length / 2)];
+  /* Pool residency alongside throughput: with VRAM residency on the table, how
+   * much memory a step actually holds is the number that decides feasibility. */
+  const st = B.stats ? B.stats() : null;
+  if (st && st.allocations !== undefined)
+    console.log(`      pool: live ${st.live} pooled ${st.pooled} carved ${st.carved} slabs ${st.allocations} (${(st.allocations * 4 / 1024).toFixed(2)} GB held)`);
   console.log(
     `${String(batch).padStart(5)}   ${String(batch * SEQ).padStart(11)}   ${med.toFixed(1).padStart(7)}   ` +
     `${(batch * SEQ / (med / 1000)).toFixed(0).padStart(8)}   ` +

@@ -4,6 +4,7 @@
 #include "tensor.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 /* Generous, because nothing frees intermediates yet: the tape offers a release
  * callback and wiring it naively frees tensors the graph still references, so
@@ -208,7 +209,14 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
      * memory bypasses the cache: 161x slower than ordinary memory, measured.
      * The pushbuffer and the QMD keep write-combining, which is the trade they
      * actually want. See gaia_alloc_cached. */
-    if (gaia_alloc_cached(&ctx->device, &s->buf, want, GAIA_SYSMEM, 1) == 0 &&
+    /* VIDMEM when asked: the GPU reads system memory at a measured 19.7 GB/s
+     * against ~448 GB/s from its own, and the step is ~40% GPU-bound, so the
+     * ceiling on this switch is large. The risk is the host mapping — video
+     * memory is mapped through the BAR1 aperture, which is commonly 256 MB on a
+     * consumer card, and a step holds 1.4 GB. Env-gated so the failure mode can
+     * be observed rather than guessed at. */
+    const gaia_location where = getenv("HELIOS_VIDMEM") ? GAIA_VIDMEM : GAIA_SYSMEM;
+    if (gaia_alloc_cached(&ctx->device, &s->buf, want, where, 1) == 0 &&
         gaia_map_gpu(&ctx->device, &s->buf) == 0 &&
         gaia_map_host(&ctx->device, &s->buf) == 0)
       break;
