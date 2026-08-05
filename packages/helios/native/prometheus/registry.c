@@ -173,7 +173,11 @@ static const pr_kernel KERNELS[] = {
      * matmul stages A's row when the shape allows and a QMD that declared zero
      * would fault the launch. Asking the emitter is the only way the two cannot
      * disagree. */
-    K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N,
+    /* 64 because the tiled emitter's four-row register map reaches R53, and a
+     * declaration with no slack above the highest register used raises
+     * GR_EXCEPTION (see qmd.c). The device path declares the same via
+     * helios_program.regs. */
+    K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N, .regs = 64,
       .sharedBytes = PR_MM_K * 4, .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
 
     K(.name = "reduce sum", .build = bld_sum, .checkedElements = 1, .fill = pr_fill_pos,

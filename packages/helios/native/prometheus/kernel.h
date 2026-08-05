@@ -70,6 +70,19 @@ typedef struct {
    * every elementwise kernel wants; a kernel with different needs says so. */
   NvU32 blockX, gridX;
 
+  /*
+   * Per-thread registers to declare. Zero means the QMD default.
+   *
+   * The production path carries this per PROGRAM (helios_program.regs) so one
+   * kernel needing more does not cost every other kernel occupancy. This
+   * harness builds its own QMDs, so without the same field it launches a
+   * kernel the device path would have declared 64 registers for at the default
+   * 48 — which does not fail loudly. It faults: `matmul 8x8x8: c[0][0]=0,
+   * errnotif=0000001f`, while the JS tests stay green, because only the
+   * harness is wrong.
+   */
+  NvU32 regs;
+
   /* Prepare the inputs. Binary kernels use both; unary kernels ignore `b`;
    * kernels that read nothing leave this NULL. */
   void (*fill)(volatile NvU32 *a, volatile NvU32 *b);

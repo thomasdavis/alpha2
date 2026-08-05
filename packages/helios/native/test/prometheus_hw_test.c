@@ -142,6 +142,9 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
   hermes_qmd_build(qmd, b->code.gpuAddr, b->scratch.gpuAddr, k->gridX, 1, 1,
                    k->blockX, 1, 1, k->sharedBytes,
                    count * (NvU32)sizeof(hp_word));
+  /* Mirror what helios_enqueue does for the device path, so this harness
+   * launches a kernel the way production launches it. */
+  if (k->regs) hermes_qmd_set_regs(qmd, k->regs);
   memcpy(b->qmd.hostPtr, qmd, HERMES_QMD_BYTES);
   __asm__ __volatile__("sfence" ::: "memory");
 

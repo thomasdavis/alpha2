@@ -110,7 +110,7 @@ static int emit(const helios_key *key, helios_program *p) {
        * does not need more, and asking for more is not free: at blockX 640,
        * 64 registers fits one block an SM where 48 fits two. This is the hook
        * a four-row tile (highest register R53) will use. */
-      p->regs = 0u;
+      p->regs = pr_matmul_tiled(key->arg0, key->arg1, key->arg2) ? 64u : 0u;
       /* The batch rides in the Y grid. It is not part of the KEY: the emitted
        * code is identical for any batch -- the plane strides come from M, N and
        * K -- so keying on it would generate one program per batch size for no

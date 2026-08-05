@@ -417,7 +417,7 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
  * apply it, the same way helios_enqueue now applies the program's. Until then
  * two rows, whose map fits under 44 and is green everywhere.
  */
-#define MATMUL_TILE_ROWS 2u
+#define MATMUL_TILE_ROWS 4u
 
 int pr_matmul_tiled(unsigned M, unsigned N, unsigned K) {
   return TILED_MATMUL && M % MATMUL_TILE_ROWS == 0 && M >= MATMUL_TILE_ROWS &&
@@ -473,11 +473,11 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
    * has run, and the two rows still take different registers, so the
    * write-after-read hazard the epilogue documents is unaffected.
    */
-  const unsigned ACC[2] = {32, 33};
-  const unsigned AV[4] = {34, 35, 36, 37};       /* ROWS * UNROLL staged A */
-  const unsigned BV[2] = {R_BVAL, 38};           /* R_BVAL is 11 */
-  const unsigned SV[2] = {34, 35};               /* A is dead by the epilogue */
-  const unsigned OA[2] = {40, 42};               /* pairs 40:41 and 42:43 */
+  const unsigned ACC[4] = {32, 33, 34, 35};
+  const unsigned AV[8] = {36, 37, 38, 39, 40, 41, 42, 43}; /* ROWS*UNROLL of A */
+  const unsigned BV[2] = {R_BVAL, 44};                     /* R_BVAL is 11 */
+  const unsigned SV[4] = {36, 37, 38, 39};   /* A is dead by the epilogue */
+  const unsigned OA[4] = {46, 48, 50, 52};   /* pairs, even-aligned */
 
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
