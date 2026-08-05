@@ -96,6 +96,14 @@ static int emit(const helios_key *key, helios_program *p) {
        * difference. */
       return 0;
 
+    case HL_PERMUTE:
+      /* One block per (b,t,h) plane on the Y index, one thread per feature. */
+      p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);
+      p->blockX = key->arg2;
+      p->gridX = 1;
+      p->gridY = 0; /* the caller supplies the plane count at launch */
+      return 0;
+
     case HL_TRANSPOSE:
       /* arg2 is the batch: one block per (row, plane), so the whole batch is
        * one launch instead of one per plane with a host copy between. */

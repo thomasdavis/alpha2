@@ -41,6 +41,7 @@ typedef enum {
   HL_NORMALIZE,   /* arg0 = pr_norm_op, arg1 = elements */
   HL_MATMUL,      /* arg0 = M, arg1 = N, arg2 = K */
   HL_TRANSPOSE,   /* arg0 = rows, arg1 = cols */
+  HL_PERMUTE,     /* arg0 = T, arg1 = H, arg2 = D — swaps the middle two axes */
   HL_EMBEDDING,   /* arg0 = dim */
   HL_SLICE,
   HL_CAUSAL_MASK, /* arg0 = cols */

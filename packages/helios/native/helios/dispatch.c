@@ -184,6 +184,23 @@ int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
   return run(ctx, k, ts, 2, NULL, 0);
 }
 
+int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
+               unsigned T, unsigned H, unsigned D, unsigned planes) {
+  const helios_key k = {HL_PERMUTE, T, H, D};
+  const helios_tensor ts[2] = {out, a};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2];
+  for (unsigned i = 0; i < 2; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  /* The plane count is a LAUNCH parameter, not part of the key: the same code
+   * serves any batch, so a new batch size does not regenerate the program. */
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, planes, p->blockX,
+                        p->sharedBytes, addrs, 2, NULL, 0);
+}
+
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
                  helios_tensor ids, unsigned tokens, unsigned dim) {
   const helios_key k = {HL_EMBEDDING, dim, tokens, 0};

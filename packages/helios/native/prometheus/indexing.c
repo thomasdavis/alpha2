@@ -22,6 +22,14 @@
 #include "indexing.h"
 
 enum {
+  R_PLANE_ID = 16,
+  R_H = 17,
+  R_T = 18,
+  R_B = 19,
+  R_TMP2 = 20,
+  R_MASK = 21,
+  R_SRC2 = 22,
+  R_DST2 = 23,
   R_ROW = 0,
   R_COL = 1,
   R_SRC_IDX = 2,
@@ -165,6 +173,67 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
   /* out[i][d] -- contiguous, unlike the gather that fed it. */
   p[n++] = hp_imad_imm(R_DST_IDX, R_ROW, dim, R_COL, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/*
+ * permute: out[b][h][t][d] = in[b][t][h][d].
+ *
+ * WHY A KERNEL AT ALL, when transpose already has one: that kernel swaps the
+ * LAST TWO axes, and attention swaps the middle two. The host did it instead —
+ * and a host permute must READ device memory, so it drains the queue as well as
+ * costing the copy. At batch 128 that was 75 ms a step, a quarter of the model,
+ * for an operation that performs no arithmetic. It is also one of the reads
+ * that stops tensors moving to video memory, where the GPU reads at ~448 GB/s
+ * instead of the 19.7 measured across PCIe.
+ *
+ * THE CONSTRAINT THAT MAKES IT CHEAP: T, H and D are powers of two in every
+ * shape this model produces, so decomposing the plane index is shifts and masks
+ * rather than division — of which sm_86 has no integer form at all. The caller
+ * checks that and keeps the host path for anything else; a kernel that quietly
+ * did the wrong thing on an odd shape would be worse than a slow one.
+ *
+ * One block per (b,t,h) plane over the block's Y index, one thread per feature.
+ * Neighbouring threads read and write neighbouring elements — both sides
+ * coalesced, which is the property the two-transpose decomposition could not
+ * have, since one of its halves is always strided.
+ */
+unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
+  unsigned n = 0;
+  unsigned lgH = 0, lgT = 0;
+  while ((1u << lgH) < H) lgH++;
+  while ((1u << lgT) < T) lgT++;
+
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+
+  /* h = plane & (H-1) */
+  p[n++] = hp_mov_imm(R_MASK, H - 1u, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_H, R_PLANE_ID, R_MASK, 0xc0, hp_ctrl_wait(BAR_ID));
+  /* t = (plane >> lgH) & (T-1) */
+  p[n++] = hp_shr_imm(R_TMP2, R_PLANE_ID, lgH, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_MASK, T - 1u, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_T, R_TMP2, R_MASK, 0xc0, hp_ctrl_safe());
+  /* b = plane >> (lgH + lgT) */
+  p[n++] = hp_shr_imm(R_B, R_PLANE_ID, lgH + lgT, hp_ctrl_safe());
+
+  /* src = (((b*T) + t)*H + h)*D + d */
+  p[n++] = hp_imad_imm(R_SRC2, R_B, T, R_T, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SRC2, R_SRC2, H, R_H, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SRC2, R_SRC2, D, R_COL, hp_ctrl_safe());
+  /* dst = (((b*H) + h)*T + t)*D + d */
+  p[n++] = hp_imad_imm(R_DST2, R_B, H, R_H, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_DST2, R_DST2, T, R_T, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_DST2, R_DST2, D, R_COL, hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
   p[n++] = hp_exit(hp_ctrl_safe());

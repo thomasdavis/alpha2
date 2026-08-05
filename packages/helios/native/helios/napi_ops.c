@@ -81,6 +81,13 @@ static napi_value js_transpose(napi_env env, napi_callback_info info) {
       env, hl_transpose(ctx, U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
+/* (out, a, T, H, D, planes) — swaps the middle two axes of [B,T,H,D] */
+static napi_value js_permute(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(
+      env, hl_permute(ctx, U32(0), U32(1), U32(2), U32(3), U32(4), U32(5)));
+}
+
 /* (out, table, ids, tokens, dim) */
 static napi_value js_embedding(napi_env env, napi_callback_info info) {
   CTX;
@@ -156,6 +163,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "normalize", js_normalize);
   hl_export(env, exports, "matmul", js_matmul);
   hl_export(env, exports, "transpose", js_transpose);
+  hl_export(env, exports, "permute", js_permute);
   hl_export(env, exports, "embedding", js_embedding);
   hl_export(env, exports, "slice", js_slice);
   hl_export(env, exports, "causalMask", js_causal_mask);

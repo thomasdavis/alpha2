@@ -76,6 +76,9 @@ export interface NativeAddon {
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
   matmul(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
   transpose(out: number, a: number, rows: number, cols: number, batch: number): boolean;
+  /** out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
+   * powers of two — the kernel decomposes the plane index with shifts. */
+  permute(out: number, a: number, T: number, H: number, D: number, planes: number): boolean;
   embedding(out: number, table: number, ids: number, tokens: number, dim: number): boolean;
   slice(out: number, a: number, count: number, offset: number, stride: number): boolean;
   causalMask(out: number, a: number, rows: number, cols: number): boolean;

@@ -1076,6 +1076,31 @@ export class NativeHeliosBackend implements Backend {
     const shape = a.shape;
     const outShape = shape.slice();
     [outShape[d0], outShape[d1]] = [outShape[d1], outShape[d0]];
+    /*
+     * THE MIDDLE-AXIS SWAP HAS A KERNEL NOW, and taking it skips the drain.
+     *
+     * A host permute must READ device memory, so it costs a queue drain as well
+     * as the copy: 75 ms a step at batch 128 for an operation that performs no
+     * arithmetic. It is also one of the reads that keeps tensors in system
+     * memory, where the GPU reads at a measured 19.7 GB/s against ~448 from its
+     * own — so removing it is worth more than the 75 ms it costs directly.
+     *
+     * The kernel decomposes the plane index with shifts and masks, sm_86 having
+     * no integer divide, so it requires T, H and D to be POWERS OF TWO. Every
+     * shape this model produces is; anything else keeps the host path below
+     * rather than being quietly given a kernel that cannot address it.
+     */
+    const pow2 = (v: number) => v > 0 && (v & (v - 1)) === 0;
+    if (d1 === d0 + 1 && shape.length === 4 && d0 === 1 &&
+        pow2(shape[1]) && pow2(shape[2]) && pow2(shape[3])) {
+      const [B, T, H, D] = shape;
+      const dat = this.device(a);
+      const o = this.make(outShape, "f32");
+      this.check(this.hl.permute(o.buffer.handle, dat.buffer.handle, T, H, D, B * T * H),
+                 "permute", dat);
+      return o;
+    }
+
     this.sync();
     const da = this.device(a);
     const out = this.make(outShape, "f32");

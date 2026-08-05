@@ -63,6 +63,11 @@ int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned rows, unsigned cols, unsigned batch);
 
+/* out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
+ * powers of two — see pr_emit_permute. */
+int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
+               unsigned T, unsigned H, unsigned D, unsigned planes);
+
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
                  helios_tensor ids, unsigned tokens, unsigned dim);
 
