@@ -51,6 +51,20 @@ int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);
 
+/*
+ * layerNorm's backward: dx and xhat from x, the incoming gradient and the
+ * weight, one block per row.
+ *
+ * Separate from hl_normalize because that one passes exactly two tensors and
+ * this one passes five. dw and db are NOT computed here -- they reduce across
+ * rows rather than within one, which is a different kernel shape; the caller
+ * gets xhat back precisely so it can form them without redoing the reductions.
+ */
+int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
+                           helios_tensor xhat, helios_tensor x, helios_tensor g,
+                           helios_tensor w, unsigned width, unsigned rows,
+                           float eps);
+
 /* out[M,N] = a[M,K] * b[K,N]. */
 /* out[b,M,N] = a[b,M,K] * b[b,K,N], the plane from the block's Y index. A batch
  * of 1 is the plain single-matrix case, same code. */

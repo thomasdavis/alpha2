@@ -66,6 +66,15 @@ static napi_value js_normalize(napi_env env, napi_callback_info info) {
                                      U32(4), F32(5)));
 }
 
+/* (dx, xhat, x, g, w, width, rows, eps) */
+static napi_value js_layer_norm_backward(napi_env env,
+                                         napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_layer_norm_backward(ctx, U32(0), U32(1), U32(2),
+                                               U32(3), U32(4), U32(5), U32(6),
+                                               F32(7)));
+}
+
 /* (out, a, b, M, N, K, batch) */
 static napi_value js_matmul(napi_env env, napi_callback_info info) {
   CTX;
@@ -182,6 +191,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "reduce", js_reduce);
   hl_export(env, exports, "reduceRows", js_reduce_rows);
   hl_export(env, exports, "normalize", js_normalize);
+  hl_export(env, exports, "layerNormBackward", js_layer_norm_backward);
   hl_export(env, exports, "matmul", js_matmul);
   hl_export(env, exports, "transpose", js_transpose);
   hl_export(env, exports, "permute", js_permute);

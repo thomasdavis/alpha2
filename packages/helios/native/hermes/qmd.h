@@ -102,7 +102,7 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
 #define HERMES_CBUF0_PARAM0 0x160
 
 /*
- * FOUR buffer pointers: out, a, b, c.
+ * SIX buffer pointers: out, a, b, c, and two more.
  *
  * It was three -- out, a, b -- which covers every element-wise and binary
  * kernel. It does not cover the optimizer step, which reads a parameter, a
@@ -112,11 +112,23 @@ void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
  * in. Widening the layout is cheaper than teaching every such kernel to pack
  * two tensors into one buffer.
  *
+ * FOUR was not enough either, and the gap was already documented rather than
+ * theoretical: residual.c records that it cannot write the summed residual back
+ * because "emitting it would need a fifth buffer slot. The layout has four."
+ * layerNorm's backward is the second such kernel -- it reads x, the incoming
+ * gradient and the weight, and writes both dx and xhat -- and it is the one that
+ * holds 38% of a training step. Two slots more cost sixteen bytes of a bank that
+ * is four kilobytes long.
+ *
+ * The scalars sit AFTER the pointers and move when this changes, which is safe
+ * only because every reader goes through HERMES_CBUF0_SCALAR_N. Nothing may
+ * hardcode a scalar offset.
+ *
  * They are addressed positionally rather than by name because a kernel's third
  * input is its third input; what it MEANS is the kernel's business.
  */
 #define HERMES_CBUF0_PARAM_N(i) (0x160 + (i) * 8)
-#define HERMES_CBUF0_PARAM_COUNT 4
+#define HERMES_CBUF0_PARAM_COUNT 6
 
 /*
  * Then the scalars, after the pointers.

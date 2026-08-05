@@ -24,12 +24,49 @@ enum {
    * added. The kernels still ran and read from somewhere near enough to look
    * like data. */
   R_IDX = 16,
+
+  /* The backward pass only. REGISTER_COUNT_V is 32, so these are within
+   * budget -- and under-requesting raises GR_EXCEPTION rather than corrupting,
+   * which is the one failure mode here that is loud. */
+  R_G = 17,    /* the incoming gradient, then dxhat = g*w */
+  R_W = 18,    /* this feature's weight */
+  R_RSTD = 19, /* 1/sqrt(var + eps), live from reduction two to the end */
+  R_M1 = 20,   /* mean(dxhat) */
+  R_M2 = 21,   /* mean(dxhat * xhat) */
+
+  /*
+   * A SEPARATE ADDRESS PAIR PER MEMORY OPERATION, all even-aligned.
+   *
+   * The obvious way to write three loads is to compute an address into R_ADDR,
+   * load, and compute the next one into R_ADDR again. That is a
+   * write-after-read hazard and this stack has no interlock for it: a global
+   * load holds its address registers until the memory pipe accepts them, so
+   * overwriting R_ADDR can change where a load already issued reads from. It is
+   * wrong only under pipe pressure, which is why it produced correct results at
+   * 64 blocks and garbage at 256, differed between two runs of the same inputs,
+   * and left 20 of 256 rows accidentally right.
+   *
+   * It could be fixed with read barriers -- hp_ctrl_setread exists for exactly
+   * this -- but there are only six barriers and four are already spoken for
+   * here. Registers are the cheaper resource: 32 per thread, and this kernel
+   * used 22. Giving every load and store its own pair removes the hazard by
+   * construction, which is a stronger guarantee than ordering it correctly.
+   *
+   * NOTE: residual.c's load_slot has the same pattern -- two loads through one
+   * R_ADDR. It is not on the model's hot path and is not exercised at these
+   * shapes, so it is flagged here rather than changed blind.
+   */
+  R_ADDR_G = 22,  /* R22:R23 */
+  R_ADDR_W = 24,  /* R24:R25 */
+  R_OUT_XH = 26,  /* R26:R27 */
 };
 
 #define BAR_TID 0
 #define BAR_LOAD 1
 #define BAR_LDS 2
 #define BAR_MUFU 3
+/* No barrier for the address-register hazard: it is removed by construction
+ * instead, with a register pair per memory operation. See the enum above. */
 
 /*
  * Load this thread's element and leave it in R_X.
@@ -180,11 +217,131 @@ static unsigned emit_layer(hp_word *p, unsigned elements) {
   return n;
 }
 
+/*
+ * layerNorm's backward: dx and xhat, in ONE launch.
+ *
+ * WHY IT IS A KERNEL AND NOT A COMPOSITION. Every arithmetic step below already
+ * exists as a device operation, and building the backward out of them was tried
+ * and measured and LOST -- at batch 1, 16 and 128, one backward at a time and
+ * all of them together. The record is in nativeBackend.ts. The reason is that a
+ * composition costs about twenty launches at 20-50 us each, and the JavaScript
+ * fallback it replaces became cheap once tensors were mapped cached. What that
+ * refutation leaves standing is exactly this: ONE launch instead of twenty.
+ *
+ * It is worth the trouble because it is the single largest item in a training
+ * step -- five of these per step at batch 128, 106.88 ms of a 280 ms step, 38%,
+ * all of it a host round-trip and a JavaScript loop over 262,144 elements.
+ *
+ * THE ARITHMETIC, per row. With xhat = (x - mean)/sigma and dxhat = g*w:
+ *
+ *   dx = (1/sigma) * (dxhat - mean(dxhat) - xhat*mean(dxhat*xhat))
+ *
+ * Four reductions -- mean(x), mean(xc^2), mean(dxhat), mean(dxhat*xhat) -- and
+ * the two-pass variance for the same reason emit_layer uses it: the shortcut
+ * var = mean(x^2) - mean(x)^2 subtracts two nearly equal numbers and keeps the
+ * rounding error.
+ *
+ * WHY xhat IS AN OUTPUT. dw = sum_rows(g*xhat) needs it, and recomputing it
+ * outside this kernel would cost the first two reductions over again. dw and db
+ * reduce down the OTHER axis -- across rows, not within one -- which is a
+ * different kernel shape entirely and stays the caller's job.
+ *
+ * A BARRIER BEFORE EVERY REUSE OF SHARED MEMORY. The tree's slots still hold
+ * the previous pass, and a thread racing ahead would overwrite a slot another
+ * thread has not finished reading. Three reuses here, so three barriers; the
+ * value each protects has already been consumed into a register by the wait on
+ * BAR_LDS that precedes it.
+ */
+static unsigned emit_layer_backward(hp_word *p, unsigned elements) {
+  unsigned n = 0;
+
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_IDX, R_ROW, elements, R_TID, hp_ctrl_wait(BAR_TID));
+
+  /*
+   * Three loads, one barrier, one wait. A scoreboard barrier counts outstanding
+   * operations, so waiting once drains all three rather than only the last --
+   * but each load gets its OWN address pair, for the reason in the register
+   * enum above.
+   *
+   * The WEIGHT is indexed by R_TID and the other two by R_IDX, and that is the
+   * whole difference between a per-feature parameter and a per-element tensor.
+   * Indexing w by R_IDX would read past its end on every row but the first and
+   * still return finite numbers.
+   */
+  p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_ADDR_G, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_ADDR_W, R_TID, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(3), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_ldg(R_G, R_ADDR_G, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_ldg(R_W, R_ADDR_W, 0, hp_ctrl_setbar(BAR_LOAD));
+
+  p[n++] = hp_mov_const(R_S0, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
+  p[n++] = hp_mov_const(R_S1, 0, HERMES_CBUF0_SCALAR_N(1), hp_ctrl_safe());
+
+  /* One: the mean. R_X becomes its deviation from it. */
+  p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_fmul(R_MEAN, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_fneg(R_TMP, R_MEAN, hp_ctrl_safe());
+  p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
+
+  /* Two: the variance, and the reciprocal square root the hardware has. */
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_fmul(R_TMP, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
+  p[n++] = hp_mufu(R_RSTD, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
+
+  /* R_X becomes xhat, and is stored: the caller needs it for dw. Its own
+   * address pair, so the dx store at the end cannot disturb it. */
+  p[n++] = hp_fmul(R_X, R_X, R_RSTD, hp_ctrl_wait(BAR_MUFU));
+  p[n++] = hp_imad_wide_const(R_OUT_XH, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(4), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT_XH, R_X, 0, hp_ctrl_safe());
+
+  /* R_G becomes dxhat. */
+  p[n++] = hp_fmul(R_G, R_G, R_W, hp_ctrl_safe());
+
+  /* Three: mean(dxhat). */
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_ACC, R_G, 0, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_fmul(R_M1, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+
+  /* Four: mean(dxhat * xhat). */
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  p[n++] = hp_fmul(R_ACC, R_G, R_X, hp_ctrl_safe());
+  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+  p[n++] = hp_fmul(R_M2, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+
+  /* dx = rstd * (dxhat - m1 - xhat*m2). */
+  p[n++] = hp_fneg(R_TMP, R_M1, hp_ctrl_safe());
+  p[n++] = hp_fadd(R_G, R_G, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_fmul(R_TMP, R_X, R_M2, hp_ctrl_safe());
+  p[n++] = hp_fneg(R_TMP, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_fadd(R_G, R_G, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_fmul(R_G, R_G, R_RSTD, hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_G, 0, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
 unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
   switch (op) {
     case PR_NORM_RMS: return emit_rms(p, elements);
     case PR_NORM_SOFTMAX: return emit_softmax(p, elements);
     case PR_NORM_LAYER: return emit_layer(p, elements);
+    case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements);
   }
   return 0;
 }

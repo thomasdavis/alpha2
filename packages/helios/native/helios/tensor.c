@@ -88,6 +88,14 @@
 typedef struct {
   gaia_buffer buf;
   NvU64 used;
+  /*
+   * Whether this slab is mapped into the host's address space.
+   *
+   * It is a property of the SLAB and not of the tensor because the mapping is
+   * made once, for the whole slab, at the one trip to the driver. A tensor is a
+   * byte range inside it and inherits whatever the slab has.
+   */
+  int hostVisible;
 } slab;
 
 typedef struct {
@@ -99,12 +107,31 @@ typedef struct {
   int classIndex;
   int nextFree;    /* -1 terminates; links the free list of its class */
   int pendingFree; /* freed, but queued work may still read it */
+  int hostVisible; /* copied from the slab, so a free can find its list */
 } slot;
 
 static slot g_slots[MAX_TENSORS];
 static slab g_slabs[MAX_SLABS];
 static unsigned g_slabCount;
-static int g_freeHead[NUM_CLASSES];
+/*
+ * TWO POOLS, and the free list has to know which one a buffer came from.
+ *
+ * Video memory is the whole point -- the GPU reads system memory at 19.7 GB/s
+ * against 111.8 measured from its own -- but it cannot simply replace system
+ * memory, because video memory is reachable from the host only through the BAR1
+ * aperture, and this card's is 256 MiB against a batch-128 step's 1.4 GB. So
+ * the two kinds of memory are not interchangeable and a single free list would
+ * hand a device-resident buffer to a caller that needs to read it on the host,
+ * which is not slow, it is a null pointer.
+ *
+ * Hence: index [class][hostVisible]. The default pool answers helios_tensor_alloc
+ * and holds the tensors kernels work on; the host-visible pool answers
+ * helios_tensor_alloc_host and holds the staging buffers through which the host
+ * reads them. With HELIOS_VIDMEM unset both pools are system memory and this
+ * whole distinction costs one branch, which is what keeps the default path
+ * exactly as it was.
+ */
+static int g_freeHead[NUM_CLASSES][2];
 /*
  * Buffers released while launches are still queued.
  *

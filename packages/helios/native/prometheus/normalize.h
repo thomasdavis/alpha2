@@ -26,6 +26,19 @@ typedef enum {
   PR_NORM_SOFTMAX,
   /* out[i] = (a[i] - mean(a)) / sqrt(var(a) + eps) */
   PR_NORM_LAYER,
+  /*
+   * layerNorm's backward, for dx and xhat.
+   *
+   * FOUR reductions and THREE inputs, which is why it does not fit the shape
+   * the other three share: slot 1 x, slot 2 the incoming gradient, slot 3 the
+   * weight (indexed by feature, not by element); slot 0 dx, slot 4 xhat.
+   * Scalars 1/N and eps.
+   *
+   * xhat is an output rather than an intermediate because dw = sum_rows(g*xhat)
+   * needs it, and recomputing it outside would cost the same two reductions
+   * again. dw and db reduce over the OTHER axis and are the caller's job.
+   */
+  PR_NORM_LAYER_BACKWARD,
 } pr_norm_op;
 
 unsigned pr_emit_normalize(hp_word *prog, pr_norm_op op, unsigned elements);

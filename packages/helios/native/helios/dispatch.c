@@ -161,6 +161,22 @@ int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
   return run(ctx, k, ts, 2, s, 2);
 }
 
+int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
+                           helios_tensor xhat, helios_tensor x, helios_tensor g,
+                           helios_tensor w, unsigned width, unsigned rows,
+                           float eps) {
+  /* Same key family as the forward -- one block per row, keyed on width AND
+   * row count for the same reason: a program built for one row and launched
+   * over many would have every block writing row zero. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_BACKWARD, width, rows};
+  /* The ORDER is the kernel's parameter order and nothing checks it: slot 0
+   * dx, 1 x, 2 g, 3 w, 4 xhat. Swapping x and g here compiles, runs, and
+   * produces a plausible wrong gradient. */
+  const helios_tensor ts[5] = {dx, x, g, w, xhat};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 5, s, 2);
+}
+
 int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
               helios_tensor b, unsigned M, unsigned N, unsigned K,
               unsigned batch) {

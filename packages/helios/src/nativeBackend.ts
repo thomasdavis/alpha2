@@ -84,6 +84,17 @@ export class NativeHeliosBackend implements Backend {
   constructor(deviceIndex = 0) {
     this.hl = nativeAddon(deviceIndex);
     this.scratch = NativeBuffer.alloc(this.hl, 1024);
+    /*
+     * The fused layerNorm backward is OPT-IN, because it measured SLOWER. See
+     * the block above layerNormBackward for the numbers.
+     *
+     * ops.ts probes `if (B.layerNormBackward)` and falls back to a JavaScript
+     * loop when it is absent, so hiding the method is exactly how the faster arm
+     * is selected -- and setting HELIOS_FUSED_LNB=1 is how the kernel is
+     * measured again, without rebuilding, if the balance ever changes.
+     */
+    if (process.env.HELIOS_FUSED_LNB !== "1")
+      (this as unknown as Record<string, unknown>).layerNormBackward = undefined;
   }
 
   /** What this backend cannot do yet, named rather than silently worked around. */
@@ -565,11 +576,36 @@ export class NativeHeliosBackend implements Backend {
    * scales -- see reduction.c, where that restraint exists so a short final
    * block cannot make a whole-tensor mean wrong.
    */
+  /*
+   * THE BLOCK REDUCTION TREE ONLY SPANS A POWER OF TWO, so anything else goes
+   * through a matmul with ones instead.
+   *
+   * pr_emit_tree walks strides width/2, /4, ... down to 1. Over 15 elements
+   * those are 7, 3 and 1, and element 14 is never combined into anything: the
+   * sum comes back finite, plausible, and short by one element. It is wrong for
+   * EVERY non-power-of-two extent, on this axis and on any other, and it has
+   * always been -- the model never met it because C is 64 and B*T is 4,096.
+   *
+   * A sum down an axis IS a matmul with a vector of ones, which is exactly the
+   * identity reduceOverAxis already uses for axes too long for one block, and
+   * that path is correct at any length (verified at 1,025 and 1,500). So route
+   * the ragged extents through it rather than teaching the tree to pad: the
+   * padding would need out-of-range threads to load nothing and contribute the
+   * combiner's identity, which is a change to every kernel that reduces, for a
+   * case none of them currently meets.
+   */
   private reduceAxis(name: string, mean: boolean, a: TensorData): TensorData {
     const width = a.shape[a.shape.length - 1] ?? 1;
     const rows = shapeSize(a.shape) / width;
-    const da = this.device(a);
     const outShape = a.shape.slice(0, -1);
+
+    if ((width & (width - 1)) !== 0) {
+      const summed = this.matmul(this.reshape(a, [rows, width]), this.full([width, 1], 1));
+      const flat = this.reshape(summed, outShape.length ? outShape : [1]);
+      return mean ? this.scale(flat, 1 / width) : flat;
+    }
+
+    const da = this.device(a);
     const out = this.make(outShape.length ? outShape : [1], "f32");
     this.check(
       this.hl.reduceRows(out.buffer.handle, da.buffer.handle, width, rows),
@@ -611,7 +647,9 @@ export class NativeHeliosBackend implements Backend {
      * reduction is the cheaper shape -- a matmul of one row does far more work
      * than it needs to.
      */
-    if (k === 0 && outer === 1 && axisLen > 1024) {
+    /* Too long for one block, OR not a power of two -- see reduceAxis for why
+     * the second condition is not optional. */
+    if (k === 0 && outer === 1 && (axisLen > 1024 || (axisLen & (axisLen - 1)) !== 0)) {
       const ones = this.full([1, axisLen], 1);
       const summed = this.matmul(ones, this.reshape(a, [axisLen, inner]));
       const flat = this.reshape(summed, [inner]);
@@ -709,7 +747,77 @@ export class NativeHeliosBackend implements Backend {
    * -- one launch instead of twenty, which is a different proposition and the
    * only remaining route to the fallbacks' ~110 ms. The compositions are in the
    * history if they are wanted as a specification of the arithmetic.
+   *
+   * THAT ROUTE WAS TAKEN THREE TIMES AND WON TWICE. geluBackward and
+   * clampBackward below are single elementwise kernels and they are on by
+   * default. layerNormBackward is a real fused kernel too -- four reductions,
+   * three inputs, one launch, in prometheus/normalize.c -- and it is OFF,
+   * because measured against the JavaScript it replaces, in one process on one
+   * card, it LOST:
+   *
+   *     batch 128   JS fallback   192.9 ms/step   21,235 tok/s   1.26 GB
+   *     batch 128   fused kernel  215.8 ms/step   18,984 tok/s   1.72 GB
+   *
+   * WHY THE PROFILE SAID OTHERWISE, which is the part worth keeping. The step
+   * profiler attributes 106.88 ms of a 280 ms step to five drains at
+   * autograd/ops.js:637 -- `const xArr = xData.data` inside this very fallback,
+   * 38% of the step, by far the largest single item. That number is real and it
+   * is not the fallback's cost. A drain is the host WAITING FOR WORK ALREADY
+   * QUEUED to finish, and that work is the forward and backward kernels, which
+   * have to run either way. The fallback was merely where the queue happened to
+   * get drained. Deleting the reader moves the wait; it does not remove the
+   * work -- and the kernel arm then ADDS ~20 launches and five full-size
+   * temporaries a step to do on the GPU what a cached host mapping was already
+   * doing at 1.4 us per 2048 elements.
+   *
+   * So the earlier paragraph's conclusion holds and is now sharper: it is not
+   * that compositions are slow and kernels are fast. It is that this fallback
+   * is CHEAP, and anything replacing it must beat a host loop over mapped
+   * memory rather than beat the drain sitting in front of it. Attributing a
+   * drain to whoever triggered it is how three sessions in a row concluded
+   * otherwise.
+   *
+   * The kernel is kept, correct and tested, behind HELIOS_FUSED_LNB=1. It is
+   * the arm to re-measure if launches ever get cheaper or the queue stops being
+   * the thing in front of the reader.
    */
+
+  /**
+   * layerNorm's backward — dx and xhat in one launch, dw and db from three ops.
+   *
+   * OFF BY DEFAULT; see above. Verified against the definition element by
+   * element at five shapes (packages/tests/diff-layernorm-backward.mjs), dx to
+   * 3e-8 absolute and dw/db to 2e-6 relative.
+   *
+   * The KERNEL returns dx and xhat. dw and db are formed here because they
+   * reduce across ROWS rather than within one, which is a different kernel
+   * shape; xhat exists as an output precisely so that dw = sum_rows(g*xhat)
+   * costs a multiply rather than the two reductions that produced it.
+   */
+  layerNormBackward(x: TensorData, weight: TensorData, g: TensorData, eps: number):
+      { dx: TensorData; dw: TensorData; db: TensorData; xhat: TensorData } {
+    const width = x.shape[x.shape.length - 1] ?? 1;
+    const rows = shapeSize(x.shape) / width;
+    const dxIn = this.device(x), dgIn = this.device(g), dwIn = this.device(weight);
+    const dx = this.make(x.shape, "f32");
+    const xhat = this.make(x.shape, "f32");
+    this.check(
+      this.hl.layerNormBackward(dx.buffer.handle, xhat.buffer.handle,
+                                dxIn.buffer.handle, dgIn.buffer.handle,
+                                dwIn.buffer.handle, width, rows, eps),
+      "layerNormBackward", dxIn, dgIn, dwIn);
+
+    /* Down the row axis, so the gradients match weight's [width] shape. */
+    const flatG = this.reshape(g, [rows, width]);
+    const db = this.sum(flatG, 0, false);
+    const dw = this.sum(this.mul(flatG, this.reshape(xhat, [rows, width])), 0, false);
+    /* xhat rides along beyond the interface's three gradients. ops.ts
+     * destructures the three it wants and ignores this one; it is here because
+     * it is the kernel's only observable intermediate, and telling "the two
+     * reductions before the store are right" from "everything is right" is the
+     * difference between a diagnosis and a guess. */
+    return { dx, dw, db, xhat };
+  }
 
   /**
    * Broadcast to `shape` — the name autograd probes for.

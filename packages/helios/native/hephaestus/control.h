@@ -108,6 +108,31 @@ static inline hp_control hp_ctrl_wait(unsigned barrier) {
 }
 
 /*
+ * Set a READ barrier: signal when this instruction has finished READING its
+ * source registers, so a later instruction may safely overwrite them.
+ *
+ * The other direction of the same missing interlock. hp_ctrl_setbar covers
+ * write-after-read on a variable-latency RESULT -- do not read R before the load
+ * writing it lands. This covers write-after-read on a variable-latency
+ * instruction's OPERANDS -- do not overwrite R before the store issuing it has
+ * read it. A global store holds its address and data registers until the memory
+ * pipe accepts them, which is not when it issued.
+ *
+ * WHY NOTHING NEEDED IT UNTIL NOW: every store in this stack was the last
+ * instruction before EXIT, so no later instruction could overwrite anything. The
+ * first kernel to store in the MIDDLE -- layerNorm's backward, which writes xhat
+ * and then keeps going -- reused the address register pair for its second store
+ * and corrupted the first. It was correct at 64 blocks and wrong at 256, because
+ * whether the pipe is still holding the register depends on how much traffic is
+ * queued ahead of it, and that is exactly the kind of load-dependent wrongness
+ * this whole file exists to prevent.
+ */
+static inline hp_control hp_ctrl_setread(unsigned barrier) {
+  hp_control c = {1, 0, HP_NO_BARRIER, barrier, 0, 0};
+  return c;
+}
+
+/*
  * Wait on SEVERAL barriers at once.
  *
  * Two variable-latency producers feeding one consumer need two barriers and a

@@ -74,6 +74,10 @@ export interface NativeAddon {
   /** One value per row: one block per row, `width` threads each. */
   reduceRows(out: number, a: number, width: number, rows: number): boolean;
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
+  /* dx and xhat together; dw and db reduce down the other axis and are the
+   * caller's job. Slot order is the kernel's and is not checked. */
+  layerNormBackward(dx: number, xhat: number, x: number, g: number, w: number,
+                    width: number, rows: number, eps: number): boolean;
   matmul(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
   transpose(out: number, a: number, rows: number, cols: number, batch: number): boolean;
   /** out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
