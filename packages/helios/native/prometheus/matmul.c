@@ -182,6 +182,30 @@ enum {
  * proposing a structure to fix it. Kept and unwired because the kernel is
  * correct at every model shape and is the structure HMMA would slot into.
  */
+/*
+ * OFF, and refuted a SECOND time, for a different reason than the first.
+ *
+ * First attempt: tiling as a MEMORY optimisation — B re-read once per output
+ * row. Refuted because B fits L2 and the reuse was already there.
+ *
+ * Second attempt, after the K-unroll made the GEMM issue-bound: tiling as an
+ * ISSUE optimisation, since a B value loaded once feeds ROWS FFMAs. The
+ * arithmetic is right — 1.5 loads per FFMA against 2 — and it is still slower:
+ *
+ *     105M seq 64, GPU ms/step (drained per op, 4 runs)
+ *       untiled, unrolled by 4   264  286  267  368     matmul 452 us/call
+ *       2 rows,  unrolled by 2   380  383  379  318     matmul 720 us/call
+ *
+ * Because it does not fit 48 declared registers and 56 costs more occupancy
+ * than the saved instructions are worth. REGISTER PRESSURE is the binding
+ * constraint on this kernel at 1024 threads a block, not instruction count —
+ * which is the same wall four rows hit, and is worth knowing before designing
+ * anything else around register blocking.
+ *
+ * The way past it is fewer threads a block with more work each, so a row costs
+ * registers that are not multiplied by 1024 lanes. That is a different kernel,
+ * and it is the one HMMA wants anyway.
+ */
 #define TILED_MATMUL 0
 
 /* How many cooperative rounds it takes N threads to stage K elements. The last
@@ -329,7 +353,12 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   const unsigned chunks = (N + BW - 1u) / BW;
   const int guard_col = chunks * BW > N;
   const unsigned ACC[4] = {R_ACC0, R_ACC1, R_ACC2, R_ACC3};
+  /* ROWS * UNROLL staged A values, then UNROLL loaded B values. */
   const unsigned AV[4] = {R_AV0, R_AV1, R_AV2, R_AV3};
+  /* R_UB1 aliases R_AV1 — the unrolled and tiled register maps were written
+   * separately and overlap. R46 is clear of both AV (36..39) and the per-row
+   * store registers used at two rows (40,41 and 42..45). */
+  const unsigned BV[2] = {R_BVAL, 46};
   const unsigned SV[4] = {R_SV0, R_SV1, R_SV2, R_SV3};
   const unsigned OA[4] = {R_O0, R_O1, R_O2, R_O3};
 
@@ -385,23 +414,51 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   else
     p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
 
+  /*
+   * UNROLLED BY TWO, on top of the two rows.
+   *
+   * Tiling was refuted as a MEMORY optimisation — B fits L2 and the reuse was
+   * already there — and it is not a memory optimisation any more. Once the K
+   * loop was unrolled the GEMM became issue-bound at two loads per FFMA, and
+   * that ratio is the one thing tiling does change: a B value loaded once feeds
+   * ROWS FFMAs.
+   *
+   *     untiled, unrolled by 4    17 instructions / 4 FFMA   = 4.25
+   *     2 rows,  unrolled by 2    14 instructions / 4 FFMA   = 3.50
+   *
+   * Two and two rather than four and four because the register budget is what
+   * made four rows lose before: 56 declared is one block an SM. This fits the
+   * same 48 the unrolled kernel already uses.
+   */
+  const unsigned UNROLL = (K % 2u == 0 && K >= 2u) ? 2u : 1u;
   const unsigned loop_top = n;
   p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
-  {
-    hp_word bl = hp_ldg(R_BVAL, R_BADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  for (unsigned j = 0; j < UNROLL; j++) {
+    const unsigned off = transposedB ? j * 4u : j * N * 4u;
+    hp_word bl = hp_ldg(BV[j], R_BADDR, off, hp_ctrl_setbar(BAR_LOAD));
     p[n++] = guard_col ? hp_predicated(bl, P_COL, 1) : bl;
   }
-  for (unsigned r = 0; r < ROWS; r++)
-    p[n++] = hp_lds(AV[r], R_K, r * K * 4u, hp_ctrl_setbar(BAR_LOAD));
-  /* One wait covering the B load and both LDS — the barrier is a counter of
-   * outstanding writes, which is the reasoning the untiled kernel records. */
-  for (unsigned r = 0; r < ROWS; r++)
-    p[n++] = hp_ffma(ACC[r], AV[r], R_BVAL, ACC[r],
-                     r == 0 ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+  for (unsigned j = 0; j < UNROLL; j++)
+    for (unsigned r = 0; r < ROWS; r++)
+      p[n++] = hp_lds(AV[j * ROWS + r], R_K, r * K * 4u + j * 4u,
+                      hp_ctrl_setbar(BAR_LOAD));
+  /* One wait covering every load — the barrier counts outstanding writes, which
+   * is the reasoning the untiled kernel records. */
+  {
+    int first = 1;
+    for (unsigned j = 0; j < UNROLL; j++)
+      for (unsigned r = 0; r < ROWS; r++) {
+        p[n++] = hp_ffma(ACC[r], AV[j * ROWS + r], BV[j], ACC[r],
+                         first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+        first = 0;
+      }
+  }
 
-  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, transposedB ? 1 : (int)N, hp_ctrl_safe());
-  p[n++] = hp_iadd3_imm(R_K, R_K, 1, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX,
+                        transposedB ? (int)UNROLL : (int)(UNROLL * N),
+                        hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_K, R_K, (int)UNROLL, hp_ctrl_safe());
   p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1, hp_ctrl_safe());
   const int back = -(int)((n + 1 - loop_top) * INSTR_BYTES);
   p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
