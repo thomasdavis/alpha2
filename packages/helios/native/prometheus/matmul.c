@@ -45,12 +45,37 @@ enum {
   R_OUT = 14, /* R14:R15 */
   R_BATCH = 16,
   R_TMP = 17,
+  R_LOAD_IDX = 18,
 };
 
 #define BAR_ID 0   /* the two S2Rs */
 #define BAR_LOAD 1 /* BOTH loads -- see the accumulate below */
 #define P_DONE 0   /* set when the loop has run its course */
 #define INSTR_BYTES 16
+
+/*
+ * Whether the row of A can be staged in shared memory.
+ *
+ * Every thread in a block computes a different COLUMN of the same output row,
+ * so all of them read the same row of A -- and in the untiled kernel each reads
+ * it separately, which is N redundant global loads of every element. Staging it
+ * once cuts A's traffic from M*N*K to M*K.
+ *
+ * Only when K divides evenly by the block width, and only when the row fits the
+ * shared-memory budget. The even division is what lets the cooperative load be
+ * unrolled with no predication -- K and N are both known when the code is
+ * generated -- and an uneven one would need a guard per load for a case that
+ * does not arise in the shapes the model uses.
+ */
+#define MATMUL_TILE_MAX_K 1024u
+static int can_tile(unsigned N, unsigned K) {
+  return N > 0 && K % N == 0 && K <= MATMUL_TILE_MAX_K &&
+         (K / N) * 6u + 40u < PR_MAX_INSTRUCTIONS;
+}
+
+unsigned pr_matmul_shared_bytes(unsigned N, unsigned K) {
+  return can_tile(N, K) ? K * 4u : 0u;
+}
 
 unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   unsigned n = 0;
@@ -86,12 +111,38 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   p[n++] = hp_imad_imm(R_TMP, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
   p[n++] = hp_iadd3_reg(R_BIDX, R_BIDX, R_TMP, hp_ctrl_safe());
 
+  /*
+   * Stage A's row in shared memory, cooperatively.
+   *
+   * Thread `col` loads elements col, col+N, col+2N ... which is coalesced --
+   * adjacent threads touch adjacent addresses -- and unrolled, because K and N
+   * are both known here. Then one barrier, and the K loop below reads A from
+   * shared memory instead of re-reading it from global once per column.
+   */
+  const int tiled = can_tile(N, K);
+  if (tiled) {
+    for (unsigned t = 0; t < K / N; t++) {
+      p[n++] = hp_iadd3_imm(R_TMP, R_COL, t * N, hp_ctrl_safe());
+      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AIDX, R_TMP, hp_ctrl_safe());
+      p[n++] = hp_imad_wide_const(R_AADDR, R_LOAD_IDX, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(1),
+                                  hp_ctrl_safe());
+      p[n++] = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_sts(R_TMP, R_AVAL, 0, hp_ctrl_wait(BAR_LOAD));
+    }
+    p[n++] = hp_bar_sync(hp_ctrl_safe());
+  }
+
   const unsigned loop_top = n;
 
-  /* A[row][k] */
-  p[n++] = hp_imad_wide_const(R_AADDR, R_AIDX, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  p[n++] = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  /* A[row][k] -- from shared memory when staged, from global when not. */
+  if (tiled) {
+    p[n++] = hp_lds(R_AVAL, R_K, 0, hp_ctrl_setbar(BAR_LOAD));
+  } else {
+    p[n++] = hp_imad_wide_const(R_AADDR, R_AIDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    p[n++] = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  }
 
   /* B[k][col] */
   p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,

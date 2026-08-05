@@ -208,7 +208,18 @@ static void test_tensor_pool(void) {
 
   /* Freed and re-requested at the same size: served from the pool, no second
    * trip to the driver. This is the whole reason the pool exists. */
+  /*
+   * RETIRE before the reuse, because a free no longer returns the buffer to
+   * circulation immediately.
+   *
+   * A kernel that was enqueued and has not run may still read a freed buffer,
+   * so handing it to the next allocation would let the host overwrite that
+   * kernel's input. Freed buffers wait until the queue drains. This test
+   * asserted immediate reuse, which was true before batching and is now the
+   * behaviour that would be a bug.
+   */
   helios_tensor_free(a);
+  helios_flush(&ctx);
   const helios_tensor b = helios_tensor_alloc(&ctx, 4096);
   HT_TRUE(b != HELIOS_TENSOR_NONE);
   HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
@@ -265,6 +276,9 @@ static void test_dispatch_chain(void) {
   /* y = x + x, then sum(y). The second reads the first's output. */
   HT_TRUE(hl_elementwise(&ctx, PR_EW_ADD, y, x, x, N, NULL, 0) == 0);
   HT_TRUE(hl_reduce(&ctx, 0, sum, y, scratch, N) == 0);
+  /* Operations ENQUEUE now; the result is only in memory once the queue is
+   * drained. Reading before this is reading what the buffer held beforehand. */
+  HT_TRUE(helios_flush(&ctx) == 0);
 
   const float got = *(const float *)helios_tensor_host(sum);
   const double err = (double)got - want_sum;

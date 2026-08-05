@@ -21,4 +21,8 @@
  */
 unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K);
 
+/* Shared memory the emitted matmul needs, which is K floats when the row of A
+ * can be staged and zero when it cannot. The launch must match. */
+unsigned pr_matmul_shared_bytes(unsigned N, unsigned K);
+
 #endif /* PROMETHEUS_MATMUL_H */

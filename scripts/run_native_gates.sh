@@ -43,6 +43,23 @@ live=$(node -e 'console.log(require(process.argv[1]).channelLive)' "$out_dir/dev
 [[ $vendor == 4318 ]] || { echo "native gate: vendor $vendor is not 0x10de (4318)" >&2; exit 1; }
 [[ $live == true ]] || { echo "native gate: no live channel — the suite would not have touched the GPU" >&2; exit 1; }
 
+# The NATIVE LAYER suites first — C tests that talk to the driver directly.
+#
+# These were not in the gate, and the gap was not theoretical: a change to the
+# matmul emitter faulted two of them while every vitest suite stayed green, and
+# the gate said GREEN. The layers below the TypeScript are where the hardware
+# actually is; a gate that skips them is gating the wrapper.
+echo "native gate: layer suites"
+if ! node packages/helios/native/build-stack.mjs > "$out_dir/layers.log" 2>&1; then
+  echo "native gate: layer build failed" >&2; tail -20 "$out_dir/layers.log" >&2; exit 1
+fi
+if ! grep -qE '^[0-9]+ layer suite\(s\), 0 failing' "$out_dir/layers.log"; then
+  echo "native gate: layer suites failing" >&2
+  grep -E 'FAIL|failing|failures' "$out_dir/layers.log" >&2 || true
+  exit 1
+fi
+grep -E 'layer suite' "$out_dir/layers.log"
+
 # The native suites, with a machine-readable report so skips can be counted.
 set +e
 npx vitest run --reporter=json --outputFile="$out_dir/report.json" \

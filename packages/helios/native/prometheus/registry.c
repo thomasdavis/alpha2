@@ -169,8 +169,12 @@ static const pr_kernel KERNELS[] = {
 
     /* One block per row, one thread per column -- NOT the default launch, and
      * the registry is where that is said, because the kernel cannot see it. */
+    /* Shared memory comes from the emitter, not from a number written here: the
+     * matmul stages A's row when the shape allows and a QMD that declared zero
+     * would fault the launch. Asking the emitter is the only way the two cannot
+     * disagree. */
     K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N,
-      .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
+      .sharedBytes = PR_MM_K * 4, .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
 
     K(.name = "reduce sum", .build = bld_sum, .checkedElements = 1, .fill = pr_fill_pos,
       .check = chk_sum, .blockX = PR_N, .gridX = 1,

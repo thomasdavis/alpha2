@@ -198,7 +198,15 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
 }
 
 int helios_flush(helios_context *ctx) {
-  if (ctx->pending == 0) return 0;
+  if (ctx->pending == 0) {
+    /* Nothing queued means nothing can be reading a freed buffer, so anything
+     * waiting to be retired is safe NOW. Returning early without this left a
+     * buffer freed while the queue was empty stranded until some later flush
+     * that happened to have work -- the pool grew instead of recycling, which
+     * is invisible except as a slow creep in allocations. */
+    helios_tensor_retire();
+    return 0;
+  }
   ctx->statFlushed++;
 
   /* ONE semaphore for the whole batch: the channel runs its pushbuffer in

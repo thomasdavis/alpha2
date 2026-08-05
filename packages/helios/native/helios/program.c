@@ -87,6 +87,7 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_MATMUL:
       p->count = pr_emit_matmul(p->code, key->arg0, key->arg1, key->arg2);
+      p->sharedBytes = pr_matmul_shared_bytes(key->arg1, key->arg2);
       p->blockX = key->arg1; /* one thread per output column */
       p->gridX = key->arg0;  /* one block per output row */
       /* The batch rides in the Y grid. It is not part of the KEY: the emitted
