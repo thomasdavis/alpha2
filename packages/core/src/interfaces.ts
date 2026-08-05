@@ -185,6 +185,10 @@ export interface Backend {
     epsilon: number,
   ): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
+  /* dest += A@B (0), A@B^T (1) or A^T@B (2). False when the backend cannot,
+   * which is the caller's cue to matmul-then-add as before. */
+  matmulAccumulate?(dest: TensorData, a: TensorData, b: TensorData,
+                    layout: 0 | 1 | 2): boolean;
   softCap?(input: TensorData, cap: number): TensorData;
   softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
 

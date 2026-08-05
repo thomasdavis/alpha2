@@ -23,7 +23,18 @@ export interface TapeEntry {
    *  within the backward closure (transposes, intermediates, etc.).
    *  The optional needsGrad array indicates which inputs actually need gradients,
    *  allowing closures to skip expensive computations for non-parameter inputs. */
-  backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]): TensorData[];
+  /*
+   * `dests` is the gradient each input ALREADY has, when it has one.
+   *
+   * A closure may compute straight into it and return that same tensor; the
+   * tape then knows the accumulation has happened and does not add again. It is
+   * optional in both directions — a closure that ignores it is correct, and so
+   * is a tape that passes nothing — because the alternative to using it is a
+   * matmul into a fresh tensor followed by a separate read-add-write pass over
+   * the destination, which is four passes where this is two.
+   */
+  backward(outGrad: TensorData, backend: Backend, release?: (td: TensorData) => void,
+           needsGrad?: boolean[], dests?: (TensorData | null)[]): TensorData[];
   /** Optional release hook for non-output auxiliary tensors captured by the op. */
   cleanup?(release?: (td: TensorData) => void): void;
 }
@@ -93,7 +104,14 @@ export class Tape {
           break;
         }
       }
-      const inputGrads = entry.backward(outGrad, backend, releaseTensor, needsGrad);
+      /*
+       * Offer each input's existing gradient as a destination. Only when it is
+       * the input's LAST use, because a closure writing into a buffer another
+       * pending accumulation still has to read would lose that one.
+       */
+      const dests = entry.inputs.map((v) =>
+        v.requiresGrad && v.grad ? v.grad : null);
+      const inputGrads = entry.backward(outGrad, backend, releaseTensor, needsGrad, dests);
 
       // Track how many trainable inputs consume each gradient tensor.
       // Some ops legitimately alias grads across inputs (e.g. add/sub paths).
@@ -128,6 +146,14 @@ export class Tape {
 
         const remainingUsesBefore = gradUseCount.get(g) ?? 0;
         let transferred = false;
+        if (input.grad === g) {
+          /* The closure accumulated into the destination itself: the gradient
+           * is already where it belongs and adding it again would double it. */
+          transferred = true;
+          retainedAsInputGrad.add(g);
+          gradUseCount.delete(g);
+          continue;
+        }
         if (input.grad) {
           // In-place accumulation: A += B without allocating a new tensor
           if (backend.addInplace) {

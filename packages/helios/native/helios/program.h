@@ -43,6 +43,16 @@ typedef enum {
   HL_MATMUL_T,
   /* the same, with B stored [N,K] and used transposed */
   HL_MATMUL_TA, /* C = A^T @ B, with A stored [K,M] — the weight gradient */
+  /*
+   * The same three, ACCUMULATING into C rather than assigning.
+   *
+   * Separate kinds rather than a fourth key field because the emitted code
+   * differs and the cache is keyed on the kind: an accumulating program handed
+   * to an assigning call would silently add to whatever the buffer held.
+   */
+  HL_MATMUL_ACC,
+  HL_MATMUL_T_ACC,
+  HL_MATMUL_TA_ACC,
   HL_TRANSPOSE,   /* arg0 = rows, arg1 = cols */
   HL_SLICE_ROWS,  /* arg0 = out width, arg1 = source width */
   HL_BROADCAST,   /* arg0 = mode (0 tile, 1 row), arg1 = width */

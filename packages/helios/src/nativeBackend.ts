@@ -955,6 +955,49 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * dest += A @ B (layout 0), A @ B^T (1) or A^T @ B (2), in ONE launch.
+   *
+   * Returns false when the shape cannot reach the tensor cores — the scalar
+   * kernel has no accumulating form — and the caller keeps its two-step route.
+   *
+   * WHY IT EXISTS. Gradient accumulation is ~24% of a step's GPU time and it is
+   * already at the card's bandwidth ceiling (417 GB/s on a 0.33M-element
+   * tensor, 342 on 1.31M, against 448), so it cannot be made faster; it can
+   * only be made less. A matmul into a fresh tensor followed by an elementwise
+   * add of it into the destination is four passes over the result and an
+   * allocation. This is two passes and none.
+   */
+  matmulAccumulate(dest: TensorData, a: TensorData, b: TensorData,
+                   layout: 0 | 1 | 2): boolean {
+    if (!this.hl.matmulAccumulate) return false;
+    const ra = a.shape.length, rb = b.shape.length;
+    if (ra < 2 || rb < 2) return false;
+    let M: number, N: number, K: number;
+    if (layout === 2) {
+      K = a.shape[ra - 2] ?? 1; M = a.shape[ra - 1] ?? 1; N = b.shape[rb - 1] ?? 1;
+      if ((b.shape[rb - 2] ?? 1) !== K) return false;
+    } else {
+      M = a.shape[ra - 2] ?? 1; K = a.shape[ra - 1] ?? 1;
+      N = layout === 1 ? (b.shape[rb - 2] ?? 1) : (b.shape[rb - 1] ?? 1);
+      if ((layout === 1 ? (b.shape[rb - 1] ?? 1) : (b.shape[rb - 2] ?? 1)) !== K)
+        return false;
+    }
+    if (shapeSize(dest.shape) !== M * N) return false;
+    const batch = shapeSize(a.shape) / (layout === 2 ? K * M : M * K);
+    if (batch !== 1) return false; /* the destination has no batch axis here */
+
+    const dd = this.device(dest), da = this.device(a), db = this.device(b);
+    if (!this.hl.matmulAccumulate(dd.buffer.handle, da.buffer.handle,
+                                  db.buffer.handle, M, N, K, batch, layout))
+      return false;
+    this.pending = true;
+    NativeBuffer.invalidateMirrors();
+    if (da !== a && da !== dest) da.buffer.release(this.hl);
+    if (db !== b && db !== dest) db.buffer.release(this.hl);
+    return true;
+  }
+
   /** A^T @ B the old way, for shapes the tensor-core tile does not divide. */
   private transposeThenMatmul(a: TensorData, b: TensorData): TensorData {
     const t = this.transpose(a, a.shape.length - 2, a.shape.length - 1);

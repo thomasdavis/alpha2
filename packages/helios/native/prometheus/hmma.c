@@ -292,6 +292,7 @@ _Static_assert(R_HIGHEST < 250u, "HMMA tile exceeds the register file");
 #define BAR_ST1 4
 #define BAR_ST2 5
 #define BAR_ST3 BAR_ID
+#define BAR_ACC 5 /* the destination read, when accumulating */
 #define P_DONE 0
 #define INSTR_BYTES 16
 
@@ -337,7 +338,7 @@ _Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_B <= 8u,
  * same however its operands arrived.
  */
 static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
-                                   unsigned BM, unsigned BN) {
+                                   unsigned BM, unsigned BN, int accumulate) {
   unsigned n = 0;
   const unsigned WN = MMA_N * HMMA_TN;
   /*
@@ -407,6 +408,23 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
                                 base + (int)(half ? 8u * N : 0u), c);
           p[n++] = hp_imad_wide_const(addr, R_TMP, R_ESIZE, 0,
                                       HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+          /*
+           * C += A*B, when asked. One extra READ of the destination against a
+           * whole separate read-add-write pass over it — which is what an
+           * addInplace after the matmul costs, and gradient accumulation does
+           * that ~221 times a step over roughly 4 GB.
+           *
+           * The temporaries are the k-loop's staging registers, dead by here:
+           * the loop has exited and the last HMMA already waited on its loads.
+           */
+          if (accumulate) {
+            p[n++] = hp_ldg(ST_A(0), addr, 0, hp_ctrl_setbar(BAR_ACC));
+            p[n++] = hp_ldg(ST_A(1), addr, 4, hp_ctrl_setbar(BAR_ACC));
+            p[n++] = hp_fadd(acc + 2u * half + 0u, acc + 2u * half + 0u,
+                             ST_A(0), hp_ctrl_wait(BAR_ACC));
+            p[n++] = hp_fadd(acc + 2u * half + 1u, acc + 2u * half + 1u,
+                             ST_A(1), hp_ctrl_safe());
+          }
           p[n++] = hp_stg(addr, acc + 2u * half + 0u, 0, hp_ctrl_safe());
           p[n++] = hp_stg(addr, acc + 2u * half + 1u, 4, hp_ctrl_setread(bar));
           unit++;
@@ -447,7 +465,7 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
  * the whole k-step cost one address computation per operand.
  */
 static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
-                                 pr_mm_kind kind) {
+                                 pr_mm_kind kind, int accumulate) {
   unsigned n = 0;
   const int transposedB = (kind == PR_MM_NT);
   const int transposedA = (kind == PR_MM_TA);
@@ -626,13 +644,13 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
     n++;
   }
-  n += emit_hmma_epilogue(&p[n], M, N, BM, BN);
+  n += emit_hmma_epilogue(&p[n], M, N, BM, BN, accumulate);
   return n;
 }
 
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
-                      pr_mm_kind kind) {
-  if (HMMA_SHARED) return emit_hmma_staged(p, M, N, K, kind);
+                      pr_mm_kind kind, int accumulate) {
+  if (HMMA_SHARED) return emit_hmma_staged(p, M, N, K, kind, accumulate);
   const int transposedB = (kind == PR_MM_NT);
   const int transposedA = (kind == PR_MM_TA);
   unsigned n = 0;
@@ -849,7 +867,7 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
     n++;
   }
 
-  n += emit_hmma_epilogue(&p[n], M, N, BM, BN);
+  n += emit_hmma_epilogue(&p[n], M, N, BM, BN, accumulate);
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }

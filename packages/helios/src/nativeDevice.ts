@@ -36,6 +36,9 @@ export interface NativeAddon {
    * tensor-core path — the scalar kernel has no transposed-A form. */
   matmulTransposedA?(out: number, a: number, b: number, M: number, N: number,
                      K: number, batch: number): boolean;
+  /* C += A@B. `layout` is 0 for A@B, 1 for A@B^T, 2 for A^T@B. */
+  matmulAccumulate?(out: number, a: number, b: number, M: number, N: number,
+                    K: number, batch: number, layout: number): boolean;
   /* Host-mapped whatever the residency policy is. Optional so a stale addon
    * still loads — without it VIDMEM simply has nowhere to stage. */
   allocHost?(bytes: number): number;

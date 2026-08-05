@@ -261,6 +261,38 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
  * has no transposed-A form. A caller that gets -1 is expected to fall back to
  * transpose-and-multiply, which is what it did before this existed.
  */
+/*
+ * C[M,N] += A @ B, in one launch, for the three operand layouts.
+ *
+ * Autograd's alternative is a matmul into a fresh tensor followed by an
+ * elementwise add of it into the destination: four passes over the result where
+ * this is two, and an allocation. Accumulation is ~24% of a step's GPU time and
+ * runs at the card's bandwidth ceiling, so the way to make it cheaper is to do
+ * less of it, not to do it faster.
+ *
+ * Refuses when the tensor path does not apply — the scalar kernel has no
+ * accumulating form — so the caller keeps its old two-step route.
+ */
+int hl_matmul_accumulate(helios_context *ctx, helios_tensor out, helios_tensor a,
+                         helios_tensor b, unsigned M, unsigned N, unsigned K,
+                         unsigned batch, unsigned layout) {
+  if (!pr_hmma_applies(M, N, K)) return -1;
+  const helios_kind kinds[3] = {HL_MATMUL_ACC, HL_MATMUL_T_ACC, HL_MATMUL_TA_ACC};
+  if (layout > 2) return -1;
+  const helios_key k = {kinds[layout], M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 3,
+                         NULL, 0);
+}
+
 int hl_matmul_transposed_a(helios_context *ctx, helios_tensor out,
                            helios_tensor a, helios_tensor b, unsigned M,
                            unsigned N, unsigned K, unsigned batch) {

@@ -86,7 +86,11 @@ function record(
   ctx: Ctx,
   data: TensorData,
   inputs: Variable[],
-  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]) => TensorData[],
+  /* `dests` carries each input's EXISTING gradient, so a closure that can
+   * compute into it may, and signals that it did by returning that tensor. See
+   * TapeEntry.backward. */
+  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void,
+             needsGrad?: boolean[], dests?: (TensorData | null)[]) => TensorData[],
   cleanup?: (release?: (td: TensorData) => void) => void,
 ): Variable {
   const out = new Variable(data, true);
@@ -164,19 +168,33 @@ export function neg(ctx: Ctx, a: Variable): Variable {
 
 export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release, needsGrad) => {
+  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release, needsGrad, dests) => {
     // For 2D: dL/dA = G @ B^T, dL/dB = A^T @ G
     const ndimA = aData.shape.length;
     const ndimB = bData.shape.length;
     let ga: TensorData | null = null;
     let gb: TensorData | null = null;
+    /*
+     * ACCUMULATE STRAIGHT INTO THE DESTINATION when the input already has a
+     * gradient. The alternative the tape would do next is an elementwise add of
+     * a fresh tensor into that same buffer: four passes over the result where
+     * this is two, plus an allocation. Returning the destination is how the
+     * tape is told the accumulation already happened.
+     */
+    const acc = B.matmulAccumulate;
     if (!needsGrad || needsGrad[0]) {
-      const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
-      ga = B.matmul(g, tB);
-      if (release) release(tB);
+      const d = dests?.[0];
+      if (d && acc && acc.call(B, d, g, bData, 1)) ga = d;  /* G @ B^T */
+      else {
+        const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
+        ga = B.matmul(g, tB);
+        if (release) release(tB);
+      }
     }
     if (!needsGrad || needsGrad[1]) {
-      if (B.matmulTransposedA) {
+      const d = dests?.[1];
+      if (d && acc && acc.call(B, d, aData, g, 2)) gb = d;  /* A^T @ G */
+      else if (B.matmulTransposedA) {
         gb = B.matmulTransposedA(aData, g);
       } else {
         const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
@@ -210,17 +228,22 @@ export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
   const out = B.matmulTransposed
     ? B.matmulTransposed(aData, bData)
     : B.matmul(aData, tBFallback!);
-  return record(ctx, out, [a, b], (g, B, release, needsGrad) => {
+  return record(ctx, out, [a, b], (g, B, release, needsGrad, dests) => {
     // C = A @ B^T where B is [N, K]
     let ga: TensorData | null = null;
     let gb: TensorData | null = null;
+    const acc = B.matmulAccumulate;
     if (!needsGrad || needsGrad[0]) {
       // dL/dA = G @ B (G is [..., M, N], B is [..., N, K] → result [..., M, K])
-      ga = B.matmul(g, bData);
+      const d = dests?.[0];
+      if (d && acc && acc.call(B, d, g, bData, 0)) ga = d;
+      else ga = B.matmul(g, bData);
     }
     if (!needsGrad || needsGrad[1]) {
       // dL/dB = G^T @ A (result [..., N, K])
-      if (B.matmulTransposedA) {
+      const d = dests?.[1];
+      if (d && acc && acc.call(B, d, g, aData, 2)) gb = d;
+      else if (B.matmulTransposedA) {
         gb = B.matmulTransposedA(g, aData);
       } else {
         const ndimG = g.shape.length;

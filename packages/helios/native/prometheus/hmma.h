@@ -57,8 +57,9 @@ typedef enum {
   PR_MM_TA = 2, /* A[K,M]^T @ B[K,N] */
 } pr_mm_kind;
 
-/* Emit C[M,N] for the given operand layout. Returns the instruction count. */
+/* Emit C[M,N] for the given operand layout, assigning or ACCUMULATING into C.
+ * Returns the instruction count. */
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
-                      pr_mm_kind kind);
+                      pr_mm_kind kind, int accumulate);
 
 #endif /* PROMETHEUS_HMMA_H */

@@ -66,13 +66,27 @@ static float want_of(hmma_case c, unsigned i, unsigned j, unsigned K) {
  * one walks a column contiguously and is the orientation the instruction
  * natively wants -- so a pass on one says nothing about the other.
  */
+/* The value C already holds when the kernel accumulates into it. Distinct per
+ * element so a wrong destination index shows up, and small enough that the sum
+ * stays exact in f32. */
+static float seed_of(unsigned i, unsigned j) { return (float)((i * 7u + j * 3u) % 64u); }
+
+static void run_case_acc(hmma_case cs, unsigned M, unsigned N, unsigned K,
+                         unsigned batch, int layout, int accumulate);
+
 static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
                      unsigned batch, int layout) {
+  run_case_acc(cs, M, N, K, batch, layout, 0);
+}
+
+static void run_case_acc(hmma_case cs, unsigned M, unsigned N, unsigned K,
+                         unsigned batch, int layout, int accumulate) {
   const int transposed = (layout == 1), transposedA = (layout == 2);
   char name[96];
-  snprintf(name, sizeof name, "hmma %s [%u,%u]x[%u,%u]%s b%u",
+  snprintf(name, sizeof name, "hmma %s [%u,%u]x[%u,%u]%s%s b%u",
            cs == CASE_SCALE ? "scale " : "kalign", M, K, K, N,
-           transposed ? " B^T" : transposedA ? " A^T" : "", batch);
+           transposed ? " B^T" : transposedA ? " A^T" : "",
+           accumulate ? " +=" : "", batch);
   HT_CASE(name);
 
   helios_context ctx;
@@ -122,9 +136,17 @@ static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
         if (transposed) hb[(size_t)p * K * N + (size_t)j * K + k] = v;
         else hb[(size_t)p * K * N + (size_t)k * N + j] = v;
       }
-  memset(hc, 0, (size_t)batch * M * N * 4);
+  if (accumulate)
+    for (unsigned q = 0; q < batch; q++)
+      for (unsigned i = 0; i < M; i++)
+        for (unsigned j = 0; j < N; j++)
+          hc[(size_t)q * M * N + (size_t)i * N + j] = seed_of(i, j);
+  else
+    memset(hc, 0, (size_t)batch * M * N * 4);
 
-  const int rc = transposed
+  const int rc = accumulate
+      ? hl_matmul_accumulate(&ctx, tc, ta, tb, M, N, K, batch, (unsigned)layout)
+      : transposed
       ? hl_matmul_transposed(&ctx, tc, ta, tb, M, N, K, batch)
       : transposedA
       ? hl_matmul_transposed_a(&ctx, tc, ta, tb, M, N, K, batch)
@@ -143,7 +165,8 @@ static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
       for (unsigned j = 0; j < N; j++) {
         float bsum = 0;
         for (unsigned k = 0; k < K; k++) bsum += b_of(cs, k, j);
-        const float want = want_of(cs, i, j, K) + (float)p * bsum;
+        const float want = want_of(cs, i, j, K) + (float)p * bsum +
+                           (accumulate ? seed_of(i, j) : 0.0f);
         const float got = hc[(size_t)p * M * N + (size_t)i * N + j];
         const float err = got - want;
         if (err > 1e-2f || err < -1e-2f) {
@@ -206,5 +229,13 @@ void hl_hmma_tests(void) {
     run_case(CASE_KALIGN, rows, cols, 64, 1, t);      /* four k-steps */
     run_case(CASE_SCALE, rows * 2, cols * 2, 64, 1, t);
     run_case(CASE_KALIGN, rows, cols, 32, 3, t);      /* three batch planes */
+    /*
+     * ACCUMULATING, which is a different epilogue and therefore a different
+     * thing to be wrong: C is seeded per element, so a destination index that
+     * moved shows up as the wrong seed rather than as a missing product.
+     */
+    run_case_acc(CASE_SCALE, rows, cols, 16, 1, t, 1);
+    run_case_acc(CASE_KALIGN, rows * 2, cols * 2, 64, 1, t, 1);
+    run_case_acc(CASE_SCALE, rows, cols, 32, 3, t, 1);
   }
 }

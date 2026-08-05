@@ -121,6 +121,9 @@ static int emit(const helios_key *key, helios_program *p) {
     case HL_MATMUL:
     case HL_MATMUL_T:
     case HL_MATMUL_TA:
+    case HL_MATMUL_ACC:
+    case HL_MATMUL_T_ACC:
+    case HL_MATMUL_TA_ACC:
       /*
        * The TENSOR-CORE path, when the shape divides.
        *
@@ -130,10 +133,15 @@ static int emit(const helios_key *key, helios_program *p) {
        * asynchronously at whatever flushes next.
        */
       if (pr_hmma_applies(key->arg0, key->arg1, key->arg2)) {
+        const int acc = key->kind == HL_MATMUL_ACC ||
+                        key->kind == HL_MATMUL_T_ACC ||
+                        key->kind == HL_MATMUL_TA_ACC;
+        const pr_mm_kind layout =
+            (key->kind == HL_MATMUL_T || key->kind == HL_MATMUL_T_ACC) ? PR_MM_NT
+            : (key->kind == HL_MATMUL_TA || key->kind == HL_MATMUL_TA_ACC) ? PR_MM_TA
+                                                                           : PR_MM_NN;
         p->count = pr_emit_hmma(p->code, key->arg0, key->arg1, key->arg2,
-                                key->kind == HL_MATMUL_T   ? PR_MM_NT
-                                : key->kind == HL_MATMUL_TA ? PR_MM_TA
-                                                            : PR_MM_NN);
+                                layout, acc);
         p->blockX = pr_hmma_threads();
         p->gridX = key->arg0 / pr_hmma_block_rows();
         p->gridY = key->arg1 / pr_hmma_block_cols();
@@ -146,7 +154,11 @@ static int emit(const helios_key *key, helios_program *p) {
        * materialises a transpose as it always did — so this is unreachable
        * rather than wrong, and returning an error beats emitting an NN kernel
        * for a TA key. */
-      if (key->kind == HL_MATMUL_TA) return -1;
+      /* The scalar kernel has neither a transposed-A form nor an accumulating
+       * one; both callers refuse when the tensor path does not apply. */
+      if (key->kind == HL_MATMUL_TA || key->kind == HL_MATMUL_ACC ||
+          key->kind == HL_MATMUL_T_ACC || key->kind == HL_MATMUL_TA_ACC)
+        return -1;
       p->count = pr_emit_matmul_kind(p->code, key->arg0, key->arg1, key->arg2,
                                      key->kind == HL_MATMUL_T);
       p->sharedBytes = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)
