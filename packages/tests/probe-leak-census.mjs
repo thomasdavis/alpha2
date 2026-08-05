@@ -48,7 +48,7 @@ NativeBuffer.alloc = (hl, elements) => {
       .map((l) => l.trim().replace(/^at /, "").replace(/.*\/packages\//, "packages/"))
       .filter((l) => !l.includes("probe-leak-census"))
       .join("\n            <- ");
-    live.set(b, { elements, st });
+    live.set(b, { elements, st, shape: null });
   }
   return b;
 };
@@ -72,6 +72,22 @@ NativeBuffer.prototype.release = function (hl) {
 };
 
 const B = new NativeHeliosBackend(0);
+
+/*
+ * THE SHAPE, not just the size. 327,680 floats is [512,640] and [8,10,64,64]
+ * and nothing distinguishes them at the allocator, so a leak of that class
+ * cannot be traced to a line of the model from its size alone. `make` is where
+ * every tensor in this backend gets both, so wrapping it is the one place the
+ * two can be joined.
+ */
+const shapeOf = new WeakMap();
+const origMake = Object.getPrototypeOf(B).make;
+Object.getPrototypeOf(B).make = function (shape, dtype) {
+  const t = origMake.call(this, shape, dtype);
+  if (t && t.buffer) shapeOf.set(t.buffer, shape);
+  return t;
+};
+
 const params = initGPT(C, B, new SeededRng(7));
 
 const kept = new Set();
@@ -127,9 +143,12 @@ recording = false;
 
 /* Group by site, because one leaking line produces hundreds of buffers. */
 const bySite = new Map();
-for (const { elements, st } of (MODE === "all" ? all : live.values())) {
-  const e = bySite.get(st) ?? { n: 0, elements: 0 };
+for (const [buf, rec] of (MODE === "all" ? all.map((r) => [null, r]) : live.entries())) {
+  const { elements, st } = rec;
+  const e = bySite.get(st) ?? { n: 0, elements: 0, shapes: new Set() };
   e.n++; e.elements += elements;
+  const sh = buf && shapeOf.get(buf);
+  if (sh) e.shapes.add(JSON.stringify(sh));
   bySite.set(st, e);
 }
 const rows = [...bySite.entries()].sort((a, b) => b[1].elements - a[1].elements);
@@ -139,7 +158,8 @@ let totalMiB = 0;
 for (const [st, e] of rows.slice(0, 12)) {
   const miB = e.elements * 4 / (1 << 20);
   totalMiB += miB;
-  console.log(`  ${e.n} buffers  ${miB.toFixed(2)} MiB  (${(miB / STEPS).toFixed(2)} MiB/step)`);
+  const shapes = e.shapes && e.shapes.size ? `  shapes ${[...e.shapes].slice(0, 4).join(" ")}` : "";
+  console.log(`  ${e.n} buffers  ${miB.toFixed(2)} MiB  (${(miB / STEPS).toFixed(2)} MiB/step)${shapes}`);
   console.log(`            ${st}\n`);
 }
 for (const [, e] of rows.slice(12)) totalMiB += e.elements * 4 / (1 << 20);

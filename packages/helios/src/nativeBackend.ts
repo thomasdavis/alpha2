@@ -117,15 +117,31 @@ export class NativeHeliosBackend implements Backend {
      */
     this.scratch = NativeBuffer.allocHost(this.hl, 1024);
     /*
-     * The fused layerNorm backward is OPT-IN, because it measured SLOWER. See
-     * the block above layerNormBackward for the numbers.
+     * The fused layerNorm backward is ON. It was opt-in for three sessions
+     * because it measured slower, and that measurement was right about the
+     * machine it was taken on and wrong about this one.
      *
-     * ops.ts probes `if (B.layerNormBackward)` and falls back to a JavaScript
-     * loop when it is absent, so hiding the method is exactly how the faster arm
-     * is selected -- and setting HELIOS_FUSED_LNB=1 is how the kernel is
-     * measured again, without rebuilding, if the balance ever changes.
+     *     105M, 18 layers, seq 64, batch 8, HELIOS_VIDMEM
+     *       JavaScript fallback   172.1 ms/step   2,975 tok/s   host 91.6
+     *       fused kernel           76.2 ms/step   6,721 tok/s   host 16.1
+     *
+     * Loss 9.6057 on both. The step goes from 47% GPU to 79% GPU, which is the
+     * result rather than the 2.3x: the fallback reads device memory, so it
+     * DRAINS THE QUEUE — 150 times a step — and the host and the device could
+     * never overlap. Removing it deletes both the JavaScript loop over twelve
+     * million elements and every mid-step barrier in front of it.
+     *
+     * What changed since the refutation: tensors moved to VIDEO memory, where
+     * `xData.data` is a PCIe copy and a drain rather than a cached view; and the
+     * three temporaries this arm allocated per layer became one, then none that
+     * outlive the call. Until that last part it exhausted the card at 18 layers,
+     * which is what kept the old measurement looking correct.
+     *
+     * ops.ts probes `if (B.layerNormBackward)`, so hiding the method is how the
+     * arm is selected. HELIOS_FUSED_LNB=0 restores the JavaScript fallback for
+     * a comparison without rebuilding.
      */
-    if (process.env.HELIOS_FUSED_LNB !== "1")
+    if (process.env.HELIOS_FUSED_LNB === "0")
       (this as unknown as Record<string, unknown>).layerNormBackward = undefined;
   }
 
@@ -617,6 +633,32 @@ export class NativeHeliosBackend implements Backend {
     );
   }
 
+  /**
+   * Reshape and HAND OVER OWNERSHIP: the view becomes the only reference.
+   *
+   * `reshape` RETAINS, because a view and its source are two tensors pointing
+   * at one buffer and the tape releases both. That is right when the caller
+   * still holds the source and wrong — silently, permanently — when the source
+   * was this function's own temporary: the caller releases the view, the count
+   * falls from two to one, and the buffer is never freed.
+   *
+   * The corrected allocation census found exactly that, at two sites in this
+   * file, on the DEFAULT path: `live` climbing 18 buffers a step with `pooled`
+   * flat, so the pool carved a fresh slab every step forever. It is invisible
+   * to a leak check that only asks "was release called" — release WAS called,
+   * once, on a buffer that needed two.
+   *
+   * So: any function returning `this.reshape(x, ...)` where x is its own must
+   * use this instead.
+   */
+  private reshapeOwned(t: TensorData, shape: Shape): NativeTensor {
+    const view = this.reshape(t, shape);
+    const src = t as NativeTensor;
+    if (src.buffer && src.buffer !== view.buffer) return view;
+    if (src.buffer && !src.buffer.released) src.buffer.release(this.hl);
+    return view;
+  }
+
   private unary(name: string, opId: number, a: TensorData, ...scalars: number[]): TensorData {
     const da = this.device(a);
     const n = shapeSize(a.shape);
@@ -1079,10 +1121,10 @@ export class NativeHeliosBackend implements Backend {
       const outShape0 = shape.slice(1);
       const res = mean ? this.scale(flat, 1 / axisLen) : flat;
       drop(ones);
-      /* `flat` is a VIEW of `summed`; when the result is not scaled it IS the
-       * result, so only the scaled branch may free it. */
-      if (res !== flat) drop(summed);
-      return this.reshape(res, outShape0.length ? outShape0 : [1]);
+      /* `flat` is a VIEW of `summed` and holds a reference of its own, so the
+       * source must be released whichever branch ran — see reshapeOwned. */
+      drop(summed);
+      return this.reshapeOwned(res, outShape0.length ? outShape0 : [1]);
     }
 
     const plane = this.reshape(a, [outer, axisLen, inner]); /* a view of `a` */
@@ -1090,7 +1132,7 @@ export class NativeHeliosBackend implements Backend {
     const reduced = this.reduceAxis(name, mean, t);
     drop(t);
     const outShape = [...shape.slice(0, k), ...shape.slice(k + 1)];
-    return this.reshape(reduced, outShape.length ? outShape : [1]);
+    return this.reshapeOwned(reduced, outShape.length ? outShape : [1]);
   }
 
   /*
@@ -1103,7 +1145,8 @@ export class NativeHeliosBackend implements Backend {
   private keep(t: TensorData, a: TensorData, axis: number, keepdims: boolean): TensorData {
     if (!keepdims) return t;
     const k = this.axisOf(a.shape, axis);
-    return this.reshape(t, [...a.shape.slice(0, k), 1, ...a.shape.slice(k + 1)]);
+    /* `t` is reduceOverAxis's own result and nobody else holds it. */
+    return this.reshapeOwned(t, [...a.shape.slice(0, k), 1, ...a.shape.slice(k + 1)]);
   }
 
   sum(a: TensorData, axis?: number, keepdims = false): TensorData {
@@ -1271,10 +1314,19 @@ export class NativeHeliosBackend implements Backend {
      * axis is too long for a block; here it is taken because of what it does
      * NOT allocate.
      */
+    /*
+     * EVERY VIEW TAKEN HERE MUST BE GIVEN BACK. `reshape` RETAINS, so a view of
+     * a tensor this function does not own still raises its count, and dropping
+     * the view on the floor leaves the source pinned forever — the caller's own
+     * release then takes the count from two to one and frees nothing.
+     *
+     * That is how the incoming gradient `g` leaked out of this very function at
+     * 11 MiB a step, and `xhat` beside it at 21, while both looked released.
+     */
     const flatG = this.reshape(g, [rows, width]);
     const ones = this.full([1, rows], 1);
     const sumRows = (x: TensorData) =>
-      this.reshape(this.matmul(ones, x), [width]);
+      this.reshapeOwned(this.matmul(ones, x), [width]);
     const db = sumRows(flatG);
     /*
      * g * xhat IN PLACE, over xhat's own buffer.
@@ -1309,6 +1361,8 @@ export class NativeHeliosBackend implements Backend {
      * launch and to any reader until helios_end_step — so returning xhat for
      * diagnosis stays sound.
      */
+    (flatXhat as NativeTensor).buffer.release(this.hl);
+    (flatG as NativeTensor).buffer.release(this.hl);
     (xhat as NativeTensor).buffer.release(this.hl);
     /*
      * xhat rides along beyond the interface's three gradients — but it now
