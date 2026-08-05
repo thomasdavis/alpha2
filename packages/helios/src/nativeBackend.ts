@@ -105,6 +105,28 @@ export class NativeHeliosBackend implements Backend {
   private readonly freed = new WeakSet<object>();
 
   /*
+   * A row of ones per length, kept for the life of the backend.
+   *
+   * `sum(x, 0)` is `ones[1,R] @ x[R,C]` — the only formulation that costs no
+   * temporary larger than its result — and the fused layerNorm backward runs it
+   * twice a layer, so a 105M step was allocating and FILLING thirty-seven of
+   * them: 39 `full` launches, 2.1 ms of GPU, for a vector of 512 floats that is
+   * the same vector every time.
+   *
+   * A cache is the thing that leaked in the Vulkan backend, so the terms are
+   * explicit: keyed by LENGTH, never invalidated because a row of ones does not
+   * depend on anything, never released, and bounded by the number of distinct
+   * row counts a model uses — which is one. Two kilobytes, once.
+   */
+  private readonly onesRows = new Map<number, TensorData>();
+
+  private onesRow(n: number): TensorData {
+    let t = this.onesRows.get(n);
+    if (!t) { t = this.full([1, n], 1); this.onesRows.set(n, t); }
+    return t;
+  }
+
+  /*
    * IS THERE ANYTHING TO WAIT FOR? Tracked here so the answer is free.
    *
    * The barrier lives on every tensor's `data` getter, which is what makes it
@@ -1344,7 +1366,7 @@ export class NativeHeliosBackend implements Backend {
      * 11 MiB a step, and `xhat` beside it at 21, while both looked released.
      */
     const flatG = this.reshape(g, [rows, width]);
-    const ones = this.full([1, rows], 1);
+    const ones = this.onesRow(rows);
     const sumRows = (x: TensorData) =>
       this.reshapeOwned(this.matmul(ones, x), [width]);
     const db = sumRows(flatG);
@@ -1366,7 +1388,6 @@ export class NativeHeliosBackend implements Backend {
     const flatXhat = this.reshape(xhat, [rows, width]);
     this.mulInto(flatXhat, flatXhat, flatG);
     const dw = sumRows(flatXhat);
-    (ones as NativeTensor).buffer.release(this.hl);
     /*
      * xhat AND the product are this method's OWN, and nothing else frees them.
      *
