@@ -4870,10 +4870,45 @@ export class HeliosBackend implements Backend {
     const vk = this.init();
     this._matmulDispatches++;
     const aNdim = a.shape.length, bNdim = b.shape.length;
-    const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
+    const K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
+    /*
+     * A SHARED WEIGHT HAS NO BATCH TO STRIDE, so folding A's leading dimensions
+     * into the row count is the only correct reading.
+     *
+     * [B,T,C] x [C,N] is what every linear layer in the model computes, and this
+     * took A's batch as the DISPATCH batch and sent it to matmul_batched -- a
+     * kernel that strides BOTH operands by the batch index. B has one plane, so
+     * batch 0 read it correctly and every later batch read past its end into
+     * whatever the pool last held. The output came back part uninitialised.
+     *
+     * It was invisible at batch 1, where batchSize is 1 and the plain 2-D path
+     * runs, and that is exactly where it hid: the loss agreed with cpu_ref and
+     * the native backend at batch 1 and broke at batch 2, staying wrong (4.1795
+     * against 4.1904) for every batch above it. Found by comparing operations
+     * against cpu_ref at a batched shape rather than comparing whole models,
+     * which only ever said that something was wrong.
+     *
+     * Rows are contiguous either way -- [B,T,C] is row-major, so B*T rows of C
+     * is the same memory -- which is why flattening is a re-reading of the shape
+     * and not a copy. The native backend has always computed M this way.
+     */
+    const rowsPerBatch = a.shape[aNdim - 2];
+    if (bNdim === 2 && aNdim > 2) {
+      /* Flatten and re-enter, rather than threading a special case through the
+       * five dispatch paths below. Each of them derives its own output shape
+       * from aBatch and M, so a flattened M with a non-empty aBatch would make
+       * the coop paths build [B, B*T, N] -- correct data, wrong shape, and a
+       * second bug chasing the first. Re-entering uses the 2-D path exactly as
+       * it is already tested, and reshape is a view. */
+      const flat = this.reshape(a, [batchSize * rowsPerBatch, K]);
+      const flatOut = this.gpuMatmul(flat, b);
+      return this.reshape(flatOut, [...aBatch, rowsPerBatch, N]);
+    }
+    const M = rowsPerBatch;
+    const outShape = [...aBatch, rowsPerBatch, N];
     const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("nn", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
@@ -4930,10 +4965,10 @@ export class HeliosBackend implements Backend {
         groups: [gX, gY, 1],
         push,
         pushSize: 16,
-        shape: [...aBatch, M, N],
+        shape: outShape,
       });
 
-      return graphLazyTensor(vk, [...aBatch, M, N], region);
+      return graphLazyTensor(vk, outShape, region);
     } else {
       // Batched matmul — dispatch all batches in one GPU submission
       const pipeline = getPipeline(vk, `matmul_batched${suffix}`, 3, 16);
@@ -4951,10 +4986,10 @@ export class HeliosBackend implements Backend {
         groups: [gX, gY, batchSize],
         push,
         pushSize: 16,
-        shape: [...aBatch, M, N],
+        shape: outShape,
       });
 
-      return graphLazyTensor(vk, [...aBatch, M, N], region);
+      return graphLazyTensor(vk, outShape, region);
     }
   }
 

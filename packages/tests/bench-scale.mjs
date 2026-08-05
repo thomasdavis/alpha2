@@ -55,7 +55,13 @@ const kept = new Set();
   for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, d + 1);
 })(params, 0);
 
-const rel = B.releaseGpuTensor ? (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); } : undefined;
+/* NO_RELEASE isolates the harness's own release wiring from the backend under
+ * test. It exists because a loss that disagrees with cpu_ref is far more likely
+ * to be the harness freeing something than the backend computing wrongly, and
+ * accusing the backend without checking would be the same mistake as reading a
+ * benchmark without a warmup. */
+const rel = (!process.env.NO_RELEASE && B.releaseGpuTensor)
+  ? (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); } : undefined;
 
 function step(batch) {
   const n = batch * SEQ;
@@ -82,7 +88,12 @@ function step(batch) {
    * Both backends get the same barrier, and it is the barrier training would
    * need anyway before the optimizer reads a gradient.
    */
-  if (B.syncGpu) B.syncGpu();
+  /* flushAndWait FIRST: it is the only one of the three that names waiting.
+   * With syncGpu the Vulkan backend measured 6.9 ms at batch 4 against 246 ms
+   * at batch 1 -- faster with four times the work, which is not a speedup, it
+   * is a missing barrier. */
+  if (B.flushAndWait) B.flushAndWait();
+  else if (B.syncGpu) B.syncGpu();
   else if (B.flush) B.flush();
   return loss;
 }
