@@ -299,11 +299,26 @@ export class NativeHeliosBackend implements Backend {
 
   // ── creation ─────────────────────────────────────────────────────────────
 
+  /*
+   * FILL ON THE DEVICE. Reading `.floats` to fill on the host is the most
+   * expensive way to write a constant.
+   *
+   * Under video memory a host read hands back a system-memory MIRROR, so
+   * `t.buffer.floats.fill(0)` allocated a staging buffer the size of the
+   * tensor, wrote zeros into it with the CPU, and then copied the whole thing
+   * back across PCIe on commit -- to produce a value the GPU can write for
+   * itself in one launch. A 105M step calls this 185 times, and the backward
+   * pass's gradient accumulators are the big ones: the LM head's is 640 x
+   * 12,288, 31.5 MB, twice.
+   *
+   * PR_EW_FILL does not read its input (see elementwise.c reads_input), so the
+   * output handle stands in for both operands and nothing is loaded. Skipping
+   * commit is correct rather than merely cheaper: the host never wrote, so
+   * there is no dirty mirror to push, and a later host read stages down from
+   * the device as it does for any other kernel result.
+   */
   zeros(shape: Shape, dtype: Dtype = "f32"): TensorData {
-    const t = this.make(shape, dtype);
-    t.buffer.floats.fill(0, 0, shapeSize(shape));
-    t.buffer.commit();
-    return t;
+    return this.full(shape, 0, dtype);
   }
 
   ones(shape: Shape, dtype: Dtype = "f32"): TensorData {
@@ -311,10 +326,15 @@ export class NativeHeliosBackend implements Backend {
   }
 
   full(shape: Shape, value: number, dtype: Dtype = "f32"): TensorData {
-    const t = this.make(shape, dtype);
-    t.buffer.floats.fill(value, 0, shapeSize(shape));
-    t.buffer.commit();
-    return t;
+    const out = this.make(shape, dtype);
+    const n = shapeSize(shape);
+    this.check(
+      this.hl.elementwise(this.hl.op.fill, out.buffer.handle,
+                          out.buffer.handle, out.buffer.handle, n,
+                          value, 0, 0, 0, 0, 0, 1),
+      "full",
+    );
+    return out;
   }
 
   randn(shape: Shape, dtype: Dtype = "f32"): TensorData {
