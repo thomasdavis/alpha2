@@ -134,10 +134,27 @@ const SHAPES = [
  *
  * BH is batch*heads = 24*10 at the gate shape; T and D are 64.
  */
-const BH = Number(process.env.BH ?? 240), T = 64, HD = 64;
+/*
+ * T and HD are overridable so the batched gap can be SWEPT rather than argued
+ * about. The 2.2x between nt and nn shows up at T=HD=64; whether it is caused
+ * by K being 64, by the block count, or by the plane size is a question three
+ * runs answer and no amount of reading the emitter does.
+ */
+const BH = Number(process.env.BH ?? 240);
+const T = Number(process.env.T ?? 64), HD = Number(process.env.HD ?? 64);
 const BATCHED = [
-  ["attn qk    bat", BH, T, HD, T],
-  ["attn av    bat", BH, T, T, HD],
+  ["attn qk    nn ", BH, T, HD, T, "nn"],
+  ["attn av    nn ", BH, T, T, HD, "nn"],
+  /*
+   * THE SAME SHAPES IN THE OTHER TWO LAYOUTS. The model reaches all three: Q@K^T
+   * now goes through matmulTransposed (so the permute is not materialised), and
+   * both backwards go through matmulTransposedA. Only "nn" was measured here,
+   * which is why a 2.5x gap between them sat in the step profile unexplained.
+   */
+  ["attn qk    nt ", BH, T, HD, T, "nt"],
+  ["attn av    nt ", BH, T, T, HD, "nt"],
+  ["attn qk    ta ", BH, T, HD, T, "ta"],
+  ["attn av    ta ", BH, T, T, HD, "ta"],
 ];
 
 const spin = () => B.hl.stats().spinNs;
@@ -273,15 +290,34 @@ function rate(name, M, N, K, transposed) {
  * outside the clock. The dry run is what removed this file's first-case
  * anomaly, and a batched output is bigger than a 2-D one, so it matters more.
  */
-function rateBatched(name, batch, M2, K2, N2) {
+/*
+ * `layout` is "nn", "nt" or "ta" — the three entry points the model actually
+ * calls on batched operands, and measuring only "nn" is what hid the finding
+ * this parameter exists for.
+ *
+ * THE STEP PROFILE SAYS THESE THREE DISAGREE BY 2.5x AT IDENTICAL SHAPES:
+ * matmulTransposed on [24,10,64,64] reads 1.2 TFLOP/s where matmul and
+ * matmulTransposedA on the same operands both read 3.1. Same FLOPs, same bytes,
+ * same block count — so it is not the 4.9 TFLOP/s roofline these shapes have,
+ * and a gap that survives here rather than only in the drained profiler is a
+ * kernel fact rather than a profiling artefact.
+ */
+function rateBatched(name, batch, M2, K2, N2, layout = "nn") {
   const a = B.randn([batch, M2, K2], rng);
-  const b = B.randn([batch, K2, N2], rng);
+  /* B^T wants [N,K] and A^T wants A stored [K,M] — the operand that changes
+   * shape is different in each, so both are built here rather than reshaped. */
+  const b = layout === "nt" ? B.randn([batch, N2, K2], rng)
+                            : B.randn([batch, K2, N2], rng);
+  const aT = layout === "ta" ? B.randn([batch, K2, M2], rng) : null;
+  const mul = layout === "nt" ? () => B.matmulTransposed(a, b)
+            : layout === "ta" ? () => B.matmulTransposedA(aT, b)
+                              : () => B.matmul(a, b);
   const beacon = B.zeros([1]);
   const drain = () => beacon.data[0];
 
   const warmStart = process.hrtime.bigint();
   while (Number(process.hrtime.bigint() - warmStart) / 1e6 < 2500) {
-    const c = B.matmul(a, b);
+    const c = mul();
     drain();
     B.releaseGpuTensor?.(c);
     B.finishStepOps?.();
@@ -289,7 +325,7 @@ function rateBatched(name, batch, M2, K2, N2) {
 
   const ITERS = 30;
   for (let i = 0; i < ITERS; i++) {
-    const c = B.matmul(a, b);
+    const c = mul();
     B.releaseGpuTensor?.(c);
   }
   drain();
@@ -301,7 +337,7 @@ function rateBatched(name, batch, M2, K2, N2) {
   let last = null;
   for (let i = 0; i < ITERS; i++) {
     if (last) B.releaseGpuTensor?.(last);
-    last = B.matmul(a, b);
+    last = mul();
   }
   drain();
   const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -321,6 +357,7 @@ function rateBatched(name, batch, M2, K2, N2) {
     `  ${(secs * 1e6 / ITERS).toFixed(0).padStart(6)} us/call`);
 
   B.releaseGpuTensor?.(a); B.releaseGpuTensor?.(b); B.releaseGpuTensor?.(beacon);
+  if (aT) B.releaseGpuTensor?.(aT);
 }
 
 
@@ -401,4 +438,56 @@ for (const [name, m, n, k] of [
 
 console.log();
 console.log("attention, batched — 240 independent 64x64 problems, not one big one");
-for (const [name, batch, M2, K2, N2] of BATCHED) rateBatched(name, batch, M2, K2, N2);
+/*
+ * ⭐ THE FINDING THIS SECTION EXISTS FOR: BATCHED TRANSPOSED-B IS 2-3x SLOW,
+ * and it is the STAGING REQUEST COUNT, not the roofline and not the profiler.
+ *
+ * Swept, one case per process, L2 evicted, pool pre-filled:
+ *
+ *     b240 m64  n64  k64      nn 3.37   nt 1.48   ta 3.44
+ *     b240 m64  n64  k640     nn 6.02   nt 1.98   ta 6.18
+ *     b240 m128 n128 k64      nn 5.96   nt 2.83   ta 5.96
+ *     b30  m64  n64  k64      nn 1.36   nt 0.79   ta 1.23
+ *     b960 m64  n64  k64      nn 4.17   nt 1.64   ta 4.19
+ *
+ * The gap survives every axis — K, block count, plane size — so it is none of
+ * them. And it does NOT appear un-batched: at m1536 n1920 k640 the same nt path
+ * is the FASTEST of the three (20.91 against nn's 18.88).
+ *
+ * WHY, from the emitted SASS (tools/hmma_dump.c writes all three; nvdisasm
+ * them). The staged B load per warp per k-step:
+ *
+ *   nn   B is [K,N]: 32 lanes take 32 consecutive n at one k
+ *          -> 128 CONTIGUOUS bytes, ONE request, x8 loads  =  8 requests
+ *   nt   B is [N,K]: a thread owns (n, k-pair) with the pair adjacent, so
+ *        8 lanes cover one row's 16 k as 64 bytes and a warp spans FOUR rows
+ *          -> 4 disjoint 64-byte chunks, FOUR requests, x4 wide loads = 16
+ *
+ * Equal bytes, equal sectors, TWICE the requests — and these shapes are
+ * memory-bound (11 FLOP per byte, a 4.9 TFLOP/s roof), so requests are what
+ * they are bound by. Un-batched the same tile is re-read once per row block —
+ * 24 times at m1536 — so it is L2-resident and the request count stops mattering,
+ * which is exactly why the gap is invisible there.
+ *
+ * WHAT IS *NOT* THE CAUSE, each eliminated rather than assumed:
+ *   - instruction count: nt emits FEWER (208 against 218) and fewer loads;
+ *   - the wide LDG.E.64: dropping it would make the requests 32, not 8;
+ *   - shared-memory bank conflicts: nn's staging store is 8-WAY CONFLICTED
+ *     (word index n*8, lanes 0-31 hitting four banks) and nt's is conflict-free,
+ *     so the conflict is on the FAST side;
+ *   - the lane assignment: laying lanes along n instead would read 32 rows at
+ *     one k, which is 32 four-byte requests.
+ *
+ * THE FIX IS THE STAGING TILE'S K WIDTH. A row of the staged tile is MMA_K=16
+ * k, which is 64 bytes, and no thread assignment can make a 64-byte row into a
+ * 128-byte request. Staging 32 k per outer step makes the row 128 bytes and the
+ * request count halve. That is a real change to hmma.c — shared tile size,
+ * staging offsets, LDSM addressing and the k loop — and this kernel has
+ * produced finite, plausible, WRONG matrices five times from exactly that area,
+ * so it is a commit of its own with the C suite green at every step.
+ *
+ * Worth 2.1 ms of a 79 ms step at the gate shape (36 calls, 3.8 -> 1.7 ms).
+ */
+for (const [name, batch, M2, K2, N2, lay] of BATCHED)
+  if (!only || name.replace(/\s+/g, "").startsWith(only))
+    rateBatched(name, batch, M2, K2, N2, lay);
