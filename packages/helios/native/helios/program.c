@@ -94,14 +94,17 @@ static int emit(const helios_key *key, helios_program *p) {
     case HL_MATMUL_T:
       p->count = pr_emit_matmul_kind(p->code, key->arg0, key->arg1, key->arg2,
                                      key->kind == HL_MATMUL_T);
-      p->sharedBytes = pr_matmul_tiled(key->arg0, key->arg1, key->arg2)
+      p->sharedBytes = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)
+                           ? key->arg2 * 4u
+                       : pr_matmul_tiled(key->arg0, key->arg1, key->arg2)
                            ? pr_matmul_tiled_shared(key->arg0, key->arg1, key->arg2)
                            : pr_matmul_shared_bytes(key->arg1, key->arg2);
       /* At most 1024 threads: a thread walks its column in chunks of the block
        * width, so N is no longer bounded by the hardware's block limit. Asking
        * for more was an invalid launch, which faults the channel (0xd) rather
        * than failing the call. */
-      p->blockX = pr_matmul_block(key->arg1);
+      p->blockX = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)
+                      ? 256u : pr_matmul_block(key->arg1);
       p->gridX = key->arg0 / pr_matmul_rows(key->arg0, key->arg1, key->arg2);
       /* The batch rides in the Y grid. It is not part of the KEY: the emitted
        * code is identical for any batch -- the plane strides come from M, N and

@@ -30,6 +30,10 @@ unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
 
 /* Whether a block computes several output rows, how many, and the shared memory
  * that needs. The launch must match all three. */
+/* Whether the column-blocked kernel applies: a narrow block whose threads each
+ * compute several columns. Changes blockX as well as the code. */
+int pr_matmul_colblocked(unsigned M, unsigned N, unsigned K);
+
 int pr_matmul_tiled(unsigned M, unsigned N, unsigned K);
 unsigned pr_matmul_rows(unsigned M, unsigned N, unsigned K);
 unsigned pr_matmul_tiled_shared(unsigned M, unsigned N, unsigned K);

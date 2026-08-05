@@ -164,6 +164,16 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * value and output address per row live (R32..R39) — 40 exactly, and a
    * declaration with no slack above the highest register used is what raises
    * GR_EXCEPTION. Measured safe on its own: 51/51, loss 4.190377. */
+  /*
+ * 56, for the column-blocked matmul's four accumulators, four B values, four
+ * store values and four output address pairs (up to R51).
+ *
+ * This was the number that made ROW tiling lose — but that kernel runs 1024
+ * threads a block, where 56 registers is 57,344 and one block an SM. The
+ * column-blocked one runs 256, where the same 56 is 14,336 and four blocks fit.
+ * The declaration is not what costs occupancy; the declaration times the block
+ * size is.
+ */
   qmd_set(qmd, REGISTER_COUNT_V, 48);
   /*
    * ONE BARRIER, always.

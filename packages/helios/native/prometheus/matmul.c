@@ -111,6 +111,13 @@ enum {
    * mutually exclusive by construction. */
   R_UA0 = 32, R_UA1 = 33, R_UA2 = 34, R_UA3 = 35,
   R_UB0 = 36, R_UB1 = 37, R_UB2 = 38, R_UB3 = 39,
+  /* Column-blocked kernel: four accumulators, four B values, four store values
+   * and four output address pairs — 24 registers, but on a 256-thread block
+   * rather than a 1024-thread one, which is the whole point. */
+  R_CACC0 = 32, R_CACC1 = 33, R_CACC2 = 34, R_CACC3 = 35,
+  R_CB0 = 36, R_CB1 = 37, R_CB2 = 38, R_CB3 = 39,
+  R_CSV0 = 40, R_CSV1 = 41, R_CSV2 = 42, R_CSV3 = 43,
+  R_CO0 = 44, R_CO1 = 46, R_CO2 = 48, R_CO3 = 50, /* pairs */
   R_ACC0 = 32, R_ACC1 = 33, R_ACC2 = 34, R_ACC3 = 35,
   R_AV0 = 36, R_AV1 = 37, R_AV2 = 38, R_AV3 = 39,
   /* Numbered so that the ROWS actually used stay low: at two rows the highest
@@ -140,6 +147,20 @@ enum {
 #define P_DONE 0   /* set when the loop has run its course */
 #define P_TILE 1   /* set when a thread is past the end of a short stage round */
 #define P_COL 2    /* clear when this thread's column is inside N */
+/*
+ * ONE PREDICATE PER COLUMN in the column-blocked kernel.
+ *
+ * Its four columns are strided by the thread count, so col_0 can be inside N
+ * while col_3 is past it — a single guard covers the first and lets the other
+ * three write out of range. It showed up as exactly the shapes where N is not a
+ * multiple of the chunk span (1920, 1728, 1025 wrong; 12288 and everything
+ * below the span right), which is the signature of a guard that is computed but
+ * not per lane.
+ */
+#define P_COL0 2
+#define P_COL1 4
+#define P_COL2 5
+#define P_COL3 6
 #define P_CHUNK 3  /* set when the chunk loop has run its course */
 #define INSTR_BYTES 16
 
@@ -158,6 +179,35 @@ enum {
  * does not arise in the shapes the model uses.
  */
 #define MATMUL_TILE_MAX_K 1024u
+
+/*
+ * OFF, and the reason is the one that explains the other two refutations.
+ *
+ *     105M seq 64, GPU ms/step (drained per op, 4 runs)
+ *       untiled, unrolled by 4    264  286  267  368    matmul 452 us/call
+ *       column-blocked, 256 thr   315  416  341  307    matmul 558 us/call
+ *
+ * It has strictly better arithmetic — 1.25 loads per FFMA against 2.0, and 3.5
+ * instructions per FFMA against 4.25 — and it is slower, because at this shape
+ * M IS 64. A matmul launches gridX = M blocks, so 64 blocks of 1024 threads is
+ * 65,536 of this card's ~70,656 thread slots, and 64 blocks of 256 is 16,384 —
+ * 23% of the machine.
+ *
+ * THAT IS WHY EVERY STRUCTURE THAT REDUCED THREAD COUNT LOST. Row tiling cut
+ * the block count, column blocking cut the block width, and both were measured
+ * against a shape that cannot fill the GPU either way. Unrolling won because it
+ * adds work per thread without touching parallelism.
+ *
+ * So the GEMM is PARALLELISM-STARVED at batch 1, seq 64, and that is a property
+ * of the shape rather than of the kernel: M = batch * seq. The way to a
+ * measurable GEMM is a larger M, which needs the step's memory bounded so batch
+ * and sequence can grow — the leak is not only about fitting, it gates having
+ * enough work to optimise against.
+ *
+ * Kept and unwired, correct at every model shape. It should be re-measured, not
+ * rewritten, the first time a step runs at a batch that fills the card.
+ */
+#define COLBLOCK_MATMUL 0
 
 /*
  * OFF, and REFUTED — the commit that introduced it claimed 12% and that was one
@@ -491,8 +541,151 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   return n;
 }
 
+
+/*
+ * COLUMN BLOCKING on a NARROW block.
+ *
+ * The K-unroll left the GEMM issue-bound at two loads per FFMA, and the only
+ * way past that ratio is for a loaded value to feed more than one FFMA. Row
+ * tiling does that and was refuted twice, most recently because it needs more
+ * registers and every register is multiplied by 1024 lanes — the block size,
+ * not the instruction count, is what priced it out.
+ *
+ * So shrink the block. 256 threads each computing FOUR columns covers the same
+ * 1024 columns a chunk did before, and:
+ *
+ *   - one LDS of A[k] now feeds four FFMAs instead of one (1.25 loads per FFMA
+ *     against 2.0), because the four columns share a row of A;
+ *   - the four B loads share one computed address and differ by an immediate,
+ *     which tools/shared_offset_probe.c established is a byte offset;
+ *   - and 24 extra registers cost 24*256 rather than 24*1024, so occupancy goes
+ *     UP rather than down: ~56 registers on 256 threads is 14,336 a block
+ *     against 49,152 for 48 on 1024.
+ *
+ * Columns are STRIDED by the thread count, not blocked per thread, so adjacent
+ * threads still read adjacent B addresses and the loads stay coalesced.
+ */
+#define MATMUL_COL_THREADS 256u
+#define MATMUL_COL_PER_THREAD 4u
+
+int pr_matmul_colblocked(unsigned M, unsigned N, unsigned K) {
+  const unsigned span = MATMUL_COL_THREADS * MATMUL_COL_PER_THREAD;
+  return COLBLOCK_MATMUL && N >= span && K <= MATMUL_TILE_MAX_K && K >= 1 &&
+         ((NvU64)K * 4u <= 48u * 1024u) &&
+         ((K + MATMUL_COL_THREADS - 1u) / MATMUL_COL_THREADS) * 7u + 90u
+             < PR_MAX_INSTRUCTIONS;
+}
+
+static unsigned emit_matmul_cols(hp_word *p, unsigned M, unsigned N, unsigned K,
+                                 int transposedB) {
+  unsigned n = 0;
+  const unsigned T = MATMUL_COL_THREADS, CPT = MATMUL_COL_PER_THREAD;
+  const unsigned span = T * CPT;
+  const unsigned chunks = (N + span - 1u) / span;
+  const int guard = chunks * span > N;
+  const unsigned ACC[4] = {R_CACC0, R_CACC1, R_CACC2, R_CACC3};
+  const unsigned BV[4] = {R_CB0, R_CB1, R_CB2, R_CB3};
+  const unsigned SV[4] = {R_CSV0, R_CSV1, R_CSV2, R_CSV3};
+  const unsigned OA[4] = {R_CO0, R_CO1, R_CO2, R_CO3};
+  const unsigned PC[4] = {P_COL0, P_COL1, P_COL2, P_COL3};
+
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
+  p[n++] = hp_imad_imm(R_AROW, R_ROW, K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_AROW, R_AROW, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_BPLANE, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
+
+  /* Stage A's row: T threads, ceil(K/T) rounds. */
+  const unsigned rounds = (K + T - 1u) / T;
+  for (unsigned t = 0; t < rounds; t++) {
+    const unsigned base = t * T;
+    const int partial = base + T > K;
+    if (partial)
+      p[n++] = hp_isetp_gt_imm(P_TILE, R_TID, (K - base) - 1u, hp_ctrl_safe());
+    const unsigned rIdx = (t & 1u) ? R_STG_IDX_B : R_STG_IDX_A;
+    const unsigned rAddr = (t & 1u) ? R_STG_ADDR_B : R_STG_ADDR_A;
+    const unsigned rVal = (t & 1u) ? R_STG_VAL_B : R_STG_VAL_A;
+    p[n++] = hp_iadd3_imm(rIdx, R_TID, base, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AROW, rIdx, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(rAddr, R_LOAD_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    hp_word load = hp_ldg(rVal, rAddr, 0, hp_ctrl_setbar(BAR_LOAD));
+    hp_word store = hp_sts(rIdx, rVal, 0, hp_ctrl_wait(BAR_LOAD));
+    if (partial) { load = hp_predicated(load, P_TILE, 1);
+                   store = hp_predicated(store, P_TILE, 1); }
+    p[n++] = load;
+    p[n++] = store;
+  }
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  const unsigned chunk_top = n;
+  /* col_0 = chunk*span + tid; col_j = col_0 + j*T. */
+  p[n++] = hp_imad_imm(R_COL, R_CHUNK, span, R_TID, hp_ctrl_safe());
+  if (guard)
+    for (unsigned j = 0; j < CPT; j++) {
+      p[n++] = hp_iadd3_imm(R_TMP, R_COL, (int)(j * T), hp_ctrl_safe());
+      p[n++] = hp_isetp_gt_imm(PC[j], R_TMP, N - 1, hp_ctrl_safe());
+    }
+  for (unsigned j = 0; j < CPT; j++)
+    p[n++] = hp_mov_imm(ACC[j], 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+  if (transposedB)
+    p[n++] = hp_imad_imm(R_BIDX, R_COL, K, R_BPLANE, hp_ctrl_safe());
+  else
+    p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
+
+  const unsigned loop_top = n;
+  /* ONE A value, four FFMAs — the reuse this kernel exists for. */
+  p[n++] = hp_lds(R_AVAL, R_K, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  for (unsigned j = 0; j < CPT; j++) {
+    const unsigned off = transposedB ? j * T * K * 4u : j * T * 4u;
+    hp_word bl = hp_ldg(BV[j], R_BADDR, off, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard ? hp_predicated(bl, PC[j], 1) : bl;
+  }
+  for (unsigned j = 0; j < CPT; j++)
+    p[n++] = hp_ffma(ACC[j], R_AVAL, BV[j], ACC[j],
+                     j == 0 ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+
+  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, transposedB ? 1 : (int)N, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_K, R_K, 1, hp_ctrl_safe());
+  p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1, hp_ctrl_safe());
+  const int back = -(int)((n + 1 - loop_top) * INSTR_BYTES);
+  p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
+  n++;
+
+  for (unsigned j = 0; j < CPT; j++) {
+    p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(R_OIDX, R_OIDX, (int)(j * T), hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * N, HP_RZ, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_OIDX, R_OIDX, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(OA[j], R_OIDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(SV[j], ACC[j], 0, hp_ctrl_safe());
+    hp_word st = hp_stg(OA[j], SV[j], 0, hp_ctrl_safe());
+    p[n++] = guard ? hp_predicated(st, PC[j], 1) : st;
+  }
+
+  if (chunks > 1) {
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int cb = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(cb, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
 unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
                              int transposedB) {
+  if (pr_matmul_colblocked(M, N, K))
+    return emit_matmul_cols(p, M, N, K, transposedB);
   if (pr_matmul_tiled(M, N, K))
     return emit_matmul_tiled(p, M, N, K, transposedB);
   unsigned n = 0;
