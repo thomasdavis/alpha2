@@ -52,11 +52,16 @@ int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);
 
 /* out[M,N] = a[M,K] * b[K,N]. */
+/* out[b,M,N] = a[b,M,K] * b[b,K,N], the plane from the block's Y index. A batch
+ * of 1 is the plain single-matrix case, same code. */
 int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
-              helios_tensor b, unsigned M, unsigned N, unsigned K);
+              helios_tensor b, unsigned M, unsigned N, unsigned K,
+              unsigned batch);
 
+/* Transposes `batch` planes of rows x cols in ONE launch, the plane taken from
+ * the block's Y index. */
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
-                 unsigned rows, unsigned cols);
+                 unsigned rows, unsigned cols, unsigned batch);
 
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
                  helios_tensor ids, unsigned tokens, unsigned dim);

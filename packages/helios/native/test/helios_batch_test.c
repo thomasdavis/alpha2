@@ -73,9 +73,9 @@ static void test_batched_launch(void) {
 
   const NvU64 c1[3] = {b.gpuAddr, a.gpuAddr, a.gpuAddr};
   const NvU64 c2[3] = {b.gpuAddr, b.gpuAddr, b.gpuAddr};
-  HT_TRUE(helios_enqueue(&ctx, cp->code, cp->count, cp->gridX, cp->blockX,
+  HT_TRUE(helios_enqueue(&ctx, cp->code, cp->count, cp->gridX, 1, cp->blockX,
                          cp->sharedBytes, c1, 3, NULL, 0) == 0);
-  HT_TRUE(helios_enqueue(&ctx, dp->code, dp->count, dp->gridX, dp->blockX,
+  HT_TRUE(helios_enqueue(&ctx, dp->code, dp->count, dp->gridX, 1, dp->blockX,
                          dp->sharedBytes, c2, 3, NULL, 0) == 0);
   if (helios_flush(&ctx) != 0)
     HT_FAIL("flush failed, channel error 0x%x", ctx.lastError);
@@ -149,7 +149,7 @@ static void test_batch_depth(void) {
     const NvU64 bufs[3] = {buf.gpuAddr, buf.gpuAddr, buf.gpuAddr};
     int queued = 1;
     for (unsigned i = 0; i < depth && queued; i++)
-      queued = helios_enqueue(&ctx, p->code, p->count, p->gridX, p->blockX,
+      queued = helios_enqueue(&ctx, p->code, p->count, p->gridX, 1, p->blockX,
                               p->sharedBytes, bufs, 3, NULL, 0) == 0;
     if (!queued || helios_flush(&ctx) != 0) {
       printf("\n      depth %u: flush failed, channel error 0x%x", depth,

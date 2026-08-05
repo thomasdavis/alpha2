@@ -66,6 +66,10 @@ typedef struct {
   hp_word code[PR_MAX_INSTRUCTIONS];
   unsigned count;
   NvU32 blockX, gridX, sharedBytes;
+  /* A second grid dimension, for kernels that take a batch index from ctaid.y.
+   * Zero means one -- most kernels are one-dimensional and should not have to
+   * say so. */
+  NvU32 gridY;
   int used;
 } helios_program;
 

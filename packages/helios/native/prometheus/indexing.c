@@ -30,6 +30,8 @@ enum {
   R_ADDR = 6,  /* R6:R7 */
   R_VALUE = 10,
   R_TABLE_ROW = 11,
+  R_BATCH = 12,
+  R_PLANE = 13,
   R_OUT = 14, /* R14:R15 */
 };
 
@@ -49,12 +51,28 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
   unsigned n = 0;
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
 
-  /* Source is row-major over cols; destination is row-major over rows, which
-   * is the same thing with the two dimensions exchanged. */
-  p[n++] = hp_imad_imm(R_SRC_IDX, R_ROW, cols, R_COL, hp_ctrl_wait(BAR_ID));
+  /*
+   * BATCHED, by taking the plane from the block's Y index.
+   *
+   * This transposed one matrix and the caller looped, copying each plane
+   * through the host and DRAINING the launch queue to do it -- so a
+   * four-head attention transpose was four round trips, and after batching
+   * went in those drains were most of what was left. One launch over a
+   * two-dimensional grid removes the loop and the drains together.
+   *
+   * Source is row-major over cols; destination is row-major over rows, which
+   * is the same thing with the two dimensions exchanged. Both are offset by
+   * the plane, which is the same size in either layout.
+   */
+  p[n++] = hp_imad_imm(R_PLANE, R_BATCH, rows * cols, HP_RZ,
+                       hp_ctrl_wait(BAR_ID));
+  p[n++] = hp_imad_imm(R_SRC_IDX, R_ROW, cols, R_COL, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_SRC_IDX, R_SRC_IDX, R_PLANE, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_DST_IDX, R_COL, rows, R_ROW, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_DST_IDX, R_DST_IDX, R_PLANE, hp_ctrl_safe());
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());

@@ -119,7 +119,7 @@ static NvU64 now_ns(void) {
 
 
 int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
-                   NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                   NvU32 gridX, NvU32 gridY, NvU32 blockX, NvU32 sharedBytes,
                    const NvU64 *buffers, unsigned nbuffers,
                    const NvU32 *scalars, unsigned nscalars) {
   if (count * sizeof(hp_word) > PROGRAM_BYTES) return -1;
@@ -168,7 +168,8 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   memcpy(slotCode, program, count * sizeof(hp_word));
 
   NvU32 qmd[HERMES_QMD_DWORDS];
-  hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, 1, 1, blockX, 1, 1, sharedBytes,
+  hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, gridY ? gridY : 1, 1, blockX, 1, 1,
+                   sharedBytes,
                    count * (NvU32)sizeof(hp_word));
   memcpy((NvU8 *)ctx->qmd.hostPtr + (size_t)slot * HERMES_QMD_BYTES, qmd,
          HERMES_QMD_BYTES);
@@ -232,11 +233,11 @@ int helios_flush(helios_context *ctx) {
 /* The synchronous form, kept for callers that want one launch and its result:
  * queue it and drain immediately. */
 int helios_launch(helios_context *ctx, const hp_word *program, unsigned count,
-                  NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                  NvU32 gridX, NvU32 gridY, NvU32 blockX, NvU32 sharedBytes,
                   const NvU64 *buffers, unsigned nbuffers, const NvU32 *scalars,
                   unsigned nscalars) {
-  if (helios_enqueue(ctx, program, count, gridX, blockX, sharedBytes, buffers,
-                     nbuffers, scalars, nscalars) != 0)
+  if (helios_enqueue(ctx, program, count, gridX, gridY, blockX, sharedBytes,
+                     buffers, nbuffers, scalars, nscalars) != 0)
     return -1;
   return helios_flush(ctx);
 }

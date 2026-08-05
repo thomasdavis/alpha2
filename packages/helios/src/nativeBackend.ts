@@ -359,24 +359,24 @@ export class NativeHeliosBackend implements Backend {
      * sequence, so batch i is finished before batch i+1 starts.
      */
     if (b.shape.length > 2) {
+      /*
+       * ONE launch for the whole batch, the plane from the block's Y index.
+       *
+       * This looped batch elements through the HOST -- copy both operands in,
+       * launch, drain the queue, copy the result out -- so attention's four
+       * heads were four round trips per matmul. The drains were the cost, not
+       * the copies: with launches batched, a drain per operation is what stops
+       * anything from queueing.
+       */
       const M0 = a.shape[a.shape.length - 2] ?? 1;
       const batch = shapeSize(b.shape) / (K * N);
       const da = this.device(a), db = this.device(b);
       const out = this.make([...a.shape.slice(0, -1), N], "f32");
-      this.sync();
-      const la = this.make([M0, K], "f32"), lb = this.make([K, N], "f32");
-      const lo = this.make([M0, N], "f32");
-      for (let i = 0; i < batch; i++) {
-        la.buffer.floats.set(da.buffer.floats.subarray(i * M0 * K, (i + 1) * M0 * K));
-        lb.buffer.floats.set(db.buffer.floats.subarray(i * K * N, (i + 1) * K * N));
-        this.check(this.hl.matmul(lo.buffer.handle, la.buffer.handle,
-                                  lb.buffer.handle, M0, N, K), "matmul");
-        this.sync();
-        out.buffer.floats.set(lo.buffer.floats.subarray(0, M0 * N), i * M0 * N);
-      }
-      la.buffer.release(this.hl);
-      lb.buffer.release(this.hl);
-      lo.buffer.release(this.hl);
+      this.check(
+        this.hl.matmul(out.buffer.handle, da.buffer.handle, db.buffer.handle,
+                       M0, N, K, batch),
+        "matmul",
+      );
       return out;
     }
 
@@ -389,7 +389,7 @@ export class NativeHeliosBackend implements Backend {
     const outShape = [...a.shape.slice(0, -1), N];
     const out = this.make(outShape, "f32");
     this.check(this.hl.matmul(out.buffer.handle, da.buffer.handle,
-                              db.buffer.handle, M, N, K), "matmul");
+                              db.buffer.handle, M, N, K, 1), "matmul");
     return out;
   }
 
@@ -611,25 +611,18 @@ export class NativeHeliosBackend implements Backend {
     const outShape = [...a.shape.slice(0, -2), cols, rows];
     const out = this.make(outShape, "f32");
 
-    if (batch === 1) {
-      this.check(this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols),
-                 "transpose");
-      return out;
-    }
-
-    this.sync();
-    const one = this.make([rows, cols], "f32");
-    const oneOut = this.make([cols, rows], "f32");
-    const plane = rows * cols;
-    for (let bI = 0; bI < batch; bI++) {
-      one.buffer.floats.set(da.buffer.floats.subarray(bI * plane, (bI + 1) * plane));
-      this.check(this.hl.transpose(oneOut.buffer.handle, one.buffer.handle, rows, cols),
-                 "transpose");
-      this.sync();
-      out.buffer.floats.set(oneOut.buffer.floats.subarray(0, plane), bI * plane);
-    }
-    one.buffer.release(this.hl);
-    oneOut.buffer.release(this.hl);
+    /*
+     * ONE launch for the whole batch, the plane taken from the block's Y index.
+     *
+     * This looped planes through the HOST -- copy in, launch, drain the queue,
+     * copy out -- so a four-head attention transpose was four round trips. With
+     * batching on, those drains were most of what remained: queueing launches
+     * between per-operation drains saves nothing.
+     */
+    this.check(
+      this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols, batch),
+      "transpose",
+    );
     return out;
   }
 

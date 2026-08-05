@@ -66,17 +66,19 @@ static napi_value js_normalize(napi_env env, napi_callback_info info) {
                                      U32(4), F32(5)));
 }
 
-/* (out, a, b, M, N, K) */
+/* (out, a, b, M, N, K, batch) */
 static napi_value js_matmul(napi_env env, napi_callback_info info) {
   CTX;
   return hl_result(
-      env, hl_matmul(ctx, U32(0), U32(1), U32(2), U32(3), U32(4), U32(5)));
+      env, hl_matmul(ctx, U32(0), U32(1), U32(2), U32(3), U32(4), U32(5),
+                     U32(6)));
 }
 
-/* (out, a, rows, cols) */
+/* (out, a, rows, cols, batch) */
 static napi_value js_transpose(napi_env env, napi_callback_info info) {
   CTX;
-  return hl_result(env, hl_transpose(ctx, U32(0), U32(1), U32(2), U32(3)));
+  return hl_result(
+      env, hl_transpose(ctx, U32(0), U32(1), U32(2), U32(3), U32(4)));
 }
 
 /* (out, table, ids, tokens, dim) */

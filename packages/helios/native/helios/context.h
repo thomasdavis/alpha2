@@ -98,7 +98,7 @@ void helios_context_close(helios_context *ctx);
  * host calls helios_flush first.
  */
 int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
-                   NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                   NvU32 gridX, NvU32 gridY, NvU32 blockX, NvU32 sharedBytes,
                    const NvU64 *buffers, unsigned nbuffers,
                    const NvU32 *scalars, unsigned nscalars);
 
@@ -115,7 +115,7 @@ int helios_flush(helios_context *ctx);
  * making once there is a measurement saying it matters.
  */
 int helios_launch(helios_context *ctx, const hp_word *program, unsigned count,
-                  NvU32 gridX, NvU32 blockX, NvU32 sharedBytes,
+                  NvU32 gridX, NvU32 gridY, NvU32 blockX, NvU32 sharedBytes,
                   const NvU64 *buffers, unsigned nbuffers, const NvU32 *scalars,
                   unsigned nscalars);
 

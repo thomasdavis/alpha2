@@ -43,6 +43,8 @@ enum {
   R_ACC = 12,
   R_OIDX = 13,
   R_OUT = 14, /* R14:R15 */
+  R_BATCH = 16,
+  R_TMP = 17,
 };
 
 #define BAR_ID 0   /* the two S2Rs */
@@ -52,10 +54,10 @@ enum {
 
 unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   unsigned n = 0;
-  (void)M; /* the grid supplies it; no instruction here needs the value */
 
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_ACC, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
@@ -66,6 +68,23 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
    * times to get the same answer. */
   p[n++] = hp_imad_imm(R_AIDX, R_ROW, K, HP_RZ, hp_ctrl_wait(BAR_ID));
   p[n++] = hp_iadd3_imm(R_BIDX, R_COL, 0, hp_ctrl_safe());
+
+  /*
+   * BATCHED, by taking the plane from the block's Y index.
+   *
+   * Every operand gets its own plane stride because they differ: A is M x K,
+   * B is K x N, and C is M x N. Launched with gridY = 1 the offsets are all
+   * zero and this is exactly the single-matrix kernel, which is why one
+   * emitter serves both and there is no second program to keep in step.
+   *
+   * It replaces a host loop that copied each plane in, launched, DRAINED the
+   * queue and copied out -- four round trips for four attention heads, and
+   * after batching went in those drains were most of what remained.
+   */
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_AIDX, R_AIDX, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_BIDX, R_BIDX, R_TMP, hp_ctrl_safe());
 
   const unsigned loop_top = n;
 
@@ -110,6 +129,8 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
 
   /* C[row][col] is element row*N + col. */
   p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * N, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_OIDX, R_OIDX, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_OIDX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());

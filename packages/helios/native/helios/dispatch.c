@@ -66,7 +66,7 @@ static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
    * healthy step shows many enqueues per flush, and the operation after the
    * last flush is the one that did not complete.
    */
-  return helios_enqueue(ctx, p->code, p->count, p->gridX, p->blockX,
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, p->gridY, p->blockX,
                         p->sharedBytes, addrs, nts, scalars, nscalars);
 }
 
@@ -162,15 +162,24 @@ int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
 }
 
 int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
-              helios_tensor b, unsigned M, unsigned N, unsigned K) {
+              helios_tensor b, unsigned M, unsigned N, unsigned K,
+              unsigned batch) {
   const helios_key k = {HL_MATMUL, M, N, K};
   const helios_tensor ts[3] = {out, a, b};
-  return run(ctx, k, ts, 3, NULL, 0);
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, batch ? batch : 1,
+                        p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
 }
 
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
-                 unsigned rows, unsigned cols) {
-  const helios_key k = {HL_TRANSPOSE, rows, cols, 0};
+                 unsigned rows, unsigned cols, unsigned batch) {
+  const helios_key k = {HL_TRANSPOSE, rows, cols, batch};
   const helios_tensor ts[2] = {out, a};
   return run(ctx, k, ts, 2, NULL, 0);
 }

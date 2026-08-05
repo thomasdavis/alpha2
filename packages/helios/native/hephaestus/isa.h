@@ -144,7 +144,10 @@
 #define HP_SR_TID_Y 0x22  /* inferred from stride — verify before relying on it */
 #define HP_SR_TID_Z 0x23  /* inferred */
 #define HP_SR_CTAID_X 0x25 /* captured */
-#define HP_SR_CTAID_Y 0x26 /* inferred */
+/* Verified against ptxas: it reads these with S2UR rather than S2R -- into a
+ * uniform register, since a block index is uniform across the block -- and the
+ * SR selector is the same field either way: 0x2500 for X, 0x2600 for Y. */
+#define HP_SR_CTAID_Y 0x26
 #define HP_SR_CTAID_Z 0x27 /* inferred */
 
 

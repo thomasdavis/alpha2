@@ -89,12 +89,19 @@ static int emit(const helios_key *key, helios_program *p) {
       p->count = pr_emit_matmul(p->code, key->arg0, key->arg1, key->arg2);
       p->blockX = key->arg1; /* one thread per output column */
       p->gridX = key->arg0;  /* one block per output row */
+      /* The batch rides in the Y grid. It is not part of the KEY: the emitted
+       * code is identical for any batch -- the plane strides come from M, N and
+       * K -- so keying on it would generate one program per batch size for no
+       * difference. */
       return 0;
 
     case HL_TRANSPOSE:
+      /* arg2 is the batch: one block per (row, plane), so the whole batch is
+       * one launch instead of one per plane with a host copy between. */
       p->count = pr_emit_transpose(p->code, key->arg0, key->arg1);
       p->blockX = key->arg1;
       p->gridX = key->arg0;
+      p->gridY = key->arg2 ? key->arg2 : 1;
       return 0;
 
     case HL_EMBEDDING:

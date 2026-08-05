@@ -84,7 +84,7 @@ static int two_level_sum(helios_context *ctx, gaia_buffer *in,
   const helios_program *pp = helios_program_get(pk);
   if (!pp) return -1;
   const NvU64 bufs1[2] = {partial->gpuAddr, in->gpuAddr};
-  if (helios_launch(ctx, pp->code, pp->count, pp->gridX, pp->blockX,
+  if (helios_launch(ctx, pp->code, pp->count, pp->gridX, 1, pp->blockX,
                     pp->sharedBytes, bufs1, 2, NULL, 0) != 0)
     return -1;
 
@@ -104,7 +104,7 @@ static int two_level_sum(helios_context *ctx, gaia_buffer *in,
   const helios_program *fp = helios_program_get(fk);
   if (!fp) return -1;
   const NvU64 bufs2[2] = {out->gpuAddr, partial->gpuAddr};
-  return helios_launch(ctx, fp->code, fp->count, fp->gridX, fp->blockX,
+  return helios_launch(ctx, fp->code, fp->count, fp->gridX, 1, fp->blockX,
                        fp->sharedBytes, bufs2, 2, NULL, 0);
 }
 
