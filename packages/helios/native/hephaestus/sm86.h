@@ -79,6 +79,27 @@ hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
                hp_control c);
 
 /*
+ * LDSM.16.M88[T].{,.2,.4} — ldmatrix: one instruction loads a whole tensor-core
+ * fragment out of shared memory.
+ *
+ * `count` is 1, 2 or 4 and is how many 8x8 matrices of f16 are fetched, which
+ * is also how many CONSECUTIVE registers `dst` names. Every lane supplies an
+ * address in `addrReg`, and the lanes are read in groups of eight: lanes 0-7
+ * give the eight row addresses of the first matrix, 8-15 the second, and so on.
+ * A lane's own result is not what it addressed — the instruction gathers across
+ * the warp and hands each lane the pieces the mma layout wants it to hold.
+ *
+ * `trans` selects the .MT88 form, which transposes each 8x8 on the way in.
+ *
+ * WHY IT MATTERS HERE: an m16n8k16 A fragment is four registers and costs four
+ * LDS; this makes it one instruction. The staged GEMM issues sixteen shared
+ * loads per k-step to feed eight tensor instructions, and that ratio — not the
+ * tile barriers, which were measured at 3-5% — is what the tensor pipe waits on.
+ */
+hp_word hp_ldsm(unsigned dst, unsigned addrReg, unsigned count, int trans,
+                hp_control c);
+
+/*
  * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.
  * Reference: ISETP.GT.U32.AND P0, PT, R7, 0x1f, PT
  *   0x0000001f0700780c 0x040fe40003f04070

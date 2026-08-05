@@ -74,6 +74,35 @@ hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
   return w;
 }
 
+/*
+ * Captured on the box, one kernel per variant so the SASS could not interleave
+ * them (tools/ldsm_capture.cu):
+ *
+ *   LDSM.16.M88.4  R4, [R0]   0x000000000004783b / 0x000e240000000200
+ *   LDSM.16.M88.2  R4, [R0]   0x000000000004783b / 0x000e240000000100
+ *   LDSM.16.M88    R5, [R0]   0x000000000005783b / 0x000e280000000000
+ *   LDSM.16.MT88.4 R4, [R0]   0x000000000004783b / 0x000e240000004200
+ *
+ * Two fields fall straight out of the four: a two-bit COUNT at high bits 9:8
+ * taking 0, 1, 2 for x1, x2, x4 — note it is an index, not the count — and
+ * TRANS as a single bit at high 14. The low word is the ordinary shape every
+ * other instruction has, opcode with PT in the predicate slot, destination at
+ * 16 and the address register at 24, which is why the x1 capture differs from
+ * the x4 only in its destination.
+ *
+ * Unlike LDG and LDS there is no memory descriptor and no 0x48 addressing mode:
+ * the high word is zero apart from these two fields and the scheduling control.
+ */
+hp_word hp_ldsm(unsigned dst, unsigned addrReg, unsigned count, int trans,
+                hp_control c) {
+  hp_word w = hp_base(HP_OP_LDSM, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, addrReg);
+  hp_put(&w, 64 + 8, 2, count == 4u ? 2u : count == 2u ? 1u : 0u);
+  if (trans) hp_put(&w, 64 + 14, 1, 1);
+  return w;
+}
+
 hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
                hp_control c) {
   hp_word w = hp_base(HP_OP_STS, c);
