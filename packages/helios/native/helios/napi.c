@@ -123,6 +123,34 @@ static napi_value js_alloc(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/*
+ * Allocate in memory the host can read directly — the staging pool.
+ *
+ * Separate from js_alloc because under HELIOS_VIDMEM the two answer from
+ * different memory, and which one a caller wants is not something the allocator
+ * can infer from a size. A tensor kernels work on wants video memory; a buffer
+ * JavaScript is about to walk wants system memory and a mapping.
+ */
+static napi_value js_alloc_host(napi_env env, napi_callback_info info) {
+  napi_value out;
+  if (!g_open) {
+    napi_throw_error(env, NULL, "helios: alloc before open");
+    napi_get_undefined(env, &out);
+    return out;
+  }
+  const NvU32 bytes = hl_arg_u32(env, info, 0);
+  const helios_tensor t = helios_tensor_alloc_host(&g_ctx, bytes);
+  napi_create_uint32(env, t, &out);
+  return out;
+}
+
+/* Whether `view` will return a buffer for this handle, asked before asking. */
+static napi_value js_host_visible(napi_env env, napi_callback_info info) {
+  napi_value out;
+  napi_get_boolean(env, helios_tensor_host_visible(hl_arg_u32(env, info, 0)), &out);
+  return out;
+}
+
 static napi_value js_free(napi_env env, napi_callback_info info) {
   helios_tensor_free(hl_arg_u32(env, info, 0));
   napi_value out;
@@ -246,6 +274,8 @@ static napi_value init(napi_env env, napi_value exports) {
   hl_export(env, exports, "open", js_open);
   hl_export(env, exports, "close", js_close);
   hl_export(env, exports, "alloc", js_alloc);
+  hl_export(env, exports, "allocHost", js_alloc_host);
+  hl_export(env, exports, "hostVisible", js_host_visible);
   hl_export(env, exports, "free", js_free);
   hl_export(env, exports, "view", js_view);
   hl_export(env, exports, "stats", js_stats);

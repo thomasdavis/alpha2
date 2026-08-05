@@ -37,6 +37,7 @@
 #define HELIOS_HEPHAESTUS_CONTROL_H
 
 #include <stdint.h>
+#include <stdlib.h>
 
 typedef struct {
   unsigned stall;      /* 0-15 */
@@ -83,6 +84,25 @@ typedef struct {
  * independent and stall 1 between them; this stalls as if every pair were
  * dependent, because nothing here tracks registers. That remains on the table
  * and is worth roughly another 2x on ALU-bound kernels.
+ */
+/*
+ * MEASURED, 2026-08-05: this stack is NOT stall-bound, so the scheduler on the
+ * table above would not pay for itself.
+ *
+ * Sweeping the default over a whole training step at batch 128 moves nothing:
+ *
+ *     stall 7   212.3 ms/step   19,294 tok/s
+ *     stall 6   214.5 ms/step   19,096 tok/s
+ *     stall 5   215.3 ms/step   19,027 tok/s
+ *
+ * -- inside the run-to-run spread, and monotonically the wrong way. The note
+ * above estimates a real scheduler at "roughly another 2x on ALU-bound
+ * kernels"; whatever this step is bound by, it is not instruction issue, and
+ * these kernels are not ALU-bound at this size.
+ *
+ * Stall 5 also moved the LOSS, 4.1903 to 4.1893, which is the more useful half
+ * of the result: the margin in 7 is doing something. Lowering it is not a free
+ * setting even where it looks like one.
  */
 static inline hp_control hp_ctrl_safe(void) {
   hp_control c = {7, 0, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};

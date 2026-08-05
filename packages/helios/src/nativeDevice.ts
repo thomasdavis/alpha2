@@ -32,7 +32,12 @@ export interface NativeAddon {
   open(index: number): boolean;
   close(): void;
   alloc(bytes: number): number;
+  /* Host-mapped whatever the residency policy is. Optional so a stale addon
+   * still loads — without it VIDMEM simply has nowhere to stage. */
+  allocHost?(bytes: number): number;
+  hostVisible?(handle: number): boolean;
   free(handle: number): void;
+  /* Null for a device-resident tensor: video memory is not mapped, by design. */
   view(handle: number): ArrayBuffer | null;
   stats(): {
     live: number;
@@ -138,8 +143,44 @@ export function nativeAddon(index = 0): NativeAddon {
  */
 export class NativeBuffer {
   readonly handle: number;
-  readonly floats: Float32Array;
-  readonly ints: Int32Array;
+  /*
+   * The direct view, when the memory is host-mapped — and NULL when it is not.
+   *
+   * Under HELIOS_VIDMEM a tensor lives in video memory with no host mapping at
+   * all, because the aperture that would provide one is 256 MiB against a
+   * batch-128 step's 1.4 GB, and reads through it are uncached PCIe round trips
+   * per element. The GPU gets 111.8 GB/s from video memory against 19.7 from
+   * system memory, so the trade is: kernels get 5.7x, and the handful of places
+   * that read on the host pay one sequential copy instead of a mapping.
+   */
+  private readonly direct: Float32Array | null;
+  private readonly directInts: Int32Array | null;
+  private readonly hl: NativeAddon;
+  private readonly elements: number;
+
+  /* The staging mirror, allocated only if somebody actually reads on the host. */
+  private staging: NativeBuffer | null = null;
+  /*
+   * Epochs, so a getter called in a loop copies once rather than every turn.
+   *
+   * `deviceEpoch` moves when a kernel may have written this buffer; the mirror
+   * is refreshed only when it has fallen behind. Without this the host permute
+   * fallback -- `out.buffer.floats.set(...)` inside a loop over planes -- would
+   * fire one device-to-host copy per plane, which is how a correct staging
+   * design becomes slower than the mapping it replaced.
+   */
+  private deviceEpoch = 1;
+  private stagingEpoch = 0;
+  /*
+   * Set on every host read, because a Float32Array cannot report being written.
+   *
+   * The alternative is to trust callers to declare it, and the callers are
+   * every autograd fallback and every host copy path in the backend. A
+   * conservative write-back costs one sequential copy on a buffer the host
+   * already touched; a missed one is a gradient computed from stale memory,
+   * which is finite, plausible and wrong.
+   */
+  private mirrorDirty = false;
   /*
    * HOW MANY TENSORS POINT HERE, not whether one does.
    *
@@ -156,18 +197,88 @@ export class NativeBuffer {
    */
   private rc = 1;
 
-  private constructor(handle: number, buffer: ArrayBuffer) {
+  private constructor(hl: NativeAddon, handle: number, buffer: ArrayBuffer | null,
+                      elements: number) {
+    this.hl = hl;
     this.handle = handle;
-    this.floats = new Float32Array(buffer);
-    this.ints = new Int32Array(buffer);
+    this.elements = elements;
+    this.direct = buffer ? new Float32Array(buffer) : null;
+    this.directInts = buffer ? new Int32Array(buffer) : null;
   }
 
   static alloc(hl: NativeAddon, elements: number): NativeBuffer {
     const handle = hl.alloc(elements * 4);
     if (handle === 0) throw new Error(`helios: allocation of ${elements} floats failed`);
+    /* Null is the normal answer for a device-resident tensor, not a failure —
+     * `view` returns it precisely so nothing does pointer arithmetic on a slab
+     * that was never mapped. */
+    return new NativeBuffer(hl, handle, hl.view(handle), elements);
+  }
+
+  /** Host-mapped whatever the residency policy is: the staging pool. */
+  static allocHost(hl: NativeAddon, elements: number): NativeBuffer {
+    const handle = hl.allocHost ? hl.allocHost(elements * 4) : hl.alloc(elements * 4);
+    if (handle === 0) throw new Error(`helios: host allocation of ${elements} floats failed`);
     const view = hl.view(handle);
-    if (!view) throw new Error("helios: allocated handle has no view");
-    return new NativeBuffer(handle, view);
+    if (!view) throw new Error("helios: host-visible handle has no view");
+    return new NativeBuffer(hl, handle, view, elements);
+  }
+
+  /** True when reads and writes need no copy — the default, non-VIDMEM path. */
+  get mapped(): boolean {
+    return this.direct !== null;
+  }
+
+  /**
+   * A kernel may have written here, so the mirror is stale.
+   *
+   * Called where output buffers are made rather than at every launch: a buffer
+   * is written by the op that allocates it, and an in-place op would have to say
+   * so anyway.
+   */
+  markWritten(): void {
+    this.deviceEpoch++;
+  }
+
+  private mirror(): NativeBuffer {
+    if (!this.staging) this.staging = NativeBuffer.allocHost(this.hl, this.elements);
+    if (this.stagingEpoch !== this.deviceEpoch) {
+      /* One sequential copy, device to system, through the same elementwise
+       * kernel everything else uses. The flush is not optional: the copy has to
+       * have RUN before the bytes are read, and reading them is what happens
+       * next by definition. */
+      this.hl.elementwise(this.hl.op.copy, this.staging.handle, this.handle,
+                          this.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
+      this.hl.flush();
+      this.stagingEpoch = this.deviceEpoch;
+    }
+    this.mirrorDirty = true;
+    return this.staging;
+  }
+
+  /**
+   * Push host writes back to the device.
+   *
+   * Called when a tensor is resolved as an operand, which is the moment before
+   * any kernel could read it and after every host write that could have
+   * happened. Cheap and silent when nothing was written or nothing is mirrored.
+   */
+  commit(): void {
+    if (!this.mirrorDirty || !this.staging) return;
+    this.mirrorDirty = false;
+    this.hl.elementwise(this.hl.op.copy, this.handle, this.staging.handle,
+                        this.staging.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
+    /* The device now matches the mirror, so a read that follows must not copy
+     * back over the writes it just made. */
+    this.stagingEpoch = ++this.deviceEpoch;
+  }
+
+  get floats(): Float32Array {
+    return this.direct ?? this.mirror().direct!;
+  }
+
+  get ints(): Int32Array {
+    return this.directInts ?? this.mirror().directInts!;
   }
 
   /** Another tensor now points at this memory and must release it in turn. */
@@ -177,7 +288,14 @@ export class NativeBuffer {
 
   release(hl: NativeAddon): void {
     if (this.rc <= 0) return;
-    if (--this.rc === 0) hl.free(this.handle);
+    if (--this.rc === 0) {
+      /* The mirror is this buffer's alone, so it dies with it. Leaving it would
+       * hold a system-memory buffer per tensor ever read on the host, which is
+       * a leak the pool cannot see -- the staging buffers are live allocations
+       * as far as it is concerned. */
+      if (this.staging) { this.staging.release(hl); this.staging = null; }
+      hl.free(this.handle);
+    }
   }
 
   get released(): boolean {

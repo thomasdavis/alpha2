@@ -3,6 +3,7 @@
  */
 #include "tensor.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -132,6 +133,8 @@ static unsigned g_slabCount;
  * exactly as it was.
  */
 static int g_freeHead[NUM_CLASSES][2];
+/* The slab each pool is currently carving from, or -1. */
+static int g_current[2] = {-1, -1};
 /*
  * Buffers released while launches are still queued.
  *
@@ -155,8 +158,21 @@ static int g_init;
 
 static void init_once(void) {
   if (g_init) return;
-  for (int i = 0; i < NUM_CLASSES; i++) g_freeHead[i] = -1;
+  for (int i = 0; i < NUM_CLASSES; i++) g_freeHead[i][0] = g_freeHead[i][1] = -1;
   g_init = 1;
+}
+
+/*
+ * Video memory only when asked, and read ONCE.
+ *
+ * getenv in the allocation path would be a syscall-free but still repeated
+ * string walk on the hottest function in the file; more to the point, a value
+ * that changed halfway through a run would split the pools against themselves.
+ */
+static int vidmem_enabled(void) {
+  static int cached = -1;
+  if (cached < 0) cached = getenv("HELIOS_VIDMEM") ? 1 : 0;
+  return cached;
 }
 
 static int class_of(NvU64 bytes) {
@@ -202,13 +218,23 @@ static helios_tensor make_handle(unsigned index, NvU32 generation) {
  * one code path, and an oversized tensor still frees and recycles like any
  * other.
  */
-static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
-  if (g_slabCount > 0) {
-    slab *s = &g_slabs[g_slabCount - 1];
+static int carve(helios_context *ctx, NvU64 size, NvU64 *offset, int hostVisible) {
+  /*
+   * The open slab is now PER POOL.
+   *
+   * This looked at the last slab created, which was right when there was one
+   * kind. With two, a single staging allocation between two device allocations
+   * would close the device slab at whatever it had reached and start another --
+   * the space is not lost, but the pools would interleave and each would carve
+   * from a slab the other had just been filling.
+   */
+  const int p = hostVisible ? 1 : 0;
+  if (g_current[p] >= 0) {
+    slab *s = &g_slabs[g_current[p]];
     if (s->buf.size - s->used >= size) {
       *offset = s->used;
       s->used += size;
-      return (int)(g_slabCount - 1);
+      return g_current[p];
     }
   }
 
@@ -236,17 +262,61 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
      * memory bypasses the cache: 161x slower than ordinary memory, measured.
      * The pushbuffer and the QMD keep write-combining, which is the trade they
      * actually want. See gaia_alloc_cached. */
-    /* VIDMEM when asked: the GPU reads system memory at a measured 19.7 GB/s
-     * against ~448 GB/s from its own, and the step is ~40% GPU-bound, so the
-     * ceiling on this switch is large. The risk is the host mapping — video
-     * memory is mapped through the BAR1 aperture, which is commonly 256 MB on a
-     * consumer card, and a step holds 1.4 GB. Env-gated so the failure mode can
-     * be observed rather than guessed at. */
-    const gaia_location where = getenv("HELIOS_VIDMEM") ? GAIA_VIDMEM : GAIA_SYSMEM;
-    if (gaia_alloc_cached(&ctx->device, &s->buf, want, where, 1) == 0 &&
-        gaia_map_gpu(&ctx->device, &s->buf) == 0 &&
-        gaia_map_host(&ctx->device, &s->buf) == 0)
+    /*
+     * VIDMEM for the device pool, and NO HOST MAPPING for it.
+     *
+     * The first attempt at video memory kept the host mapping and cost 60x. The
+     * mapping was the whole of it: video memory reaches the host through the
+     * BAR1 aperture, 256 MiB on this card, uncached and a PCIe round trip per
+     * access -- so every host read in the stack moved onto the slowest path
+     * available, and a 4 MiB slab could not even be allocated once the aperture
+     * filled. Not mapping it removes both: the aperture is untouched, so all 8
+     * GiB is usable, and there is no uncached pointer for anything to read
+     * through by accident.
+     *
+     * What the host needs instead is a STAGING buffer in system memory and a
+     * copy kernel, which is the host-visible pool below. That turns a host read
+     * from millions of uncached per-element round trips into one sequential
+     * device-to-system copy.
+     *
+     * With HELIOS_VIDMEM unset, `where` is SYSMEM and hostVisible is forced on
+     * for both pools, which is byte-for-byte the previous behaviour.
+     */
+    const int vid = vidmem_enabled() && !hostVisible;
+    const gaia_location where = vid ? GAIA_VIDMEM : GAIA_SYSMEM;
+    const int wantHost = !vid;
+    /*
+     * CACHED only when there will be a host mapping to cache.
+     *
+     * The coherency attribute describes how the CPU sees the pages, which is a
+     * question about system memory. Asking RM for CACHED video memory is asking
+     * it to cache an aperture, and it refuses: a 4 MiB VIDMEM slab failed to
+     * allocate outright, the loop halved it down to something that worked, and
+     * the model then died in layerNorm on a slab too small to carve from. The
+     * error surfaced three layers from its cause, which is what an allocator
+     * that silently accepts less than it was asked for buys you.
+     */
+    /*
+     * WHICH STAGE REFUSED, not merely that something did.
+     *
+     * The halving loop turns any refusal into a smaller slab, and a slab
+     * smaller than the request turns into -1 several frames later --
+     * "layerNorm failed on the device", which names neither the size nor the
+     * stage. Three stages can fail here and they want different fixes:
+     * allocation is RM saying no to the size or the attributes, map_gpu is the
+     * address space, map_host is the aperture.
+     */
+    const int rcAlloc = gaia_alloc_cached(&ctx->device, &s->buf, want, where, wantHost);
+    const int rcGpu = rcAlloc == 0 ? gaia_map_gpu(&ctx->device, &s->buf) : -1;
+    const int rcHost = (rcGpu == 0 && wantHost) ? gaia_map_host(&ctx->device, &s->buf) : 0;
+    if (rcAlloc == 0 && rcGpu == 0 && rcHost == 0) {
+      s->hostVisible = wantHost;
       break;
+    }
+    if (getenv("HELIOS_TRACE_ALLOC"))
+      fprintf(stderr, "[helios] slab %llu KiB %s: alloc=%d map_gpu=%d map_host=%d\n",
+              (unsigned long long)(want / 1024), where == GAIA_VIDMEM ? "vidmem" : "sysmem",
+              rcAlloc, rcGpu, rcHost);
     /* Partially constructed is the normal case here -- the allocation may have
      * succeeded and a mapping failed -- and gaia_free is safe on that. */
     gaia_free(&ctx->device, &s->buf);
@@ -260,22 +330,26 @@ static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
   *offset = 0;
   g_stats.allocations++;
   g_stats.bytesHeld += want;
+  g_current[p] = (int)g_slabCount;
   return (int)g_slabCount++;
 }
 
-helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
+static helios_tensor alloc_from(helios_context *ctx, NvU64 bytes, int hostVisible) {
   init_once();
   if (bytes == 0) return HELIOS_TENSOR_NONE;
   const int c = class_of(bytes);
   if (c < 0) return HELIOS_TENSOR_NONE;
+  /* Without video memory the pools are the same memory, so collapsing them
+   * keeps one free list warm instead of splitting the pool in half. */
+  const int p = (hostVisible && vidmem_enabled()) ? 1 : 0;
 
   /* A buffer of this class already held? Take it without touching the driver.
    * This is the path that matters: measured at 1.0 us against 802.3 us for a
    * carve that has to ask RM for memory. */
-  if (g_freeHead[c] >= 0) {
-    const int index = g_freeHead[c];
+  if (g_freeHead[c][p] >= 0) {
+    const int index = g_freeHead[c][p];
     slot *s = &g_slots[index];
-    g_freeHead[c] = s->nextFree;
+    g_freeHead[c][p] = s->nextFree;
     s->nextFree = -1;
     s->inUse = 1;
     s->requested = bytes;
@@ -291,7 +365,7 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   memset(s, 0, sizeof *s);
   const NvU64 size = 1ull << (MIN_CLASS_SHIFT + c);
   NvU64 offset = 0;
-  const int si = carve(ctx, size, &offset);
+  const int si = carve(ctx, size, &offset, p);
   if (si < 0) return HELIOS_TENSOR_NONE;
 
   s->slabIndex = si;
@@ -301,10 +375,19 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   s->generation = 1;
   s->inUse = 1;
   s->nextFree = -1;
+  s->hostVisible = p;
   const unsigned index = g_used++;
   g_stats.live++;
   g_stats.carved++;
   return make_handle(index, s->generation);
+}
+
+helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
+  return alloc_from(ctx, bytes, 0);
+}
+
+helios_tensor helios_tensor_alloc_host(helios_context *ctx, NvU64 bytes) {
+  return alloc_from(ctx, bytes, 1);
 }
 
 /*
@@ -353,8 +436,17 @@ NvU64 helios_tensor_addr(helios_tensor t) {
 
 void *helios_tensor_host(helios_tensor t) {
   slot *s = resolve(t);
-  return s ? (void *)((NvU8 *)g_slabs[s->slabIndex].buf.hostPtr + s->offset)
-           : NULL;
+  /* A device-resident tensor has no host mapping, and saying so is the point:
+   * the alternative is arithmetic on a NULL slab pointer, which produces a
+   * plausible address that faults somewhere else entirely. Callers that need
+   * the bytes on the host allocate a staging tensor and copy. */
+  if (!s || !g_slabs[s->slabIndex].hostVisible) return NULL;
+  return (void *)((NvU8 *)g_slabs[s->slabIndex].buf.hostPtr + s->offset);
+}
+
+int helios_tensor_host_visible(helios_tensor t) {
+  const slot *s = resolve(t);
+  return s ? g_slabs[s->slabIndex].hostVisible : 0;
 }
 
 NvU64 helios_tensor_bytes(helios_tensor t) {
@@ -372,8 +464,8 @@ void helios_tensor_retire(void) {
      * of it at once, not just the one that was passed to free. */
     s->generation++;
     s->inUse = 0;
-    s->nextFree = g_freeHead[s->classIndex];
-    g_freeHead[s->classIndex] = i;
+    s->nextFree = g_freeHead[s->classIndex][s->hostVisible];
+    g_freeHead[s->classIndex][s->hostVisible] = i;
     i = next;
   }
   g_pendingHead = -1;
@@ -390,6 +482,7 @@ void helios_tensor_release_all(helios_context *ctx) {
   memset(g_slabs, 0, sizeof g_slabs);
   memset(&g_stats, 0, sizeof g_stats);
   g_slabCount = 0;
+  g_current[0] = g_current[1] = -1;
   g_used = 0;
   g_pendingHead = -1;
   g_init = 0;

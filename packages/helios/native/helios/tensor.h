@@ -54,8 +54,29 @@ typedef NvU32 helios_tensor;
 
 #define HELIOS_TENSOR_NONE 0u
 
-/* Allocate at least `bytes`, host- and GPU-visible. Returns NONE on failure. */
+/*
+ * Allocate at least `bytes` for the GPU. Returns NONE on failure.
+ *
+ * Under HELIOS_VIDMEM this is VIDEO memory with NO host mapping, and
+ * helios_tensor_host will return NULL for it. That is the point: the GPU reads
+ * system memory at 19.7 GB/s and its own at 111.8, and the aperture through
+ * which the host could see video memory is 256 MiB against a step's 1.4 GB.
+ * Without the env var it is system memory, host-mapped, exactly as before.
+ */
 helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes);
+
+/*
+ * Allocate at least `bytes` in memory the HOST can read and write directly.
+ *
+ * This is the staging pool. A caller that needs a device-resident tensor's
+ * bytes allocates one of these, copies into it with a kernel, and reads it --
+ * one sequential transfer instead of millions of uncached round trips through
+ * the aperture. Always system memory, always mapped, whatever HELIOS_VIDMEM says.
+ */
+helios_tensor helios_tensor_alloc_host(helios_context *ctx, NvU64 bytes);
+
+/* Whether helios_tensor_host will return a pointer for this handle. */
+int helios_tensor_host_visible(helios_tensor t);
 
 /* Return it to the pool. The handle is dead afterwards and any further use of
  * it is rejected rather than acted on. */

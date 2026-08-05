@@ -83,7 +83,16 @@ export class NativeHeliosBackend implements Backend {
 
   constructor(deviceIndex = 0) {
     this.hl = nativeAddon(deviceIndex);
-    this.scratch = NativeBuffer.alloc(this.hl, 1024);
+    /*
+     * HOST-MAPPED, deliberately, even when every other tensor is in video memory.
+     *
+     * reduceAll clears this on the host and then passes the HANDLE straight to
+     * the kernel, bypassing `device()` — so a mirrored write would never be
+     * committed and the second reduction pass would sum whatever the last one
+     * left. It is 4 KB read once per reduction; keeping it in system memory
+     * costs nothing measurable and keeps the host write direct.
+     */
+    this.scratch = NativeBuffer.allocHost(this.hl, 1024);
     /*
      * The fused layerNorm backward is OPT-IN, because it measured SLOWER. See
      * the block above layerNormBackward for the numbers.
@@ -130,13 +139,26 @@ export class NativeHeliosBackend implements Backend {
     const n = shapeSize(shape);
     const buffer = NativeBuffer.alloc(this.hl, n);
     const self = this;
-    const view = buffer.floats.subarray(0, n);
+    /*
+     * THE VIEW IS TAKEN LAZILY, and under video memory that is the difference
+     * between working and not.
+     *
+     * `buffer.floats` on a device-resident tensor materialises a system-memory
+     * mirror and copies into it. Taking it here would do that for every tensor
+     * the model allocates -- hundreds a step, every one of which the GPU is
+     * about to overwrite anyway -- so the copies would be pure loss and the
+     * staging pool would hold a shadow of the entire model.
+     *
+     * It also has to stay a getter rather than a cached local, because the
+     * mirror is refreshed against the device epoch: a view captured before a
+     * kernel ran would be the bytes from before it ran.
+     */
     return {
       shape,
       dtype,
       get data() {
         self.sync();
-        return view;
+        return buffer.floats.subarray(0, n);
       },
       buffer,
     } as NativeTensor;
@@ -144,10 +166,30 @@ export class NativeHeliosBackend implements Backend {
 
   /** Upload a host tensor, or pass a device one straight through. */
   private device(t: TensorData): NativeTensor {
-    if (isNative(t)) return t;
+    if (isNative(t)) {
+      /*
+       * THE WRITE-BACK POINT, and it is here because this is the only place
+       * every operand passes through.
+       *
+       * Under video memory a host read hands back a system-memory mirror, and
+       * nothing can observe a write into a Float32Array. So the writes are
+       * pushed at the moment before a kernel could read them: an operation
+       * resolves its inputs, and resolving is this. Anything earlier would miss
+       * writes made after it; anything later would be after the launch.
+       *
+       * On the default mapped path this is a null check.
+       */
+      t.buffer.commit();
+      return t;
+    }
     const out = this.make(t.shape, "f32");
     const src = t.data as ArrayLike<number>;
-    for (let i = 0; i < src.length; i++) out.buffer.floats[i] = src[i];
+    const dst = out.buffer.floats;
+    for (let i = 0; i < src.length; i++) dst[i] = src[i];
+    /* The host just wrote it; the device has to see that before anything reads
+     * it, and `out` is returned as an operand rather than passing through the
+     * branch above. */
+    out.buffer.commit();
     return out;
   }
 
@@ -227,16 +269,21 @@ export class NativeHeliosBackend implements Backend {
      * step -- unlike the operations above, which are on the hot path. */
     const t = this.make(shape, dtype);
     const n = shapeSize(shape);
+    /* Hoisted: `floats` is a getter, and under video residency it is the one
+     * that materialises the staging mirror. Reading it per element would copy
+     * the buffer per element. */
+    const dst = t.buffer.floats;
     for (let i = 0; i < n; i++) {
       const u = Math.random() || Number.EPSILON;
-      t.buffer.floats[i] = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+      dst[i] = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
     }
     return t;
   }
 
   fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
     const t = this.make(shape, dtype);
-    for (let i = 0; i < data.length; i++) t.buffer.floats[i] = data[i];
+    const dst = t.buffer.floats;
+    for (let i = 0; i < data.length; i++) dst[i] = data[i];
     return t;
   }
 
@@ -362,12 +409,13 @@ export class NativeHeliosBackend implements Backend {
     }
 
     const idx = new Array(shape.length).fill(0);
+    const dst = out.buffer.floats;
     if (run > 1) {
       const total = want / run;
       for (let n = 0; n < total; n++) {
         let si = 0;
         for (let d = 0; d < runDim; d++) si += idx[d] * sStride[d];
-        out.buffer.floats.set(src.subarray(si, si + run), n * run);
+        dst.set(src.subarray(si, si + run), n * run);
         for (let d = runDim - 1; d >= 0; d--) {
           if (++idx[d] < shape[d]) break;
           idx[d] = 0;
@@ -379,7 +427,7 @@ export class NativeHeliosBackend implements Backend {
     for (let n = 0; n < want; n++) {
       let si = 0;
       for (let d = 0; d < shape.length; d++) si += idx[d] * sStride[d];
-      out.buffer.floats[n] = src[si];
+      dst[n] = src[si];
       for (let d = shape.length - 1; d >= 0; d--) {
         if (++idx[d] < shape[d]) break;
         idx[d] = 0;
@@ -1038,13 +1086,16 @@ export class NativeHeliosBackend implements Backend {
     /* A second tensor now points at this memory, and the tape will release both
      * of them. Without this the first release frees it under the other. */
     buffer.retain();
-    const view = buffer.floats.subarray(0, shapeSize(shape));
+    /* Lazily, for the same reason `make` is: taking the view materialises a
+     * system-memory mirror under video residency, and a reshape is the one
+     * operation that is supposed to cost nothing at all. */
+    const n = shapeSize(shape);
     return {
       shape,
       dtype: da.dtype,
       get data() {
         self.sync();
-        return view;
+        return buffer.floats.subarray(0, n);
       },
       buffer,
     } as NativeTensor;
@@ -1147,10 +1198,11 @@ export class NativeHeliosBackend implements Backend {
     const outer = extents.slice(0, shape.length - runDims);
     const total = outer.reduce((x, y) => x * y, 1);
     const idx = new Array(outer.length).fill(0);
+    const dst = out.buffer.floats, srcArr = da.buffer.floats;
     for (let n = 0; n < total; n++) {
       let src = runStart;
       for (let d = 0; d < outer.length; d++) src += (starts[d] + idx[d]) * srcStride[d];
-      out.buffer.floats.set(da.buffer.floats.subarray(src, src + run), n * run);
+      dst.set(srcArr.subarray(src, src + run), n * run);
       for (let d = outer.length - 1; d >= 0; d--) {
         if (++idx[d] < outer[d]) break;
         idx[d] = 0;
@@ -1283,12 +1335,14 @@ export class NativeHeliosBackend implements Backend {
 
     this.sync();
     const devs = tensors.map((t) => this.device(t));
+    const dst = out.buffer.floats;
+    const srcArrs = devs.map((d) => d.buffer.floats);
     for (let o = 0; o < outer; o++) {
       let at = o * outSlab;
       for (let i = 0; i < devs.length; i++) {
         const slab = sizes[i] * inner;
-        out.buffer.floats.set(
-          devs[i].buffer.floats.subarray(o * slab, (o + 1) * slab),
+        dst.set(
+          srcArrs[i].subarray(o * slab, (o + 1) * slab),
           at,
         );
         at += slab;
@@ -1323,11 +1377,12 @@ export class NativeHeliosBackend implements Backend {
     this.sync();
     const src = this.device(a).buffer.floats;
     const out = this.make(rows === 1 ? [1] : [rows], "i32");
+    const outInts = out.buffer.ints;
     for (let r = 0; r < rows; r++) {
       let best = 0;
       for (let i = 1; i < width; i++)
         if (src[r * width + i] > src[r * width + best]) best = i;
-      out.buffer.ints[r] = best;
+      outInts[r] = best;
     }
     return out;
   }
@@ -1339,13 +1394,14 @@ export class NativeHeliosBackend implements Backend {
     const src = this.device(a).buffer.floats;
     const values = this.make(rows === 1 ? [k] : [rows, k], "f32");
     const indices = this.make(rows === 1 ? [k] : [rows, k], "i32");
+    const vals = values.buffer.floats, idxInts = indices.buffer.ints;
     for (let r = 0; r < rows; r++) {
       const order = Array.from({ length: width }, (_, i) => i)
         .sort((x, y) => src[r * width + y] - src[r * width + x])
         .slice(0, k);
       for (let j = 0; j < k; j++) {
-        values.buffer.floats[r * k + j] = src[r * width + order[j]];
-        indices.buffer.ints[r * k + j] = order[j];
+        vals[r * k + j] = src[r * width + order[j]];
+        idxInts[r * k + j] = order[j];
       }
     }
     return { values, indices };
@@ -1409,6 +1465,7 @@ export class NativeHeliosBackend implements Backend {
     const outer = outShape.slice(0, hi + 1);
     const total = outer.reduce((x, y) => x * y, 1);
     const idx = new Array(outer.length).fill(0);
+    const dst = out.buffer.floats, srcArr = da.buffer.floats;
     for (let o = 0; o < total; o++) {
       /* The destination walks in order; the source is the same coordinates with
        * the two axes exchanged. Axes past `hi` contribute nothing here — they
@@ -1418,7 +1475,7 @@ export class NativeHeliosBackend implements Backend {
         const sd = d === d0 ? d1 : d === d1 ? d0 : d;
         si += idx[d] * srcStride[sd];
       }
-      out.buffer.floats.set(da.buffer.floats.subarray(si, si + run), o * run);
+      dst.set(srcArr.subarray(si, si + run), o * run);
       for (let d = outer.length - 1; d >= 0; d--) {
         if (++idx[d] < outer[d]) break;
         idx[d] = 0;
