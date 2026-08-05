@@ -185,6 +185,20 @@ export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
     if (!needsGrad || needsGrad[0]) {
       const d = dests?.[0];
       if (d && acc && acc.call(B, d, g, bData, 1)) ga = d;  /* G @ B^T */
+      /*
+       * G @ B^T, without forming B^T. matmulTransposed's second operand is
+       * stored [N,K] and used as [K,N], which is exactly the relationship this
+       * needs read the other way: B arrives stored [K,N] and is wanted as
+       * [N,K]. The transposed form costs the tensor-core kernel nothing — a
+       * fragment register already takes a load and a pack, so a strided read is
+       * the same instruction count with different immediates — where the
+       * explicit transpose is a whole extra pass over B and a whole extra
+       * tensor, on a path taken once per matmul in the backward.
+       *
+       * The sibling gradient has had this since matmulTransposedA landed; this
+       * arm was left composing.
+       */
+      else if (B.matmulTransposed) ga = B.matmulTransposed(g, bData);
       else {
         const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
         ga = B.matmul(g, tB);

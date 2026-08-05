@@ -236,6 +236,20 @@
 #define TILE_STRIDE (MMA_K / 2u + 1u)
 #endif
 
+/*
+ * THE WARP GEOMETRY IS ALSO SETTLED, and it was worth checking separately from
+ * the register tile: more warps grows the block tile WITHOUT growing per-thread
+ * registers, which is what sank the three earlier tile sweeps. It loses anyway.
+ *
+ *                    mlp fc   lm head   attn proj
+ *     2x2 (current)   17.91     20.49       11.56 TFLOP/s
+ *     2x4              16.28     18.41        9.58
+ *     4x2              16.49     18.77        9.68
+ *
+ * Eight warps is worse everywhere and worst on the narrow shape, which is the
+ * one already short of blocks — doubling the block tile halves the block count,
+ * and the rate tracks block count. Four warps stays.
+ */
 unsigned pr_hmma_block_rows(void) { return MMA_M * HMMA_TM * HMMA_WARPS_M; }
 unsigned pr_hmma_block_cols(void) { return MMA_N * HMMA_TN * HMMA_WARPS_N; }
 unsigned pr_hmma_threads(void) { return 32u * HMMA_WARPS; }
