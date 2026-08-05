@@ -27,14 +27,14 @@ const rand = (n) => Array.from({ length: n }, (_, i) => Math.sin(i * 0.7) * 0.5)
 function timeOp(fn, iters = 21) {
   fn(); N.syncGpu();
   const until = process.hrtime.bigint() + 1_500_000_000n;
-  while (process.hrtime.bigint() < until) { fn(); N.syncGpu(); N.endStep?.(); }
+  while (process.hrtime.bigint() < until) { fn(); N.syncGpu(); N.finishStepOps?.(); }
   const ms = [];
   for (let i = 0; i < iters; i++) {
     const t0 = process.hrtime.bigint();
     fn();
     N.syncGpu();
     ms.push(Number(process.hrtime.bigint() - t0) / 1e6);
-    N.endStep?.();
+    N.finishStepOps?.();
   }
   ms.sort((a, b) => a - b);
   return ms[ms.length >> 1];

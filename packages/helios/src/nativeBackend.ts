@@ -253,8 +253,8 @@ export class NativeHeliosBackend implements Backend {
       const drained = this.hl.flush();
       const err = (this.hl.stats() as { lastError?: number }).lastError ?? 0;
       if (!drained || err)
-        console.error(`[helios] ${op}: flush=${drained} lastError=0x${err.toString(16)}`);
-      else console.error(`[helios] ${op} ok`);
+        throw new Error(`helios-native: ${op} FAULTED (flush=${drained} channel error 0x${err.toString(16)}) ` +
+                        `— drain-per-op attribution, this is the operation that caused it`);
     }
     if (ok) return;
     const dead = operands
@@ -278,6 +278,7 @@ export class NativeHeliosBackend implements Backend {
   zeros(shape: Shape, dtype: Dtype = "f32"): TensorData {
     const t = this.make(shape, dtype);
     t.buffer.floats.fill(0, 0, shapeSize(shape));
+    t.buffer.commit();
     return t;
   }
 
@@ -288,6 +289,7 @@ export class NativeHeliosBackend implements Backend {
   full(shape: Shape, value: number, dtype: Dtype = "f32"): TensorData {
     const t = this.make(shape, dtype);
     t.buffer.floats.fill(value, 0, shapeSize(shape));
+    t.buffer.commit();
     return t;
   }
 
@@ -305,6 +307,7 @@ export class NativeHeliosBackend implements Backend {
       const u = Math.random() || Number.EPSILON;
       dst[i] = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
     }
+    t.buffer.commit();
     return t;
   }
 
@@ -312,6 +315,7 @@ export class NativeHeliosBackend implements Backend {
     const t = this.make(shape, dtype);
     const dst = t.buffer.floats;
     for (let i = 0; i < data.length; i++) dst[i] = data[i];
+    t.buffer.commit();
     return t;
   }
 
@@ -449,6 +453,11 @@ export class NativeHeliosBackend implements Backend {
           idx[d] = 0;
         }
       }
+      /* Written on the host and returned straight to `binary`, which passes the
+       * handle to a kernel without going through `device()`. Everything built
+       * on the host commits before it is returned — that is the invariant, and
+       * it is local so it cannot be forgotten somewhere else. */
+      out.buffer.commit();
       return out;
     }
 
@@ -461,6 +470,7 @@ export class NativeHeliosBackend implements Backend {
         idx[d] = 0;
       }
     }
+    out.buffer.commit();
     return out;
   }
 
@@ -973,7 +983,20 @@ export class NativeHeliosBackend implements Backend {
      * index addresses somewhere absurd. */
     const ids = this.make([tokens], "i32");
     const src = indices.data as ArrayLike<number>;
-    for (let i = 0; i < tokens; i++) ids.buffer.ints[i] = src[i] | 0;
+    const idsInts = ids.buffer.ints;
+    for (let i = 0; i < tokens; i++) idsInts[i] = src[i] | 0;
+    /*
+     * COMMIT, because this handle goes to the kernel WITHOUT passing `device()`.
+     *
+     * `device()` is where host writes are pushed back under video residency, and
+     * every other operand reaches a dispatch through it. This one does not: the
+     * indices are built here and handed straight to `hl.embedding`. Without the
+     * commit the kernel reads whatever was in that video memory, uses it as a
+     * row index, and addresses somewhere absurd -- an MMU fault (channel error
+     * 0x1f) reported at whichever LATER operation happened to flush, which is
+     * how this arrived labelled "layerNorm failed on the device".
+     */
+    ids.buffer.commit();
     /*
      * The output keeps the INDICES' shape and appends the feature dimension:
      * [1,8] indices into a [16,16] table give [1,8,16], not [8,16].
@@ -999,7 +1022,11 @@ export class NativeHeliosBackend implements Backend {
     const dl = this.device(logits);
     const ids = this.make([rows], "i32");
     const src = targets.data as ArrayLike<number>;
-    for (let i = 0; i < rows; i++) ids.buffer.ints[i] = src[i] | 0;
+    const idsInts = ids.buffer.ints;
+    for (let i = 0; i < rows; i++) idsInts[i] = src[i] | 0;
+    /* Same as embedding: built here, handed straight to the kernel, so the
+     * write-back has to be explicit. */
+    ids.buffer.commit();
     const perRow = this.make([rows], "f32");
     this.check(this.hl.crossEntropy(perRow.buffer.handle, dl.buffer.handle,
                                     ids.buffer.handle, rows, classes),
@@ -1236,6 +1263,7 @@ export class NativeHeliosBackend implements Backend {
         idx[d] = 0;
       }
     }
+    out.buffer.commit();
     return out;
   }
 
@@ -1376,6 +1404,7 @@ export class NativeHeliosBackend implements Backend {
         at += slab;
       }
     }
+    out.buffer.commit();
     return out;
   }
 
@@ -1412,6 +1441,7 @@ export class NativeHeliosBackend implements Backend {
         if (src[r * width + i] > src[r * width + best]) best = i;
       outInts[r] = best;
     }
+    out.buffer.commit();
     return out;
   }
 
@@ -1432,6 +1462,8 @@ export class NativeHeliosBackend implements Backend {
         idxInts[r * k + j] = order[j];
       }
     }
+    values.buffer.commit();
+    indices.buffer.commit();
     return { values, indices };
   }
 
@@ -1509,6 +1541,7 @@ export class NativeHeliosBackend implements Backend {
         idx[d] = 0;
       }
     }
+    out.buffer.commit();
     return out;
   }
 

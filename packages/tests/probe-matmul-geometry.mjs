@@ -58,14 +58,14 @@ function timeOp(fn, iters = 15) {
    */
   fn(); N.syncGpu();
   const warmUntil = process.hrtime.bigint() + 2_000_000_000n;
-  while (process.hrtime.bigint() < warmUntil) { fn(); N.syncGpu(); N.endStep?.(); }
+  while (process.hrtime.bigint() < warmUntil) { fn(); N.syncGpu(); N.finishStepOps?.(); }
   const ms = [];
   for (let i = 0; i < iters; i++) {
     const t0 = process.hrtime.bigint();
     fn();
     N.syncGpu();
     ms.push(Number(process.hrtime.bigint() - t0) / 1e6);
-    N.endStep?.();
+    N.finishStepOps?.();
   }
   ms.sort((a, b) => a - b);
   return { med: ms[ms.length >> 1], lo: ms[0], hi: ms[ms.length - 1] };
