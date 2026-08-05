@@ -34,10 +34,11 @@ enum {
  * thread can read a neighbour's slot before that neighbour has written it, and
  * the result is a sum that is wrong by an amount that varies per run.
  */
-static unsigned emit_step(hp_word *p, unsigned stride, pr_combine how,
-                          unsigned tid, unsigned lhs, unsigned rhs) {
+static unsigned emit_step(hp_word *p, unsigned stride, unsigned active,
+                          pr_combine how, unsigned tid, unsigned lhs,
+                          unsigned rhs) {
   unsigned n = 0;
-  p[n++] = hp_isetp_gt_imm(P_INACTIVE, tid, stride - 1, hp_ctrl_safe());
+  p[n++] = hp_isetp_gt_imm(P_INACTIVE, tid, active - 1, hp_ctrl_safe());
   p[n++] = hp_predicated(hp_lds(lhs, tid, 0, hp_ctrl_setbar(BAR_LDS)),
                          P_INACTIVE, 1);
   p[n++] = hp_predicated(hp_lds(rhs, tid, stride * 4, hp_ctrl_setbar(BAR_LDS)),
@@ -52,11 +53,50 @@ static unsigned emit_step(hp_word *p, unsigned stride, pr_combine how,
   return n;
 }
 
+/*
+ * THE TREE HAD TO BE MADE CORRECT AT WIDTHS THAT ARE NOT A POWER OF TWO, and
+ * the model's own width was one of them.
+ *
+ * The loop used to run `stride = elements/2` and halve, which is exact only
+ * while the live count stays even. At 640 it goes 320, 160, 80, 40, 20, 10 —
+ * all exact — and then 5, where the count is odd. The stride-2 step after it
+ * reduces slots 0..3 and NEVER TOUCHES SLOT 4, so a 640-wide layerNorm
+ * normalised over 512 of its 640 features. Measured, not reasoned: the output
+ * row mean came back 0.80 where a layer norm's is 0 by construction, at widths
+ * 20, 40 and 640, while 8, 16, 64, 512 and 1024 were exact to 3.6e-7. Every
+ * width this stack had ever been arbitrated at was a power of two — the 2L/64d
+ * parity benchmark, the attention softmax at T=64 — so nothing caught it.
+ *
+ * This is the SECOND instance of the same defect. `pr_cross_entropy_block`
+ * returned an unrounded class count into this same tree, and every vocabulary
+ * that was not a power of two reduced over part of each row. Fixing it there
+ * left the general fault here, one caller away.
+ *
+ * The fix is one FOLD before the tree: threads below `elements - pot` add the
+ * tail onto the head, leaving exactly `pot` live slots for the halving loop,
+ * where `pot` is the largest power of two at or below `elements`. It costs one
+ * step, needs no extra shared memory, and wastes no threads.
+ *
+ * The fold's active count is `elements - pot`, NOT its stride. Predicating on
+ * the stride the way every other step does would make threads 128..511 read
+ * slots 640..1023 of a 640-slot allocation — past the end of this block's
+ * shared memory, which does not fault here, it returns other rows' data. That
+ * is why `active` is now a parameter separate from `stride` rather than the
+ * same number spelt twice.
+ *
+ * For a power-of-two width `pot == elements`, the fold is skipped and every
+ * step has active == stride, so the emitted program is byte-identical to the
+ * old one. Widths that already worked cannot regress.
+ */
 unsigned pr_emit_tree(hp_word *p, unsigned elements, pr_combine how,
                       unsigned tid, unsigned lhs, unsigned rhs) {
   unsigned n = 0;
-  for (unsigned stride = elements / 2; stride >= 1; stride >>= 1)
-    n += emit_step(&p[n], stride, how, tid, lhs, rhs);
+  unsigned pot = 1;
+  while (pot * 2 <= elements) pot *= 2;
+  if (pot != elements)
+    n += emit_step(&p[n], pot, elements - pot, how, tid, lhs, rhs);
+  for (unsigned stride = pot / 2; stride >= 1; stride >>= 1)
+    n += emit_step(&p[n], stride, stride, how, tid, lhs, rhs);
   return n;
 }
 

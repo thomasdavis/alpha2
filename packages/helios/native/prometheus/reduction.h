@@ -13,9 +13,15 @@
  * and both are separable problems. One block reducing PR_N elements is the
  * kernel the rest are built from, and getting it right first is the point.
  *
- * WHAT THIS DELIBERATELY DOES NOT DO: no multi-block reduction, no arbitrary
- * lengths, no warp-shuffle fast path. Each of those is a real optimisation and
- * each would be premature against a reduction that is not yet known-correct.
+ * WHAT THIS DELIBERATELY DOES NOT DO: no multi-block reduction and no
+ * warp-shuffle fast path. Each is a real optimisation and each would be
+ * premature against a reduction that is not yet known-correct.
+ *
+ * ARBITRARY LENGTHS ARE NOW SUPPORTED, and they were not optional: the halving
+ * loop was exact only while the live count stayed even, so a 640-wide layerNorm
+ * — the model's own width — reduced over 512 of its 640 features and said
+ * nothing. See pr_emit_tree in reduction.c for the fold that fixes it and for
+ * why the same defect had already been found once, in cross-entropy.
  */
 #ifndef HELIOS_PROMETHEUS_REDUCTION_H
 #define HELIOS_PROMETHEUS_REDUCTION_H
@@ -27,8 +33,9 @@ typedef enum {
   PR_RED_MEAN, /* out[0] = sum(a) * s, with s = 1/N   */
 } pr_red_op;
 
-/* Emit the reduction. `elements` must be a power of two and equal to the block
- * width: every thread contributes exactly one element. */
+/* Emit the reduction. `elements` equals the block width: every thread
+ * contributes exactly one element. Any width is correct; a power of two emits
+ * the same program it always did. */
 unsigned pr_emit_reduction(hp_word *prog, pr_red_op op, unsigned elements);
 
 /*
