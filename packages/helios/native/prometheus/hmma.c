@@ -319,10 +319,21 @@
  * follow; or the accumulator's initialisation, which writes ACC_WORDS*TM*TN
  * registers of integer zero where the f16 form may want something else.
  *
- * Start by dumping the emitted program for a 1x1 f16 build through
- * tools/hmma_dump.c and reading it against a ptxas-compiled equivalent. That is
+ * ONE OF THEM IS FOUND AND FIXED: the unpack temporaries did not rotate with
+ * the address pairs, so the next unit overwrote them while the previous unit's
+ * stores may still have been reading — the same write-after-read hazard,
+ * arriving through the one operand it had not yet reached. That is also why it
+ * failed at a 1x1 tile and looked like core wiring: 1x1 still emits TWO units,
+ * one per row half. Fixing it takes the failures from 27 to 21, so it was real
+ * and it was not alone.
+ *
+ * For the remaining 21, dump the emitted program for a 1x1 f16 build through
+ * tools/hmma_dump.c and read it against a ptxas-compiled equivalent. That is
  * how the F32 form was got right, and at 1x1 the listing is short enough to
- * check by eye.
+ * check by eye. Note that the surviving hypotheses are now few: the
+ * accumulate-width bit (captured, but a capture proves the encoding, not that
+ * nothing else must change with it), the accumulator's integer-zero
+ * initialisation, and the control on the unpacks.
  */
 #ifndef HMMA_F16ACC
 #define HMMA_F16ACC 0
@@ -718,11 +729,25 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
             */
           unsigned v0, v1;
           if (HMMA_F16ACC) {
-            p[n++] = hp_half_to_float(ST_B(0), acc + half, HP_HALF_LO,
-                                      hp_ctrl_safe());
-            p[n++] = hp_half_to_float(ST_B(1), acc + half, HP_HALF_HI,
-                                      hp_ctrl_safe());
-            v0 = ST_B(0); v1 = ST_B(1);
+            /*
+             * THE TEMPORARIES ROTATE WITH THE ADDRESS PAIRS, and for the same
+             * reason: a global store holds its DATA register until the memory
+             * pipe accepts it, which is not when it issued. A single pair of
+             * unpack temporaries is written again by the very next unit while
+             * the previous unit's two stores may still be reading it — the
+             * write-after-read hazard this file records four times, arriving
+             * through the one operand it had not yet reached.
+             *
+             * It is also why f16 accumulation failed at a 1x1 tile, which is
+             * what made it look like the core wiring: at 1x1 there are still
+             * TWO units, one per row half, so the second clobbers the first.
+             *
+             * Slot s reuses its registers only after four intervening units and
+             * behind the wait on `bar` that the loop above already applies.
+             */
+            v0 = ST_B(2u * slot); v1 = ST_B(2u * slot + 1u);
+            p[n++] = hp_half_to_float(v0, acc + half, HP_HALF_LO, hp_ctrl_safe());
+            p[n++] = hp_half_to_float(v1, acc + half, HP_HALF_HI, hp_ctrl_safe());
           } else {
             v0 = acc + 2u * half + 0u; v1 = acc + 2u * half + 1u;
           }
