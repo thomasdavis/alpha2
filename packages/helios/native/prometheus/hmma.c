@@ -304,9 +304,26 @@ _Static_assert(R_HIGHEST < 250u, "HMMA tile exceeds the register file");
 #define EPI_BASE 46u
 #define EPI_ADDR(i) (EPI_BASE + 2u * (i))
 
-/* The staged path's load temporaries: eight per operand, packed in place. */
+/*
+ * The staged path's load temporaries: eight per operand, packed in place.
+ *
+ * Eight is two per staging ITERATION, and the iteration count follows from the
+ * tile: a bigger tile needs more of them and would silently run off the end of
+ * this window into the epilogue's address pairs. TM=2/TN=8 did exactly that —
+ * every known-answer case failed, with no fault, because the staging wrote over
+ * registers the store addresses live in.
+ *
+ * So the bound is asserted rather than assumed. A tile that needs more temps is
+ * a build error, not a wrong matrix.
+ */
 #define ST_A(i) (24u + (i))
 #define ST_B(i) (32u + (i))
+#define STAGE_ITERS_A ((MMA_M * HMMA_TM * HMMA_WARPS_M) * (MMA_K / 2u) / (32u * HMMA_WARPS))
+#define STAGE_ITERS_B ((MMA_N * HMMA_TN * HMMA_WARPS_N) * (MMA_K / 2u) / (32u * HMMA_WARPS))
+_Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_A <= 8u,
+               "staged A needs more load temporaries than ST_A reserves");
+_Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_B <= 8u,
+               "staged B needs more load temporaries than ST_B reserves");
 
 /* Where lane-owned pieces live within the tile. */
 #define ACC_OF(tm, tn) (R_ACC + 4u * ((tm) * HMMA_TN + (tn)))
