@@ -256,7 +256,7 @@ enum {
  * registers that are not multiplied by 1024 lanes. That is a different kernel,
  * and it is the one HMMA wants anyway.
  */
-#define TILED_MATMUL 0
+#define TILED_MATMUL 1
 
 /* How many cooperative rounds it takes N threads to stage K elements. The last
  * one is short whenever N does not divide K, and it is PREDICATED. */
@@ -434,15 +434,35 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
   const unsigned BW = pr_matmul_block(N);
   const unsigned chunks = (N + BW - 1u) / BW;
   const int guard_col = chunks * BW > N;
-  const unsigned ACC[4] = {R_ACC0, R_ACC1, R_ACC2, R_ACC3};
-  /* ROWS * UNROLL staged A values, then UNROLL loaded B values. */
-  const unsigned AV[4] = {R_AV0, R_AV1, R_AV2, R_AV3};
-  /* R_UB1 aliases R_AV1 — the unrolled and tiled register maps were written
-   * separately and overlap. R46 is clear of both AV (36..39) and the per-row
-   * store registers used at two rows (40,41 and 42..45). */
-  const unsigned BV[2] = {R_BVAL, 46};
-  const unsigned SV[4] = {R_SV0, R_SV1, R_SV2, R_SV3};
-  const unsigned OA[4] = {R_O0, R_O1, R_O2, R_O3};
+  /*
+   * REGISTERS PACKED UNDER 44, because the DECLARATION is global and costs
+   * every other kernel.
+   *
+   * This map used to reach R46 against a REGISTER_COUNT_V of 48, and that is
+   * what faulted the channel: as the note in qmd.c says, "a declaration with
+   * no slack above the highest register used is what raises GR_EXCEPTION" —
+   * one register of slack is not enough. Raising the declaration to 64 fixes
+   * the fault and every shape then agrees with the definition, but the count
+   * is shared by every program on the device, and at 1024 threads a block it
+   * is the declaration TIMES the block size that prices occupancy:
+   *
+   *     REG 48, tiled off    937 tok/s      (105M seq 64 batch 12)
+   *     REG 64, tiled off    801 tok/s      -15%, and tiling had not run yet
+   *     REG 64, tiled on     862 tok/s      +7.6% over the same declaration
+   *
+   * So tiling genuinely wins and the global raise it appeared to need costs
+   * more than tiling gains. Packing under 44 keeps four registers of slack
+   * inside the existing 48 and leaves every other kernel alone.
+   *
+   * The store values REUSE the staged A registers: A is dead once the K loop
+   * has run, and the two rows still take different registers, so the
+   * write-after-read hazard the epilogue documents is unaffected.
+   */
+  const unsigned ACC[2] = {32, 33};
+  const unsigned AV[4] = {34, 35, 36, 37};       /* ROWS * UNROLL staged A */
+  const unsigned BV[2] = {R_BVAL, 38};           /* R_BVAL is 11 */
+  const unsigned SV[2] = {34, 35};               /* A is dead by the epilogue */
+  const unsigned OA[2] = {40, 42};               /* pairs 40:41 and 42:43 */
 
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
