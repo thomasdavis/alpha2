@@ -1101,8 +1101,30 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     for (unsigned tm = 0; tm < HMMA_TM; tm++)
       for (unsigned tn = 0; tn < HMMA_TN; tn++) {
         const unsigned acc = ACC_OF(tm, tn);
+        /*
+         * THE FIRST HMMA MUST SET BAR_MMA TOO, not only wait on the loads.
+         *
+         * It used to carry a bare wait, so at a 1x1 tile — where it is the ONLY
+         * tensor instruction — nothing ever set the barrier the epilogue then
+         * waits on. Under f32 that survived: the accumulator is read by a
+         * STORE, several instructions downstream, and the tensor pipe had
+         * always finished by then. Under f16 the accumulator is read by the
+         * unpack, an ALU instruction one step sooner, and the race opens.
+         *
+         * A barrier that is waited on and never set is a latent fault either
+         * way, and it is exactly the class this file keeps being bitten by:
+         * correct-looking, shape-independent, and dependent on how much work
+         * happens to sit between the write and the read.
+         *
+         * HONEST NOTE: this did NOT fix the f16 failures — still 21 with it —
+         * so it is kept as the correctness repair it is and not credited with
+         * anything. The default 2x4 tile was never exposed, because there the
+         * non-first HMMAs set the barrier; only the 1x1 configuration the
+         * sweeps use was relying on luck.
+         */
         p[n++] = hp_hmma_acc(acc, AFRAG_OF(tm), BFRAG_OF(tn), acc, HMMA_F16ACC,
-                             first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_setbar(BAR_MMA));
+                             first ? hp_ctrl_wait_setbar(BAR_LOAD, BAR_MMA)
+                                   : hp_ctrl_setbar(BAR_MMA));
         first = 0;
       }
   }
