@@ -316,7 +316,20 @@ unsigned pr_ew_emit_op(hp_word *p, pr_ew_op op) {
       p[4] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR3, hp_ctrl_safe());
       p[5] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
       p[6] = hp_fmul(R_TEMP, R_TEMP2, R_SCALAR2, hp_ctrl_wait(BAR_MUFU));
-      p[7] = hp_fmul(R_RESULT, R_TEMP, R_B_VALUE, hp_ctrl_safe());
+      /*
+       * WAIT FOR THE SECOND OPERAND. The gradient's load sets BAR_LOAD_B and
+       * this is the first instruction to read it — seven instructions after it
+       * issued, which is nowhere near a global load's latency.
+       *
+       * GELU_GRAD reads R_B_VALUE with no wait and gets away with it because
+       * sixteen instructions separate the two; this kernel is eight long and
+       * does not. It presented as SOME elements taking a plausible value
+       * computed from another element's gradient, only on tensors big enough
+       * for the latency to vary, and only where the result was not already
+       * saturated to zero — which is why a cap of 1.5 passed while 4 and 30
+       * failed on the same data.
+       */
+      p[7] = hp_fmul(R_RESULT, R_TEMP, R_B_VALUE, hp_ctrl_wait(BAR_LOAD_B));
       return 8;
 
     case PR_EW_SILU:

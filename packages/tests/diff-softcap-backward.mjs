@@ -15,8 +15,14 @@
 import { NativeHeliosBackend } from "/workspace/alpha2/packages/helios/dist/index.js";
 
 const B = new NativeHeliosBackend(0);
-const CAPS = [30, 4, 1.5];
-const SHAPES = [[64], [8, 10, 64, 64], [512, 640], [7, 13]];
+/* ONE case per process when asked. The GEMM probe in this directory reported a
+ * 4x layout gap that was entirely an artifact of measuring cases in sequence,
+ * so a failure that only appears in a multi-case run is a hypothesis about the
+ * RUN until it survives being run alone. */
+const CAPS = process.env.CAP ? [Number(process.env.CAP)] : [30, 4, 1.5];
+const SHAPES = process.env.SHAPE
+  ? [process.env.SHAPE.split(",").map(Number)]
+  : [[64], [8, 10, 64, 64], [512, 640], [7, 13]];
 
 let bad = 0, ran = 0;
 for (const cap of CAPS) {

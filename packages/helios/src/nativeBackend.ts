@@ -186,22 +186,20 @@ export class NativeHeliosBackend implements Backend {
     if (process.env.HELIOS_FUSED_LNB === "0")
       (this as unknown as Record<string, unknown>).layerNormBackward = undefined;
     /*
-     * THE FUSED softCap BACKWARD IS OFF, because it is not correct yet.
+     * The fused softCap backward is ON. It was gated off for one commit while
+     * it was wrong, and what was wrong is worth keeping: the kernel consumed
+     * the GRADIENT seven instructions after its load issued without waiting on
+     * that load's barrier. It presented as some elements taking a plausible
+     * value computed from another element's gradient — only on tensors big
+     * enough for the latency to vary, and only where the answer was not already
+     * saturated to zero, so a cap of 1.5 passed while 4 and 30 failed on the
+     * same data.
      *
-     * The kernel is right on every small shape — 2e-7 relative against the
-     * definition at three caps, including the saturated tail where the obvious
-     * algebra loses all its digits. It is WRONG on the two shapes with 327,680
-     * elements, and wrong by clean multiples (10x, 2x, 7x) at a handful of
-     * indices, which points at a scalar or a launch-state fault rather than at
-     * the arithmetic. That is not isolated, so it does not ship: a wrong
-     * gradient does not move the forward loss and nothing that watches the loss
-     * can see it — this file already records exactly that failure, from
-     * GELU_GRAD being left out of reads_b.
-     *
-     * HELIOS_FUSED_SOFTCAP=1 turns it on for the next attempt.
-     * packages/tests/diff-softcap-backward.mjs is the arbiter.
+     * HELIOS_FUSED_SOFTCAP=0 restores the composed six-operation fallback.
+     * packages/tests/diff-softcap-backward.mjs is the arbiter: 12/12 at three
+     * caps and four shapes, worst 4.6e-7.
      */
-    if (process.env.HELIOS_FUSED_SOFTCAP !== "1")
+    if (process.env.HELIOS_FUSED_SOFTCAP === "0")
       (this as unknown as Record<string, unknown>).softCapBackward = undefined;
   }
 
