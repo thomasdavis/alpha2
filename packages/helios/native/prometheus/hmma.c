@@ -68,9 +68,26 @@
 #ifndef HMMA_TN
 #define HMMA_TN 4u
 #endif
-#ifndef HMMA_WARPS
-#define HMMA_WARPS 4u
+/*
+ * The warps of a block, laid out in TWO dimensions.
+ *
+ * They were all along N, which makes the block tile 32 rows by 128 columns and
+ * decides how often each operand is re-read: A once per column block, B once
+ * per row block. At the shapes this model runs that is the wrong way round —
+ * B is the larger matrix and it was being re-read sixteen times while A was
+ * re-read fifteen. Going 2 x 4 over eight warps makes the tile 64 x 128 and
+ * cuts the implied traffic of a qkv projection from 98 MB to 59.
+ *
+ * WARPS_N must be a power of two: the warp's two coordinates are recovered with
+ * a shift and a multiply-subtract, because sm_86 has no integer divide.
+ */
+#ifndef HMMA_WARPS_M
+#define HMMA_WARPS_M 2u
 #endif
+#ifndef HMMA_WARPS_N
+#define HMMA_WARPS_N 2u
+#endif
+#define HMMA_WARPS (HMMA_WARPS_M * HMMA_WARPS_N)
 
 /* One HMMA covers 16 rows, 8 columns and 16 of K. Not tunable: they are the
  * instruction's shape. */
@@ -78,8 +95,8 @@
 #define MMA_N 8u
 #define MMA_K 16u
 
-unsigned pr_hmma_block_rows(void) { return MMA_M * HMMA_TM; }
-unsigned pr_hmma_block_cols(void) { return MMA_N * HMMA_TN * HMMA_WARPS; }
+unsigned pr_hmma_block_rows(void) { return MMA_M * HMMA_TM * HMMA_WARPS_M; }
+unsigned pr_hmma_block_cols(void) { return MMA_N * HMMA_TN * HMMA_WARPS_N; }
 unsigned pr_hmma_threads(void) { return 32u * HMMA_WARPS; }
 
 /*
@@ -146,6 +163,7 @@ enum {
   R_TMP2 = 11,
   R_KN = 12,    /* (k + 2l) * N, for the untransposed B only */
   R_KM = 14,    /* (k + 2l) * M, for the transposed A only */
+  R_WARPN = 15, /* warp % WARPS_N; R_WARP holds warp / WARPS_N */
   R_OBASE = 13, /* the output index of this lane's first element */
   R_ADDR_BASE = 16,
 };
@@ -269,6 +287,17 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
   p[n++] = hp_imad_imm(R_LANE, R_WARP, (uint32_t)-32, R_TID, hp_ctrl_safe());
   p[n++] = hp_shr_imm(R_G, R_LANE, 2, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_L, R_G, (uint32_t)-4, R_LANE, hp_ctrl_safe());
+  /* The warp's two coordinates, by the same shift-and-subtract: WARPS_N is a
+   * power of two and this hardware has no integer divide. R_WARP becomes the
+   * ROW coordinate in place. */
+  {
+    unsigned lgN = 0;
+    while ((1u << lgN) < HMMA_WARPS_N) lgN++;
+    p[n++] = hp_shr_imm(R_TMP, R_WARP, lgN, hp_ctrl_safe());          /* warpM */
+    p[n++] = hp_imad_imm(R_WARPN, R_TMP, (uint32_t)-(int)HMMA_WARPS_N,
+                         R_WARP, hp_ctrl_safe());                     /* warpN */
+    p[n++] = hp_iadd3_imm(R_WARP, R_TMP, 0, hp_ctrl_safe());
+  }
 
   /*
    * A's row bases, one per row fragment, WITHOUT k.
@@ -279,6 +308,7 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
    * it fits and into a second address when it does not.
    */
   p[n++] = hp_imad_imm(R_TMP, R_CTA_M, BM, R_G, hp_ctrl_safe());  /* row0 */
+  p[n++] = hp_imad_imm(R_TMP, R_WARP, MMA_M * HMMA_TM, R_TMP, hp_ctrl_safe());
   for (unsigned tm = 0; tm < HMMA_TM; tm++) {
     p[n++] = hp_iadd3_imm(R_TMP2, R_TMP, (int)(MMA_M * tm), hp_ctrl_safe());
     if (transposedA) {
@@ -305,7 +335,7 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
    */
   const unsigned RB = R_IDX + HMMA_TM;
   p[n++] = hp_imad_imm(R_TMP, R_CTA_N, BN, R_G, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_TMP, R_WARP, WN, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_WARPN, WN, R_TMP, hp_ctrl_safe());
   for (unsigned tn = 0; tn < HMMA_TN; tn++) {
     p[n++] = hp_iadd3_imm(RB + tn, R_TMP, (int)(MMA_N * tn), hp_ctrl_safe());
     if (transposedB) {
@@ -462,9 +492,10 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
    * pipelined and the reuse behind a wait.
    */
   p[n++] = hp_imad_imm(R_TMP, R_CTA_M, BM, R_G, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_WARP, MMA_M * HMMA_TM, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_OBASE, R_TMP, N, HP_RZ, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_TMP, R_CTA_N, BN, R_OBASE, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_TMP, R_WARP, WN, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_WARPN, WN, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_OBASE, R_L, 2, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * N, HP_RZ, hp_ctrl_safe());
   p[n++] = hp_iadd3_reg(R_OBASE, R_OBASE, R_TMP, hp_ctrl_safe());

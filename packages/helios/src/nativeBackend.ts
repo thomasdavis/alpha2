@@ -65,7 +65,27 @@ const TRACE_OPS = !!process.env.HELIOS_TRACE_OPS;
  * tensors either way, so the fallback transposes were not the survivors the
  * allocation census pointed at.
  */
-const FUSED_MATMUL_TRANSPOSED = false;
+/*
+ * ON when the shape can use the TENSOR CORES, and the refutation that turned it
+ * off does not carry to that kernel.
+ *
+ * It was measured slower twice, both times for the scalar GEMM, and the reason
+ * given each time was that a transposed B makes B[k][col] = col*K + k — a
+ * column walk, uncoalesced, thirty-two transactions a warp — so the cost of the
+ * fused form scales with block count while the saving does not.
+ *
+ * The tensor-core kernel reads B COLUMN-major by construction: m16n8k16 is
+ * `row.col` and WANTS B transposed, which is why the transposed layout is the
+ * CHEAPER of the two there (isa/hmma-sm86.md says so, from the capture). So the
+ * composed path is now paying for a full-size transpose and a launch to hand
+ * the kernel the orientation it did not want:
+ *
+ *     matmulTransposed  73 calls  209 us each   against matmul's 72
+ *
+ * The gate stays a constant rather than becoming an env var because a build
+ * that half-takes it is an invalid launch, and those fault asynchronously.
+ */
+const FUSED_MATMUL_TRANSPOSED = true;
 
 export class NativeHeliosBackend implements Backend {
   readonly name = "helios-native";
