@@ -31,9 +31,29 @@ unsigned pr_hmma_threads(void);
  * has to be declared per program. */
 unsigned pr_hmma_regs(void);
 
-/* Emit C[M,N] = A[M,K] * B[K,N] (transposedB 0) or A * B^T with B stored [N,K]
- * (transposedB 1). Returns the instruction count. */
+/*
+ * Which operand is stored transposed.
+ *
+ * NN and NT were the whole world while autograd could reach a weight gradient
+ * by materialising a transpose. It cannot afford to: `dL/dB = G^T @ A` runs
+ * once per weight per step, 54 times at 18 layers, and the transpose it
+ * allocates is up to 24 MiB for the LM head. TA computes it directly.
+ *
+ * TA costs NOTHING extra in this kernel, which is why it is worth having here
+ * rather than in the scalar fallback. A fragment register already takes two
+ * loads and a pack — the operands are f32 in memory and f16 in the fragment —
+ * so a strided A is the same instruction count as a contiguous one, only a
+ * different immediate offset. The B-untransposed branch already addresses
+ * exactly this way.
+ */
+typedef enum {
+  PR_MM_NN = 0, /* A[M,K] @ B[K,N] */
+  PR_MM_NT = 1, /* A[M,K] @ B[N,K]^T */
+  PR_MM_TA = 2, /* A[K,M]^T @ B[K,N] */
+} pr_mm_kind;
+
+/* Emit C[M,N] for the given operand layout. Returns the instruction count. */
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
-                      int transposedB);
+                      pr_mm_kind kind);
 
 #endif /* PROMETHEUS_HMMA_H */

@@ -821,6 +821,64 @@ export class NativeHeliosBackend implements Backend {
    * strides differ and getting that wrong is a wrong answer rather than a
    * missing feature.
    */
+  /**
+   * C[M,N] = A^T @ B, with A stored [K,M] — the WEIGHT GRADIENT.
+   *
+   * autograd probes for this name and, not finding it, transposes the incoming
+   * gradient and calls matmul. That costs a full-size tensor and an extra
+   * launch per weight per step — 54 of them at 18 layers, up to 24 MiB each for
+   * the LM head — and the allocation census puts that path among the largest
+   * consumers of a step. Peak memory here is total bytes ALLOCATED in a step,
+   * not the live set, so a temporary that is freed is not thereby free.
+   *
+   * It costs nothing extra in the tensor-core kernel: a fragment register
+   * already takes two loads and a pack, because the operands are f32 in memory
+   * and f16 in the fragment, so a strided A is the same instruction count as a
+   * contiguous one with different immediate offsets.
+   *
+   * TOTAL, not partial: when the shape does not divide the tensor-core tile it
+   * transposes and multiplies right here, releasing the transpose. ops.ts
+   * probes for the NAME and then calls it unconditionally, so a method that
+   * could decline would have to be declined for by its caller — and the caller
+   * is backend-agnostic.
+   */
+  matmulTransposedA(a: TensorData, b: TensorData): TensorData {
+    /* a is [.., R, M], b is [.., R, N]; the result is [.., M, N]. */
+    const ra = a.shape.length, rb = b.shape.length;
+    const R = a.shape[ra - 2] ?? 1, M = a.shape[ra - 1] ?? 1;
+    const N = b.shape[rb - 1] ?? 1;
+    const shapesAgree = ra >= 2 && rb >= 2 && (b.shape[rb - 2] ?? 1) === R &&
+      shapeSize(a.shape) / (R * M) === shapeSize(b.shape) / (R * N);
+    if (!this.hl.matmulTransposedA || !shapesAgree) return this.transposeThenMatmul(a, b);
+    const batch = shapeSize(a.shape) / (R * M);
+
+    const da = this.device(a), db = this.device(b);
+    const out = this.make([...a.shape.slice(0, -2), M, N], "f32");
+    if (!this.hl.matmulTransposedA(out.buffer.handle, da.buffer.handle,
+                                   db.buffer.handle, M, N, R, batch)) {
+      /* The shape does not divide the tile. Give the buffer straight back —
+       * an abandoned output would be a leak on exactly the path this method
+       * exists to make cheaper — and take the old route. */
+      out.buffer.release(this.hl);
+      if (da !== a) da.buffer.release(this.hl);
+      if (db !== b) db.buffer.release(this.hl);
+      return this.transposeThenMatmul(a, b);
+    }
+    this.pending = true;
+    NativeBuffer.invalidateMirrors();
+    if (da !== a && da !== out) da.buffer.release(this.hl);
+    if (db !== b && db !== out) db.buffer.release(this.hl);
+    return out;
+  }
+
+  /** A^T @ B the old way, for shapes the tensor-core tile does not divide. */
+  private transposeThenMatmul(a: TensorData, b: TensorData): TensorData {
+    const t = this.transpose(a, a.shape.length - 2, a.shape.length - 1);
+    const out = this.matmul(t, b);
+    (t as NativeTensor).buffer.release(this.hl);
+    return out;
+  }
+
   matmulTransposed(a: TensorData, b: TensorData): TensorData {
     const K = a.shape[a.shape.length - 1] ?? 1;
     /*

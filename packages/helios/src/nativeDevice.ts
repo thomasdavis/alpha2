@@ -32,6 +32,10 @@ export interface NativeAddon {
   open(index: number): boolean;
   close(): void;
   alloc(bytes: number): number;
+  /* C[M,N] = A[K,M]^T @ B[K,N]. Returns false when the shape cannot use the
+   * tensor-core path — the scalar kernel has no transposed-A form. */
+  matmulTransposedA?(out: number, a: number, b: number, M: number, N: number,
+                     K: number, batch: number): boolean;
   /* Host-mapped whatever the residency policy is. Optional so a stale addon
    * still loads — without it VIDMEM simply has nowhere to stage. */
   allocHost?(bytes: number): number;

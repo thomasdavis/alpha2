@@ -111,6 +111,11 @@ int pr_hmma_applies(unsigned M, unsigned N, unsigned K) {
    */
   if (32u * K + 36u > 0x7fffffu) return 0;
   if (36u * N > 0x7fffffu) return 0;
+  /* The transposed-A layout reaches along M with the same immediates. Checked
+   * unconditionally because pr_hmma_applies does not take the layout — a shape
+   * this kernel can run must be runnable in every layout the caller may pick,
+   * and no model dimension comes near the bound either way. */
+  if (36u * M > 0x7fffffu) return 0;
   /* The instruction budget: the k-step body is emitted once, the epilogue once
    * per accumulator fragment. Both are bounded by the tile, which is a compile
    * -time constant, so this can only fail if the tile is raised carelessly. */
@@ -140,8 +145,9 @@ enum {
   R_TMP = 10,
   R_TMP2 = 11,
   R_KN = 12,    /* (k + 2l) * N, for the untransposed B only */
+  R_KM = 14,    /* (k + 2l) * M, for the transposed A only */
   R_OBASE = 13, /* the output index of this lane's first element */
-  R_ADDR_BASE = 14,
+  R_ADDR_BASE = 16,
 };
 
 /*
@@ -236,7 +242,9 @@ _Static_assert(R_HIGHEST < 250u, "HMMA tile exceeds the register file");
 #define TEMP_B(tn, i) (R_TEMP_BASE + 8u * HMMA_TM + 4u * (tn) + (i))
 
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
-                      int transposedB) {
+                      pr_mm_kind kind) {
+  const int transposedB = (kind == PR_MM_NT);
+  const int transposedA = (kind == PR_MM_TA);
   unsigned n = 0;
   const unsigned BM = pr_hmma_block_rows();
   const unsigned BN = pr_hmma_block_cols();
@@ -273,9 +281,16 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
   p[n++] = hp_imad_imm(R_TMP, R_CTA_M, BM, R_G, hp_ctrl_safe());  /* row0 */
   for (unsigned tm = 0; tm < HMMA_TM; tm++) {
     p[n++] = hp_iadd3_imm(R_TMP2, R_TMP, (int)(MMA_M * tm), hp_ctrl_safe());
-    p[n++] = hp_imad_imm(R_IDX + tm, R_TMP2, K, HP_RZ, hp_ctrl_safe());
-    p[n++] = hp_imad_imm(R_TMP2, R_L, 2, R_IDX + tm, hp_ctrl_safe());
-    p[n++] = hp_iadd3_imm(R_IDX + tm, R_TMP2, 0, hp_ctrl_safe());
+    if (transposedA) {
+      /* A is [K,M]: element (row, k) is k*M + row, so the base holds only the
+       * ROW and the k loop adds (k + 2l)*M — the same shape as an
+       * untransposed B, and addressed by the same immediate offsets. */
+      p[n++] = hp_iadd3_imm(R_IDX + tm, R_TMP2, 0, hp_ctrl_safe());
+    } else {
+      p[n++] = hp_imad_imm(R_IDX + tm, R_TMP2, K, HP_RZ, hp_ctrl_safe());
+      p[n++] = hp_imad_imm(R_TMP2, R_L, 2, R_IDX + tm, hp_ctrl_safe());
+      p[n++] = hp_iadd3_imm(R_IDX + tm, R_TMP2, 0, hp_ctrl_safe());
+    }
   }
   /* The batch plane, added once to every A base. */
   p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
@@ -319,24 +334,49 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
    * The ordering is the point: a fragment-at-a-time version pays the global
    * latency once per fragment, and there are TM+TN of them.
    */
+  if (transposedA) {
+    /* (k + 2l) * M, shared by every row fragment — the mirror of R_KN. */
+    p[n++] = hp_imad_imm(R_TMP, R_L, 2, R_K, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_KM, R_TMP, M, HP_RZ, hp_ctrl_safe());
+  }
   for (unsigned tm = 0; tm < HMMA_TM; tm++) {
     /*
      * One pair for both rows of the fragment: row g+8 is a constant 8*K
      * elements on, which goes in the load's immediate offset rather than in a
      * second address. That is what keeps this at TM+TN pairs.
      */
-    const unsigned a = ADDR_A(tm), r1 = 32u * K;
-    p[n++] = hp_iadd3_reg(R_TMP, R_IDX + tm, R_K, hp_ctrl_safe());
-    p[n++] = hp_imad_wide_const(a, R_TMP, R_ESIZE, 0,
-                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-    p[n++] = hp_ldg(TEMP_A(tm, 0), a, 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 1), a, 4, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 2), a, 32, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 3), a, 36, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 4), a, r1 + 0, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 5), a, r1 + 4, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 6), a, r1 + 32, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(TEMP_A(tm, 7), a, r1 + 36, hp_ctrl_setbar(BAR_LOAD));
+    const unsigned a = ADDR_A(tm);
+    if (transposedA) {
+      /* (k + 2l)*M + row. The k pair is M elements apart and the +8 pair 8M
+       * on, so the four elements of a fragment register pair are immediate
+       * offsets exactly as the untransposed B is. The second ROW of the
+       * fragment is 8 further along the row axis, which is +8 elements. */
+      p[n++] = hp_iadd3_reg(R_TMP, R_IDX + tm, R_KM, hp_ctrl_safe());
+      p[n++] = hp_imad_wide_const(a, R_TMP, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+      const unsigned m1 = M * 4u, m8 = 8u * M * 4u, m9 = 9u * M * 4u;
+      p[n++] = hp_ldg(TEMP_A(tm, 0), a, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 1), a, m1, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 2), a, m8, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 3), a, m9, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 4), a, 32, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 5), a, m1 + 32, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 6), a, m8 + 32, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 7), a, m9 + 32, hp_ctrl_setbar(BAR_LOAD));
+    } else {
+      const unsigned r1 = 32u * K;
+      p[n++] = hp_iadd3_reg(R_TMP, R_IDX + tm, R_K, hp_ctrl_safe());
+      p[n++] = hp_imad_wide_const(a, R_TMP, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+      p[n++] = hp_ldg(TEMP_A(tm, 0), a, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 1), a, 4, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 2), a, 32, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 3), a, 36, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 4), a, r1 + 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 5), a, r1 + 4, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 6), a, r1 + 32, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = hp_ldg(TEMP_A(tm, 7), a, r1 + 36, hp_ctrl_setbar(BAR_LOAD));
+    }
   }
 
   if (!transposedB) {

@@ -248,6 +248,37 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
   return matmul_launch(ctx, p, M, N, K, batch, addrs);
 }
 
+/*
+ * C[M,N] = A[K,M]^T @ B[K,N] — the WEIGHT GRADIENT, without materialising the
+ * transpose.
+ *
+ * autograd probes for this and, not finding it, transposes the incoming
+ * gradient and calls matmul: a full-size tensor and an extra launch per weight
+ * per step, 54 of them at 18 layers and up to 24 MiB each for the LM head. The
+ * allocation census puts that path among the largest consumers of a step.
+ *
+ * Refuses when the tensor-core path does not apply, because the scalar kernel
+ * has no transposed-A form. A caller that gets -1 is expected to fall back to
+ * transpose-and-multiply, which is what it did before this existed.
+ */
+int hl_matmul_transposed_a(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, helios_tensor b, unsigned M,
+                           unsigned N, unsigned K, unsigned batch) {
+  if (!pr_hmma_applies(M, N, K)) return -1;
+  const helios_key k = {HL_MATMUL_TA, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 3,
+                         NULL, 0);
+}
+
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned rows, unsigned cols, unsigned batch) {
   const helios_key k = {HL_TRANSPOSE, rows, cols, batch};

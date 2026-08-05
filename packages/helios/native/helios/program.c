@@ -93,6 +93,7 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_MATMUL:
     case HL_MATMUL_T:
+    case HL_MATMUL_TA:
       /*
        * The TENSOR-CORE path, when the shape divides.
        *
@@ -103,7 +104,9 @@ static int emit(const helios_key *key, helios_program *p) {
        */
       if (pr_hmma_applies(key->arg0, key->arg1, key->arg2)) {
         p->count = pr_emit_hmma(p->code, key->arg0, key->arg1, key->arg2,
-                                key->kind == HL_MATMUL_T);
+                                key->kind == HL_MATMUL_T   ? PR_MM_NT
+                                : key->kind == HL_MATMUL_TA ? PR_MM_TA
+                                                            : PR_MM_NN);
         p->blockX = pr_hmma_threads();
         p->gridX = key->arg0 / pr_hmma_block_rows();
         p->gridY = key->arg1 / pr_hmma_block_cols();
@@ -111,6 +114,12 @@ static int emit(const helios_key *key, helios_program *p) {
         p->regs = pr_hmma_regs();
         return 0;
       }
+      /* The scalar kernel has no transposed-A form. hl_matmul_transposed_a
+       * refuses the call when the tensor path does not apply, and the caller
+       * materialises a transpose as it always did — so this is unreachable
+       * rather than wrong, and returning an error beats emitting an NN kernel
+       * for a TA key. */
+      if (key->kind == HL_MATMUL_TA) return -1;
       p->count = pr_emit_matmul_kind(p->code, key->arg0, key->arg1, key->arg2,
                                      key->kind == HL_MATMUL_T);
       p->sharedBytes = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)

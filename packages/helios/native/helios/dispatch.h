@@ -78,6 +78,12 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
                          helios_tensor b, unsigned M, unsigned N, unsigned K,
                          unsigned batch);
 
+/* C[M,N] = A[K,M]^T @ B[K,N]. Returns -1 when the shape cannot use the
+ * tensor-core path, which is the caller's cue to transpose and multiply. */
+int hl_matmul_transposed_a(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, helios_tensor b, unsigned M,
+                           unsigned N, unsigned K, unsigned batch);
+
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned rows, unsigned cols, unsigned batch);
 

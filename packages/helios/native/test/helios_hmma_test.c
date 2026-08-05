@@ -67,11 +67,12 @@ static float want_of(hmma_case c, unsigned i, unsigned j, unsigned K) {
  * natively wants -- so a pass on one says nothing about the other.
  */
 static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
-                     unsigned batch, int transposed) {
+                     unsigned batch, int layout) {
+  const int transposed = (layout == 1), transposedA = (layout == 2);
   char name[96];
   snprintf(name, sizeof name, "hmma %s [%u,%u]x[%u,%u]%s b%u",
            cs == CASE_SCALE ? "scale " : "kalign", M, K, K, N,
-           transposed ? " B^T" : "", batch);
+           transposed ? " B^T" : transposedA ? " A^T" : "", batch);
   HT_CASE(name);
 
   helios_context ctx;
@@ -103,11 +104,16 @@ static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
    * marks as inferred rather than captured -- writes plane 0's answer into
    * every plane and is caught.
    */
+  /* A is [M,K] normally and [K,M] for the transposed-A layout — the SAME
+   * matrix, stored the other way round, so the expected answer is unchanged
+   * and any confusion between the two shows up as a wrong one. */
   for (unsigned p = 0; p < batch; p++)
     for (unsigned i = 0; i < M; i++)
-      for (unsigned k = 0; k < K; k++)
-        ha[(size_t)p * M * K + (size_t)i * K + k] =
-            a_of(cs, i, k, K) + (float)p;
+      for (unsigned k = 0; k < K; k++) {
+        const float v = a_of(cs, i, k, K) + (float)p;
+        if (transposedA) ha[(size_t)p * M * K + (size_t)k * M + i] = v;
+        else ha[(size_t)p * M * K + (size_t)i * K + k] = v;
+      }
 
   for (unsigned p = 0; p < batch; p++)
     for (unsigned k = 0; k < K; k++)
@@ -120,6 +126,8 @@ static void run_case(hmma_case cs, unsigned M, unsigned N, unsigned K,
 
   const int rc = transposed
       ? hl_matmul_transposed(&ctx, tc, ta, tb, M, N, K, batch)
+      : transposedA
+      ? hl_matmul_transposed_a(&ctx, tc, ta, tb, M, N, K, batch)
       : hl_matmul(&ctx, tc, ta, tb, M, N, K, batch);
   HT_TRUE(rc == 0);
   HT_TRUE(helios_flush(&ctx) == 0);
@@ -187,7 +195,10 @@ void hl_hmma_tests(void) {
    * than a failure that only appears at a model dimension.
    */
   const unsigned rows = pr_hmma_block_rows(), cols = pr_hmma_block_cols();
-  for (int t = 0; t < 2; t++) {
+  /* layout 0 = A@B, 1 = A@B^T, 2 = A^T@B. The third is the weight gradient and
+   * it addresses A along a different axis, so a pass on the first two says
+   * nothing about it. */
+  for (int t = 0; t < 3; t++) {
     run_case(CASE_SCALE, rows, cols, 16, 1, t);
     run_case(CASE_KALIGN, rows, cols, 16, 1, t);
     run_case(CASE_SCALE, rows * 2, cols, 16, 1, t);   /* two row blocks */
