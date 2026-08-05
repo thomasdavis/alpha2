@@ -95,6 +95,7 @@ typedef enum {
    *   s2 = 1.0
    */
   PR_EW_GELU,
+  PR_EW_GELU_GRAD,
 
   /*
    * softCap: c * tanh(x / c), the same tanh identity with the cap folded in.

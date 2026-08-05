@@ -16,8 +16,8 @@
  */
 #include "ew_layout.h"
 
-const unsigned SCALAR_REG[HERMES_CBUF0_SCALAR_COUNT] = {R_SCALAR, R_SCALAR2,
-                                                        R_SCALAR3, R_SCALAR4};
+const unsigned SCALAR_REG[HERMES_CBUF0_SCALAR_COUNT] = {
+    R_SCALAR, R_SCALAR2, R_SCALAR3, R_SCALAR4, R_SCALAR5, R_SCALAR6};
 
 /*
  * How many constants from the constant bank the operation reads.
@@ -35,6 +35,8 @@ const unsigned SCALAR_REG[HERMES_CBUF0_SCALAR_COUNT] = {R_SCALAR, R_SCALAR2,
  */
 unsigned pr_ew_scalars_read(pr_ew_op op) {
   switch (op) {
+    case PR_EW_GELU_GRAD:
+      return 5;
     case PR_EW_GELU:
     case PR_EW_SOFTCAP:
       return 4;
@@ -199,6 +201,44 @@ unsigned pr_ew_emit_op(hp_word *p, pr_ew_op op) {
       p[8] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
       p[9] = hp_fmul(R_RESULT, R_VALUE, R_TEMP3, hp_ctrl_safe());
       return 10;
+
+    /*
+     * geluBackward: g * d/dx [x * sigma(2u)],  u = K0(x + K1 x^3)
+     *
+     * The forward leaves sigma(2u) in a register on its way to x*sigma(2u), and
+     * the derivative reuses exactly that:
+     *
+     *   d/dx = s + x * s(1-s) * 2K0 * (1 + 3K1 x^2)
+     *
+     * BINARY, because it needs both the pre-activation x and the incoming
+     * gradient g -- which is why it is here rather than as a unary with a
+     * scalar. It replaces a JavaScript loop over the whole tensor behind a
+     * drain, worth ~33 ms a step at batch 128.
+     *
+     * Five scalars: K1, the folded exp2 argument, 1, 3K1, 2K0. Four were mapped
+     * before this; see ew_layout.h.
+     */
+    case PR_EW_GELU_GRAD:
+      p[0] = hp_fmul(R_TEMP, R_VALUE, R_VALUE, both_loads);
+      p[1] = hp_fmul(R_TEMP2, R_TEMP, R_VALUE, hp_ctrl_safe());
+      p[2] = hp_ffma(R_TEMP2, R_TEMP2, R_SCALAR, R_VALUE, hp_ctrl_safe());
+      p[3] = hp_fmul(R_TEMP2, R_TEMP2, R_SCALAR2, hp_ctrl_safe());
+      p[4] = hp_mufu(R_TEMP2, R_TEMP2, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+      p[5] = hp_fadd(R_TEMP2, R_TEMP2, R_SCALAR3, hp_ctrl_wait(BAR_MUFU));
+      p[6] = hp_mufu(R_TEMP3, R_TEMP2, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
+      p[7] = hp_fneg(R_TEMP3, R_TEMP3, hp_ctrl_wait(BAR_MUFU));
+      p[8] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
+      /* s(1-s), reusing TEMP2 now the exponential is spent */
+      p[9] = hp_fneg(R_TEMP2, R_TEMP3, hp_ctrl_safe());
+      p[10] = hp_fadd(R_TEMP2, R_TEMP2, R_SCALAR3, hp_ctrl_safe());
+      p[11] = hp_fmul(R_TEMP2, R_TEMP2, R_TEMP3, hp_ctrl_safe());
+      /* TEMP still holds x^2 from p[0] */
+      p[12] = hp_ffma(R_TEMP, R_TEMP, R_SCALAR4, R_SCALAR3, hp_ctrl_safe());
+      p[13] = hp_fmul(R_TEMP, R_TEMP, R_TEMP2, hp_ctrl_safe());
+      p[14] = hp_fmul(R_TEMP, R_TEMP, R_VALUE, hp_ctrl_safe());
+      p[15] = hp_ffma(R_TEMP, R_TEMP, R_SCALAR5, R_TEMP3, hp_ctrl_safe());
+      p[16] = hp_fmul(R_RESULT, R_TEMP, R_B_VALUE, hp_ctrl_safe());
+      return 17;
 
     /*
      * softCap(x) = c * tanh(x/c) = c * (1 - 2/(exp2(s0*x) + 1))

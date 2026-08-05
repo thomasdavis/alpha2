@@ -33,6 +33,12 @@ enum {
   R_SCALAR3 = 17,
   R_SCALAR4 = 18,
   R_TEMP3 = 19,
+  /* The bank carries SIX scalars and only four were mapped, so slots 4 and 5
+   * fell back to register 0 -- R_INDEX -- and any op that passed five would
+   * have clobbered its own element index. No op did yet; geluBackward is the
+   * first that needs five. */
+  R_SCALAR5 = 20,
+  R_SCALAR6 = 21,
 };
 
 /* Bytes per element. Everything here is 32-bit. */
