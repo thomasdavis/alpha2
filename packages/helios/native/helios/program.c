@@ -133,7 +133,9 @@ static int emit(const helios_key *key, helios_program *p) {
       /* arg2 is the batch: one block per (row, plane), so the whole batch is
        * one launch instead of one per plane with a host copy between. */
       p->count = pr_emit_transpose(p->code, key->arg0, key->arg1);
-      p->blockX = key->arg1;
+      /* At most 1024: threads walk the columns in chunks, so a transpose of a
+       * 12,288-wide weight is the same launch as one of a 64-wide activation. */
+      p->blockX = pr_transpose_block(key->arg1);
       p->gridX = key->arg0;
       p->gridY = key->arg2 ? key->arg2 : 1;
       return 0;

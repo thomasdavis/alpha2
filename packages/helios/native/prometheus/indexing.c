@@ -30,6 +30,9 @@ enum {
   R_MASK = 21,
   R_SRC2 = 22,
   R_DST2 = 23,
+  /* The column-chunk loop, so a transpose is not capped at 1024 columns. */
+  R_TID = 24,
+  R_CHUNK = 25,
   R_ROW = 0,
   R_COL = 1,
   R_SRC_IDX = 2,
@@ -45,6 +48,24 @@ enum {
 
 #define BAR_ID 0
 #define BAR_LOAD 1
+#define P_COL 2   /* clear when this thread's column is inside `cols` */
+#define P_CHUNK 3 /* set when the column-chunk loop has run its course */
+#define INSTR_BYTES 16
+
+/*
+ * A block is at most 1024 threads, and `cols` is a MODEL DIMENSION.
+ *
+ * One thread per column made a transpose of anything wider than 1024 an invalid
+ * launch — GR_EXCEPTION on the channel, asynchronously, so it surfaced at
+ * whatever flushed next. A 105M-parameter model transposes weights that are
+ * 1,728, 1,920 and 12,288 wide. Threads walk their columns in chunks instead,
+ * exactly as matmul does, and the launch geometry stops depending on the shape.
+ */
+#define TRANSPOSE_MAX_THREADS 1024u
+
+unsigned pr_transpose_block(unsigned cols) {
+  return cols < TRANSPOSE_MAX_THREADS ? cols : TRANSPOSE_MAX_THREADS;
+}
 
 /*
  * transpose: out[c][r] = in[r][c], for an M x N input.
@@ -57,8 +78,12 @@ enum {
  */
 unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
   unsigned n = 0;
+  const unsigned BW = pr_transpose_block(cols);
+  const unsigned chunks = BW ? (cols + BW - 1u) / BW : 1u;
+  const int guard_col = chunks * BW > cols;
+
   p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
-  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
 
@@ -77,6 +102,13 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
    */
   p[n++] = hp_imad_imm(R_PLANE, R_BATCH, rows * cols, HP_RZ,
                        hp_ctrl_wait(BAR_ID));
+
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  const unsigned chunk_top = n;
+  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+  if (guard_col)
+    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, cols - 1, hp_ctrl_safe());
+
   p[n++] = hp_imad_imm(R_SRC_IDX, R_ROW, cols, R_COL, hp_ctrl_safe());
   p[n++] = hp_iadd3_reg(R_SRC_IDX, R_SRC_IDX, R_PLANE, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_DST_IDX, R_COL, rows, R_ROW, hp_ctrl_safe());
@@ -84,10 +116,27 @@ unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols) {
 
   p[n++] = hp_imad_wide_const(R_ADDR, R_SRC_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  {
+    /* An overhanging thread must not touch memory at either end: the load would
+     * read the next row and the store would write into a live column. */
+    hp_word ld = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard_col ? hp_predicated(ld, P_COL, 1) : ld;
+  }
   p[n++] = hp_imad_wide_const(R_OUT, R_DST_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
-  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  {
+    hp_word st = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+  }
+
+  if (chunks > 1) {
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }

@@ -9,6 +9,10 @@
 /* out[c][r] = in[r][c]. Launch rows blocks of cols threads. */
 unsigned pr_emit_transpose(hp_word *p, unsigned rows, unsigned cols);
 
+/* Threads a transpose block runs — min(cols, 1024). Past that the launch is
+ * invalid rather than slow; threads walk their columns in chunks instead. */
+unsigned pr_transpose_block(unsigned cols);
+
 /* out[i] = in[offset + i*stride], both from the constant bank as integers. */
 unsigned pr_emit_slice(hp_word *p);
 
