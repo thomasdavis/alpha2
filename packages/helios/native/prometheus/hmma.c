@@ -209,12 +209,19 @@ enum {
 #define R_BFRAG (((R_AFRAG + 4u * HMMA_TM) + 1u) & ~1u)
 #define R_HIGHEST (R_BFRAG + 2u * HMMA_TN - 1u)
 
+/* Extra declared registers, for probing occupancy. The declaration TIMES the
+ * block size is what prices blocks per SM, so raising it with no code change
+ * measures how much this kernel is paying for parallelism it does not have. */
+#ifndef HMMA_EXTRA_REGS
+#define HMMA_EXTRA_REGS 0u
+#endif
+
 unsigned pr_hmma_regs(void) {
   /* Slack above the highest register used, rounded to eight — qmd.c: "a
    * declaration with no slack above the highest register used is what raises
    * GR_EXCEPTION", one register was not enough there either, and the hardware
    * allocates the register file in groups rather than singly. */
-  return ((R_HIGHEST + 8u) + 7u) & ~7u;
+  return ((R_HIGHEST + 8u + HMMA_EXTRA_REGS) + 7u) & ~7u;
 }
 
 /*

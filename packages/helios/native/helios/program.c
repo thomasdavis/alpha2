@@ -46,6 +46,33 @@ static unsigned key_hash(const helios_key *k) {
   return h ^ (h >> 16);
 }
 
+/*
+ * The block width for a flat elementwise launch: the largest power of two up to
+ * 512 that DIVIDES the element count exactly.
+ *
+ * PR_BLOCK is 32, which is one warp — a size chosen for the 64-element known-
+ * answer harness and never revisited for a model. At 32 threads a block, a
+ * 327,680-element tensor launches 10,240 blocks, and an SM will hold at most 16
+ * of them: 512 of its 1,536 thread slots, a third of the machine, on operations
+ * that are 40% of a step's GPU time.
+ *
+ * EXACT DIVISION, not a ceiling, and that is the whole reason this is a
+ * function. A partial last block runs threads past the end of the tensor, and
+ * they would not fault — the pool rounds every allocation up to a size class,
+ * so a thread reading a little past the end reads that tensor's own slack. It
+ * is the WRITE that is the problem, and at the classes this model uses the
+ * slack is often zero: 327,680 floats is exactly 1.25 MiB, which is exactly a
+ * class. So the launch must cover the tensor and nothing else.
+ *
+ * The kernel needs no change: it reads ntid from the constant bank, so it has
+ * always been block-size agnostic.
+ */
+static NvU32 ew_block(NvU32 n) {
+  for (NvU32 b = 512; b > PR_BLOCK; b >>= 1)
+    if (n % b == 0) return b;
+  return PR_BLOCK;
+}
+
 /* Emit the program for `key` into `p`, returning 0 on success. The launch shape
  * is chosen here because it is chosen WITH the code -- see program.h. */
 static int emit(const helios_key *key, helios_program *p) {
@@ -55,8 +82,8 @@ static int emit(const helios_key *key, helios_program *p) {
   switch (key->kind) {
     case HL_ELEMENTWISE:
       p->count = pr_emit_elementwise(p->code, (pr_ew_op)key->arg0);
-      p->blockX = PR_BLOCK;
-      p->gridX = (n + PR_BLOCK - 1) / PR_BLOCK;
+      p->blockX = ew_block(n);
+      p->gridX = (n + p->blockX - 1) / p->blockX;
       return 0;
 
     case HL_REDUCE:
@@ -196,7 +223,7 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_SLICE:
       p->count = pr_emit_slice(p->code);
-      p->blockX = key->arg0 < PR_BLOCK ? key->arg0 : PR_BLOCK;
+      p->blockX = key->arg0 < PR_BLOCK ? key->arg0 : ew_block(key->arg0);
       p->gridX = (key->arg0 + p->blockX - 1) / p->blockX;
       return 0;
 
@@ -208,8 +235,8 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_MASKED_FILL:
       p->count = pr_emit_masked_fill(p->code);
-      p->blockX = PR_BLOCK;
-      p->gridX = (n + PR_BLOCK - 1) / PR_BLOCK;
+      p->blockX = ew_block(n);
+      p->gridX = (n + p->blockX - 1) / p->blockX;
       return 0;
 
     case HL_CAST_TO_F16:
@@ -218,14 +245,15 @@ static int emit(const helios_key *key, helios_program *p) {
       p->count = key->kind == HL_CAST_TO_F16
                      ? pr_emit_cast_f32_to_f16(p->code)
                      : pr_emit_cast_f16_to_f32(p->code);
-      p->blockX = PR_BLOCK / 2;
+      /* Half the threads, so the DIVISOR is over the pair count. */
+      p->blockX = ew_block(n / 2) ;
       p->gridX = (n / 2 + p->blockX - 1) / p->blockX;
       return 0;
 
     case HL_DROPOUT:
       p->count = pr_emit_dropout_mask(p->code);
-      p->blockX = PR_BLOCK;
-      p->gridX = (n + PR_BLOCK - 1) / PR_BLOCK;
+      p->blockX = ew_block(n);
+      p->gridX = (n + p->blockX - 1) / p->blockX;
       return 0;
 
     case HL_CROSS_ENTROPY:
