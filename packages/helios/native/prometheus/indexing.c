@@ -299,8 +299,26 @@ unsigned pr_emit_embedding(hp_word *p, unsigned dim) {
  * of two" -- satisfied by any sequence length this model uses -- and the head
  * count becomes free.
  */
+unsigned pr_permute_rows(unsigned T, unsigned D) {
+  if (D == 0 || D > PR_MAX_BLOCK) return 1u;
+  /*
+   * D MUST BE A POWER OF TWO, because the kernel splits the thread index into
+   * (row, feature) with a shift and sm_86 has no integer divide. Two of the ten
+   * diff shapes have D = 5 and D = 3, and without this they came back wrong —
+   * a reminder that a helper computing a launch parameter has to answer for
+   * every shape the KERNEL will see, not only the ones the model uses.
+   */
+  if ((D & (D - 1u)) != 0u) return 1u;
+  unsigned r = 1u;
+  while (r * 2u * D <= PR_MAX_BLOCK && T % (r * 2u) == 0u) r *= 2u;
+  return r;
+}
+
 unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
   unsigned n = 0;
+  const unsigned R = pr_permute_rows(T, D);
+  unsigned lgD = 0;
+  while ((1u << lgD) < D) lgD++;
 
   /*
    * ALL THREE INDICES COME FROM THE GRID — h on X, t on Y, b on Z — so nothing
@@ -329,6 +347,15 @@ unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
   /* One wait covers all four S2Rs: the barrier counts outstanding writes, it
    * is not a flag. */
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_ID));
+  if (R > 1u) {
+    /* The block covers R t-values: thread index splits into the row within the
+     * block and the feature. D is a power of two here — pr_permute_rows only
+     * returns more than one when it is — so this is a shift and a subtract, and
+     * sm_86 has no integer divide. */
+    p[n++] = hp_shr_imm(R_TMP2, R_COL, lgD, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_COL, R_TMP2, (uint32_t)-(int)D, R_COL, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_T, R_T, R, R_TMP2, hp_ctrl_safe());
+  }
 
   /* src = ((b*T + t)*H + h)*D + d */
   p[n++] = hp_imad_imm(R_SRC2, R_B, T, R_T, hp_ctrl_safe());

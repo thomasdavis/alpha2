@@ -33,6 +33,21 @@ unsigned pr_emit_cat_rows(hp_word *p, unsigned W, unsigned dstW);
 
 unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D);
 
+/*
+ * How many t-values one block covers.
+ *
+ * The kernel ran one thread per FEATURE and nothing else, so a block was D
+ * threads — 64 for a 640-wide model over ten heads. An SM will hold sixteen
+ * blocks, so that is 1,024 of its 1,536 thread slots and 5,120 blocks to
+ * schedule for one permute; measured, the copy moved 2.6 MB in 24 us, which is
+ * 109 GB/s against a 448 GB/s card.
+ *
+ * Giving a block several t-values costs one shift and one subtract in the
+ * kernel and nothing anywhere else. Bounded by the 1,024-thread limit and by
+ * what divides T, because a partial block would read and write past the plane.
+ */
+unsigned pr_permute_rows(unsigned T, unsigned D);
+
 /* out[i][d] = table[ids[i]][d], table in the first input, ids in the second.
  * Launch one block per token, dim threads each. */
 unsigned pr_emit_embedding(hp_word *p, unsigned dim);

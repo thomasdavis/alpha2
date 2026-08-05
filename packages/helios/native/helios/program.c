@@ -211,9 +211,15 @@ static int emit(const helios_key *key, helios_program *p) {
        * a power of two — see pr_emit_permute. The caller supplies the batch as
        * the third dimension at launch. */
       p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);
-      p->blockX = key->arg2; /* D */
-      p->gridX = key->arg1;  /* H */
-      p->gridY = key->arg0;  /* T */
+      /* A block covers R t-values, so it is R*D threads and there are T/R of
+       * them down the Y axis. R divides T by construction — a partial block
+       * would read and write past the plane. */
+      {
+        const NvU32 R = pr_permute_rows(key->arg0, key->arg2);
+        p->blockX = key->arg2 * R; /* D * R */
+        p->gridX = key->arg1;      /* H */
+        p->gridY = key->arg0 / R;  /* T / R */
+      }
       return 0;
 
     case HL_TRANSPOSE:
