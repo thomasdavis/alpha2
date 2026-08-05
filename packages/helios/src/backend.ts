@@ -159,6 +159,17 @@ if (MATMUL_TILE_OVERRIDE_ENV) {
   }
 }
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
+/*
+ * Take the tensor-core path out, to tell a PRECISION difference from a BUG.
+ *
+ * Vulkan's loss disagrees with cpu_ref and with the native backend from batch 2
+ * onward (4.1795 against 4.1904), and at the model's real matmul shape the
+ * operation differs by 1.8e-2 — about 0.25% relative, which is far too large for
+ * f32 (1e-7) and about right for fp16 inputs. That is the signature of the
+ * cooperative-matrix path, not of a wrong index, and the two want separating
+ * before either is chased: one is a bug to fix, the other is a trade to declare.
+ */
+const DISABLE_COOP = process.env.HELIOS_DISABLE_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
 // Opt-in FP32 emulation on tensor cores: decompose each FP32 operand into an
 // FP16 high part plus an FP16 residual and accumulate high*high + high*low +
@@ -4909,7 +4920,7 @@ export class HeliosBackend implements Backend {
     }
     const M = rowsPerBatch;
     const outShape = [...aBatch, rowsPerBatch, N];
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("nn", M, N, K);
+    const coopInputDtypesOk = !DISABLE_COOP && this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("nn", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
