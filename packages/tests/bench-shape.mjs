@@ -92,6 +92,16 @@ function step() {
   for (const v of paramVars) {
     if (v.grad) { rel?.(v.grad); v.grad = null; }
   }
+  /*
+   * CLEAR THE TAPE, which is where the intermediates actually go.
+   *
+   * The release callback frees what each operation hands back; the tape still
+   * holds every recorded entry's output and every fallback's scratch, and its
+   * own docstring says so — "without this, GPU buffers are only freed when
+   * V8's FinalizationRegistry fires... and leads to GPU OOM during multi-step
+   * training". Nothing here was calling it.
+   */
+  tape.clear(rel);
   B.finishStepOps?.();
   if (B.flushAndWait) B.flushAndWait();
   else if (B.syncGpu) B.syncGpu();

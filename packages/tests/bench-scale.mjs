@@ -80,6 +80,16 @@ function step(batch) {
    * afterwards works only when nothing is being released. */
   const loss = out.loss.data.data[0];
   tape.backward(out.loss, B, rel);
+  /*
+   * CLEAR THE TAPE, which is where the intermediates actually go.
+   *
+   * The release callback frees what each operation hands back; the tape still
+   * holds every recorded entry's output and every fallback's scratch, and its
+   * own docstring says so — "without this, GPU buffers are only freed when
+   * V8's FinalizationRegistry fires... and leads to GPU OOM during multi-step
+   * training". Nothing here was calling it.
+   */
+  tape.clear(rel);
   B.finishStepOps?.();
   /*
    * The step is not over until the GPU says so.

@@ -50,6 +50,16 @@ function step() {
   const out = gptForward(C, params, B, tape, tok, tgt, true, false, false, undefined, rel);
   const loss = out.loss.data.data[0];
   tape.backward(out.loss, B, rel);
+  /*
+   * CLEAR THE TAPE, which is where the intermediates actually go.
+   *
+   * The release callback frees what each operation hands back; the tape still
+   * holds every recorded entry's output and every fallback's scratch, and its
+   * own docstring says so — "without this, GPU buffers are only freed when
+   * V8's FinalizationRegistry fires... and leads to GPU OOM during multi-step
+   * training". Nothing here was calling it.
+   */
+  tape.clear(rel);
   B.finishStepOps?.();
   /* The step is not over until the GPU says so — flushAndWait first, it is the
    * only one of the three that names waiting. Without it the timer measures
