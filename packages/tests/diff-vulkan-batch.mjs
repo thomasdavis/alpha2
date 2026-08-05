@@ -142,3 +142,44 @@ for (const c of CASES) {
   console.log(`${c.name.padEnd(38)} ${worst.toExponential(2).padStart(10)}   ${bad ? "**DIVERGES**" : "ok"}`);
 }
 console.log(firstBad ? `\nfirst divergence: ${firstBad}` : "\nevery operation agrees at batch > 1");
+
+/*
+ * THE ONE THAT MATTERS: Vulkan's GPU embedding ignores its indices.
+ *
+ * Each row of the table is filled with its own index, so the output says which
+ * row was actually read. cpu_ref reads the rows asked for; Vulkan reads row ZERO
+ * for every token:
+ *
+ *     cpu_ref   rows read: 7,3,0,63,12,40,5,31
+ *     vulkan    rows read: 0,0,0,0,0,0,0,0
+ *
+ * Every token receives the same embedding vector. It is size-gated like the
+ * rest — below the GPU threshold the correct CPU path runs and hides it — which
+ * is why it survived a suite that exercises small shapes.
+ *
+ * It also explains the SHAPE of the symptom, which nothing else did. At
+ * initialisation every embedding row is a similar-scale random vector, so
+ * reading row zero everywhere gives a loss that is wrong and entirely plausible
+ * (4.1795 against cpu_ref's 4.1904) rather than one that is obviously broken.
+ * That is why eleven earlier hypotheses each looked reasonable: the number was
+ * never absurd enough to point anywhere.
+ *
+ * A backend that cannot look up an embedding cannot train. Any Vulkan
+ * throughput measured above the threshold is measuring the wrong computation.
+ */
+{
+  const VOCAB = 64, D = 8;
+  const tab = [];
+  for (let r = 0; r < VOCAB; r++) for (let d = 0; d < D; d++) tab.push(r);
+  const want = [7, 3, 0, 63, 12, 40, 5, 31];
+  const rows = (B) => {
+    const o = B.embedding(B.fromArray(tab, [VOCAB, D]), B.fromArray(want, [2, 4]));
+    if (B.flushAndWait) B.flushAndWait();
+    const d = o.data;
+    return Array.from({ length: want.length }, (_, i) => d[i * D]);
+  };
+  const c = rows(C), v = rows(V);
+  const ok = want.every((w, i) => c[i] === w) && want.every((w, i) => v[i] === w);
+  console.log(`\nembedding reads the rows it was asked for:  cpu_ref ${c.join(",")}`);
+  console.log(`${" ".repeat(43)}vulkan  ${v.join(",")}   ${ok ? "ok" : "**VULKAN IGNORES ITS INDICES**"}`);
+}
