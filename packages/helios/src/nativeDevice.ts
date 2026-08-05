@@ -164,6 +164,32 @@ export function nativeAddon(index = 0): NativeAddon {
  */
 let deviceGeneration = 1;
 
+/*
+ * THE SAFETY NET THE NATIVE BACKEND DID NOT HAVE.
+ *
+ * The Vulkan backend registers every buffer with a FinalizationRegistry
+ * (gpuCleanup) so a tensor JavaScript drops without an explicit release still
+ * returns its memory. This one had nothing, so a buffer nobody released held
+ * its pool slot FOREVER — and "nobody released" is the normal case for any
+ * temporary an operation makes internally, which is four separate bugs this
+ * session and counting.
+ *
+ * It shows as a leak that garbage collection cannot touch: forcing gc() between
+ * steps moved the pool's size-class histogram by exactly zero, because nothing
+ * was ever registered to be collected.
+ *
+ * Freeing from a finalizer is as safe as freeing from release(): helios_tensor_
+ * free only MARKS the slot, and the memory stays valid until helios_end_step —
+ * so a kernel still holding the buffer is unaffected, which is the same
+ * deferral the tape already relies on.
+ *
+ * This is a NET, not a policy. Explicit release is still what makes reclamation
+ * prompt; the registry only stops a missed one from being permanent.
+ */
+const reclaim = new FinalizationRegistry<{ hl: NativeAddon; handle: number }>(
+  (info) => { info.hl.free(info.handle); },
+);
+
 export class NativeBuffer {
   readonly handle: number;
   /*
@@ -244,6 +270,9 @@ export class NativeBuffer {
       Object.defineProperty(this, "floats", { value: this.direct, enumerable: false });
       Object.defineProperty(this, "ints", { value: this.directInts, enumerable: false });
     }
+    /* The token is `this`, so release() can unregister and the two paths cannot
+     * both free the same handle. */
+    reclaim.register(this, { hl, handle }, this);
   }
 
   static alloc(hl: NativeAddon, elements: number): NativeBuffer {
@@ -378,6 +407,9 @@ export class NativeBuffer {
        */
       this.commit();
       if (this.staging) this.staging.release(hl);
+      /* Explicit release wins; take it off the net so the finalizer cannot free
+       * a handle the pool has already recycled to somebody else. */
+      reclaim.unregister(this);
       hl.free(this.handle);
     }
   }
