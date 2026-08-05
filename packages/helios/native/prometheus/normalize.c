@@ -24,6 +24,11 @@ enum {
    * added. The kernels still ran and read from somewhere near enough to look
    * like data. */
   R_IDX = 16,
+  /* The chunked softmax only: a row wider than a block. */
+  R_ROWBASE = 24, /* row * elements — this row's first value */
+  R_CHUNK = 25,   /* which chunk of BW columns this pass is on */
+  R_SUM = 26,     /* the running sum of exponentials, across chunks */
+  R_MAXV = 27,    /* the row maximum, live from pass one to pass three */
 
   /* The backward pass only. REGISTER_COUNT_V is 32, so these are within
    * budget -- and under-requesting raises GR_EXCEPTION rather than corrupting,
@@ -60,6 +65,26 @@ enum {
   R_ADDR_W = 24,  /* R24:R25 */
   R_OUT_XH = 26,  /* R26:R27 */
 };
+
+/*
+ * A block is at most 1024 threads. A feature vector fits; a VOCABULARY does not.
+ *
+ * Rows at or below this keep the one-element-per-thread kernel, which holds the
+ * value in a register across both reductions and touches memory once. Rows past
+ * it take emit_softmax_chunked.
+ */
+#define NORM_MAX_THREADS 1024u
+#define NORM_INSTR_BYTES 16
+#define P_OOR 2   /* set when this thread's column is past the row */
+#define P_CHUNK 3 /* set when a chunk loop has run its course */
+
+/* Threads a normalize block runs. Only softmax can cover a row wider than the
+ * block; the others hold one element per thread by construction. */
+unsigned pr_normalize_block(pr_norm_op op, unsigned elements) {
+  if (op == PR_NORM_SOFTMAX && elements > NORM_MAX_THREADS)
+    return NORM_MAX_THREADS;
+  return elements;
+}
 
 #define BAR_TID 0
 #define BAR_LOAD 1
@@ -149,6 +174,139 @@ static unsigned emit_rms(hp_word *p, unsigned elements) {
  * than merely faster. The tree is reused with a different combiner for the
  * first pass, which is the whole reason it takes one.
  */
+/*
+ * A ROW WIDER THAN A BLOCK, which a vocabulary is.
+ *
+ * The kernel above puts one element in one thread's register and keeps it live
+ * across both reductions. That is the right shape for a feature vector — 640
+ * wide, one pass over memory — and it cannot express a softmax over 12,288
+ * classes: the launch would need 12,288 threads, which is invalid, and 48 KB of
+ * shared memory, which is the entire per-block budget.
+ *
+ * The backward of cross-entropy is exactly that softmax, so a 105M-parameter
+ * model hits it on every step.
+ *
+ * This version keeps nothing live. Each thread walks its columns three times —
+ * once for the maximum, once for the sum, once to write — and only the
+ * per-thread partials go through the tree, so shared memory is BW floats
+ * whatever the row is. Three passes over memory instead of one is the price,
+ * and it is only paid by rows that could not run at all before.
+ */
+static unsigned emit_softmax_chunked(hp_word *p, unsigned elements) {
+  unsigned n = 0;
+  const unsigned BW = NORM_MAX_THREADS;
+  const unsigned chunks = (elements + BW - 1u) / BW;
+  const int guard = chunks * BW > elements;
+
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_TID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_wait(BAR_TID));
+  p[n++] = hp_imad_imm(R_ROWBASE, R_ROW, elements, HP_RZ, hp_ctrl_safe());
+
+  /* Pass one: this thread's maximum. Chunk zero is always in range and seeds
+   * the accumulator, so no negative-infinity identity is needed. */
+  p[n++] = hp_iadd3_reg(R_IDX, R_ROWBASE, R_TID, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_ACC, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_iadd3_imm(R_X, R_ACC, 0, hp_ctrl_wait(BAR_LOAD));
+  if (chunks > 1) {
+    p[n++] = hp_mov_imm(R_CHUNK, 1, hp_ctrl_safe());
+    const unsigned top = n;
+    p[n++] = hp_imad_imm(R_IDX, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+    if (guard)
+      p[n++] = hp_isetp_gt_imm(P_OOR, R_IDX, elements - 1, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_IDX, R_IDX, R_ROWBASE, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      /* Off, R_X keeps the previous chunk's value — a real element of this row,
+       * so the maximum is unaffected. */
+      hp_word ld = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(ld, P_OOR, 1) : ld;
+    }
+    p[n++] = hp_fmnmx(R_ACC, R_ACC, R_X, 1, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - top) * NORM_INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  n += emit_reduce(&p[n], BW, PR_COMBINE_MAX);
+  p[n++] = hp_iadd3_imm(R_MAXV, R_RED, 0, hp_ctrl_wait(BAR_LDS));
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  /* Pass two: this thread's sum of exp(x - max). Zero is the identity, so the
+   * overhang is predicated out of the accumulate. */
+  p[n++] = hp_mov_const(R_S0, 0, HERMES_CBUF0_SCALAR, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_SUM, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  {
+    const unsigned top = n;
+    p[n++] = hp_imad_imm(R_IDX, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+    if (guard)
+      p[n++] = hp_isetp_gt_imm(P_OOR, R_IDX, elements - 1, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_IDX, R_IDX, R_ROWBASE, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      hp_word ld = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(ld, P_OOR, 1) : ld;
+    }
+    p[n++] = hp_fneg(R_TMP, R_MAXV, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_fadd(R_TMP, R_X, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_TMP, R_TMP, R_S0, hp_ctrl_safe());
+    p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+    {
+      hp_word acc = hp_fadd(R_SUM, R_SUM, R_TMP, hp_ctrl_wait(BAR_MUFU));
+      p[n++] = guard ? hp_predicated(acc, P_OOR, 1) : acc;
+    }
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - top) * NORM_INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_iadd3_imm(R_ACC, R_SUM, 0, hp_ctrl_safe());
+  n += emit_reduce(&p[n], BW, PR_COMBINE_ADD);
+  p[n++] = hp_mufu(R_S1, R_RED, HP_MUFU_RCP,
+                   hp_ctrl_wait_setbar(BAR_LDS, BAR_MUFU));
+
+  /* Pass three: write exp(x - max) * (1/sum) back over the row. */
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_wait(BAR_MUFU));
+  {
+    const unsigned top = n;
+    p[n++] = hp_imad_imm(R_IDX, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+    if (guard)
+      p[n++] = hp_isetp_gt_imm(P_OOR, R_IDX, elements - 1, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_IDX, R_IDX, R_ROWBASE, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(R_ADDR, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+    {
+      hp_word ld = hp_ldg(R_X, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(ld, P_OOR, 1) : ld;
+    }
+    p[n++] = hp_fneg(R_TMP, R_MAXV, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_fadd(R_TMP, R_X, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_TMP, R_TMP, R_S0, hp_ctrl_safe());
+    p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+    p[n++] = hp_fmul(R_TMP, R_TMP, R_S1, hp_ctrl_wait(BAR_MUFU));
+    p[n++] = hp_imad_wide_const(R_OUT, R_IDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    {
+      hp_word st = hp_stg(R_OUT, R_TMP, 0, hp_ctrl_safe());
+      p[n++] = guard ? hp_predicated(st, P_OOR, 1) : st;
+    }
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int back = -(int)((n + 1 - top) * NORM_INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
 static unsigned emit_softmax(hp_word *p, unsigned elements) {
   unsigned n = emit_load(p, elements);
 
@@ -339,7 +497,9 @@ static unsigned emit_layer_backward(hp_word *p, unsigned elements) {
 unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
   switch (op) {
     case PR_NORM_RMS: return emit_rms(p, elements);
-    case PR_NORM_SOFTMAX: return emit_softmax(p, elements);
+    case PR_NORM_SOFTMAX:
+      return elements > NORM_MAX_THREADS ? emit_softmax_chunked(p, elements)
+                                         : emit_softmax(p, elements);
     case PR_NORM_LAYER: return emit_layer(p, elements);
     case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements);
   }

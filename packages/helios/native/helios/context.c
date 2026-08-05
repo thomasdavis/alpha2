@@ -4,6 +4,8 @@
 #include "context.h"
 #include "tensor.h"
 
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -138,6 +140,9 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
    */
   if (blockX > HELIOS_MAX_BLOCK_THREADS) {
     ctx->failStage = "launch: block width over 1024 threads";
+    if (getenv("HELIOS_TRACE_ALLOC"))
+      fprintf(stderr, "[helios] refused launch: blockX=%u grid=%ux%u shared=%u\n",
+              blockX, gridX, gridY, sharedBytes);
     return -1;
   }
   if (nbuffers > HERMES_CBUF0_PARAM_COUNT) return -1;

@@ -4,6 +4,7 @@
 #include "program.h"
 
 #include "../prometheus/builders.h"
+#include "../prometheus/normalize.h"
 
 #include <string.h>
 
@@ -80,9 +81,12 @@ static int emit(const helios_key *key, helios_program *p) {
       /* arg1 is the row WIDTH and arg2 the row count: one block per row, each
        * with its own shared memory, so rows normalise independently. */
       p->count = pr_emit_normalize(p->code, (pr_norm_op)key->arg0, n);
-      p->blockX = n;
+      /* Softmax over a row wider than a block walks it in chunks, and then only
+       * the per-thread partials go through shared memory — 4 KB rather than the
+       * 48 KB a 12,288-class row would have asked for. */
+      p->blockX = pr_normalize_block((pr_norm_op)key->arg0, n);
       p->gridX = key->arg2 ? key->arg2 : 1;
-      p->sharedBytes = n * 4;
+      p->sharedBytes = pr_normalize_block((pr_norm_op)key->arg0, n) * 4;
       return 0;
 
     case HL_MATMUL:
@@ -182,9 +186,11 @@ static int emit(const helios_key *key, helios_program *p) {
 
     case HL_CROSS_ENTROPY:
       p->count = pr_emit_cross_entropy(p->code, key->arg0);
-      p->blockX = key->arg0; /* one thread per class */
+      /* At most 1024, and shared memory holds the per-THREAD partials rather
+       * than the whole row — 4 KB whatever the vocabulary is. */
+      p->blockX = pr_cross_entropy_block(key->arg0);
       p->gridX = key->arg1;  /* one block per row */
-      p->sharedBytes = key->arg0 * 4;
+      p->sharedBytes = pr_cross_entropy_block(key->arg0) * 4;
       return 0;
 
     case HL_RESIDUAL_RMS:

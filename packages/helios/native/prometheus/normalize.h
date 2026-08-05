@@ -43,4 +43,15 @@ typedef enum {
 
 unsigned pr_emit_normalize(hp_word *prog, pr_norm_op op, unsigned elements);
 
+/*
+ * Threads a normalize block runs.
+ *
+ * Softmax over a row wider than a block walks it in chunks and reduces only the
+ * per-thread partials, so it returns 1024 and shared memory stays 4 KB. The
+ * others hold one element per thread by construction and return `elements`,
+ * which the launch guard will reject if a caller ever asks for a feature vector
+ * wider than a block.
+ */
+unsigned pr_normalize_block(pr_norm_op op, unsigned elements);
+
 #endif /* HELIOS_PROMETHEUS_NORMALIZE_H */

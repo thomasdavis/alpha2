@@ -13,4 +13,9 @@
  */
 unsigned pr_emit_cross_entropy(hp_word *p, unsigned classes);
 
+/* Threads a cross-entropy block runs — min(classes, 1024). Past that the launch
+ * is invalid, and the shared-memory request would be the whole per-block budget.
+ * Threads cover the vocabulary in chunks instead. */
+unsigned pr_cross_entropy_block(unsigned classes);
+
 #endif /* PROMETHEUS_CROSSENTROPY_H */
