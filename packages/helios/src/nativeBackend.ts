@@ -439,10 +439,11 @@ export class NativeHeliosBackend implements Backend {
      * alternating value and address registers, exactly so a width can exceed
      * one block of threads. Only this constant said otherwise.
      *
-     * 8192 rather than unbounded because the unroll is real instructions —
-     * eight chunks of about eight against a 256-instruction program budget.
+     * 16384 rather than unbounded because the unroll is real instructions —
+     * sixteen chunks of about eight against a 256-instruction program budget.
+     * The vocabulary is 12,288, and embeddingBackward tiles a row that wide.
      */
-    const MAX_BLOCK = 8192;
+    const MAX_BLOCK = 16384;
     /*
      * A TILE REQUIRES THE SOURCE TO MATCH THE DESTINATION'S TRAILING AXES.
      *
@@ -1189,6 +1190,82 @@ export class NativeHeliosBackend implements Backend {
   }
 
   logSoftmax(): TensorData { return this.unsupported("logSoftmax"); }
+
+  /*
+   * THE EMBEDDING GRADIENT, ON THE DEVICE — built from kernels that already
+   * exist rather than from a scatter that does not.
+   *
+   * Backend.embeddingBackward is OPTIONAL, the Vulkan backend implements it,
+   * and this one did not — so autograd took its host fallback: a JavaScript
+   * loop over every token accumulating into the table's gradient, which for
+   * 105M is 640 x 12,288 and 31.5 MB. It reads three device tensors to do it,
+   * and reading device memory DRAINS THE QUEUE, so it also serialised the
+   * backward pass. Profiling put it at the largest single host cost left.
+   *
+   * The obvious kernel is a scatter-add, which needs atomics, which this ISA
+   * encoder does not emit. It is not needed. The gradient is
+   *
+   *     dW[v][c] = sum over tokens i where indices[i] == v of g[i][c]
+   *              = (onehot^T @ g)[v][c],   onehot[i][v] = (indices[i] == v)
+   *
+   * and the one-hot itself comes out of arithmetic, no scatter and no
+   * comparison operator:
+   *
+   *     onehot = 1 - clamp((indices[i] - v)^2, 0, 1)
+   *
+   * which is 1 exactly when the difference is zero and 0 otherwise. Squaring
+   * is safe in f32 despite overflowing 24 bits of mantissa at this vocabulary:
+   * the value is only ever compared against 1, and rounding a large number
+   * never yields zero. The difference itself is exact — both operands are
+   * integers below 2^24.
+   *
+   * It computes a 12,288 x 768 product to obtain a mostly-zero table, which is
+   * wasteful in FLOPs and much cheaper in seconds than the host loop it
+   * replaces, because it neither drains the queue nor moves 31.5 MB across the
+   * bus twice.
+   */
+  embeddingBackward(indices: TensorData, gradOutput: TensorData,
+                    vocabSize: number): TensorData {
+    const tokens = shapeSize(indices.shape);
+    const dim = gradOutput.shape[gradOutput.shape.length - 1] ?? 1;
+    const wide: Shape = [tokens, vocabSize];
+
+    const drop = (t: TensorData) => { if (isNative(t)) t.buffer.release(this.hl); };
+
+    /* Each token's id spread across its row, against the column's own index
+     * tiled down every row. */
+    const idxRow = this.expand(this.reshape(indices, [tokens, 1]), wide);
+    const colRow = this.expand(this.arange(vocabSize), wide);
+    const d = this.sub(idxRow, colRow);
+    drop(idxRow); drop(colRow);
+    const d2 = this.mul(d, d);
+    drop(d);
+    const c = this.clamp(d2, 0, 1);
+    drop(d2);
+    const ones = this.full(wide, 1);
+    const oh = this.sub(ones, c);
+    drop(ones); drop(c);
+
+    const ohT = this.transpose(oh, 0, 1);
+    drop(oh);
+    const out = this.matmul(ohT, this.reshape(gradOutput, [tokens, dim]));
+    drop(ohT);
+    return out;
+  }
+
+  /* 0..n-1 on the device, built once. It is a constant of the vocabulary, so
+   * rebuilding it per step would be the host cost this class is removing. */
+  private arangeCache = new Map<number, TensorData>();
+  private arange(n: number): TensorData {
+    let t = this.arangeCache.get(n);
+    if (!t) {
+      const a = new Float32Array(n);
+      for (let i = 0; i < n; i++) a[i] = i;
+      t = this.fromArray(a, [n]);
+      this.arangeCache.set(n, t);
+    }
+    return t;
+  }
 
   embedding(weight: TensorData, indices: TensorData): TensorData {
     const dim = weight.shape[weight.shape.length - 1] ?? 1;
