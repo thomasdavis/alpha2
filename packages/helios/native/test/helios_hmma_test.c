@@ -47,15 +47,71 @@
 
 typedef enum { CASE_SCALE, CASE_KALIGN } hmma_case;
 
+/*
+ * UNDER f16 ACCUMULATION THE NUMBERS SHRINK — the comparison does NOT loosen.
+ *
+ * The header above explains that every input is exact in f16 and the ACCUMULATOR
+ * is f32, so the check can be tight. Half of that stops being true when the
+ * accumulator is f16: `scale`'s answer is K*(i+1)*(j+1), which at [128,64]x[64,128]
+ * is 1,048,576 — sixteen times past the 65,504 an f16 can hold at all. The
+ * failures that produced were `33306` against `33290` and one honest `inf`
+ * against `65558`: half an ULP, two ULP, and an overflow. All of them are the
+ * FORMAT, and none of them is the kernel.
+ *
+ * The tempting response is a relative tolerance, and it is the wrong one. This
+ * file exists because a wrong fragment layout returns a finite, plausible,
+ * WRONG matrix, and a tolerance wide enough to admit an 11-bit accumulator at
+ * 33,000 is wide enough to admit a permutation. So the magnitudes come down
+ * instead and the comparison stays exact:
+ *
+ *     f32 accumulate   A[i][k] = i+1        B[k][j] = j+1
+ *     f16 accumulate   A[i][k] = (i%16)+1   B[k][j] = (j%8)+1
+ *
+ * 16 and 8 are the instruction's own tile — m16n8k16 — so every element of the
+ * 16x8 tile a warp cooperatively owns still has a DISTINCT expected value, which
+ * is the property that detects a wrong layout. The largest answer becomes
+ * K*16*8 = 8,192 at K=64, every partial sum is a multiple of 16*a*b, and f16 is
+ * exact on multiples of 16 up to 32,768 — so the accumulation is exact at every
+ * step and `err > 1e-2` remains the right question to ask.
+ *
+ * What it gives up is sensitivity to a permutation that moves a whole 16x8 tile
+ * somewhere else, since two tiles now share expected values. `kalign` is
+ * untouched and still indexes k, and the block-level addressing is covered by
+ * the shape sweep, so the gap is narrow and named rather than silent.
+ */
+#ifndef HMMA_F16ACC
+#define HMMA_F16ACC 0
+#endif
+#define SCALE_I(i) (HMMA_F16ACC ? ((i) % 16u) + 1u : (i) + 1u)
+#define SCALE_J(j) (HMMA_F16ACC ? ((j) % 8u) + 1u : (j) + 1u)
+
+/*
+ * `kalign` comes down too, and for a different reason: the BATCH PLANE OFFSET.
+ *
+ * The offset adds p to every element of A, so it adds p * sum_k B[k][j] to the
+ * answer. With B = 8*(k+1) + j%8 that column sum is 4,448 at K=32, and three
+ * planes of it lands near 13,000 with a j%8 term that is not a multiple of the
+ * ULP there. That is the `got 4264 want 4265` failure — off by exactly one, at
+ * a magnitude whose f16 step is four.
+ *
+ * Under f16 the encoding becomes (k%16)+1, so a column sum is 544 at K=64 and
+ * every intermediate is an integer under 2,048 — the range f16 represents
+ * exactly. The j%8 term goes, and it costs nothing: this file's own header says
+ * the column mapping is `scale`'s job and that kalign "only has to be sensitive
+ * to k". Sixteen distinct values across k keep it exactly that sensitive.
+ */
+#define KALIGN_K(k) (HMMA_F16ACC ? ((k) % 16u) + 1u : 8u * ((k) + 1u))
+#define KALIGN_J(j) (HMMA_F16ACC ? 0u : (j) % 8u)
+
 static float a_of(hmma_case c, unsigned i, unsigned k, unsigned K) {
-  return c == CASE_SCALE ? (float)(i + 1u) : (k == i % K ? 1.0f : 0.0f);
+  return c == CASE_SCALE ? (float)SCALE_I(i) : (k == i % K ? 1.0f : 0.0f);
 }
 static float b_of(hmma_case c, unsigned k, unsigned j) {
-  return c == CASE_SCALE ? (float)(j + 1u) : (float)(8u * (k + 1u) + j % 8u);
+  return c == CASE_SCALE ? (float)SCALE_J(j) : (float)(KALIGN_K(k) + KALIGN_J(j));
 }
 static float want_of(hmma_case c, unsigned i, unsigned j, unsigned K) {
-  return c == CASE_SCALE ? (float)K * (float)(i + 1u) * (float)(j + 1u)
-                         : (float)(8u * ((i % K) + 1u) + j % 8u);
+  return c == CASE_SCALE ? (float)K * (float)SCALE_I(i) * (float)SCALE_J(j)
+                         : (float)(KALIGN_K(i % K) + KALIGN_J(j));
 }
 
 /*

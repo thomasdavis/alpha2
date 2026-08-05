@@ -550,7 +550,42 @@ enum {
 #define R_TEMP_COUNT (8u * HMMA_TM + 4u * HMMA_TN)
 #define ALIGN4(x) (((x) + 3u) & ~3u)
 #define R_ACC ALIGN4(R_TEMP_BASE + R_TEMP_COUNT)
-#define R_AFRAG ALIGN4(R_ACC + 4u * HMMA_TM * HMMA_TN)
+/*
+ * THE ACCUMULATOR WINDOW IS SIZED FOR f32 EVEN WHEN IT HOLDS f16, and the spare
+ * half is where the f16 epilogue's unpack temporaries go.
+ *
+ * A fragment is four registers under f32 accumulation and two under f16, but
+ * this window has always been reserved at four — so an f16 build already
+ * declares 2*TM*TN registers above its accumulator that NOTHING reads. That is
+ * exactly what the epilogue needs, and it is the one region here with all three
+ * properties: inside the declared count, owned by no other stage, and out of
+ * reach of both the staging registers and the epilogue's hardcoded address
+ * pairs at EPI_BASE.
+ *
+ * The previous two attempts put them ABOVE R_HIGHEST and both failed — bare
+ * (21 -> 60), and with the declaration widened by eight (still 60). Neither was
+ * a register-count problem, which is why widening did not help: EPI_BASE is a
+ * hardcoded 46 and the epilogue's four address pairs occupy R46-R53 regardless
+ * of where R_HIGHEST lands, so "just past the top" is not free space at these
+ * tiles. Taking the registers from a window whose extent is DERIVED cannot
+ * collide with anything by construction, which is the discipline this file
+ * already applies to fragments and to staging temporaries.
+ *
+ * Small tiles have fewer spare than the four-slot rotation needs — a 1x1 tile
+ * has two — so the window is widened to guarantee eight. That costs nothing at
+ * the tiles that ship, where 2*TM*TN is already 16.
+ */
+/* Two registers per fragment under f16 accumulation, four under f32. Defined
+ * here rather than beside ACC_OF because the register map below is derived from
+ * it and _Static_asserts on the result. */
+#define ACC_WORDS (HMMA_F16ACC ? 2u : 4u)
+#define ACC_SPARE (HMMA_F16ACC ? 8u : 0u)
+#define ACC_USED (ACC_WORDS * HMMA_TM * HMMA_TN)
+#define ACC_WINDOW ((4u * HMMA_TM * HMMA_TN) > (ACC_USED + ACC_SPARE) \
+                    ? (4u * HMMA_TM * HMMA_TN) : (ACC_USED + ACC_SPARE))
+/* Slot s of the epilogue's rotation, s in 0..3, two registers each. */
+#define UNPACK(i) (R_ACC + ACC_USED + (i))
+#define R_AFRAG ALIGN4(R_ACC + ACC_WINDOW)
 #define R_BFRAG (((R_AFRAG + 4u * HMMA_TM) + 1u) & ~1u)
 #define R_HIGHEST (R_BFRAG + 2u * HMMA_TN - 1u)
 
@@ -581,6 +616,14 @@ _Static_assert(R_ACC % 4u == 0, "HMMA accumulator quad must be 4-aligned");
 _Static_assert(R_AFRAG % 4u == 0, "HMMA A fragment quad must be 4-aligned");
 _Static_assert(R_BFRAG % 2u == 0, "HMMA B fragment pair must be 2-aligned");
 _Static_assert(R_HIGHEST < 250u, "HMMA tile exceeds the register file");
+/* The epilogue rotates over four slots of two registers each; the spare half of
+ * the accumulator window has to cover all eight or a slot unpacks over a
+ * fragment a later unit still has to read. This is the defect that survived two
+ * reasoned attempts, so it is a build error now rather than a wrong matrix. */
+_Static_assert(!HMMA_F16ACC || ACC_WINDOW - ACC_USED >= 8u,
+               "f16 accumulate: the unpack rotation needs eight spare registers");
+_Static_assert(!HMMA_F16ACC || R_ACC + ACC_WINDOW <= R_AFRAG,
+               "f16 accumulate: unpack temporaries overrun the A fragments");
 
 #define BAR_ID 0    /* the special registers */
 #define BAR_LOAD 1  /* every global load in a k-step */
@@ -627,8 +670,6 @@ _Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_B <= 8u,
                "staged B needs more load temporaries than ST_B reserves");
 
 /* Where lane-owned pieces live within the tile. */
-/* Two registers per fragment under f16 accumulation, four under f32. */
-#define ACC_WORDS (HMMA_F16ACC ? 2u : 4u)
 #define ACC_OF(tm, tn) (R_ACC + ACC_WORDS * ((tm) * HMMA_TN + (tn)))
 #define AFRAG_OF(tm) (R_AFRAG + 4u * (tm))
 #define BFRAG_OF(tn) (R_BFRAG + 2u * (tn))
@@ -746,26 +787,24 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
              * behind the wait on `bar` that the loop above already applies.
              */
             /*
-             * ⚠️ TWO SLOTS' WORTH OF THESE OVERLAP THE ACCUMULATOR, and that is
-             * a KNOWN REMAINING DEFECT rather than an oversight left unstated.
-             * The nvdisasm dump of a 1x1 f16 build shows R_ACC at R36 while
-             * ST_B spans R32-R39, so slots two and three unpack straight over
-             * accumulator registers that later units still have to read. A 1x1
-             * tile has only two units and never reaches those slots, which is
-             * why the 1x1 failure is a DIFFERENT bug and why this one hid.
+             * The temporaries come from the SPARE HALF OF THE ACCUMULATOR
+             * WINDOW — see UNPACK and the note on ACC_WINDOW above. They used to
+             * be ST_B's staging registers, and two of the four slots landed on
+             * the accumulator itself: the nvdisasm dump of a 1x1 f16 build put
+             * R_ACC at R36 while ST_B spans R32-R39, so slots two and three
+             * unpacked straight over fragments that later units still had to
+             * read. A 1x1 tile has only two units and never reaches those
+             * slots, which is why that failure and this one are different bugs.
              *
-             * Moving them above R_HIGHEST was tried TWICE and is wrong both
-             * times: bare, the kernel's declared register count is derived from
-             * R_HIGHEST so the new temporaries are never allocated (21 -> 60
-             * failures); and WITH the declaration widened by eight to cover
-             * them, still 60. So "past the declared count" was not the
-             * explanation either, and something else about that region is
-             * unusable here. Do not try it a third time without first dumping
-             * the emitted program and confirming the registers appear where
-             * they are expected — this is now two hypotheses spent on register
-             * placement and both were reasoned rather than read.
+             * Two attempts to move them above R_HIGHEST failed instead of
+             * fixing it (21 -> 60, and still 60 with the declaration widened by
+             * eight), which ruled out "past the declared count" as the
+             * explanation. EPI_BASE is a hardcoded 46 and the epilogue's own
+             * address pairs occupy R46-R53 whatever R_HIGHEST is, so the space
+             * just above the top was never free. Deriving the window makes the
+             * collision a build error.
              */
-            v0 = ST_B(2u * slot); v1 = ST_B(2u * slot + 1u);
+            v0 = UNPACK(2u * slot); v1 = UNPACK(2u * slot + 1u);
             p[n++] = hp_half_to_float(v0, acc + half, HP_HALF_LO, hp_ctrl_safe());
             p[n++] = hp_half_to_float(v1, acc + half, HP_HALF_HI, hp_ctrl_safe());
           } else {
