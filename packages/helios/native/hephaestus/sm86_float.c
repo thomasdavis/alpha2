@@ -60,12 +60,32 @@ hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
  */
 hp_word hp_hmma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
                 hp_control c) {
+  return hp_hmma_acc(dst, srcA, srcB, srcC, 0, c);
+}
+
+/*
+ * The accumulate width is ONE BIT, which is the whole difference between the
+ * two forms. Captured (tools/hmma_f16_capture.cu) against the F32 reference:
+ *
+ *   HMMA.16816.F32 R8, R8, R6, RZ   0x000000060808723c / 0x004fe400000018ff
+ *   HMMA.16816.F16 R8, R8, R6, RZ   0x000000060808723c / 0x004fee00000008ff
+ *
+ * The low words are IDENTICAL — same opcode, same three operand slots — and the
+ * high words differ only in bits 72-79, 0x18 against 0x08. The 0x004fe4 against
+ * 0x004fee above that is ptxas scheduling the two kernels differently and says
+ * nothing about the instruction.
+ *
+ * `f16acc` also halves the accumulator: D and C become TWO registers per
+ * fragment rather than four, each packing two results, low half first.
+ */
+hp_word hp_hmma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                    int f16acc, hp_control c) {
   hp_word w = hp_base(HP_OP_HMMA, c);
   hp_put(&w, HP_F_DST, 8, dst);
   hp_put(&w, HP_F_SRCA, 8, srcA);
   hp_put(&w, HP_F_SRCB, 8, srcB);
   hp_put(&w, 64, 8, srcC);
-  hp_put(&w, 72, 8, 0x18);
+  hp_put(&w, 72, 8, f16acc ? 0x08 : 0x18);
   return w;
 }
 

@@ -49,6 +49,14 @@ hp_word hp_ffma(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
  *             MUFU.LG2 R8,R6  0x0000000600087308 0x000e640000000c00 */
 hp_word hp_mufu(unsigned dst, unsigned src, unsigned fn, hp_control c);
 
+/* HMMA.16816.F16 — the same instruction accumulating in f16. Two registers per
+ * fragment instead of four, each packing two results low-half-first, and a
+ * measured 90.28 TFLOP/s against the f32 form's 45.51. It accumulates the whole
+ * k-loop in eleven bits of mantissa, so it MOVES THE LOSS: forty steps at this
+ * model's K of 640. */
+hp_word hp_hmma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                    int f16acc, hp_control c);
+
 /* HMMA.16816.F32: warp-level C += A*B, f16 operands, f32 accumulate. Register
  * arguments name the FIRST of each fragment's consecutive registers (4 for the
  * accumulator and A, 2 for B). See isa/hmma-sm86.md. */

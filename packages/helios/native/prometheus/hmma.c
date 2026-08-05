@@ -261,6 +261,45 @@
 #endif
 
 /*
+ * HMMA_F16ACC — accumulate the k-loop in f16 instead of f32.
+ *
+ * This is the ONLY remaining lever with a factor behind it: the instruction
+ * ceiling measured on this card goes 45.51 -> 90.28 TFLOP/s. It also halves the
+ * accumulator, two registers per fragment instead of four, which hands back 16
+ * registers per warp at this tile and relieves exactly the pressure that sank
+ * three register-tile sweeps.
+ *
+ * AND IT IS THE FIRST CHANGE HERE THAT MOVES THE LOSS. Every other commit in
+ * this effort held it bit-identical; this one accumulates K/16 partial products
+ * in eleven bits of mantissa — forty steps at this model's K of 640 — and the
+ * error is not bounded by anything the caller controls. It is a knob, off by
+ * default, so the cost can be MEASURED and reported as a number rather than
+ * asserted to be small.
+ *
+ * ⚠️ INCOMPLETE, AND OFF BECAUSE IT IS WRONG, not because of the numerics.
+ * Built with -DHMMA_F16ACC=1 it fails 27 of 168 known-answer cases with errors
+ * that are STRUCTURAL, not precision: 400 against an expected 272, and 9
+ * against 73. A k-loop accumulating in eleven bits would come back close and
+ * low, not at a different number entirely, and it would degrade with K rather
+ * than fail at [64,16]x[16,64] where the loop runs once.
+ *
+ * WHAT IS UNVERIFIED IS THE D-FRAGMENT PACKING. The epilogue below assumes
+ * register `half` holds this row's two column-adjacent results, low half first
+ * — the natural reading of "four f32 become two f16 pairs" — so that r0 is
+ * (row g, col 2l) and (row g, col 2l+1) and r1 is the same for row g+8. The
+ * alternative the failures are consistent with is a pairing ACROSS the rows,
+ * r0 = (row g, row g+8) at col 2l and r1 the same at col 2l+1. That is one bit
+ * of information and it is CAPTURABLE the way everything else here was: emit
+ * the f16 form from nvcc with known operands and read which lane holds what.
+ * Do that before touching anything else in this file — do not guess the second
+ * arrangement and see if the tests go green, because two wrong layouts can
+ * agree on a symmetric case.
+ */
+#ifndef HMMA_F16ACC
+#define HMMA_F16ACC 0
+#endif
+
+/*
  * Padding is still ALLOWED under ldmatrix, just not by one word: the stride has
  * to keep every row 16-byte aligned, so it moves in fours.
  *
@@ -548,7 +587,9 @@ _Static_assert(!HMMA_SHARED || 2u * STAGE_ITERS_B <= 8u,
                "staged B needs more load temporaries than ST_B reserves");
 
 /* Where lane-owned pieces live within the tile. */
-#define ACC_OF(tm, tn) (R_ACC + 4u * ((tm) * HMMA_TN + (tn)))
+/* Two registers per fragment under f16 accumulation, four under f32. */
+#define ACC_WORDS (HMMA_F16ACC ? 2u : 4u)
+#define ACC_OF(tm, tn) (R_ACC + ACC_WORDS * ((tm) * HMMA_TN + (tn)))
 #define AFRAG_OF(tm) (R_AFRAG + 4u * (tm))
 #define BFRAG_OF(tn) (R_BFRAG + 2u * (tn))
 #define TEMP_A(tm, i) (R_TEMP_BASE + 8u * (tm) + (i))
@@ -638,16 +679,32 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
            * The temporaries are the k-loop's staging registers, dead by here:
            * the loop has exited and the last HMMA already waited on its loads.
            */
+          /*
+            * Under f16 accumulation one register holds BOTH of this row's
+            * results, low half first, so they are widened here — the store
+            * side of this kernel is f32 either way, and the caller never sees
+            * an f16 tensor. ST_B's staging registers are the temporaries:
+            * dead by here, and distinct from the ST_A pair the accumulate
+            * path below loads into.
+            */
+          unsigned v0, v1;
+          if (HMMA_F16ACC) {
+            p[n++] = hp_half_to_float(ST_B(0), acc + half, HP_HALF_LO,
+                                      hp_ctrl_safe());
+            p[n++] = hp_half_to_float(ST_B(1), acc + half, HP_HALF_HI,
+                                      hp_ctrl_safe());
+            v0 = ST_B(0); v1 = ST_B(1);
+          } else {
+            v0 = acc + 2u * half + 0u; v1 = acc + 2u * half + 1u;
+          }
           if (accumulate) {
             p[n++] = hp_ldg(ST_A(0), addr, 0, hp_ctrl_setbar(BAR_ACC));
             p[n++] = hp_ldg(ST_A(1), addr, 4, hp_ctrl_setbar(BAR_ACC));
-            p[n++] = hp_fadd(acc + 2u * half + 0u, acc + 2u * half + 0u,
-                             ST_A(0), hp_ctrl_wait(BAR_ACC));
-            p[n++] = hp_fadd(acc + 2u * half + 1u, acc + 2u * half + 1u,
-                             ST_A(1), hp_ctrl_safe());
+            p[n++] = hp_fadd(v0, v0, ST_A(0), hp_ctrl_wait(BAR_ACC));
+            p[n++] = hp_fadd(v1, v1, ST_A(1), hp_ctrl_safe());
           }
-          p[n++] = hp_stg(addr, acc + 2u * half + 0u, 0, hp_ctrl_safe());
-          p[n++] = hp_stg(addr, acc + 2u * half + 1u, 4, hp_ctrl_setread(bar));
+          p[n++] = hp_stg(addr, v0, 0, hp_ctrl_safe());
+          p[n++] = hp_stg(addr, v1, 4, hp_ctrl_setread(bar));
           unit++;
         }
       }
@@ -884,7 +941,7 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     p[n++] = hp_imad_imm(R_SHLB, R_SHLB, 4, HP_RZ, hp_ctrl_safe());
   }
 
-  for (unsigned i = 0; i < 4u * HMMA_TM * HMMA_TN; i++)
+  for (unsigned i = 0; i < ACC_WORDS * HMMA_TM * HMMA_TN; i++)
     p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
   /*
@@ -990,8 +1047,8 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     for (unsigned tm = 0; tm < HMMA_TM; tm++)
       for (unsigned tn = 0; tn < HMMA_TN; tn++) {
         const unsigned acc = ACC_OF(tm, tn);
-        p[n++] = hp_hmma(acc, AFRAG_OF(tm), BFRAG_OF(tn), acc,
-                         first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_setbar(BAR_MMA));
+        p[n++] = hp_hmma_acc(acc, AFRAG_OF(tm), BFRAG_OF(tn), acc, HMMA_F16ACC,
+                             first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_setbar(BAR_MMA));
         first = 0;
       }
   }
@@ -1100,7 +1157,7 @@ unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
   }
 
   /* Clear the accumulator. */
-  for (unsigned i = 0; i < 4u * HMMA_TM * HMMA_TN; i++)
+  for (unsigned i = 0; i < ACC_WORDS * HMMA_TM * HMMA_TN; i++)
     p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
 
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());

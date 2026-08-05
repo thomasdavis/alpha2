@@ -120,6 +120,15 @@ static void test_control_flow(void) {
               hi_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())) & ctl);
     /* And the address register is where every other instruction puts srcA. */
     HT_EQ_U64(lo_of(hp_ldsm(4, 7, 0, 4, 0, hp_ctrl_safe())), 0x000000000704783bULL);
+    /* HMMA's accumulate width, from tools/hmma_f16_capture.cu. The low words
+     * must be identical and only bits 72-79 may differ — asserting both is what
+     * shows the width shares no field with the operands. */
+    HT_EQ_U64(lo_of(hp_hmma_acc(8, 8, 6, 255, 0, hp_ctrl_safe())),
+              lo_of(hp_hmma_acc(8, 8, 6, 255, 1, hp_ctrl_safe())));
+    HT_EQ_U64(lo_of(hp_hmma_acc(8, 8, 6, 255, 1, hp_ctrl_safe())), 0x000000060808723cULL);
+    HT_EQ_U64(hi_of(hp_hmma_acc(8, 8, 6, 255, 0, hp_ctrl_safe())) & 0xffffULL, 0x18ffULL);
+    HT_EQ_U64(hi_of(hp_hmma_acc(8, 8, 6, 255, 1, hp_ctrl_safe())) & 0xffffULL, 0x08ffULL);
+
     /* LDG.E.64 and .128, from tools/ldg64_capture.cu. The low word must be
      * IDENTICAL to the 32-bit form at the same operands — the width is only in
      * the descriptor — and asserting that is what proves the two do not share a
