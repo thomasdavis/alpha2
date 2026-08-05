@@ -335,7 +335,7 @@ export class NativeHeliosBackend implements Backend {
     return t;
   }
 
-  fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype: Dtype = "f32"): TensorData {
     const t = this.make(shape, dtype);
     const dst = t.buffer.floats;
     for (let i = 0; i < data.length; i++) dst[i] = data[i];

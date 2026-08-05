@@ -59,7 +59,11 @@ export interface Backend {
   ones(shape: Shape, dtype?: Dtype): TensorData;
   full(shape: Shape, value: number, dtype?: Dtype): TensorData;
   randn(shape: Shape, dtype?: Dtype): TensorData;
-  fromArray(data: number[], shape: Shape, dtype?: Dtype): TensorData;
+  /* ArrayLike, not number[], so a Float32Array can be handed over without
+   * being copied into a JS array first. Every implementation only reads
+   * .length and indexes, so this widens what callers may pass and changes
+   * nothing about what they get back. */
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype?: Dtype): TensorData;
 
   // math
   add(a: TensorData, b: TensorData): TensorData;

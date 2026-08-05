@@ -142,7 +142,7 @@ export class CpuRefBackend implements Backend {
     return t;
   }
 
-  fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype: Dtype = "f32"): TensorData {
     const size = shapeSize(shape);
     if (data.length !== size) {
       throw new Error(`Data length ${data.length} does not match shape size ${size}`);

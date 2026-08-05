@@ -77,12 +77,33 @@ export interface LayerParams {
   };
 }
 
+/*
+ * THE WEIGHT GOES ON THE DEVICE, and until now it did not.
+ *
+ * This function took `backend` and never used it: it built a Float32Array and
+ * wrapped it in a bare TensorData, so every large parameter -- every attention
+ * and MLP matrix, the embedding, the head -- stayed host-only, while
+ * initOnes/initZeros/initFull beside it went through the backend correctly. At
+ * 105M that is 11 host tensors of 25.6M elements against 10 device tensors of
+ * almost nothing, and it is invisible because the result is CORRECT: an
+ * operand that is not resident gets copied in, so the model trains and simply
+ * pays for it.
+ *
+ * What it pays: every matmul re-uploads its weight EVERY STEP, through
+ * `for (i) dst[i] = src[i]` on the host. Profiling a 105M step put 42% of wall
+ * clock outside the GPU and the largest chains were all this copy, reached via
+ * device() from matmul and transpose. It also produced the pool churn that
+ * looked like a leak -- 108 weight-sized buffers a step with nobody to own
+ * them.
+ *
+ * The initialisation stays on the host because rng.nextGauss is a host RNG and
+ * the values must be reproducible from the seed; only the RESIDENCY changes.
+ */
 function initWeight(backend: Backend, rng: SeededRng, shape: number[], std: number): Variable {
   const size = shapeSize(shape);
   const data = new Float32Array(size);
   for (let i = 0; i < size; i++) data[i] = rng.nextGauss() * std;
-  const td: TensorData = { shape, dtype: "f32", data };
-  return new Variable(td, true);
+  return new Variable(backend.fromArray(data, shape, "f32"), true);
 }
 
 function initOnes(backend: Backend, shape: number[]): Variable {

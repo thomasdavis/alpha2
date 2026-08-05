@@ -117,15 +117,33 @@ try {
   process.exit(1);
 }
 
+/*
+ * GPU time BESIDE wall time, because they answer different questions.
+ *
+ * The native context counts the nanoseconds it spends spinning on the
+ * end-of-step fence (statSpinNs), which is GPU time by construction: the host
+ * is doing nothing else while it waits. Printed next to the median it says
+ * whether a step is limited by kernels or by the host that queues them, and
+ * that decides whether the next piece of work belongs in the emitter or in
+ * the backend. Without it a slow step is just slow.
+ */
+const spin = () => B.hl?.stats ? B.hl.stats().spinNs : null;
+const spin0 = spin();
+const wall0 = process.hrtime.bigint();
 const ms = [];
 for (let i = 0; i < SAMPLES; i++) {
   const t = process.hrtime.bigint();
   loss = step();
   ms.push(Number(process.hrtime.bigint() - t) / 1e6);
 }
+const wallTotal = Number(process.hrtime.bigint() - wall0) / 1e6;
+const spinTotal = spin0 === null ? null : (spin() - spin0) / 1e6;
 ms.sort((a, b) => a - b);
 const med = ms[Math.floor(ms.length / 2)];
 const st = B.stats ? B.stats() : null;
 console.log(`${(BATCH * SEQ / (med / 1000)).toFixed(0).padStart(8)} tok/s   median ${med.toFixed(1)} ms  ` +
             `[${ms[0].toFixed(1)}-${ms[ms.length - 1].toFixed(1)}]  loss ${loss.toFixed(4)}  (${warm} warm)` +
-            (st && st.allocations !== undefined ? `  held ${(st.allocations * 4 / 1024).toFixed(2)} GB` : ""));
+            (st && st.allocations !== undefined ? `  held ${(st.allocations * 4 / 1024).toFixed(2)} GB` : "") +
+            (spinTotal === null ? "" :
+              `\n${" ".repeat(9)}GPU ${(spinTotal / SAMPLES).toFixed(1)} ms/step = ` +
+              `${(spinTotal / wallTotal * 100).toFixed(0)}% of wall, host ${((wallTotal - spinTotal) / SAMPLES).toFixed(1)} ms/step`));

@@ -188,11 +188,31 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
 #define MUTATION_BIT 0x40000000u
   const NvU32 work = k->workElements ? k->workElements : PR_N;
   const NvU32 checked = k->checkedElements ? k->checkedElements : work;
+  /*
+   * FENCE BETWEEN THE PERTURBATION AND THE READ, because the output buffer is
+   * WRITE-COMBINED and this loop is the one place the HOST writes it.
+   *
+   * chk_zeros compares every element against 0.0f and the mutation sets 2.0f,
+   * so it cannot legitimately miss -- yet this check failed intermittently,
+   * roughly one gate run in two, at a different index each time (o[62], then
+   * o[56]). That pattern is not a checker with a gap; it is a store that has
+   * not landed. A write-combining buffer may hold the store past the reload
+   * that follows it, so k->check() reads back the original zero, sees nothing
+   * wrong, and the loop reports the checker as not looking.
+   *
+   * Everywhere else in this stack the host writes device-visible memory and
+   * fences before handing over (see hermes_launch's callers); this loop wrote
+   * and immediately re-read without one. Two fences: after the mutation so
+   * check() sees it, and after the restore so the NEXT iteration's baseline is
+   * the real value rather than a mutated leftover.
+   */
   for (NvU32 i = 0; i < checked; i++) {
     const NvU32 saved = o[i];
     o[i] = saved ^ MUTATION_BIT;
+    __asm__ __volatile__("sfence" ::: "memory");
     const char *caught = k->check(o);
     o[i] = saved;
+    __asm__ __volatile__("sfence" ::: "memory");
     if (!caught) {
       snprintf(g_mut, sizeof g_mut,
                "%s: checker accepts a perturbed o[%u] -- it does not check it",

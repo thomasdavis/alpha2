@@ -2883,7 +2883,7 @@ export class HeliosBackend implements Backend {
     return makeTensor(shape, dtype, data);
   }
 
-  fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype: Dtype = "f32"): TensorData {
     const size = shapeSize(shape);
     if (data.length !== size) throw new Error(`Data length ${data.length} != shape size ${size}`);
     const Ctor = dtypeArray(dtype);
