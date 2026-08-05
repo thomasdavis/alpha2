@@ -47,6 +47,16 @@ int hl_reduce(helios_context *ctx, int mean, helios_tensor out,
 int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
                    unsigned width, unsigned rows);
 
+/*
+ * out[c] = sum over rows of a[r][c] — the bias-shaped gradient.
+ *
+ * Its own entry point rather than a mode of hl_reduce_rows, which collapses the
+ * COLUMN axis and keeps rows. This one is the transpose of that question and a
+ * completely different access pattern: coalesced along the axis it keeps.
+ */
+int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  unsigned rows, unsigned cols);
+
 /* out = normalise(a) over rows of `width`, one block per row. */
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps);

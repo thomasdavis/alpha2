@@ -150,6 +150,13 @@ int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
   return run(ctx, k, ts, 2, NULL, 0);
 }
 
+int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  unsigned rows, unsigned cols) {
+  const helios_key k = {HL_COLUMN_SUM, rows, cols, 0};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, 0, 0);
+}
+
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps) {
   /* The row count is part of the KEY, not just the launch: a program built for

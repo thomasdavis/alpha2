@@ -1445,6 +1445,22 @@ export class NativeHeliosBackend implements Backend {
    * the thing in front of the reader.
    */
 
+  /*
+   * out[c] = sum over rows of a[r][c] — the bias-shaped gradient.
+   *
+   * Public because it is the right answer for every reduction that collapses
+   * the token axis and keeps the feature axis, not only for a layer norm's dw
+   * and db. See pr_emit_column_sum for why this is a kernel rather than either
+   * of the two compositions that came before it.
+   */
+  columnSum(a: TensorData, rows: number, cols: number): TensorData {
+    const da = this.device(a);
+    const out = this.make([cols], "f32");
+    this.check(this.hl.columnSum(out.buffer.handle, da.buffer.handle, rows, cols),
+               "columnSum", da);
+    return out;
+  }
+
   /**
    * layerNorm's backward — dx and xhat in one launch, dw and db from three ops.
    *
@@ -1471,20 +1487,26 @@ export class NativeHeliosBackend implements Backend {
       "layerNormBackward", dxIn, dgIn, dwIn);
 
     /*
-     * Down the row axis — AS A MATMUL WITH A VECTOR OF ONES, not as sum().
+     * Down the row axis — ITS OWN KERNEL, after two other routes were measured.
      *
-     * sum(x, 0) over a [512, 640] gradient takes the transpose route, because
-     * 512 is a power of two and fits a block; that allocates a full transposed
-     * copy of its input. Two of them a layer, and a release only MARKS — the
-     * buffer is not reusable until helios_end_step — so peak memory here is
-     * total bytes ALLOCATED in a step, not the live set. Two full-size
-     * transposes a layer is what made this arm exhaust the card while the
-     * JavaScript fallback did not.
+     * `sum(x, 0)` takes the transpose route, which allocates a full transposed
+     * copy of its input. Two a layer, and a release only MARKS — the buffer is
+     * not reusable until helios_end_step — so a step's peak is the bytes
+     * ALLOCATED, and that is what exhausted the card here while the JavaScript
+     * fallback did not.
      *
-     * ones[1,R] @ x[R,C] is the same sum in one launch with no temporary
-     * larger than the result. reduceOverAxis already takes this route when the
-     * axis is too long for a block; here it is taken because of what it does
-     * NOT allocate.
+     * `ones[1,R] @ x[R,C]` replaced it and allocates nothing larger than the
+     * result, which fixed the memory and hid a much larger cost. It is a GEMM
+     * with ONE output row: it fills a 32x128 tensor-core tile to a
+     * thirty-second and falls off the HMMA path entirely. Profiling by SHAPE
+     * rather than by op name put it at 74 calls of [1,1536] x [1536,640],
+     * 298 us each, 22.0 ms — 21% of the whole GPU step, and the largest single
+     * line in the profile. The op-name view could not see it, because "matmul"
+     * averaged it together with the m1536 projections that run at 20 TFLOP/s.
+     *
+     * It moves 3.9 MB and writes 2.5 KB, which is about 10 us of bandwidth.
+     * pr_emit_column_sum is that kernel: coalesced along the axis it keeps, one
+     * block per 32 columns, no temporary at all.
      */
     /*
      * EVERY VIEW TAKEN HERE MUST BE GIVEN BACK. `reshape` RETAINS, so a view of
@@ -1497,8 +1519,7 @@ export class NativeHeliosBackend implements Backend {
      */
     const flatG = this.reshape(g, [rows, width]);
     const ones = this.onesRow(rows);
-    const sumRows = (x: TensorData) =>
-      this.reshapeOwned(this.matmul(ones, x), [width]);
+    const sumRows = (x: TensorData) => this.columnSum(x, rows, width);
     const db = sumRows(flatG);
     /*
      * g * xhat IN PLACE, over xhat's own buffer.

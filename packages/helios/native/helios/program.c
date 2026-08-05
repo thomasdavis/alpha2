@@ -6,6 +6,7 @@
 #include "../prometheus/builders.h"
 #include "../prometheus/hmma.h"
 #include "../prometheus/normalize.h"
+#include "../prometheus/colsum.h"
 #include "../prometheus/indexing.h"
 
 #include <string.h>
@@ -116,6 +117,15 @@ static int emit(const helios_key *key, helios_program *p) {
       p->blockX = pr_normalize_block((pr_norm_op)key->arg0, n);
       p->gridX = key->arg2 ? key->arg2 : 1;
       p->sharedBytes = pr_normalize_block((pr_norm_op)key->arg0, n) * 4;
+      return 0;
+
+    case HL_COLUMN_SUM:
+      /* arg0 = rows, arg1 = cols. One block per 32 columns, 32 row-lanes deep;
+       * the row axis is walked, not split, so the grid is in columns alone. */
+      p->count = pr_emit_column_sum(p->code, key->arg0, key->arg1);
+      p->blockX = PR_COLSUM_BLOCK;
+      p->gridX = pr_colsum_grid(key->arg1);
+      p->sharedBytes = pr_colsum_shared();
       return 0;
 
     case HL_MATMUL:

@@ -53,6 +53,14 @@ typedef enum {
   HL_MATMUL_ACC,
   HL_MATMUL_T_ACC,
   HL_MATMUL_TA_ACC,
+  /*
+   * out[c] = sum over rows of in[r][c]. arg0 = rows, arg1 = cols.
+   *
+   * Both are part of the KEY and not only of the launch: the row count is the
+   * loop's trip bound and the column count is the row stride, and both are
+   * compiled into the program as immediates.
+   */
+  HL_COLUMN_SUM,
   HL_TRANSPOSE,   /* arg0 = rows, arg1 = cols */
   HL_SLICE_ROWS,  /* arg0 = out width, arg1 = source width */
   HL_BROADCAST,   /* arg0 = mode (0 tile, 1 row), arg1 = width */

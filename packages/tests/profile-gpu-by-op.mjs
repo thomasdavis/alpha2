@@ -43,6 +43,10 @@ const METHODS = ["add","sub","mul","div","neg","gelu","exp","log","sqrt","scale"
   "embedding","crossEntropy","transpose","slice","causalMask","maskedFill","cat","zeros",
   "ones","full","clone","broadcast","addInplace"];
 const cost = new Map();
+/* SHAPES=1 adds the per-shape breakdown; off by default so the headline table
+ * stays readable. */
+const SHAPES = process.env.SHAPES === "1";
+const shapeCost = new Map();
 let tracking = false, depth = 0;
 const hl = B.hl;
 for (const m of METHODS) {
@@ -58,6 +62,21 @@ for (const m of METHODS) {
     const us = (hl.stats().spinNs - before) / 1000;
     const e = cost.get(m) ?? { n: 0, us: 0 };
     e.n++; e.us += us; cost.set(m, e);
+    /*
+     * ALSO BY SHAPE, because "matmul: 264 us/call" is an average over two
+     * populations that have nothing to do with each other. A step runs ~110
+     * projection matmuls at m1536 and ~110 attention matmuls that are 240
+     * independent 64x64 problems, and the second kind sustains 3.4 TFLOP/s
+     * against the first kind's 20. An average over both describes neither, and
+     * the decision this profile exists to inform — what to fuse or restructure
+     * next — depends entirely on which of them holds the clock.
+     */
+    if (SHAPES) {
+      const dims = (t) => (t && t.shape ? t.shape.join("x") : "?");
+      const key = `${m} ${dims(args[0])} . ${dims(args[1])}`;
+      const se = shapeCost.get(key) ?? { n: 0, us: 0 };
+      se.n++; se.us += us; shapeCost.set(key, se);
+    }
     return r;
   };
 }
@@ -88,3 +107,25 @@ console.log(`${L}L seq ${SEQ} batch ${BATCH}: ${calls} operations, ${(total/1000
 console.log("operation           calls    GPU ms    %     us/call");
 for (const [k, v] of [...cost.entries()].sort((a,b) => b[1].us - a[1].us).slice(0, 12))
   console.log(`${k.padEnd(18)} ${String(v.n).padStart(6)}  ${(v.us/1000).toFixed(1).padStart(8)}  ${(v.us/total*100).toFixed(1).padStart(5)}  ${(v.us/v.n).toFixed(0).padStart(8)}`);
+
+if (SHAPES) {
+  console.log("\nby shape (top 20) — the operand dimensions, not the op name");
+  console.log("operation / operands                                calls    GPU ms    %     us/call");
+  for (const [k, v] of [...shapeCost.entries()].sort((a, b) => b[1].us - a[1].us).slice(0, 20))
+    console.log(`${k.padEnd(50)} ${String(v.n).padStart(5)}  ${(v.us / 1000).toFixed(1).padStart(8)}` +
+                `  ${(v.us / total * 100).toFixed(1).padStart(5)}  ${(v.us / v.n).toFixed(0).padStart(8)}`);
+
+  /* The two populations, summed. This is the number the next decision turns on. */
+  let big = { n: 0, us: 0 }, small = { n: 0, us: 0 };
+  for (const [k, v] of shapeCost) {
+    if (!/^matmul/.test(k)) continue;
+    /* An attention operand carries the batch*head dimension, so it has three
+     * axes where a projection operand has two. */
+    const t = (k.split(" ")[1] ?? "").split("x").length >= 3 ? small : big;
+    t.n += v.n; t.us += v.us;
+  }
+  console.log(`\n  projection GEMMs  ${String(big.n).padStart(4)} calls  ${(big.us / 1000).toFixed(1).padStart(6)} ms` +
+              `  ${(big.us / total * 100).toFixed(1)}% of GPU`);
+  console.log(`  attention  GEMMs  ${String(small.n).padStart(4)} calls  ${(small.us / 1000).toFixed(1).padStart(6)} ms` +
+              `  ${(small.us / total * 100).toFixed(1)}% of GPU`);
+}

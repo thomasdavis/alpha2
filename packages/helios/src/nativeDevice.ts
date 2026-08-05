@@ -88,6 +88,8 @@ export interface NativeAddon {
   reduce(mean: number, out: number, a: number, scratch: number, n: number): boolean;
   /** One value per row: one block per row, `width` threads each. */
   reduceRows(out: number, a: number, width: number, rows: number): boolean;
+  /* out[c] = sum over rows of a[r][c] — the bias-shaped gradient. */
+  columnSum(out: number, a: number, rows: number, cols: number): boolean;
   normalize(op: number, out: number, a: number, width: number, rows: number, eps: number): boolean;
   /* dx and xhat together; dw and db reduce down the other axis and are the
    * caller's job. Slot order is the kernel's and is not checked. */

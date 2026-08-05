@@ -109,6 +109,34 @@ const SHAPES = [
   ["mlp proj   fwd", M, 640, 2560, false],
 ];
 
+/*
+ * THE ATTENTION MATMULS, which every earlier version of this file left out.
+ *
+ * The eight shapes above are the projections, and they are the ones the rate
+ * headline has always been about. But a step runs roughly as many attention
+ * matmuls as projection matmuls, and they are a completely different shape: not
+ * one m1536 problem but 240 INDEPENDENT m64 n64 k64 problems, one per (batch,
+ * head). The FLOPs are trivial — 13.6 GFLOP a step against 888 — so if they
+ * take a comparable share of the clock, the arithmetic says nothing and the
+ * geometry says everything.
+ *
+ * That is worth measuring precisely because this kernel's rate is already known
+ * to track BLOCK COUNT rather than arithmetic: 80 blocks on 46 SMs gives 11.6
+ * TFLOP/s where 1,536 blocks gives 20.5. A 64x64 output with a 32x128 block
+ * tile is ONE block per batch element, and whether 240 of those fill the card
+ * is exactly the open question.
+ *
+ *   qk  [BH,T,D] x [BH,D,T]  -> [BH,T,T]   scores
+ *   av  [BH,T,T] x [BH,T,D]  -> [BH,T,D]   the weighted sum
+ *
+ * BH is batch*heads = 24*10 at the gate shape; T and D are 64.
+ */
+const BH = Number(process.env.BH ?? 240), T = 64, HD = 64;
+const BATCHED = [
+  ["attn qk    bat", BH, T, HD, T],
+  ["attn av    bat", BH, T, T, HD],
+];
+
 const spin = () => B.hl.stats().spinNs;
 
 function rate(name, M, N, K, transposed) {
@@ -216,6 +244,68 @@ function rate(name, M, N, K, transposed) {
   B.finishStepOps?.();
 }
 
+/*
+ * The same measurement for a BATCHED shape, kept as its own function rather
+ * than as a flag on `rate` because every piece of the arithmetic differs: the
+ * FLOP count carries the batch, the implied-traffic model has no block re-read
+ * across batch elements, and the operands are 3-D.
+ *
+ * Same three guards as `rate`, for the same reasons and they are not optional:
+ * warm by time, a dry run of exactly ITERS to fill the pool, and an L2 evict
+ * outside the clock. The dry run is what removed this file's first-case
+ * anomaly, and a batched output is bigger than a 2-D one, so it matters more.
+ */
+function rateBatched(name, batch, M2, K2, N2) {
+  const a = B.randn([batch, M2, K2], rng);
+  const b = B.randn([batch, K2, N2], rng);
+  const beacon = B.zeros([1]);
+  const drain = () => beacon.data[0];
+
+  const warmStart = process.hrtime.bigint();
+  while (Number(process.hrtime.bigint() - warmStart) / 1e6 < 2500) {
+    const c = B.matmul(a, b);
+    drain();
+    B.releaseGpuTensor?.(c);
+    B.finishStepOps?.();
+  }
+
+  const ITERS = 30;
+  for (let i = 0; i < ITERS; i++) {
+    const c = B.matmul(a, b);
+    B.releaseGpuTensor?.(c);
+  }
+  drain();
+  B.finishStepOps?.();
+  evictL2();
+  drain();
+
+  const t0 = process.hrtime.bigint();
+  let last = null;
+  for (let i = 0; i < ITERS; i++) {
+    if (last) B.releaseGpuTensor?.(last);
+    last = B.matmul(a, b);
+  }
+  drain();
+  const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  B.releaseGpuTensor?.(last);
+  B.finishStepOps?.();
+
+  const secs = wallMs / 1e3;
+  const flop = 2 * batch * M2 * N2 * K2 * ITERS;
+  /* One block per (batch, tile) — with a 64x64 output and a 32x128 tile that is
+   * two blocks per batch element, and the total is what decides whether the
+   * card is filled at all. */
+  const blocks = batch * Math.ceil(M2 / BM) * Math.ceil(N2 / BN);
+  console.log(
+    `  ${name}  b${String(batch).padEnd(3)} m${String(M2).padEnd(4)} n${String(N2).padEnd(4)} k${String(K2).padEnd(4)}` +
+    `  ${(flop / secs / 1e12).toFixed(2).padStart(6)} TFLOP/s` +
+    `  ${String(blocks).padStart(6)} blocks` +
+    `  ${(secs * 1e6 / ITERS).toFixed(0).padStart(6)} us/call`);
+
+  B.releaseGpuTensor?.(a); B.releaseGpuTensor?.(b); B.releaseGpuTensor?.(beacon);
+}
+
+
 console.log(`GEMM rate, tensor-core tile ${BM} rows x ${BN} cols`);
 console.log(`ceilings: 45.5 TFLOP/s from registers, 24-32 cuBLAS here, 448 GB/s DRAM\n`);
 /* ONE CASE PER PROCESS when asked, which is the only way to be sure a number
@@ -223,3 +313,7 @@ console.log(`ceilings: 45.5 TFLOP/s from registers, 24-32 cuBLAS here, 448 GB/s 
 const only = process.env.ONLY;
 for (const [name, M, N, K, t] of SHAPES)
   if (!only || name.replace(/\s+/g, "").startsWith(only)) rate(name, M, N, K, t);
+
+console.log();
+console.log("attention, batched — 240 independent 64x64 problems, not one big one");
+for (const [name, batch, M2, K2, N2] of BATCHED) rateBatched(name, batch, M2, K2, N2);
