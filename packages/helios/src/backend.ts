@@ -5013,6 +5013,16 @@ export class HeliosBackend implements Backend {
    */
   matmulTransposed(a: TensorData, b: TensorData): TensorData {
     const aNdim = a.shape.length, bNdim = b.shape.length;
+    /* A SHARED WEIGHT HAS NO BATCH TO STRIDE — see gpuMatmul. Taking M as A's
+     * second-to-last axis counts one batch element's rows and silently drops
+     * the rest, which is invisible at batch 1 where they coincide. Flatten and
+     * re-enter, then restore A's leading axes on the result. */
+    if (bNdim === 2 && aNdim > 2) {
+      const K0 = a.shape[aNdim - 1];
+      const rows = shapeSize(a.shape) / K0;
+      const out = this.matmulTransposed(this.reshape(a, [rows, K0]), b);
+      return this.reshape(out, [...a.shape.slice(0, -1), b.shape[bNdim - 2]]);
+    }
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
     const N = b.shape[bNdim - 2]; // B is [N, K], so N is dim -2
     // Use compute FLOPs threshold like regular matmul
@@ -5029,6 +5039,24 @@ export class HeliosBackend implements Backend {
    */
   matmulTransposedA(a: TensorData, b: TensorData): TensorData {
     const aNdim = a.shape.length, bNdim = b.shape.length;
+    /*
+     * THIS ONE COMPUTES dW, and getting M wrong here is worse than a wrong
+     * answer — it is a quietly wrong GRADIENT.
+     *
+     * A^T x B sums over every row of both operands, and for [B,T,C] and [B,T,N]
+     * that is B*T rows. Taking M as the second-to-last axis gives T, so the
+     * weight gradient accumulated ONE batch element and discarded the other
+     * B-1. The shape check passed because it compared the same wrong number on
+     * both sides, and the forward loss never moved because nothing here touches
+     * it. At batch 1 the two agree, which is why it has held up so far.
+     */
+    if (aNdim > 2 || bNdim > 2) {
+      const K0 = a.shape[aNdim - 1], N0 = b.shape[bNdim - 1];
+      const rows = shapeSize(a.shape) / K0;
+      if (shapeSize(b.shape) / N0 === rows)
+        return this.matmulTransposedA(this.reshape(a, [rows, K0]),
+                                      this.reshape(b, [rows, N0]));
+    }
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
     const bM = b.shape[bNdim - 2], N = b.shape[bNdim - 1];
     if (bM !== M) throw new Error("matmulTransposedA shape mismatch");
