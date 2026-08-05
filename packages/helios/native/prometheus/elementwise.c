@@ -22,7 +22,8 @@ static int reads_b(pr_ew_op op) {
    * train-model-native, which compares parameter gradients rather than only the
    * loss; nothing that watches the loss can see a broken backward. */
   return op == PR_EW_ADD || op == PR_EW_SUB || op == PR_EW_MUL ||
-         op == PR_EW_DIV || op == PR_EW_GELU_GRAD;
+         op == PR_EW_DIV || op == PR_EW_GELU_GRAD ||
+         op == PR_EW_CLAMP_GRAD;
 }
 
 /* ADD_INPLACE reads the OUTPUT array as well as writing it, which is the whole

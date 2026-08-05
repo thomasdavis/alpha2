@@ -37,6 +37,8 @@ unsigned pr_ew_scalars_read(pr_ew_op op) {
   switch (op) {
     case PR_EW_GELU_GRAD:
       return 5;
+    case PR_EW_CLAMP_GRAD:
+      return 4;
     case PR_EW_GELU:
     case PR_EW_SOFTCAP:
       return 4;
@@ -161,6 +163,30 @@ unsigned pr_ew_emit_op(hp_word *p, pr_ew_op op) {
     case PR_EW_FILL:
       p[0] = hp_iadd3_imm(R_RESULT, R_SCALAR, 0, hp_ctrl_safe());
       return 1;
+
+    /*
+     * clampBackward: g where lo <= a <= hi, zero outside.
+     *
+     * There is no comparison kernel and none is needed. clamp(a) equals a
+     * EXACTLY where a was in range, so the difference is exactly zero there and
+     * nonzero outside — not merely small, which is what makes an indicator
+     * built from it sound rather than a trick. Squaring, scaling by something
+     * large and clamping to [0,1] turns "nonzero" into 1 without a branch.
+     *
+     * Scalars: lo, hi, a large number, 1.
+     */
+    case PR_EW_CLAMP_GRAD:
+      p[0] = hp_fmnmx(R_TEMP, R_VALUE, R_SCALAR, 1, both_loads);
+      p[1] = hp_fmnmx(R_TEMP, R_TEMP, R_SCALAR2, 0, hp_ctrl_safe());
+      p[2] = hp_fneg(R_TEMP, R_TEMP, hp_ctrl_safe());
+      p[3] = hp_fadd(R_TEMP, R_TEMP, R_VALUE, hp_ctrl_safe());
+      p[4] = hp_fmul(R_TEMP, R_TEMP, R_TEMP, hp_ctrl_safe());
+      p[5] = hp_fmul(R_TEMP, R_TEMP, R_SCALAR3, hp_ctrl_safe());
+      p[6] = hp_fmnmx(R_TEMP, R_TEMP, R_SCALAR4, 0, hp_ctrl_safe());
+      p[7] = hp_fneg(R_TEMP, R_TEMP, hp_ctrl_safe());
+      p[8] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR4, hp_ctrl_safe());
+      p[9] = hp_fmul(R_RESULT, R_TEMP, R_B_VALUE, hp_ctrl_safe());
+      return 10;
 
     /* clamp(a, lo, hi) = min(max(a, lo), hi). Two FMNMX, opposite senses. */
     case PR_EW_CLAMP:

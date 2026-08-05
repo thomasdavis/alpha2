@@ -755,6 +755,23 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * g where the forward did not clamp, zero where it did.
+   *
+   * No comparison kernel is needed: clamp(a) equals a EXACTLY in range, so the
+   * difference is exactly zero there — not merely small, which is what makes
+   * the indicator sound rather than a trick.
+   */
+  clampBackward(a: TensorData, g: TensorData, lo: number, hi: number): TensorData {
+    const da = this.device(a), dg = this.device(g);
+    const out = this.make(a.shape, "f32");
+    this.check(
+      this.hl.elementwise(this.hl.op.clampGrad, out.buffer.handle, da.buffer.handle,
+                          dg.buffer.handle, shapeSize(a.shape), lo, hi, 1e30, 1, 0, 0, 4),
+      "clampBackward", da, dg);
+    return out;
+  }
+
   softmax(a: TensorData, axis?: number): TensorData {
     if (axis !== undefined && this.axisOf(a.shape, axis) !== a.shape.length - 1)
       this.unsupported("softmax over a non-final axis");

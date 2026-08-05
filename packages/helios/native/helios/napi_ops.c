@@ -215,6 +215,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   OP("relu", PR_EW_RELU);
   OP("gelu", PR_EW_GELU);
   OP("geluGrad", PR_EW_GELU_GRAD);
+  OP("clampGrad", PR_EW_CLAMP_GRAD);
   OP("silu", PR_EW_SILU);
   OP("exp", PR_EW_EXP);
   OP("log", PR_EW_LOG);
