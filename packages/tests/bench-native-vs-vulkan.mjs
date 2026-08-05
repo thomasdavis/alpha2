@@ -15,7 +15,19 @@ import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index
 
 const C = { vocabSize: 64, blockSize: 32, nLayer: 2, nEmbd: 64, nHead: 4, dropout: 0 };
 const TOKENS = C.blockSize;
-const WARMUP = 10, SAMPLES = 25;
+/*
+ * Warm up by TIME, not by step count.
+ *
+ * This card idles at 210 MHz and runs at 2100 -- a 10x clock swing -- and
+ * nvidia-smi cannot lock clocks inside the container, so the only defence is to
+ * hold the GPU busy until it has ramped. Ten steps was 0.85 s and not enough:
+ * the same Vulkan binary measured 127 tok/s in a cold process and 628 in a warm
+ * one, which is a 4.9x error, far larger than any change worth arguing about.
+ *
+ * Three seconds is where the medians stopped moving. The step floor keeps the
+ * warmup meaningful for a backend fast enough to do 3 s in very few steps.
+ */
+const WARMUP_MS = 3000, WARMUP_MIN = 10, SAMPLES = 25;
 
 function step(B, params) {
   const tape = new Tape();
@@ -31,7 +43,13 @@ function bench(name, make) {
   try { B = make(); } catch (e) { console.log(`${name.padEnd(15)} unavailable`); return null; }
   const params = initGPT(C, B, new SeededRng(7));
   let loss = 0;
-  for (let i = 0; i < WARMUP; i++) loss = step(B, params);
+  const warmStart = process.hrtime.bigint();
+  let warmSteps = 0;
+  while (warmSteps < WARMUP_MIN ||
+         Number(process.hrtime.bigint() - warmStart) / 1e6 < WARMUP_MS) {
+    loss = step(B, params);
+    warmSteps++;
+  }
 
   const ms = [];
   for (let i = 0; i < SAMPLES; i++) {
@@ -46,12 +64,29 @@ function bench(name, make) {
    * anything: two medians closer together than either spread are the same. */
   console.log(
     `${name.padEnd(15)} ${(TOKENS / (med / 1000)).toFixed(0).padStart(6)} tok/s   ` +
-    `median ${med.toFixed(1)} ms  [${lo.toFixed(1)}-${hi.toFixed(1)}]  loss ${loss.toFixed(4)}`);
+    `median ${med.toFixed(1)} ms  [${lo.toFixed(1)}-${hi.toFixed(1)}]  loss ${loss.toFixed(4)}` +
+    `  (${warmSteps} warmup steps)`);
   return TOKENS / (med / 1000);
 }
 
-console.log(`${C.nLayer}L ${C.nEmbd}d ${C.nHead}h, ${TOKENS} tok/step, ${WARMUP} warmup + ${SAMPLES} samples\n`);
-const n = bench("helios-native", () => new NativeHeliosBackend(0));
-const v = bench("helios-vulkan", () => new HeliosBackend());
-bench("cpu_ref", () => new CpuRefBackend());
+/*
+ * ONE BACKEND PER PROCESS, when it matters.
+ *
+ * Running all three in one process is convenient and it is not safe: the
+ * native stack holds an open channel and pinned slabs for the rest of the
+ * process, and with those held the SAME Vulkan binary measured 142 tok/s where
+ * it had measured 627 -- a 4.4x swing in code that had not changed. Whichever
+ * direction that interference runs, a comparison drawn from it is worthless.
+ *
+ * So `node bench-native-vs-vulkan.mjs native|vulkan|cpu` runs exactly one, and
+ * the caller compares numbers from separate processes. With no argument it
+ * still runs all three, which is fine for a quick look and labelled as such.
+ */
+const which = process.argv[2];
+console.log(`${C.nLayer}L ${C.nEmbd}d ${C.nHead}h, ${TOKENS} tok/step, ${WARMUP_MS}ms warmup + ${SAMPLES} samples` +
+            (which ? ` — ${which} only` : " — ALL THREE IN ONE PROCESS, they interfere") + "\n");
+const want = (name) => !which || which === name;
+const n = want("native") ? bench("helios-native", () => new NativeHeliosBackend(0)) : null;
+const v = want("vulkan") ? bench("helios-vulkan", () => new HeliosBackend()) : null;
+if (want("cpu")) bench("cpu_ref", () => new CpuRefBackend());
 if (n && v) console.log(`\nnative / vulkan = ${(n / v).toFixed(2)}x  ${n > v ? "AHEAD" : "behind"}`);

@@ -636,19 +636,38 @@ export class NativeHeliosBackend implements Backend {
    * contiguously either way. Copying here would be work done to produce a
    * tensor byte-identical to the one that already existed.
    */
+  /*
+   * ...and it stopped being free by writing `data: da.data`.
+   *
+   * That spelling READS the source's getter, and the getter is where the queue
+   * barrier lives -- so the one operation that launches nothing was draining
+   * the queue, 50 times a step, 367 us each: 18.4 ms of an 86 ms step, more
+   * than any real kernel. It also flattened the barrier away, since the result
+   * held a resolved array rather than a property, so a later read of the view
+   * would not have flushed at all.
+   *
+   * Carrying the getter across fixes both. The view is computed eagerly because
+   * `subarray` allocates nothing and launches nothing; only the FLUSH is
+   * deferred, to the moment somebody actually reads.
+   */
   reshape(a: TensorData, shape: Shape): NativeTensor {
     if (shapeSize(shape) !== shapeSize(a.shape))
       throw new Error(
         `helios-native: reshape ${a.shape} -> ${shape} changes the element count`,
       );
     const da = this.device(a);
-    const view: NativeTensor = {
+    const hl = this.hl;
+    const buffer = da.buffer;
+    const view = buffer.floats.subarray(0, shapeSize(shape));
+    return {
       shape,
       dtype: da.dtype,
-      data: da.data,
-      buffer: da.buffer,
-    };
-    return view;
+      get data() {
+        hl.flush();
+        return view;
+      },
+      buffer,
+    } as NativeTensor;
   }
 
   clone(a: TensorData): TensorData {
@@ -945,8 +964,10 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /** Pool and program statistics, for confirming a step reuses rather than
-   * reallocates. `allocations` should stop growing after the first step. */
-  stats(): { live: number; pooled: number; allocations: number; programs: number; enqueued: number; flushes: number } {
+   * reallocates. `carved` is the one to watch: it should stop growing after
+   * the first step, and `allocations` cannot show that any more now that a
+   * trip to the driver buys a whole slab. */
+  stats(): { live: number; pooled: number; allocations: number; carved: number; programs: number; enqueued: number; flushes: number } {
     this.sync();
     return this.hl.stats();
   }

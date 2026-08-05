@@ -37,7 +37,11 @@ export interface NativeAddon {
   stats(): {
     live: number;
     pooled: number;
+    /** Trips to the driver — slabs, not tensors. Rare by design. */
     allocations: number;
+    /** Requests the free list could not serve. This is the one that reveals a
+     * pool that never recycles; `allocations` no longer can. */
+    carved: number;
     programs: number;
     enqueued: number;
     flushes: number;

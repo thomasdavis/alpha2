@@ -1,0 +1,139 @@
+/* Where does a native step's time actually go?
+ *
+ * The benchmark says 90 tok/s against Vulkan's 651 and the commit log blames
+ * "a drain per operation", but that is an inference from what the code does,
+ * not a measurement of what it costs. This measures it.
+ *
+ * Three questions, in order of how much they would change the plan:
+ *   1. How many enqueues and how many FLUSHES does one step take? Batching only
+ *      helps if flushes are far fewer than enqueues.
+ *   2. Which backend methods hold the wall clock, and how many calls each?
+ *   3. Of a method's time, how much is the C call and how much is JavaScript?
+ *
+ * Method wrapping counts the OUTERMOST call only. binary() calls expand()
+ * calls device(); attributing the inner time to both would double-count and
+ * make the total exceed the step. */
+import { NativeHeliosBackend } from "/workspace/alpha2/packages/helios/dist/index.js";
+import { SeededRng } from "/workspace/alpha2/packages/core/dist/index.js";
+import { Tape } from "/workspace/alpha2/packages/autograd/dist/index.js";
+import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index.js";
+
+const C = { vocabSize: 64, blockSize: 32, nLayer: 2, nEmbd: 64, nHead: 4, dropout: 0 };
+const TOKENS = C.blockSize;
+
+const B = new NativeHeliosBackend(0);
+
+/* The flush, measured separately.
+ *
+ * Method wrapping attributes time to whichever backend call is outermost, and
+ * a large share of the step is in NEITHER -- the tape and the model read
+ * `.data` directly, and that getter drains the queue. Those drains are real
+ * time that no method row can show. Wrapping the addon's flush catches every
+ * one of them, wherever it was triggered from. */
+const hl = B.hl;
+const rawFlush = hl.flush.bind(hl);
+let flushN = 0, flushMs = 0;
+/* A flush with nothing queued costs 0.1 us and one that actually waits costs
+ * hundreds. Counting them together hides which is which, so anything over this
+ * is treated as a REAL DRAIN and attributed to whoever caused it. */
+const DRAIN_US = 50;
+let drainN = 0, drainMs = 0;
+const drainBy = new Map();
+let current = "(tape/model)";
+hl.flush = () => {
+  const t = process.hrtime.bigint();
+  try { return rawFlush(); }
+  finally {
+    const us = Number(process.hrtime.bigint() - t) / 1000;
+    flushMs += us / 1000; flushN++;
+    if (us > DRAIN_US) {
+      drainN++; drainMs += us / 1000;
+      const e = drainBy.get(current) ?? { n: 0, ms: 0 };
+      e.n++; e.ms += us / 1000;
+      drainBy.set(current, e);
+    }
+  }
+};
+
+/* Wrap every public method with a counter and a timer. Depth guards the
+ * outermost-only rule. */
+const prof = new Map();
+let depth = 0;
+const METHODS = [
+  "add", "sub", "mul", "div", "neg", "relu", "gelu", "silu", "exp", "log",
+  "sqrt", "scale", "clamp", "pow", "matmul", "sum", "mean", "rmsNorm",
+  "layerNorm", "softmax", "embedding", "crossEntropy", "transpose", "zeros",
+  "ones", "full", "fromArray", "reshape", "clone", "slice", "causalMask",
+  "maskedFill", "cat", "gather", "argmax", "topk", "release", "randn",
+];
+for (const m of METHODS) {
+  const orig = B[m];
+  if (typeof orig !== "function") continue;
+  B[m] = function (...args) {
+    if (depth > 0) return orig.apply(this, args);
+    depth++;
+    const outer = current;
+    current = m;
+    const t = process.hrtime.bigint();
+    try {
+      return orig.apply(this, args);
+    } finally {
+      const dt = Number(process.hrtime.bigint() - t) / 1e6;
+      depth--;
+      current = outer;
+      const e = prof.get(m) ?? { n: 0, ms: 0 };
+      e.n++; e.ms += dt;
+      prof.set(m, e);
+    }
+  };
+}
+
+function step(params) {
+  const tape = new Tape();
+  const tok = B.fromArray(Array.from({ length: TOKENS }, (_, i) => i % C.vocabSize), [1, TOKENS]);
+  const tgt = B.fromArray(Array.from({ length: TOKENS }, (_, i) => (i + 1) % C.vocabSize), [1, TOKENS]);
+  const out = gptForward(C, params, B, tape, tok, tgt, true);
+  tape.backward(out.loss, B);
+  return out.loss.data.data[0];
+}
+
+const params = initGPT(C, B, new SeededRng(7));
+for (let i = 0; i < 10; i++) step(params);
+
+prof.clear();
+const before = B.stats();
+flushN = 0; flushMs = 0; drainN = 0; drainMs = 0; drainBy.clear();
+const t0 = process.hrtime.bigint();
+const N = 10;
+for (let i = 0; i < N; i++) step(params);
+const total = Number(process.hrtime.bigint() - t0) / 1e6;
+const after = B.stats();
+
+const enq = (after.enqueued - before.enqueued) / N;
+const fls = (after.flushes - before.flushes) / N;
+console.log(`\nstep ${(total / N).toFixed(1)} ms   enqueued ${enq.toFixed(1)}/step   flushes ${fls.toFixed(1)}/step   ` +
+            `enq-per-flush ${(enq / Math.max(fls, 1)).toFixed(2)}`);
+console.log(`pool: live ${after.live} pooled ${after.pooled} slabs ${after.allocations} carved ${after.carved} programs ${after.programs}`);
+console.log(`flush: ${(flushN / N).toFixed(0)} calls/step, ${(flushMs / N).toFixed(2)} ms/step total`);
+console.log(`  of which REAL DRAINS (>${DRAIN_US}us): ${(drainN / N).toFixed(1)}/step  ` +
+            `${(drainMs / N).toFixed(2)} ms/step  ${((drainMs / N) / (total / N) * 100).toFixed(1)}% of step  ` +
+            `${((drainMs / Math.max(drainN, 1)) * 1000).toFixed(0)} us each`);
+const dr = [...drainBy.entries()].sort((a, b) => b[1].ms - a[1].ms);
+for (const [who, e] of dr)
+  console.log(`    ${who.padEnd(16)} ${(e.n / N).toFixed(1).padStart(6)} drains/step ${(e.ms / N).toFixed(2).padStart(8)} ms/step`);
+console.log();
+
+const rows = [...prof.entries()]
+  .map(([m, e]) => ({ m, n: e.n / N, ms: e.ms / N }))
+  .sort((a, b) => b.ms - a.ms);
+console.log("method             calls/step    ms/step   %step    us/call");
+let acc = 0;
+for (const r of rows) {
+  if (r.ms < 0.05) continue;
+  acc += r.ms;
+  console.log(
+    `${r.m.padEnd(18)} ${r.n.toFixed(1).padStart(9)} ${r.ms.toFixed(2).padStart(10)} ` +
+    `${((r.ms / (total / N)) * 100).toFixed(1).padStart(6)}% ${((r.ms / r.n) * 1000).toFixed(1).padStart(10)}`);
+}
+console.log(`${"accounted".padEnd(18)} ${"".padStart(9)} ${acc.toFixed(2).padStart(10)} ` +
+            `${((acc / (total / N)) * 100).toFixed(1).padStart(6)}%`);

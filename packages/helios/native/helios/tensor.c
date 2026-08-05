@@ -22,14 +22,57 @@
  * allocates one. A best-fit search over arbitrary sizes would reuse memory
  * better and would also mean a 1 MiB request could be served by a 64 MiB
  * buffer, quietly holding sixty-three megabytes hostage for the run.
+ *
+ * The 4 KiB FLOOR is deliberately kept now that tensors share a slab. A tensor
+ * still occupies its whole class, so the slack past its end is its own and a
+ * kernel that reads a little past the end sees what it saw before -- untouched
+ * bytes, not the next tensor's data. Lowering the floor would have shrunk the
+ * guard band and turned an over-read from a harmless zero into a plausible
+ * wrong number, which is the failure mode this file is most afraid of.
  */
 #define MIN_CLASS_SHIFT 12 /* 4 KiB */
 #define NUM_CLASSES 20     /* up to 2 GiB */
 
+/*
+ * How much memory one trip to the driver buys.
+ *
+ * 4 MiB, and it is a MEASURED ceiling rather than a chosen size. gaia_alloc
+ * asks for physically CONTIGUOUS pages, and tools/slab_probe.c walks the sizes
+ * on this hardware:
+ *
+ *     256M..8M  alloc FAIL
+ *     4M        alloc ok, map_gpu ok, map_host ok
+ *
+ * which is the kernel's MAX_ORDER limit -- 1024 pages of 4 KiB. 64 MiB was
+ * tried first, on arithmetic, and every allocation failed; the pool then served
+ * nothing at all and the layer suite went red. A constant a machine silently
+ * refuses is worse than a smaller one that works.
+ *
+ * It is still worth ~1024 carves of the smallest class per trip to the driver,
+ * which is the whole point: 283 allocations a step becomes well under one.
+ */
+#define SLAB_BYTES (4ull * 1024 * 1024)
+/* 16 GiB of ceiling. Not a reservation -- slabs are allocated on demand, and
+ * this only bounds how many can exist. */
+#define MAX_SLABS 4096
+
+/*
+ * A slab: one driver allocation, mapped once, carved many times.
+ *
+ * Bump-only. A slab is never partially reclaimed -- the free list recycles
+ * CARVES, not slab space -- so `used` only ever grows. That is what makes the
+ * carve a pointer bump with no search and no fragmentation logic.
+ */
 typedef struct {
   gaia_buffer buf;
+  NvU64 used;
+} slab;
+
+typedef struct {
+  NvU64 offset;    /* where this tensor starts inside its slab */
   NvU64 requested; /* what the caller asked for, not the class size */
   NvU32 generation;
+  int slabIndex;
   int inUse;
   int classIndex;
   int nextFree;    /* -1 terminates; links the free list of its class */
@@ -37,6 +80,8 @@ typedef struct {
 } slot;
 
 static slot g_slots[MAX_TENSORS];
+static slab g_slabs[MAX_SLABS];
+static unsigned g_slabCount;
 static int g_freeHead[NUM_CLASSES];
 /*
  * Buffers released while launches are still queued.
@@ -97,13 +142,71 @@ static helios_tensor make_handle(unsigned index, NvU32 generation) {
   return ((index + 1u) & INDEX_MASK) | ((generation & 0xffffu) << INDEX_BITS);
 }
 
+/*
+ * Find room for `size`, adding a slab if the current one is full.
+ *
+ * Returns the slab index and writes the offset, or -1. A request larger than a
+ * standard slab gets a slab of its own rather than a special case elsewhere:
+ * one code path, and an oversized tensor still frees and recycles like any
+ * other.
+ */
+static int carve(helios_context *ctx, NvU64 size, NvU64 *offset) {
+  if (g_slabCount > 0) {
+    slab *s = &g_slabs[g_slabCount - 1];
+    if (s->buf.size - s->used >= size) {
+      *offset = s->used;
+      s->used += size;
+      return (int)(g_slabCount - 1);
+    }
+  }
+
+  if (g_slabCount >= MAX_SLABS) return -1;
+  slab *s = &g_slabs[g_slabCount];
+
+  /*
+   * Ask for a full slab, then HALVE until the machine agrees.
+   *
+   * 4 MiB is what this hardware gives (see SLAB_BYTES), but the limit is the
+   * kernel's contiguous-page ceiling and that moves with memory pressure and
+   * with whatever machine this runs on next. Failing the whole allocation
+   * because a slab-sized request was refused would turn a busy machine into a
+   * dead backend, when a smaller slab would have served perfectly well.
+   *
+   * The floor is the request itself: below that the carve cannot be satisfied
+   * and -1 is the honest answer.
+   */
+  NvU64 want = size > SLAB_BYTES ? size : SLAB_BYTES;
+  for (;;) {
+    memset(s, 0, sizeof *s);
+    if (gaia_alloc(&ctx->device, &s->buf, want, GAIA_SYSMEM) == 0 &&
+        gaia_map_gpu(&ctx->device, &s->buf) == 0 &&
+        gaia_map_host(&ctx->device, &s->buf) == 0)
+      break;
+    /* Partially constructed is the normal case here -- the allocation may have
+     * succeeded and a mapping failed -- and gaia_free is safe on that. */
+    gaia_free(&ctx->device, &s->buf);
+    if (want <= size) return -1;
+    want >>= 1;
+    if (want < size) want = size;
+  }
+
+  s->buf.size = want;
+  s->used = size;
+  *offset = 0;
+  g_stats.allocations++;
+  g_stats.bytesHeld += want;
+  return (int)g_slabCount++;
+}
+
 helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   init_once();
   if (bytes == 0) return HELIOS_TENSOR_NONE;
   const int c = class_of(bytes);
   if (c < 0) return HELIOS_TENSOR_NONE;
 
-  /* A buffer of this class already held? Take it without touching the driver. */
+  /* A buffer of this class already held? Take it without touching the driver.
+   * This is the path that matters: measured at 1.0 us against 802.3 us for a
+   * carve that has to ask RM for memory. */
   if (g_freeHead[c] >= 0) {
     const int index = g_freeHead[c];
     slot *s = &g_slots[index];
@@ -120,11 +223,12 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   slot *s = &g_slots[g_used];
   memset(s, 0, sizeof *s);
   const NvU64 size = 1ull << (MIN_CLASS_SHIFT + c);
-  if (gaia_alloc(&ctx->device, &s->buf, size, GAIA_SYSMEM) != 0)
-    return HELIOS_TENSOR_NONE;
-  if (gaia_map_gpu(&ctx->device, &s->buf) != 0) return HELIOS_TENSOR_NONE;
-  if (gaia_map_host(&ctx->device, &s->buf) != 0) return HELIOS_TENSOR_NONE;
+  NvU64 offset = 0;
+  const int si = carve(ctx, size, &offset);
+  if (si < 0) return HELIOS_TENSOR_NONE;
 
+  s->slabIndex = si;
+  s->offset = offset;
   s->classIndex = c;
   s->requested = bytes;
   s->generation = 1;
@@ -132,8 +236,7 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   s->nextFree = -1;
   const unsigned index = g_used++;
   g_stats.live++;
-  g_stats.allocations++;
-  g_stats.bytesHeld += size;
+  g_stats.carved++;
   return make_handle(index, s->generation);
 }
 
@@ -154,12 +257,13 @@ void helios_tensor_free(helios_tensor t) {
 
 NvU64 helios_tensor_addr(helios_tensor t) {
   const slot *s = resolve(t);
-  return s ? s->buf.gpuAddr : 0;
+  return s ? g_slabs[s->slabIndex].buf.gpuAddr + s->offset : 0;
 }
 
 void *helios_tensor_host(helios_tensor t) {
   slot *s = resolve(t);
-  return s ? s->buf.hostPtr : NULL;
+  return s ? (void *)((NvU8 *)g_slabs[s->slabIndex].buf.hostPtr + s->offset)
+           : NULL;
 }
 
 NvU64 helios_tensor_bytes(helios_tensor t) {
@@ -183,9 +287,14 @@ void helios_tensor_retire(void) {
 helios_tensor_stats helios_tensor_get_stats(void) { return g_stats; }
 
 void helios_tensor_release_all(helios_context *ctx) {
-  for (unsigned i = 0; i < g_used; i++) gaia_free(&ctx->device, &g_slots[i].buf);
+  /* The SLABS own the memory now, so they are what goes back to the driver.
+   * Freeing per slot would hand RM an address it never issued. */
+  for (unsigned i = 0; i < g_slabCount; i++)
+    gaia_free(&ctx->device, &g_slabs[i].buf);
   memset(g_slots, 0, sizeof g_slots);
+  memset(g_slabs, 0, sizeof g_slabs);
   memset(&g_stats, 0, sizeof g_stats);
+  g_slabCount = 0;
   g_used = 0;
   g_pendingHead = -1;
   g_init = 0;

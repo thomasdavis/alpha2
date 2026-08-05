@@ -238,6 +238,80 @@ static void test_tensor_pool(void) {
 }
 
 /*
+ * Tensors carved from one slab must not overlap.
+ *
+ * This is the failure the slab introduced the possibility of, and it is worth
+ * a test of its own because its symptom is the worst kind: two tensors sharing
+ * bytes produces finite, plausible, WRONG numbers from an operation that looks
+ * unrelated to the one that wrote them. No fault, no error.
+ *
+ * The expected values come from arithmetic on the addresses, not from a second
+ * allocator: distinct carves of one class are exactly the class size apart, the
+ * host and GPU addresses advance by the SAME offset (they are two mappings of
+ * one range, so a carve that moved one and not the other would put the CPU and
+ * the GPU on different bytes), and a write through one host pointer is not
+ * visible through another.
+ */
+static void test_slab_carves_do_not_overlap(void) {
+  HT_CASE("carves from one slab are disjoint in both address spaces");
+
+  helios_context ctx;
+  if (helios_context_open(&ctx, 0) != 0) {
+    printf("skip (no NVIDIA driver)\n");
+    ht_case_failed = 0;
+    return;
+  }
+  helios_tensor_release_all(&ctx);
+
+  enum { N = 8 };
+  helios_tensor t[N];
+  for (unsigned i = 0; i < N; i++) {
+    t[i] = helios_tensor_alloc(&ctx, 4096);
+    HT_TRUE(t[i] != HELIOS_TENSOR_NONE);
+  }
+
+  /* One trip to the driver for all eight -- that IS the slab. Eight carves,
+   * so `carved` counts them separately and still reveals a pool that is not
+   * recycling. */
+  HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
+  HT_EQ_U64(helios_tensor_get_stats().carved, N);
+
+  for (unsigned i = 1; i < N; i++) {
+    const NvU64 dGpu = helios_tensor_addr(t[i]) - helios_tensor_addr(t[i - 1]);
+    const NvU64 dHost = (NvU64)((NvU8 *)helios_tensor_host(t[i]) -
+                                (NvU8 *)helios_tensor_host(t[i - 1]));
+    HT_EQ_U64(dGpu, 4096);
+    HT_EQ_U64(dHost, 4096);
+  }
+
+  /* And the bytes really are separate: stamp each with its own index and read
+   * them all back. An overlap makes an earlier tensor carry a later one's
+   * value, which no address arithmetic would have caught if the mapping were
+   * wrong rather than the offset. */
+  for (unsigned i = 0; i < N; i++)
+    *(volatile NvU32 *)helios_tensor_host(t[i]) = 0xA5A50000u + i;
+  for (unsigned i = 0; i < N; i++)
+    HT_EQ_U64(*(volatile NvU32 *)helios_tensor_host(t[i]), 0xA5A50000u + i);
+
+  /* Freed and retired, the same memory comes back rather than more slab being
+   * spent -- so `carved` stops rising, which is the property that makes a long
+   * run bounded. */
+  for (unsigned i = 0; i < N; i++) helios_tensor_free(t[i]);
+  helios_flush(&ctx);
+  const unsigned carvedBefore = helios_tensor_get_stats().carved;
+  for (unsigned i = 0; i < N; i++) {
+    const helios_tensor r = helios_tensor_alloc(&ctx, 4096);
+    HT_TRUE(r != HELIOS_TENSOR_NONE);
+  }
+  HT_EQ_U64(helios_tensor_get_stats().carved, carvedBefore);
+  HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
+
+  helios_tensor_release_all(&ctx);
+  helios_context_close(&ctx);
+  HT_END();
+}
+
+/*
  * A short chain of real operations through the dispatcher.
  *
  * Chained on purpose: each reads what the one before it wrote, so it also tests
@@ -292,6 +366,7 @@ static void test_dispatch_chain(void) {
 void ht_run(void) {
   hl_batch_tests();
   test_tensor_pool();
+  test_slab_carves_do_not_overlap();
   test_dispatch_chain();
   test_cache_identity();
   test_context_and_reduction();

@@ -206,6 +206,10 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "pooled", v);
   napi_create_uint32(env, s.allocations, &v);
   napi_set_named_property(env, out, "allocations", v);
+  /* Reported beside `allocations` because slabs made that one rare: a pool
+   * that never recycles now shows up here and nowhere else. */
+  napi_create_uint32(env, s.carved, &v);
+  napi_set_named_property(env, out, "carved", v);
   napi_create_uint32(env, helios_program_count(), &v);
   napi_set_named_property(env, out, "programs", v);
   /* How many launches were queued and how many times the queue was drained.
