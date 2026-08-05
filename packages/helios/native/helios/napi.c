@@ -227,6 +227,11 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "enqueued", v);
   napi_create_uint32(env, g_ctx.statFlushed, &v);
   napi_set_named_property(env, out, "flushes", v);
+  /* Nanoseconds the host spent spinning on the fence — the GPU half of the
+   * step. Everything else is host. A double carries it exactly to 2^53 ns,
+   * which is 104 days of spinning. */
+  napi_create_double(env, (double)g_ctx.statSpinNs, &v);
+  napi_set_named_property(env, out, "spinNs", v);
   return out;
 }
 

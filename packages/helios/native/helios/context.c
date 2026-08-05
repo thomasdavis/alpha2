@@ -228,14 +228,17 @@ int helios_flush(helios_context *ctx) {
   hermes_ring(&ctx->channel, (volatile NvU32 *)ctx->channel.userd.hostPtr,
               ctx->channel.doorbell, ctx->channel.token);
 
-  const NvU64 deadline = now_ns() + LAUNCH_TIMEOUT_NS;
+  const NvU64 spinStart = now_ns();
+  const NvU64 deadline = spinStart + LAUNCH_TIMEOUT_NS;
   while (*fence != want) {
     if (now_ns() > deadline) {
       ctx->lastError = ((volatile NvU32 *)ctx->channel.errnotif.hostPtr)[2];
       ctx->pending = 0;
+      ctx->statSpinNs += now_ns() - spinStart;
       return -1;
     }
   }
+  ctx->statSpinNs += now_ns() - spinStart;
   ctx->lastError = 0;
   ctx->pending = 0;
   return 0;

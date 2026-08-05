@@ -102,19 +102,45 @@ for (const m of METHODS) {
   };
 }
 
+const params = initGPT(C, B, new SeededRng(7));
+
+/*
+ * PROFILE THE PATH THE BENCHMARK MEASURES, not a different one.
+ *
+ * This ran without the release callback, so nothing was ever reclaimed and the
+ * step allocated FRESH slabs the whole way down: 2,101 slabs against the
+ * benchmark's 609, and a fresh 4 KB allocation costs 802 us where a pooled one
+ * costs 1.0. Every per-method figure was therefore dominated by an allocation
+ * cost the measured configuration does not pay, and the ranking it produced was
+ * a ranking of who allocated most.
+ *
+ * A profiler that does not run the configuration under test is not measuring
+ * the thing it is being read to explain.
+ */
+const kept = new Set();
+(function walk(v, d) {
+  if (!v || typeof v !== "object" || d > 6) return;
+  if (v.buffer && v.shape) { kept.add(v); return; }
+  if (v.data) kept.add(v.data);
+  for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, d + 1);
+})(params, 0);
+const rel = B.releaseGpuTensor ? (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); } : undefined;
+
 function step(params) {
   const tape = new Tape();
   const n = BATCH * TOKENS;
   const tok = B.fromArray(Array.from({ length: n }, (_, i) => i % C.vocabSize), [BATCH, TOKENS]);
   const tgt = B.fromArray(Array.from({ length: n }, (_, i) => (i + 1) % C.vocabSize), [BATCH, TOKENS]);
-  const out = gptForward(C, params, B, tape, tok, tgt, true);
+  const out = gptForward(C, params, B, tape, tok, tgt, true, false, false, undefined, rel);
   const loss = out.loss.data.data[0];
-  tape.backward(out.loss, B);
+  tape.backward(out.loss, B, rel);
   B.finishStepOps?.();
+  /* The step is not over until the GPU says so — the same barrier the
+   * benchmark applies, or the tail of the step lands in the next one. */
+  if (B.flushAndWait) B.flushAndWait();
+  else if (B.syncGpu) B.syncGpu();
   return loss;
 }
-
-const params = initGPT(C, B, new SeededRng(7));
 /* Warm up by TIME, for the same reason the benchmark does: this card idles at
  * 210 MHz against 2100 max and cannot be clock locked inside the container. Ten
  * steps is 0.85 s and leaves it part-ramped, which would have had me reading
@@ -141,6 +167,22 @@ const fls = (after.flushes - before.flushes) / N;
 console.log(`\nstep ${(total / N).toFixed(1)} ms   enqueued ${enq.toFixed(1)}/step   flushes ${fls.toFixed(1)}/step   ` +
             `enq-per-flush ${(enq / Math.max(fls, 1)).toFixed(2)}`);
 console.log(`pool: live ${after.live} pooled ${after.pooled} slabs ${after.allocations} carved ${after.carved} programs ${after.programs}`);
+/*
+ * THE SPLIT, from the fence rather than from an inference.
+ *
+ * A flush submits and then SPINS until the GPU signals, so a step is host work
+ * plus GPU work with no overlap at all. Spin time is the GPU half exactly;
+ * everything else is host. The per-method table below cannot show this, because
+ * a flush forced from inside helios_enqueue is charged to whichever operation
+ * happened to fill the pushbuffer.
+ */
+if (after.spinNs !== undefined) {
+  const gpuMs = (after.spinNs - before.spinNs) / 1e6 / N;
+  const stepMs = total / N;
+  console.log(`SPLIT: gpu (fence spin) ${gpuMs.toFixed(1)} ms/step ${(gpuMs / stepMs * 100).toFixed(1)}%   ` +
+              `host ${(stepMs - gpuMs).toFixed(1)} ms/step ${((stepMs - gpuMs) / stepMs * 100).toFixed(1)}%   ` +
+              `perfect overlap would give ${(stepMs / Math.max(gpuMs, stepMs - gpuMs)).toFixed(2)}x`);
+}
 console.log(`flush: ${(flushN / N).toFixed(0)} calls/step, ${(flushMs / N).toFixed(2)} ms/step total`);
 console.log(`  of which REAL DRAINS (>${DRAIN_US}us): ${(drainN / N).toFixed(1)}/step  ` +
             `${(drainMs / N).toFixed(2)} ms/step  ${((drainMs / N) / (total / N) * 100).toFixed(1)}% of step  ` +

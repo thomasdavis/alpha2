@@ -75,6 +75,21 @@ typedef struct {
    * working from one that is silently flushing per operation. */
   NvU32 statEnqueued;
   NvU32 statFlushed;
+  /*
+   * How long the host SPUN on the fence, in nanoseconds.
+   *
+   * The ratio above says how well launches batch. It cannot say what the batching
+   * is worth, because a flush is a full drain -- submit, then spin until the GPU
+   * signals -- so a step is host-enqueue plus GPU-execute with no overlap
+   * whatever. This counter splits those two: spin time is GPU, and everything
+   * else in the step is host.
+   *
+   * Without it the split has to be inferred from per-method wall times, and that
+   * inference is wrong: a flush forced from inside helios_enqueue is charged to
+   * whichever operation happened to be the one that filled the pushbuffer, which
+   * is how `sub` came to look like it cost 2,843 us a call.
+   */
+  NvU64 statSpinNs;
   int open;
   const char *failStage;
 } helios_context;
