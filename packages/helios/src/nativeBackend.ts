@@ -48,6 +48,10 @@ function isNative(t: TensorData): t is NativeTensor {
  * is attributed to the kernel that caused it rather than the one that noticed. */
 const TRACE_OPS = !!process.env.HELIOS_TRACE_OPS;
 
+/* Whether to use the FUSED A @ B^T kernel. Off: it is correct and it is slower,
+ * because the transposed read is uncoalesced. See matmulTransposed. */
+const FUSED_MATMUL_TRANSPOSED = false;
+
 export class NativeHeliosBackend implements Backend {
   readonly name = "helios-native";
   private readonly hl: NativeAddon;
@@ -675,6 +679,55 @@ export class NativeHeliosBackend implements Backend {
     const out = this.make(outShape, "f32");
     this.check(this.hl.matmul(out.buffer.handle, da.buffer.handle,
                               db.buffer.handle, M, N, K, 1), "matmul", da, db);
+    return out;
+  }
+
+  /**
+   * C = A @ B-transpose, with B stored [N, K].
+   *
+   * autograd probes for this and, not finding it, transposed B and called
+   * matmul — a launch and a tensor nobody frees, on every projection. The
+   * allocation census puts that at 225 MB a step across three call sites at 18
+   * layers, the largest single entry in it.
+   *
+   * Only for a 2-D B, which is what a weight is. A batched right operand —
+   * attention's Q @ K-transpose — keeps the composed path, because its plane
+   * strides differ and getting that wrong is a wrong answer rather than a
+   * missing feature.
+   */
+  matmulTransposed(a: TensorData, b: TensorData): TensorData {
+    const K = a.shape[a.shape.length - 1] ?? 1;
+    /*
+     * UNWIRED, AND MEASURED — this returns the composed path on purpose.
+     *
+     * The kernel is correct at every shape the model runs (qkv 1920, mlp 1728
+     * and 640, lm head 12288, odd N 1025, all within 2.4e-4 of cpu_ref) and it
+     * is SLOWER:
+     *
+     *     benchmark shape   54,575 -> 51,431 tok/s   (-5.8%)
+     *     105M seq 64           78 -> 76 tok/s       (-3%, 7.31 -> 7.09 GB)
+     *
+     * Because the access pattern inverts. Untransposed, B[k][col] is `k*N+col`
+     * and adjacent threads read adjacent addresses — one coalesced transaction.
+     * Transposed, it is `col*K+k`, so adjacent threads are K elements apart and
+     * every warp issues 32 separate transactions. That costs more than the
+     * transpose launch and the leaked tensor it saves.
+     *
+     * The fix is not in this kernel, it is the tiled GEMM: staging B's tile in
+     * shared memory makes the global read coalesced whichever way the tile is
+     * indexed, and then the fused form is strictly better. Kept and unwired so
+     * that work starts from a kernel already proven correct.
+     */
+    if (!FUSED_MATMUL_TRANSPOSED || b.shape.length !== 2 ||
+        (b.shape[1] ?? K) !== K || !this.hl.matmulTransposed)
+      return this.matmul(a, this.transpose(b, b.shape.length - 2, b.shape.length - 1));
+    const N = b.shape[0] ?? 1;
+    const M = shapeSize(a.shape) / K;
+    const da = this.device(a), db = this.device(b);
+    const out = this.make([...a.shape.slice(0, -1), N], "f32");
+    this.check(this.hl.matmulTransposed!(out.buffer.handle, da.buffer.handle,
+                                        db.buffer.handle, M, N, K, 1),
+               "matmulTransposed", da, db);
     return out;
   }
 

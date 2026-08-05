@@ -211,6 +211,24 @@ int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
                         p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
 }
 
+/* C = A @ B^T with B stored [N,K]. Same launch, different program; the key's
+ * KIND keeps the two apart in the cache. */
+int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a,
+                         helios_tensor b, unsigned M, unsigned N, unsigned K,
+                         unsigned batch) {
+  const helios_key k = {HL_MATMUL_T, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, batch ? batch : 1,
+                        p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
+}
+
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned rows, unsigned cols, unsigned batch) {
   const helios_key k = {HL_TRANSPOSE, rows, cols, batch};

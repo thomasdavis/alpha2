@@ -40,6 +40,7 @@ typedef enum {
   HL_REDUCE,      /* arg0 = pr_red_op, arg1 = elements */
   HL_NORMALIZE,   /* arg0 = pr_norm_op, arg1 = elements */
   HL_MATMUL,      /* arg0 = M, arg1 = N, arg2 = K */
+  HL_MATMUL_T,    /* the same, with B stored [N,K] and used transposed */
   HL_TRANSPOSE,   /* arg0 = rows, arg1 = cols */
   HL_SLICE_ROWS,  /* arg0 = out width, arg1 = source width */
   HL_BROADCAST,   /* arg0 = mode (0 tile, 1 row), arg1 = width */

@@ -91,7 +91,9 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_MATMUL:
-      p->count = pr_emit_matmul(p->code, key->arg0, key->arg1, key->arg2);
+    case HL_MATMUL_T:
+      p->count = pr_emit_matmul_kind(p->code, key->arg0, key->arg1, key->arg2,
+                                     key->kind == HL_MATMUL_T);
       p->sharedBytes = pr_matmul_shared_bytes(key->arg1, key->arg2);
       /* At most 1024 threads: a thread walks its column in chunks of the block
        * width, so N is no longer bounded by the hardware's block limit. Asking

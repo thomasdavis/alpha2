@@ -23,6 +23,11 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K);
 
 /* Shared memory the emitted matmul needs, which is K floats when the row of A
  * can be staged and zero when it cannot. The launch must match. */
+/* C = A @ B when transposedB is 0, C = A @ B^T when it is 1. B is [K,N] in the
+ * first case and [N,K] in the second. */
+unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
+                             int transposedB);
+
 unsigned pr_matmul_shared_bytes(unsigned N, unsigned K);
 
 /*

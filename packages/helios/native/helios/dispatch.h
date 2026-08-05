@@ -74,6 +74,10 @@ int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
 
 /* Transposes `batch` planes of rows x cols in ONE launch, the plane taken from
  * the block's Y index. */
+int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a,
+                         helios_tensor b, unsigned M, unsigned N, unsigned K,
+                         unsigned batch);
+
 int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned rows, unsigned cols, unsigned batch);
 

@@ -80,6 +80,16 @@ enum {
   R_CHUNK = 28, /* which chunk of BW columns this pass is computing */
   R_AROW = 29,  /* A's row start incl. batch plane — invariant across chunks */
   R_BPLANE = 30, /* B's batch plane offset — likewise */
+  /*
+   * The value the STORE reads, copied out of the accumulator first.
+   *
+   * Chunk t ends by storing and chunk t+1 begins by zeroing the accumulator,
+   * and nothing interlocks those: the store holds its operands until the pipe
+   * takes them, so the reset can land first and the store writes ZERO. Copying
+   * to a register the next chunk does not touch until its OWN store — a whole K
+   * loop later — puts the reuse out of reach.
+   */
+  R_STOREVAL = 31,
   R_STG_IDX_B = 23,
   R_STG_ADDR_B = 24, /* R24:R25 */
   R_STG_VAL_B = 26,
@@ -179,6 +189,25 @@ unsigned pr_matmul_shared_bytes(unsigned N, unsigned K) {
 }
 
 unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
+  return pr_emit_matmul_kind(p, M, N, K, 0);
+}
+
+/*
+ * C = A @ B, or C = A @ B-TRANSPOSE, from one emitter.
+ *
+ * The only difference is how B is addressed: untransposed it is [K,N] and
+ * B[k][col] is `k*N + col`, walking DOWN a column N elements a step;
+ * transposed it is [N,K] and the same element is `col*K + k`, walking ALONG a
+ * row one element a step.
+ *
+ * Without a fused form autograd transposes the weight and calls matmul, which
+ * costs a launch AND a tensor nobody frees — 225 MB a step across three call
+ * sites at 18 layers, the largest single entry in the allocation census. Every
+ * weight here is stored [out, in] and used transposed, so this is the common
+ * case rather than the special one.
+ */
+unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
+                             int transposedB) {
   unsigned n = 0;
 
   const unsigned BW = pr_matmul_block(N);
@@ -293,7 +322,11 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   p[n++] = hp_mov_imm(R_ACC, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
   p[n++] = hp_iadd3_imm(R_AIDX, R_AROW, 0, hp_ctrl_safe());
-  p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
+  /* B[0][col] is element `col` when B is [K,N] and `col*K` when it is [N,K]. */
+  if (transposedB)
+    p[n++] = hp_imad_imm(R_BIDX, R_COL, K, R_BPLANE, hp_ctrl_safe());
+  else
+    p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
 
   const unsigned loop_top = n;
 
@@ -333,7 +366,8 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   /* Walk both indices and the counter. A moves along its row one element at a
    * time; B moves down its column, which is N elements per step. */
   p[n++] = hp_iadd3_imm(R_AIDX, R_AIDX, 1, hp_ctrl_safe());
-  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, N, hp_ctrl_safe());
+  /* Down a column is N elements; along a row is one. */
+  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, transposedB ? 1 : (int)N, hp_ctrl_safe());
   p[n++] = hp_iadd3_imm(R_K, R_K, 1, hp_ctrl_safe());
 
   /* "k > K-1" rather than "k >= K" because the comparison the hardware offers
@@ -352,10 +386,12 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
   p[n++] = hp_iadd3_reg(R_OIDX, R_OIDX, R_TMP, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_OIDX, R_ESIZE, 0, HERMES_CBUF0_PARAM_N(0),
                               hp_ctrl_safe());
+  /* Off the accumulator before the store — see R_STOREVAL. */
+  p[n++] = hp_iadd3_imm(R_STOREVAL, R_ACC, 0, hp_ctrl_safe());
   {
     /* The overhanging threads computed a dot product from data they were not
      * allowed to read; the store is where that has to stop. */
-    hp_word st = hp_stg(R_OUT, R_ACC, 0, hp_ctrl_safe());
+    hp_word st = hp_stg(R_OUT, R_STOREVAL, 0, hp_ctrl_safe());
     p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
   }
 
