@@ -198,6 +198,27 @@ static inline hp_control hp_ctrl_branch(void) {
   return c;
 }
 
+/*
+ * An EXPLICIT stall, for a run of instructions known to be independent.
+ *
+ * hp_ctrl_safe stalls 7, which is the worst measured latency this default has
+ * to cover (MOV c[] at 5) plus margin, and it is right wherever the next
+ * instruction might read what this one wrote. It is pure waste where the next
+ * instruction demonstrably does not: the staged GEMM's k-step issues eight
+ * independent conversions and eight independent shared stores back to back, and
+ * at stall 7 those sixteen instructions alone space out 112 cycles of a roughly
+ * 200-cycle step.
+ *
+ * The caller is asserting independence. Get that wrong and the hardware does
+ * not stall and does not fault — it reads a stale register, which is the whole
+ * reason the default is what it is. Use it only where the register map makes
+ * the independence checkable by reading the emitter.
+ */
+static inline hp_control hp_ctrl_stall(unsigned stall) {
+  hp_control c = {stall, 0, HP_NO_BARRIER, HP_NO_BARRIER, 0, 0};
+  return c;
+}
+
 static inline hp_control hp_ctrl_waitmask(unsigned mask) {
   hp_control c = {15, 0, HP_NO_BARRIER, HP_NO_BARRIER, mask & 0x3f, 0};
   return c;

@@ -118,6 +118,25 @@
 #define MMA_N 8u
 #define MMA_K 16u
 
+/*
+ * A TILE ROW IS PADDED BY ONE WORD, and the padding is the point.
+ *
+ * Shared memory has 32 banks of 4 bytes. Unpadded, a tile row is MMA_K/2 = 8
+ * words, so lane (g, l) reads word g*8 + l — and across a warp that is g in
+ * 0..7 and l in 0..3, which lands on banks {0-3, 8-11, 16-19, 24-27}: SIXTEEN
+ * distinct banks serving thirty-two lanes, a two-way conflict on every
+ * fragment load, of which there are sixteen per k-step.
+ *
+ * A stride of nine walks the pattern across the banks instead. It costs one
+ * word per row — 512 bytes on a 64x64 tile — and shared memory is not the
+ * constraint here.
+ *
+ * This is the fifth hypothesis tried against the GEMM's 37% MFU. Arithmetic
+ * intensity, occupancy, exposed load latency and instruction issue spacing were
+ * each measured and each moved it by ~1% or less.
+ */
+#define TILE_STRIDE (MMA_K / 2u + 1u)
+
 unsigned pr_hmma_block_rows(void) { return MMA_M * HMMA_TM * HMMA_WARPS_M; }
 unsigned pr_hmma_block_cols(void) { return MMA_N * HMMA_TN * HMMA_WARPS_N; }
 unsigned pr_hmma_threads(void) { return 32u * HMMA_WARPS; }
@@ -130,11 +149,10 @@ unsigned pr_hmma_threads(void) { return 32u * HMMA_WARPS; }
  */
 unsigned pr_hmma_shared(void) {
   if (!HMMA_SHARED) return 0;
-  return (pr_hmma_block_rows() + pr_hmma_block_cols()) * MMA_K * 2u;
+  return (pr_hmma_block_rows() + pr_hmma_block_cols()) * TILE_STRIDE * 4u;
 }
 
-/* Words (4 bytes, one f16 pair) in the A tile; the B tile follows it. */
-#define A_WORDS (pr_hmma_block_rows() * MMA_K / 2u)
+#define A_WORDS (pr_hmma_block_rows() * TILE_STRIDE)
 #define SH_A_BYTES (A_WORDS * 4u)
 
 /*
@@ -552,9 +570,9 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
    * multiple of WPR. */
   p[n++] = hp_shr_imm(R_SROW, R_TID, lgWPR, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_SKP, R_SROW, (uint32_t)-(int)WPR, R_TID, hp_ctrl_safe());
-  /* A's shared STORE word is the thread id itself: word = row*WPR + kpair and
-   * that is exactly tid, because THREADS is a multiple of WPR. */
-  p[n++] = hp_iadd3_imm(R_SHA, R_TID, 0, hp_ctrl_safe());
+  /* A's shared STORE word: row*TILE_STRIDE + kpair. It was simply `tid` while
+   * the stride equalled the words per row; padding breaks that identity. */
+  p[n++] = hp_imad_imm(R_SHA, R_SROW, TILE_STRIDE, R_SKP, hp_ctrl_safe());
 
   /* A's global base, without k. */
   if (transposedA) {
@@ -584,15 +602,15 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     p[n++] = hp_imad_imm(R_TMP, R_CTA_N, BN, R_SROW, hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_BGB, R_TMP, K, HP_RZ, hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_BGB, R_SKP, 2, R_BGB, hp_ctrl_safe());
-    p[n++] = hp_iadd3_imm(R_SHB, R_TID, 0, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_SHB, R_SROW, TILE_STRIDE, R_SKP, hp_ctrl_safe());
   } else {
     p[n++] = hp_shr_imm(R_BKP, R_TID, lgBN, hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_BCOL, R_BKP, (uint32_t)-(int)BN, R_TID, hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_TMP, R_BKP, 2u * N, HP_RZ, hp_ctrl_safe());
     p[n++] = hp_imad_imm(R_TMP2, R_CTA_N, BN, R_BCOL, hp_ctrl_safe());
     p[n++] = hp_iadd3_reg(R_BGB, R_TMP, R_TMP2, hp_ctrl_safe());
-    /* shared word = col*WPR + kpair */
-    p[n++] = hp_imad_imm(R_SHB, R_BCOL, WPR, R_BKP, hp_ctrl_safe());
+    /* shared word = col*TILE_STRIDE + kpair */
+    p[n++] = hp_imad_imm(R_SHB, R_BCOL, TILE_STRIDE, R_BKP, hp_ctrl_safe());
   }
   {
     const unsigned plane = transposedB ? N * K : K * N;
@@ -602,9 +620,9 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
 
   /* Fragment bases, in shared WORDS: row (or column) times WPR, plus l. */
   p[n++] = hp_imad_imm(R_TMP, R_WARP, MMA_M * HMMA_TM, R_G, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_SHFA, R_TMP, WPR, R_L, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHFA, R_TMP, TILE_STRIDE, R_L, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_TMP, R_WARPN, MMA_N * HMMA_TN, R_G, hp_ctrl_safe());
-  p[n++] = hp_imad_imm(R_SHFB, R_TMP, WPR, R_L, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHFB, R_TMP, TILE_STRIDE, R_L, hp_ctrl_safe());
 
   for (unsigned i = 0; i < 4u * HMMA_TM * HMMA_TN; i++)
     p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
@@ -636,20 +654,38 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
    * issue and the packs issue in order. */
   {
     int first = 1;
+    /*
+     * STALL 1 between the conversions, because they are INDEPENDENT: pack i
+     * reads ST_x(2i) and ST_x(2i+1) and writes ST_x(i), and the only overlap is
+     * with a register a PREVIOUS pack already read at issue. The first carries
+     * the wait for every load.
+     */
     for (unsigned i = 0; i < A_ITERS; i++) {
       p[n++] = hp_f2fp_pack(ST_A(i), ST_A(2 * i), ST_A(2 * i + 1),
-                            first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+                            first ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_stall(1));
       first = 0;
     }
     for (unsigned i = 0; i < B_ITERS; i++)
-      p[n++] = hp_f2fp_pack(ST_B(i), ST_B(2 * i), ST_B(2 * i + 1), hp_ctrl_safe());
+      p[n++] = hp_f2fp_pack(ST_B(i), ST_B(2 * i), ST_B(2 * i + 1), hp_ctrl_stall(1));
   }
-  for (unsigned i = 0; i < A_ITERS; i++)
-    p[n++] = hp_sts(R_SHA, ST_A(i), i * THREADS * 4u, hp_ctrl_safe());
-  for (unsigned i = 0; i < B_ITERS; i++) {
-    const unsigned o = transposedB ? i * THREADS * 4u
-                                   : (THREADS / BN) * i * 4u;
-    p[n++] = hp_sts(R_SHB, ST_B(i), SH_A_BYTES + o, hp_ctrl_safe());
+  /*
+   * The stores are independent of each other and share one address register
+   * apiece, which nothing here rewrites. The FIRST keeps the safe stall because
+   * it reads a register the last conversion wrote — that is the one dependency
+   * in the run, and the measured ALU minimum is 4.
+   */
+  {
+    int firstStore = 1;
+    for (unsigned i = 0; i < A_ITERS; i++) {
+      p[n++] = hp_sts(R_SHA, ST_A(i), i * (THREADS / WPR) * TILE_STRIDE * 4u,
+                      firstStore ? hp_ctrl_safe() : hp_ctrl_stall(1));
+      firstStore = 0;
+    }
+    for (unsigned i = 0; i < B_ITERS; i++) {
+      const unsigned o = transposedB ? i * (THREADS / WPR) * TILE_STRIDE * 4u
+                                     : (THREADS / BN) * i * 4u;
+      p[n++] = hp_sts(R_SHB, ST_B(i), SH_A_BYTES + o, hp_ctrl_stall(1));
+    }
   }
   p[n++] = hp_bar_sync(hp_ctrl_safe());
 
@@ -664,15 +700,15 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
 
   /* ---- fragments, from shared ---- */
   for (unsigned tm = 0; tm < HMMA_TM; tm++) {
-    const unsigned a = AFRAG_OF(tm), base = tm * MMA_M * WPR * 4u;
+    const unsigned a = AFRAG_OF(tm), base = tm * MMA_M * TILE_STRIDE * 4u;
     p[n++] = hp_lds(a + 0, R_SHFA, base, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(a + 1, R_SHFA, base + 8u * WPR * 4u, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(a + 1, R_SHFA, base + 8u * TILE_STRIDE * 4u, hp_ctrl_setbar(BAR_LOAD));
     p[n++] = hp_lds(a + 2, R_SHFA, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_lds(a + 3, R_SHFA, base + 8u * WPR * 4u + (WPR / 2u) * 4u,
+    p[n++] = hp_lds(a + 3, R_SHFA, base + 8u * TILE_STRIDE * 4u + (WPR / 2u) * 4u,
                     hp_ctrl_setbar(BAR_LOAD));
   }
   for (unsigned tn = 0; tn < HMMA_TN; tn++) {
-    const unsigned b = BFRAG_OF(tn), base = SH_A_BYTES + tn * MMA_N * WPR * 4u;
+    const unsigned b = BFRAG_OF(tn), base = SH_A_BYTES + tn * MMA_N * TILE_STRIDE * 4u;
     p[n++] = hp_lds(b + 0, R_SHFB, base, hp_ctrl_setbar(BAR_LOAD));
     p[n++] = hp_lds(b + 1, R_SHFB, base + (WPR / 2u) * 4u, hp_ctrl_setbar(BAR_LOAD));
   }
