@@ -38,8 +38,16 @@ const kept = new Set();
   for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, d + 1); })(P, 0);
 const rel = (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); };
 
+/*
+ * matmulTransposedA and matmulAccumulate were MISSING and they are not a minor
+ * omission: dW = G^T @ A is one GEMM per weight per layer, so roughly a third
+ * of the step's matrix multiplies never appeared in this profile at all. The
+ * table looked complete because every line in it was real.
+ */
 const METHODS = ["add","sub","mul","div","neg","gelu","exp","log","sqrt","scale","clamp",
-  "matmul","matmulTransposed","sum","mean","layerNorm","rmsNorm","softmax","softCap",
+  "matmul","matmulTransposed","matmulTransposedA","matmulAccumulate",
+  "columnSum","embeddingBackward","crossEntropyBackward","layerNormBackward",
+  "sum","mean","layerNorm","rmsNorm","softmax","softCap",
   "embedding","crossEntropy","transpose","slice","causalMask","maskedFill","cat","zeros",
   "ones","full","clone","broadcast","addInplace"];
 const cost = new Map();

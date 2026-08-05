@@ -84,6 +84,9 @@ const evictL2 = () => { B.addInplace(scrubA, scrubB); };
  * BLOCK COUNT — so the row count is not a detail of the benchmark, it is a
  * variable the answer depends on. `M=1536 node probe-gemm-rate.mjs`. */
 const M = Number(process.env.M ?? 512);
+/* COLD=1: evict L2 before every iteration, so the rate is one a step could
+ * actually reach. See the timed loop. */
+const COLD = process.env.COLD === "1";
 
 /* The shapes a 105M step actually runs, at batch 8 (512 rows). Named, because
  * a rate without a shape is not comparable to anything. */
@@ -214,10 +217,25 @@ function rate(name, M, N, K, transposed) {
   B.finishStepOps?.();
   evictL2();
   drain();
+  /*
+   * COLD=1 EVICTS L2 BETWEEN EVERY ITERATION, and the difference it makes is
+   * the difference between this probe and a step.
+   *
+   * The loop runs the same multiply thirty times over the same two operands, so
+   * after the first iteration whatever fits in the 4 MB L2 is already resident
+   * — and it is re-read thirty times for free. A real step never does that: each
+   * GEMM's operands were written by some other kernel and are cold. A probe that
+   * reports a rate a step cannot reach is not a harmless optimism, it is a wrong
+   * answer about how much headroom is left.
+   *
+   * The evict is inside the timed region here, so its own cost is charged to the
+   * measurement; the scrub is reported separately below so it can be subtracted.
+   */
   const s0 = spin(), t0 = process.hrtime.bigint();
   let last = null;
   for (let i = 0; i < ITERS; i++) {
     if (last) B.releaseGpuTensor?.(last);
+    if (COLD) evictL2();
     last = transposed ? B.matmulTransposed(a, b) : B.matmul(a, b);
   }
   drain(last);

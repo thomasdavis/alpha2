@@ -325,6 +325,26 @@ export class NativeBuffer {
     deviceGeneration++;
   }
 
+  /*
+   * A CENSUS OF THE HOST/DEVICE ROUND TRIPS, because they are invisible in a
+   * per-op profile and expensive twice over.
+   *
+   * A read of `.data` copies the whole buffer device-to-host through the
+   * elementwise kernel AND FLUSHES — a mid-step drain, which is what stops host
+   * and device overlapping. It then marks the mirror dirty, so the next time
+   * that tensor is resolved as an operand `commit()` copies the whole thing
+   * back. One touched element costs two full-buffer copies and a drain, and the
+   * profile charges all of it to whatever op happened to be running.
+   *
+   * HELIOS_XFER_CENSUS=1 counts them. Off by default: it is two increments, but
+   * a counter nobody reads is still a thing to explain.
+   */
+  static census = { mirrorCopies: 0, mirrorBytes: 0, commitCopies: 0, commitBytes: 0, flushes: 0 };
+  static censusOn = process.env.HELIOS_XFER_CENSUS === "1";
+  static resetCensus(): void {
+    NativeBuffer.census = { mirrorCopies: 0, mirrorBytes: 0, commitCopies: 0, commitBytes: 0, flushes: 0 };
+  }
+
   private mirror(): NativeBuffer {
     if (!this.staging) this.staging = NativeBuffer.allocHost(this.hl, this.elements);
     /*
@@ -350,6 +370,11 @@ export class NativeBuffer {
        * kernel everything else uses. The flush is not optional: the copy has to
        * have RUN before the bytes are read, and reading them is what happens
        * next by definition. */
+      if (NativeBuffer.censusOn) {
+        NativeBuffer.census.mirrorCopies++;
+        NativeBuffer.census.mirrorBytes += this.elements * 4;
+        NativeBuffer.census.flushes++;
+      }
       this.hl.elementwise(this.hl.op.copy, this.staging.handle, this.handle,
                           this.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
       /* A FAILED FLUSH HERE IS SILENT GARBAGE. The copy is the only thing
@@ -380,6 +405,10 @@ export class NativeBuffer {
   commit(): void {
     if (!this.mirrorDirty || !this.staging) return;
     this.mirrorDirty = false;
+    if (NativeBuffer.censusOn) {
+      NativeBuffer.census.commitCopies++;
+      NativeBuffer.census.commitBytes += this.elements * 4;
+    }
     this.hl.elementwise(this.hl.op.copy, this.handle, this.staging.handle,
                         this.staging.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
     /* The device now matches the mirror, so a read that follows must not copy
