@@ -48,8 +48,23 @@ function isNative(t: TensorData): t is NativeTensor {
  * is attributed to the kernel that caused it rather than the one that noticed. */
 const TRACE_OPS = !!process.env.HELIOS_TRACE_OPS;
 
-/* Whether to use the FUSED A @ B^T kernel. Off: it is correct and it is slower,
- * because the transposed read is uncoalesced. See matmulTransposed. */
+/*
+ * Whether to use the FUSED A @ B^T kernel. Off, and the margin GREW.
+ *
+ * When first measured it was 3-6% slower and read as roughly neutral, so the
+ * case for turning it on later was that it removes a fallback transpose and the
+ * tensor nobody frees. Re-measured after the K-unroll, on the stable per-op
+ * instrument:
+ *
+ *     105M seq 64, GPU ms/step   composed 276    fused 324.6  (3 runs, +-0.1)
+ *     benchmark batch 128        60,402 tok/s    56,236 tok/s
+ *
+ * The unroll made the COMPOSED path faster — its transpose and its matmul both
+ * benefit — while the fused one keeps an uncoalesced B read that unrolling
+ * cannot help. And it does not even buy the memory: the step still leaks 356
+ * tensors either way, so the fallback transposes were not the survivors the
+ * allocation census pointed at.
+ */
 const FUSED_MATMUL_TRANSPOSED = false;
 
 export class NativeHeliosBackend implements Backend {
