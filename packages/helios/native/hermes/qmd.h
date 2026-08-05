@@ -87,6 +87,11 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
  * needs no bank at all, and an unset bank is simply invalid rather than wrong. */
 void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size);
 
+/* Override the per-thread register declaration for ONE kernel. The QMD default
+ * suits the kernels that need least; a kernel that needs more should not make
+ * every other kernel pay for it in occupancy. */
+void hermes_qmd_set_regs(NvU32 *qmd, NvU32 count);
+
 /*
  * Constant bank 0 holds the kernel's parameters, and the layout is CUDA's:
  * driver-provided values low, user parameters from 0x160. We follow it because

@@ -2,6 +2,7 @@
  * context.c — see context.h.
  */
 #include "context.h"
+#include "program.h"
 #include "tensor.h"
 
 #include <stdlib.h>
@@ -193,6 +194,7 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   hermes_qmd_build(qmd, codeAddr, cbAddr, gridX, gridY ? gridY : 1, 1, blockX, 1, 1,
                    sharedBytes,
                    count * (NvU32)sizeof(hp_word));
+  hermes_qmd_set_regs(qmd, helios_program_last_regs());
   memcpy((NvU8 *)ctx->qmd.hostPtr + (size_t)slot * HERMES_QMD_BYTES, qmd,
          HERMES_QMD_BYTES);
   __asm__ __volatile__("sfence" ::: "memory");

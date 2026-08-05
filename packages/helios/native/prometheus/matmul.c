@@ -402,6 +402,21 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
  * with diff-matmul-tiled.mjs — it faults on its first case, so the cycle is
  * seconds rather than minutes.
  */
+/*
+ * FOUR ROWS IS FASTER AND IS BLOCKED ON THE TEST HARNESS, not on the kernel.
+ *
+ * ROWS=4 with the wider register map (ACC 32-35, AV 36-43, BV[1] 44, output
+ * pairs 46:47..52:53) measures 1005 -> 1178 tok/s at batch 8 and 1027 -> 1195
+ * at batch 12, and diff-matmul-tiled agrees with the definition at every
+ * shape. It cannot ship yet: its highest register is R53, so it needs the
+ * 64-register declaration that helios_program now carries per program — and
+ * prometheus_hw_test.c builds its OWN QMDs at hermes_qmd_build's default, so
+ * the same kernel faults there (`matmul 8x8x8: c[0][0]=0, errnotif=0000001f`).
+ *
+ * The fix is to give pr_kernel a register count and have the test's runner
+ * apply it, the same way helios_enqueue now applies the program's. Until then
+ * two rows, whose map fits under 44 and is green everywhere.
+ */
 #define MATMUL_TILE_ROWS 2u
 
 int pr_matmul_tiled(unsigned M, unsigned N, unsigned K) {

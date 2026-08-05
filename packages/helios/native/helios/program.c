@@ -106,6 +106,11 @@ static int emit(const helios_key *key, helios_program *p) {
       p->blockX = pr_matmul_colblocked(key->arg0, key->arg1, key->arg2)
                       ? 256u : pr_matmul_block(key->arg1);
       p->gridX = key->arg0 / pr_matmul_rows(key->arg0, key->arg1, key->arg2);
+      /* Zero = the default. The two-row tiled map is packed under 44 so it
+       * does not need more, and asking for more is not free: at blockX 640,
+       * 64 registers fits one block an SM where 48 fits two. This is the hook
+       * a four-row tile (highest register R53) will use. */
+      p->regs = 0u;
       /* The batch rides in the Y grid. It is not part of the KEY: the emitted
        * code is identical for any batch -- the plane strides come from M, N and
        * K -- so keying on it would generate one program per batch size for no
@@ -228,12 +233,15 @@ static int emit(const helios_key *key, helios_program *p) {
   return -1;
 }
 
+#define HELIOS_DEFAULT_REGS 48u
+static NvU32 g_lastRegs = HELIOS_DEFAULT_REGS;
+
 const helios_program *helios_program_get(helios_key key) {
   unsigned slot = key_hash(&key) % CACHE_SLOTS;
   for (unsigned probe = 0; probe < CACHE_SLOTS; probe++) {
     helios_program *p = &g_cache[(slot + probe) % CACHE_SLOTS];
     if (p->used) {
-      if (key_eq(&p->key, &key)) return p;
+      if (key_eq(&p->key, &key)) { g_lastRegs = p->regs; return p; }
       continue;
     }
     memset(p, 0, sizeof *p);
@@ -243,12 +251,16 @@ const helios_program *helios_program_get(helios_key key) {
      * so this cannot catch it -- what it catches is one that returned nothing,
      * which is an unimplemented kind reaching here. */
     if (p->count == 0 || p->count > PR_MAX_INSTRUCTIONS) return NULL;
+    if (p->regs == 0) p->regs = HELIOS_DEFAULT_REGS;
     p->used = 1;
     g_count++;
+    g_lastRegs = p->regs;
     return p;
   }
   return NULL;
 }
+
+NvU32 helios_program_last_regs(void) { return g_lastRegs; }
 
 unsigned helios_program_count(void) { return g_count; }
 

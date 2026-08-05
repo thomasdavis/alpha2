@@ -75,6 +75,10 @@ typedef struct {
    * Zero means one -- most kernels are one-dimensional and should not have to
    * say so. */
   NvU32 gridY;
+  /* Per-thread registers this program needs declared. Zero means the default.
+   * It is here rather than global because occupancy is the declaration TIMES
+   * the block size: one kernel wanting 64 used to cost every kernel 15%. */
+  NvU32 regs;
   int used;
 } helios_program;
 
@@ -85,6 +89,13 @@ typedef struct {
  * caller ignores the return.
  */
 const helios_program *helios_program_get(helios_key key);
+
+/* The register count of the program returned by the most recent
+ * helios_program_get. A latch rather than a parameter because helios_enqueue
+ * takes a program's FIELDS, not the program, and threading a new argument
+ * through twenty dispatch functions to carry one number is a worse trade.
+ * Safe because dispatch is serial: every caller does get() then enqueue(). */
+NvU32 helios_program_last_regs(void);
 
 /* How many distinct programs have been generated. For tests, and for anyone
  * wondering whether a step is regenerating code it should be reusing. */

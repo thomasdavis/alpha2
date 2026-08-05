@@ -210,6 +210,10 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
   qmd_set(qmd, SHADER_LOCAL_MEMORY_HIGH_SIZE, 0);
 }
 
+void hermes_qmd_set_regs(NvU32 *qmd, NvU32 count) {
+  qmd_set(qmd, REGISTER_COUNT_V, count);
+}
+
 void hermes_qmd_set_cbuf(NvU32 *qmd, unsigned index, NvU64 addr, NvU32 size) {
   qmd_set_cbuf(qmd, index, addr, size);
 }
