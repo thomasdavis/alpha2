@@ -681,6 +681,9 @@ export class NativeHeliosBackend implements Backend {
                        M0, N, K, batch),
         "matmul", da, db,
       );
+      /* Uploads are this function's own — see the 2-D branch below. */
+      if (da !== a && da !== out) da.buffer.release(this.hl);
+      if (db !== b && db !== da && db !== out) db.buffer.release(this.hl);
       return out;
     }
 
@@ -694,6 +697,19 @@ export class NativeHeliosBackend implements Backend {
     const out = this.make(outShape, "f32");
     this.check(this.hl.matmul(out.buffer.handle, da.buffer.handle,
                               db.buffer.handle, M, N, K, 1), "matmul", da, db);
+    /*
+     * AN UPLOAD IS THIS FUNCTION'S OWN, same as a materialised broadcast.
+     *
+     * `device()` returns its argument untouched when it is already on the
+     * device and ALLOCATES when it is not — and the caller never sees that
+     * tensor, so nobody downstream can free it. The free-gap profiler put 54
+     * class-11 buffers a step here, which at this shape is weight-sized.
+     *
+     * Fifth instance of this shape, after binary's broadcasts, layerNorm's
+     * intermediates, maskedFill's mask and matmulTransposed's transpose.
+     */
+    if (da !== a && da !== out) da.buffer.release(this.hl);
+    if (db !== b && db !== da && db !== out) db.buffer.release(this.hl);
     return out;
   }
 
@@ -1251,6 +1267,22 @@ export class NativeHeliosBackend implements Backend {
       this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols, batch),
       "transpose",
     );
+    /*
+     * AN UPLOAD IS THIS FUNCTION'S OWN — and this is where the leak actually
+     * lived, one level below where it looked like it lived.
+     *
+     * matmulTransposed releases the transpose it creates, and the free-gap
+     * profiler still put 309 MB a step on that line. The stack read
+     * `alloc <- device() <- transpose() <- matmulTransposed()`: what leaked was
+     * not the transpose's OUTPUT but the copy `device()` makes when its
+     * argument is not resident. Releasing the visible temporary while its
+     * hidden upload stays is why the first fix moved nothing.
+     *
+     * Safe to release here because no operation in this file returns what
+     * `device()` allocated, and because a release only MARKS — the memory stays
+     * valid to the queued launch until helios_end_step (tensor.c).
+     */
+    if (da !== a && da !== out) da.buffer.release(this.hl);
     return out;
   }
 
