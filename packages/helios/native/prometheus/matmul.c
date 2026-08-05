@@ -432,9 +432,29 @@ static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K
       const int partial = base + BW > K;
       if (partial)
         p[n++] = hp_isetp_gt_imm(P_TILE, R_TID, (K - base) - 1u, hp_ctrl_safe());
-      const unsigned rIdx = (t & 1u) ? R_STG_IDX_B : R_STG_IDX_A;
-      const unsigned rAddr = (t & 1u) ? R_STG_ADDR_B : R_STG_ADDR_A;
-      const unsigned rVal = (t & 1u) ? R_STG_VAL_B : R_STG_VAL_A;
+      /*
+       * ALTERNATE ON THE STAGING STEP, NOT ON THE ROUND — this was the fault.
+       *
+       * The untiled kernel stages ONE row and alternates its register set on
+       * the round index, which is the whole of its loop. This one stages ROWS
+       * rows, so the loop is (r, t) and `t` alone does not distinguish
+       * consecutive steps: whenever rounds == 1 — every shape whose block is
+       * at least as wide as K, which includes [4096,64]x[64,256] — BOTH row
+       * iterations got set A.
+       *
+       * Row 1 then recomputed R_STG_ADDR_A, a 64-bit ADDRESS PAIR, while row
+       * 0's LDG was still reading it, and there is no write-after-read
+       * interlock in this stack. A half-updated address is an out-of-bounds
+       * global read, which faults the channel — reported as `channel error
+       * 0xd` after the 5-second fence timeout, and misread as a hang.
+       *
+       * The value register aliased the same way, which would have been merely
+       * a wrong answer; the address register is what made it a fault.
+       */
+      const unsigned parity = (r * rounds + t) & 1u;
+      const unsigned rIdx = parity ? R_STG_IDX_B : R_STG_IDX_A;
+      const unsigned rAddr = parity ? R_STG_ADDR_B : R_STG_ADDR_A;
+      const unsigned rVal = parity ? R_STG_VAL_B : R_STG_VAL_A;
       /* Element within the row; the row itself is the STS byte offset. */
       p[n++] = hp_iadd3_imm(rIdx, R_TID, base, hp_ctrl_safe());
       p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AROW, rIdx, hp_ctrl_safe());
