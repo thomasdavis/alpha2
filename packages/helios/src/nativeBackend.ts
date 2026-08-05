@@ -515,6 +515,30 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /**
+   * a += b, in place, with no new tensor.
+   *
+   * The tape probes for this when accumulating gradients. Without it, every
+   * accumulation is `input.grad = backend.add(input.grad, g)` — a fresh tensor
+   * the size of the parameter, written in full, and the old one released. A
+   * 105M model accumulates into every parameter on every step, so it is a
+   * carve and a full write per parameter per step for arithmetic that could
+   * have gone straight into the buffer that already exists.
+   *
+   * The kernel takes its second operand from the OUTPUT pointer rather than a
+   * third one — see reads_output in elementwise.c — so `out` and the addend are
+   * the two arrays and the third handle is unused.
+   */
+  addInplace(a: TensorData, b: TensorData): void {
+    const da = this.device(a), db = this.device(b);
+    this.check(
+      this.hl.elementwise(this.hl.op.addInPlace, da.buffer.handle,
+                          db.buffer.handle, db.buffer.handle,
+                          shapeSize(a.shape), 0, 0, 0, 0, 0, 0, 0),
+      "addInplace", da, db,
+    );
+  }
+
   private unary(name: string, opId: number, a: TensorData, ...scalars: number[]): TensorData {
     const da = this.device(a);
     const n = shapeSize(a.shape);
