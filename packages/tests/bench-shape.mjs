@@ -58,6 +58,14 @@ const kept = new Set();
 })(P, 0);
 const rel = B.releaseGpuTensor ? (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); } : undefined;
 
+/* Every Variable that carries a gradient, so the step can hand them back. */
+const paramVars = [];
+(function walkV(v, d) {
+  if (!v || typeof v !== "object" || d > 6) return;
+  if (v.requiresGrad !== undefined && v.data) { paramVars.push(v); return; }
+  for (const x of Array.isArray(v) ? v : Object.values(v)) walkV(x, d + 1);
+})(P, 0);
+
 function step() {
   const n = BATCH * SEQ;
   const tape = new Tape();
@@ -66,6 +74,24 @@ function step() {
   const out = gptForward(C, P, B, tape, tok, tgt, true, false, false, undefined, rel);
   const loss = out.loss.data.data[0];
   tape.backward(out.loss, B, rel);
+
+  /*
+   * RELEASE THE GRADIENTS, because a training step consumes them.
+   *
+   * The release callback frees intermediates; it cannot free the gradients,
+   * which are the backward pass's RESULT and are still attached to every
+   * parameter when it returns. In a real step the optimizer reads them and they
+   * go; a benchmark with no optimizer keeps every one, and at 105M parameters
+   * that is the whole of the growth — the LM head's dW alone is 640 x 12,288,
+   * 31.5 MB, and there are two of them.
+   *
+   * Measured at 2 layers: 34 tensors and 99.1 MB survive a step, 67.5 MB of it
+   * matmul outputs that are weight gradients and 30.2 MB `zeros` that are the
+   * accumulators autograd's fallbacks allocate for them.
+   */
+  for (const v of paramVars) {
+    if (v.grad) { rel?.(v.grad); v.grad = null; }
+  }
   B.finishStepOps?.();
   if (B.flushAndWait) B.flushAndWait();
   else if (B.syncGpu) B.syncGpu();
