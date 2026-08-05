@@ -64,6 +64,44 @@ at 32, srcC at 64`):
 Note the destination and srcA are the same register here only because the
 compiler chose to accumulate in place; they are independent fields.
 
+## The fragment layout — MEASURED on the 3070, not read from the docs
+
+Settled ahead of implementing the kernel, because getting it wrong is silent.
+A CUDA probe filled A (16x16) and B (8x16) with distinct exactly-representable
+values, loaded the fragments according to the layout below, ran the real
+`mma.sync`, and compared all 128 outputs against a host reference:
+
+    m16n8k16 row.col fragment layout: worst abs error 0 across 128 elements
+    LAYOUT CONFIRMED on this GPU
+
+Exact, not approximate — the inputs are small integers exact in f16 and the
+accumulation is f32.
+
+With `g = lane >> 2` (the lane's group, 0..7) and `l = lane & 3` (its position
+in that group):
+
+| fragment | register | holds |
+|---|---|---|
+| A (4 regs, f16x2) | a0 | rows `g`,   k = `2l`,   `2l+1` |
+|                   | a1 | rows `g+8`, k = `2l`,   `2l+1` |
+|                   | a2 | rows `g`,   k = `2l+8`, `2l+9` |
+|                   | a3 | rows `g+8`, k = `2l+8`, `2l+9` |
+| B (2 regs, f16x2) | b0 | col `g`, k = `2l`,   `2l+1` |
+|                   | b1 | col `g`, k = `2l+8`, `2l+9` |
+| C/D (4 regs, f32) | d0,d1 | row `g`,   cols `2l`, `2l+1` |
+|                   | d2,d3 | row `g+8`, cols `2l`, `2l+1` |
+
+So A is read row-major and B column-major — which is why the operation is
+`row.col`, and why it wants B TRANSPOSED. That is worth noting against
+matmul.c: the fused `matmulTransposed` was refuted for the scalar kernel
+because transposed B made the loads uncoalesced, but a tensor-core GEMM wants
+exactly that orientation, and the tile is staged through shared memory where
+the global access pattern is decoupled from the fragment's. The refutation
+does not carry over.
+
+The probe source is reproduced in the git history of this file's commit; it
+needs only nvcc, which is installed on the box.
+
 ## What is NOT in this capture, and is the actual work
 
 The encoding is the easy half. `m16n8k16` is a WARP-level instruction: the
@@ -76,11 +114,10 @@ checks for NaNs.
 So the implementation order should be:
 
 1. `hp_hmma(dst, a, b, c, ctrl)` in `sm86_float.c`, encoding the above.
-2. A known-answer probe under `tools/`, in the spirit of
-   `shared_offset_probe.c`: one warp, one 16x8x16 product, compared against a
-   host reference. Establish the lane-to-element mapping by MEASUREMENT rather
-   than from the PTX documentation, exactly as the LDS/LDG byte-offset question
-   was settled.
+2. ~~Establish the lane-to-element mapping by measurement.~~ DONE — see the
+   table above, confirmed exactly on this GPU. A bare-metal probe under
+   `tools/` is still worth writing, but it is now a VERIFICATION of a known
+   layout rather than a discovery exercise, which is a much smaller job.
 3. Only then wire it into `matmul.c`, which already has the shared-memory
    staging and register-tile structure the fragments need — that was the
    prerequisite, and it now ships at four rows.
