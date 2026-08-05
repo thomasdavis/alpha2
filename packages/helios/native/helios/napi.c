@@ -195,6 +195,14 @@ static napi_value js_flush(napi_env env, napi_callback_info info) {
   return hl_result(env, g_open ? helios_flush(&g_ctx) : -1);
 }
 
+/* End of step: drain, then hand every buffer released during the step back to
+ * the pool. Separate from flush because a released buffer must stay valid for
+ * the rest of the step -- see helios_tensor_free. */
+static napi_value js_end_step(napi_env env, napi_callback_info info) {
+  (void)info;
+  return hl_result(env, g_open ? helios_end_step(&g_ctx) : -1);
+}
+
 static napi_value js_stats(napi_env env, napi_callback_info info) {
   (void)info;
   const helios_tensor_stats s = helios_tensor_get_stats();
@@ -237,6 +245,7 @@ static napi_value init(napi_env env, napi_value exports) {
   hl_export(env, exports, "view", js_view);
   hl_export(env, exports, "stats", js_stats);
   hl_export(env, exports, "flush", js_flush);
+  hl_export(env, exports, "endStep", js_end_step);
   hl_export(env, exports, "deviceInfo", js_device_info);
   return hl_napi_register_ops(env, exports);
 }

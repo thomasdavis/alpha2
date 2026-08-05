@@ -272,13 +272,37 @@ helios_tensor helios_tensor_alloc(helios_context *ctx, NvU64 bytes) {
   return make_handle(index, s->generation);
 }
 
+/*
+ * A free MARKS the buffer; it does not kill the handle. That happens at the
+ * step boundary.
+ *
+ * Killing it here -- bumping the generation and clearing inUse immediately --
+ * is the stricter contract and it is stricter than the tape can honour. Wiring
+ * the tape's release callback produces a use-after-free every step: `add` is
+ * handed a released [1,4,32,32] attention-scores gradient. Tracing every
+ * release of that shape shows no tensor freed twice, so it is one BUFFER with
+ * two owners that the tape believes are independent -- a lifetime disagreement
+ * between the tape and this backend, not a bug in either alone.
+ *
+ * The Vulkan backend survives the same tape because it DEFERS: `deferRelease`
+ * queues a region and `processPendingDestroys` reclaims it later. This is the
+ * same bargain. Between a release and the end of the step the handle still
+ * resolves and the memory is untouched, so a premature release is harmless
+ * rather than fatal; at the boundary the generation moves, every outstanding
+ * handle dies at once, and the memory goes back into circulation.
+ *
+ * What it gives up: a use-after-free that spans a step boundary is no longer
+ * caught, it reads recycled memory. That is the same exposure Vulkan has
+ * carried all along, and it buys a pool that actually recycles -- without it
+ * nothing is ever reused and a batch-16 step allocates 48 MB it never returns.
+ */
 void helios_tensor_free(helios_tensor t) {
   slot *s = resolve(t);
   if (!s) return;
-  /* Bumping the generation is what kills every outstanding copy of this
-   * handle, not just the one passed in. */
-  s->generation++;
-  s->inUse = 0;
+  /* Already queued this step. Counting it twice would corrupt the pool's
+   * bookkeeping and link the slot into the pending list twice, which makes a
+   * cycle and hangs the retire walk. */
+  if (s->pendingFree) return;
   const int index = (int)((t & INDEX_MASK) - 1u);
   s->pendingFree = 1;
   s->nextFree = g_pendingHead;
@@ -309,6 +333,10 @@ void helios_tensor_retire(void) {
     slot *s = &g_slots[i];
     const int next = s->nextFree;
     s->pendingFree = 0;
+    /* NOW the handle dies. Bumping the generation kills every outstanding copy
+     * of it at once, not just the one that was passed to free. */
+    s->generation++;
+    s->inUse = 0;
     s->nextFree = g_freeHead[s->classIndex];
     g_freeHead[s->classIndex] = i;
     i = next;

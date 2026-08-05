@@ -145,8 +145,26 @@ export class NativeHeliosBackend implements Backend {
     this.hl.flush();
   }
 
-  private check(ok: boolean, op: string): void {
-    if (!ok) throw new Error(`helios-native: ${op} failed on the device`);
+  /*
+   * Say WHICH operand was dead, not just that the dispatch failed.
+   *
+   * A released buffer resolves to a null GPU address and the dispatch returns
+   * -1, so every use-after-free arrives as "add failed on the device" -- an
+   * error about the operation, from a bug in a lifetime, with nothing to say
+   * whether the accumulator or the increment was the stale one. Naming the
+   * operand is the difference between a day of bisecting and a minute.
+   */
+  private check(ok: boolean, op: string, ...operands: (TensorData | undefined)[]): void {
+    if (ok) return;
+    const dead = operands
+      .map((t, i) => (t && isNative(t) && t.buffer.released ? `#${i} ${JSON.stringify(t.shape)}` : null))
+      .filter(Boolean);
+    throw new Error(
+      dead.length
+        ? `helios-native: ${op} was given RELEASED operand(s) ${dead.join(", ")} — ` +
+          `something freed a tensor the graph still references`
+        : `helios-native: ${op} failed on the device`,
+    );
   }
 
   // ── creation ─────────────────────────────────────────────────────────────
@@ -253,7 +271,7 @@ export class NativeHeliosBackend implements Backend {
     this.check(
       this.hl.elementwise(opId, out.buffer.handle, da.buffer.handle,
                           db.buffer.handle, n, 0, 0, 0, 0, 0, 0, 0),
-      name,
+      name, da, db,
     );
     return out;
   }
@@ -268,7 +286,7 @@ export class NativeHeliosBackend implements Backend {
       this.hl.elementwise(opId, out.buffer.handle, da.buffer.handle,
                           da.buffer.handle, n, s[0], s[1], s[2], s[3], s[4],
                           s[5], scalars.length),
-      name,
+      name, da,
     );
     return out;
   }
@@ -379,7 +397,7 @@ export class NativeHeliosBackend implements Backend {
       this.check(
         this.hl.matmul(out.buffer.handle, da.buffer.handle, db.buffer.handle,
                        M0, N, K, batch),
-        "matmul",
+        "matmul", da, db,
       );
       return out;
     }
@@ -393,7 +411,7 @@ export class NativeHeliosBackend implements Backend {
     const outShape = [...a.shape.slice(0, -1), N];
     const out = this.make(outShape, "f32");
     this.check(this.hl.matmul(out.buffer.handle, da.buffer.handle,
-                              db.buffer.handle, M, N, K, 1), "matmul");
+                              db.buffer.handle, M, N, K, 1), "matmul", da, db);
     return out;
   }
 
@@ -508,6 +526,35 @@ export class NativeHeliosBackend implements Backend {
     const n = this.normalized("layerNorm", this.hl.op.layerNorm, x, eps);
     return this.add(this.mul(n, weight), bias);
   }
+
+  /*
+   * THE FUSED BACKWARDS ARE NOT HERE, AND THAT IS A MEASURED DECISION.
+   *
+   * ops.ts probes for layerNormBackward, geluBackward, clampBackward, broadcast
+   * and a dozen more; Vulkan implements them, this backend does not, so each one
+   * falls back to a JavaScript loop over the tensor. That looked like the
+   * obvious next win -- at batch 32 those fallbacks held 37.8 ms of drain in a
+   * 195 ms step.
+   *
+   * They were written, as compositions of kernels that already exist, and they
+   * were SLOWER than the JavaScript they replaced:
+   *
+   *     batch  1     2911 -> 2466 tok/s
+   *     batch 16     7204 -> 5941 tok/s
+   *     batch 64     7739 -> failed
+   *
+   * The reason is the memory fix that came before them. A CPU fallback is a
+   * drain plus a host loop, and once tensors were mapped cached that loop reads
+   * at 1.4 us per 2048 elements instead of 226 -- so the fallback became cheap
+   * while a composition still costs ~20 launches at 20-50 us each. Fixing the
+   * memory removed the motivation for the kernels.
+   *
+   * What this does NOT say is that fused backwards are worthless. It says
+   * COMPOSED ones are, at this size, against a fallback this cheap. A single
+   * kernel per backward -- one launch, not twenty -- is a different proposition
+   * and remains open. The composition is in the history at this commit if it is
+   * wanted as a starting point.
+   */
 
   softmax(a: TensorData, axis?: number): TensorData {
     if (axis !== undefined && this.axisOf(a.shape, axis) !== a.shape.length - 1)
@@ -972,27 +1019,40 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /*
-   * `releaseGpuTensor` IS DELIBERATELY NOT DEFINED HERE, and that is a bug
-   * being left in place on purpose rather than an oversight.
+   * The name the TRAINER looks for, now that releasing is survivable.
    *
    * trainer.ts builds its release callback with
-   * `typeof backend.releaseGpuTensor === "function"` and this backend spells the
-   * method `release`, so the probe fails, releaseFn stays undefined, and a real
-   * training run reclaims nothing. That is a genuine defect: `carved` climbs
-   * ~283 a step forever and a long run exhausts the tensor table.
+   * `typeof backend.releaseGpuTensor === "function"`, and this backend spelled
+   * the method `release`, so the probe failed and a real training run reclaimed
+   * nothing at all. Defining the alias was unsafe until reclamation moved to the
+   * step boundary: the tape releases tensors it turns out to still reference,
+   * and freeing on the next flush handed that memory to the next allocation.
    *
-   * Defining the alias is a one-line fix and it is not yet a safe one. Turning
-   * it on hands the tape a release path that still fails: with reference
-   * counting in place a naive policy gets further than it did -- past matmul's
-   * backward -- and then dies in gradient accumulation, so at least one
-   * lifetime is still wrong somewhere between the tape and this backend. Adding
-   * the alias would convert a trainer that is leaky and CORRECT into one that is
-   * tidy and wrong, and the wrongness would arrive as a failed dispatch in the
-   * middle of a long run.
-   *
-   * So the leak stays until the release path is proven, which is what
-   * packages/tests/micro-release-recycles.mjs exists to do.
+   * Deferred reclamation makes that harmless -- a released buffer stays valid
+   * and untouched until `finishStepOps` -- so the alias can exist. It is only
+   * meaningful if the caller marks step boundaries; one that never does simply
+   * never recycles, which is what happened before.
    */
+  releaseGpuTensor(t: TensorData): void {
+    this.release(t);
+  }
+
+  /**
+   * End of a training step: drain, then recycle everything released during it.
+   *
+   * `finishStepOps` is the name trainer.ts probes for, so this is the hook a
+   * real run already calls once a step. Without it nothing is ever reused: a
+   * batch-16 step carves 284 buffers and takes 12 fresh 4 MiB slabs from the
+   * driver, 48 MB a step it never gives back.
+   */
+  finishStepOps(): void {
+    this.hl.endStep();
+  }
+
+  /** Also the trainer's spelling: it probes for `syncGpu`. */
+  syncGpu(): void {
+    this.sync();
+  }
 
   /** Drain the queue. Callers reading a tensor's `data` directly must call
    * this first — the operations are asynchronous now. */

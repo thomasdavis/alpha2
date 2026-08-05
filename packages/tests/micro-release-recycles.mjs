@@ -27,7 +27,14 @@ const STEPS = 40;
 const B = new NativeHeliosBackend(0);
 const params = initGPT(C, B, new SeededRng(7));
 
-function run(useRelease) {
+/* `mode` bisects WHERE the release callback goes. The trainer passes the same
+ * function to both gptForward and tape.backward, and those are two different
+ * owners of overlapping tensors -- so if one of them is the problem, wiring
+ * them separately says which. */
+function run(mode) {
+  const toModel = mode === "model" || mode === "both";
+  const toTape = mode === "tape" || mode === "both";
+  const useRelease = toModel || toTape;
   /* The model's own parameters must survive the step, so the callback refuses
    * anything that is one of them. Without that guard the first backward frees
    * the weights and the second step reads a recycled buffer. */
@@ -49,8 +56,8 @@ function run(useRelease) {
     const tape = new Tape();
     const tok = B.fromArray(Array.from({ length: TOKENS }, (_, j) => j % C.vocabSize), [1, TOKENS]);
     const tgt = B.fromArray(Array.from({ length: TOKENS }, (_, j) => (j + 1) % C.vocabSize), [1, TOKENS]);
-    const out = gptForward(C, params, B, tape, tok, tgt, true, false, false, undefined, release);
-    tape.backward(out.loss, B, release);
+    const out = gptForward(C, params, B, tape, tok, tgt, true, false, false, undefined, toModel ? release : undefined);
+    tape.backward(out.loss, B, toTape ? release : undefined);
     loss = out.loss.data.data[0];
   }
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -64,22 +71,21 @@ function run(useRelease) {
   };
 }
 
-/* Warm first so neither arm pays the clock ramp or the program cache. */
-run(false);
-
-const plain = run(false);
-const freed = run(true);
+/* Warm first so no arm pays the clock ramp or the program cache. */
+run("none");
+const base = run("none");
 
 console.log(`\n${STEPS} steps each\n`);
-console.log("                    carved   slabs   pooled   ms/step   loss");
+console.log("release wired to   carved/step   slabs   pooled   ms/step   loss");
 const row = (n, r) => console.log(
-  `${n.padEnd(18)} ${String(r.carved).padStart(8)} ${String(r.slabs).padStart(7)} ` +
-  `${String(r.pooled).padStart(8)} ${r.ms.toFixed(2).padStart(9)}   ${r.loss.toFixed(4)}`);
-row("no release", plain);
-row("release wired", freed);
-
-console.log(`\ncarved per step: ${(plain.carved / STEPS).toFixed(1)} without release, ` +
-            `${(freed.carved / STEPS).toFixed(1)} with`);
-console.log(freed.loss === plain.loss
-  ? "loss identical between the two arms"
-  : `LOSS DIFFERS: ${plain.loss} vs ${freed.loss} — release is freeing something still live`);
+  `${n.padEnd(18)} ${(r.carved / STEPS).toFixed(1).padStart(11)} ${String(r.slabs).padStart(7)} ` +
+  `${String(r.pooled).padStart(8)} ${r.ms.toFixed(2).padStart(9)}   ${typeof r.loss === "number" ? r.loss.toFixed(4) : r.loss}`);
+row("nothing", base);
+for (const mode of ["tape", "model", "both"]) {
+  let r;
+  try { r = run(mode); }
+  catch (e) { console.log(`${mode.padEnd(18)} FAILED: ${e.message}`); continue; }
+  row(mode, r);
+  if (r.loss !== base.loss)
+    console.log(`   ^ LOSS DIFFERS from ${base.loss.toFixed(4)} — this arm frees something still live`);
+}

@@ -106,6 +106,18 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
 int helios_flush(helios_context *ctx);
 
 /*
+ * End of a training step: drain, then return every buffer released during the
+ * step to the pool.
+ *
+ * Reclamation is HERE and not in helios_flush because a released buffer must
+ * stay valid for the rest of the step. The tape releases tensors it turns out
+ * to still reference, and recycling at the next flush handed that memory to the
+ * next allocation -- see the long comment on helios_tensor_free. A caller that
+ * never calls this never recycles, which is the behaviour that shipped before.
+ */
+int helios_end_step(helios_context *ctx);
+
+/*
  * Launch `program` over the given grid, with up to four buffers and six
  * scalars in the constant bank, and wait for it to retire.
  *

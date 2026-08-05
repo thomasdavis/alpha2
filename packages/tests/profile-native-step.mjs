@@ -19,6 +19,7 @@ import { Tape } from "/workspace/alpha2/packages/autograd/dist/index.js";
 import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index.js";
 
 const C = { vocabSize: 64, blockSize: 32, nLayer: 2, nEmbd: 64, nHead: 4, dropout: 0 };
+const BATCH = Number(process.argv[2] ?? 1);
 const TOKENS = C.blockSize;
 
 const B = new NativeHeliosBackend(0);
@@ -103,11 +104,14 @@ for (const m of METHODS) {
 
 function step(params) {
   const tape = new Tape();
-  const tok = B.fromArray(Array.from({ length: TOKENS }, (_, i) => i % C.vocabSize), [1, TOKENS]);
-  const tgt = B.fromArray(Array.from({ length: TOKENS }, (_, i) => (i + 1) % C.vocabSize), [1, TOKENS]);
+  const n = BATCH * TOKENS;
+  const tok = B.fromArray(Array.from({ length: n }, (_, i) => i % C.vocabSize), [BATCH, TOKENS]);
+  const tgt = B.fromArray(Array.from({ length: n }, (_, i) => (i + 1) % C.vocabSize), [BATCH, TOKENS]);
   const out = gptForward(C, params, B, tape, tok, tgt, true);
+  const loss = out.loss.data.data[0];
   tape.backward(out.loss, B);
-  return out.loss.data.data[0];
+  B.finishStepOps?.();
+  return loss;
 }
 
 const params = initGPT(C, B, new SeededRng(7));

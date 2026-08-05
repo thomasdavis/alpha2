@@ -218,8 +218,11 @@ static void test_tensor_pool(void) {
    * asserted immediate reuse, which was true before batching and is now the
    * behaviour that would be a bug.
    */
+  /* END OF STEP, not a flush. Reclamation moved there so that a buffer
+   * released while the graph still references it stays valid for the rest of
+   * the step -- see helios_tensor_free. A flush no longer recycles anything. */
   helios_tensor_free(a);
-  helios_flush(&ctx);
+  helios_end_step(&ctx);
   const helios_tensor b = helios_tensor_alloc(&ctx, 4096);
   HT_TRUE(b != HELIOS_TENSOR_NONE);
   HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
@@ -297,7 +300,7 @@ static void test_slab_carves_do_not_overlap(void) {
    * spent -- so `carved` stops rising, which is the property that makes a long
    * run bounded. */
   for (unsigned i = 0; i < N; i++) helios_tensor_free(t[i]);
-  helios_flush(&ctx);
+  helios_end_step(&ctx);
   const unsigned carvedBefore = helios_tensor_get_stats().carved;
   for (unsigned i = 0; i < N; i++) {
     const helios_tensor r = helios_tensor_alloc(&ctx, 4096);

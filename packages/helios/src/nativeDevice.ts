@@ -51,6 +51,10 @@ export interface NativeAddon {
   readonly scalar: NativeOps;
   /** Drain the launch queue. Must precede any host read of device memory. */
   flush(): boolean;
+  /** Drain, then return every buffer released during the step to the pool.
+   * Reclamation lives here rather than in flush because a released buffer must
+   * stay valid for the rest of the step — see helios_tensor_free. */
+  endStep(): boolean;
   /** Device identity in the shape the NVIDIA gate checks: vendorId 0x10de, and
    * channelLive, which distinguishes "ran on a GPU" from "ran at all". */
   deviceInfo(): {

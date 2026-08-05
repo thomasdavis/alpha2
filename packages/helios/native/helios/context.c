@@ -197,16 +197,22 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   return 0;
 }
 
+/*
+ * A FLUSH NO LONGER RETIRES. The step boundary does.
+ *
+ * It used to: a flush drained the queue, so nothing could still be reading a
+ * freed buffer and recycling was safe. Safe against the GPU, and not against
+ * the graph -- the tape releases tensors it turns out to still reference, and
+ * recycling on the next flush handed that memory straight to somebody else.
+ *
+ * Retiring at the step boundary instead keeps a released buffer valid and
+ * untouched for the rest of the step, which is what makes the tape's release
+ * callback usable at all. helios_end_step is where it happens, and a harness
+ * that never calls it simply never recycles -- which is exactly the behaviour
+ * that shipped before, so nothing regresses by not adopting it.
+ */
 int helios_flush(helios_context *ctx) {
-  if (ctx->pending == 0) {
-    /* Nothing queued means nothing can be reading a freed buffer, so anything
-     * waiting to be retired is safe NOW. Returning early without this left a
-     * buffer freed while the queue was empty stranded until some later flush
-     * that happened to have work -- the pool grew instead of recycling, which
-     * is invisible except as a slow creep in allocations. */
-    helios_tensor_retire();
-    return 0;
-  }
+  if (ctx->pending == 0) return 0;
   ctx->statFlushed++;
 
   /* ONE semaphore for the whole batch: the channel runs its pushbuffer in
@@ -232,8 +238,20 @@ int helios_flush(helios_context *ctx) {
   }
   ctx->lastError = 0;
   ctx->pending = 0;
-  /* Everything queued has run, so buffers freed during the batch are now safe
-   * to hand out again. */
+  return 0;
+}
+
+/*
+ * The end of a step: drain, then recycle everything released during it.
+ *
+ * The drain must come FIRST and it is not a formality -- a kernel that was
+ * enqueued and has not run may still be reading a buffer that was released, and
+ * handing that memory to the next allocation lets the host overwrite the
+ * kernel's input. That produces a finite, plausible, wrong number from an
+ * operation that looks unrelated.
+ */
+int helios_end_step(helios_context *ctx) {
+  if (helios_flush(ctx) != 0) return -1;
   helios_tensor_retire();
   return 0;
 }
