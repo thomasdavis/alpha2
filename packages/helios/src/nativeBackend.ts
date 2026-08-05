@@ -598,6 +598,25 @@ export class NativeHeliosBackend implements Backend {
     );
   }
 
+  /**
+   * out = a * b, into a buffer the caller already owns.
+   *
+   * The only caller aliases `out` onto `a`, which is why this is private: it is
+   * sound for an ELEMENTWISE kernel, where a thread reads and writes the same
+   * index, and unsound for anything whose output index differs from its input.
+   * No broadcasting either — the shapes must already match, and the one caller
+   * has reshaped them to agree.
+   */
+  private mulInto(out: TensorData, a: TensorData, b: TensorData): void {
+    const dOut = out as NativeTensor, da = this.device(a), db = this.device(b);
+    this.check(
+      this.hl.elementwise(this.hl.op.mul, dOut.buffer.handle, da.buffer.handle,
+                          db.buffer.handle, shapeSize(out.shape), 0, 0, 0, 0, 0,
+                          0, 0),
+      "mulInto", da, db,
+    );
+  }
+
   private unary(name: string, opId: number, a: TensorData, ...scalars: number[]): TensorData {
     const da = this.device(a);
     const n = shapeSize(a.shape);
@@ -1178,11 +1197,46 @@ export class NativeHeliosBackend implements Backend {
                                 dwIn.buffer.handle, width, rows, eps),
       "layerNormBackward", dxIn, dgIn, dwIn);
 
-    /* Down the row axis, so the gradients match weight's [width] shape. */
+    /*
+     * Down the row axis — AS A MATMUL WITH A VECTOR OF ONES, not as sum().
+     *
+     * sum(x, 0) over a [512, 640] gradient takes the transpose route, because
+     * 512 is a power of two and fits a block; that allocates a full transposed
+     * copy of its input. Two of them a layer, and a release only MARKS — the
+     * buffer is not reusable until helios_end_step — so peak memory here is
+     * total bytes ALLOCATED in a step, not the live set. Two full-size
+     * transposes a layer is what made this arm exhaust the card while the
+     * JavaScript fallback did not.
+     *
+     * ones[1,R] @ x[R,C] is the same sum in one launch with no temporary
+     * larger than the result. reduceOverAxis already takes this route when the
+     * axis is too long for a block; here it is taken because of what it does
+     * NOT allocate.
+     */
     const flatG = this.reshape(g, [rows, width]);
-    const db = this.sum(flatG, 0, false);
-    const prod = this.mul(flatG, this.reshape(xhat, [rows, width]));
-    const dw = this.sum(prod, 0, false);
+    const ones = this.full([1, rows], 1);
+    const sumRows = (x: TensorData) =>
+      this.reshape(this.matmul(ones, x), [width]);
+    const db = sumRows(flatG);
+    /*
+     * g * xhat IN PLACE, over xhat's own buffer.
+     *
+     * `mul` would allocate a third full-size tensor a layer, and in this
+     * allocator a temporary is not free even when it is freed: a release only
+     * MARKS, so the buffer is not reusable until helios_end_step and a step
+     * costs what it ALLOCATES. xhat is dead the moment dw is formed, so the
+     * product can overwrite it.
+     *
+     * Safe because the kernel is elementwise: each thread reads a[i] and b[i]
+     * and writes out[i] at the SAME index, so aliasing the output onto an input
+     * cannot race — a thread only ever overwrites the element it just read.
+     * That is not true of any kernel whose output index differs from its input
+     * index, which is why this is a private helper and not a general `mul`.
+     */
+    const flatXhat = this.reshape(xhat, [rows, width]);
+    this.mulInto(flatXhat, flatXhat, flatG);
+    const dw = sumRows(flatXhat);
+    (ones as NativeTensor).buffer.release(this.hl);
     /*
      * xhat AND the product are this method's OWN, and nothing else frees them.
      *
@@ -1197,13 +1251,14 @@ export class NativeHeliosBackend implements Backend {
      * launch and to any reader until helios_end_step — so returning xhat for
      * diagnosis stays sound.
      */
-    (prod as NativeTensor).buffer.release(this.hl);
     (xhat as NativeTensor).buffer.release(this.hl);
-    /* xhat rides along beyond the interface's three gradients. ops.ts
-     * destructures the three it wants and ignores this one; it is here because
-     * it is the kernel's only observable intermediate, and telling "the two
-     * reductions before the store are right" from "everything is right" is the
-     * difference between a diagnosis and a guess. */
+    /*
+     * xhat rides along beyond the interface's three gradients — but it now
+     * holds g*xhat, not xhat, because the product overwrote it in place. The
+     * field is kept because ops.ts's destructure names it and because the
+     * kernel's only observable intermediate is worth having a handle on; the
+     * diff harness checks dx, dw and db, which are what the interface promises.
+     */
     return { dx, dw, db, xhat };
   }
 

@@ -82,6 +82,30 @@ function step() {
   return loss;
 }
 
+/*
+ * TWO QUESTIONS, and they have different answers.
+ *
+ * "survivors" reports what is still held after a step boundary — a LEAK, growth
+ * across steps.
+ *
+ * "all" reports everything allocated during the window whether or not it was
+ * freed — the PEAK, which is the quantity that actually bounds the batch here.
+ * A release only MARKS in this allocator: the buffer stays valid to any queued
+ * launch and to any reader until helios_end_step, so a step's memory is total
+ * bytes ALLOCATED and not the live set. A path can leak nothing and still
+ * exhaust the card, which is exactly what the fused layerNorm backward does.
+ */
+const MODE = process.env.CENSUS_MODE ?? "survivors";
+const all = [];
+if (MODE === "all") {
+  const wrapped = NativeBuffer.alloc;
+  NativeBuffer.alloc = (hl, elements) => {
+    const b = wrapped(hl, elements);
+    if (recording) all.push(live.get(b) ?? { elements, st: "(unrecorded)" });
+    return b;
+  };
+}
+
 for (let i = 0; i < 5; i++) step();
 recording = true;
 live.clear();
@@ -90,14 +114,14 @@ recording = false;
 
 /* Group by site, because one leaking line produces hundreds of buffers. */
 const bySite = new Map();
-for (const { elements, st } of live.values()) {
+for (const { elements, st } of (MODE === "all" ? all : live.values())) {
   const e = bySite.get(st) ?? { n: 0, elements: 0 };
   e.n++; e.elements += elements;
   bySite.set(st, e);
 }
 const rows = [...bySite.entries()].sort((a, b) => b[1].elements - a[1].elements);
 
-console.log(`${C.nLayer}L ${C.nEmbd}d batch ${BATCH} — buffers surviving ${STEPS} step boundaries\n`);
+console.log(`${C.nLayer}L ${C.nEmbd}d batch ${BATCH} — ` + (MODE === "all" ? `ALL allocations over ${STEPS} steps` : `buffers surviving ${STEPS} step boundaries`) + "\n");
 let totalMiB = 0;
 for (const [st, e] of rows.slice(0, 12)) {
   const miB = e.elements * 4 / (1 << 20);
