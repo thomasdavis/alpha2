@@ -1731,6 +1731,23 @@ class ComputeGraph {
         }
         this.deferredReleases = [];
       }
+      // AN EMPTY QUEUE IS NOT A FINISHED GPU.
+      //
+      // A step does not always end with ops pending: MAX_PENDING_OPS and the
+      // X49 DGC run-split both flush mid-step, so whether anything is left at
+      // the step boundary depends on the op count, which depends on the batch.
+      // Returning here without waiting made flushAndWait() a no-op on exactly
+      // those steps -- the submitted work was still running and the timer
+      // measured submission.
+      //
+      // It is why batch 256 reported 8,192 tokens in 73.9 ms against batch
+      // 128's 4,096 in 112.2 ms -- twice the work in two thirds the time -- and
+      // why the same binary measured 71,616 and then 25,910 tok/s at batch 16
+      // across two runs. Waiting on the last timeline value costs nothing when
+      // the GPU is already idle and is the whole measurement when it is not.
+      if (withWait && this.vk && this._lastFlushTimeline > 0) {
+        waitTimelineTracked(this.vk, this._lastFlushTimeline);
+      }
       return this._lastFlushTimeline;
     }
     const vk = this.vk;
