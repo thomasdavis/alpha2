@@ -366,11 +366,25 @@ static void test_dispatch_chain(void) {
   helios_tensor_release_all(&ctx);
   helios_program_reset();
 
+  /*
+   * HOST-VISIBLE, because this test writes its input and reads its result
+   * through a pointer.
+   *
+   * Under HELIOS_VIDMEM the default pool is video memory with no host mapping
+   * at all -- that is the point of it -- so helios_tensor_host returns NULL and
+   * the stores below would write through it. The host-visible pool is the one
+   * that answers for memory the host touches, which is exactly what this test
+   * is. Under system memory the two pools are the same allocator, so nothing
+   * about the sysmem run changes.
+   *
+   * The property being checked -- that a launch reading another's output sees
+   * it -- is a property of the dispatcher, not of where the bytes live.
+   */
   const unsigned N = 256;
-  const helios_tensor x = helios_tensor_alloc(&ctx, N * 4);
-  const helios_tensor y = helios_tensor_alloc(&ctx, N * 4);
-  const helios_tensor sum = helios_tensor_alloc(&ctx, 4096);
-  const helios_tensor scratch = helios_tensor_alloc(&ctx, 4096);
+  const helios_tensor x = helios_tensor_alloc_host(&ctx, N * 4);
+  const helios_tensor y = helios_tensor_alloc_host(&ctx, N * 4);
+  const helios_tensor sum = helios_tensor_alloc_host(&ctx, 4096);
+  const helios_tensor scratch = helios_tensor_alloc_host(&ctx, 4096);
   HT_TRUE(x && y && sum && scratch);
 
   float *hx = (float *)helios_tensor_host(x);

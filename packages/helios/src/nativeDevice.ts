@@ -307,7 +307,12 @@ export class NativeBuffer {
        * next by definition. */
       this.hl.elementwise(this.hl.op.copy, this.staging.handle, this.handle,
                           this.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
-      this.hl.flush();
+      /* A FAILED FLUSH HERE IS SILENT GARBAGE. The copy is the only thing
+       * standing between device memory and a host loop, so a drain that timed
+       * out or faulted must not be mistaken for one that completed — the reader
+       * would get whatever the staging buffer happened to hold. */
+      if (!this.hl.flush())
+        throw new Error("helios: flush failed while staging a device tensor for the host");
       /* The copy is itself a dispatch, so read the generation AFTER it: the
        * mirror is current as of the world that includes the copy. */
       this.stagingGen = deviceGeneration;
