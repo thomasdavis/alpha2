@@ -90,6 +90,28 @@ enum {
    * loop later — puts the reuse out of reach.
    */
   R_STOREVAL = 31,
+  /*
+   * The tiled kernel: ROWS accumulators and ROWS staged A values.
+   *
+   * A block owning ONE output row re-reads all of B from global for every row
+   * of the output — at N=1920, K=640 that is 4.9 MB read 64 times for a single
+   * matmul, and it is why the GPU half of a 105M step sustains 0.54% of peak.
+   * Giving a block several rows lets one B load feed several FFMAs.
+   */
+  R_ACC0 = 32, R_ACC1 = 33,
+  R_AV0 = 34, R_AV1 = 35,
+  /*
+   * A store value and an output address PER ROW.
+   *
+   * The rows store one after another, and row 1 computing its value clobbers
+   * the register row 0's store is still reading — the sixth instance of this
+   * hazard in this stack, and the second inside this file. It presents as
+   * elements that are zero, on some shapes and not others, because whether the
+   * store has taken its operand is a timing question: N=1025 failed while
+   * N=1920 with the same chunk count and the same guard passed.
+   */
+  R_STOREVAL1 = 36,
+  R_OUT_B = 38, /* R38:R39 */
   R_STG_IDX_B = 23,
   R_STG_ADDR_B = 24, /* R24:R25 */
   R_STG_VAL_B = 26,
@@ -118,6 +140,9 @@ enum {
  * does not arise in the shapes the model uses.
  */
 #define MATMUL_TILE_MAX_K 1024u
+
+/* The tiled form, on. Flip to 0 to compare against one row per block. */
+#define TILED_MATMUL 1
 
 /* How many cooperative rounds it takes N threads to stage K elements. The last
  * one is short whenever N does not divide K, and it is PREDICATED. */
@@ -206,8 +231,156 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
  * weight here is stored [out, in] and used transposed, so this is the common
  * case rather than the special one.
  */
+
+/*
+ * Output rows one block computes.
+ *
+ * TWO first, deliberately. The register and shared-memory budgets both allow
+ * four, and four was tried first and failed a layer suite for reasons that took
+ * two eliminated suspects to not find. Two is the smallest step that still
+ * halves B's traffic, and it is the one that can be checked against cpu_ref
+ * shape by shape before anything larger is attempted.
+ */
+#define MATMUL_TILE_ROWS 2u
+
+int pr_matmul_tiled(unsigned M, unsigned N, unsigned K) {
+  return TILED_MATMUL && M % MATMUL_TILE_ROWS == 0 && M >= MATMUL_TILE_ROWS &&
+         (NvU64)MATMUL_TILE_ROWS * K * 4u <= 48u * 1024u &&
+         can_tile(N, K) &&
+         tile_rounds(N, K) * MATMUL_TILE_ROWS * 8u + 90u < PR_MAX_INSTRUCTIONS;
+}
+
+unsigned pr_matmul_rows(unsigned M, unsigned N, unsigned K) {
+  return pr_matmul_tiled(M, N, K) ? MATMUL_TILE_ROWS : 1u;
+}
+
+unsigned pr_matmul_tiled_shared(unsigned M, unsigned N, unsigned K) {
+  return pr_matmul_tiled(M, N, K) ? MATMUL_TILE_ROWS * K * 4u : 0u;
+}
+
+/*
+ * C = A @ B (or A @ B^T) with a block computing MATMUL_TILE_ROWS output rows.
+ *
+ * The point is B REUSE: one global load of B[k][col] feeds ROWS FFMAs, so B
+ * crosses the bus ROWS times less often. A's rows live in shared memory, ROWS
+ * of them, addressed by `R_K*4 + r*K*4` — the immediate is a BYTE offset, which
+ * tools/shared_offset_probe.c established rather than assumed.
+ */
+static unsigned emit_matmul_tiled(hp_word *p, unsigned M, unsigned N, unsigned K,
+                                  int transposedB) {
+  unsigned n = 0;
+  const unsigned ROWS = MATMUL_TILE_ROWS;
+  const unsigned BW = pr_matmul_block(N);
+  const unsigned chunks = (N + BW - 1u) / BW;
+  const int guard_col = chunks * BW > N;
+  const unsigned ACC[2] = {R_ACC0, R_ACC1};
+  const unsigned AV[2] = {R_AV0, R_AV1};
+
+  p[n++] = hp_s2r(R_ROW, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  /* This block's FIRST output row. */
+  p[n++] = hp_imad_imm(R_ROW, R_ROW, ROWS, HP_RZ, hp_ctrl_wait(BAR_ID));
+
+  p[n++] = hp_imad_imm(R_AROW, R_ROW, K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_AROW, R_AROW, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_BPLANE, R_BATCH, K * N, HP_RZ, hp_ctrl_safe());
+
+  /* Stage ROWS rows of A. Round t covers elements [t*BW, t*BW+BW) of a row. */
+  const unsigned rounds = tile_rounds(N, K);
+  for (unsigned r = 0; r < ROWS; r++) {
+    for (unsigned t = 0; t < rounds; t++) {
+      const unsigned base = t * BW;
+      const int partial = base + BW > K;
+      if (partial)
+        p[n++] = hp_isetp_gt_imm(P_TILE, R_TID, (K - base) - 1u, hp_ctrl_safe());
+      const unsigned rIdx = (t & 1u) ? R_STG_IDX_B : R_STG_IDX_A;
+      const unsigned rAddr = (t & 1u) ? R_STG_ADDR_B : R_STG_ADDR_A;
+      const unsigned rVal = (t & 1u) ? R_STG_VAL_B : R_STG_VAL_A;
+      /* Element within the row; the row itself is the STS byte offset. */
+      p[n++] = hp_iadd3_imm(rIdx, R_TID, base, hp_ctrl_safe());
+      p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AROW, rIdx, hp_ctrl_safe());
+      p[n++] = hp_iadd3_imm(R_LOAD_IDX, R_LOAD_IDX, (int)(r * K), hp_ctrl_safe());
+      p[n++] = hp_imad_wide_const(rAddr, R_LOAD_IDX, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+      hp_word load = hp_ldg(rVal, rAddr, 0, hp_ctrl_setbar(BAR_LOAD));
+      hp_word store = hp_sts(rIdx, rVal, r * K * 4u, hp_ctrl_wait(BAR_LOAD));
+      if (partial) { load = hp_predicated(load, P_TILE, 1);
+                     store = hp_predicated(store, P_TILE, 1); }
+      p[n++] = load;
+      p[n++] = store;
+    }
+  }
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  p[n++] = hp_mov_imm(R_CHUNK, 0, hp_ctrl_safe());
+  const unsigned chunk_top = n;
+  p[n++] = hp_imad_imm(R_COL, R_CHUNK, BW, R_TID, hp_ctrl_safe());
+  if (guard_col)
+    p[n++] = hp_isetp_gt_imm(P_COL, R_COL, N - 1, hp_ctrl_safe());
+  for (unsigned r = 0; r < ROWS; r++)
+    p[n++] = hp_mov_imm(ACC[r], 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+  if (transposedB)
+    p[n++] = hp_imad_imm(R_BIDX, R_COL, K, R_BPLANE, hp_ctrl_safe());
+  else
+    p[n++] = hp_iadd3_reg(R_BIDX, R_COL, R_BPLANE, hp_ctrl_safe());
+
+  const unsigned loop_top = n;
+  p[n++] = hp_imad_wide_const(R_BADDR, R_BIDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  {
+    hp_word bl = hp_ldg(R_BVAL, R_BADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard_col ? hp_predicated(bl, P_COL, 1) : bl;
+  }
+  for (unsigned r = 0; r < ROWS; r++)
+    p[n++] = hp_lds(AV[r], R_K, r * K * 4u, hp_ctrl_setbar(BAR_LOAD));
+  /* One wait covering the B load and both LDS — the barrier is a counter of
+   * outstanding writes, which is the reasoning the untiled kernel records. */
+  for (unsigned r = 0; r < ROWS; r++)
+    p[n++] = hp_ffma(ACC[r], AV[r], R_BVAL, ACC[r],
+                     r == 0 ? hp_ctrl_wait(BAR_LOAD) : hp_ctrl_safe());
+
+  p[n++] = hp_iadd3_imm(R_BIDX, R_BIDX, transposedB ? 1 : (int)N, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_K, R_K, 1, hp_ctrl_safe());
+  p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1, hp_ctrl_safe());
+  const int back = -(int)((n + 1 - loop_top) * INSTR_BYTES);
+  p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
+  n++;
+
+  for (unsigned r = 0; r < ROWS; r++) {
+    /* Per row, because the stores are consecutive and nothing interlocks the
+     * next one's operand setup against this one's read. See R_STOREVAL1. */
+    const unsigned sv = (r & 1u) ? R_STOREVAL1 : R_STOREVAL;
+    const unsigned outAddr = (r & 1u) ? R_OUT_B : R_OUT;
+    p[n++] = hp_imad_imm(R_OIDX, R_ROW, N, R_COL, hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(R_OIDX, R_OIDX, (int)(r * N), hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_TMP, R_BATCH, M * N, HP_RZ, hp_ctrl_safe());
+    p[n++] = hp_iadd3_reg(R_OIDX, R_OIDX, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_imad_wide_const(outAddr, R_OIDX, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+    p[n++] = hp_iadd3_imm(sv, ACC[r], 0, hp_ctrl_safe());
+    hp_word st = hp_stg(outAddr, sv, 0, hp_ctrl_safe());
+    p[n++] = guard_col ? hp_predicated(st, P_COL, 1) : st;
+  }
+
+  if (chunks > 1) {
+    p[n++] = hp_iadd3_imm(R_CHUNK, R_CHUNK, 1, hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_CHUNK, R_CHUNK, chunks - 1, hp_ctrl_safe());
+    const int cback = -(int)((n + 1 - chunk_top) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(cback, hp_ctrl_branch()), P_CHUNK, 1);
+    n++;
+  }
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
 unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
                              int transposedB) {
+  if (pr_matmul_tiled(M, N, K))
+    return emit_matmul_tiled(p, M, N, K, transposedB);
   unsigned n = 0;
 
   const unsigned BW = pr_matmul_block(N);

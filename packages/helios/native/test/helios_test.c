@@ -21,6 +21,7 @@ void hl_batch_tests(void);
 #include "../prometheus/elementwise.h"
 #include "../helios/program.h"
 #include "../helios/tensor.h"
+#include "../prometheus/matmul.h"
 #include "../prometheus/reduction.h"
 
 #include <string.h>
@@ -63,11 +64,20 @@ static void test_cache_identity(void) {
   HT_TRUE(b != NULL && b != a);
   HT_EQ_U64(helios_program_count(), 2);
 
-  /* And the launch shape travels WITH the code, so it matches the key. */
-  HT_EQ_U64(a->gridX, 8);
-  HT_EQ_U64(a->blockX, 16);
-  HT_EQ_U64(b->gridX, 32);
-  HT_EQ_U64(b->blockX, 16);
+  /*
+   * And the launch shape travels WITH the code, so it matches the key — via
+   * the same functions the dispatcher uses rather than a constant.
+   *
+   * These were 8 and 32, which encoded "one block per output row" into the
+   * test. A block owns several rows now, so the grid is M/rows, and asserting
+   * the old number would make a correct change look like a regression. The
+   * property worth holding is that the launch AGREES with the emitter, not that
+   * it has a particular value.
+   */
+  HT_EQ_U64(a->gridX, 8 / pr_matmul_rows(8, 16, 32));
+  HT_EQ_U64(a->blockX, pr_matmul_block(16));
+  HT_EQ_U64(b->gridX, 32 / pr_matmul_rows(32, 16, 8));
+  HT_EQ_U64(b->blockX, pr_matmul_block(16));
   HT_END();
 }
 

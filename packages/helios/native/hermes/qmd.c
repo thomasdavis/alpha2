@@ -160,7 +160,11 @@ void hermes_qmd_build(NvU32 *qmd, NvU64 program, NvU64 scratch, NvU32 gridX,
    * allocates in units of 8, so this is the next size up and it costs occupancy
    * rather than correctness — the trade this comment already describes.
    */
-  qmd_set(qmd, REGISTER_COUNT_V, 40);
+  /* 48: the tiled matmul keeps two accumulators, two staged A values, and a store
+   * value and output address per row live (R32..R39) — 40 exactly, and a
+   * declaration with no slack above the highest register used is what raises
+   * GR_EXCEPTION. Measured safe on its own: 51/51, loss 4.190377. */
+  qmd_set(qmd, REGISTER_COUNT_V, 48);
   /*
    * ONE BARRIER, always.
    *

@@ -28,6 +28,12 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K);
 unsigned pr_emit_matmul_kind(hp_word *p, unsigned M, unsigned N, unsigned K,
                              int transposedB);
 
+/* Whether a block computes several output rows, how many, and the shared memory
+ * that needs. The launch must match all three. */
+int pr_matmul_tiled(unsigned M, unsigned N, unsigned K);
+unsigned pr_matmul_rows(unsigned M, unsigned N, unsigned K);
+unsigned pr_matmul_tiled_shared(unsigned M, unsigned N, unsigned K);
+
 unsigned pr_matmul_shared_bytes(unsigned N, unsigned K);
 
 /*
