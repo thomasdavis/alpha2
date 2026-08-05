@@ -724,6 +724,37 @@ export class NativeHeliosBackend implements Backend {
     return this.expand(t, shape);
   }
 
+  /**
+   * g * dgelu(x), in one launch.
+   *
+   * gelu is x*sigma(2u) with u = K0(x + K1 x^3), so the derivative reuses the
+   * same sigma the forward already computes:
+   *
+   *   d/dx = s + x*s(1-s)*2K0*(1 + 3K1 x^2)
+   *
+   * which is the JavaScript fallback's expression rearranged — that one writes
+   * 0.5(1+tanh u) + 0.5 x sech^2(u) K0 (1+3K1x^2), and s = (1+tanh u)/2 with
+   * sech^2 u = 4s(1-s).
+   *
+   * Binary, because it needs the pre-activation and the incoming gradient
+   * together. It replaces a JavaScript loop over the whole tensor behind a
+   * drain — ~33 ms a step at batch 128, growing with the batch.
+   *
+   * The constants come from the ADDON. Restating them here is how gelu's two
+   * ended up swapped once, giving plausible wrong numbers.
+   */
+  geluBackward(x: TensorData, g: TensorData): TensorData {
+    const dx = this.device(x), dg = this.device(g);
+    const out = this.make(x.shape, "f32");
+    this.check(
+      this.hl.elementwise(this.hl.op.geluGrad, out.buffer.handle, dx.buffer.handle,
+                          dg.buffer.handle, shapeSize(x.shape), this.hl.scalar.geluK1,
+                          this.hl.scalar.geluFolded, 1, this.hl.scalar.gelu3K1,
+                          this.hl.scalar.gelu2K0, 0, 5),
+      "geluBackward", dx, dg);
+    return out;
+  }
+
   softmax(a: TensorData, axis?: number): TensorData {
     if (axis !== undefined && this.axisOf(a.shape, axis) !== a.shape.length - 1)
       this.unsupported("softmax over a non-final axis");

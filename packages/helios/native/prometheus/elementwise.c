@@ -14,8 +14,15 @@ static int reads_input(pr_ew_op op) {
 
 /* Does the operation read a SECOND input array? */
 static int reads_b(pr_ew_op op) {
+  /* GELU_GRAD is binary for a different reason from the arithmetic four: its
+   * second operand is the incoming GRADIENT, not another term. Leaving it out
+   * of this list did not fail to compile and did not fault — the kernel simply
+   * multiplied by whatever R_B_VALUE happened to hold, so the forward loss
+   * matched cpu_ref exactly and every gradient was wrong. Caught by
+   * train-model-native, which compares parameter gradients rather than only the
+   * loss; nothing that watches the loss can see a broken backward. */
   return op == PR_EW_ADD || op == PR_EW_SUB || op == PR_EW_MUL ||
-         op == PR_EW_DIV;
+         op == PR_EW_DIV || op == PR_EW_GELU_GRAD;
 }
 
 /* ADD_INPLACE reads the OUTPUT array as well as writing it, which is the whole
