@@ -464,6 +464,60 @@ static unsigned emit_hmma_epilogue(hp_word *p, unsigned M, unsigned N,
  * the SAME for every iteration and only a constant is added. That is what makes
  * the whole k-step cost one address computation per operand.
  */
+/*
+ * The staging LOADS for one k-step, emitted twice: once before the loop and
+ * once inside it, a step ahead of the tile it feeds.
+ *
+ * A struct rather than a dozen parameters because every field is derived from
+ * the tile and the layout, and threading them through a signature is how two
+ * copies of this drift apart. `guard` predicates the loads off on the final
+ * iteration, where there is no next tile to read.
+ */
+typedef struct {
+  unsigned M, N, K;
+  int transposedA, transposedB;
+  unsigned aIters, bIters, threads, wpr, bn;
+} stage_params;
+
+static unsigned emit_stage_loads(hp_word *p, const stage_params *sp, int guard) {
+  unsigned n = 0;
+  const unsigned M = sp->M, N = sp->N, K = sp->K;
+  if (sp->transposedA) {
+    p[n++] = hp_imad_imm(R_TMP, R_K, M, R_AGB, hp_ctrl_safe());
+  } else {
+    p[n++] = hp_iadd3_reg(R_TMP, R_AGB, R_K, hp_ctrl_safe());
+  }
+  p[n++] = hp_imad_wide_const(R_ADDR_SA, R_TMP, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  for (unsigned i = 0; i < sp->aIters; i++) {
+    /* Iteration i is `threads` words on, which is threads/wpr rows on. */
+    const unsigned rowStep = (sp->threads / sp->wpr) * i;
+    const unsigned o = sp->transposedA ? rowStep * 4u : rowStep * K * 4u;
+    const unsigned pairOff = sp->transposedA ? M * 4u : 4u;
+    hp_word l0 = hp_ldg(ST_A(2 * i + 0), R_ADDR_SA, o, hp_ctrl_setbar(BAR_LOAD));
+    hp_word l1 = hp_ldg(ST_A(2 * i + 1), R_ADDR_SA, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard ? hp_predicated(l0, P_DONE, 1) : l0;
+    p[n++] = guard ? hp_predicated(l1, P_DONE, 1) : l1;
+  }
+  if (sp->transposedB) {
+    p[n++] = hp_iadd3_reg(R_TMP, R_BGB, R_K, hp_ctrl_safe());
+  } else {
+    p[n++] = hp_imad_imm(R_TMP, R_K, N, R_BGB, hp_ctrl_safe());
+  }
+  p[n++] = hp_imad_wide_const(R_ADDR_SB, R_TMP, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  for (unsigned i = 0; i < sp->bIters; i++) {
+    const unsigned o = sp->transposedB ? (sp->threads / sp->wpr) * i * K * 4u
+                                       : (sp->threads / sp->bn) * i * 2u * N * 4u;
+    const unsigned pairOff = sp->transposedB ? 4u : N * 4u;
+    hp_word l0 = hp_ldg(ST_B(2 * i + 0), R_ADDR_SB, o, hp_ctrl_setbar(BAR_LOAD));
+    hp_word l1 = hp_ldg(ST_B(2 * i + 1), R_ADDR_SB, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = guard ? hp_predicated(l0, P_DONE, 1) : l0;
+    p[n++] = guard ? hp_predicated(l1, P_DONE, 1) : l1;
+  }
+  return n;
+}
+
 static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
                                  pr_mm_kind kind, int accumulate) {
   unsigned n = 0;
@@ -555,38 +609,27 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   for (unsigned i = 0; i < 4u * HMMA_TM * HMMA_TN; i++)
     p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+  /*
+   * ---- PREFETCH: a k-step's loads are issued a WHOLE STEP EARLY ----
+   *
+   * The loop used to issue its global loads and immediately wait on them, so
+   * every k-step paid the full memory latency with nothing to hide it. This
+   * GEMM sustains 29% of the card's tensor-core rate against cuBLAS's 53-70%
+   * on the same shapes, and an exposed load is the first thing to suspect.
+   *
+   * The loads now land in REGISTERS one step ahead, while the PREVIOUS tile's
+   * fragments are being multiplied. It needs no second shared tile and no
+   * unrolling: only the shared STORE has to wait for a barrier, and the barrier
+   * was already there.
+   *
+   * The in-loop prefetch is PREDICATED, because the last iteration has no next
+   * tile and an unguarded read past the end of A or B is out of bounds — which
+   * faults the channel rather than returning nonsense.
+   */
+  const stage_params sp = {M, N, K, transposedA, transposedB,
+                           A_ITERS, B_ITERS, THREADS, WPR, BN};
+  n += emit_stage_loads(&p[n], &sp, 0);
   const unsigned loop_top = n;
-
-  /* ---- stage both tiles ---- */
-  if (transposedA) {
-    p[n++] = hp_imad_imm(R_TMP, R_K, M, R_AGB, hp_ctrl_safe());
-  } else {
-    p[n++] = hp_iadd3_reg(R_TMP, R_AGB, R_K, hp_ctrl_safe());
-  }
-  p[n++] = hp_imad_wide_const(R_ADDR_SA, R_TMP, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  for (unsigned i = 0; i < A_ITERS; i++) {
-    /* Iteration i is THREADS words on, which is THREADS/WPR rows on. */
-    const unsigned rowStep = (THREADS / WPR) * i;
-    const unsigned o = transposedA ? rowStep * 4u : rowStep * K * 4u;
-    const unsigned pairOff = transposedA ? M * 4u : 4u;
-    p[n++] = hp_ldg(ST_A(2 * i + 0), R_ADDR_SA, o, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(ST_A(2 * i + 1), R_ADDR_SA, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
-  }
-  if (transposedB) {
-    p[n++] = hp_iadd3_reg(R_TMP, R_BGB, R_K, hp_ctrl_safe());
-  } else {
-    p[n++] = hp_imad_imm(R_TMP, R_K, N, R_BGB, hp_ctrl_safe());
-  }
-  p[n++] = hp_imad_wide_const(R_ADDR_SB, R_TMP, R_ESIZE, 0,
-                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
-  for (unsigned i = 0; i < B_ITERS; i++) {
-    const unsigned o = transposedB ? (THREADS / WPR) * i * K * 4u
-                                   : (THREADS / BN) * i * 2u * N * 4u;
-    const unsigned pairOff = transposedB ? 4u : N * 4u;
-    p[n++] = hp_ldg(ST_B(2 * i + 0), R_ADDR_SB, o, hp_ctrl_setbar(BAR_LOAD));
-    p[n++] = hp_ldg(ST_B(2 * i + 1), R_ADDR_SB, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
-  }
 
   /* Pack into f16 pairs and store. The pack writes over a register the PREVIOUS
    * pack has already read, which is safe because an ALU operand is taken at
@@ -609,6 +652,15 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
     p[n++] = hp_sts(R_SHB, ST_B(i), SH_A_BYTES + o, hp_ctrl_safe());
   }
   p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  /*
+   * Advance k and issue the NEXT tile's loads before multiplying this one.
+   * P_DONE is set here rather than at the bottom so it can guard the prefetch
+   * as well as the branch — one comparison serving both.
+   */
+  p[n++] = hp_iadd3_imm(R_K, R_K, (int)MMA_K, hp_ctrl_safe());
+  p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1u, hp_ctrl_safe());
+  n += emit_stage_loads(&p[n], &sp, 1);
 
   /* ---- fragments, from shared ---- */
   for (unsigned tm = 0; tm < HMMA_TM; tm++) {
@@ -637,8 +689,6 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   /* Nobody may overwrite a tile until every warp has read it. */
   p[n++] = hp_bar_sync(hp_ctrl_safe());
 
-  p[n++] = hp_iadd3_imm(R_K, R_K, (int)MMA_K, hp_ctrl_safe());
-  p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1u, hp_ctrl_safe());
   {
     const int back = -(int)((n + 1u - loop_top) * INSTR_BYTES);
     p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);

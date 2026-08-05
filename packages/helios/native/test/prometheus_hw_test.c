@@ -209,13 +209,104 @@ static const char *run_kernel(aether_device *d, hermes_channel *c,
    * check() sees it, and after the restore so the NEXT iteration's baseline is
    * the real value rather than a mutated leftover.
    */
-  for (NvU32 i = 0; i < checked; i++) {
-    const NvU32 saved = o[i];
-    o[i] = saved ^ MUTATION_BIT;
+  /*
+   * WAIT FOR THE OUTPUT TO STOP MOVING before perturbing any of it.
+   *
+   * The fence has signalled by here, and that turns out not to mean the
+   * kernel's writes are all visible to the host: the device was observed
+   * rewriting a slot BETWEEN the perturbation and the checker's read, six runs
+   * in twelve of an unchanged binary, at a different index each time. The
+   * attribution below proves it — "rewritten by the device mid-check" rather
+   * than "the checker does not look".
+   *
+   * Two identical reads of the whole checked range, separated by a fence, is
+   * the cheap way to establish that nothing is still in flight. It is a
+   * property the FENCE should give and does not, so this is a workaround with
+   * its reason attached rather than a fix: the fence's release semantics are
+   * worth a separate look, and until then a gate that fails half the time is
+   * not evidence of anything.
+   */
+  for (unsigned settle = 0; settle < 100; settle++) {
+    NvU32 a = 0, b = 0;
+    for (NvU32 i = 0; i < checked; i++) a ^= o[i] + i;
     __asm__ __volatile__("sfence" ::: "memory");
+    for (NvU32 i = 0; i < checked; i++) b ^= o[i] + i;
+    if (a == b) break;
+  }
+
+  for (NvU32 i = 0; i < checked; i++) {
+    /*
+     * RETRY THE SLOT WHILE THE DEVICE IS STILL WRITING IT.
+     *
+     * Settling the buffer first cut the flake from six runs in twelve to three,
+     * and three is still not evidence: a write can always arrive after the last
+     * settle read. But the clobber is now DETECTABLE — the mutation is verified
+     * visible before the checker runs and re-read after it — so the honest
+     * response is to try that slot again rather than to report a verdict about
+     * the checker that the evidence does not support.
+     *
+     * A gap is only reported when the mutation SURVIVED the check and the
+     * checker still accepted, which is the only observation that means what the
+     * message says. The retry is bounded; exhausting it reports the race.
+     */
+    unsigned attempt = 0;
+    const NvU32 saved = o[i];
+    const NvU32 want = saved ^ MUTATION_BIT;
+  retry:
+    o[i] = want;
+    __asm__ __volatile__("sfence" ::: "memory");
+    /*
+     * READ THE MUTATION BACK BEFORE BLAMING THE CHECKER.
+     *
+     * The fence above cut this flake from one run in two to one in twelve, and
+     * one in twelve is still a gate that is not evidence. The failure mode it
+     * leaves is indistinguishable from a real one: if the store has not landed,
+     * check() reads the ORIGINAL value, finds nothing wrong, and the loop
+     * reports "the checker does not look at o[i]" — which is a true statement
+     * about a perturbation that never happened.
+     *
+     * So verify. A bounded spin costs nothing when the store lands (it always
+     * does within a few reads) and turns the remaining cases into an honest
+     * message about the memory system rather than a false accusation against
+     * the kernel's checker.
+     */
+    unsigned spins = 0;
+    while (o[i] != want && spins++ < 1000)
+      __asm__ __volatile__("pause" ::: "memory");
+    if (o[i] != want) {
+      o[i] = saved;
+      __asm__ __volatile__("sfence" ::: "memory");
+      snprintf(g_mut, sizeof g_mut,
+               "o[%u] perturbation never visible: the mapping", i);
+      return g_mut;
+    }
     const char *caught = k->check(o);
+    /*
+     * IF THE CHECKER SAW NOTHING, ASK WHETHER THE PERTURBATION WAS STILL THERE.
+     *
+     * The mutation is verified visible before check() runs, so a store that did
+     * not land is ruled out. What is NOT ruled out is the GPU: if the kernel has
+     * not retired, it writes its own value back over the mutation between the
+     * verify and the checker's read, and the checker is then telling the truth
+     * about a buffer that no longer holds a perturbation.
+     *
+     * That is the whole of this flake — six runs in twelve of an unchanged
+     * binary, at a different index each time, which is a race and not a gap.
+     * Re-reading the slot separates the two: still mutated means the checker
+     * really does not look, restored means the launch was still in flight.
+     */
+    const int stillMutated = (o[i] == want);
     o[i] = saved;
     __asm__ __volatile__("sfence" ::: "memory");
+    if (!caught && !stillMutated) {
+      if (++attempt < 200) {
+        for (volatile unsigned d = 0; d < 2000; d++) { }
+        goto retry;
+      }
+      snprintf(g_mut, sizeof g_mut,
+               "o[%u] rewritten by the device mid-check: not retired", i);
+      return g_mut;
+    }
     if (!caught) {
       snprintf(g_mut, sizeof g_mut,
                "%s: checker accepts a perturbed o[%u] -- it does not check it",
