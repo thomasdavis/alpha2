@@ -1030,19 +1030,39 @@ export class NativeHeliosBackend implements Backend {
     const srcStride: number[] = new Array(shape.length).fill(1);
     for (let i = shape.length - 2; i >= 0; i--) srcStride[i] = srcStride[i + 1] * shape[i + 1];
 
-    const n = shapeSize(shape);
-    const idx = new Array(outShape.length).fill(0);
-    for (let o = 0; o < n; o++) {
-      /* The destination index walks in order; the source index is the same
-       * coordinates with the two axes exchanged. */
+    /*
+     * EVERYTHING PAST THE OUTERMOST SWAPPED AXIS IS UNTOUCHED, and therefore
+     * contiguous in BOTH layouts — so it moves as one run rather than as
+     * elements.
+     *
+     * This walked every element and recomputed a full multi-dimensional index
+     * for each. Attention permutes [B,T,H,D] to [B,H,T,D], which leaves D
+     * contiguous on both sides, so the element loop was doing D times the
+     * addressing work and D times the copies it needed. At batch 128 transpose
+     * was 144.6 ms a step, 3.1 ms a call, the largest single cost in the model
+     * — five times every matmul.
+     *
+     * The same shape of fix as slice, for the same reason: a copy that costs
+     * more than the arithmetic is a loop that has not noticed its own memory is
+     * already in order.
+     */
+    const hi = Math.max(d0, d1);
+    const run = shape.slice(hi + 1).reduce((x, y) => x * y, 1);
+    const outer = outShape.slice(0, hi + 1);
+    const total = outer.reduce((x, y) => x * y, 1);
+    const idx = new Array(outer.length).fill(0);
+    for (let o = 0; o < total; o++) {
+      /* The destination walks in order; the source is the same coordinates with
+       * the two axes exchanged. Axes past `hi` contribute nothing here — they
+       * are the run, and the run starts at coordinate zero along them. */
       let si = 0;
-      for (let d = 0; d < outShape.length; d++) {
+      for (let d = 0; d <= hi; d++) {
         const sd = d === d0 ? d1 : d === d1 ? d0 : d;
         si += idx[d] * srcStride[sd];
       }
-      out.buffer.floats[o] = da.buffer.floats[si];
-      for (let d = outShape.length - 1; d >= 0; d--) {
-        if (++idx[d] < outShape[d]) break;
+      out.buffer.floats.set(da.buffer.floats.subarray(si, si + run), o * run);
+      for (let d = outer.length - 1; d >= 0; d--) {
+        if (++idx[d] < outer[d]) break;
         idx[d] = 0;
       }
     }
