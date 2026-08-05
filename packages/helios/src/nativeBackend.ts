@@ -261,6 +261,34 @@ export class NativeHeliosBackend implements Backend {
      * destination computing each element's source index. Contiguous runs fall
      * out of it naturally when the trailing dimensions already match. */
     const out = this.make(shape, "f32");
+
+    /*
+     * TWO SHAPES DO NOT NEED THE HOST AT ALL, and they are the two the model
+     * asks for: a vector tiled down the rows (every bias, every norm weight)
+     * and one value spread across each row (every mean and reciprocal deviation
+     * in a normalisation). Both are a kernel of ten instructions once the launch
+     * supplies the row.
+     *
+     * It matters beyond the copy. Broadcasting on the host READS device memory,
+     * so it drains the queue, and it is one of the reads that keeps tensors in
+     * system memory — where the GPU sees 19.7 GB/s against ~448 from its own.
+     */
+    const W = shape[shape.length - 1] ?? 1;
+    const rowsOut = want / W;
+    const srcLast = t.shape[t.shape.length - 1] ?? 1;
+    if (W > 0 && rowsOut > 0 && Number.isInteger(rowsOut)) {
+      if (have === W && srcLast === W) {          /* [.., W] tiled down rows */
+        this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 0, W, rowsOut),
+                   "broadcast", dt);
+        return out;
+      }
+      if (have === rowsOut && srcLast === 1) {    /* [.., 1] spread along a row */
+        this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 1, W, rowsOut),
+                   "broadcast", dt);
+        return out;
+      }
+    }
+
     this.sync();
     const src = dt.buffer.floats;
     const pad = shape.length - t.shape.length;
@@ -848,6 +876,26 @@ export class NativeHeliosBackend implements Backend {
     if (shape.length === 1) {
       this.check(this.hl.slice(out.buffer.handle, da.buffer.handle, extents[0],
                                starts[0], 1), "slice");
+      return out;
+    }
+
+    /*
+     * A LAST-AXIS SLICE HAS A KERNEL: it is what splitting qkv does, three
+     * times a layer, and doing it on the host both copies and drains.
+     *
+     * Only when every outer dimension is taken whole — then the output rows are
+     * exactly the source rows, offset by `starts[last]`, and the launch supplies
+     * the row. A slice that also cuts an outer dimension is a different mapping
+     * and keeps the host path.
+     */
+    const lastD = shape.length - 1;
+    const outerWhole = starts.slice(0, lastD).every((st, i) => st === 0 && ends[i] === shape[i]);
+    if (outerWhole && extents[lastD] > 0) {
+      const rowsN = shapeSize(shape) / shape[lastD];
+      this.check(
+        this.hl.sliceRows(out.buffer.handle, da.buffer.handle, extents[lastD],
+                          shape[lastD], starts[lastD], rowsN),
+        "slice", da);
       return out;
     }
 

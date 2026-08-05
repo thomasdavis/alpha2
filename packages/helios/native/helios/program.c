@@ -96,6 +96,20 @@ static int emit(const helios_key *key, helios_program *p) {
        * difference. */
       return 0;
 
+    case HL_SLICE_ROWS:
+      p->count = pr_emit_slice_rows(p->code, key->arg0, key->arg1);
+      p->blockX = key->arg0;
+      p->gridX = 1;
+      p->gridY = 0; /* rows supplied at launch */
+      return 0;
+
+    case HL_BROADCAST:
+      p->count = pr_emit_broadcast(p->code, key->arg0, key->arg1);
+      p->blockX = key->arg1;
+      p->gridX = 1;
+      p->gridY = 0;
+      return 0;
+
     case HL_PERMUTE:
       /* One block per (b,t,h) plane on the Y index, one thread per feature. */
       p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);

@@ -14,6 +14,12 @@ unsigned pr_emit_slice(hp_word *p);
 
 /* out[b][h][t][d] = in[b][t][h][d]. T, H and D must be powers of two — the
  * index decomposition is shifts and masks, since sm_86 has no integer divide. */
+/* out[r][c] = in[r][start + c]; `start` arrives in scalar 0. */
+unsigned pr_emit_slice_rows(hp_word *p, unsigned W, unsigned srcW);
+
+/* mode 0 tiles a vector down the rows, mode 1 spreads one value across each. */
+unsigned pr_emit_broadcast(hp_word *p, unsigned mode, unsigned W);
+
 unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D);
 
 /* out[i][d] = table[ids[i]][d], table in the first input, ids in the second.

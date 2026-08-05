@@ -79,6 +79,10 @@ export interface NativeAddon {
   /** out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
    * powers of two — the kernel decomposes the plane index with shifts. */
   permute(out: number, a: number, T: number, H: number, D: number, planes: number): boolean;
+  /** out[r][c] = in[r][start + c], over `rows` rows. */
+  sliceRows(out: number, a: number, W: number, srcW: number, start: number, rows: number): boolean;
+  /** mode 0 tiles a [W] vector down `rows`; mode 1 spreads one value per row. */
+  broadcastRows(out: number, a: number, mode: number, W: number, rows: number): boolean;
   embedding(out: number, table: number, ids: number, tokens: number, dim: number): boolean;
   slice(out: number, a: number, count: number, offset: number, stride: number): boolean;
   causalMask(out: number, a: number, rows: number, cols: number): boolean;

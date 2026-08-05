@@ -239,3 +239,76 @@ unsigned pr_emit_permute(hp_word *p, unsigned T, unsigned H, unsigned D) {
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }
+
+/*
+ * slice along the LAST axis: out[r][c] = in[r][start + c].
+ *
+ * The one-dimensional slice kernel above cannot express this — its source index
+ * is affine in the destination index, and here the stride between output rows
+ * (W) differs from the stride between source rows (srcW), so the mapping is not
+ * affine in a flat index. A two-dimensional launch supplies the row instead of
+ * computing it, and then both indices are one multiply-add.
+ *
+ * `start` comes from the constant bank rather than being baked in, because a
+ * slice offset changes per call — qkv takes three different ones from the same
+ * tensor — and baking it would regenerate the program for each.
+ *
+ * No power-of-two requirement: nothing is decomposed, so nothing is divided.
+ */
+unsigned pr_emit_slice_rows(hp_word *p, unsigned W, unsigned srcW) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+
+  /* dst = row*W + c */
+  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_wait(BAR_ID));
+  /* src = row*srcW + start + c */
+  p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, srcW, R_TMP2, hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/*
+ * broadcast, in the two forms the model actually asks for.
+ *
+ * mode 0, TILE: a vector repeated down the rows — [C] to [B,T,C], which is
+ *   every bias and every norm weight. The source index is the COLUMN alone.
+ * mode 1, ROW: one value per row spread across it — [B,T,1] to [B,T,C], which
+ *   is every mean and reciprocal-deviation in a normalisation. The source index
+ *   is the ROW alone.
+ *
+ * Both are trivial once the launch supplies the row, which is the whole reason
+ * this is two kernels of ten instructions rather than one that decomposes a
+ * flat index against a stride array. A general broadcast would need that, and
+ * would need division; these two cover the model and cost nothing.
+ */
+unsigned pr_emit_broadcast(hp_word *p, unsigned mode, unsigned W) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+
+  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, W, R_COL, hp_ctrl_wait(BAR_ID));
+  /* The source is one coordinate or the other; that IS the broadcast. */
+  p[n++] = hp_imad_imm(R_SRC2, mode ? R_PLANE_ID : R_COL, 1, HP_RZ,
+                       hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}

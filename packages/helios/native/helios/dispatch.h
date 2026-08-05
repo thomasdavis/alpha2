@@ -65,6 +65,14 @@ int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
 
 /* out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
  * powers of two — see pr_emit_permute. */
+/* out[r][c] = in[r][start + c], over `rows` rows. */
+int hl_slice_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  unsigned W, unsigned srcW, unsigned start, unsigned rows);
+
+/* mode 0 tiles a [W] vector down `rows`; mode 1 spreads one value per row. */
+int hl_broadcast(helios_context *ctx, helios_tensor out, helios_tensor a,
+                 unsigned mode, unsigned W, unsigned rows);
+
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                unsigned T, unsigned H, unsigned D, unsigned planes);
 

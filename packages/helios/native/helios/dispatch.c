@@ -184,6 +184,29 @@ int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
   return run(ctx, k, ts, 2, NULL, 0);
 }
 
+int hl_slice_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  unsigned W, unsigned srcW, unsigned start, unsigned rows) {
+  const helios_key k = {HL_SLICE_ROWS, W, srcW, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  const NvU32 s[1] = {start}; /* an integer, not a float bit pattern */
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, s, 1);
+}
+
+int hl_broadcast(helios_context *ctx, helios_tensor out, helios_tensor a,
+                 unsigned mode, unsigned W, unsigned rows) {
+  const helios_key k = {HL_BROADCAST, mode, W, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, NULL, 0);
+}
+
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                unsigned T, unsigned H, unsigned D, unsigned planes) {
   const helios_key k = {HL_PERMUTE, T, H, D};
