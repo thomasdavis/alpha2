@@ -235,8 +235,22 @@
  * staging addressing in both layouts plus an f16 tensor format through the
  * stack.
  *
- * So this kernel is NOT purely issue-bound, and that closes the last cheap
- * structural theory about its 45%. At 21-22 TFLOP/s it is now 65-90% of cuBLAS
+ * AND IT IS NOT BANDWIDTH-BOUND EITHER, which was the obvious objection to the
+ * paragraph above: the operand traffic comes out at 1,700-1,800 GB/s on every
+ * shape that runs well, four times DRAM, and a cluster that tight looks exactly
+ * like a kernel pinned against a roof. It is not. tools/l2_bandwidth.cu reads a
+ * working set that fits in the 4 MB L2 and measures 6,000-6,470 GB/s, with a
+ * 256 MB control coming out at 423 against the card's 448 spec — so the harness
+ * is sound and the GEMM is using about 28% of the L2 bandwidth available to it.
+ *
+ * That matters because it decides the same rewrite from the other side: if the
+ * kernel were L2-bound, halving the operand bytes would have been worth close
+ * to a factor whatever the instruction count said. It is worth the ~5% the
+ * instruction count says.
+ *
+ * So this kernel is NOT purely issue-bound, NOT bandwidth-bound, NOT
+ * occupancy-bound, NOT barrier-bound and NOT geometry-bound, and that closes
+ * the last cheap structural theory about its 45%. At 21-22 TFLOP/s it is now 65-90% of cuBLAS
  * at these shapes. What remains between here and the 45.5 ceiling is not
  * something the instruction mix explains, and the only lever with a factor
  * rather than a percent behind it is f16 ACCUMULATE — ceiling 90.3 — which
