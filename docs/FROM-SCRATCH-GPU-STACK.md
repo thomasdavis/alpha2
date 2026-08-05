@@ -2,6 +2,24 @@
 
 **Status:** contract of record, adopted 2026-08-04. Supersedes Vulkan as Alpha's path to the GPU.
 
+> **2026-08-05 — the native path is now FASTER than the Vulkan one it replaces.**
+> On the 2L/64d/4h benchmark: **native 2943 tok/s against Vulkan's 612, 4.5x**, and
+> 2x `cpu_ref`. Loss identical to `cpu_ref` at 4.1834; `run_native_gates.sh` green,
+> 40 passed / 0 skipped. It was 0.14x that morning.
+>
+> Almost none of it was kernels. The step was 65% **driver** (a fresh tensor
+> allocation cost 802 µs against 1.0 µs from the pool, and nothing was ever freed),
+> and most of the rest was the host reading **write-combined** memory — 161x slower
+> than ordinary memory, paid by every broadcast, slice and concatenation. Tensors
+> are now carved from slabs mapped once, and mapped **cached**. Full account, with
+> the wrong turns and what killed them, in
+> [`resume/X61-NATIVE-BEATS-VULKAN-2026-08-05.md`](resume/X61-NATIVE-BEATS-VULKAN-2026-08-05.md).
+>
+> **Known defect, deliberately left in place:** nothing frees intermediates, in the
+> benchmark or in training — `trainer.ts` probes for `releaseGpuTensor` and this
+> backend spells it `release`, so reclamation is silently off. The alias is one
+> line and is not yet safe to add; see X61's closing section.
+
 ---
 
 ## 1. Why
