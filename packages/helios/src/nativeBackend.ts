@@ -1669,9 +1669,25 @@ export class NativeHeliosBackend implements Backend {
     const oh = this.sub(ones, c);
     drop(ones); drop(c);
 
+    /*
+     * onehot^T @ g WITHOUT forming onehot^T. The tensor-core kernel reads a
+     * transposed A by changing address immediates — a fragment register already
+     * costs a load and a pack, so a strided read is the same instruction count
+     * — where the explicit transpose is a whole extra pass over a
+     * [tokens, vocab] tensor and a second one of it held at the same time. At
+     * this vocabulary that tensor is 37.7 MB a step at batch 12 and 75 at batch
+     * 24, and the allocation census named this function as four of the top
+     * sites, 772 MiB held, which is what the batch runs out of.
+     */
+    const g2 = this.reshape(gradOutput, [tokens, dim]);
+    if (this.matmulTransposedA) {
+      const out = this.matmulTransposedA(oh, g2);
+      drop(oh);
+      return out;
+    }
     const ohT = this.transpose(oh, 0, 1);
     drop(oh);
-    const out = this.matmul(ohT, this.reshape(gradOutput, [tokens, dim]));
+    const out = this.matmul(ohT, g2);
     drop(ohT);
     return out;
   }
