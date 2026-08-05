@@ -141,6 +141,27 @@ export function nativeAddon(index = 0): NativeAddon {
  * `bytes` is what was asked for, not what the pool rounded up to, so a view is
  * exactly the tensor and never spills into the slack at the end of its buffer.
  */
+/*
+ * A counter that moves whenever ANY kernel is enqueued.
+ *
+ * A staging mirror is a copy of device memory taken at a moment, and it stops
+ * being true the moment a kernel writes anything. Tracking which buffer a
+ * dispatch wrote would be exact and would require every one of forty operations
+ * to declare its output; this is the conservative version of the same fact --
+ * after any dispatch, assume every mirror is stale.
+ *
+ * It is what makes the mirror correct rather than merely fast. Without it a
+ * buffer read on the host, written by a kernel, and read again returned the
+ * FIRST read's bytes: the loss came back 4.1888 to 4.1910 across runs against
+ * cpu_ref's 4.1904, varying with pool reuse order, which reads as a race and is
+ * really a cache with no invalidation.
+ *
+ * Refreshing per dispatch would be the naive reading of that and would copy the
+ * buffer once per element in every host loop. Per GENERATION is the right
+ * granularity: a host loop enqueues nothing, so it sees one copy.
+ */
+let deviceGeneration = 1;
+
 export class NativeBuffer {
   readonly handle: number;
   /*
@@ -161,16 +182,16 @@ export class NativeBuffer {
   /* The staging mirror, allocated only if somebody actually reads on the host. */
   private staging: NativeBuffer | null = null;
   /*
-   * Epochs, so a getter called in a loop copies once rather than every turn.
+   * The generation the mirror was taken at; 0 means never.
    *
-   * `deviceEpoch` moves when a kernel may have written this buffer; the mirror
-   * is refreshed only when it has fallen behind. Without this the host permute
-   * fallback -- `out.buffer.floats.set(...)` inside a loop over planes -- would
+   * Comparing it against `deviceGeneration` is what makes a getter called in a
+   * loop copy once rather than every turn: a host loop enqueues nothing, so the
+   * generation does not move and the mirror stays current. Without that the host
+   * permute fallback -- `out.buffer.floats.set(...)` once per plane -- would
    * fire one device-to-host copy per plane, which is how a correct staging
    * design becomes slower than the mapping it replaced.
    */
-  private deviceEpoch = 1;
-  private stagingEpoch = 0;
+  private stagingGen = 0;
   /*
    * Set on every host read, because a Float32Array cannot report being written.
    *
@@ -236,13 +257,33 @@ export class NativeBuffer {
    * is written by the op that allocates it, and an in-place op would have to say
    * so anyway.
    */
-  markWritten(): void {
-    this.deviceEpoch++;
+  /** Every dispatch invalidates every mirror. Called from the backend's `check`,
+   * which is the one point every dispatch in the stack passes through. */
+  static invalidateMirrors(): void {
+    deviceGeneration++;
   }
 
   private mirror(): NativeBuffer {
     if (!this.staging) this.staging = NativeBuffer.allocHost(this.hl, this.elements);
-    if (this.stagingEpoch !== this.deviceEpoch) {
+    /*
+     * A DIRTY MIRROR IS THE AUTHORITY, and refreshing it loses the writes.
+     *
+     * The autograd fallbacks ACCUMULATE: `B.zeros(...)` then `dw.data[j] += ...`
+     * over many reads of `.data`. Every one of those reads is a mirror(), and
+     * dispatches happen in between, so an unconditional refresh copied device
+     * memory back over the partial sum -- and device memory still held the zeros
+     * that `zeros` committed. The gradient came back exactly 0, which is why it
+     * was the final LayerNorm's weight that reported it: `lnF.weight grad[1]:
+     * device 0 vs reference -0.0054929466`.
+     *
+     * So once the host has written, the host owns the buffer until `device()`
+     * commits it. The limitation this accepts, stated plainly: a buffer written
+     * by the host AND by a kernel between two commits cannot be merged, and the
+     * host's copy wins. No path in this backend does that -- a buffer is either
+     * being accumulated on the host or produced by kernels -- and a merge would
+     * need per-element ownership, which is a different design.
+     */
+    if (!this.mirrorDirty && this.stagingGen !== deviceGeneration) {
       /* One sequential copy, device to system, through the same elementwise
        * kernel everything else uses. The flush is not optional: the copy has to
        * have RUN before the bytes are read, and reading them is what happens
@@ -250,7 +291,9 @@ export class NativeBuffer {
       this.hl.elementwise(this.hl.op.copy, this.staging.handle, this.handle,
                           this.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
       this.hl.flush();
-      this.stagingEpoch = this.deviceEpoch;
+      /* The copy is itself a dispatch, so read the generation AFTER it: the
+       * mirror is current as of the world that includes the copy. */
+      this.stagingGen = deviceGeneration;
     }
     this.mirrorDirty = true;
     return this.staging;
@@ -270,7 +313,7 @@ export class NativeBuffer {
                         this.staging.handle, this.elements, 0, 0, 0, 0, 0, 0, 0);
     /* The device now matches the mirror, so a read that follows must not copy
      * back over the writes it just made. */
-    this.stagingEpoch = ++this.deviceEpoch;
+    this.stagingGen = deviceGeneration;
   }
 
   get floats(): Float32Array {

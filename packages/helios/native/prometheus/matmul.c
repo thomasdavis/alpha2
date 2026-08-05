@@ -51,6 +51,7 @@ enum {
 #define BAR_ID 0   /* the two S2Rs */
 #define BAR_LOAD 1 /* BOTH loads -- see the accumulate below */
 #define P_DONE 0   /* set when the loop has run its course */
+#define P_TILE 1   /* set when a thread is past the end of a short stage round */
 #define INSTR_BYTES 16
 
 /*
@@ -68,9 +69,46 @@ enum {
  * does not arise in the shapes the model uses.
  */
 #define MATMUL_TILE_MAX_K 1024u
+
+/* How many cooperative rounds it takes N threads to stage K elements. The last
+ * one is short whenever N does not divide K, and it is PREDICATED. */
+static unsigned tile_rounds(unsigned N, unsigned K) {
+  return (K + N - 1u) / N;
+}
+
+/*
+ * K % N == 0 WAS THE CONDITION. Lifting it is CORRECT and it is NOT FASTER.
+ *
+ * The even division let the cooperative load be unrolled with no predication,
+ * and the original note here said an uneven one "would need a guard per load
+ * for a case that does not arise in the shapes the model uses". It does arise,
+ * in the two biggest: the qkv projection is K=64 N=192 and the MLP
+ * up-projection is K=64 N=256, so neither ever staged anything, while the MLP
+ * down-projection at K=256 N=64 did -- and that one is twice as fast per flop.
+ *
+ * The obvious reading is that staging is the difference, because unstaged every
+ * one of the N threads in a block re-reads the same row of A and the step is
+ * bandwidth-bound (an elementwise add measures 18.4 GB/s against system
+ * memory's 19.7 GB/s ceiling). Measured, that reading is wrong:
+ *
+ *     [4096,64]x[64,256]   unstaged  1.42 ms   94 Gflop/s
+ *     [4096,64]x[64,256]   staged    1.38 ms   98 Gflop/s
+ *
+ * -- inside the spread, and the whole step is unchanged at 19.3k tok/s. A's row
+ * is 256 bytes and every thread in the block wants it at the same moment, so L1
+ * was already serving those reads; staging moves them to shared memory, which
+ * is not meaningfully closer. Whatever makes the two shapes differ, it is not
+ * A's traffic.
+ *
+ * The generalisation stays because it is correct, it is verified branch by
+ * branch against the definition (packages/tests/diff-matmul-tiled.mjs), and it
+ * removes a restriction that was arbitrary from the caller's side. It is not
+ * kept because it made anything faster. A guard costs one ISETP on the last
+ * round only.
+ */
 static int can_tile(unsigned N, unsigned K) {
-  return N > 0 && K % N == 0 && K <= MATMUL_TILE_MAX_K &&
-         (K / N) * 6u + 40u < PR_MAX_INSTRUCTIONS;
+  return N > 0 && K > 0 && K <= MATMUL_TILE_MAX_K &&
+         tile_rounds(N, K) * 7u + 40u < PR_MAX_INSTRUCTIONS;
 }
 
 unsigned pr_matmul_shared_bytes(unsigned N, unsigned K) {
@@ -121,14 +159,37 @@ unsigned pr_emit_matmul(hp_word *p, unsigned M, unsigned N, unsigned K) {
    */
   const int tiled = can_tile(N, K);
   if (tiled) {
-    for (unsigned t = 0; t < K / N; t++) {
-      p[n++] = hp_iadd3_imm(R_TMP, R_COL, t * N, hp_ctrl_safe());
+    const unsigned rounds = tile_rounds(N, K);
+    for (unsigned t = 0; t < rounds; t++) {
+      const unsigned base = t * N;
+      /*
+       * The last round is short unless N divides K, and the threads past the
+       * end must not load: A[row][K] is the next row's first element, so an
+       * unguarded read would stage a neighbouring row's data and produce a
+       * finite, plausible, wrong dot product.
+       *
+       * The predicate is set when the thread is PAST the range and used
+       * NEGATED, which is the convention reduction.c established -- the
+       * comparison the hardware offers is GT, so "col > (K-base)-1" is the
+       * inactive half and @!P is the active one.
+       */
+      const int partial = base + N > K;
+      if (partial)
+        p[n++] = hp_isetp_gt_imm(P_TILE, R_COL, (K - base) - 1u, hp_ctrl_safe());
+
+      p[n++] = hp_iadd3_imm(R_TMP, R_COL, base, hp_ctrl_safe());
       p[n++] = hp_iadd3_reg(R_LOAD_IDX, R_AIDX, R_TMP, hp_ctrl_safe());
       p[n++] = hp_imad_wide_const(R_AADDR, R_LOAD_IDX, R_ESIZE, 0,
                                   HERMES_CBUF0_PARAM_N(1),
                                   hp_ctrl_safe());
-      p[n++] = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
-      p[n++] = hp_sts(R_TMP, R_AVAL, 0, hp_ctrl_wait(BAR_LOAD));
+      hp_word load = hp_ldg(R_AVAL, R_AADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      hp_word store = hp_sts(R_TMP, R_AVAL, 0, hp_ctrl_wait(BAR_LOAD));
+      if (partial) {
+        load = hp_predicated(load, P_TILE, 1);
+        store = hp_predicated(store, P_TILE, 1);
+      }
+      p[n++] = load;
+      p[n++] = store;
     }
     p[n++] = hp_bar_sync(hp_ctrl_safe());
   }

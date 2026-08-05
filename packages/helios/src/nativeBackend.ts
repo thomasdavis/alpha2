@@ -235,8 +235,10 @@ export class NativeHeliosBackend implements Backend {
    */
   private check(ok: boolean, op: string, ...operands: (TensorData | undefined)[]): void {
     /* Every dispatch in this file passes through here, which is what makes one
-     * flag sufficient. */
+     * flag sufficient — and one invalidation. A kernel may have written any
+     * buffer, so every staging mirror taken before now is stale. */
     this.pending = true;
+    NativeBuffer.invalidateMirrors();
     /*
      * A drain after EVERY operation, when asked, because an MMU fault is
      * asynchronous and therefore mis-attributed by default.

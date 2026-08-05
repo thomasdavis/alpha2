@@ -202,7 +202,16 @@ static void test_tensor_pool(void) {
   const helios_tensor a = helios_tensor_alloc(&ctx, 4096);
   HT_TRUE(a != HELIOS_TENSOR_NONE);
   HT_TRUE(helios_tensor_addr(a) != 0);
-  HT_TRUE(helios_tensor_host(a) != NULL);
+  /*
+   * A HOST POINTER IS NOT PROMISED BY THIS ALLOCATOR, and asserting one here
+   * hard-coded the old residency policy into the pool's own test.
+   *
+   * Under HELIOS_VIDMEM the default pool is video memory with no host mapping —
+   * that IS the feature — so the pointer is legitimately NULL and the contract
+   * to check is `helios_tensor_host_visible` agreeing with it. The staging pool
+   * is what promises a pointer, and it is checked as such.
+   */
+  HT_TRUE((helios_tensor_host(a) != NULL) == (helios_tensor_host_visible(a) != 0));
   HT_EQ_U64(helios_tensor_bytes(a), 4096);
   HT_EQ_U64(helios_tensor_get_stats().allocations, 1);
 
