@@ -185,6 +185,24 @@ export class NativeHeliosBackend implements Backend {
      */
     if (process.env.HELIOS_FUSED_LNB === "0")
       (this as unknown as Record<string, unknown>).layerNormBackward = undefined;
+    /*
+     * THE FUSED softCap BACKWARD IS OFF, because it is not correct yet.
+     *
+     * The kernel is right on every small shape — 2e-7 relative against the
+     * definition at three caps, including the saturated tail where the obvious
+     * algebra loses all its digits. It is WRONG on the two shapes with 327,680
+     * elements, and wrong by clean multiples (10x, 2x, 7x) at a handful of
+     * indices, which points at a scalar or a launch-state fault rather than at
+     * the arithmetic. That is not isolated, so it does not ship: a wrong
+     * gradient does not move the forward loss and nothing that watches the loss
+     * can see it — this file already records exactly that failure, from
+     * GELU_GRAD being left out of reads_b.
+     *
+     * HELIOS_FUSED_SOFTCAP=1 turns it on for the next attempt.
+     * packages/tests/diff-softcap-backward.mjs is the arbiter.
+     */
+    if (process.env.HELIOS_FUSED_SOFTCAP !== "1")
+      (this as unknown as Record<string, unknown>).softCapBackward = undefined;
   }
 
   /** What this backend cannot do yet, named rather than silently worked around. */
@@ -773,6 +791,38 @@ export class NativeHeliosBackend implements Backend {
    * formula. Only s0 and s2 depend on the cap, so they are recomputed here from
    * the addon's value for c = PR_SOFTCAP_C rather than restated.
    */
+  /**
+   * g * (1 - tanh^2(x/cap)), in one launch.
+   *
+   * ops.ts composes this from SIX operations when it is absent — recompute
+   * softCap, scale, mul, ones, sub, mul — each a full pass over the attention
+   * scores, once per layer. The kernel evaluates it as 4r(1 - r) with
+   * r = 1/(exp2(s0*x) + 1), which is the same r the forward already forms and
+   * never builds tanh at all.
+   *
+   * Argument order matches the interface: gradient first, pre-activation
+   * second. The kernel's `a` is x and its `b` is g, which is the binary
+   * convention in elementwise_ops.c.
+   */
+  softCapBackward(g: TensorData, a: TensorData, cap: number): TensorData {
+    /* s0 = 2*log2(e)/cap, s1 = 1, s2 = 4 — recovered from the addon's folded
+     * pair for its own default c rather than restated here, for the reason
+     * gelu's constants are: which constant belongs in which slot is a property
+     * of the kernel's rearrangement, not of the textbook formula. */
+    const twoLog2e = this.hl.scalar.softCapFolded * this.hl.scalar.softCapC;
+    const da = this.device(a), dg = this.device(g);
+    const out = this.make(a.shape, "f32");
+    this.check(
+      this.hl.elementwise(this.hl.op.softCapGrad, out.buffer.handle,
+                          da.buffer.handle, dg.buffer.handle,
+                          shapeSize(a.shape), twoLog2e / cap, 4, 2, 0, 0, 0, 3),
+      "softCapBackward", da, dg,
+    );
+    if (da !== a && da !== out) da.buffer.release(this.hl);
+    if (dg !== g && dg !== out) dg.buffer.release(this.hl);
+    return out;
+  }
+
   softCap(a: TensorData, cap: number): TensorData {
     /* s0 = 2*log2(e)/cap, s1 = 1, s2 = cap, s3 = 2. The addon publishes the
      * folded pair for its own default c, and the ratio recovers 2*log2(e). */

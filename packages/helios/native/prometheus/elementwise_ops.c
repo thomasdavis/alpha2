@@ -41,6 +41,7 @@ unsigned pr_ew_scalars_read(pr_ew_op op) {
       return 4;
     case PR_EW_GELU:
     case PR_EW_SOFTCAP:
+    case PR_EW_SOFTCAP_GRAD:
       return 4;
     case PR_EW_CLAMP:
     case PR_EW_SILU:
@@ -279,6 +280,43 @@ unsigned pr_ew_emit_op(hp_word *p, pr_ew_op op) {
       p[5] = hp_fneg(R_TEMP3, R_TEMP2, hp_ctrl_safe());
       p[6] = hp_fadd(R_TEMP3, R_TEMP3, R_SCALAR2, hp_ctrl_safe());
       p[7] = hp_fmul(R_RESULT, R_TEMP3, R_SCALAR3, hp_ctrl_safe());
+      return 8;
+
+    /*
+     * g * (1 - tanh^2(x/c)) = g * 4r(1 - r), with r = 1/(exp2(s0*x) + 1) and
+     * s0 = 2*log2(e)/c, s1 = 1, s2 = 4.
+     *
+     * R_VALUE is x (input a) and R_B_VALUE is g (input b) — the binary
+     * convention this file already uses. Never forms tanh, so the saturated
+     * tail costs no extra accuracy: as x grows, r goes to zero and so does the
+     * product, which is what the definition does.
+     */
+    case PR_EW_SOFTCAP_GRAD:
+      /*
+       * 4 / (v + 1/v + 2), with v = exp2(s0*x), and NOT the algebraically equal
+       * 4r(1 - r) with r = 1/(1 + v).
+       *
+       * They agree in real arithmetic and not in f32. In the saturated tail r
+       * approaches 1, so `1 - r` cancels away every significant digit it has:
+       * at x/c = -7 the relative error is 3.5e-4 and climbing, on a value the
+       * definition puts at 2.7e-6. This form has no subtraction of nearly-equal
+       * quantities anywhere.
+       *
+       * It is also correct AT the infinities, which the other form is not. For
+       * very positive x, v overflows: here v + 1/v is +inf and 4/inf is 0,
+       * which is the right gradient; there, r would be 0 and v*r would be
+       * inf*0 = NaN. For very negative x, v underflows to 0, 1/v is +inf, and
+       * the answer is 0 again. Both tails fall out rather than needing a guard.
+       */
+      p[0] = hp_fmul(R_TEMP, R_VALUE, R_SCALAR, after_load);
+      p[1] = hp_mufu(R_TEMP, R_TEMP, HP_MUFU_EX2, hp_ctrl_setbar(BAR_MUFU));
+      p[2] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP,
+                     hp_ctrl_wait_setbar(BAR_MUFU, BAR_MUFU));
+      p[3] = hp_fadd(R_TEMP, R_TEMP, R_TEMP2, hp_ctrl_wait(BAR_MUFU));
+      p[4] = hp_fadd(R_TEMP, R_TEMP, R_SCALAR3, hp_ctrl_safe());
+      p[5] = hp_mufu(R_TEMP2, R_TEMP, HP_MUFU_RCP, hp_ctrl_setbar(BAR_MUFU));
+      p[6] = hp_fmul(R_TEMP, R_TEMP2, R_SCALAR2, hp_ctrl_wait(BAR_MUFU));
+      p[7] = hp_fmul(R_RESULT, R_TEMP, R_B_VALUE, hp_ctrl_safe());
       return 8;
 
     case PR_EW_SILU:

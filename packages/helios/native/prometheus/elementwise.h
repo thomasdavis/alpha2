@@ -103,6 +103,16 @@ typedef enum {
    *   s0 = 2 * log2(e) / c    s1 = 1.0    s2 = c    s3 = 2.0
    */
   PR_EW_SOFTCAP,
+  /*
+   * softCap's gradient: g * (1 - tanh^2(x/c)), from a and b.
+   *
+   * Written as 4r(1 - r) with r = 1/(exp2(s0*x) + 1), because that is the same
+   * r the forward already computes and it avoids ever forming tanh: with
+   * t = 1 - 2r, 1 - t^2 = 4r - 4r^2. One kernel against the six ops ops.ts
+   * composes when this is absent — recompute softCap, scale, mul, ones, sub,
+   * mul — each a full pass over the attention scores, once per layer.
+   */
+  PR_EW_SOFTCAP_GRAD,
 
   PR_EW_COUNT,
 } pr_ew_op;

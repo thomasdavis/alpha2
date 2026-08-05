@@ -267,6 +267,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   OP("copy", PR_EW_COPY);
   OP("addInPlace", PR_EW_ADD_INPLACE);
   OP("softCap", PR_EW_SOFTCAP);
+  OP("softCapGrad", PR_EW_SOFTCAP_GRAD);
   OP("rmsNorm", PR_NORM_RMS);
   OP("softmax", PR_NORM_SOFTMAX);
   OP("layerNorm", PR_NORM_LAYER);
