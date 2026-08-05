@@ -44,12 +44,24 @@ const rel = (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); };
  * of the step's matrix multiplies never appeared in this profile at all. The
  * table looked complete because every line in it was real.
  */
-const METHODS = ["add","sub","mul","div","neg","gelu","exp","log","sqrt","scale","clamp",
+const METHODS = [
+  /* EXHAUSTIVE, and it has to stay that way. An UNTRACKED op's GPU time does
+   * not vanish — the wrapper reads the spin counter around each tracked call,
+   * so work enqueued in between is charged to whichever tracked op runs NEXT.
+   * That has now misled this file three times: first matmulTransposedA and
+   * matmulAccumulate (a third of all GEMMs), then the fused attention kernels,
+   * each time inflating a GEMM row and pointing the next day's work at the
+   * wrong thing. The coverage check below is what stops a fourth. */
+  "add","sub","mul","div","neg","gelu","exp","log","sqrt","scale","clamp",
   "matmul","matmulTransposed","matmulTransposedA","matmulAccumulate",
   "columnSum","embeddingBackward","crossEntropyBackward","layerNormBackward",
   "sum","mean","layerNorm","rmsNorm","softmax","softCap",
   "embedding","crossEntropy","transpose","slice","causalMask","maskedFill","cat","zeros",
-  "ones","full","clone","broadcast","addInplace"];
+  "ones","full","clone","broadcast","addInplace",
+  "softmaxMasked","softmaxBackward","softCapBackward","geluBackward","clampBackward",
+  "mulInto","expand","permuteSwap","reduceAll","reduceAxis","relu","silu",
+  "unary","binary","writeColumns","normalized","normalizedAffine",
+];
 const cost = new Map();
 /* SHAPES=1 adds the per-shape breakdown; off by default so the headline table
  * stays readable. */
@@ -111,6 +123,31 @@ tape.clear(rel); B.finishStepOps?.();
 
 let total = 0, calls = 0;
 for (const [, v] of cost) { total += v.us; calls += v.n; }
+
+/*
+ * COVERAGE, checked rather than assumed.
+ *
+ * The step's own spin counter is GPU time by construction, and this profile is
+ * the same GPU time attributed per op — so the two have to agree to within the
+ * overhead draining adds. If the profiled total is well BELOW the step's, some
+ * op is launching kernels this file does not wrap, and its time is silently
+ * inside a neighbour's row rather than missing from the table. That failure has
+ * cost three wrong conclusions here, and it is invisible without this line.
+ */
+{
+  const spin0 = B.hl.stats().spinNs;
+  const tape2 = new Tape();
+  const tok2 = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>i%C.vocabSize),[BATCH,SEQ]);
+  const tgt2 = B.fromArray(Array.from({length:BATCH*SEQ},(_,i)=>(i+1)%C.vocabSize),[BATCH,SEQ]);
+  const o2 = gptForward(C, P, B, tape2, tok2, tgt2, true, false, false, undefined, rel);
+  tape2.backward(o2.loss, B, rel);
+  tape2.clear(rel); B.finishStepOps?.();
+  const stepMs = (B.hl.stats().spinNs - spin0) / 1e6;
+  const ratio = total / 1000 / stepMs;
+  console.log(`coverage: ${(total/1000).toFixed(1)} ms profiled against ${stepMs.toFixed(1)} ms of ` +
+              `undrained step GPU (${ratio.toFixed(2)}x). Draining removes overlap so >1 is expected; ` +
+              `${ratio < 1 ? "BELOW 1 MEANS OPS ARE MISSING FROM THE TABLE." : "no ops appear to be missing."}`);
+}
 console.log(`${L}L seq ${SEQ} batch ${BATCH}: ${calls} operations, ${(total/1000).toFixed(1)} ms of GPU (drained per op), wall ${Date.now()-t0} ms\n`);
 console.log("operation           calls    GPU ms    %     us/call");
 for (const [k, v] of [...cost.entries()].sort((a,b) => b[1].us - a[1].us).slice(0, 12))

@@ -345,6 +345,32 @@ for (const [name, M, N, K, t] of SHAPES)
  * Matched means the same M, N and K, so the FLOPs are identical and any gap is
  * the layout. Anything else would be comparing two different problems.
  */
+/*
+ * WHAT SPLIT-K WOULD BE WORTH, emulated at equal arithmetic.
+ *
+ * The N=640 shapes run at 12-15 TFLOP/s where the wide ones reach 18-21, and
+ * the reading is block count: N=640 with a 64-wide tile is 240 blocks against
+ * roughly 184 resident, so a third of the time most of the card is idle.
+ * Halving the TILE to double the blocks was measured and lost — it cuts the
+ * peak by more than it recovers from the tail. Split-K raises the block count
+ * with the tile UNCHANGED, which is the one version of this that has not been
+ * tried.
+ *
+ * It cannot be measured directly without building it, but it can be emulated:
+ * splitting K by two turns one m1536/k2560 problem into 480 blocks each doing
+ * half the k-loop, and an m3072/k1280 problem is 480 blocks each doing half the
+ * k-loop at the SAME total arithmetic. The pair below is that comparison, and
+ * the gap between them is the ceiling on what split-K could recover — before
+ * subtracting the reduction pass it would then owe.
+ */
+console.log();
+console.log("split-K, emulated: same FLOPs, double the blocks, half the k-loop");
+for (const [name, m, n, k] of [
+  ["k2560, 240 blocks", 1536, 640, 2560],
+  ["k1280, 480 blocks", 3072, 640, 1280],
+  ["k640,  960 blocks", 6144, 640, 640],
+]) rate(name, m, n, k, false);
+
 console.log();
 console.log("weight-gradient layout (A stored [K,M]) against the forward, matched shapes");
 for (const [name, m, n, k] of [
