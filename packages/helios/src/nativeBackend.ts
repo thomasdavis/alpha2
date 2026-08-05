@@ -1342,6 +1342,10 @@ export class NativeHeliosBackend implements Backend {
     this.check(this.hl.maskedFill(out.buffer.handle, da.buffer.handle,
                                   dm.buffer.handle, shapeSize(a.shape), value),
                "maskedFill");
+    /* The tiled mask is this function's own, exactly as in `binary`: the causal
+     * mask is [T,T] and every call broadcasts it across [B,H,T,T], so without
+     * this a step leaks one full attention-sized tensor per layer. */
+    if (dm !== mask) dm.buffer.release(this.hl);
     return out;
   }
 
