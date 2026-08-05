@@ -191,11 +191,13 @@ int helios_enqueue(helios_context *ctx, const hp_word *program, unsigned count,
   if (hermes_submit(&ctx->device, &ctx->channel) != 0) return -1;
   ctx->ringNext = (slot + 1) % HELIOS_RING_SLOTS;
   ctx->pending++;
+  ctx->statEnqueued++;
   return 0;
 }
 
 int helios_flush(helios_context *ctx) {
   if (ctx->pending == 0) return 0;
+  ctx->statFlushed++;
 
   /* ONE semaphore for the whole batch: the channel runs its pushbuffer in
    * order, so the last kernel retiring means all of them have. */

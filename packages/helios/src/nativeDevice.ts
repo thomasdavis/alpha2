@@ -39,6 +39,8 @@ export interface NativeAddon {
     pooled: number;
     allocations: number;
     programs: number;
+    enqueued: number;
+    flushes: number;
   };
   readonly op: NativeOps;
   /** The folded constants the kernels expect, by name — see nativeBackend. */

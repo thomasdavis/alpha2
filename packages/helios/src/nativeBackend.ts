@@ -958,7 +958,7 @@ export class NativeHeliosBackend implements Backend {
 
   /** Pool and program statistics, for confirming a step reuses rather than
    * reallocates. `allocations` should stop growing after the first step. */
-  stats(): { live: number; pooled: number; allocations: number; programs: number } {
+  stats(): { live: number; pooled: number; allocations: number; programs: number; enqueued: number; flushes: number } {
     this.sync();
     return this.hl.stats();
   }

@@ -53,6 +53,19 @@ static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
    * queued, and the pushbuffer wrap was one such thing and not the only one.
    * Shipping a stack that deadlocks would be worse than shipping a slow one.
    */
+  /*
+   * SYNCHRONOUS. Flip to helios_enqueue to turn batching on.
+   *
+   * Batching is CORRECT where it has been measured -- 32 launches deep, and a
+   * 20-operation chain that enqueues 20 times and drains once -- and it does
+   * not complete inside gptForward. So the remaining fault is specific to a
+   * shape or a path the model uses and not to the submission machinery, which
+   * is the opposite of what "it hangs at scale" suggested.
+   *
+   * The enqueued/flushes counters in stats() are what will localise it: a
+   * healthy step shows many enqueues per flush, and the operation after the
+   * last flush is the one that did not complete.
+   */
   return helios_launch(ctx, p->code, p->count, p->gridX, p->blockX,
                        p->sharedBytes, addrs, nts, scalars, nscalars);
 }

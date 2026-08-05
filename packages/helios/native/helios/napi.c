@@ -208,6 +208,13 @@ static napi_value js_stats(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "allocations", v);
   napi_create_uint32(env, helios_program_count(), &v);
   napi_set_named_property(env, out, "programs", v);
+  /* How many launches were queued and how many times the queue was drained.
+   * Their RATIO is the batching factor: equal counts mean every launch waited
+   * on its own fence and the batching bought nothing. */
+  napi_create_uint32(env, g_ctx.statEnqueued, &v);
+  napi_set_named_property(env, out, "enqueued", v);
+  napi_create_uint32(env, g_ctx.statFlushed, &v);
+  napi_set_named_property(env, out, "flushes", v);
   return out;
 }
 

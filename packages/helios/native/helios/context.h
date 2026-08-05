@@ -70,6 +70,11 @@ typedef struct {
    * zero if it simply never signalled. A timeout and a fault need different
    * investigations and look identical without this. */
   NvU32 lastError;
+  /* Counters, not state: the ratio of launches queued to queue drains is the
+   * batching factor, and it is the only way to tell a batching design that is
+   * working from one that is silently flushing per operation. */
+  NvU32 statEnqueued;
+  NvU32 statFlushed;
   int open;
   const char *failStage;
 } helios_context;
