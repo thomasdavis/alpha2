@@ -117,6 +117,20 @@ hp_word hp_red_add_f32(unsigned addrReg, unsigned dataReg, uint32_t offset,
                        hp_control c);
 
 /*
+ * LDG.E.{64,128} — one global load filling TWO or FOUR consecutive registers.
+ *
+ * `words` is 2 or 4; `dst` must be aligned to it, and the ADDRESS must be
+ * aligned to the access width — eight bytes for a 64-bit load, sixteen for a
+ * 128-bit one. Neither is checked by the hardware in any useful way: a
+ * misaligned wide load does not fault here, it returns the wrong words.
+ *
+ * The width is not a field of its own; it lives in the memory descriptor, which
+ * is why this takes the width rather than composing with hp_ldg.
+ */
+hp_word hp_ldg_wide(unsigned dst, unsigned addrReg, uint32_t offset,
+                    unsigned words, hp_control c);
+
+/*
  * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.
  * Reference: ISETP.GT.U32.AND P0, PT, R7, 0x1f, PT
  *   0x0000001f0700780c 0x040fe40003f04070

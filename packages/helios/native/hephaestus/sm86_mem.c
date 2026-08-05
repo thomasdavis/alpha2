@@ -64,6 +64,31 @@ hp_word hp_ldg(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
   return w;
 }
 
+/*
+ * Captured (tools/ldg64_capture.cu), against the 32-bit LDG already above:
+ *
+ *   LDG.E     R2, [R2.64]        ... / 0x000ea2000c1e1900
+ *   LDG.E.64  R2, [R2.64]        0x0000000402027981 / 0x000ea2000c1e1b00
+ *   LDG.E.64  R2, [R2.64+0x80]   0x0000800402027981 / 0x000ea2000c1e1b00
+ *   LDG.E.128 R4, [R2.64]        0x0000000402047981 / 0x000ea2000c1e1d00
+ *
+ * The low word does not move at all — same opcode, same operand slots, the same
+ * 0x04 constant, and the offset in the same place, which the +0x80 capture
+ * pins. The WIDTH is entirely in the descriptor: 0x19, 0x1b, 0x1d in bits 8-15
+ * of it, stepping by two per doubling. That is why this is a separate function
+ * rather than a width argument threaded through hp_ldg's descriptor constant.
+ */
+hp_word hp_ldg_wide(unsigned dst, unsigned addrReg, uint32_t offset,
+                    unsigned words, hp_control c) {
+  hp_word w = hp_base(HP_OP_LDG, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, addrReg);
+  hp_put(&w, HP_F_SRCB, 8, 0x04);
+  hp_put(&w, HP_F_SRCB + 8, 24, offset);
+  hp_put(&w, 64, 32, 0x0c1e1900u | (words == 4u ? 0x400u : words == 2u ? 0x200u : 0u));
+  return w;
+}
+
 hp_word hp_lds(unsigned dst, unsigned addrReg, uint32_t offset, hp_control c) {
   hp_word w = hp_base(HP_OP_LDS, c);
   hp_put(&w, HP_F_DST, 8, dst);

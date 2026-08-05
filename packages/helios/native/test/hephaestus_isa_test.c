@@ -120,6 +120,19 @@ static void test_control_flow(void) {
               hi_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())) & ctl);
     /* And the address register is where every other instruction puts srcA. */
     HT_EQ_U64(lo_of(hp_ldsm(4, 7, 0, 4, 0, hp_ctrl_safe())), 0x000000000704783bULL);
+    /* LDG.E.64 and .128, from tools/ldg64_capture.cu. The low word must be
+     * IDENTICAL to the 32-bit form at the same operands — the width is only in
+     * the descriptor — and asserting that is what proves the two do not share a
+     * field. */
+    HT_EQ_U64(lo_of(hp_ldg_wide(2, 2, 0, 2, hp_ctrl_safe())), 0x0000000402027981ULL);
+    HT_EQ_U64(lo_of(hp_ldg_wide(2, 2, 0x80, 2, hp_ctrl_safe())), 0x0000800402027981ULL);
+    HT_EQ_U64(lo_of(hp_ldg_wide(4, 2, 0, 4, hp_ctrl_safe())), 0x0000000402047981ULL);
+    HT_EQ_U64(lo_of(hp_ldg_wide(2, 2, 0, 2, hp_ctrl_safe())),
+              lo_of(hp_ldg(2, 2, 0, hp_ctrl_safe())));
+    HT_EQ_U64(hi_of(hp_ldg_wide(2, 2, 0, 2, hp_ctrl_safe())) & 0xffffffffULL, 0x0c1e1b00ULL);
+    HT_EQ_U64(hi_of(hp_ldg_wide(4, 2, 0, 4, hp_ctrl_safe())) & 0xffffffffULL, 0x0c1e1d00ULL);
+    HT_EQ_U64(hi_of(hp_ldg(2, 2, 0, hp_ctrl_safe())) & 0xffffffffULL, 0x0c1e1900ULL);
+
     /* RED — the float atomic add, from tools/atom_capture.cu. Both captures,
      * which differ only in the data register and so pin that slot. */
     HT_EQ_U64(lo_of(hp_red_add_f32(2, 7, 0, hp_ctrl_safe())), 0x000000070200798eULL);

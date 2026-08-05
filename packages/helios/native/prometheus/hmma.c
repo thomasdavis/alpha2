@@ -660,6 +660,23 @@ static unsigned emit_stage_loads(hp_word *p, const stage_params *sp, int guard) 
     const unsigned rowStep = (sp->threads / sp->wpr) * i;
     const unsigned o = sp->transposedA ? rowStep * 4u : rowStep * K * 4u;
     const unsigned pairOff = sp->transposedA ? M * 4u : 4u;
+    /*
+     * ONE 64-BIT LOAD WHERE THE PAIR IS ADJACENT. A thread's two k are next to
+     * each other whenever k is the contiguous axis — untransposed A, or
+     * transposed B — and eight contiguous bytes is one load, not two.
+     *
+     * The alignment condition is K EVEN, and it is not a formality: the row
+     * base is (m0+row)*K elements in, so an odd K puts every second row on a
+     * four-byte boundary, and a misaligned wide load on this hardware does not
+     * fault, it returns the wrong words. Every shape this model runs has K even
+     * (640, 2560); an odd one falls back to the pair of 32-bit loads.
+     */
+    if (pairOff == 4u && (K % 2u) == 0u) {
+      hp_word l = hp_ldg_wide(ST_A(2 * i + 0), R_ADDR_SA, o, 2,
+                              hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(l, P_DONE, 1) : l;
+      continue;
+    }
     hp_word l0 = hp_ldg(ST_A(2 * i + 0), R_ADDR_SA, o, hp_ctrl_setbar(BAR_LOAD));
     hp_word l1 = hp_ldg(ST_A(2 * i + 1), R_ADDR_SA, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
     p[n++] = guard ? hp_predicated(l0, P_DONE, 1) : l0;
@@ -676,6 +693,12 @@ static unsigned emit_stage_loads(hp_word *p, const stage_params *sp, int guard) 
     const unsigned o = sp->transposedB ? (sp->threads / sp->wpr) * i * K * 4u
                                        : (sp->threads / sp->bn) * i * 2u * N * 4u;
     const unsigned pairOff = sp->transposedB ? 4u : N * 4u;
+    if (pairOff == 4u && (K % 2u) == 0u) {
+      hp_word l = hp_ldg_wide(ST_B(2 * i + 0), R_ADDR_SB, o, 2,
+                              hp_ctrl_setbar(BAR_LOAD));
+      p[n++] = guard ? hp_predicated(l, P_DONE, 1) : l;
+      continue;
+    }
     hp_word l0 = hp_ldg(ST_B(2 * i + 0), R_ADDR_SB, o, hp_ctrl_setbar(BAR_LOAD));
     hp_word l1 = hp_ldg(ST_B(2 * i + 1), R_ADDR_SB, o + pairOff, hp_ctrl_setbar(BAR_LOAD));
     p[n++] = guard ? hp_predicated(l0, P_DONE, 1) : l0;
