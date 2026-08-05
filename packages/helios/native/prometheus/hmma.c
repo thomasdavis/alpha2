@@ -112,6 +112,44 @@
 #define HMMA_SHARED 1
 #endif
 
+/*
+ * HMMA_NOBAR — a MEASUREMENT, not a mode. Builds the loop without the barrier
+ * that protects the tile from being overwritten while warps are still reading
+ * it, which makes the kernel RACE and its answers wrong. The only thing it
+ * produces is a number: how much of the k-step those barriers cost, and
+ * therefore whether double-buffering the shared tiles is worth building.
+ *
+ * Three tile-geometry sweeps have already been spent on this GEMM on the
+ * strength of plausible reasoning. This one gets measured first.
+ *
+ * MEASURED, on the eight shapes this model actually runs:
+ *
+ *     qkv     B^T  14.48 -> 15.28 TFLOP/s    +5.5%
+ *     qkv     fwd  15.58 -> 16.31            +4.7
+ *     mlp fc  B^T  14.68 -> 15.29            +4.2
+ *     mlp fc  fwd  15.76 -> 16.43            +4.3
+ *     lm head B^T  17.49 -> 18.33            +4.8
+ *     lm head fwd  18.63 -> 19.55            +4.9
+ *     attn proj    11.87 -> 12.24            +3.1
+ *     mlp proj     14.09 -> 14.50            +2.9
+ *
+ * So THREE TO FIVE PERCENT, and that is an upper bound on double-buffering the
+ * tiles, which recovers the barrier but pays for it in address toggling or in
+ * twice the emitted loop. The barriers are not what stands between this kernel
+ * and cuBLAS's 24-32 TFLOP/s at the same shapes; do not spend a rewrite there.
+ *
+ * WHAT THE SPREAD SAYS INSTEAD: the rate tracks the block count, not the
+ * barrier. attn proj is 80 blocks on 46 SMs — under two waves, so the tail is
+ * most of the kernel — and it is the slowest at 11.87. The lm head is 1,536
+ * blocks, 33 waves, and the fastest at 18.63. And per k-step a warp issues 16
+ * shared loads to feed 8 tensor instructions: the fragment loads, not the
+ * barriers, are what the tensor pipe waits on. That is what ldmatrix exists to
+ * fix, and it is the next thing to measure.
+ */
+#ifndef HMMA_NOBAR
+#define HMMA_NOBAR 0
+#endif
+
 /* One HMMA covers 16 rows, 8 columns and 16 of K. Not tunable: they are the
  * instruction's shape. */
 #define MMA_M 16u
@@ -723,7 +761,7 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
       }
   }
   /* Nobody may overwrite a tile until every warp has read it. */
-  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  if (!HMMA_NOBAR) p[n++] = hp_bar_sync(hp_ctrl_safe());
 
   {
     const int back = -(int)((n + 1u - loop_top) * INSTR_BYTES);
