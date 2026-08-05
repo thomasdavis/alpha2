@@ -108,6 +108,30 @@ hp_word hp_ldsm(unsigned dst, unsigned addrReg, uint32_t offset,
   return w;
 }
 
+/*
+ * Captured (tools/atom_capture.cu):
+ *
+ *   RED.E.ADD.F32.FTZ.RN.STRONG.GPU [R2.64], R7   0x000000070200798e
+ *   RED.E.ADD.F32.FTZ.RN.STRONG.GPU [R2.64], R5   0x000000050200798e
+ *
+ * Two captures differing only in the data register prove that slot is SRCB,
+ * where STG also puts it; the address is at SRCA and the immediate offset in
+ * STG's slot. The 0x0c10e784 descriptor is reproduced for the same reason STG's
+ * is: the hardware was observed to accept it. It differs from STG's 0x0c101904
+ * in the bits that presumably select the reduction operator and the rounding
+ * mode the mnemonic spells FTZ.RN, but that has not been isolated, and a
+ * different reduction — a max, an integer add — must be captured, not derived.
+ */
+hp_word hp_red_add_f32(unsigned addrReg, unsigned dataReg, uint32_t offset,
+                       hp_control c) {
+  hp_word w = hp_base(HP_OP_RED, c);
+  hp_put(&w, HP_F_SRCA, 8, addrReg);
+  hp_put(&w, HP_F_SRCB, 8, dataReg);
+  hp_put(&w, HP_F_SRCB + 8, 24, offset);
+  hp_put(&w, 64, 32, 0x0c10e784);
+  return w;
+}
+
 hp_word hp_sts(unsigned addrReg, unsigned dataReg, uint32_t offset,
                hp_control c) {
   hp_word w = hp_base(HP_OP_STS, c);

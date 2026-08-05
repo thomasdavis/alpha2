@@ -100,6 +100,23 @@ hp_word hp_ldsm(unsigned dst, unsigned addrReg, uint32_t offset,
                 unsigned count, int trans, hp_control c);
 
 /*
+ * RED.E.ADD.F32.FTZ.RN.STRONG.GPU [Ra.64+off], Rb — atomically add Rb into
+ * global memory. The REDUCTION form: it returns nothing, which is what a
+ * scatter-add wants, and is cheaper than ATOMG for exactly that reason.
+ *
+ * The operand shape is STG's — address register, data register, immediate
+ * offset — because it IS a store, with an adder in the memory pipe.
+ *
+ * WHAT IT IS FOR: dW[indices[i]] += g[i], the embedding gradient. Two tokens
+ * can share a vocabulary id, and needing that collision handled is the only
+ * reason that gradient is currently obtained by building a [tokens, vocab]
+ * one-hot through seven full-size passes and pulling a mostly-zero table out of
+ * a 24 GFLOP matmul.
+ */
+hp_word hp_red_add_f32(unsigned addrReg, unsigned dataReg, uint32_t offset,
+                       hp_control c);
+
+/*
  * ISETP.GT.U32.AND Pd, PT, Ra, imm, PT — set a predicate from a comparison.
  * Reference: ISETP.GT.U32.AND P0, PT, R7, 0x1f, PT
  *   0x0000001f0700780c 0x040fe40003f04070

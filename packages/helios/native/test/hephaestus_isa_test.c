@@ -120,6 +120,16 @@ static void test_control_flow(void) {
               hi_of(hp_ldsm(4, 0, 0, 4, 0, hp_ctrl_safe())) & ctl);
     /* And the address register is where every other instruction puts srcA. */
     HT_EQ_U64(lo_of(hp_ldsm(4, 7, 0, 4, 0, hp_ctrl_safe())), 0x000000000704783bULL);
+    /* RED — the float atomic add, from tools/atom_capture.cu. Both captures,
+     * which differ only in the data register and so pin that slot. */
+    HT_EQ_U64(lo_of(hp_red_add_f32(2, 7, 0, hp_ctrl_safe())), 0x000000070200798eULL);
+    HT_EQ_U64(lo_of(hp_red_add_f32(2, 5, 0, hp_ctrl_safe())), 0x000000050200798eULL);
+    HT_EQ_U64(hi_of(hp_red_add_f32(2, 7, 0, hp_ctrl_safe())) & 0xffffffffULL,
+              0x0c10e784ULL);
+    /* The offset sits where STG puts it, one byte above the data register. */
+    HT_EQ_U64(lo_of(hp_red_add_f32(2, 7, 0x40, hp_ctrl_safe())),
+              0x000000070200798eULL | (0x40ULL << 40));
+
     /* The offset, from the fifth capture: LDSM.16.M88.4 R4, [R5+0x800]. */
     HT_EQ_U64(lo_of(hp_ldsm(4, 5, 0x800, 4, 0, hp_ctrl_safe())),
               0x000800000504783bULL);

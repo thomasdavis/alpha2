@@ -50,6 +50,7 @@
 #define HP_OP_FMNMX 0x209    /* FMNMX Rd, Ra, Rb, {PT|!PT} — min or max */
 #define HP_OP_LDS 0x984      /* LDS Rd, [Ra.X4+off] — shared memory load  */
 #define HP_OP_LDSM 0x83b     /* LDSM.16.M88.x — ldmatrix, a whole fragment */
+#define HP_OP_RED 0x98e      /* RED.E.ADD.F32 — atomic add, no return value */
 #define HP_OP_STS 0x388      /* STS [Ra.X4+off], Rb — shared memory store */
 #define HP_OP_ISETP_IMM 0x80c
 /* Register form. The immediate/register opcode pairs differ by 0x600 -- as with
