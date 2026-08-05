@@ -17,7 +17,29 @@
 import { HeliosBackend } from "/workspace/alpha2/packages/helios/dist/index.js";
 import { CpuRefBackend } from "/workspace/alpha2/packages/tensor/dist/index.js";
 
+/*
+ * PIN THE THRESHOLDS, or this harness tests the wrong backend.
+ *
+ * Vulkan routes matmul to cpuMatmul below MATMUL_GPU_FLOPS_THRESHOLD and
+ * sum/mean to their CPU forms below _minGpuSize. Small cases therefore run
+ * cpu_ref's own arithmetic and agree with cpu_ref for the least interesting
+ * reason available — which is exactly how twelve hypotheses were eliminated
+ * against a harness that was, for half its cases, comparing cpu_ref to itself.
+ *
+ * The same artifact is what made the model's divergence look batch-gated. It is
+ * SIZE-gated: forcing the GPU path on at batch 1 gives 4.1759, against 4.1834
+ * from Vulkan's own default at that size and 4.1834 from cpu_ref. Batch was
+ * never the variable; it was just what pushed operations over the threshold.
+ *
+ *     cpu_ref  batch1 4.1834   batch2 4.1904
+ *     vulkan   batch1 4.1834   batch2 4.1795    (default)
+ *     vulkan   batch1 4.1759                    (setMinGpuSize(0))
+ *
+ * So the bug reproduces at batch 1 with one sequence: small, fast and
+ * deterministic. Debug it there.
+ */
 const V = new HeliosBackend();
+if (V.setMinGpuSize) V.setMinGpuSize(0);
 const C = new CpuRefBackend();
 const TOL = 1e-3;
 
