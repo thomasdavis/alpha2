@@ -494,6 +494,24 @@ export class NativeHeliosBackend implements Backend {
                           db.buffer.handle, n, 0, 0, 0, 0, 0, 0, 0),
       name, da, db,
     );
+    /*
+     * A MATERIALISED BROADCAST IS THIS FUNCTION'S RUBBISH, and nobody else can
+     * take it out.
+     *
+     * `expand` returns the operand untouched when the shapes already match and
+     * a NEW tensor when they do not — every bias, every norm weight, every mask.
+     * That tensor is never returned to the caller, so the release callback the
+     * tape and the model pass around cannot see it, and it leaked once per
+     * broadcast per step forever: 372 tensors a step at 18 layers, which is what
+     * put a 105M model out of memory in two steps on an 8 GB card.
+     *
+     * Releasing straight after the dispatch is safe because a release here is
+     * DEFERRED — helios_tensor_free only marks, and the memory stays valid and
+     * untouched until helios_end_step. The kernel that was just enqueued still
+     * reads it.
+     */
+    if (da !== a && da !== out) da.buffer.release(this.hl);
+    if (db !== b && db !== da && db !== out) db.buffer.release(this.hl);
     return out;
   }
 
@@ -791,13 +809,33 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /*
+   * THE INTERMEDIATES OF A COMPOSITE ARE ITS OWN, and the caller never sees them.
+   *
+   * layerNorm is normalize, then multiply by the weight, then add the bias —
+   * two tensors that exist only between those three calls. The release callback
+   * the tape and the model pass around gets the RESULT; it has no way to know
+   * the other two were ever made, so they leaked once per norm per step, which
+   * at 18 layers is 74 tensors a step doing nothing.
+   *
+   * Safe to release immediately: helios_tensor_free only marks, and the memory
+   * stays valid until helios_end_step, so the kernels just enqueued still read
+   * it. Same reasoning as the materialised broadcasts in `binary`.
+   */
   rmsNorm(x: TensorData, weight: TensorData, eps: number): TensorData {
-    return this.mul(this.normalized("rmsNorm", this.hl.op.rmsNorm, x, eps), weight);
+    const n = this.normalized("rmsNorm", this.hl.op.rmsNorm, x, eps);
+    const out = this.mul(n, weight);
+    n.buffer.release(this.hl);
+    return out;
   }
 
   layerNorm(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData {
     const n = this.normalized("layerNorm", this.hl.op.layerNorm, x, eps);
-    return this.add(this.mul(n, weight), bias);
+    const scaled = this.mul(n, weight);
+    n.buffer.release(this.hl);
+    const out = this.add(scaled, bias);
+    if (isNative(scaled)) scaled.buffer.release(this.hl);
+    return out;
   }
 
   /*
