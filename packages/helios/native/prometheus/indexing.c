@@ -312,3 +312,39 @@ unsigned pr_emit_broadcast(hp_word *p, unsigned mode, unsigned W) {
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }
+
+/*
+ * cat along the LAST axis: out[r][start + c] = in[r][c].
+ *
+ * The mirror of pr_emit_slice_rows, and it exists for the same reason: the
+ * output row stride differs from the input's, so the mapping is not affine in a
+ * flat index and a one-dimensional kernel cannot express it. Concatenating N
+ * tensors is N launches, one per source, each writing its own column range —
+ * which is cheaper than it sounds, because the alternative was a host copy that
+ * drained the queue and cost 3.4 ms a call at batch 128.
+ *
+ * `start` is the destination offset and arrives in the constant bank, so one
+ * program serves every piece of every concatenation.
+ */
+unsigned pr_emit_cat_rows(hp_word *p, unsigned W, unsigned dstW) {
+  unsigned n = 0;
+  p[n++] = hp_s2r(R_PLANE_ID, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_COL, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+
+  /* src = row*W + c */
+  p[n++] = hp_imad_imm(R_SRC2, R_PLANE_ID, W, R_COL, hp_ctrl_wait(BAR_ID));
+  /* dst = row*dstW + start + c */
+  p[n++] = hp_mov_const(R_MASK, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_TMP2, R_COL, R_MASK, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_DST2, R_PLANE_ID, dstW, R_TMP2, hp_ctrl_safe());
+
+  p[n++] = hp_imad_wide_const(R_ADDR, R_SRC2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_ldg(R_VALUE, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+  p[n++] = hp_imad_wide_const(R_OUT, R_DST2, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_VALUE, 0, hp_ctrl_wait(BAR_LOAD));
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}

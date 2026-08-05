@@ -207,6 +207,18 @@ int hl_broadcast(helios_context *ctx, helios_tensor out, helios_tensor a,
                         p->sharedBytes, addrs, 2, NULL, 0);
 }
 
+int hl_cat_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                unsigned W, unsigned dstW, unsigned start, unsigned rows) {
+  const helios_key k = {HL_CAT_ROWS, W, dstW, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  const NvU32 s[1] = {start};
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, s, 1);
+}
+
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                unsigned T, unsigned H, unsigned D, unsigned planes) {
   const helios_key k = {HL_PERMUTE, T, H, D};

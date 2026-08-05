@@ -110,6 +110,13 @@ static int emit(const helios_key *key, helios_program *p) {
       p->gridY = 0;
       return 0;
 
+    case HL_CAT_ROWS:
+      p->count = pr_emit_cat_rows(p->code, key->arg0, key->arg1);
+      p->blockX = key->arg0;
+      p->gridX = 1;
+      p->gridY = 0;
+      return 0;
+
     case HL_PERMUTE:
       /* One block per (b,t,h) plane on the Y index, one thread per feature. */
       p->count = pr_emit_permute(p->code, key->arg0, key->arg1, key->arg2);

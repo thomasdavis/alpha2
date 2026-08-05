@@ -276,6 +276,7 @@ export class NativeHeliosBackend implements Backend {
     const W = shape[shape.length - 1] ?? 1;
     const rowsOut = want / W;
     const srcLast = t.shape[t.shape.length - 1] ?? 1;
+
     if (W > 0 && rowsOut > 0 && Number.isInteger(rowsOut)) {
       if (have === W && srcLast === W) {          /* [.., W] tiled down rows */
         this.check(this.hl.broadcastRows(out.buffer.handle, dt.buffer.handle, 0, W, rowsOut),
@@ -1048,6 +1049,31 @@ export class NativeHeliosBackend implements Backend {
     outShape[k] = sizes.reduce((x, y) => x + y, 0);
     const out = this.make(outShape, "f32");
     const outSlab = outShape[k] * inner;
+
+    /*
+     * ALONG THE LAST AXIS THIS IS A KERNEL, one launch per piece.
+     *
+     * Each source contributes a contiguous column range of every output row, so
+     * it is exactly sliceRows run backwards, and the launch supplies the row.
+     * On the host it was 3.4 ms a call at batch 128 — 20 ms a step plus the
+     * drains, because copying on the host means READING device memory.
+     *
+     * Interior axes keep the host path: there each input contributes a slab per
+     * outer index rather than one column range, which is a different mapping.
+     */
+    if (k === shape.length - 1) {
+      const rowsN = shapeSize(shape) / shape[k];
+      let at = 0;
+      for (const t of tensors) {
+        const dt = this.device(t);
+        const w = t.shape[k];
+        this.check(
+          this.hl.catRows(out.buffer.handle, dt.buffer.handle, w, outShape[k], at, rowsN),
+          "cat", dt);
+        at += w;
+      }
+      return out;
+    }
 
     this.sync();
     const devs = tensors.map((t) => this.device(t));

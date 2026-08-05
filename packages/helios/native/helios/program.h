@@ -43,6 +43,7 @@ typedef enum {
   HL_TRANSPOSE,   /* arg0 = rows, arg1 = cols */
   HL_SLICE_ROWS,  /* arg0 = out width, arg1 = source width */
   HL_BROADCAST,   /* arg0 = mode (0 tile, 1 row), arg1 = width */
+  HL_CAT_ROWS,    /* arg0 = piece width, arg1 = destination width */
   HL_PERMUTE,     /* arg0 = T, arg1 = H, arg2 = D — swaps the middle two axes */
   HL_EMBEDDING,   /* arg0 = dim */
   HL_SLICE,

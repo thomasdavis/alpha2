@@ -73,6 +73,10 @@ int hl_slice_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
 int hl_broadcast(helios_context *ctx, helios_tensor out, helios_tensor a,
                  unsigned mode, unsigned W, unsigned rows);
 
+/* out[r][start + c] = in[r][c], over `rows` rows. */
+int hl_cat_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                unsigned W, unsigned dstW, unsigned start, unsigned rows);
+
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                unsigned T, unsigned H, unsigned D, unsigned planes);
 
