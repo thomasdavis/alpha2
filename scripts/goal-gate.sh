@@ -19,13 +19,27 @@
 # above ~768 tokens a step (batch 8 gives 9,126 against batch 6's 10,745) while
 # native still climbs. Override with NATIVE_BATCH / VULKAN_BATCH.
 #
+# NATIVE'S DEFAULT IS ITS MEASURED PEAK, and 24 is where the card runs out
+# rather than where the curve turns:
+#
+#     12   13,474 tok/s   held 3.70 GB
+#     16   13,606         held 5.34
+#     20   13,622         held 5.41
+#     24   14,254         held 5.38
+#     32   FAILS — "allocation of 1310720 floats failed" on an 8 GB card
+#
+# So MEMORY is what caps native's batch, not throughput, and the step's ~275 MB
+# per layer of intermediates is therefore a speed constraint as well as a
+# footprint one. The curve is also flattening — twice the batch buys ~6% — so
+# this is not a route to the target, only to its own last few percent.
+#
 # Usage: scripts/goal-gate.sh [outdir]
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
 L=${L:-18} D=${D:-640} H=${H:-10} V=${V:-12288} SEQ=${SEQ:-64}
-NATIVE_BATCH=${NATIVE_BATCH:-8}
+NATIVE_BATCH=${NATIVE_BATCH:-24}
 VULKAN_BATCH=${VULKAN_BATCH:-6}
 NATIVE_TARGET=${NATIVE_TARGET:-30000}
 VULKAN_TARGET=${VULKAN_TARGET:-10000}
