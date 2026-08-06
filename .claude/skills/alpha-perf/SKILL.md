@@ -23,6 +23,48 @@ loss) in the DB, and repeat. The DB is the loop's memory; keep it current every 
 
 ---
 
+## The vision — what this is, and why (stable; the "why" behind every cycle)
+
+- **A GPU compute stack built entirely FROM SCRATCH, no CUDA, no cuBLAS, no vendor
+  runtime.** The native backend talks to the RTX 3070 through our own code across eight
+  layers, bottom-up: `aether` (the ioctl transport to the driver), `gaia` (memory + address
+  space), `hermes` (channels, pushbuffer, kernel launch), `chronos` (fences/timeline),
+  `hephaestus` (the sm_86 SASS assembler — we emit raw machine code), `prometheus` (kernel
+  IR + codegen), `helios` (the facade: context, program cache, dispatch), and `alpha` (the
+  model ops). The build's `LAYERS` array order IS the dependency rule — a layer links only
+  what is below it, so the architecture is enforced by the linker, not by review. Making
+  this stack *fast* is the point: it is proof that a hand-built, fully-understood GPU path
+  can reach vendor-class throughput.
+- **TWO backends, both first-class, both with targets.** `native` (the from-scratch
+  driver+assembler above) and `vulkan` (compute shaders through the Vulkan API). They run
+  the SAME model and are gated together. Vulkan is the more mature path and already reaches
+  its target; native is the hard frontier and where most cycles go — but a change must keep
+  BOTH green, and Vulkan's kernels (`packages/helios/src/kernels/`, esp. `matmul-coop.ts`
+  with f16 operands + double buffering) are the worked reference for what native is climbing
+  toward.
+- **It is TRAINING throughput, not inference.** A "token/s" is a full training step —
+  forward, backward, and the AdamW update — over the gate's fixed 18L/640d/10h/v12288/seq64
+  shape. So the backward GEMMs and the optimizer are in the budget, not just the forward.
+- **The point of the speed is a genuinely chatty ~100M Alpha model.** Performance work
+  exists to make iterating on that model AFFORDABLE — faster steps mean more training runs
+  per dollar of the RunPod fortnight. That is why LOSS IS SACRED (law 3): a speedup that
+  moves the loss is not a speedup, it is a different, unvalidated model. Numerics changes
+  (f16 accumulate, f16 activations) are allowed only with a convergence-validation run, not
+  a free flip.
+- **"We haven't implemented all the driver and lowering methods yet" — the operation
+  universe is the ROADMAP of what the stack COULD become.** `gpu-op-universe/` (seeded into
+  the DB's `operation` table) is 2,644 canonical ops across the eight layers; almost all are
+  `stub`. The loop does NOT implement them speculatively — it implements exactly the one the
+  binding constraint demands, captures/encodes it properly, and advances its `impl_status`.
+  Stubs and the ISA coverage register (§5) exist so a missing method is a NAMED gap with a
+  cost, never a silent absence. The dataset evolves as the stack does.
+- **The budget: RunPod for ~two weeks.** The pod is the machine with the GPU; the box is
+  the machine with the git history. Source moves box→pod (§1). 50k is the north star, 30k
+  the historical gate; the honest reachable ceiling for this model/card is a DB query, not
+  an assumption (§6).
+
+---
+
 ## 0. The three non-negotiable laws of this stack
 
 1. **NEVER TAKE A SHORTCUT. Build everything perfectly regardless of complexity.** No
@@ -262,7 +304,7 @@ and this file should not have had the number.
 ## 7. File map + build incantation
 
 ```
-packages/helios/native/
+packages/helios/native/          THE FROM-SCRATCH BACKEND (C, no CUDA)
   hephaestus/     the sm_86 assembler — sm86_*.c (encoders), isa.h (opcodes+fields),
                   coverage.h + sm86_stub.c (the ISA coverage register), control.h
   prometheus/     kernel codegen — hmma.c (tensor-core GEMM incl. emit_hmma_cpasync_f16),
@@ -270,11 +312,19 @@ packages/helios/native/
   aether/gaia/hermes/chronos/helios/   driver, memory, channels, timeline, facade
   tools/          *_capture.cu (ISA captures), hmma_dump.c, l2_bandwidth.cu, ...
   test/           the C hardware + ISA tests (prometheus_hw_test.c is the kernel harness)
+  build-stack.mjs   builds the NATIVE addon + runs its C layer tests
+packages/helios/src/             THE VULKAN BACKEND (TS + SPIR-V/compute shaders)
+  kernels/        the Vulkan compute kernels — matmul-coop.ts is the cooperative-matrix
+                  GEMM with f16 operands + double buffering, the reference native chases
+  nativeBackend.ts / nativeDevice.ts   the native addon's TS wrapper + handle layer
+  native/build.mjs  builds the VULKAN addon (helios_vk.node)
+packages/model/   the GPT (gptForward/initGPT); packages/autograd/ the tape + ops.ts
 packages/tests/   the JS instruments — micro-*, probe-*, profile-*, diff-*, bench-*
-scripts/goal-gate.sh          THE gate (both backends, PASS/FAIL)
-tools/alphaperf.py            the research DB CLI
+scripts/goal-gate.sh   THE gate: BOTH backends at 18L/640d/10h/v12288/seq64, one process
+                       each (a shared process makes Vulkan mismeasure), prints PASS/FAIL
+tools/alphaperf.py            the research DB CLI (the STATE)
 tools/alphaperf_backfill.sh   deterministic DB rebuild
-gpu-op-universe/              the 2,644-operation grammar (now seeded into alphaperf.db)
+gpu-op-universe/              the 2,644-operation grammar (seeded into alphaperf.db)
 ```
 
 Build a native crate/binary niced on the shared box:
