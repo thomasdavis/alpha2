@@ -7,9 +7,17 @@
 /* K used by the single-warp INT8 GEMM known-answer test (16x8xK, one warp). */
 #define IMMA_GEMM_K 64u
 
+/* The multi-tile grid GEMM test shape (M, N powers-of-2 multiples of 16/8). */
+#define IMMA_GEMM2_M 64u
+#define IMMA_GEMM2_N 64u
+#define IMMA_GEMM2_K 256u
+
 unsigned pr_emit_imma_tile(hp_word *p);
-/* A single-warp INT8 GEMM: D[16x8] s32 = A[16xK] s8 * B[8xK] s8, K a multiple
- * of 32. Fully serialized (no staging) — correctness first; the staged,
- * multi-warp, cp.async version is the throughput follow-on. */
+/* A multi-tile INT8 GEMM: D[MxN] s32 = A[MxK] s8 (row-major) * B[NxK] s8
+ * (n-major), one warp per 16x8 output tile over a linearized (M/16 x N/8) grid,
+ * K a multiple of 32. Fully serialized (no staging) — correctness first; the
+ * staged multi-warp cp.async version is the throughput follow-on. */
+unsigned pr_emit_imma_gemm(hp_word *p, unsigned M, unsigned N, unsigned K);
+/* One-tile convenience (M=16, N=8): the original single-warp test. */
 unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K);
 #endif

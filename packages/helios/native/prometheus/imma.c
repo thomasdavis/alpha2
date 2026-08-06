@@ -90,44 +90,70 @@ unsigned pr_emit_imma_tile(hp_word *p) {
 
 #define BAR_MMA 2
 
+/* Extra registers the multi-tile grid GEMM needs beyond the single-tile enum:
+ * the block id and this block's tile origin (m0,n0), all persistent to the
+ * store. R_ADDR(6:7)=A base, R_OUT(20:21)=B base then store address. */
+enum {
+  R_BID = 15, /* linearized block id (ctaid.x) */
+  R_M0 = 22,  /* tile row origin = bx*16 */
+  R_N0 = 23,  /* tile col origin = by*8 */
+};
+
 /*
- * pr_emit_imma_gemm_16x8 — the single tile grown into a real GEMM over K by
- * looping the IMMA accumulate. One warp, one 16x8 output tile, K a multiple of
- * 32. A is [16][K] row-major s8, B is [8][K] n-major s8, D is [16][8] s32.
+ * pr_emit_imma_gemm — the verified tile grown into a real GEMM over both K and
+ * the output grid. One warp per 16x8 output tile; the (M/16 x N/8) grid is
+ * LINEARIZED into ctaid.x (there is no ctaid.y in this harness) and decoded as
+ * by = bid >> log2(M/16), bx = bid - by*(M/16). A is [M][K] row-major s8, B is
+ * [N][K] n-major s8, D is [M][N] s32.
  *
- * The k-step addressing generalises the tile's fixed +256 for row g+8 to the
- * true row stride: row g+8 is 8*K bytes on, and each k-step is 32 bytes along.
+ * The addressing generalises the single tile: A's per-thread base is
+ * (m0+g)*K + 4l, B's is (n0+g)*K + 4l, and the row-g+8 offset that was a fixed
+ * +256 in the standalone [16][8] tile is 8*N elements in the [M][N] output.
  *
- * SERIALIZED ON PURPOSE (correctness first, not yet the speedup): every k-step
- * fully completes before the next. Two hazards force the barriers — the IMMA
- * both reads and writes C (a RAW across steps), and the next step's loads
- * overwrite the A/B fragment registers the current IMMA still reads (a WAR). So
- * the first load of each step waits BAR_MMA (previous IMMA done reading + C
- * written) and the IMMA waits BAR_LOAD then sets BAR_MMA. The staged version
- * hides this latency by double-buffering; this one measures nothing but correct.
+ * SERIALIZED ON PURPOSE (correctness first): every k-step fully completes
+ * before the next. The IMMA reads and writes C (a RAW across steps) and the
+ * next step's loads overwrite the A/B fragment registers the current IMMA still
+ * reads (a WAR); BAR_MMA between steps covers both. The staged version hides
+ * this latency by double-buffering — this one measures nothing but correct.
  */
-unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K) {
+unsigned pr_emit_imma_gemm(hp_word *p, unsigned M, unsigned N, unsigned K) {
   unsigned n = 0;
   const unsigned steps = K / 32u;
-  const unsigned rowg8 = 8u * K; /* byte offset of row g+8 within A */
+  const unsigned rowg8 = 8u * K;         /* byte offset of A row g+8 */
+  const unsigned drowg8 = 8u * N * 4u;   /* byte offset of D row g+8 */
+  const unsigned mtiles = M / 16u;
+  unsigned lgM = 0;
+  while ((1u << lgM) < mtiles) lgM++;
 
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BID, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_mov_imm(R_ESIZE, 1, hp_ctrl_wait(BAR_ID)); /* byte addressing */
   p[n++] = hp_shr_imm(R_G, R_TID, 2, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_L, R_G, (uint32_t)-4, R_TID, hp_ctrl_safe());
 
-  /* A/B byte offset at k=0 for this thread: g*K + 4l (stride K, both matrices
-   * K-contiguous). */
-  p[n++] = hp_imad_imm(R_AIDX, R_G, K, HP_RZ, hp_ctrl_safe());
+  /* Decode the tile: by = bid>>lgM, bx = bid - by*mtiles; m0 = bx*16, n0 = by*8.
+   * R_TMP carries by, R_CIDX carries bx (both dead by the store, which rebuilds
+   * R_CIDX). */
+  p[n++] = hp_shr_imm(R_TMP, R_BID, lgM, hp_ctrl_safe());               /* by */
+  p[n++] = hp_imad_imm(R_CIDX, R_TMP, (uint32_t)-(int)mtiles, R_BID,
+                       hp_ctrl_safe());                                  /* bx */
+  p[n++] = hp_imad_imm(R_M0, R_CIDX, 16, HP_RZ, hp_ctrl_safe());        /* m0 */
+  p[n++] = hp_imad_imm(R_N0, R_TMP, 8, HP_RZ, hp_ctrl_safe());          /* n0 */
+
+  /* A base byte offset = (m0+g)*K + 4l. */
+  p[n++] = hp_iadd3_reg(R_AIDX, R_M0, R_G, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_AIDX, R_AIDX, K, HP_RZ, hp_ctrl_safe());
   p[n++] = hp_imad_imm(R_AIDX, R_L, 4, R_AIDX, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_ADDR, R_AIDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
-  /* B keeps its own persistent base (R_OUT is free until the store). */
-  p[n++] = hp_imad_wide_const(R_OUT, R_AIDX, R_ESIZE, 0,
+  /* B base byte offset = (n0+g)*K + 4l, into R_OUT (free until the store). */
+  p[n++] = hp_iadd3_reg(R_TMP, R_N0, R_G, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_TMP, K, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_L, 4, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_OUT, R_TMP, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
 
-  /* C accumulator starts at zero; movs are fixed-latency and retire during the
-   * first step's loads. */
+  /* C accumulator starts at zero (fixed-latency movs, retire during the loads). */
   p[n++] = hp_mov_imm(R_C0, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_C1, 0, hp_ctrl_safe());
   p[n++] = hp_mov_imm(R_C2, 0, hp_ctrl_safe());
@@ -155,17 +181,22 @@ unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K) {
     p[n++] = hp_imma_acc(R_C0, R_A0, R_B0, R_C0, immac);
   }
 
-  /* Store D (slot 0, s32); C is [16][8] regardless of K, so the tile's offsets
-   * are unchanged. Wait the last IMMA. */
-  p[n++] = hp_imad_imm(R_CIDX, R_G, 8, HP_RZ, hp_ctrl_wait(BAR_MMA));
-  p[n++] = hp_imad_imm(R_CIDX, R_L, 2, R_CIDX, hp_ctrl_safe());
+  /* Store D (slot 0, s32): element (m0+g)*N + n0 + 2l; row g+8 is 8*N on. Wait
+   * the last IMMA. */
+  p[n++] = hp_iadd3_reg(R_CIDX, R_M0, R_G, hp_ctrl_wait(BAR_MMA));
+  p[n++] = hp_imad_imm(R_CIDX, R_CIDX, N, R_N0, hp_ctrl_safe()); /* (m0+g)*N+n0 */
+  p[n++] = hp_imad_imm(R_CIDX, R_L, 2, R_CIDX, hp_ctrl_safe());  /* + 2l */
   p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
   p[n++] = hp_imad_wide_const(R_OUT, R_CIDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_C0, 0, hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_C1, 4, hp_ctrl_safe());
-  p[n++] = hp_stg(R_OUT, R_C2, 256, hp_ctrl_safe());
-  p[n++] = hp_stg(R_OUT, R_C3, 260, hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C2, drowg8, hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C3, drowg8 + 4, hp_ctrl_safe());
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
+}
+
+unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K) {
+  return pr_emit_imma_gemm(p, 16, 8, K);
 }

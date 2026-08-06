@@ -72,3 +72,36 @@ const char *chk_imma_gemm(const volatile NvU32 *o) {
   }
   return NULL;
 }
+
+/* The multi-tile grid GEMM: A[M][K], B[N][K], D[M][N], all K-contiguous. */
+void pr_fill_imma_gemm2(volatile NvU32 *a, volatile NvU32 *b) {
+  volatile signed char *A = (volatile signed char *)a;
+  volatile signed char *B = (volatile signed char *)b;
+  for (int i = 0; i < (int)IMMA_GEMM2_M; i++)
+    for (int k = 0; k < (int)IMMA_GEMM2_K; k++)
+      A[i * (int)IMMA_GEMM2_K + k] = (signed char)a_val(i, k);
+  for (int j = 0; j < (int)IMMA_GEMM2_N; j++)
+    for (int k = 0; k < (int)IMMA_GEMM2_K; k++)
+      B[j * (int)IMMA_GEMM2_K + k] = (signed char)b_val(j, k);
+}
+
+const char *chk_imma_gemm2(const volatile NvU32 *o) {
+  const volatile int *D = (const volatile int *)o; /* [M][N] row-major */
+  int nbad = 0, fi = -1, fj = -1, fg = 0, fw = 0;
+  for (int i = 0; i < (int)IMMA_GEMM2_M; i++)
+    for (int j = 0; j < (int)IMMA_GEMM2_N; j++) {
+      int want = 0;
+      for (int k = 0; k < (int)IMMA_GEMM2_K; k++) want += a_val(i, k) * b_val(j, k);
+      const int got = D[i * (int)IMMA_GEMM2_N + j];
+      if (got != want) {
+        if (nbad == 0) { fi = i; fj = j; fg = got; fw = want; }
+        nbad++;
+      }
+    }
+  if (nbad) {
+    snprintf(pr_msg(), PR_MSG_SIZE,
+             "imma gemm2: %d wrong; first D[%d][%d]=%d want %d", nbad, fi, fj, fg, fw);
+    return pr_msg();
+  }
+  return NULL;
+}
