@@ -45,7 +45,7 @@ void hp_coverage_tests(void) {
   /* A count that has to be updated deliberately. Not a style rule: a row added
    * without a thought about what it BLOCKS is the row that makes the register
    * decorative. */
-  HT_EQ_U64(n, 41);
+  HT_EQ_U64(n, 43);
   for (unsigned i = 0; i < n; i++) {
     HT_TRUE(t[i].mnemonic && t[i].mnemonic[0]);
     /* Long enough to be a reason rather than a restatement of the mnemonic.
@@ -94,6 +94,8 @@ void hp_coverage_tests(void) {
   HT_EQ_U64(opcode_of(hp_exit(hp_ctrl_safe())), 0x94d);
   HT_EQ_U64(opcode_of(hp_f2fp_pack(1, 2, 3, hp_ctrl_safe())), 0x23e);
   HT_EQ_U64(opcode_of(hp_isetp_gt_imm(0, 1, 3, hp_ctrl_safe())), 0x80c);
+  HT_EQ_U64(opcode_of(hp_ldgdepbar(hp_ctrl_safe())), 0x9af);
+  HT_EQ_U64(opcode_of(hp_depbar(0, hp_ctrl_safe())), 0x91a);
   HT_END();
 
   HT_CASE("hp_isa_have answers from the table, and only for ENCODED rows");
@@ -104,7 +106,13 @@ void hp_coverage_tests(void) {
    * which is precisely the state a caller must not treat as usable. */
   HT_TRUE(!hp_isa_have("LDG.E.128"));
   HT_TRUE(!hp_isa_have("SHFL.reg"));
+  /* LDGSTS encodes but has NO CALLER, so it is CAPTURED, not ENCODED — the
+   * state exists precisely so "the bits are known" cannot be read as "the
+   * staging uses it". Its two companions are ENCODED because there is nothing
+   * further to do to them. */
   HT_TRUE(!hp_isa_have("LDGSTS"));
+  HT_TRUE(hp_isa_have("LDGDEPBAR"));
+  HT_TRUE(hp_isa_have("DEPBAR"));
   HT_TRUE(!hp_isa_have("HFMA2"));
   HT_TRUE(!hp_isa_have("FSETP"));
   /* And a name that is not in the table is not available either — the answer
@@ -129,8 +137,9 @@ void hp_coverage_tests(void) {
      * packed f16 arithmetic is its precondition. */
     e = find("HFMA2"); HT_TRUE(e && e->state == HP_ISA_MISSING);
     /* cp.async is what "double buffering" would actually mean here; the 3-5%
-     * that declined it measured barriers, not the register round trip. */
-    e = find("LDGSTS"); HT_TRUE(e && e->state == HP_ISA_MISSING);
+     * that declined it measured barriers, not the register round trip.
+     * Captured and encoded 2026-08-06, and deliberately still uncalled. */
+    e = find("LDGSTS"); HT_TRUE(e && e->state == HP_ISA_CAPTURED);
     /* SHFL is closed — and the row must say so, because the reduction now
      * depends on it. */
     e = find("SHFL"); HT_TRUE(e && e->state == HP_ISA_ENCODED);

@@ -329,9 +329,64 @@ static void test_bitwise(void) {
   HT_END();
 }
 
+static void test_cpasync(void) {
+  HT_CASE("LDGSTS / LDGDEPBAR / DEPBAR match ptxas");
+  const uint64_t ctl = 0xffffffffULL; /* the encoding, without the schedule */
+
+  /* THE OPERAND REGISTERS. The shared destination is at DST and the global
+   * address PAIR at srcA — two captures differing only in the destination, and
+   * two differing only in the source. */
+  HT_EQ_U64(lo_of(hp_ldgsts(7, 2, 0, 16, hp_ctrl_safe())), 0x0000000002077faeULL);
+  HT_EQ_U64(lo_of(hp_ldgsts(11, 2, 0, 16, hp_ctrl_safe())), 0x00000000020b7faeULL);
+  HT_EQ_U64(lo_of(hp_ldgsts(11, 6, 0x1000, 16, hp_ctrl_safe())),
+            0x01000000060b7faeULL);
+  HT_EQ_U64(lo_of(hp_ldgsts(11, 8, 0x2000, 16, hp_ctrl_safe())),
+            0x02000000080b7faeULL);
+
+  /*
+   * THE WIDTH AND THE CACHE HINT, which share the memory descriptor and are
+   * therefore the pair most easily confused for one field. Three widths at
+   * identical operands: only bits 73-74 may move.
+   */
+  HT_EQ_U64(hi_of(hp_ldgsts(7, 2, 0, 4, hp_ctrl_safe())) & ctl, 0x0b921844ULL);
+  HT_EQ_U64(hi_of(hp_ldgsts(7, 2, 0, 8, hp_ctrl_safe())) & ctl, 0x0b921a44ULL);
+  HT_EQ_U64(hi_of(hp_ldgsts(7, 2, 0, 16, hp_ctrl_safe())) & ctl, 0x0b901c44ULL);
+  /* 4 and 8 bytes differ ONLY in the width field; 16 additionally clears the
+   * L1 bit, because a 16-byte cp.async does not go through L1 on this
+   * architecture and every 128-bit capture is BYPASS. Asserting the XOR is what
+   * shows the two are separate bits rather than one selector. */
+  HT_EQ_U64((hi_of(hp_ldgsts(7, 2, 0, 4, hp_ctrl_safe())) & ctl) ^
+                (hi_of(hp_ldgsts(7, 2, 0, 8, hp_ctrl_safe())) & ctl),
+            1ULL << 9);
+  HT_EQ_U64((hi_of(hp_ldgsts(7, 2, 0, 8, hp_ctrl_safe())) & ctl) ^
+                (hi_of(hp_ldgsts(7, 2, 0, 16, hp_ctrl_safe())) & ctl),
+            (3ULL << 9) | (1ULL << 17));
+
+  /* The offset must not reach the operands and the operands must not reach the
+   * offset — the check a capture cannot make. */
+  HT_TRUE(lo_of(hp_ldgsts(7, 2, 0, 16, hp_ctrl_safe())) !=
+          lo_of(hp_ldgsts(7, 2, 0x1000, 16, hp_ctrl_safe())));
+  HT_EQ_U64(lo_of(hp_ldgsts(0, 0, 0x1000, 16, hp_ctrl_safe())),
+            0x0100000000007faeULL);
+
+  /* LDGDEPBAR takes no operands at all — the group is implicit state. */
+  HT_EQ_U64(lo_of(hp_ldgdepbar(hp_ctrl_safe())), 0x00000000000079afULL);
+
+  /*
+   * DEPBAR's COUNT, captured at 0, 1 and 2. Capturing only wait_group 0 would
+   * have left the count indistinguishable from a constant — and 0 is the one
+   * value that makes the instruction useless, since it drains everything.
+   */
+  HT_EQ_U64(lo_of(hp_depbar(0, hp_ctrl_safe())), 0x000080000000791aULL);
+  HT_EQ_U64(lo_of(hp_depbar(1, hp_ctrl_safe())), 0x000080400000791aULL);
+  HT_EQ_U64(lo_of(hp_depbar(2, hp_ctrl_safe())), 0x000080800000791aULL);
+  HT_END();
+}
+
 void hp_isa_tests(void) {
   test_control_flow();
   test_shfl();
+  test_cpasync();
   test_isetp_fields();
   test_imad_immediate();
   test_mufu_functions();

@@ -148,6 +148,23 @@ hp_word hp_red_add_f32(unsigned addrReg, unsigned dataReg, uint32_t offset,
  * lane holds the total. That is the reason to prefer it over DOWN, which leaves
  * the answer only in lane 0 and then needs a broadcast to undo it.
  */
+/*
+ * LDGSTS / LDGDEPBAR / DEPBAR — cp.async. Global straight to shared with no
+ * register in the path, plus the GROUP discipline that tracks its completion.
+ *
+ * ⚠️ The control field's scoreboard does NOT track these. hp_ldgdepbar() closes
+ * a group and hp_depbar(n) waits until at most n remain; reading the shared
+ * memory without that wait does not fault, it reads what was there.
+ *
+ * ENCODED AND NOT YET CALLED. It is the gate for the f16-in-memory staging —
+ * cp.async copies bytes and cannot convert f32 to f16 on the way — and see
+ * sm86_mem.c for the one field whose granularity is not yet proven.
+ */
+hp_word hp_ldgsts(unsigned sharedAddrReg, unsigned globalAddrReg,
+                  uint32_t offset, unsigned bytes, hp_control c);
+hp_word hp_ldgdepbar(hp_control c);
+hp_word hp_depbar(unsigned groups, hp_control c);
+
 #define HP_SHFL_IDX 0u  /* every lane reads lane `laneImm`         */
 #define HP_SHFL_UP 1u   /* lane -= laneImm, clamped                */
 #define HP_SHFL_DOWN 2u /* lane += laneImm, clamped                */
@@ -184,8 +201,6 @@ static inline unsigned hp_shfl_segment(unsigned width) {
  */
 hp_word hp_shfl_reg(unsigned mode, unsigned dst, unsigned src, unsigned laneReg,
                     unsigned cImm, hp_control c);
-hp_word hp_ldgsts(unsigned sharedAddrReg, unsigned globalAddrReg,
-                  uint32_t offset, unsigned bytes, hp_control c);
 hp_word hp_hfma2(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
                  hp_control c);
 hp_word hp_fsetp(unsigned destPred, unsigned srcA, unsigned srcB, unsigned cmp,

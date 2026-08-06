@@ -78,13 +78,22 @@ static const hp_isa_entry TABLE[] = {
      "would want — those widths currently keep the halving tree"},
 
     /* ---- missing, and each one gates something measured ----------------- */
-    {"LDGSTS", HP_ISA_MISSING,
-     "cp.async: global -> shared WITHOUT passing through registers. The GEMM's "
-     "staging is load-to-register, pack, store-to-shared, and this deletes two "
-     "thirds of that. It is also the precondition for real multi-stage "
-     "pipelining; double buffering was measured at 3-5% and declined, but that "
-     "measured BARRIERS, not the register round trip. NOT in the catalogue — "
-     "the surveyed kernels predate it — so it needs its own capture"},
+    {"LDGSTS", HP_ISA_CAPTURED,
+     "cp.async: global -> shared WITHOUT passing through registers. ENCODED "
+     "2026-08-06 with LDGDEPBAR and DEPBAR, and NOT YET CALLED — it is the gate "
+     "for f16-in-memory staging, because cp.async copies bytes and cannot "
+     "convert f32 on the way. The GEMM's staging is load-to-register, pack, "
+     "store-to-shared, and this deletes two thirds of that. Double buffering "
+     "was measured at 3-5% and declined, but that measured BARRIERS, not the "
+     "register round trip. One field's granularity is still unproven — see "
+     "sm86_mem.c"},
+    {"LDGDEPBAR", HP_ISA_ENCODED,
+     "closes a cp.async group. Without it the copies are never committed and "
+     "DEPBAR has nothing to wait on"},
+    {"DEPBAR", HP_ISA_ENCODED,
+     "waits until at most N cp.async groups are outstanding. N=0 drains and is "
+     "no better than a synchronous load; the instruction earns its place at 1 "
+     "or 2, which is what puts stage N+1 in flight while stage N is consumed"},
     {"HFMA2", HP_ISA_MISSING,
      "packed f16 fused multiply-add. Two lanes of arithmetic per instruction, "
      "and the precondition for f16 activations in MEMORY rather than only in "
@@ -189,13 +198,6 @@ hp_word hp_shfl_reg(unsigned mode, unsigned dst, unsigned src, unsigned laneReg,
                     unsigned cImm, hp_control c) {
   (void)mode; (void)dst; (void)src; (void)laneReg; (void)cImm; (void)c;
   hp_isa_unimplemented("SHFL.reg");
-  return (hp_word){0, 0};
-}
-
-hp_word hp_ldgsts(unsigned sharedAddrReg, unsigned globalAddrReg,
-                  uint32_t offset, unsigned bytes, hp_control c) {
-  (void)sharedAddrReg; (void)globalAddrReg; (void)offset; (void)bytes; (void)c;
-  hp_isa_unimplemented("LDGSTS");
   return (hp_word){0, 0};
 }
 

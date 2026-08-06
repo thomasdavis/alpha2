@@ -214,3 +214,81 @@ hp_word hp_shfl(unsigned mode, unsigned dst, unsigned src, unsigned laneImm,
   hp_put(&w, 81, 3, HP_PT);
   return w;
 }
+
+/*
+ * LDGSTS — cp.async: global straight to shared, with NO register in the path.
+ * Captured in tools/ldgsts_capture.cu.
+ *
+ * WHY IT IS WORTH ENCODING BEFORE IT HAS A CALLER. The staging path is the one
+ * structural lever on the GEMM nobody has tried. Today an operand element goes
+ *
+ *     global -> REGISTER -> F2FP pack -> shared -> LDSM -> tensor fragment
+ *
+ * and this deletes the middle three. It is also COUPLED to f16-in-memory and
+ * that coupling is the point: cp.async copies BYTES and cannot convert, so it
+ * only applies once operands are f16 in memory — at which stage the packs go
+ * too and the operand traffic halves. Priced apart, the packs are 1.3-3.7% and
+ * the load halving 5-9%, and neither justifies the work. Together they are a
+ * different staging structure.
+ *
+ * ⚠️ IT IS ASYNCHRONOUS AND THE SCOREBOARD DOES NOT TRACK IT. Completion is by
+ * GROUP: hp_ldgdepbar() closes a group, hp_depbar(n) waits until at most n
+ * groups are outstanding. A control-field barrier will NOT do it, and reading
+ * the shared memory without the wait does not fault — it reads what was there.
+ *
+ * FIELDS, each derived from what moves between two captures:
+ *   bits 16-23   the SHARED destination address register
+ *   bits 24-31   the GLOBAL address register PAIR (Ra.64)
+ *   bits 44-63   an immediate byte offset on the SHARED side
+ *   bits 64-95   the memory descriptor, carrying the width and the cache hint
+ *   bit  73-74   width: 0 = 32-bit, 1 = 64-bit, 2 = 128-bit
+ *   bit  81      L1-cached (.ca). CLEAR is .cg / BYPASS
+ *
+ * ⚠️ THE OFFSET'S GRANULARITY IS NOT FULLY PROVEN. Both captures that carry one
+ * are multiples of 0x1000 (0x1000 -> bit 44 holding 0x1000, 0x2000 -> 0x2000),
+ * which is consistent with a byte offset at bit 44 AND with a 4096-byte-unit
+ * offset at bit 32. They are told apart by one more capture at a small offset,
+ * and until that exists a caller should pass 0 or a multiple of 0x1000. This is
+ * recorded rather than assumed because a wrong offset here does not fault.
+ *
+ * WIDTH 128 IS ALSO ALWAYS BYPASS in what ptxas emitted, even for a `.ca`
+ * source: a 16-byte cp.async does not go through L1 on this architecture, so
+ * the hint is ignored. The encoder does not enforce that — it encodes what it
+ * is told — but a `.ca` 128-bit request will not match a ptxas capture.
+ */
+hp_word hp_ldgsts(unsigned sharedAddrReg, unsigned globalAddrReg,
+                  uint32_t offset, unsigned bytes, hp_control c) {
+  hp_word w = hp_base(HP_OP_LDGSTS, c);
+  const unsigned width = bytes == 16u ? 2u : bytes == 8u ? 1u : 0u;
+  /* 16 bytes never reaches L1, and every 128-bit capture is BYPASS. */
+  const int l1 = bytes != 16u;
+  hp_put(&w, HP_F_DST, 8, sharedAddrReg);
+  hp_put(&w, HP_F_SRCA, 8, globalAddrReg);
+  hp_put(&w, 44, 20, offset);
+  hp_put(&w, 64, 32, 0x0b901844u | (width << 9) | (l1 ? (1u << 17) : 0u));
+  return w;
+}
+
+/* Close the current cp.async group — PTX spells it cp.async.commit_group. No
+ * operands at all; the group is implicit state. */
+hp_word hp_ldgdepbar(hp_control c) { return hp_base(HP_OP_LDGDEPBAR, c); }
+
+/*
+ * Wait until at most `groups` cp.async groups are still outstanding —
+ * cp.async.wait_group N.
+ *
+ * `groups == 0` drains everything and is no better than a synchronous load;
+ * the instruction earns its place at 1 or 2, which is what lets stage N+1's
+ * copies be in flight while stage N is consumed. The count field was proven by
+ * capturing 0, 1 and 2 rather than by reading one encoding.
+ *
+ * The 0x8000 at bit 47 is the scoreboard selector and the LE comparison, taken
+ * verbatim from the captures; neither has been isolated, and a different
+ * scoreboard must be captured rather than derived.
+ */
+hp_word hp_depbar(unsigned groups, hp_control c) {
+  hp_word w = hp_base(HP_OP_DEPBAR, c);
+  hp_put(&w, 38, 6, groups);
+  hp_put(&w, 47, 1, 1);
+  return w;
+}

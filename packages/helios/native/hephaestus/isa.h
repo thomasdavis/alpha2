@@ -157,6 +157,16 @@
 #define HP_OP_SHFL_RI 0x589 /* lane in a register, c immediate — NOT ENCODED  */
 #define HP_OP_SHFL_IR 0x989 /* lane immediate, c in a register — NOT ENCODED  */
 
+/*
+ * The cp.async family, captured in tools/ldgsts_capture.cu. LDGSTS moves global
+ * to shared with no register in the path; LDGDEPBAR closes a group; DEPBAR
+ * waits until at most N groups remain. None of them is tracked by the control
+ * field's scoreboard barriers — the group IS the dependency mechanism.
+ */
+#define HP_OP_LDGSTS 0xfae
+#define HP_OP_LDGDEPBAR 0x9af
+#define HP_OP_DEPBAR 0x91a
+
 #define HP_OP_F2FP 0x23e
 #define HP_OP_HADD2 0x230
 #define HP_HALF_LO 0
