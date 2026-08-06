@@ -1196,11 +1196,19 @@ export class NativeHeliosBackend implements Backend {
         this.hl.cast(1, bF16.buffer.handle, db.buffer.handle, N * K);
         this.weightF16.set(b, bF16); /* never released — persists */
       }
-      const aF16 = this.make([(M * K) >> 1], "f32");
-      this.hl.cast(1, aF16.buffer.handle, da.buffer.handle, M * K);
-      const rc = this.hl.matmulCpasync(out.buffer.handle, aF16.buffer.handle,
+      /* If the activation ARRIVED f16 (a fused f16-output norm), stage it
+       * straight — no cast, the whole point. Otherwise cast this call. */
+      let aHandle: number, aTmp: NativeTensor | null = null;
+      if (a.dtype === "f16") {
+        aHandle = da.buffer.handle;
+      } else {
+        aTmp = this.make([(M * K) >> 1], "f32");
+        this.hl.cast(1, aTmp.buffer.handle, da.buffer.handle, M * K);
+        aHandle = aTmp.buffer.handle;
+      }
+      const rc = this.hl.matmulCpasync(out.buffer.handle, aHandle,
                                        bF16.buffer.handle, M, N, K, 1);
-      aF16.buffer.release(this.hl);
+      if (aTmp) aTmp.buffer.release(this.hl);
       if (rc) return out;
       /* false means the shape was refused after all — fall through to staged. */
     }
