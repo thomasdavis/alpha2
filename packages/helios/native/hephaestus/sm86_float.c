@@ -89,6 +89,25 @@ hp_word hp_hmma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
   return w;
 }
 
+/*
+ * IMMA.16832.S8.S8 Rd, Ra.ROW, Rb.COL, Rc — the integer tensor cores, s8*s8
+ * accumulated in s32. Same operand layout as HMMA (dst/srcA/srcB at 16/24/32,
+ * srcC at 64), a different opcode (0x237) and type modifier: 0x5c at bit 72 and
+ * 0x40 at bit 80 encode .16832.S8.S8.ROW.COL. Verified against the three
+ * tools/imma_capture*.cu SASS captures in hephaestus_isa_test.c.
+ */
+hp_word hp_imma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                    hp_control c) {
+  hp_word w = hp_base(HP_OP_IMMA, c);
+  hp_put(&w, HP_F_DST, 8, dst);
+  hp_put(&w, HP_F_SRCA, 8, srcA);
+  hp_put(&w, HP_F_SRCB, 8, srcB);
+  hp_put(&w, 64, 8, srcC);
+  hp_put(&w, 72, 8, 0x5c);
+  hp_put(&w, 80, 8, 0x40);
+  return w;
+}
+
 /* MUFU's operand sits in the srcB slot at bit 32, not srcA at bit 24. The
  * reference MUFU.LG2 R8, R6 carries 0x06 at bits 32..39, and every other
  * captured MUFU reads R0, which is zero in both slots and so proves nothing --

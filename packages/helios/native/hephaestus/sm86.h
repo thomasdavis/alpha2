@@ -54,6 +54,10 @@ hp_word hp_mufu(unsigned dst, unsigned src, unsigned fn, hp_control c);
  * measured 90.28 TFLOP/s against the f32 form's 45.51. It accumulates the whole
  * k-loop in eleven bits of mantissa, so it MOVES THE LOSS: forty steps at this
  * model's K of 640. */
+/* IMMA.16832.S8.S8 — integer tensor core, s8*s8 -> s32. Same operand layout as
+ * HMMA; the int8 GEMM path past the f16/L2 ceiling. */
+hp_word hp_imma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
+                    hp_control c);
 hp_word hp_hmma_acc(unsigned dst, unsigned srcA, unsigned srcB, unsigned srcC,
                     int f16acc, hp_control c);
 

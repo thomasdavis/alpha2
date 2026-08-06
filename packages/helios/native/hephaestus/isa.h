@@ -47,6 +47,10 @@
 /* HMMA.16816.F32 — the tensor cores. Captured from nvcc 12.8 for sm_86; the
  * capture and its decode live in isa/hmma-sm86.md. */
 #define HP_OP_HMMA 0x23c
+/* IMMA.16832.S8.S8 — the INTEGER tensor cores, s8*s8 -> s32. Captured from nvcc
+ * 12.8 for sm_86 (tools/imma_capture*.cu); low word 0x7237, type modifier 0x5c
+ * at bit 72 + 0x40 at bit 80. The int8 path past the f16/L2 GEMM ceiling. */
+#define HP_OP_IMMA 0x237
 #define HP_OP_FMNMX 0x209    /* FMNMX Rd, Ra, Rb, {PT|!PT} — min or max */
 #define HP_OP_LDS 0x984      /* LDS Rd, [Ra.X4+off] — shared memory load  */
 #define HP_OP_LDSM 0x83b     /* LDSM.16.M88.x — ldmatrix, a whole fragment */

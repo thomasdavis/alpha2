@@ -129,6 +129,16 @@ static void test_control_flow(void) {
     HT_EQ_U64(hi_of(hp_hmma_acc(8, 8, 6, 255, 0, hp_ctrl_safe())) & 0xffffULL, 0x18ffULL);
     HT_EQ_U64(hi_of(hp_hmma_acc(8, 8, 6, 255, 1, hp_ctrl_safe())) & 0xffffULL, 0x08ffULL);
 
+    /* IMMA.16832.S8.S8, from tools/imma_capture*.cu — the integer tensor core.
+     * Three captures pin every operand field: (8,8,6,RZ) and (8,8,12,R16) differ
+     * only in srcB (low) and srcC (high); (16,4,12,R16) splits dst from srcA. The
+     * type modifier 0x5c|0x40 sits above srcC and touches no operand. */
+    HT_EQ_U64(lo_of(hp_imma_acc(8, 8, 6, 255, hp_ctrl_safe())), 0x0000000608087237ULL);
+    HT_EQ_U64(lo_of(hp_imma_acc(8, 8, 12, 16, hp_ctrl_safe())), 0x0000000c08087237ULL);
+    HT_EQ_U64(lo_of(hp_imma_acc(16, 4, 12, 16, hp_ctrl_safe())), 0x0000000c04107237ULL);
+    HT_EQ_U64(hi_of(hp_imma_acc(8, 8, 6, 255, hp_ctrl_safe())) & 0xffffffULL, 0x405cffULL);
+    HT_EQ_U64(hi_of(hp_imma_acc(8, 8, 12, 16, hp_ctrl_safe())) & 0xffffffULL, 0x405c10ULL);
+
     /* LDG.E.64 and .128, from tools/ldg64_capture.cu. The low word must be
      * IDENTICAL to the 32-bit form at the same operands — the width is only in
      * the descriptor — and asserting that is what proves the two do not share a
