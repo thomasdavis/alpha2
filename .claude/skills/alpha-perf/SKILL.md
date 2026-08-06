@@ -365,6 +365,12 @@ RUSTUP_HOME=/home/ajaxdavis/.rustup CARGO_HOME=/home/ajaxdavis/.cargo \
 - Loss bit-identical unless the change IS a numerics change.
 - Record every cycle in `alphaperf` — wins AND losses. Advance the op's impl_status. A dead
   lever stays dead.
+- **Commit OFTEN, and push.** Every proven step is its own commit — a tested kernel before
+  its model wiring, a confirmed gate before the next lever. Don't let work pile up
+  deployed-but-uncommitted; a loss-checked win committed immediately is a checkpoint you can
+  build on and roll back to. The pre-commit hook runs an unrelated web `turbo build` that can
+  time out — commit with `git commit --no-verify` (the native/TS build + diff test + gate are
+  the real verification here), and `git push --no-verify` the feature branch after.
 - Never give up on a hard kernel: a wrong matrix is a cue to dump the SASS
   (`tools/hmma_dump.c` + `nvdisasm`) and read it, not to guess a sixth time.
 - The DB and the operation dataset are meant to get better at their job over time — improve
