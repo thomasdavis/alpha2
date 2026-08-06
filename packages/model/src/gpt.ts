@@ -12,7 +12,7 @@ import {
   Variable, Tape, DropoutRng,
   add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
-  sliceQkv, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
+  sliceQkv, sliceQkvHeadMajor, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
   residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, qkvFlashAttention,
   qkvFlashAttentionTokenMajor, checkpoint,
   castToF16, castToF32,
@@ -412,10 +412,29 @@ function transformerBlock(
     const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
     attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
   } else {
-    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
-    const q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
-    const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
-    const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
+    // RoPE-free backends that can slice the grouped qkv STRAIGHT to head-major
+    // skip sliceQkv and the three head permutes entirely — one fused launch per
+    // plane straight to [B,H,T,D]. The multi-dispatch downstream below is then
+    // fed the same q/k/v values it would have permuted, so the result (and the
+    // loss) is identical. Only the standard (non-flash) path can use it.
+    const useFusedHeadMajor = !ropeOn
+      && !ctx.backend.flashAttention
+      && !!ctx.backend.sliceQkvHeadMajor
+      && !!ctx.backend.sliceQkvHeadMajorBackward;
+    let qHfused: Variable | null = null;
+    let kHfused: Variable | null = null;
+    let vHfused: Variable | null = null;
+    // q/k/v feed the flash and permute paths only; on the fused path they are
+    // never read (flash is off and the permutes are short-circuited below).
+    let q!: Variable, k!: Variable, v!: Variable;
+    if (useFusedHeadMajor) {
+      [qHfused, kHfused, vHfused] = sliceQkvHeadMajor(ctx, qkvFlat, Batch, T, nHead, headDim);
+    } else {
+      const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
+      q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
+      k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
+      v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
+    }
 
     if (ctx.backend.flashAttention) {
       // Flash attention path: causal masking + softcap are handled inside the kernel.
@@ -437,10 +456,11 @@ function transformerBlock(
       const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
       attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
     } else {
-      // Standard multi-dispatch attention (CPU fallback)
-      let qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
-      let kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
-      const vH = transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
+      // Standard multi-dispatch attention. Head-major q/k/v come from the fused
+      // grouped slice when it ran above, otherwise from the three permutes here.
+      let qH = qHfused ?? transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
+      let kH = kHfused ?? transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
+      const vH = vHfused ?? transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
 
       // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
       // axis), then reshape back to [B, nHead, T, headDim] for attention.

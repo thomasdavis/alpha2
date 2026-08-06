@@ -9,7 +9,7 @@ export {
   embedding, layerNorm, rmsNorm, rope, qkvHeadMajorRope, softmax, crossEntropy, crossEntropyMasked,
   crossEntropyUnlikelihoodMasked,
   flashAttention, qkvFlashAttention, qkvFlashAttentionTokenMajor,
-  slice, sliceQkv, reshape, transpose,
+  slice, sliceQkv, sliceQkvHeadMajor, reshape, transpose,
   castToF16, castToF32,
 } from "./ops.js";
 export { checkpoint } from "./checkpoint.js";

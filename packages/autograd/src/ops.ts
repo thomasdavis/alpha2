@@ -993,6 +993,66 @@ export function qkvHeadMajorRope(
   return [branch(qData, 0), branch(kData, 1), branch(vData, 2)];
 }
 
+/**
+ * RoPE-free sibling of qkvHeadMajorRope: convert grouped token-major QKV
+ * [B*T, 3*H*D] directly to the three head-major tensors [B, H, T, D] attention
+ * consumes, WITHOUT rotary embedding (the learned-position-embedding path).
+ * Backends without the paired forward/backward hooks fall back to the exact
+ * sliceQkv → transpose graph, so the result is identical either way.
+ */
+export function sliceQkvHeadMajor(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+): [Variable, Variable, Variable] {
+  const modelDim = heads * headDim;
+  const expected = [batch * sequence, 3 * modelDim];
+  if (qkv.data.shape.length !== 2
+    || qkv.data.shape[0] !== expected[0]
+    || qkv.data.shape[1] !== expected[1]) {
+    throw new Error(`sliceQkvHeadMajor: expected [${expected}], got [${qkv.data.shape}]`);
+  }
+
+  const B = ctx.backend;
+  if (!B.sliceQkvHeadMajor || !B.sliceQkvHeadMajorBackward) {
+    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkv);
+    const toHeadMajor = (value: Variable): Variable => reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, value, [batch, sequence, heads, headDim]), 1, 2),
+      [batch, heads, sequence, headDim],
+    );
+    return [toHeadMajor(qFlat), toHeadMajor(kFlat), toHeadMajor(vFlat)];
+  }
+
+  const origShape = [...qkv.data.shape];
+  const [qData, kData, vData] = B.sliceQkvHeadMajor(qkv.data, batch, sequence, heads, headDim);
+  /*
+   * Each plane's gradient scatters into its own disjoint third of the qkvFlat
+   * gradient, so the three should never be added together — the tape hands the
+   * same destination to all three (the sliceQkv pattern) and each writes its
+   * columns in place. The first to arrive allocates and zero-fills, so a plane
+   * with no gradient still leaves zeros where its columns are.
+   */
+  const branch = (data: TensorData, which: 0 | 1 | 2): Variable => record(
+    ctx,
+    data,
+    [qkv],
+    (grad, backwardBackend, _release, _ng, dests) => {
+      if (!backwardBackend.sliceQkvHeadMajorBackward) {
+        throw new Error("sliceQkvHeadMajor backward hook disappeared after forward");
+      }
+      const into = dests?.[0] ?? backwardBackend.zeros(origShape, grad.dtype);
+      return [backwardBackend.sliceQkvHeadMajorBackward(
+        grad, into, which, batch, sequence, heads, headDim,
+      )];
+    },
+  );
+  return [branch(qData, 0), branch(kData, 1), branch(vData, 2)];
+}
+
 export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Variable {
   if (!training || p === 0) return a;
   const aData = a.data;
