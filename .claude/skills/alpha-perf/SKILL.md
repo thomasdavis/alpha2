@@ -1,20 +1,21 @@
 ---
 name: alpha-perf
-description: Boot and drive the alpha2 native+Vulkan GPU-performance autoresearch loop — scaling the from-scratch Helios stack toward 50,000 tokens/second for a ~100M-parameter model on an RTX 3070. This skill is the stable METHOD (pod access, goal gate, measurement discipline, SASS capture recipe, the loop); all STATE — every measurement, the proven/refuted levers, the current ceiling, and the 2,644-operation universe of things still to try — lives in the alphaperf sqlite DB, which you QUERY constantly (before proposing any lever, search whether it was already tried/refuted; to pick what to build next, ask the DB for untried ops) and WRITE back every cycle. Use whenever working on alpha2/Helios throughput, the native or Vulkan backend, the tensor-core GEMM, the sm_86 assembler, kernel lowering, or any "make it faster" task on this stack.
+description: Boot and drive the alpha2 GPU-performance autoresearch loop — scaling the from-scratch, CUDA-free NATIVE backend (our own sm_86 driver + SASS assembler) toward 50,000 training tokens/second for a ~100M-parameter model on an RTX 3070. Native is the target; the Vulkan backend already meets its bar and, with tinygrad/CUTLASS/ptxas, is just a reference to consult for inspiration. This skill is the stable METHOD (pod access, goal gate, measurement discipline, SASS capture recipe, the loop); all STATE — every measurement, the proven/refuted levers, the current ceiling, and the 2,644-operation universe of things still to try — lives in the alphaperf sqlite DB, which you QUERY constantly (before proposing any lever, search whether it was already tried/refuted; to pick what to build next, ask the DB for untried ops) and WRITE back every cycle. Use whenever working on alpha2/Helios native throughput, the tensor-core GEMM, the sm_86 assembler, kernel lowering, or any "make it faster" task on this stack.
 ---
 
 # alpha-perf — the 3070 → 50k tok/s autoresearch loop
 
 You are a GPU-performance research agent on **alpha2** (`/mnt/donto-data/workspace/alpha2`),
-a from-scratch CUDA-free training stack. Two backends run the same model: **native**
-(our own sm_86 driver + SASS assembler, no CUDA, no cuBLAS) and **Vulkan**. The job is
-to push both toward groundbreaking throughput for a ~100M-parameter GPT on **one RTX
-3070** — the only card the sm_86 emitter targets.
+a from-scratch CUDA-free training stack. The job is groundbreaking throughput for a
+~100M-parameter GPT on **one RTX 3070** (the only card the sm_86 emitter targets), on the
+**native** backend — our own sm_86 driver + SASS assembler, no CUDA, no cuBLAS. A `vulkan`
+backend runs the same model and already meets its bar; it is a satisfied constraint and a
+reference, not the target (see the vision section).
 
-**THE GOAL:** native **50,000 tok/s** and Vulkan **10,000 tok/s**, at ~100M params, on a
-3070, at the same commit, loss preserved. (The gate's historical target is 30k; the
-standing north star is 50k. Vulkan already passes ~12k. Native is the frontier: ~19,900
-as of 2026-08-06, up from 1,179.)
+**THE GOAL:** **native 50,000 tok/s** (north star; 30k is the historical gate), at ~100M
+params on a 3070, loss preserved. Vulkan must stay ≥10k in the gate but needs no pushing —
+it already clears it. Native is the frontier and gets every cycle; its current number is a
+DB query (`alphaperf.py loop`), never a figure read from this file.
 
 This is not a checklist — it is a **loop**. Profile, find the one binding constraint,
 consult the operation universe for the relevant primitive and its lowering, build it
@@ -35,13 +36,21 @@ loss) in the DB, and repeat. The DB is the loop's memory; keep it current every 
   what is below it, so the architecture is enforced by the linker, not by review. Making
   this stack *fast* is the point: it is proof that a hand-built, fully-understood GPU path
   can reach vendor-class throughput.
-- **TWO backends, both first-class, both with targets.** `native` (the from-scratch
-  driver+assembler above) and `vulkan` (compute shaders through the Vulkan API). They run
-  the SAME model and are gated together. Vulkan is the more mature path and already reaches
-  its target; native is the hard frontier and where most cycles go — but a change must keep
-  BOTH green, and Vulkan's kernels (`packages/helios/src/kernels/`, esp. `matmul-coop.ts`
-  with f16 operands + double buffering) are the worked reference for what native is climbing
-  toward.
+- **NATIVE is the target; Vulkan is a satisfied constraint.** `native` (the from-scratch
+  driver+assembler above) is the whole point and where every cycle goes. `vulkan` (compute
+  shaders) already passes its 10k target and is NOT the priority — just keep it green in the
+  gate, do not spend cycles pushing it. Vulkan is now most useful as ONE of several
+  REFERENCE implementations to consult for inspiration when a native kernel is stuck (see
+  the inspiration note below) — its `matmul-coop.ts` shows a cooperative-matrix GEMM with
+  f16 operands + double buffering, for example — but the goal is native, not parity between
+  the two.
+- **INSPIRATION, not imitation — look outward when a native kernel is stuck.** When a
+  lowering is unclear or a kernel is off its roofline with no obvious cause, study how the
+  mature implementations do it — our own Vulkan kernels, **tinygrad** (small, readable,
+  from-scratch-spirited), CUTLASS/cuBLAS design notes, the CUDA programming guide, ptxas
+  output (§5). Take the IDEA (a staging structure, a pipeline shape, a swizzle) and rebuild
+  it properly in our stack with a capture + test; never copy code, and always re-measure
+  here because their card and constraints are not ours.
 - **It is TRAINING throughput, not inference.** A "token/s" is a full training step —
   forward, backward, and the AdamW update — over the gate's fixed 18L/640d/10h/v12288/seq64
   shape. So the backward GEMMs and the optimizer are in the budget, not just the forward.
