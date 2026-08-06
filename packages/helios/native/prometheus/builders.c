@@ -121,6 +121,12 @@ unsigned bld_matmul(hp_word *p, NvU64 out, NvU64 in) {
   return pr_emit_matmul(p, PR_MM_M, PR_MM_N, PR_MM_K);
 }
 
+unsigned bld_imma(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_imma_tile(p);
+}
+
 unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
   return pr_emit_reduction(p, PR_RED_SUM, PR_N);

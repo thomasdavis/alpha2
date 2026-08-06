@@ -43,6 +43,8 @@ const char *chk_log2(const volatile NvU32 *o);
 const char *chk_logn(const volatile NvU32 *o);
 const char *chk_masked_fill(const volatile NvU32 *o);
 const char *chk_matmul(const volatile NvU32 *o);
+void pr_fill_imma(volatile NvU32 *a, volatile NvU32 *b);
+const char *chk_imma(const volatile NvU32 *o);
 const char *chk_mean(const volatile NvU32 *o);
 const char *chk_mul(const volatile NvU32 *o);
 const char *chk_ones(const volatile NvU32 *o);

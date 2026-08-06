@@ -188,6 +188,9 @@ static const pr_kernel KERNELS[] = {
      * helios_program.regs. */
     K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N, .regs = 64,
       .sharedBytes = PR_MM_K * 4, .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
+    K(.name = "imma int8 16x8x32", .build = bld_imma, .blockX = 32, .gridX = 1,
+      .regs = 24, .fill = pr_fill_imma, .check = chk_imma, .checkedElements = 128,
+      .elementsPerThread = 4, .workElements = 128),
     /* The cp.async f16 GEMM, one 64x64 block, one k-step. 128 threads each own
      * 32 outputs (a 64x64 tile over four warps). The fill writes f16 operands
      * and the check computes the exact integer product. regs/shared/threads come
