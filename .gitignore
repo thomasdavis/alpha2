@@ -38,3 +38,5 @@ packages/helios/native/.build/
 alphaperf.db
 alphaperf.db-wal
 alphaperf.db-shm
+gpu-op-universe/node_modules/
+gpu-op-universe/**/dist/

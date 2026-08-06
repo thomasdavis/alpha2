@@ -42,6 +42,7 @@ this is written from the box after reading a pod run.
 import sqlite3
 import sys
 import os
+import json
 import argparse
 
 DB = os.environ.get("ALPHAPERF_DB",
@@ -113,6 +114,71 @@ CREATE TABLE IF NOT EXISTS isa (
   ts        TEXT DEFAULT (datetime('now')),
   state     TEXT NOT NULL,          -- encoded | captured | missing
   blocks    TEXT
+);
+
+/*
+ * operation — the GPU-operation universe (gpu-op-universe/), given the axis it
+ * lacks: IMPLEMENTATION state. The registry ships a DESIGN-maturity status
+ * (research/speculative/standard); what a performance program needs to know is
+ * how far each operation has come toward a fast, measured kernel. Imported from
+ * the registry, then advanced as work lands. This is how the dataset EVOLVES:
+ * every op we implement moves along impl and gains a measurement and a code ref.
+ *
+ *   impl_status ladder (each strictly stronger than the last):
+ *     stub       named in the registry, no code
+ *     captured   the ISA/bits are known (a .cu capture), nothing emits it
+ *     encoded    an emitter exists and passes a ptxas/bit test
+ *     tested     correct on hardware against a reference
+ *     measured   its cost is in the kernel/gemm tables at a known commit
+ *     optimized  measured AND at/near its roofline, no known lever left
+ */
+CREATE TABLE IF NOT EXISTS operation (
+  id           TEXT PRIMARY KEY,    -- layer.family.kebab
+  layer        TEXT,
+  family       TEXT,
+  name         TEXT,
+  export_name  TEXT,
+  request_type TEXT,
+  summary      TEXT,
+  design_status TEXT,               -- research | speculative | standard
+  target       TEXT,                -- JSON array, as the registry carries it
+  algebra      TEXT,                -- JSON array
+  differentiability TEXT,
+  fusion_tags  TEXT,                -- JSON array
+  lowering_hints TEXT,              -- JSON array
+  source_tags  TEXT,                -- JSON array
+  reg_notes    TEXT,                -- the registry's own notes field
+  -- ---- the implementation axis the registry lacks (this DB owns it) ----
+  impl_status  TEXT DEFAULT 'stub', -- stub|captured|encoded|tested|measured|optimized
+  tflops       REAL,                -- best measured rate, when it has one
+  roofline     REAL,                -- the rate that would make it 'optimized'
+  code_ref     TEXT,                -- file:symbol where it lives
+  commit_id    TEXT,                -- commit at the current impl_status
+  note         TEXT,                -- our progress note
+  updated      TEXT DEFAULT (datetime('now'))
+);
+
+/*
+ * experiment — one turn of the autoresearch loop, recorded whether it won or
+ * lost. This is the loop's memory: a hypothesis, the lever it tests, the paired
+ * before/after, and a verdict. A REFUTED experiment is as valuable as a
+ * confirmed one — it is what stops the same dead lever being tried again, which
+ * is the failure mode this whole program keeps hitting.
+ *
+ *   verdict: confirmed | refuted | inconclusive | inprogress
+ */
+CREATE TABLE IF NOT EXISTS experiment (
+  id        INTEGER PRIMARY KEY,
+  ts        TEXT DEFAULT (datetime('now')),
+  hypothesis TEXT NOT NULL,         -- what we expected and why
+  op_id     TEXT,                   -- the operation it touches, if one
+  lever     TEXT,                   -- the mechanism (cp.async, warp-shuffle, ...)
+  before_v  REAL,                   -- the reading it started from
+  after_v   REAL,                   -- the reading it produced
+  unit      TEXT DEFAULT 'tok/s',   -- tok/s | TFLOP/s | us | GB/s
+  verdict   TEXT DEFAULT 'inprogress',
+  commit_id TEXT,
+  note      TEXT
 );
 """
 
@@ -221,6 +287,128 @@ def cmd_sql(a):
             print("\t".join("" if v is None else str(v) for v in r))
 
 
+# ---- the autoresearch loop -------------------------------------------------
+
+IMPL_LADDER = ["stub", "captured", "encoded", "tested", "measured", "optimized"]
+
+
+def cmd_op_import(a):
+    """Seed the operation registry INTO this DB — the DB is then its home.
+
+    The universe JSON is only the initial vocabulary; after this import the
+    `operation` table is the single source of truth for both what an operation
+    is AND how far it is built. Idempotent on id: the registry-owned columns
+    refresh, but our implementation columns (impl_status, tflops, code_ref, ...)
+    are PRESERVED, so re-seeding a newer dump never loses progress."""
+    c = conn(); c.executescript(SCHEMA)
+    reg = json.load(open(a.registry))
+    ops = reg["operations"] if isinstance(reg, dict) else reg
+    j = lambda v: json.dumps(v) if v else None
+    added = updated = 0
+    for o in ops:
+        vals = (o["layer"], o["family"], o["name"], o.get("exportName"),
+                o.get("requestType"), o.get("summary"), o.get("status"),
+                j(o.get("target")), j(o.get("algebra")), o.get("differentiability"),
+                j(o.get("fusionTags")), j(o.get("loweringHints")), j(o.get("sourceTags")),
+                o.get("notes"))
+        if c.execute("SELECT id FROM operation WHERE id=?", (o["id"],)).fetchone():
+            c.execute("UPDATE operation SET layer=?,family=?,name=?,export_name=?,"
+                      "request_type=?,summary=?,design_status=?,target=?,algebra=?,"
+                      "differentiability=?,fusion_tags=?,lowering_hints=?,source_tags=?,"
+                      "reg_notes=? WHERE id=?", vals + (o["id"],))
+            updated += 1
+        else:
+            c.execute("INSERT INTO operation(id,layer,family,name,export_name,"
+                      "request_type,summary,design_status,target,algebra,"
+                      "differentiability,fusion_tags,lowering_hints,source_tags,reg_notes)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (o["id"],) + vals)
+            added += 1
+    c.commit()
+    print(f"operations: {added} imported, {updated} refreshed ({len(ops)} total)."
+          f" The DB now owns the registry.")
+
+
+def cmd_op(a):
+    """Advance an operation's implementation state, with its measurement + code."""
+    c = conn(); c.executescript(SCHEMA)
+    if a.impl_status not in IMPL_LADDER:
+        raise SystemExit(f"impl_status must be one of {IMPL_LADDER}")
+    ex = c.execute("SELECT id FROM operation WHERE id=?", (a.op_id,)).fetchone()
+    if not ex:
+        # allow ad-hoc ops (our own primitives) not in the registry. Parse the
+        # id as layer.family.name so they still slot into the universe by layer.
+        parts = a.op_id.split(".")
+        layer = parts[0] if parts else a.op_id
+        family = parts[1] if len(parts) >= 3 else ""
+        name = parts[-1]
+        c.execute("INSERT INTO operation(id,layer,family,name,design_status) VALUES(?,?,?,?,?)",
+                  (a.op_id, layer, family, name, "own"))
+    c.execute(
+        "UPDATE operation SET impl_status=?, tflops=COALESCE(?,tflops), "
+        "roofline=COALESCE(?,roofline), code_ref=COALESCE(?,code_ref), "
+        "commit_id=COALESCE(?,commit_id), note=COALESCE(?,note), updated=datetime('now') WHERE id=?",
+        (a.impl_status, a.tflops, a.roofline, a.ref, a.commit_id, a.note, a.op_id))
+    c.commit()
+    print(f"op: {a.op_id} -> {a.impl_status}"
+          + (f" @ {a.tflops} TFLOP/s" if a.tflops else ""))
+
+
+def cmd_experiment(a):
+    c = conn(); c.executescript(SCHEMA)
+    delta = None
+    if a.before is not None and a.after is not None and a.before:
+        delta = 100.0 * (a.after - a.before) / a.before
+    c.execute(
+        "INSERT INTO experiment(hypothesis,op_id,lever,before_v,after_v,unit,verdict,commit_id,note)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        (a.hypothesis, a.op_id, a.lever, a.before, a.after, a.unit, a.verdict, a.commit_id, a.note))
+    c.commit()
+    d = f" ({delta:+.1f}%)" if delta is not None else ""
+    print(f"experiment [{a.verdict}]: {a.hypothesis}{d}")
+
+
+def cmd_roadmap(a):
+    """The implementation frontier: how far the universe has been built."""
+    c = conn(); c.executescript(SCHEMA)
+    total = c.execute("SELECT count(*) FROM operation").fetchone()[0]
+    if not total:
+        print("no operations imported — run: alphaperf.py op-import <registry.json>")
+        return
+    print(f"operation universe — {total} operations\n")
+    print("  impl_status     count   (the implementation frontier)")
+    for s in IMPL_LADDER:
+        n = c.execute("SELECT count(*) FROM operation WHERE impl_status=?", (s,)).fetchone()[0]
+        bar = "#" * min(40, n)
+        print(f"  {s:12s} {n:7d}   {bar}")
+    print("\n  the operations that ARE built (past stub), newest first:")
+    for r in c.execute("SELECT id,impl_status,tflops,commit_id FROM operation "
+                       "WHERE impl_status!='stub' ORDER BY updated DESC LIMIT 20"):
+        t = f"{r[2]:.1f} TFLOP/s" if r[2] else ""
+        print(f"    {r[1]:9s} {r[0]:52s} {t:14s} {r[3] or ''}")
+
+
+def cmd_loop(a):
+    """The autoresearch state: where the number is, and what to try next."""
+    c = conn(); c.executescript(SCHEMA)
+    print("=== alphaperf — autoresearch state ===\n")
+    print("current throughput:")
+    cmd_latest(a)
+    print("\nlast experiments (the loop's memory):")
+    for r in c.execute("SELECT verdict,hypothesis,before_v,after_v,unit FROM experiment "
+                       "ORDER BY id DESC LIMIT 6"):
+        d = ""
+        if r[2] and r[3]:
+            d = f"  {r[2]:.0f}->{r[3]:.0f} {r[4]}"
+        print(f"  [{r[0]:11s}] {r[1][:72]}{d}")
+    print("\nopen levers (findings still todo/inprogress):")
+    for r in c.execute("SELECT category,summary,value FROM finding "
+                       "WHERE status IN ('todo','inprogress') ORDER BY id DESC LIMIT 8"):
+        print(f"  [{r[0]:10s}] {r[1][:70]}" + (f"  ({r[2]})" if r[2] else ""))
+    print("\nREFUTED levers (do not retry):")
+    for r in c.execute("SELECT summary FROM finding WHERE status='refuted' ORDER BY id DESC LIMIT 8"):
+        print(f"  x {r[0][:80]}")
+
+
 def main():
     p = argparse.ArgumentParser(description="alphaperf tracking DB")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -266,6 +454,24 @@ def main():
 
     sq = sub.add_parser("sql"); sq.set_defaults(fn=cmd_sql)
     sq.add_argument("query")
+
+    oi = sub.add_parser("op-import"); oi.set_defaults(fn=cmd_op_import)
+    oi.add_argument("registry")
+
+    op = sub.add_parser("op"); op.set_defaults(fn=cmd_op)
+    op.add_argument("op_id"); op.add_argument("impl_status")
+    op.add_argument("--tflops", type=float); op.add_argument("--roofline", type=float)
+    op.add_argument("--ref"); op.add_argument("--commit", dest="commit_id"); op.add_argument("--note")
+
+    xp = sub.add_parser("experiment"); xp.set_defaults(fn=cmd_experiment)
+    xp.add_argument("hypothesis")
+    xp.add_argument("--op", dest="op_id"); xp.add_argument("--lever")
+    xp.add_argument("--before", type=float); xp.add_argument("--after", type=float)
+    xp.add_argument("--unit", default="tok/s"); xp.add_argument("--verdict", default="inprogress")
+    xp.add_argument("--commit", dest="commit_id"); xp.add_argument("--note")
+
+    sub.add_parser("roadmap").set_defaults(fn=cmd_roadmap)
+    sub.add_parser("loop").set_defaults(fn=cmd_loop)
 
     a = p.parse_args()
     a.fn(a)

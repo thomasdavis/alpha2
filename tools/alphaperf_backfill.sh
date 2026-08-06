@@ -92,3 +92,21 @@ $A isa I2FP missing "int->float, so a count can scale inside a kernel"
 echo
 echo "backfill complete:"
 $A latest
+
+# ---- the operation universe (the registry now lives IN this DB) -------------
+$A op-import gpu-op-universe/catalog/operation-registry.json
+
+# the primitives + kernels built this session, along the implementation ladder
+$A op hephaestus.warp.shfl optimized --ref hephaestus/sm86_mem.c:hp_shfl --commit 50849af --note "warp shuffle; reduction rewritten on it"
+$A op hephaestus.memory.ldgsts tested --ref hephaestus/sm86_mem.c:hp_ldgsts --commit 22c53e0 --note "cp.async; hardware-validated copy primitive"
+$A op hephaestus.memory.ldgdepbar encoded --ref hephaestus/sm86_mem.c:hp_ldgdepbar --commit d23e5ce
+$A op hephaestus.memory.depbar encoded --ref hephaestus/sm86_mem.c:hp_depbar --commit d23e5ce
+$A op prometheus.reduction.warp-reduce optimized --ref prometheus/reduction.c:pr_emit_tree_warp_reg --commit bb11fe1 --note "two-butterfly warp reduction; layerNorm 65->34us at roofline"
+$A op prometheus.gemm.cpasync-f16-nt tested --roofline 28 --ref prometheus/hmma.c:emit_hmma_cpasync_f16 --commit 1317004 --note "cp.async f16 GEMM NT single-buffered; correct 128x64x64; not yet measured"
+$A op prometheus.gemm.hmma-staged measured --tflops 21 --roofline 28 --ref prometheus/hmma.c:emit_hmma_staged --commit aecaa40 --note "shipping staged GEMM; 15-21 TFLOP/s, issue-bound on staging"
+
+# the autoresearch loop's experiment memory
+$A experiment "Warp-shuffle reduction removes the block barriers that made layerNorm 5x off roofline" --op prometheus.reduction.warp-reduce --lever warp-shuffle --before 19116 --after 19988 --verdict confirmed --commit bb11fe1
+$A experiment "f16-accumulate alone doubles the tensor ceiling so should be a factor" --lever f16-accumulate --verdict refuted --unit TFLOP/s --note "only 4pct because GEMM is issue-bound on STAGING not tensor-bound; pays only after cp.async"
+$A experiment "Bigger batch amortises launches and fills the GEMM better" --lever batch-size --before 19 --after 17 --unit TFLOP/s --verdict refuted --note "rate FALLS with M as operands leave cache"
+$A experiment "cp.async + f16 staging deletes 28 of 42 k-step instructions, doubling tensor fraction to 78pct" --op prometheus.gemm.cpasync-f16-nt --lever cp.async --verdict inprogress --commit 1317004 --note "emitter correct; perf pending double-buffer + measurement"
