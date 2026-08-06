@@ -2025,6 +2025,18 @@ export class NativeHeliosBackend implements Backend {
      * batching on, those drains were most of what remained: queueing launches
      * between per-operation drains saves nothing.
      */
+    /*
+     * ABLATION (HELIOS_ABLATE_TRANSPOSE=1): skip the launch entirely and return
+     * the correctly-shaped but UNFILLED output. This corrupts the result — the
+     * loss is garbage — but every other kernel runs at the same shapes, so the
+     * gate's tok/s measures the step WITH the transposes removed. That is the
+     * real end-to-end value of folding them, which the drained profiler only
+     * estimates (it says 4.1% but cannot see overlap). Never ship it; it exists
+     * to decide whether the strided-GEMM fold is worth building. A win that does
+     * not move the step is not a win.
+     */
+    if (process.env.HELIOS_ABLATE_TRANSPOSE === "1") return out;
+
     this.check(
       this.hl.transpose(out.buffer.handle, da.buffer.handle, rows, cols, batch),
       "transpose",
