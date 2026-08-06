@@ -106,11 +106,10 @@ void hp_coverage_tests(void) {
    * which is precisely the state a caller must not treat as usable. */
   HT_TRUE(!hp_isa_have("LDG.E.128"));
   HT_TRUE(!hp_isa_have("SHFL.reg"));
-  /* LDGSTS encodes but has NO CALLER, so it is CAPTURED, not ENCODED — the
-   * state exists precisely so "the bits are known" cannot be read as "the
-   * staging uses it". Its two companions are ENCODED because there is nothing
-   * further to do to them. */
-  HT_TRUE(!hp_isa_have("LDGSTS"));
+  /* LDGSTS is now ENCODED — hardware-validated (the cp.async copy kernels pass)
+   * AND used by the cp.async f16 GEMM staging. It went CAPTURED -> ENCODED once
+   * it had a proven caller, which is exactly what the state distinction tracks. */
+  HT_TRUE(hp_isa_have("LDGSTS"));
   HT_TRUE(hp_isa_have("LDGDEPBAR"));
   HT_TRUE(hp_isa_have("DEPBAR"));
   HT_TRUE(!hp_isa_have("HFMA2"));
@@ -138,8 +137,8 @@ void hp_coverage_tests(void) {
     e = find("HFMA2"); HT_TRUE(e && e->state == HP_ISA_MISSING);
     /* cp.async is what "double buffering" would actually mean here; the 3-5%
      * that declined it measured barriers, not the register round trip.
-     * Captured and encoded 2026-08-06, and deliberately still uncalled. */
-    e = find("LDGSTS"); HT_TRUE(e && e->state == HP_ISA_CAPTURED);
+     * Encoded, hardware-validated AND now the cp.async f16 GEMM's staging. */
+    e = find("LDGSTS"); HT_TRUE(e && e->state == HP_ISA_ENCODED);
     /* SHFL is closed — and the row must say so, because the reduction now
      * depends on it. */
     e = find("SHFL"); HT_TRUE(e && e->state == HP_ISA_ENCODED);

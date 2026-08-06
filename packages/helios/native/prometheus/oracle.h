@@ -26,6 +26,7 @@
 /* ---- inputs ------------------------------------------------------------- */
 
 void pr_fill_ints(volatile NvU32 *a, volatile NvU32 *b);
+void pr_fill_cpasync(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_pos(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_signed(volatile NvU32 *a, volatile NvU32 *b);
 void pr_fill_pair(volatile NvU32 *a, volatile NvU32 *b);

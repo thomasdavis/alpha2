@@ -23,8 +23,14 @@
  *
  * It was at out+64 once, which is element 16 -- so a checker reporting "wrote 16
  * of 64 slots" was indistinguishable from a one-warp launch. Far enough away
- * that no kernel's output can reach it. */
-#define FENCE_OFFSET 1024
+ * that no kernel's output can reach it.
+ *
+ * RAISED to 128 KiB when the tensor-core GEMM arrived: a 64x64 tile of f32 is
+ * 16 KiB and the cp.async f16 GEMM writes a whole tile, so the old 1 KiB fence
+ * sat INSIDE the output. The output buffer grew to match; a fence a kernel can
+ * reach is worse than no fence, because it turns a working kernel into a
+ * hung-looking one. */
+#define FENCE_OFFSET 0x20000u
 #define FENCE_VALUE 0x5eed5eedu
 
 static NvU64 now_ns(void) {
@@ -42,16 +48,20 @@ typedef struct {
 static int alloc_buffers(aether_device *d, pr_buffers *b) {
   int rc;
   memset(b, 0, sizeof *b);
-  if ((rc = gaia_alloc(d, &b->out, 4096, GAIA_SYSMEM)) != 0) return rc;
+  /* out holds the output BELOW the fence at 128 KiB, plus the fence — 256 KiB
+   * covers a 64x256 f32 tile. in and inB hold the GEMM operands: a 64-row f16
+   * tile at K up to a few thousand fits 64 KiB. The small kernels use a corner
+   * of these and do not care that they grew. */
+  if ((rc = gaia_alloc(d, &b->out, 0x40000, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->out)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->out)) != 0) return rc;
-  if ((rc = gaia_alloc(d, &b->in, 4096, GAIA_SYSMEM)) != 0) return rc;
+  if ((rc = gaia_alloc(d, &b->in, 0x10000, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->in)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->in)) != 0) return rc;
   if ((rc = gaia_alloc(d, &b->inC, 4096, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->inC)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->inC)) != 0) return rc;
-  if ((rc = gaia_alloc(d, &b->inB, 4096, GAIA_SYSMEM)) != 0) return rc;
+  if ((rc = gaia_alloc(d, &b->inB, 0x10000, GAIA_SYSMEM)) != 0) return rc;
   if ((rc = gaia_map_gpu(d, &b->inB)) != 0) return rc;
   if ((rc = gaia_map_host(d, &b->inB)) != 0) return rc;
   if ((rc = gaia_alloc(d, &b->code, 4096, GAIA_VIDMEM)) != 0) return rc;

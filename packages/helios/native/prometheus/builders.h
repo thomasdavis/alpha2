@@ -17,6 +17,7 @@
 #include "indexing.h"
 #include "loop.h"
 #include "mask.h"
+#include "hmma.h"
 #include "matmul.h"
 #include "normalize.h"
 #include "optimizer.h"
@@ -34,6 +35,7 @@ unsigned bld_layer(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_masked_fill(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_matmul(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cpasync_gemm(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_mean(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_rms(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_softmax(hp_word *p, NvU64 out, NvU64 in);

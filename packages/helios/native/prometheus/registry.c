@@ -16,6 +16,7 @@
  * row is a claim about which pieces belong together, and no more.
  */
 #include "builders.h"
+#include "hmma.h"
 #include "expect.h"
 #include "oracle.h"
 
@@ -187,6 +188,14 @@ static const pr_kernel KERNELS[] = {
      * helios_program.regs. */
     K(.name = "matmul 8x8x8", .build = bld_matmul, .blockX = PR_MM_N, .regs = 64,
       .sharedBytes = PR_MM_K * 4, .gridX = PR_MM_M, .fill = pr_fill_pair, .check = chk_matmul),
+    /* The cp.async f16 GEMM, one 64x64 block, one k-step. 128 threads each own
+     * 32 outputs (a 64x64 tile over four warps). The fill writes f16 operands
+     * and the check computes the exact integer product. regs/shared/threads come
+     * from the kernel's own helpers, as the real launch does. */
+    K(.name = "cp.async f16 GEMM 128x64x64", .build = bld_cpasync_gemm,
+      .fill = pr_fill_cpasync, .check = chk_cpasync,
+      .blockX = 128, .gridX = 2, .regs = 0 /*resolved in pr_kernels*/,
+      .elementsPerThread = 32, .workElements = 128 * 64, .checkedElements = 128),
 
     K(.name = "reduce sum", .build = bld_sum, .checkedElements = 1, .fill = pr_fill_pos,
       .check = chk_sum, .blockX = PR_N, .gridX = 1,
@@ -218,6 +227,15 @@ const pr_kernel *pr_kernels(unsigned *count) {
     g_resolved[i] = KERNELS[i];
     if (!g_resolved[i].blockX) g_resolved[i].blockX = PR_BLOCK;
     if (!g_resolved[i].gridX) g_resolved[i].gridX = PR_GRID;
+    /* The tensor-core GEMM's register and shared-memory needs are DERIVED from
+     * the tile (compile-time constants behind a function), so they cannot sit
+     * in the static table. Resolve them here from the kernel's own helpers,
+     * exactly as the real launch does — a hardcoded number would silently rot
+     * when the tile changes. */
+    if (g_resolved[i].build == bld_cpasync_gemm) {
+      g_resolved[i].regs = pr_hmma_regs();
+      g_resolved[i].sharedBytes = pr_hmma_shared();
+    }
   }
   *count = n;
   return g_resolved;

@@ -62,4 +62,20 @@ typedef enum {
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
                       pr_mm_kind kind, int accumulate);
 
+/*
+ * The cp.async f16 GEMM, NT layout only: A[M,K] @ B[N,K]^T, both operands f16 in
+ * global memory, staged to shared with cp.async (no register round trip, no
+ * pack). The k-step collapses from 42 instructions to ~18 and the tensor
+ * fraction roughly doubles. See emit_hmma_cpasync_f16 in hmma.c.
+ *
+ * Numerically identical to the staged path: it already rounds operands to f16
+ * before the tensor cores; this just stores them f16. The caller provides the
+ * f16 operands (produced by the cast kernel) as params 1 and 2.
+ *
+ * Single-buffered for now — correct but not yet the speedup, which is double
+ * buffering. Kept as its own entry while it proves out against matmul.c.
+ */
+unsigned pr_emit_hmma_cpasync(hp_word *p, unsigned M, unsigned N, unsigned K,
+                              int accumulate);
+
 #endif /* PROMETHEUS_HMMA_H */

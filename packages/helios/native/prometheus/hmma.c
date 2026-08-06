@@ -1270,6 +1270,185 @@ static unsigned emit_hmma_staged(hp_word *p, unsigned M, unsigned N, unsigned K,
   return n;
 }
 
+/*
+ * ==================== THE cp.async f16 GEMM (NT layout) ====================
+ *
+ * The staged path above spends most of a k-step NOT multiplying. Its inner loop
+ * is 42 instructions and only 14 are tensor: per step it issues 12 global loads,
+ * eight F2FP packs and eight shared stores to move one tile through a register
+ * round trip. Measured from the SASS, that is the 33% tensor fraction that keeps
+ * the GEMM at 15-21 TFLOP/s against cuBLAS's 24-32.
+ *
+ * cp.async deletes the round trip. When the operands are ALREADY f16 in global
+ * memory, a tile row is a contiguous run of bytes at both ends — the shared tile
+ * is [BM][MMA_K] with K contiguous (LDSM_PAD is 0), and A[M,K] / B[N,K] are
+ * K-contiguous too — so one 128-bit LDGSTS moves eight f16 straight to shared
+ * with no register, no pack, no store. Per k-step: two LDGSTS instead of
+ * 12+8+8, so 42 instructions become ~18 and the tensor fraction roughly doubles.
+ *
+ * WHY f16 IN MEMORY IS NUMERICALLY FREE: the staged path already rounds every
+ * operand to f16 in the F2FP pack before the tensor cores see it. Storing the
+ * operand f16 produces the SAME rounded value; the loss does not move.
+ *
+ * WHY NT ONLY, for now: cp.async copies a contiguous run, so it needs the k
+ * axis contiguous in global. A[M,K] always is; B is K-contiguous exactly when it
+ * is transposed (NT). NN's B[K,N] and TA's A[K,M] stride k by a row, so their
+ * cp.async would not be contiguous and they keep the staged path until this one
+ * is proven. NT is the qkv and mlp-fc forwards — the largest share of the GEMM.
+ *
+ * SINGLE-BUFFERED, deliberately, as the first correct version: stage the tile,
+ * wait for it (DEPBAR), multiply. That hides no latency and is not yet the
+ * speedup — double buffering (stage the NEXT tile while multiplying this one) is
+ * the next commit. Correctness first, against the scalar matmul, then the
+ * pipeline. Reuses the proven LDSM, HMMA and epilogue unchanged.
+ *
+ * THE CALLER PROVIDES f16 OPERANDS: param 1 is A[M,K] f16, param 2 is B[N,K]
+ * f16, param 0 is C[M,N] f32. The backend produces the f16 operands with the
+ * cast kernel; this emitter assumes them.
+ */
+enum {
+  /* cp.async's own registers, in the staging-temp region (16-45) that this path
+   * does not otherwise use — the accumulator is at 64 and the LDSM bases at
+   * 46-51, so nothing here collides. */
+  R_CP_ROWH = 16,  /* tid >> 1 — this thread's row within the tile */
+  R_CP_KH = 17,    /* (tid & 1) * 8 — which k-half of the row */
+  R_CP_BASEA = 18, /* A's element index at k=0, folding batch and row */
+  R_CP_BASEB = 19, /* B's, likewise */
+  R_CP_SHA = 20,   /* A's shared destination BYTE (cp.async has no .X4 scaling) */
+  R_CP_SHB = 21,   /* B's */
+  R_CP_GA = 22,    /* R22:R23 — A's global source address pair */
+  R_CP_GB = 24,    /* R24:R25 — B's */
+  R_CP_E2 = 26,    /* 2, the f16 element size in bytes */
+  R_CP_ELEM = 27,  /* base + k, this step's element index */
+  R_CP_ELEM2 = 28,
+};
+#define SB_ASYNC 0 /* the async-copy scoreboard. Free in the loop; barrier 0 is
+                    * only used by the prologue's s2r, long retired by here. */
+
+static unsigned emit_hmma_cpasync_f16(hp_word *p, unsigned M, unsigned N,
+                                      unsigned K, int accumulate) {
+  unsigned n = 0;
+  const unsigned BM = pr_hmma_block_rows(), BN = pr_hmma_block_cols();
+  const unsigned WPR = MMA_K / 2u; /* words per tile row, as the staged path */
+  unsigned lgWN = 0; while ((1u << lgWN) < HMMA_WARPS_N) lgWN++;
+
+  /* ---- thread coordinates, exactly as the staged path computes them ---- */
+  p[n++] = hp_s2r(R_CTA_M, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_CTA_N, HP_SR_CTAID_Y, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_BATCH, HP_SR_CTAID_Z, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_CP_E2, 2, hp_ctrl_safe());
+
+  p[n++] = hp_shr_imm(R_WARP, R_TID, 5, hp_ctrl_wait(BAR_ID));
+  p[n++] = hp_imad_imm(R_LANE, R_WARP, (uint32_t)-32, R_TID, hp_ctrl_safe());
+  p[n++] = hp_shr_imm(R_G, R_LANE, 2, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_L, R_G, (uint32_t)-4, R_LANE, hp_ctrl_safe());
+  p[n++] = hp_shr_imm(R_TMP, R_WARP, lgWN, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_WARPN, R_TMP, (uint32_t)-(int)HMMA_WARPS_N, R_WARP,
+                       hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_WARP, R_TMP, 0, hp_ctrl_safe());
+
+  /* ---- the LDSM fragment bases, verbatim from the staged path ---- */
+  p[n++] = hp_shr_imm(R_LSEL, R_LANE, 3, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_LANE8, R_LSEL, (uint32_t)-8, R_LANE, hp_ctrl_safe());
+  p[n++] = hp_shr_imm(R_LKOF, R_LSEL, 1, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_LROW, R_LKOF, (uint32_t)-2, R_LSEL, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLA, R_WARP, MMA_M * HMMA_TM, R_LANE8, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLA, R_LROW, 8, R_SHLA, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_LKOF, WPR / 2u, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLA, R_SHLA, TILE_STRIDE, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLA, R_SHLA, 4, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLB, R_WARPN, MMA_N * HMMA_TN, R_LANE8, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP, R_LROW, WPR / 2u, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLB, R_SHLB, TILE_STRIDE, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_SHLB, R_SHLB, A_WORDS, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHLB, R_SHLB, 4, HP_RZ, hp_ctrl_safe());
+
+  /* ---- the cp.async addresses, computed once ---- */
+  /* row within the tile and which k-half: thread tid owns row tid/2, k-half
+   * (tid&1), which is exactly the shared byte tid*16 = 8 f16. */
+  p[n++] = hp_shr_imm(R_CP_ROWH, R_TID, 1, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_CP_KH, R_CP_ROWH, (uint32_t)-2, R_TID, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_CP_KH, R_CP_KH, 8, HP_RZ, hp_ctrl_safe());
+  /* shared destinations: A at tid*16, B after A's whole tile. */
+  p[n++] = hp_imad_imm(R_CP_SHA, R_TID, 16, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_CP_SHB, R_CP_SHA, SH_A_BYTES, hp_ctrl_safe());
+  /* A's element base: ((batch*M + ctaM*BM + rowh) * K + khalf). The batch and
+   * the row fold into one multiply by K, the way the staged path folds them. */
+  p[n++] = hp_imad_imm(R_TMP, R_CTA_M, BM, R_CP_ROWH, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP2, R_BATCH, M, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_CP_BASEA, R_TMP2, K, R_CP_KH, hp_ctrl_safe());
+  /* B's element base: ((batch*N + ctaN*BN + rowh) * K + khalf). */
+  p[n++] = hp_imad_imm(R_TMP, R_CTA_N, BN, R_CP_ROWH, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_TMP2, R_BATCH, N, R_TMP, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_CP_BASEB, R_TMP2, K, R_CP_KH, hp_ctrl_safe());
+
+  /* ---- zero the accumulator, start k at 0 ---- */
+  for (unsigned i = 0; i < ACC_WORDS * HMMA_TM * HMMA_TN; i++)
+    p[n++] = hp_mov_imm(R_ACC + i, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_K, 0, hp_ctrl_safe());
+
+  const unsigned loop_top = n;
+  /* ---- stage this k-step's tile: two 128-bit cp.async, then wait ---- */
+  p[n++] = hp_iadd3_reg(R_CP_ELEM, R_CP_BASEA, R_K, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_CP_GA, R_CP_ELEM, R_CP_E2, 0,
+                              HERMES_CBUF0_PARAM_N(1), hp_ctrl_safe());
+  p[n++] = hp_iadd3_reg(R_CP_ELEM2, R_CP_BASEB, R_K, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_CP_GB, R_CP_ELEM2, R_CP_E2, 0,
+                              HERMES_CBUF0_PARAM_N(2), hp_ctrl_safe());
+  p[n++] = hp_ldgsts(R_CP_SHA, R_CP_GA, 0, 16, hp_ctrl_safe());
+  p[n++] = hp_ldgsts(R_CP_SHB, R_CP_GB, 0, 16, hp_ctrl_safe());
+  /* LDGDEPBAR must SET the async scoreboard (decoded wiring); DEPBAR waits. */
+  p[n++] = hp_ldgdepbar(hp_ctrl_setbar(SB_ASYNC));
+  p[n++] = hp_depbar(0, hp_ctrl_safe());
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+  /* advance k and the done predicate before the fragments, so the branch and a
+   * (later) prefetch share one comparison. */
+  p[n++] = hp_iadd3_imm(R_K, R_K, (int)MMA_K, hp_ctrl_safe());
+  p[n++] = hp_isetp_gt_imm(P_DONE, R_K, K - 1u, hp_ctrl_safe());
+
+  /* ---- fragments from shared, and the multiply — verbatim from staged ---- */
+  for (unsigned tm = 0; tm < HMMA_TM; tm++)
+    p[n++] = hp_ldsm(AFRAG_OF(tm), R_SHLA, tm * MMA_M * TILE_STRIDE * 4u, 4, 0,
+                     hp_ctrl_setbar(BAR_LOAD));
+  for (unsigned tn = 0; tn < HMMA_TN; tn++)
+    p[n++] = hp_ldsm(BFRAG_OF(tn), R_SHLB, tn * MMA_N * TILE_STRIDE * 4u, 2, 0,
+                     hp_ctrl_setbar(BAR_LOAD));
+  {
+    int first = 1;
+    for (unsigned tm = 0; tm < HMMA_TM; tm++)
+      for (unsigned tn = 0; tn < HMMA_TN; tn++) {
+        const unsigned acc = ACC_OF(tm, tn);
+        p[n++] = hp_hmma_acc(acc, AFRAG_OF(tm), BFRAG_OF(tn), acc, HMMA_F16ACC,
+                             first ? hp_ctrl_wait_setbar(BAR_LOAD, BAR_MMA)
+                                   : hp_ctrl_setbar(BAR_MMA));
+        first = 0;
+      }
+  }
+  /* Nobody may overwrite the tile until every warp has read it. */
+  p[n++] = hp_bar_sync(hp_ctrl_safe());
+  {
+    const int back = -(int)((n + 1u - loop_top) * INSTR_BYTES);
+    p[n] = hp_predicated(hp_bra(back, hp_ctrl_branch()), P_DONE, 1);
+    n++;
+  }
+  n += emit_hmma_epilogue(&p[n], M, N, BM, BN, accumulate);
+  /* The epilogue leaves the EXIT to its caller, as the staged path does — the
+   * program must end in a real EXIT, not rely on the code buffer's padding. */
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/* The exported entry: NT layout, f16 operands, cp.async staged. Kept separate
+ * from pr_emit_hmma while it proves out; the dispatcher will select it once the
+ * backend produces f16 operands and the double-buffered version lands. */
+unsigned pr_emit_hmma_cpasync(hp_word *p, unsigned M, unsigned N, unsigned K,
+                              int accumulate) {
+  return emit_hmma_cpasync_f16(p, M, N, K, accumulate);
+}
+
 unsigned pr_emit_hmma(hp_word *p, unsigned M, unsigned N, unsigned K,
                       pr_mm_kind kind, int accumulate) {
   if (HMMA_SHARED) return emit_hmma_staged(p, M, N, K, kind, accumulate);

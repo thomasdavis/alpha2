@@ -23,6 +23,7 @@ const char *chk_cast_to_f32(const volatile NvU32 *o);
 const char *chk_causal(const volatile NvU32 *o);
 const char *chk_clamp(const volatile NvU32 *o);
 const char *chk_copy(const volatile NvU32 *o);
+const char *chk_cpasync(const volatile NvU32 *o);
 const char *chk_div(const volatile NvU32 *o);
 const char *chk_cross_entropy(const volatile NvU32 *o);
 const char *chk_dropout(const volatile NvU32 *o);

@@ -98,6 +98,11 @@ unsigned bld_masked_fill(hp_word *p, NvU64 out, NvU64 in) {
   return pr_emit_masked_fill(p);
 }
 
+unsigned bld_cpasync_gemm(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_hmma_cpasync(p, 128, 64, 64, 0);
+}
+
 unsigned bld_transpose(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;
