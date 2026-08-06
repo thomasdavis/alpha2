@@ -26,6 +26,14 @@
 static const pr_kernel KERNELS[] = {
     K(.name = "elementwise copy", .build = bld_copy, .fill = pr_fill_ints,
       .check = chk_copy),
+    /* cp.async on real silicon — identity copies through shared that only
+     * LDGSTS performs, so chk_copy's out==in rejects a wrong group wait. The
+     * 16-byte form (4 floats/thread) is what the GEMM staging will use. */
+    K(.name = "cp.async copy 4-byte", .build = bld_cpasync4, .fill = pr_fill_ints,
+      .check = chk_copy, .blockX = 64, .gridX = 1, .sharedBytes = 256),
+    K(.name = "cp.async copy 16-byte", .build = bld_cpasync16, .fill = pr_fill_ints,
+      .check = chk_copy, .blockX = 16, .gridX = 1, .sharedBytes = 256,
+      .elementsPerThread = 4),
     K(.name = "elementwise add index", .build = bld_addidx, .fill = pr_fill_ints,
       .check = chk_addidx),
     K(.name = "elementwise add constant", .build = bld_addconst,

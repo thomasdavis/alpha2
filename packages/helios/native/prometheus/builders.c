@@ -47,6 +47,15 @@ EW(silu, PR_EW_SILU)
 EW(gelu, PR_EW_GELU)
 EW(softcap, PR_EW_SOFTCAP)
 
+unsigned bld_cpasync4(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_cpasync_copy(p, 4);
+}
+unsigned bld_cpasync16(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out; (void)in;
+  return pr_emit_cpasync_copy(p, 16);
+}
+
 unsigned bld_branch_nop(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;

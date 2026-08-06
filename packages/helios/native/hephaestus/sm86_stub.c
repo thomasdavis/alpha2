@@ -78,17 +78,13 @@ static const hp_isa_entry TABLE[] = {
      "would want — those widths currently keep the halving tree"},
 
     /* ---- missing, and each one gates something measured ----------------- */
-    {"LDGSTS", HP_ISA_CAPTURED,
-     "cp.async: global -> shared WITHOUT passing through registers. ENCODED "
-     "2026-08-06 with LDGDEPBAR and DEPBAR, and NOT YET CALLED — it is the gate "
-     "for f16-in-memory staging, because cp.async copies bytes and cannot "
-     "convert f32 on the way. The GEMM's staging is load-to-register, pack, "
-     "store-to-shared, and this deletes two thirds of that. Double buffering "
-     "was measured at 3-5% and declined, but that measured BARRIERS, not the "
-     "register round trip. ENCODED + WIRING DECODED 2026-08-06 (LDGDEPBAR sets "
-     "wbar 0; see sm86_mem.c) — ready to thread into the GEMM staging, which the "
-     "SASS says would delete 28 of the 42 k-step instructions. One offset "
-     "field's granularity still unproven"},
+    {"LDGSTS", HP_ISA_ENCODED,
+     "cp.async: global -> shared WITHOUT passing through registers. ENCODED + "
+     "WIRING DECODED + HARDWARE-VALIDATED 2026-08-06 (identity-copy kernel in "
+     "the registry passes; LDGDEPBAR sets wbar 0 to arm SB0). Ready to thread "
+     "into the GEMM staging, which the SASS says deletes 28 of the 42 k-step "
+     "instructions. It is the gate for f16-in-memory (cp.async copies bytes, "
+     "cannot convert f32). One offset field's granularity still unproven"},
     {"LDGDEPBAR", HP_ISA_ENCODED,
      "closes a cp.async group AND must SET WRITE BARRIER 0 (ptxas ctrl "
      "0x000e2200) to arm async scoreboard SB0 — pass hp_ctrl_setbar(0). Decoded "

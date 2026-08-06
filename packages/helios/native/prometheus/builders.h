@@ -20,6 +20,7 @@
 #include "matmul.h"
 #include "normalize.h"
 #include "optimizer.h"
+#include "cpasync.h"
 #include "reduction.h"
 #include "residual.h"
 
@@ -39,6 +40,8 @@ unsigned bld_softmax(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_transpose(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_copy(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cpasync4(hp_word *p, NvU64 out, NvU64 in);
+unsigned bld_cpasync16(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_addidx(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_addconst(hp_word *p, NvU64 out, NvU64 in);
 unsigned bld_index(hp_word *p, NvU64 out, NvU64 in);
