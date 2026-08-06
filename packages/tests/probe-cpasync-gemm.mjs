@@ -100,14 +100,26 @@ for (const [name, M, N, K] of SHAPES) {
     hl.matmulTransposed(cF32.handle, aF32.handle, bF32.handle, M, N, K, 1));
   const secCp = time(() =>
     hl.matmulCpasync(cCp.handle, aF16.handle, bF16.handle, M, N, K, 1));
+  /* Weight pre-cast (a persistent shadow), only the ACTIVATION cast per call —
+   * the cheapest wiring that could still be net positive. */
+  const secShadow = time(() => {
+    hl.cast(1, aF16.handle, aF32.handle, M * K);
+    hl.matmulCpasync(cCp.handle, aF16.handle, bF16.handle, M, N, K, 1);
+  });
+  /* Both cast per call — what the naive model wiring does. */
+  const secBoth = time(() => {
+    hl.cast(1, aF16.handle, aF32.handle, M * K);
+    hl.cast(1, bF16.handle, bF32.handle, N * K);
+    hl.matmulCpasync(cCp.handle, aF16.handle, bF16.handle, M, N, K, 1);
+  });
 
   const tfStaged = flop / secStaged / 1e12, tfCp = flop / secCp / 1e12;
-  const speedup = secStaged / secCp;
-  rows.push({ name, tfStaged, tfCp, speedup });
+  rows.push({ name, tfStaged, tfCp, speedup: secStaged / secCp });
   console.log(
     `${name}  ${tfStaged.toFixed(2).padStart(8)} ${(secStaged * 1e6).toFixed(0).padStart(6)}` +
     `    ${tfCp.toFixed(2).padStart(8)} ${(secCp * 1e6).toFixed(0).padStart(6)}` +
-    `    ${speedup.toFixed(2)}x`);
+    `    ${(secStaged / secCp).toFixed(2)}x  |  +actCast ${(secStaged / secShadow).toFixed(2)}x` +
+    `  +bothCast ${(secStaged / secBoth).toFixed(2)}x`);
 
   for (const b of [aF32, bF32, cF32, aF16, bF16, cCp]) b.free?.();
 }
