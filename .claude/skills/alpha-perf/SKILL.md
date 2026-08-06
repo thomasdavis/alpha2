@@ -92,6 +92,16 @@ the DB for it (`alphaperf.py loop`, and `sql` over `finding`/`experiment` — se
 file is the method; the DB is the state. Never read a current number from this file —
 query it.
 
+4. **THIS IS AN AUTONOMOUS LOOP — YOU DRIVE IT. NEVER ask the user which lever, direction,
+   option, or approach to take, and never ask them to weigh a fork or confirm a plan.** The
+   user set this loop up to run without them. The DB and the measurements are the decision
+   authority, not the user's opinion: to pick what to build next, query the DB (`loop`,
+   `roadmap`, open/refuted levers), profile fresh for the binding constraint, and choose the
+   highest-value action yourself. A reframing (e.g. a wrong DB assumption) is something you
+   RECORD in the DB and act on, not a reason to stop and ask. Just decide, build, measure,
+   record, commit, repeat. (Do NOT use AskUserQuestion in this loop.) Report what you did and
+   what you found — but the choice is always yours to make from the evidence.
+
 ---
 
 ## 1. Boot the machine (one minute)
