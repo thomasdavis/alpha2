@@ -126,6 +126,14 @@ export class NativeHeliosBackend implements Backend {
   private readonly freed = new WeakSet<object>();
 
   /*
+   * A persistent packed-f16 shadow per weight, for the cp.async forward GEMM.
+   * Cast once and never released, so it survives end-of-step recycling. Correct
+   * while the weight is constant (the gate runs no optimizer); training refreshes
+   * it through adamw's fused shadow instead. Keyed on the weight's TensorData.
+   */
+  private readonly weightF16: WeakMap<object, NativeTensor> = new WeakMap();
+
+  /*
    * A row of ones per length, kept for the life of the backend.
    *
    * `sum(x, 0)` is `ones[1,R] @ x[R,C]` — the only formulation that costs no
@@ -1176,14 +1184,23 @@ export class NativeHeliosBackend implements Backend {
      */
     if (CPASYNC_MM && this.hl.matmulCpasync && this.hl.cast &&
         K % 16 === 0 && M % 64 === 0 && N % 64 === 0) {
+      /*
+       * The WEIGHT f16 is cast ONCE and cached (it is constant across a gate's
+       * steps; training keeps it fresh via adamw's fused shadow). Only the
+       * ACTIVATION, unique each forward, is cast per call — the cost the fused
+       * f16-output norm will later remove too.
+       */
+      let bF16 = this.weightF16.get(b);
+      if (!bF16) {
+        bF16 = this.make([(N * K) >> 1], "f32");
+        this.hl.cast(1, bF16.buffer.handle, db.buffer.handle, N * K);
+        this.weightF16.set(b, bF16); /* never released — persists */
+      }
       const aF16 = this.make([(M * K) >> 1], "f32");
-      const bF16 = this.make([(N * K) >> 1], "f32");
       this.hl.cast(1, aF16.buffer.handle, da.buffer.handle, M * K);
-      this.hl.cast(1, bF16.buffer.handle, db.buffer.handle, N * K);
       const rc = this.hl.matmulCpasync(out.buffer.handle, aF16.buffer.handle,
                                        bF16.buffer.handle, M, N, K, 1);
       aF16.buffer.release(this.hl);
-      bF16.buffer.release(this.hl);
       if (rc) return out;
       /* false means the shape was refused after all — fall through to staged. */
     }
