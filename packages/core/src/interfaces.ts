@@ -171,7 +171,11 @@ export interface Backend {
   siluMul?(a: TensorData, b: TensorData): TensorData;
   siluMulBackward?(a: TensorData, b: TensorData, gradOutput: TensorData): TensorData[];
   clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
-  layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
+  layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number, stats?: TensorData): { dx: TensorData; dw: TensorData; db: TensorData };
+  /** layerNorm forward that also returns per-row [mean, rstd] (interleaved,
+   *  [rows*2]); pass that `stats` back to layerNormBackward so it loads the
+   *  stats instead of recomputing them. Same `y` as layerNorm. */
+  layerNormStats?(x: TensorData, weight: TensorData, bias: TensorData, eps: number): { y: TensorData; stats: TensorData };
   /** Optional fused RMSNorm backward hook (mirrors layerNormBackward but with no
    *  bias gradient). Returns dx (input grad) and dw (weight grad). When absent,
    *  the autograd op falls back to a CPU loop like layerNorm's. */

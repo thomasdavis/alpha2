@@ -203,6 +203,19 @@ int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
   return run(ctx, k, ts, 4, s, 2);
 }
 
+int hl_normalize_affine_stats(helios_context *ctx, helios_tensor out,
+                              helios_tensor a, helios_tensor weight,
+                              helios_tensor bias, helios_tensor stats,
+                              unsigned width, unsigned rows, float eps) {
+  /* layerNorm forward that also saves per-row [mean, rstd] into `stats`
+   * (interleaved, 2 floats/row) in slot 4 — one slot, because the six-deep
+   * param bank has no room for two. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_AFFINE_STATS, width, rows};
+  const helios_tensor ts[5] = {out, a, weight, bias ? bias : weight, stats};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 5, s, 2);
+}
+
 int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
                  helios_tensor a, unsigned width, unsigned rows, float eps) {
   /* The row count is part of the KEY, not just the launch: a program built for
@@ -247,6 +260,19 @@ int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
   const helios_tensor ts[5] = {dx, x, g, w, xhat};
   const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
   return run(ctx, k, ts, 5, s, 2);
+}
+
+int hl_layer_norm_backward_stats(helios_context *ctx, helios_tensor dx,
+                                 helios_tensor xhat, helios_tensor x,
+                                 helios_tensor g, helios_tensor w,
+                                 helios_tensor stats, unsigned width,
+                                 unsigned rows, float eps) {
+  /* layerNorm backward given the forward's saved [mean, rstd] per row in
+   * `stats` (slot 5) — loaded instead of recomputed with two reductions. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_BACKWARD_STATS, width, rows};
+  const helios_tensor ts[6] = {dx, x, g, w, xhat, stats};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 6, s, 2);
 }
 
 /*

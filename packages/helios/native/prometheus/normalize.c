@@ -99,6 +99,7 @@ enum {
 #define NORM_INSTR_BYTES 16
 #define P_OOR 2   /* set when this thread's column is past the row */
 #define P_MASKED 4 /* the fused softmax: this position is forbidden */
+#define P_STAT 5  /* set on every thread but 0 — guards the per-row stats store */
 /* -1e9, as bits. See emit_softmax_masked for why the value cannot matter. */
 #define SOFTMAX_MASK_FILL 0xce6e6b28u
 /* log2(e) and the two small constants the soft cap needs, as f32 bit patterns.
@@ -548,7 +549,8 @@ static unsigned emit_softmax_masked(hp_word *p, unsigned elements, int cap) {
  * rounding error. Computing the deviations first costs one more pass over the
  * data and is the reason this kernel is trustworthy at all.
  */
-static unsigned emit_layer(hp_word *p, unsigned elements, int affine) {
+static unsigned emit_layer(hp_word *p, unsigned elements, int affine,
+                           int store_stats) {
   unsigned n = emit_load(p, elements);
   if (affine) n += emit_affine_load(&p[n], 1);
 
@@ -574,6 +576,28 @@ static unsigned emit_layer(hp_word *p, unsigned elements, int affine) {
   p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
   p[n++] = hp_mufu(R_TMP, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
   p[n++] = hp_fmul(R_X, R_X, R_TMP, hp_ctrl_wait(BAR_MUFU));
+
+  /*
+   * Save this row's mean (R_MEAN) and rstd (R_TMP) for the backward to reuse,
+   * so it need not recompute them with two reductions. Every thread holds the
+   * same value and they share one per-row address, so ONLY thread 0 stores —
+   * 640 threads writing one word would serialise into a conflict. R_ADDR and
+   * R_OUT are both free here (x is already in R_X; the y store is later).
+   */
+  if (store_stats) {
+    /* One interleaved buffer per row, [mean, rstd], in slot 4 — the param bank
+     * is only six deep, so the backward (which also carries dx/x/g/w/xhat)
+     * cannot afford two separate slots. R_ACC and R_ADDR are free here. */
+    p[n++] = hp_isetp_gt_imm(P_STAT, R_TID, 0, hp_ctrl_safe());
+    p[n++] = hp_imad_imm(R_ACC, R_ROW, 2, HP_RZ, hp_ctrl_safe()); /* 2*row */
+    p[n++] = hp_imad_wide_const(R_ADDR, R_ACC, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(4), hp_ctrl_safe());
+    p[n] = hp_predicated(hp_stg(R_ADDR, R_MEAN, 0, hp_ctrl_safe()), P_STAT, 1);
+    n++;
+    p[n] = hp_predicated(hp_stg(R_ADDR, R_TMP, 4, hp_ctrl_safe()), P_STAT, 1);
+    n++;
+  }
+
   if (affine) n += emit_affine_apply(&p[n], 1);
   n += emit_store(&p[n], hp_ctrl_safe());
   return n;
@@ -614,7 +638,7 @@ static unsigned emit_layer(hp_word *p, unsigned elements, int affine) {
  * value each protects has already been consumed into a register by the wait on
  * BAR_LDS that precedes it.
  */
-static unsigned emit_layer_backward(hp_word *p, unsigned elements) {
+static unsigned emit_layer_backward(hp_word *p, unsigned elements, int use_stats) {
   unsigned n = 0;
 
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_TID));
@@ -646,24 +670,49 @@ static unsigned emit_layer_backward(hp_word *p, unsigned elements) {
   p[n++] = hp_mov_const(R_S0, 0, HERMES_CBUF0_SCALAR_N(0), hp_ctrl_safe());
   p[n++] = hp_mov_const(R_S1, 0, HERMES_CBUF0_SCALAR_N(1), hp_ctrl_safe());
 
-  /* One: the mean. R_X becomes its deviation from it. */
-  p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
-  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
-  p[n++] = hp_fmul(R_MEAN, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
-  p[n++] = hp_fneg(R_TMP, R_MEAN, hp_ctrl_safe());
-  p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
+  if (use_stats) {
+    /*
+     * Reductions one and two are the forward's mean and rstd, which it already
+     * computed and saved (PR_NORM_LAYER_AFFINE_STATS). Load them by row — slot
+     * 5 mean, slot 6 rstd — and skip straight to the deviation and xhat. Two of
+     * four reductions gone; bit-identical, because a load returns the same f32
+     * the forward stored. Mean and rstd get their own address pairs so both
+     * loads are in flight at once.
+     */
+    /*
+     * The stats address goes in R_OUT, NOT R_ADDR: R_ADDR still holds the x
+     * load's address and that load is in flight on BAR_LOAD, so overwriting it
+     * before the wait would redirect x to read from here. R_OUT is free until
+     * the dx store at the very end.
+     */
+    p[n++] = hp_imad_imm(R_ACC, R_ROW, 2, HP_RZ, hp_ctrl_safe()); /* 2*row */
+    p[n++] = hp_imad_wide_const(R_OUT, R_ACC, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(5), hp_ctrl_safe());
+    p[n++] = hp_ldg(R_MEAN, R_OUT, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_ldg(R_RSTD, R_OUT, 4, hp_ctrl_setbar(BAR_LOAD));
+    /* R_X = (x - mean) * rstd = xhat. Wait covers x, mean and rstd. */
+    p[n++] = hp_fneg(R_TMP, R_MEAN, hp_ctrl_wait(BAR_LOAD));
+    p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
+    p[n++] = hp_fmul(R_X, R_X, R_RSTD, hp_ctrl_safe());
+  } else {
+    /* One: the mean. R_X becomes its deviation from it. */
+    p[n++] = hp_iadd3_imm(R_ACC, R_X, 0, hp_ctrl_wait(BAR_LOAD));
+    n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+    p[n++] = hp_fmul(R_MEAN, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+    p[n++] = hp_fneg(R_TMP, R_MEAN, hp_ctrl_safe());
+    p[n++] = hp_fadd(R_X, R_X, R_TMP, hp_ctrl_safe());
 
-  /* Two: the variance, and the reciprocal square root the hardware has. */
-  p[n++] = hp_bar_sync(hp_ctrl_safe());
-  p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_safe());
-  n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
-  p[n++] = hp_fmul(R_TMP, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
-  p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
-  p[n++] = hp_mufu(R_RSTD, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
+    /* Two: the variance, and the reciprocal square root the hardware has. */
+    p[n++] = hp_bar_sync(hp_ctrl_safe());
+    p[n++] = hp_fmul(R_ACC, R_X, R_X, hp_ctrl_safe());
+    n += emit_reduce(&p[n], elements, PR_COMBINE_ADD);
+    p[n++] = hp_fmul(R_TMP, R_RED, R_S0, hp_ctrl_wait(BAR_LDS));
+    p[n++] = hp_fadd(R_TMP, R_TMP, R_S1, hp_ctrl_safe());
+    p[n++] = hp_mufu(R_RSTD, R_TMP, HP_MUFU_RSQ, hp_ctrl_setbar(BAR_MUFU));
 
-  /* R_X becomes xhat, and is stored: the caller needs it for dw. Its own
-   * address pair, so the dx store at the end cannot disturb it. */
-  p[n++] = hp_fmul(R_X, R_X, R_RSTD, hp_ctrl_wait(BAR_MUFU));
+    /* R_X becomes xhat. Its own address pair, so the dx store cannot disturb it. */
+    p[n++] = hp_fmul(R_X, R_X, R_RSTD, hp_ctrl_wait(BAR_MUFU));
+  }
   p[n++] = hp_imad_wide_const(R_OUT_XH, R_IDX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(4), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT_XH, R_X, 0, hp_ctrl_safe());
@@ -809,9 +858,11 @@ unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
     case PR_NORM_SOFTMAX:
       return elements > NORM_MAX_THREADS ? emit_softmax_chunked(p, elements)
                                          : emit_softmax(p, elements);
-    case PR_NORM_LAYER: return emit_layer(p, elements, 0);
-    case PR_NORM_LAYER_AFFINE: return emit_layer(p, elements, 1);
-    case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements);
+    case PR_NORM_LAYER: return emit_layer(p, elements, 0, 0);
+    case PR_NORM_LAYER_AFFINE: return emit_layer(p, elements, 1, 0);
+    case PR_NORM_LAYER_AFFINE_STATS: return emit_layer(p, elements, 1, 1);
+    case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements, 0);
+    case PR_NORM_LAYER_BACKWARD_STATS: return emit_layer_backward(p, elements, 1);
     case PR_NORM_SOFTMAX_BACKWARD: return emit_softmax_backward(p, elements);
   }
   return 0;

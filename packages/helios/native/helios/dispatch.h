@@ -98,6 +98,21 @@ int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
                            helios_tensor w, unsigned width, unsigned rows,
                            float eps);
 
+/* layerNorm forward that also writes per-row [mean, rstd] (interleaved, 2
+ * floats/row) into `stats`, for the backward below to reuse. */
+int hl_normalize_affine_stats(helios_context *ctx, helios_tensor out,
+                              helios_tensor a, helios_tensor weight,
+                              helios_tensor bias, helios_tensor stats,
+                              unsigned width, unsigned rows, float eps);
+
+/* layerNorm backward that loads `stats` ([mean, rstd] per row) instead of
+ * recomputing them — two of four reductions gone, bit-identical. */
+int hl_layer_norm_backward_stats(helios_context *ctx, helios_tensor dx,
+                                 helios_tensor xhat, helios_tensor x,
+                                 helios_tensor g, helios_tensor w,
+                                 helios_tensor stats, unsigned width,
+                                 unsigned rows, float eps);
+
 /* out[M,N] = a[M,K] * b[K,N]. */
 /* out[b,M,N] = a[b,M,K] * b[b,K,N], the plane from the block's Y index. A batch
  * of 1 is the plain single-matrix case, same code. */

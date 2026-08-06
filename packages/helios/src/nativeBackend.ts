@@ -1475,6 +1475,26 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /*
+   * layerNorm forward that also saves the per-row [mean, rstd] the backward
+   * would otherwise recompute with two reductions. `stats` is [rows*2],
+   * interleaved. Same y as layerNorm(); paired with layerNormBackward(...,stats).
+   */
+  layerNormStats(x: TensorData, weight: TensorData, bias: TensorData, eps: number):
+      { y: TensorData; stats: TensorData } {
+    const width = x.shape[x.shape.length - 1] ?? 1;
+    const rows = shapeSize(x.shape) / width;
+    const dx = this.device(x), dw = this.device(weight), db = this.device(bias);
+    const out = this.make(x.shape, "f32");
+    const stats = this.make([rows * 2], "f32");
+    this.check(
+      this.hl.normalizeAffineStats(out.buffer.handle, dx.buffer.handle,
+                                   dw.buffer.handle, db.buffer.handle,
+                                   stats.buffer.handle, width, rows, eps),
+      "layerNormStats", dx, dw, db);
+    return { y: out, stats };
+  }
+
+  /*
    * THE FUSED BACKWARDS ARE NOT HERE, AND THAT IS A MEASURED DECISION.
    *
    * ops.ts probes for layerNormBackward, geluBackward, clampBackward, broadcast
@@ -1581,18 +1601,35 @@ export class NativeHeliosBackend implements Backend {
    * shape; xhat exists as an output precisely so that dw = sum_rows(g*xhat)
    * costs a multiply rather than the two reductions that produced it.
    */
-  layerNormBackward(x: TensorData, weight: TensorData, g: TensorData, eps: number):
+  layerNormBackward(x: TensorData, weight: TensorData, g: TensorData, eps: number,
+                    stats?: TensorData):
       { dx: TensorData; dw: TensorData; db: TensorData; xhat: TensorData } {
     const width = x.shape[x.shape.length - 1] ?? 1;
     const rows = shapeSize(x.shape) / width;
     const dxIn = this.device(x), dgIn = this.device(g), dwIn = this.device(weight);
     const dx = this.make(x.shape, "f32");
     const xhat = this.make(x.shape, "f32");
-    this.check(
-      this.hl.layerNormBackward(dx.buffer.handle, xhat.buffer.handle,
-                                dxIn.buffer.handle, dgIn.buffer.handle,
-                                dwIn.buffer.handle, width, rows, eps),
-      "layerNormBackward", dxIn, dgIn, dwIn);
+    /*
+     * With the forward's saved stats, the kernel loads mean+rstd instead of
+     * recomputing them — two of four reductions gone. Bit-identical; only the
+     * dx/xhat launch differs, the dw/db column-sums below are unchanged.
+     */
+    if (stats) {
+      const dstats = this.device(stats);
+      this.check(
+        this.hl.layerNormBackwardStats(dx.buffer.handle, xhat.buffer.handle,
+                                       dxIn.buffer.handle, dgIn.buffer.handle,
+                                       dwIn.buffer.handle, dstats.buffer.handle,
+                                       width, rows, eps),
+        "layerNormBackwardStats", dxIn, dgIn, dwIn);
+      if (dstats !== stats) dstats.buffer.release(this.hl);
+    } else {
+      this.check(
+        this.hl.layerNormBackward(dx.buffer.handle, xhat.buffer.handle,
+                                  dxIn.buffer.handle, dgIn.buffer.handle,
+                                  dwIn.buffer.handle, width, rows, eps),
+        "layerNormBackward", dxIn, dgIn, dwIn);
+    }
 
     /*
      * Down the row axis — ITS OWN KERNEL, after two other routes were measured.

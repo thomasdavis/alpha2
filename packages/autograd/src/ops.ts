@@ -694,6 +694,22 @@ export function layerNorm(
 ): Variable {
   const xData = x.data;
   const wData = weight.data;
+
+  /*
+   * Save-stats path: the forward returns this row's [mean, rstd] and the
+   * backward LOADS them instead of recomputing mean+variance — two of the
+   * backward's four reductions gone (layerNormBackward is 31% of roofline). The
+   * result is bit-identical: a loaded stat is the same f32 the forward wrote.
+   */
+  if (ctx.backend.layerNormStats && ctx.backend.layerNormBackward) {
+    const { y, stats } = ctx.backend.layerNormStats(xData, wData, bias.data, eps);
+    return record(ctx, y, [x, weight, bias], (g, B) => {
+      if (!B.layerNormBackward) throw new Error("layerNormBackward hook disappeared");
+      const { dx, dw, db } = B.layerNormBackward(xData, wData, g, eps, stats);
+      return [dx, dw, db];
+    });
+  }
+
   return record(ctx, ctx.backend.layerNorm(xData, wData, bias.data, eps), [x, weight, bias], (g, B) => {
     if (B.layerNormBackward) {
       const { dx, dw, db } = B.layerNormBackward(xData, wData, g, eps);

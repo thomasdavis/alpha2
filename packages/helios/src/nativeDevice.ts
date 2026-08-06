@@ -106,6 +106,12 @@ export interface NativeAddon {
    * caller's job. Slot order is the kernel's and is not checked. */
   layerNormBackward(dx: number, xhat: number, x: number, g: number, w: number,
                     width: number, rows: number, eps: number): boolean;
+  /* Forward that also writes per-row [mean, rstd] into `stats`, and the backward
+   * that loads them instead of recomputing (two of four reductions gone). */
+  normalizeAffineStats(out: number, a: number, weight: number, bias: number,
+                       stats: number, width: number, rows: number, eps: number): boolean;
+  layerNormBackwardStats(dx: number, xhat: number, x: number, g: number, w: number,
+                         stats: number, width: number, rows: number, eps: number): boolean;
   matmul(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
   /* C = A @ B^T with B stored [N,K]. Optional so a stale addon still loads. */
   matmulTransposed?(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;

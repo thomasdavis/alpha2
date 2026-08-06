@@ -91,6 +91,20 @@ typedef enum {
    */
   PR_NORM_LAYER_BACKWARD,
   /*
+   * layerNorm forward that ALSO saves the per-row mean and rstd for the
+   * backward to reuse. Same slots 0-3 as PR_NORM_LAYER_AFFINE, plus slot 4 =
+   * mean-out and slot 5 = rstd-out (one value per row, written by thread 0).
+   */
+  PR_NORM_LAYER_AFFINE_STATS,
+  /*
+   * layerNorm backward given the forward's saved stats. Slots 0-4 as
+   * PR_NORM_LAYER_BACKWARD, plus slot 5 = mean-in and slot 6 = rstd-in. Loads
+   * them instead of RECOMPUTING mean+variance — two of four reductions gone,
+   * bit-identical (same f32 stats). Cuts layerNormBackward from 31% to ~60% of
+   * roofline.
+   */
+  PR_NORM_LAYER_BACKWARD_STATS,
+  /*
    * softmax's backward, fused: out = s * (g - sum_j g_j s_j).
    *
    * ops.ts composes it from mul, sum, broadcast, sub and mul — five passes over
