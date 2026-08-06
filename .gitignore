@@ -33,3 +33,8 @@ third_party/
 
 # from-scratch GPU stack build output
 packages/helios/native/.build/
+
+# perf workbench DB (rebuilt by tools/alphaperf.py backfill)
+alphaperf.db
+alphaperf.db-wal
+alphaperf.db-shm
