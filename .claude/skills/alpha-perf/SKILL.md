@@ -214,6 +214,21 @@ loop's control fields before relying on a new async instruction.
 
 Read the live version with `alphaperf.py loop`; this is the shape of it.
 
+**⭐ THE MEASURED CEILING — read this before promising 30k.** There is NO factor
+lever left in the GEMM. cp.async removed the staging bottleneck (+10% raw), and
+f16-accumulate on the cp.async kernel is only **+6%** (not the 2x its 90.3-vs-45.5
+ceiling promises) — the kernel is STILL not tensor-pipe-bound. So cp.async +
+f16-accumulate tops the GEMM at **~25-27 TFLOP/s, cuBLAS's LOWER range**, and 30k
+needs 17.4 TFLOP/s SUSTAINED across the WHOLE step (every GEMM at peak, non-GEMM
+near zero). The honest ladder — cp.async on ALL GEMMs (fwd nt + bwd nn/ta) +
+f16-accumulate + non-GEMM fusion — lands around **24-25k**. 30k is at or beyond
+the f32-quality roofline for a 100M model on this card, which agrees with the
+user's own "30-45k extremely aggressive" note. Getting to 30k likely requires
+accepting f16-accumulate's numerics (it MOVES the loss — needs a convergence
+validation run, not a free flip) as part of the full stack, and even then it is
+marginal. Report this honestly; do not claim a lever will reach 30k without the
+sustained-step arithmetic behind it.
+
 - **The step is GEMM-bound (~69% of GPU). The non-GEMM half is AT the bandwidth roofline**
   (gelu/geluBwd/addInplace 340-402 GB/s vs a 345 control) — the reduction was the one
   off-roofline op and warp-shuffle fixed it (layerNorm 65→34 us). So the only non-GEMM
