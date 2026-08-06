@@ -241,6 +241,12 @@ in `alphaperf.py` and the backfill — the tracker is expected to get better at 
   Three instruments once disagreed 23x (25.1 / 2.5 / 1.1 ms); ablation was right.
 - **When two instruments disagree, distrust the one saying "no problem"** — it is the one
   that ends the search.
+- **A `prometheus_hw_test` kernel is CORRECTNESS-only — the C harness has no bench mode.**
+  To get TFLOP/s you drive the kernel through `NativeHeliosBackend.matmul` /
+  `matmulTransposed` (what `probe-gemm-rate` times). So a brand-new from-scratch GEMM cannot
+  be measured in isolation until it is wired into the helios dispatch path — plan that
+  wiring as the measurement STEP, not a harness flag. Correctness first in the C harness,
+  then the dispatch hookup to measure.
 
 ---
 
@@ -271,6 +277,60 @@ that six times. And **bit-correct is not the whole contract for async ops:** cp.
 needed the SCOREBOARD wired in the control fields (`LDGDEPBAR` must set write-barrier 0) —
 the encoding matching ptxas was necessary but not sufficient. Decode a full ptxas pipeline
 loop's control fields before relying on a new async instruction.
+
+---
+
+## 5.5 Bringing up a warp-cooperative kernel (tensor cores, shared staging)
+
+§5 gets an instruction ENCODED and bit-asserted. A GEMM/MMA kernel then fails in a SECOND,
+distinct way — not the encoding but the warp-level CONSTRUCTION: which lane holds which
+matrix element, which register the tensor op reads, which barrier orders the pipe. None of
+it is in the encoding, and — exactly like a wrong encoding — a wrong construction returns a
+finite, plausible, WRONG matrix, not a fault. The discipline that settles it:
+
+- **Build the big kernel as a LADDER of tested checkpoints, never one 350-line clone.** Each
+  rung adds exactly ONE new mechanic, is proven bit-exact against a CPU reference in
+  `prometheus_hw_test.c`, and is COMMITTED before the next. A tensor-core GEMM ladders as:
+  single MMA tile (encoding + fragment layout) → K-loop (s32/f32 accumulation across
+  k-steps) → output grid (block→tile decode + addressing) → shared-staged tile
+  (LDS-from-shared fragments) → the full staged/cp.async multi-warp kernel. A broken
+  multi-hundred-line intermediate is un-committable and un-bisectable; a ladder is neither,
+  and each rung de-risks exactly the next.
+
+- **The known-answer hardware test IS the reference, and its PATTERN localises the bug.**
+  Add a `KERNELS[]` row with distinct, deterministic fills (never all-ones or symmetric
+  data — those let a transposed or mis-indexed layout pass by coincidence) and a `check`
+  that recomputes the WHOLE output (D = A·B for a GEMM) and compares EVERY element. Count
+  ALL mismatches and report the first plus the count: a CLEAN split (one half of the rows
+  wrong, the rest exact) points at a fragment-register or row-half mapping; a SCATTER points
+  at a barrier/timing race. The meta-test "every kernel is completely specified" requires
+  `blockX*gridX*elementsPerThread == workElements` (and `.regs`/`.sharedBytes` set), so a
+  fault of `errnotif=…1f` is usually an under-declared `.regs`, not the kernel.
+
+- **Fragment base registers must be N-register-ALIGNED** (4 for a 4-register fragment). An
+  unaligned base is the one construction error that DOES fault (errnotif ~0x0d) rather than
+  return a wrong matrix — so a faulting MMA launch is an alignment check FIRST, before you
+  re-suspect the encoding.
+
+- **One address register per in-flight load, or serialize.** A load holds its address
+  register until the memory pipe accepts it, and this stack has no write-after-read
+  interlock — recompute that register (e.g. to point A's base at B's) while the load is in
+  flight and it reads the wrong place. The tell is a clean partial-wrong pattern (half the
+  rows). Give each fragment its own address pair (what `emit_hmma_staged`'s "ONE ADDRESS
+  PAIR PER FRAGMENT" comment enforces) or wait the load before reusing the register.
+
+- **The MMA barriers are TWO, not one.** Back-to-back MMAs into the same accumulator have a
+  RAW through the VARIABLE-latency tensor pipe — the next MMA (or the epilogue) must wait the
+  previous MMA's write barrier; a bare stall does not cover a variable-latency op. The next
+  k-step's loads have a WAR on the fragment registers the current MMA still reads. A
+  shared-staged loop needs, additionally, a block barrier AFTER the multiply (every lane has
+  read its fragments) before the next staging overwrites the tile.
+
+- **LDS/STS are `.X4`-addressed: the address register is a WORD index (scaled ×4), the
+  offset immediate is BYTES.** Read the encoder (`sm86_mem.c`) to confirm the scaling and
+  units of any memory op before trusting an offset — a word/byte mix-up is silent, and the
+  same "byte-identical when the words-per-row match" reasoning is what lets one staging
+  layout serve two element types.
 
 ---
 
@@ -373,6 +433,10 @@ RUSTUP_HOME=/home/ajaxdavis/.rustup CARGO_HOME=/home/ajaxdavis/.cargo \
   the real verification here), and `git push --no-verify` the feature branch after.
 - Never give up on a hard kernel: a wrong matrix is a cue to dump the SASS
   (`tools/hmma_dump.c` + `nvdisasm`) and read it, not to guess a sixth time.
+- A big kernel is a LADDER of committed checkpoints (§5.5), not a monolith — one new
+  mechanic per rung, each bit-exact vs a CPU reference in `prometheus_hw_test.c` and
+  committed before the next. Correctness in the C harness first; the helios `matmul`
+  dispatch hookup is a separate step and the only way to measure TFLOP/s (§4).
 - The DB and the operation dataset are meant to get better at their job over time — improve
   them as the work teaches you what to track.
 - **Keep every file around ~300 lines.** It is the house style and it is load-bearing: a
