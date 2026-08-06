@@ -1520,6 +1520,28 @@ export class NativeHeliosBackend implements Backend {
   }
 
   /*
+   * layerNorm whose OUTPUT is packed f16 — the activation half of f16-in-memory.
+   * The result is dtype "f16" with the logical [rows,width] shape but a
+   * half-size buffer; a cp.async forward GEMM (and the backward dW HMMA) read it
+   * with no cast. Exact: y feeds only the GEMM, which rounds to f16 regardless.
+   */
+  layerNormF16(x: TensorData, weight: TensorData, bias: TensorData, eps: number): TensorData {
+    const width = x.shape[x.shape.length - 1] ?? 1;
+    const rows = shapeSize(x.shape) / width;
+    const dx = this.device(x), dw = this.device(weight), db = this.device(bias);
+    /* Logical [rows,width] f16 — make sizes by element*4, so this over-allocates
+     * 2x, but the kernel writes only rows*width f16 (rows*width*2 bytes) and the
+     * GEMM reads exactly that many. The dtype tag routes it to the cast-free path. */
+    const out = this.make([...x.shape], "f16");
+    this.check(
+      this.hl.normalizeAffine(this.hl.op.layerNormAffineF16, out.buffer.handle,
+                              dx.buffer.handle, dw.buffer.handle, db.buffer.handle,
+                              width, rows, eps),
+      "layerNormF16", dx, dw, db);
+    return out;
+  }
+
+  /*
    * layerNorm forward that also saves the per-row [mean, rstd] the backward
    * would otherwise recompute with two reductions. `stats` is [rows*2],
    * interleaved. Same y as layerNorm(); paired with layerNormBackward(...,stats).

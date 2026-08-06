@@ -227,6 +227,30 @@ static unsigned emit_store(hp_word *p, hp_control c) {
 }
 
 /*
+ * Store the result as PACKED f16 — so a forward GEMM reads it straight through
+ * cp.async with no cast pass, the activation half of the f16-in-memory path.
+ * Each even lane packs its y and its neighbour's into one 32-bit word of two
+ * f16 (the SHFL-pack the adamw shadow proved); the odd lane's store is off.
+ * y feeds only its GEMM, which would round to f16 anyway, so this is exact.
+ */
+static unsigned emit_store_f16(hp_word *p) {
+  unsigned n = 0;
+  p[n++] = hp_shfl(HP_SHFL_DOWN, R_ACC, R_X, 1, hp_shfl_segment(32),
+                   hp_ctrl_setbar(BAR_MUFU));
+  p[n++] = hp_f2fp_pack(R_RED, R_ACC, R_X, hp_ctrl_wait(BAR_MUFU));
+  p[n++] = hp_shr_imm(R_LHS, R_IDX, 1, hp_ctrl_safe());        /* packed index */
+  p[n++] = hp_mov_imm(R_RHS, 1, hp_ctrl_safe());
+  p[n++] = hp_lop3(R_TMP, R_IDX, R_RHS, 0xC0u, hp_ctrl_safe()); /* idx & 1 */
+  p[n++] = hp_isetp_gt_imm(P_STAT, R_TMP, 0, hp_ctrl_safe());   /* odd lane */
+  p[n++] = hp_imad_wide_const(R_OUT, R_LHS, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n] = hp_predicated(hp_stg(R_OUT, R_RED, 0, hp_ctrl_safe()), P_STAT, 1);
+  n++;
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}
+
+/*
  * Load this feature's weight, and its bias when there is one.
  *
  * Issued immediately after the input load and BEFORE the reductions, so two
@@ -550,7 +574,7 @@ static unsigned emit_softmax_masked(hp_word *p, unsigned elements, int cap) {
  * data and is the reason this kernel is trustworthy at all.
  */
 static unsigned emit_layer(hp_word *p, unsigned elements, int affine,
-                           int store_stats) {
+                           int store_stats, int f16_out) {
   unsigned n = emit_load(p, elements);
   if (affine) n += emit_affine_load(&p[n], 1);
 
@@ -599,7 +623,7 @@ static unsigned emit_layer(hp_word *p, unsigned elements, int affine,
   }
 
   if (affine) n += emit_affine_apply(&p[n], 1);
-  n += emit_store(&p[n], hp_ctrl_safe());
+  n += f16_out ? emit_store_f16(&p[n]) : emit_store(&p[n], hp_ctrl_safe());
   return n;
 }
 
@@ -858,9 +882,10 @@ unsigned pr_emit_normalize(hp_word *p, pr_norm_op op, unsigned elements) {
     case PR_NORM_SOFTMAX:
       return elements > NORM_MAX_THREADS ? emit_softmax_chunked(p, elements)
                                          : emit_softmax(p, elements);
-    case PR_NORM_LAYER: return emit_layer(p, elements, 0, 0);
-    case PR_NORM_LAYER_AFFINE: return emit_layer(p, elements, 1, 0);
-    case PR_NORM_LAYER_AFFINE_STATS: return emit_layer(p, elements, 1, 1);
+    case PR_NORM_LAYER: return emit_layer(p, elements, 0, 0, 0);
+    case PR_NORM_LAYER_AFFINE: return emit_layer(p, elements, 1, 0, 0);
+    case PR_NORM_LAYER_AFFINE_STATS: return emit_layer(p, elements, 1, 1, 0);
+    case PR_NORM_LAYER_AFFINE_F16: return emit_layer(p, elements, 1, 0, 1);
     case PR_NORM_LAYER_BACKWARD: return emit_layer_backward(p, elements, 0);
     case PR_NORM_LAYER_BACKWARD_STATS: return emit_layer_backward(p, elements, 1);
     case PR_NORM_SOFTMAX_BACKWARD: return emit_softmax_backward(p, elements);

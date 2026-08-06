@@ -362,6 +362,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   OP("layerNorm", PR_NORM_LAYER);
   OP("rmsNormAffine", PR_NORM_RMS_AFFINE);
   OP("layerNormAffine", PR_NORM_LAYER_AFFINE);
+  OP("layerNormAffineF16", PR_NORM_LAYER_AFFINE_F16);
 #undef OP
   napi_set_named_property(env, exports, "op", ops);
 

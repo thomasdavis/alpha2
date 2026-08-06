@@ -96,6 +96,10 @@ typedef enum {
    * mean-out and slot 5 = rstd-out (one value per row, written by thread 0).
    */
   PR_NORM_LAYER_AFFINE_STATS,
+  /* layerNorm forward that stores the result as PACKED f16 (slot 0 is a f16
+   * buffer, rows*width f16 = rows*width/2 f32-words) — the activation half of
+   * the f16-in-memory path, so a cp.async GEMM reads it with no cast. */
+  PR_NORM_LAYER_AFFINE_F16,
   /*
    * layerNorm backward given the forward's saved stats. Slots 0-4 as
    * PR_NORM_LAYER_BACKWARD, plus slot 5 = mean-in and slot 6 = rstd-in. Loads
