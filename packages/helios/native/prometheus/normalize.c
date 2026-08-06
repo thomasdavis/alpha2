@@ -174,6 +174,38 @@ static unsigned emit_load(hp_word *p, unsigned width) {
  * R_RED. Every thread ends up holding the same reduced value. */
 static unsigned emit_reduce(hp_word *p, unsigned elements, pr_combine how) {
   unsigned n = 0;
+
+  /*
+   * THE WARP PATH NEVER PUTS THE CONTRIBUTION IN SHARED MEMORY AT ALL.
+   *
+   * The halving tree needs it there because a thread combines with a
+   * NEIGHBOUR'S value; a butterfly gets the neighbour's value out of the
+   * neighbour's register. So the store goes, the round trip through slot 0
+   * goes, and what is left of the shared traffic is one word per warp.
+   *
+   * THE BARRIER STAYS, and it is not the tree's — it is the one the STS used to
+   * carry. A kernel runs several reductions over the same slots (a layer norm
+   * runs two, its backward four), so the cross-warp step of reduction N+1 must
+   * not overwrite a slot reduction N is still reading. Dropping this because
+   * "the warp path does not use shared" would be right about the contribution
+   * and wrong about the partials.
+   */
+  if (pr_reduce_wants_warp(elements)) {
+    p[n++] = hp_bar_sync(hp_ctrl_safe());
+    n += pr_emit_tree_warp_reg(&p[n], elements, how, R_TID, R_ACC, R_LHS);
+    /*
+     * R_ACC holds the total in every thread; the callers read R_RED. An integer
+     * add of zero is a bit copy, which is exactly what a move of a float
+     * through an integer unit should be — and there is no register-to-register
+     * MOV in this encoder.
+     *
+     * The callers then wait on BAR_LDS, which this path leaves clear. A wait on
+     * a barrier nothing set is a no-op, so they need no change.
+     */
+    p[n++] = hp_iadd3_imm(R_RED, R_ACC, 0, hp_ctrl_safe());
+    return n;
+  }
+
   p[n++] = hp_sts(R_TID, R_ACC, 0, hp_ctrl_safe());
   p[n++] = hp_bar_sync(hp_ctrl_safe());
   n += pr_emit_tree(&p[n], elements, how, R_TID, R_LHS, R_RHS);

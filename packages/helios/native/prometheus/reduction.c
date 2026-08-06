@@ -117,6 +117,14 @@ unsigned pr_emit_tree(hp_word *p, unsigned elements, pr_combine how,
     /* The accumulator's load must land before the first shuffle reads it, and
      * a shuffle takes its source at issue like any other instruction. */
     p[n++] = hp_nop(hp_ctrl_wait(BAR_LDS));
+    /*
+     * AND A BARRIER, which the register-entry callers do not need. This path
+     * takes its contribution from SHARED, and the cross-warp step then writes
+     * slot `warp` — a slot some OTHER thread is reading in the load above. Lane
+     * 0 of warp 5 overwriting slot 5 before thread 5 has read it is a race that
+     * loses one warp's worth of the sum, silently and not every time.
+     */
+    p[n++] = hp_bar_sync(hp_ctrl_safe());
     n += pr_emit_tree_warp_reg(&p[n], elements, how, tid, lhs, rhs);
     p[n++] = hp_isetp_gt_imm(P_INACTIVE, tid, 0, hp_ctrl_safe());
     p[n++] = hp_predicated(hp_sts(tid, lhs, 0, hp_ctrl_safe()), P_INACTIVE, 1);
@@ -201,7 +209,39 @@ unsigned pr_emit_tree_warp_reg(hp_word *p, unsigned elements, pr_combine how,
   const unsigned nWarps = elements / 32u;
 
   /*
-   * THE BUTTERFLY. Five steps, lane ^= 16, 8, 4, 2, 1.
+   * PHASE A — the cross-warp slots that no warp will write get the IDENTITY.
+   *
+   * The second butterfly below reduces all 32 lanes over slots 0..31, so slots
+   * nWarps..31 have to hold something neutral. They currently hold whatever the
+   * caller left there.
+   *
+   * THE RANGE nWarps <= tid < 32 IN TWO INSTRUCTIONS, via unsigned wraparound:
+   * subtract nWarps and compare unsigned against 31-nWarps. A thread below
+   * nWarps wraps to something enormous and fails the comparison, which is
+   * exactly the answer wanted. hp_isetp_gt_imm is U32 — see the 0x03f04070 in
+   * sm86_flow.c, which carries the type — and a signed compare here would let
+   * every thread below nWarps through.
+   *
+   * Skipped entirely at nWarps == 32, where the range is empty and 31-nWarps
+   * would wrap to 0xffffffff: the comparison would then be false for everyone
+   * and EVERY thread would write the identity over a real partial.
+   */
+  if (nWarps > 1u && nWarps < 32u) {
+    p[n++] = hp_iadd3_imm(t0, tid, (uint32_t)(-(int32_t)nWarps), hp_ctrl_safe());
+    p[n++] = hp_isetp_gt_imm(P_LANE, t0, 31u - nWarps, hp_ctrl_safe());
+    if (how == PR_COMBINE_MAX) {
+      /* -inf. RZ serves for a sum and there is no register form of it for a
+       * maximum, so one has to be materialised — after the predicate, because
+       * t0 is carrying the shifted thread index until then. */
+      p[n++] = hp_mov_imm(t0, 0xff800000u, hp_ctrl_safe());
+      p[n++] = hp_predicated(hp_sts(tid, t0, 0, hp_ctrl_safe()), P_LANE, 1);
+    } else {
+      p[n++] = hp_predicated(hp_sts(tid, HP_RZ, 0, hp_ctrl_safe()), P_LANE, 1);
+    }
+  }
+
+  /*
+   * PHASE B — THE BUTTERFLY. Five steps, lane ^= 16, 8, 4, 2, 1.
    *
    * The shuffle SETS a barrier and the combine WAITS on it. A stall count
    * cannot substitute: control.h's opening paragraph is about exactly this, and
@@ -209,8 +249,7 @@ unsigned pr_emit_tree_warp_reg(hp_word *p, unsigned elements, pr_combine how,
    * write-barrier 0, which is it saying the same thing.
    *
    * The barrier alternates between two indices so a step's shuffle can issue
-   * while the previous step's combine is still retiring. With one index the
-   * shuffle would have to wait for its own barrier to be free.
+   * while the previous step's combine is still retiring.
    */
   for (unsigned mask = 16u, i = 0; mask; mask >>= 1, i++) {
     const unsigned bar = (i & 1u) ? BAR_SHFL2 : BAR_SHFL;
@@ -221,58 +260,68 @@ unsigned pr_emit_tree_warp_reg(hp_word *p, unsigned elements, pr_combine how,
                  : hp_fadd(acc, acc, t0, hp_ctrl_wait(bar));
   }
 
-  /* One warp and we are done — every lane already holds the total. */
+  /* One warp and we are done — every lane already holds the total, which is the
+   * property that makes BFLY the right shuffle here rather than DOWN. */
   if (nWarps == 1u) return n;
 
   /*
-   * ACROSS THE WARPS. Lane 0 of each warp publishes its total to shared[warp].
+   * PHASE C — lane 0 of each warp publishes its total to slot `warp`.
    *
-   * The guard is "lane != 0" expressed as a comparison because that is the
-   * comparison this encoder has: tid & 31, then GT 0, used negated. Letting
-   * every lane store instead would be a race that happens to write the same
-   * value — the pattern pr_emit_reduction's comment already refuses, because it
-   * cannot tell a right predicate from a wrong one.
+   * The slots it writes, 0..nWarps-1, are disjoint from the ones phase A wrote,
+   * nWarps..31, so ONE barrier covers both and the reduction costs a single
+   * block synchronisation rather than the halving tree's ten.
+   *
+   * The guard is "lane != 0" as a comparison because that is the comparison
+   * this encoder has. Letting every lane store instead would be a race that
+   * happens to write the same value — the pattern pr_emit_reduction's comment
+   * already refuses, because it cannot tell a right predicate from a wrong one.
+   *
+   * ONE SCRATCH REGISTER, not two: the butterfly is finished, so t0 is free,
+   * and LOP3 may name it as both a source and the destination because an ALU op
+   * reads its operands at issue. Needing only `acc` and `t0` is what lets
+   * pr_emit_tree route into this without a third register its own callers do
+   * not have — normalize.c holds the live input in R4 and would have had it
+   * clobbered.
    */
-  /* ONE scratch register, not two: the butterfly is finished, so t0 — its
-   * shuffle destination — is free, and LOP3 may name it as both a source and
-   * the destination because an ALU op reads its operands at issue. Needing only
-   * `acc` and `t0` is what lets pr_emit_tree route into this without a third
-   * register its own callers do not have: normalize.c holds the live input in
-   * R4 and would have had it clobbered. */
   p[n++] = hp_mov_imm(t0, 31u, hp_ctrl_safe());
   p[n++] = hp_lop3(t0, tid, t0, HP_LUT_AND, hp_ctrl_safe());
   p[n++] = hp_isetp_gt_imm(P_LANE, t0, 0, hp_ctrl_safe());
   p[n++] = hp_shr_imm(t0, tid, 5, hp_ctrl_safe());
-  p[n++] = hp_predicated(hp_sts(t0, acc, 0, hp_ctrl_safe()), P_LANE, 1);
+  /*
+   * setread, not safe. A shared store holds its ADDRESS register until the
+   * memory pipe accepts it and there is no write-after-read interlock, so the
+   * `mov t0, 31` in phase D can change where this store lands. That hazard has
+   * now cost this stack six separate debugging sessions, every one of them a
+   * finite, plausible, wrong answer.
+   */
+  p[n++] = hp_predicated(hp_sts(t0, acc, 0, hp_ctrl_setread(BAR_SHFL)), P_LANE, 1);
   p[n++] = hp_bar_sync(hp_ctrl_safe());
 
   /*
-   * Every thread then walks the `nWarps` partials. Unrolled, and with TWO loads
-   * in flight on alternating barriers, because a shared load is tens of cycles
-   * and a strictly serial chain of twenty of them would put back a fraction of
-   * what the barriers cost.
+   * PHASE D — every thread loads slot `lane` and butterflies again.
    *
-   * Every thread doing the whole walk — rather than one warp doing it and
-   * broadcasting — is deliberate: the loads are a BROADCAST (every lane reads
-   * the same address, one transaction) and the alternative needs another store
-   * and another barrier to get the answer back out.
+   * A SECOND BUTTERFLY RATHER THAN A WALK. The first version of this read the
+   * nWarps partials serially — twenty shared loads and nineteen adds at 640
+   * wide — and that walk became the largest thing left in a reduction once the
+   * barriers were gone. Five shuffles replace it, and every lane still ends
+   * holding the total, so there is nothing to broadcast afterwards.
+   *
+   * The load is a BROADCAST within each group of lanes reading the same slot,
+   * and slots 0..31 are exactly one bank each, so it is conflict-free.
    */
-  p[n++] = hp_lds(acc, HP_RZ, 0, hp_ctrl_setbar(BAR_SHFL));
-  for (unsigned w = 1; w < nWarps; w++) {
-    const unsigned bar = (w & 1u) ? BAR_SHFL2 : BAR_SHFL;
-    const unsigned prev = (w & 1u) ? BAR_SHFL : BAR_SHFL2;
-    p[n++] = hp_lds(t0, HP_RZ, w * 4u, hp_ctrl_setbar(bar));
-    /* Wait on THIS load's barrier. The first combine also needs the initial
-     * LDS, which used BAR_SHFL — and w == 1 waits on BAR_SHFL2, so the
-     * accumulator's own load is covered by the previous iteration's wait for
-     * every w > 1 and by this special case for w == 1. */
+  p[n++] = hp_mov_imm(t0, 31u, hp_ctrl_wait(BAR_SHFL));
+  p[n++] = hp_lop3(t0, tid, t0, HP_LUT_AND, hp_ctrl_safe());
+  p[n++] = hp_lds(acc, t0, 0, hp_ctrl_setbar(BAR_LDS));
+  for (unsigned mask = 16u, i = 0; mask; mask >>= 1, i++) {
+    const unsigned bar = (i & 1u) ? BAR_SHFL2 : BAR_SHFL;
+    /* The FIRST shuffle waits on the load — which also releases the load's
+     * address register, so t0 is safe to overwrite from here. */
+    p[n++] = hp_shfl(HP_SHFL_BFLY, t0, acc, mask, hp_shfl_segment(32),
+                     i == 0 ? hp_ctrl_wait_setbar(BAR_LDS, bar)
+                            : hp_ctrl_setbar(bar));
     p[n++] = how == PR_COMBINE_MAX
-                 ? hp_fmnmx(acc, acc, t0, 1,
-                            w == 1u ? hp_ctrl_waitmask((1u << bar) | (1u << prev))
-                                    : hp_ctrl_wait(bar))
-                 : hp_fadd(acc, acc, t0,
-                           w == 1u ? hp_ctrl_waitmask((1u << bar) | (1u << prev))
-                                   : hp_ctrl_wait(bar));
+                 ? hp_fmnmx(acc, acc, t0, 1, hp_ctrl_wait(bar))
+                 : hp_fadd(acc, acc, t0, hp_ctrl_wait(bar));
   }
   return n;
 }
