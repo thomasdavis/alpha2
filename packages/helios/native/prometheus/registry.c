@@ -191,6 +191,9 @@ static const pr_kernel KERNELS[] = {
     K(.name = "imma int8 16x8x32", .build = bld_imma, .blockX = 32, .gridX = 1,
       .regs = 24, .fill = pr_fill_imma, .check = chk_imma, .checkedElements = 128,
       .elementsPerThread = 4, .workElements = 128),
+    K(.name = "imma gemm 16x8x64", .build = bld_imma_gemm, .blockX = 32, .gridX = 1,
+      .regs = 32, .fill = pr_fill_imma_gemm, .check = chk_imma_gemm,
+      .checkedElements = 128, .elementsPerThread = 4, .workElements = 128),
     /* The cp.async f16 GEMM, one 64x64 block, one k-step. 128 threads each own
      * 32 outputs (a 64x64 tile over four warps). The fill writes f16 operands
      * and the check computes the exact integer product. regs/shared/threads come

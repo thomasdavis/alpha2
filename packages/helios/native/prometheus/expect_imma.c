@@ -5,6 +5,7 @@
  * fill and compares every one of the 128 s32 outputs.
  */
 #include "expect.h"
+#include "imma.h"
 
 static int a_val(int i, int k) { return ((i * 3 + k) % 11) - 5; }
 static int b_val(int j, int k) { return ((j * 5 + k * 2) % 9) - 4; }
@@ -34,6 +35,39 @@ const char *chk_imma(const volatile NvU32 *o) {
   if (nbad) {
     snprintf(pr_msg(), PR_MSG_SIZE,
              "imma: %d/128 wrong; first D[%d][%d]=%d want %d", nbad, fi, fj, fg, fw);
+    return pr_msg();
+  }
+  return NULL;
+}
+
+/* The GEMM variant: A[16][K] and B[8][K] with K = IMMA_GEMM_K, K-contiguous. */
+void pr_fill_imma_gemm(volatile NvU32 *a, volatile NvU32 *b) {
+  volatile signed char *A = (volatile signed char *)a;
+  volatile signed char *B = (volatile signed char *)b;
+  for (int i = 0; i < 16; i++)
+    for (int k = 0; k < (int)IMMA_GEMM_K; k++)
+      A[i * (int)IMMA_GEMM_K + k] = (signed char)a_val(i, k);
+  for (int j = 0; j < 8; j++)
+    for (int k = 0; k < (int)IMMA_GEMM_K; k++)
+      B[j * (int)IMMA_GEMM_K + k] = (signed char)b_val(j, k);
+}
+
+const char *chk_imma_gemm(const volatile NvU32 *o) {
+  const volatile int *D = (const volatile int *)o; /* [16][8] row-major */
+  int nbad = 0, fi = -1, fj = -1, fg = 0, fw = 0;
+  for (int i = 0; i < 16; i++)
+    for (int j = 0; j < 8; j++) {
+      int want = 0;
+      for (int k = 0; k < (int)IMMA_GEMM_K; k++) want += a_val(i, k) * b_val(j, k);
+      const int got = D[i * 8 + j];
+      if (got != want) {
+        if (nbad == 0) { fi = i; fj = j; fg = got; fw = want; }
+        nbad++;
+      }
+    }
+  if (nbad) {
+    snprintf(pr_msg(), PR_MSG_SIZE,
+             "imma gemm: %d/128 wrong; first D[%d][%d]=%d want %d", nbad, fi, fj, fg, fw);
     return pr_msg();
   }
   return NULL;
