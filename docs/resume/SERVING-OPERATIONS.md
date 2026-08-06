@@ -28,6 +28,10 @@ Checkpoint source:
     https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints
     revision ffc447e8a0f2240d42ceb0abfd18ab5b427d5e60
 
+Repair v2 did not pass selection and was deliberately not deployed. Its recovery-only revision
+`c1117378c0bc8b81b408be09c000f80ea9f027d7` adds rejected optimizer-bearing branch states to the training
+archive; it does not change the model, Space, backend checkpoint, or quality claim in this document.
+
 ## Runtime source
 
 - Application source: apps/hf/src/

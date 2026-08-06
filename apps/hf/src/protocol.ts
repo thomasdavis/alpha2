@@ -1,5 +1,37 @@
-export const MODEL_ID = "ajaxdavis/alpha-60m-chat";
+export const MODEL_ID = process.env.MODEL_ID?.trim() || "ajaxdavis/alpha-60m-chat";
 export const END_TOKEN = "<|end_of_text|>";
+export const USER_TOKEN = "<|user|>";
+export const ASSISTANT_TOKEN = "<|assistant|>";
+
+export interface ChatStopTokenIds {
+  readonly eos: number;
+  readonly user: number;
+  readonly assistant: number;
+  readonly all: ReadonlySet<number>;
+}
+
+/** Resolve every token that ends the currently generated assistant turn.
+ *
+ * Alpha's serialized multi-turn chats place the next `<|user|>` marker directly
+ * after an assistant response; there is no separate end-of-turn token between
+ * them. A live chat runtime must therefore stop before emitting that marker,
+ * while `<|end_of_text|>` remains the end of the complete serialized dialogue.
+ */
+export function resolveChatStopTokenIds(
+  encode: (text: string) => ArrayLike<number>,
+): ChatStopTokenIds {
+  const atomic = (token: string): number => {
+    const ids = Array.from(encode(token));
+    if (ids.length !== 1) throw new Error(`${token} is not an atomic tokenizer token`);
+    return ids[0]!;
+  };
+  const eos = atomic(END_TOKEN);
+  const user = atomic(USER_TOKEN);
+  const assistant = atomic(ASSISTANT_TOKEN);
+  const all = new Set([eos, user, assistant]);
+  if (all.size !== 3) throw new Error("chat stop tokens must have distinct token IDs");
+  return { eos, user, assistant, all };
+}
 
 export type ChatRole = "system" | "user" | "assistant";
 

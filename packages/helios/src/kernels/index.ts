@@ -6,6 +6,9 @@
 
 import { Op, GLSLstd450 } from "./helpers.js";
 
+export { kernelQkvHeadMajorRope, kernelQkvHeadMajorRopeBackward, kernelQkvHeadMajorRopeBackwardCombined } from "./qkv-layout.js";
+import { kernelQkvHeadMajorRope, kernelQkvHeadMajorRopeBackward, kernelQkvHeadMajorRopeBackwardCombined } from "./qkv-layout.js";
+
 // Elementwise kernels
 export {
   kernelAdd, kernelSub, kernelMul, kernelDiv, kernelNeg, kernelScale,
@@ -45,22 +48,27 @@ import {
 
 // Reduction kernels
 export {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumReduceBDA, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 import {
-  kernelSumReduce, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumDual, kernelSumAxis,
+  kernelSumReduce, kernelSumReduceBDA, kernelSumOfSquares, kernelSumOfSquaresStride, kernelMaxReduce, kernelColumnSum, kernelColumnSumRowLanes, kernelColumnSumDual, kernelSumAxis,
 } from "./reduction.js";
 
 // NN kernels (includes silu, silu_vec4, mulAdd, residualDropoutAdd, dropoutMask)
 export {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
-  kernelRmsNorm, kernelRmsNormBackward, kernelRope,
+  kernelRmsNorm, kernelResidualAddRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
-  kernelCrossEntropyForwardMasked,
+  kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardFusedOnline, kernelCrossEntropyBackwardMaskedFusedOnline,
+  kernelCrossEntropyTrainingFusedOnline,
+  kernelCrossEntropyMaskedTrainingFusedOnline,
+  kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
+  kernelEmbeddingBackwardDeterministic,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
@@ -69,12 +77,17 @@ export {
 
 import {
   kernelSoftmax, kernelSoftmaxOnline, kernelSoftmaxOnlinePCTA, kernelSoftmaxRegResident, kernelSoftmaxRegUnrolled, kernelSoftmaxVec4, kernelLayerNorm, kernelLayerNormRegUnrolled, kernelLayerNormVec4, kernelLayerNormBackward, kernelLayerNormBackwardVec4,
-  kernelRmsNorm, kernelRmsNormBackward, kernelRope,
+  kernelRmsNorm, kernelResidualAddRmsNorm, kernelRmsNormBackward, kernelRope,
   kernelBroadcast, kernelMaskedFill,
   kernelCrossEntropyForwardFused, kernelCrossEntropyForwardVec4, kernelCrossEntropyForwardPick,
-  kernelCrossEntropyForwardMasked,
+  kernelCrossEntropyForwardMasked, kernelCrossEntropyForwardUnlikelihoodMasked,
   kernelCrossEntropyBackward, kernelCrossEntropyBackwardMasked,
+  kernelCrossEntropyBackwardFusedOnline, kernelCrossEntropyBackwardMaskedFusedOnline,
+  kernelCrossEntropyTrainingFusedOnline,
+  kernelCrossEntropyMaskedTrainingFusedOnline,
+  kernelCrossEntropyBackwardUnlikelihoodMasked,
   kernelEmbeddingForward, kernelEmbeddingForwardVec4, kernelEmbeddingBackward,
+  kernelEmbeddingBackwardDeterministic,
   kernelSilu, kernelSiluVec4, kernelSiluVec4x2,
   kernelSiluMul, kernelSiluMulVec4, kernelSiluMulBackward, kernelSiluMulBackwardVec4,
   kernelMulAdd, kernelResidualDropoutAdd, kernelResidualDropoutAddVec4,
@@ -86,12 +99,24 @@ export {
   kernelMatmul, kernelMatmulBatched,
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
   kernelMatmulTransposedA, kernelMatmulTransposedABatched,
+  kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
+  kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
+  kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedReg4x2CoalescedK32,
+  kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
 import {
   kernelMatmul, kernelMatmulBatched,
   kernelMatmulTransposed, kernelMatmulTransposedBatched,
   kernelMatmulTransposedA, kernelMatmulTransposedABatched,
+  kernelMatmulReg2x2, kernelMatmulTransposedReg2x2,
+  kernelMatmulTransposedReg2x2Coalesced, kernelMatmulTransposedAReg2x2,
+  kernelMatmulReg4x2, kernelMatmulTransposedReg4x2,
+  kernelMatmulTransposedReg4x2Coalesced, kernelMatmulTransposedReg4x2CoalescedK32,
+  kernelMatmulTransposedAReg4x2,
+  kernelMatmulTransposedAReg4x2Coalesced,
 } from "./matmul.js";
 
 // Optimizer / utility kernels
@@ -214,9 +239,11 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "gelu_vec4": spirv = kernelGeluVec4(wgSize); break;
     case "gelu_vec4x2": spirv = kernelGeluVec4x2(wgSize); break;
     case "sum_reduce": spirv = kernelSumReduce(wgSize); break;
+    case "sum_reduce_bda": spirv = kernelSumReduceBDA(wgSize); break;
     case "sum_sq_reduce": spirv = kernelSumOfSquares(wgSize); break;
     case "sum_sq_reduce_stride": spirv = kernelSumOfSquaresStride(wgSize); break;
     case "max_reduce": spirv = kernelMaxReduce(wgSize); break;
+    case "max_abs_reduce": spirv = kernelMaxReduce(wgSize, true); break;
     case "softmax":   spirv = kernelSoftmax(wgSize); break;
     case "softmax_online": spirv = kernelSoftmaxOnline(wgSize); break;
     case "softmax_online_pcta": spirv = kernelSoftmaxOnlinePCTA(wgSize); break;
@@ -225,8 +252,12 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "layernorm": spirv = kernelLayerNorm(wgSize); break;
     case "layernorm_vec4": spirv = kernelLayerNormVec4(wgSize); break;
     case "rmsnorm": spirv = kernelRmsNorm(wgSize); break;
+    case "residual_add_rmsnorm": spirv = kernelResidualAddRmsNorm(wgSize); break;
     case "rmsnorm_backward": spirv = kernelRmsNormBackward(wgSize); break;
     case "rope": spirv = kernelRope(wgSize); break;
+    case "qkv_head_major_rope": spirv = kernelQkvHeadMajorRope(wgSize); break;
+    case "qkv_head_major_rope_backward": spirv = kernelQkvHeadMajorRopeBackward(wgSize); break;
+    case "qkv_head_major_rope_backward_combined": spirv = kernelQkvHeadMajorRopeBackwardCombined(wgSize); break;
     case "silu":      spirv = kernelSilu(wgSize); break;
     case "silu_vec4": spirv = kernelSiluVec4(wgSize); break;
     case "silu_vec4x2": spirv = kernelSiluVec4x2(wgSize); break;
@@ -250,6 +281,18 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "matmul_transposed_batched_T32": spirv = kernelMatmulTransposedBatched(32 * 32, 32); break;
     case "matmul_transposed_a_T32": spirv = kernelMatmulTransposedA(32 * 32, 32); break;
     case "matmul_transposed_a_batched_T32": spirv = kernelMatmulTransposedABatched(32 * 32, 32); break;
+    // Portable 2x2 register blocking: 256 threads compute a 32x32 output tile.
+    case "matmul_R2": spirv = kernelMatmulReg2x2(); break;
+    case "matmul_transposed_R2": spirv = kernelMatmulTransposedReg2x2(); break;
+    case "matmul_transposed_R2C": spirv = kernelMatmulTransposedReg2x2Coalesced(); break;
+    case "matmul_transposed_a_R2": spirv = kernelMatmulTransposedAReg2x2(); break;
+    // Portable 4x2 register blocking: 128 threads compute a 32x32 output tile.
+    case "matmul_R42": spirv = kernelMatmulReg4x2(); break;
+    case "matmul_transposed_R42": spirv = kernelMatmulTransposedReg4x2(); break;
+    case "matmul_transposed_R42C": spirv = kernelMatmulTransposedReg4x2Coalesced(); break;
+    case "matmul_transposed_R42CK32": spirv = kernelMatmulTransposedReg4x2CoalescedK32(); break;
+    case "matmul_transposed_a_R42": spirv = kernelMatmulTransposedAReg4x2(); break;
+    case "matmul_transposed_a_R42C": spirv = kernelMatmulTransposedAReg4x2Coalesced(); break;
     case "add_inplace": spirv = kernelAddInplace(wgSize); break;
     case "add_inplace_vec4": spirv = kernelAddInplaceVec4(wgSize); break;
     case "scale_inplace": spirv = kernelScaleInplace(wgSize); break;
@@ -263,6 +306,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "layernorm_backward": spirv = kernelLayerNormBackward(wgSize); break;
     case "layernorm_backward_vec4": spirv = kernelLayerNormBackwardVec4(wgSize); break;
     case "column_sum": spirv = kernelColumnSum(wgSize); break;
+    case "column_sum_row_lanes_4": spirv = kernelColumnSumRowLanes(32, 4); break;
+    case "column_sum_row_lanes_8": spirv = kernelColumnSumRowLanes(32, 8); break;
+    case "column_sum_row_lanes_16": spirv = kernelColumnSumRowLanes(32, 16); break;
     case "column_sum_dual": spirv = kernelColumnSumDual(wgSize); break;
     case "adamw_step": spirv = kernelAdamW(wgSize); break;
     case "transpose":  spirv = kernelTranspose(wgSize); break;
@@ -274,9 +320,16 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
     case "ce_fwd_vec4":  spirv = kernelCrossEntropyForwardVec4(wgSize); break;
     case "ce_fwd_pick": spirv = kernelCrossEntropyForwardPick(wgSize); break;
     case "cross_entropy_backward": spirv = kernelCrossEntropyBackward(wgSize); break;
+    case "ce_backward_fused_online": spirv = kernelCrossEntropyBackwardFusedOnline(wgSize); break;
     case "ce_fwd_masked": spirv = kernelCrossEntropyForwardMasked(wgSize); break;
     case "ce_masked_backward": spirv = kernelCrossEntropyBackwardMasked(wgSize); break;
+    case "ce_masked_backward_fused_online": spirv = kernelCrossEntropyBackwardMaskedFusedOnline(wgSize); break;
+    case "ce_training_fused_online": spirv = kernelCrossEntropyTrainingFusedOnline(wgSize); break;
+    case "ce_masked_training_fused_online": spirv = kernelCrossEntropyMaskedTrainingFusedOnline(wgSize); break;
+    case "ul_fwd_masked": spirv = kernelCrossEntropyForwardUnlikelihoodMasked(wgSize); break;
+    case "ul_masked_backward": spirv = kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize); break;
     case "embedding_backward": spirv = kernelEmbeddingBackward(wgSize); break;
+    case "embedding_backward_deterministic": spirv = kernelEmbeddingBackwardDeterministic(wgSize); break;
     case "embedding_forward": spirv = kernelEmbeddingForward(wgSize); break;
     case "embedding_forward_vec4": spirv = kernelEmbeddingForwardVec4(wgSize); break;
     case "slice_2d": spirv = kernelSlice2D(wgSize); break;
@@ -320,20 +373,22 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
           spirv = kernelLayerNormRegUnrolled(wgSize, iters);
         }
       }
-      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}
+      // Flash attention kernels — name encodes params: flash_attn_{variant}[_sc]_{Br}_{Bc}_{D}[_tm][_gqkv]
       // Optional _sc suffix enables soft-capping (tanh clamping). Without _sc, softcap code
       // is physically absent from the SPIR-V, eliminating ~25 ops/iter in forward, ~35 in backward.
       if (!spirv) {
-        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)$/);
+        const flashMatch = name.match(/^flash_attn_(fwd(?:_v2)?|bwd_dq(?:_v2)?|bwd_dkv(?:_v2)?)(_sc)?_(\d+)_(\d+)_(\d+)(_tm)?(_gqkv)?$/);
         if (flashMatch) {
-          const [, variant, scSuffix, brS, bcS, dS] = flashMatch;
+          const [, variant, scSuffix, brS, bcS, dS, tokenMajorSuffix, groupedQkvSuffix] = flashMatch;
           const Br = parseInt(brS), Bc = parseInt(bcS), D = parseInt(dS);
           const useSoftCap = scSuffix === "_sc";
+          const tokenMajorOutput = tokenMajorSuffix === "_tm";
+          const groupedQkvOutput = groupedQkvSuffix === "_gqkv";
           switch (variant) {
-            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap); break;
+            case "fwd":        spirv = kernelFlashAttentionForward(Br, Bc, D, useSoftCap, tokenMajorOutput); break;
             case "fwd_v2":     spirv = kernelFlashAttentionForwardV2(Br, Bc, D); break;
-            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap); break;
-            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap); break;
+            case "bwd_dq":     spirv = kernelFlashAttentionBackwardDQ(Br, Bc, D, useSoftCap, tokenMajorOutput, groupedQkvOutput); break;
+            case "bwd_dkv":    spirv = kernelFlashAttentionBackwardDKV(Br, Bc, D, useSoftCap, tokenMajorOutput, groupedQkvOutput); break;
             case "bwd_dq_v2":  spirv = kernelFlashAttentionBackwardDQV2(Br, Bc, D); break;
             case "bwd_dkv_v2": spirv = kernelFlashAttentionBackwardDKVV2(Br, Bc, D); break;
           }
@@ -365,9 +420,9 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_{sg|wg}
       //   flash_attn_coop2_fwd_sc30_in16_{Br}_{Bc}_{D}_ls{LS}_db  (double-buffered KV staging)
       if (!spirv) {
-        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(_db)?(?:_(wg|sg))?$/);
+        const coop2FlashMatch = name.match(/^flash_attn_coop2_fwd(_sc|_sc30)?(_in16)?(_nolse)?_(\d+)_(\d+)_(\d+)(?:_qt(\d+))?(?:_ls(\d+))?(_db)?(_tm)?(?:_(wg|sg))?$/);
         if (coop2FlashMatch) {
-          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, dbSuffix, scopeRaw] = coop2FlashMatch;
+          const [, scSuffix, in16Suffix, noLseSuffix, brS, bcS, dS, qtS, lsS, dbSuffix, tokenMajorSuffix, scopeRaw] = coop2FlashMatch;
           const scopeMode = scopeRaw === "wg" ? "workgroup" : "subgroup";
           const useSoftCap = scSuffix === "_sc" || scSuffix === "_sc30";
           const softCapConst = scSuffix === "_sc30" ? 30 : null;
@@ -389,6 +444,7 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
             qTiles,
             localSize,
             doubleBuf,
+            tokenMajorSuffix === "_tm",
           );
         }
       }
@@ -435,47 +491,57 @@ export function getKernelSpirv(name: string, wgSize = 256): Uint32Array {
         }
       }
       // Cooperative matrix matmul — name encodes:
-      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
+      //   matmul_coop_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_be{p|n}{N}][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
       if (!spirv) {
-        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
+        const coopMatch = name.match(/^matmul_coop_(basic|batched|transposed|transposed_batched|transposed_a|transposed_a_batched)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(be([pn])(\d+)))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
         if (coopMatch) {
-          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix] = coopMatch;
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , balanceSign, balanceMagnitude, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = coopMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
           const inputF16 = f16Suffix === "f16in";
           const accumF16 = f16AccSuffix === "f16acc";
+          const emulateFp32 = f16x3Suffix === "f16x3";
+          const balanceExponent = balanceMagnitude
+            ? (balanceSign === "n" ? -1 : 1) * parseInt(balanceMagnitude)
+            : 0;
           const subgroupTilesX = Math.max(1, subgroupXS ? parseInt(subgroupXS) : 1);
           const subgroupTilesY = Math.max(1, subgroupYS ? parseInt(subgroupYS) : 1);
           const regTilesM = Math.max(1, regMStr ? parseInt(regMStr) : 1);
           const regTilesN = Math.max(1, regNStr ? parseInt(regNStr) : 1);
           const doubleBuf = dbSuffix === "db";
+          const kMulti = kMultiS ? parseInt(kMultiS) : undefined;
           switch (variant) {
-            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
+            case "basic":               spirv = kernelCoopMatmulBasic(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "batched":             spirv = kernelCoopMatmulBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed":          spirv = kernelCoopMatmulTransposed(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_batched":  spirv = kernelCoopMatmulTransposedBatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a":        spirv = kernelCoopMatmulTransposedA(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a_batched": spirv = kernelCoopMatmulTransposedABatched(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
           }
         }
       }
       // Split-K cooperative matrix matmul — name encodes:
-      //   matmul_coop_splitk_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
+      //   matmul_coop_splitk_{variant}_{M}_{N}_{K}[_f16in][_f16acc][_f16x3][_be{p|n}{N}][_s{X}x{Y}][_r{M}x{N}][_db][_km{N}]
       if (!spirv) {
-        const skMatch = name.match(/^matmul_coop_splitk_(basic|transposed|transposed_a)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
+        const skMatch = name.match(/^matmul_coop_splitk_(basic|transposed|transposed_a)_(\d+)_(\d+)_(\d+)(?:_(f16in))?(?:_(f16acc))?(?:_(f16x3))?(?:_(be([pn])(\d+)))?(?:_(s(\d+)x(\d+)))?(?:_(r(\d+)x(\d+)))?(?:_(db))?(?:_km(\d+))?$/);
         if (skMatch) {
-          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix] = skMatch;
+          const [, variant, mS, nS, kS, f16Suffix, f16AccSuffix, f16x3Suffix, , balanceSign, balanceMagnitude, , subgroupXS, subgroupYS, , regMStr, regNStr, dbSuffix, kMultiS] = skMatch;
           const cM = parseInt(mS), cN = parseInt(nS), cK = parseInt(kS);
           const inputF16 = f16Suffix === "f16in";
           const accumF16 = f16AccSuffix === "f16acc";
+          const emulateFp32 = f16x3Suffix === "f16x3";
+          const balanceExponent = balanceMagnitude
+            ? (balanceSign === "n" ? -1 : 1) * parseInt(balanceMagnitude)
+            : 0;
           const subgroupTilesX = Math.max(1, subgroupXS ? parseInt(subgroupXS) : 1);
           const subgroupTilesY = Math.max(1, subgroupYS ? parseInt(subgroupYS) : 1);
           const regTilesM = Math.max(1, regMStr ? parseInt(regMStr) : 1);
           const regTilesN = Math.max(1, regNStr ? parseInt(regNStr) : 1);
           const doubleBuf = dbSuffix === "db";
+          const kMulti = kMultiS ? parseInt(kMultiS) : undefined;
           switch (variant) {
-            case "basic":        spirv = kernelCoopMatmulSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed":   spirv = kernelCoopMatmulTransposedSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
-            case "transposed_a": spirv = kernelCoopMatmulTransposedASplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf); break;
+            case "basic":        spirv = kernelCoopMatmulSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed":   spirv = kernelCoopMatmulTransposedSplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
+            case "transposed_a": spirv = kernelCoopMatmulTransposedASplitK(cM, cN, cK, inputF16, accumF16, subgroupTilesX, subgroupTilesY, regTilesM, regTilesN, doubleBuf, emulateFp32, balanceExponent, kMulti); break;
           }
         }
       }

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alpha.local/schemas/operation-registry.schema.json",
+  "title": "Alpha GPU Operation Registry",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "variantDimensions",
+    "operations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string"
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string"
+    },
+    "limitations": {
+      "type": "string"
+    },
+    "variantDimensions": {
+      "type": "object"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "layer",
+          "family",
+          "name",
+          "exportName",
+          "requestType",
+          "summary",
+          "status",
+          "target"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_.-]+$"
+          },
+          "layer": {
+            "enum": [
+              "alpha",
+              "helios",
+              "prometheus",
+              "hephaestus",
+              "chronos",
+              "hermes",
+              "gaia",
+              "aether"
+            ]
+          },
+          "family": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "exportName": {
+            "type": "string"
+          },
+          "requestType": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "standard",
+              "research",
+              "speculative"
+            ]
+          },
+          "target": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "algebra": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "differentiability": {
+            "type": "string"
+          },
+          "fusionTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "loweringHints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sourceTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

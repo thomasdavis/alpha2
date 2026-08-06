@@ -1,13 +1,220 @@
-# HANDOFF — Alpha chat repair published with quality FAIL; AlphaCorpus paused, state as of 2026-07-31
+# HANDOFF — Alpha foundation and Helios acceleration active; best honest chat checkpoint unchanged, state as of 2026-08-03
+
+> **Latest self-contained agent transfer:**
+> [`docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md`](docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md).
+> It freezes the current product north star, repository/runtime state, public artifact identities, selected Helios
+> baseline, open and rejected experiments, mounted evidence map, downstream obligations, and exact next-action
+> order. Use it before the older chronological record below.
 
 ## ACTIVE GOAL — make the original Alpha model reliably chatty
+
+### 2026-08-03 superseding execution state
+
+The active path is now a better-trained small foundation followed by distillation and chat post-training. The
+full foundation run has **not** begun. Its 2,058,181,632-token packed train cache and fixed validation cache are
+verified, a matched three-arm pilot selected peak learning rate `0.002`, and the current candidate contract is
+97,098,880 parameters, sequence length 1,024, batch 24, 79,020 optimizer steps, and 1,941,995,520 planned
+training tokens. Symbiogenesis is disabled for this run. Do not describe the verified caches or LR pilot as a
+trained foundation model.
+
+Helios optimization now has five selected, numerically validated results. The exact per-dispatch Vulkan profiler
+first guided a portable 2 x 2 register-blocked GEMM that reduced one-step dispatch time by 36.9% and raised
+matched steady median throughput from the historical 3,579 to 4,513 tokens/s. Corrected physical-kernel labels
+then exposed 637 `scale_vec4x2` calls as autograd gradient copies rather than useful arithmetic. The tape now
+moves the final consumer's gradient buffer and clones only genuine aliases. A same-source trace-on control is
+available with `ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1`; it measured 4,121.0 tokens/s versus 6,123.2 with ownership
+forwarding (+48.6%). A longer trace-off production run measured 18 warm steps at p10/median/p90 6,432.6 /
+6,567.7 / 6,666.5 tokens/s. Its median is +45.5% over the prior register-blocked baseline and +83.5% over the
+historical path.
+
+A third, portable 4 x 2 register-blocked GEMM was then evaluated per physical layout. It is faster for ordinary
+and transposed-A multiplication but slower for transposed-B, so the selected portfolio uses R4x2 / R2 / R4x2 for
+ordinary / transposed-B / transposed-A respectively. Across 18 warm production steps, it raised median throughput
+from 6,567.7 to 6,836.8 tokens/s (+4.10%), with p10/p90 6,638.4 / 6,970.6. Maximum loss and gradient-norm
+differences were `9.537e-7` and `4.308e-8`; the terminal held-out loss, learning rate, and clipping coefficients
+matched. The complete RTX 4090 suite passed 29 files / 283 tests.
+
+The remaining transposed-B path was then redesigned around physical memory layout. R42C makes adjacent X
+invocations read contiguous K elements of B and transposes only into shared memory. A paired R2C control was
+correct but neutral; R42C cut transposed-B time from 570,078.2 to 467,672.1 us (-17.96%) and full exact dispatch
+time from 1,759,004.2 to 1,640,182.0 us (-6.75%). Its 18-warm-step p10/median/p90 was 6,844.8 / 7,048.9 /
+7,200.8 tokens/s, another 3.10% median gain. Maximum loss and gradient-norm differences from the prior portfolio
+were `9.537e-7` and `3.681e-8`; terminal validation, learning rate, and clipping coefficients matched. The full
+physical suite again passed 29 files / 283 tests.
+
+The transposed-A path now has the matching physical-layout remap. R42C-A makes adjacent X invocations read
+contiguous M elements from physical `[K,M]` A and transposes only into the shared `[32,16]` tile. Across five
+matched exact profiles, the original R42 controls took 336,395.8 and 338,954.0 us while three R42C-A samples took
+290,239.8-292,475.6 us; candidate median is 13.61% below the control midpoint. In a conservative candidate-first
+20-step production comparison, warm median throughput rose from 7,085.0 to 7,253.8 tokens/s (+2.38%). Loss was
+exact across all steps and maximum gradient-norm drift was `2.154e-8`. The physical suite passed 29 files / 283
+tests. Selected source commit is `028e9b31524e6d89b2caee76dad2ae47b8896e03`; complete evidence is under
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/`.
+
+An additional **unselected** R42CK32 experiment is now available at source commit
+`2ca869249da901763b7f4a69db939226753b198f`. It retains the coalesced transposed-B R42C mapping but doubles the
+K-reduction tile from 16 to 32, increasing total shared memory from 4 KiB to 8 KiB in exchange for half as many
+tile load/barrier rounds. The opt-in shader dispatched correctly on the awkward `113 x 157 x 93` Mesa smoke,
+with transposed-B maximum absolute error `3.338e-6`; the refactored K16 R42C and R42C-A controls also passed, as
+did the full local suite at 233 pass / 50 GPU-gated / 0 fail. This is correctness evidence only. The foundation
+launcher does not enable `HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32`, and no speed claim exists until an
+alternating physical-GPU K16/K32 comparison passes the complete parity and sustained-throughput gates.
+
+The old cooperative-matrix failure has a stronger discriminator but is not yet repaired or selected. The B4
+forward-only row dispatched 81 production `transposed-B s2x2 r4x4 km4` kernels and changed first loss from
+2.7419 to 6.9667 before backward. A streaming audit of the exact base checkpoint found maximum parameter
+absolute value 4.6417856 and zero of 57,688,576 stored parameters outside f16 range, so stored-weight clamping
+cannot explain the failure. In addition to the three production-shape rank-one gates, the test suite now has a
+dense non-low-rank dyadic transposed-B oracle whose exact f16/f32-representable result must match the generic
+FP32 path with zero tolerance while telemetry proves direct `s2x2_r4x4` dispatch. The local package suite passes
+233 tests with 54 GPU-gated and zero failures; physical execution remains open, so there is no new speed claim.
+The historical B4 sweep lacked an exact source/dirty-patch binding; the launcher now captures both plus source
+hashes, runtime, and the controlled per-row environment. Canonical audit:
+`/mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/`.
+
+An additional **unselected** row-parallel `column_sum` candidate addresses the next measured reduction hotspot.
+The selected kernel gives one thread each of roughly 512 columns and makes it walk all 24,576 token rows; the
+candidate family uses portable 32-column x {4,8,16}-row-lane workgroups, coalesced reads, shared-memory reduction,
+and no atomics or subgroup-size assumption. All three executed on the independent llvmpipe Vulkan stack with
+subgroup size 8 and matched an awkward dense 257 x 96 RMSNorm weight gradient within `4.2915e-6` maximum absolute
+error. The local
+package suite passes 233 tests with 55 physical-GPU-gated and zero failures. It remains opt-in through
+`HELIOS_COLUMN_SUM_ROW_LANES=4|8|16`; no speed claim or production selection exists until an alternating RTX profile
+and sustained trajectory pass the same parity and provenance gates as the selected GEMM portfolio.
+
+Matched control/candidate losses and validation loss were exact; maximum gradient-norm difference was
+`6.913e-7`. A later one-ulp replay difference was traced to legal nondeterministic ordering in repeated-token
+embedding-gradient atomics, not hidden with a tolerance. Bounded replay shapes now use a fixed-order gather,
+while real training retains the fast scatter. The failing case passed in 10 fresh GPU processes and the
+default-on path then passed all 29 physical-GPU test files and 283 tests. A simple four-query dKV
+unroll was separately rejected after making dKV 74.7% slower and the complete dispatch graph 15.6% slower. These
+are engine gains, not behavioral model gains, so they have not triggered Discord, Hugging Face, or BLAH
+publication.
+
+The register-blocked portfolio remains explicitly selected with `HELIOS_MATMUL_REG4X2=1`,
+`HELIOS_MATMUL_REG4X2_TRANSPOSED_B=1`, `HELIOS_MATMUL_TRANSPOSED_B_COALESCED=1`,
+`HELIOS_MATMUL_TRANSPOSED_A_COALESCED=1`, and
+`HELIOS_MATMUL_REG2X2=1` while more devices are measured. R4x2 needs only
+ordinary scalar FP32 Vulkan compute, a 16 x 8 workgroup, 128 invocations, and 4 KiB of shared memory; the R2
+fallback needs a 16 x 16 workgroup and 256 invocations. Their awkward-dimension numerical smokes also pass Mesa llvmpipe. That is useful portability
+evidence but **not** physical AMD proof. The current RunPod catalog visible to this account offers NVIDIA GPUs
+only. AMD support remains active work: Vulkan-on-Radeon first, plus a backend-neutral HIP/ROCm lowering for
+Instinct rentals that do not expose production Vulkan.
+
+The dedicated RTX 4090 pod `wtupxv15debnvh` was deleted on 2026-08-03 after the pushed commits, mounted evidence,
+older dirty worktree, untracked files, and all stashes were recovered and hash-checked. `runpodctl pod list`
+returned empty after deletion, so no Alpha RunPod is billing. Recovery is at
+`/mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/`. At the sustained median 7,253.8
+tokens/s, the current full-token contract would take about 74.37 hours before validation/checkpoint overhead and
+cost about USD 51.31 at that price. This is materially better but still not the accepted engine endpoint. The
+next exact targets are the physical row-parallel column-sum discriminator, a CODA-controlled GEMM-epilogue
+slice, correct reduced-precision matrix acceleration, a real attention-backward redesign, transposes, and
+operation-graph quotienting. Finish the
+correctness-gated optimization/accelerator decision before starting the multi-day run.
+
+Profiler interpretation is now reproducible rather than hand-transcribed. Run
+`npm run perf:profile:summary -- LOG...` to parse every exact `[gpu_ops]` sample, average the profiler's dynamic
+operation kinds and physical kernel identities, calculate mean/call and dispatch share, and bind every source log
+by SHA-256. Against the two selected R42C/R42C-A profiles it reproduces the ledger mean exactly at
+1,670,607.05 us and emits the requested readable Markdown tables plus a JSON mode. It deliberately does not use a
+hand-maintained kernel-category map.
+
+The physical reduction experiment is also scripted as
+`npm run perf:sweep:column-sum`. It requires `TRAIN_DATA`, `VAL_DATA`, and `TOKENIZER`, rejects a pre-existing
+output directory, captures input/source/runtime hashes plus the full dirty patch, disables checkpoints, and runs
+mirrored control/4/8/16/16/8/4/control orders for both exact timestamp profiles and sustained 20-step
+trajectories. Each timestamped row gets its own Markdown and JSON profile report. This script is prepared but has
+not been executed on a physical GPU.
+
+Read these first:
+
+- [Helios exact profiler and register-blocking evidence](docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md)
+- [Helios optimization and AMD compatibility program](docs/resume/HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md)
+- [Foundation candidate feasibility and LR contract](docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md)
+- [Current state](docs/resume/CURRENT-STATE.md)
+
+All Helios research and benchmark evidence must be persisted on the mounted drive. The canonical policy and
+mounted evidence register are:
+
+    /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/EVIDENCE-REGISTER.md
+
+`/tmp`, pod root filesystems, terminal output, and uncommitted worktrees are never the sole copy. Preserve raw
+controls, candidates, rejected and invalid runs, exact commands, device/driver metadata, source identities, test
+reports, and checksum manifests before closing an experiment or deleting a remote machine. Pause before a
+project slice adds more than 15 GiB; do not discard evidence merely to remain below that threshold.
+
+The older historical sections below remain evidence, but any statement that no Alpha pod is billing, no paid run
+is authorized, or the LR pilot is merely planned is superseded by this execution state.
 
 The operator explicitly returned the project to the original product goal on 2026-07-31: Alpha should be a
 small, natural conversational model. AlphaCorpus remains a valuable side project, but its D5 review workflow is
 paused and is not the active model-training objective. Do not restart corpus generation, human-review pipeline
 work, or public explorer work merely because the historical section below is detailed.
 
-The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). The short version:
+The latest authoritative records are the
+[v2 mechanism analysis](docs/resume/CHAT-REPAIR-V2-MECHANISM-ANALYSIS-2026-08-01.md) and the unexecuted
+[v3 experiment contract](docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md). The full v2 execution record remains
+[Chat Repair v2 2026-07-31](docs/resume/CHAT-REPAIR-V2-2026-07-31.md). Repair v2 is complete and negative:
+
+- Pilot A continued the published checkpoint for 800 bounded steps. Pilot B then ran the one predeclared
+  clean-base control for 1,600 steps from SHA
+  `08e14fa9604bf1b46ebcd5df37933c84d2496c1d05d9e4b32ebad98792cc6049`.
+- Every v2 selector checkpoint answered all 96 prompts, so the response-initiation intervention worked. On the
+  exact 69 prompts shared with the public baseline, however, the baseline had 24 loop flags; Pilot A's best was
+  30 and the clean-base control's best was 29. Qualitative panels showed parroting, semantic errors, generic
+  nonanswers, and repeated-phrase attractors.
+- No v2 checkpoint was selected. The 150-prompt sealed-final suite was never executed or inspected. The public
+  model, Space, and backend deliberately remain on the earlier selected step 1,200.
+- All eight clean-base checkpoints, metrics, four evaluations, and logs are mounted under
+  `/mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/`. Step 800 and terminal step 1,600 are additionally
+  public with optimizer/RNG state at training-archive revision
+  `c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`.
+- Anonymous verification found 53 public files and exact LFS hashes for both retained checkpoints. The public
+  checksum manifest SHA-256 is `b733f5704e722faadd2e6e46cd9505be44e7952da75d3d001aa65ac92cc6cf5f`.
+- Alpha pod `omn3hktwqs7r5l` was removed only after verified recovery. RunPod `7pk5wnwgtazb0z`, visible in the
+  immediate termination proof, belonged to an unrelated workload and was untouched; it was no longer listed at
+  the final documentation audit. Always recheck live pod ownership rather than treating either observation as
+  permanent.
+- No v2 improvement announcement was posted. One later operator-requested webhook test used an exact rejected
+  sample and was clearly labelled as a test; it did not change the improvement-only rule.
+- Do not continue either v2 branch blindly. A future paid run requires explicit authorization and a genuinely
+  new finite intervention aimed at semantic contingency or autoregressive stability.
+
+Repair v3 was subsequently authorized, executed, recovered, and rejected for release:
+
+- The full 4,096-row CUDA rollout ledger, repetition mask, selection-ineligible paired probe, matched C0/U1 arms,
+  and declared development evaluations completed on one secure RTX 4090. The real NVIDIA suite passed 50/50 after
+  an exact-zero gradient-sign correction in `72079db`; native tokenizer binding was corrected in `8c0fe06` before
+  selectable training.
+- C0 and U1 each completed 400/400 finite steps from the same selected checkpoint with the same data order. U1
+  step 400 reduced fresh-development loops from 35 to 6, fixed 29 C0 loop cases, introduced zero new paired loops,
+  preserved 96/96 nonempty responses, and therefore passed the mechanical gate.
+- A 48-triad blinded human-review packet is preserved under
+  `/mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-blind-review-20260801/`; its key remains sealed and
+  human review remains pending. The sealed final was not opened.
+- A matched live probe through `evals.blah.dev` was sufficient to reject promotion: U1 step 400 remained circular
+  or wrong on explanation and conceptual distinction, ignored pragmatic intent, and did not improve ambiguity or
+  identity reasoning. It fixed an autoregressive repetition symptom without adding the missing semantic ability.
+- The complete remote artifact tree was mirrored locally: 273/273 files, 13,896,740,932 bytes, and every SHA-256
+  matched. Pod `13ot2p3prx36th` was removed only after that proof. No Alpha RunPod is billing. Canonical execution
+  record: `/mnt/donto-data/alpha-runs/alpha-chat-repair-v3-20260801/RUN.md`.
+- The transient local U1 serving unit was stopped after the Blah probe. The public Hugging Face model, public
+  backend, Space, and Blah production registration remain on selected step 1,200.
+
+The active local preflight is now
+[semantic-chat repair v4](docs/resume/CHAT-SEMANTIC-REPAIR-V4-PREFLIGHT.md). It measures a concrete data mismatch:
+the 34,880-row corrective corpus was 86% SODA role-play and contained only 519 one-exchange conversations, while
+the existing SmolTalk source held 186,043 direct user/assistant pairs that the repair builder excluded by design.
+V4 tests a compact, structurally generated and reviewed `gpt-5.4` semantic-chat curriculum plus limited natural
+multi-turn replay. The structured generation smoke passed. The first production attempt was stopped after 15/50
+batches because an embedding/manual audit exposed cross-batch paraphrase clusters that the per-batch validator
+could not see. Those attempts are preserved and excluded. Planned-v2 now uses one `gpt-5.5` global semantic
+blueprint before `gpt-5.4` realization, then performs stronger-model review, semantic-overlap, tokenizer, mask,
+and human-sample audits. No v4 GPU run or public model change has occurred.
+
+The selected checkpoint's earlier recovery record is
+[Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-2026-07-31.md). Its short version:
 
 - The archived terminal checkpoint really did have an answer-initiation failure, but the evaluator, native API,
   Hugging Face template, and Space also appended an erroneous generation-only space after `<|assistant|>`.
@@ -38,17 +245,22 @@ The current recovery record is [Chat Repair 2026-07-31](docs/resume/CHAT-REPAIR-
 - Pod `ksotbczj60mntk` was removed after the untouched outputs were copied, hashed, and recomputed;
   `runpodctl pod list` was empty immediately afterward.
 
-Current local evidence root:
+Selected-repair local evidence root:
 
     /mnt/donto-data/alpha-runs/alpha-chat-repair-20260731/
+
+Rejected-v2 local evidence root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/
 
 Current corpus root:
 
     /mnt/donto-data/donto-resources/research/alpha-chat-repair-20260731/
 
-The generated replies are often shallow, vague, wrong, empty, or repetitive. Do not describe this candidate as
-philosophically intelligent, generally capable, or reliably chatty. It demonstrates a partial recovery of
-conversational initiation, with the complete failure profile preserved for the next experiment.
+The generated replies are often shallow, vague, wrong, empty, or repetitive. Do not describe the selected or
+rejected candidates as philosophically intelligent, generally capable, or reliably chatty. The selected model
+demonstrates a partial recovery of conversational initiation; v2 proves that reliable initiation alone does not
+produce semantic contingency or stable conversation.
 
 ---
 
@@ -2219,6 +2431,7 @@ more CPU training on the box).
 ## State of the repo (github.com/thomasdavis/alpha2, master, all pushed)
 
 Working tree CLEAN at `84c110c`. Key commits this program (chronological):
+
 - `9524598` GOAL.md + proven RunPod/Vulkan bootstrap (`scripts/runpod_bootstrap.sh`, `docs/RUNPOD.md`)
 - `59d79da` **G0 PASSED**: Helios trained on a RunPod 3090 (60 steps, loss 7.28→7.05, 0 NaN, ~40K tok/s
   at 1.33M params, DGC+BDA+coop active). Artifacts: `/mnt/donto-data/alpha-runs/g0-smoke-20260722/`
@@ -2234,6 +2447,7 @@ Working tree CLEAN at `84c110c`. Key commits this program (chronological):
 - `84c110c` e2e script self-containment fix + final-tree golden numbers
 
 ### Test/verification state (all on the FINAL committed tree)
+
 - `nice -n19 npx tsc -b` from root: clean. Full turbo build: 19/19.
 - `packages/tests`: **178 passed / 44 GPU-gated skips / 0 failed** (~80–150s wall on the loaded box).
   The 44 skips are `parity-helios.test.ts` (36) + `gpu-perf.test.ts` — they gate on NVIDIA vendorId
@@ -2246,7 +2460,9 @@ Working tree CLEAN at `84c110c`. Key commits this program (chronological):
 - Byte-BPE exporter cross-verified vs Python `tokenizers` on 9,822 real corpus docs: 100% id agreement.
 
 ### What Stages 3–4 added (commit `b3ffe90`)
+
 All config-gated; legacy GPT-2-style configs bit-for-bit unchanged.
+
 - **Arch**: `rmsNorm` (+fused backward) and `rope` ops — cpu_ref + autograd + Helios SPIR-V kernels.
   RoPE is EXACTLY HF `rotate_half` (half-split, `inv_freq=θ^(-2i/D)`) so export needs no permutation;
   backward = rotation by −angle (reuses forward kernel with negated sin). Tied embeddings via
@@ -2282,6 +2498,7 @@ All config-gated; legacy GPT-2-style configs bit-for-bit unchanged.
   - P3 (= the inference-engine fix above).
 
 ### Stage-1 harness (commit `9b63685`) — how correctness is enforced
+
 `packages/tests/src/`: `gradcheck-ops.test.ts` (central-difference FD checks for EVERY op the model
 uses; reusable `checkGrad`), `gradcheck-model.test.ts` (whole tiny-GPT gradchecks across
 swiglu/gelu/universal/kan_spline AND the Llama-form config; top-|grad| element sampling; dead-param +

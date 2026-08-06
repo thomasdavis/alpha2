@@ -10,9 +10,11 @@ import type { ModelConfig, Backend, TensorData } from "@alpha/core";
 import { shapeSize, SeededRng } from "@alpha/core";
 import {
   Variable, Tape, DropoutRng,
-  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMul, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
-  sliceQkv, reshape, transpose, embedding, scale, softCap, dropout,
-  residualDropoutAdd, flashAttention, checkpoint,
+  add, mul, matmul, matmulTransposed, matmulTransposedGelu, gelu, silu, siluMulMatmulTransposedRecompute, relu, layerNorm, rmsNorm, rope, softmax, crossEntropy, crossEntropyMasked,
+  crossEntropyUnlikelihoodMasked,
+  sliceQkv, sliceQkvHeadMajor, qkvHeadMajorRope, reshape, transpose, embedding, scale, softCap, dropout,
+  residualDropoutAdd, residualDropoutAddRmsNorm, flashAttention, qkvFlashAttention,
+  qkvFlashAttentionTokenMajor, checkpoint,
   castToF16, castToF32,
 } from "@alpha/autograd";
 
@@ -49,6 +51,13 @@ export interface GPTParams {
   lmHead: Variable;
 }
 
+/** Explicit loss selection for specialized training branches. Ordinary model
+ * training defaults to cross-entropy; RCR-UL must opt into unlikelihood and
+ * provide a mask identifying only frozen negative-token positions. */
+export type GPTLossObjective =
+  | { kind: "cross_entropy" }
+  | { kind: "unlikelihood"; epsilon: number };
+
 export interface LayerParams {
   ln1: { weight: Variable; bias?: Variable };
   attn: {
@@ -68,12 +77,33 @@ export interface LayerParams {
   };
 }
 
+/*
+ * THE WEIGHT GOES ON THE DEVICE, and until now it did not.
+ *
+ * This function took `backend` and never used it: it built a Float32Array and
+ * wrapped it in a bare TensorData, so every large parameter -- every attention
+ * and MLP matrix, the embedding, the head -- stayed host-only, while
+ * initOnes/initZeros/initFull beside it went through the backend correctly. At
+ * 105M that is 11 host tensors of 25.6M elements against 10 device tensors of
+ * almost nothing, and it is invisible because the result is CORRECT: an
+ * operand that is not resident gets copied in, so the model trains and simply
+ * pays for it.
+ *
+ * What it pays: every matmul re-uploads its weight EVERY STEP, through
+ * `for (i) dst[i] = src[i]` on the host. Profiling a 105M step put 42% of wall
+ * clock outside the GPU and the largest chains were all this copy, reached via
+ * device() from matmul and transpose. It also produced the pool churn that
+ * looked like a leak -- 108 weight-sized buffers a step with nobody to own
+ * them.
+ *
+ * The initialisation stays on the host because rng.nextGauss is a host RNG and
+ * the values must be reproducible from the seed; only the RESIDENCY changes.
+ */
 function initWeight(backend: Backend, rng: SeededRng, shape: number[], std: number): Variable {
   const size = shapeSize(shape);
   const data = new Float32Array(size);
   for (let i = 0; i < size; i++) data[i] = rng.nextGauss() * std;
-  const td: TensorData = { shape, dtype: "f32", data };
-  return new Variable(td, true);
+  return new Variable(backend.fromArray(data, shape, "f32"), true);
 }
 
 function initOnes(backend: Backend, shape: number[]): Variable {
@@ -86,6 +116,40 @@ function initZeros(backend: Backend, shape: number[]): Variable {
 
 function initFull(backend: Backend, shape: number[], value: number): Variable {
   return new Variable(backend.full(shape, value, "f32"), true);
+}
+
+/**
+ * Return the exact number of unique trainable scalar parameters that initGPT
+ * creates for a configuration. Keep planning code on this architecture-aware
+ * path: tied embeddings, RoPE, and RMSNorm materially change the total.
+ */
+export function estimateGPTParamCount(config: ModelConfig): number {
+  const { vocabSize, blockSize, nLayer, nEmbd } = config;
+  const activation = config.ffnActivation ?? "gelu";
+  const normType = config.normType ?? "layernorm";
+  const posEnc = config.posEnc ?? "learned";
+  const tieEmbeddings = config.tieEmbeddings ?? false;
+  const ffnDim = config.ffnDim ?? (activation === "swiglu"
+    ? Math.ceil((8 / 3) * nEmbd / 64) * 64
+    : 4 * nEmbd);
+
+  const normParams = normType === "rmsnorm" ? nEmbd : 2 * nEmbd;
+  const embeddingParams = vocabSize * nEmbd;
+  let total = embeddingParams;
+  if (posEnc !== "rope") total += blockSize * nEmbd;
+  total += normParams; // final norm
+  if (!tieEmbeddings) total += embeddingParams;
+
+  let mlpParams = activation === "swiglu"
+    ? 3 * nEmbd * ffnDim
+    : 2 * nEmbd * ffnDim;
+  if (activation === "universal") mlpParams += 2 * ffnDim;
+  else if (activation === "kan_spline") mlpParams += 5 * ffnDim;
+
+  const attentionParams = 4 * nEmbd * nEmbd;
+  const perLayerNormParams = 2 * normParams;
+  total += nLayer * (attentionParams + mlpParams + perLayerNormParams);
+  return total;
 }
 
 export function initGPT(config: ModelConfig, backend: Backend, rng: SeededRng): GPTParams {
@@ -247,7 +311,14 @@ export interface GPTForwardResult {
   };
 }
 
-/** Single transformer block: LN → Attention → Residual, LN → MLP → Residual. */
+type TransformerBlockResult = {
+  output: Variable;
+  normalizedForNext?: Variable;
+};
+
+/** Single transformer block: LN → Attention → Residual, LN → MLP → Residual.
+ *  A caller may provide the first normalized view from a preceding fused
+ *  residual boundary and request the next normalized view as a side output. */
 function transformerBlock(
   ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng },
   x: Variable,
@@ -257,7 +328,9 @@ function transformerBlock(
   T: number,
   mask: TensorData,
   training: boolean,
-): Variable {
+  normalizedInput?: Variable,
+  nextNorm?: NormLayer,
+): TransformerBlockResult {
   const { nHead, nEmbd } = config;
   const headDim = nEmbd / nHead;
   const ropeOn = (config.posEnc ?? "learned") === "rope";
@@ -268,74 +341,261 @@ function transformerBlock(
   const useSoftCap = softCapVal !== undefined && softCapVal > 0;
 
   // 1) Norm → Attention → Residual
-  const ln1Out = applyNorm(ctx, x, layer.ln1, config, 1e-5);
+  const ln1Out = normalizedInput ?? applyNorm(ctx, x, layer.ln1, config, 1e-5);
 
   // Grouped QKV projection — single GEMM instead of three
   const q3d = reshape(ctx, ln1Out, [Batch * T, nEmbd]);
   const qkvFlat = matmulTransposed(ctx, q3d, layer.attn.wqkv); // [B*T, 3*nEmbd]
-  const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
-  const q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
-  const k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
-  const v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
 
   // Attention: Flash Attention (fused) or standard path
   let attnConcat: Variable;
-  if (ctx.backend.flashAttention) {
-    // Flash attention path: causal masking + softcap are handled inside the kernel.
-    // q/k/v are [B, T, nEmbd] with memory layout [B][T][nHead][headDim]. The flash
-    // kernel indexes contiguous [B*nHead, T, headDim] as head-major — a contiguous
-    // [T, headDim] block per (batch, head). A PLAIN reshape to [B*nHead, T, headDim]
-    // would reinterpret the [B][T][nHead][headDim] buffer without moving data, so
-    // for nHead>1 the (batch,head) rows and time positions are scrambled (and RoPE
-    // would then rotate by wrong positions). Reshape→transpose(1,2)→reshape lays
-    // the data out head-major, matching the standard path exactly. [defect P1]
-    let qFA = reshape(ctx, transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    let kFA = reshape(ctx, transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    const vFA = reshape(ctx, transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
-    // RoPE rotates q/k (per-head, per-position) before attention; flash kernel unchanged.
-    if (ropeOn) {
-      qFA = rope(ctx, qFA, headDim, 0, ropeTheta);
-      kFA = rope(ctx, kFA, headDim, 0, ropeTheta);
-    }
+  const tokenMajorQkvFlash = ropeOn
+    && !!ctx.backend.flashAttentionTokenMajor
+    && !!ctx.backend.flashAttentionBackwardTokenMajor
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackwardCombined;
+  const combinedQkvFlash = ropeOn
+    && !!ctx.backend.flashAttention
+    && !!ctx.backend.flashAttentionBackward
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackwardCombined;
+  const fusedQkvLayout = ropeOn
+    && !!ctx.backend.flashAttention
+    && !!ctx.backend.qkvHeadMajorRope
+    && !!ctx.backend.qkvHeadMajorRopeBackward;
+  if (tokenMajorQkvFlash) {
+    // The Flash kernel writes [B*T,H*D] in the output projection's native
+    // token-major order and consumes O/dO in the same layout during backward.
+    // This removes both whole-tensor output transposes without changing Q/K/V.
+    attnConcat = qkvFlashAttentionTokenMajor(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+      1 / Math.sqrt(headDim),
+      useSoftCap ? softCapVal! : 0,
+    );
+  } else if (combinedQkvFlash) {
+    // Record the layout/RoPE boundary and flash attention as one autograd
+    // operation. Its backward consumes dQ/dK/dV together and writes the
+    // complete grouped QKV gradient once, avoiding three zero-padded branch
+    // tensors plus two full-width tape additions.
+    const attnOut = qkvFlashAttention(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+      1 / Math.sqrt(headDim),
+      useSoftCap ? softCapVal! : 0,
+    );
+    attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
+  } else if (fusedQkvLayout) {
+    // The QKV projection is token-major [B*T,3*H*D], whereas flash attention
+    // consumes head-major [B*H,T,D]. Cross that boundary once and rotate Q/K
+    // in the same dispatch instead of materialising slice, transpose, and RoPE
+    // intermediates. The backend retains a matched compositional control.
+    const [qFA, kFA, vFA] = qkvHeadMajorRope(
+      ctx,
+      qkvFlat,
+      Batch,
+      T,
+      nHead,
+      headDim,
+      ropeTheta,
+    );
     const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
     attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
   } else {
-    // Standard multi-dispatch attention (CPU fallback)
-    let qH = transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
-    let kH = transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
-    const vH = transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
-
-    // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
-    // axis), then reshape back to [B, nHead, T, headDim] for attention.
-    if (ropeOn) {
-      qH = reshape(ctx, rope(ctx, reshape(ctx, qH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
-      kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+    // RoPE-free backends that can slice the grouped qkv STRAIGHT to head-major
+    // skip sliceQkv and the three head permutes entirely — one fused launch per
+    // plane straight to [B,H,T,D]. The multi-dispatch downstream below is then
+    // fed the same q/k/v values it would have permuted, so the result (and the
+    // loss) is identical. Only the standard (non-flash) path can use it.
+    const useFusedHeadMajor = !ropeOn
+      && !ctx.backend.flashAttention
+      && !!ctx.backend.sliceQkvHeadMajor
+      && !!ctx.backend.sliceQkvHeadMajorBackward;
+    let qHfused: Variable | null = null;
+    let kHfused: Variable | null = null;
+    let vHfused: Variable | null = null;
+    // q/k/v feed the flash and permute paths only; on the fused path they are
+    // never read (flash is off and the permutes are short-circuited below).
+    let q!: Variable, k!: Variable, v!: Variable;
+    if (useFusedHeadMajor) {
+      [qHfused, kHfused, vHfused] = sliceQkvHeadMajor(ctx, qkvFlat, Batch, T, nHead, headDim);
+    } else {
+      const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkvFlat); // fused 3-way slice
+      q = reshape(ctx, qFlat, [Batch, T, nEmbd]);
+      k = reshape(ctx, kFlat, [Batch, T, nEmbd]);
+      v = reshape(ctx, vFlat, [Batch, T, nEmbd]);
     }
 
-    const kT = transpose(ctx, kH, 2, 3);
-    const rawScores = scale(ctx, matmul(ctx, qH, kT), 1 / Math.sqrt(headDim));
-    const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
+    if (ctx.backend.flashAttention) {
+      // Flash attention path: causal masking + softcap are handled inside the kernel.
+      // q/k/v are [B, T, nEmbd] with memory layout [B][T][nHead][headDim]. The flash
+      // kernel indexes contiguous [B*nHead, T, headDim] as head-major — a contiguous
+      // [T, headDim] block per (batch, head). A PLAIN reshape to [B*nHead, T, headDim]
+      // would reinterpret the [B][T][nHead][headDim] buffer without moving data, so
+      // for nHead>1 the (batch,head) rows and time positions are scrambled (and RoPE
+      // would then rotate by wrong positions). Reshape→transpose(1,2)→reshape lays
+      // the data out head-major, matching the standard path exactly. [defect P1]
+      let qFA = reshape(ctx, transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      let kFA = reshape(ctx, transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      const vFA = reshape(ctx, transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2), [Batch * nHead, T, headDim]);
+      // RoPE rotates q/k (per-head, per-position) before attention; flash kernel unchanged.
+      if (ropeOn) {
+        qFA = rope(ctx, qFA, headDim, 0, ropeTheta);
+        kFA = rope(ctx, kFA, headDim, 0, ropeTheta);
+      }
+      const attnOut = flashAttention(ctx, qFA, kFA, vFA, T, 1 / Math.sqrt(headDim), useSoftCap ? softCapVal! : 0);
+      attnConcat = reshape(ctx, transpose(ctx, reshape(ctx, attnOut, [Batch, nHead, T, headDim]), 1, 2), [Batch * T, nEmbd]);
+    } else {
+      // Standard multi-dispatch attention. Head-major q/k/v come from the fused
+      // grouped slice when it ran above, otherwise from the three permutes here.
+      let qH = qHfused ?? transpose(ctx, reshape(ctx, q, [Batch, T, nHead, headDim]), 1, 2);
+      let kH = kHfused ?? transpose(ctx, reshape(ctx, k, [Batch, T, nHead, headDim]), 1, 2);
+      const vH = vHfused ?? transpose(ctx, reshape(ctx, v, [Batch, T, nHead, headDim]), 1, 2);
 
-    const maskedScores = new Variable(
-      ctx.backend.maskedFill(scores.data, mask, -1e9),
-      true,
-    );
-    ctx.tape.record({
-      output: maskedScores,
-      inputs: [scores],
-      backward: (g, B) => [B.maskedFill(g, mask, 0)],
-    });
+      // RoPE on q/k: rotate the [B*nHead, T, headDim] head-major view (position = T
+      // axis), then reshape back to [B, nHead, T, headDim] for attention.
+      if (ropeOn) {
+        qH = reshape(ctx, rope(ctx, reshape(ctx, qH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+        kH = reshape(ctx, rope(ctx, reshape(ctx, kH, [Batch * nHead, T, headDim]), headDim, 0, ropeTheta), [Batch, nHead, T, headDim]);
+      }
 
-    const attnWeights = softmax(ctx, maskedScores, -1);
-    const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
-    const attnOut = matmul(ctx, attnDrop, vH);
-    attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
+      // Q @ K^T through the FUSED entry point, not a materialised transpose.
+      //
+      // m16n8k16 is `row.col` — it reads A row-major and B column-major, so a
+      // transposed B is the orientation the instruction natively wants and the
+      // tensor-core path stages tiles through shared memory anyway. (The fused
+      // form was refuted twice for the older SCALAR kernel, where a transposed
+      // B is uncoalesced; that does not carry over and should not be re-tested
+      // a third time.)
+      //
+      // What it removes is a transpose of the whole [B,H,T,D] tensor — 3.93 MB
+      // read and written per layer, plus its counterpart in the backward. The
+      // fused backward is also better shaped: dL/dA = G @ B and dL/dB = G^T @ A
+      // both go straight to a GEMM, where the transpose route recorded a
+      // separate permute to differentiate through.
+      const invSqrt = 1 / Math.sqrt(headDim);
+      const qk = matmulTransposed(ctx, qH, kH);
+
+      // Scale, causal mask and softmax are ONE kernel when the backend has it.
+      //
+      // Composed they are three passes over the same [B,H,T,T] tensor — 23.6 MB
+      // of traffic per layer to apply one multiply and one predicated move per
+      // element. The fused form returns null when the shape does not suit it
+      // (T must be a power of two and a row must fit one block), and softCap
+      // takes the composed path because it belongs between the scale and the
+      // mask.
+      // softmaxBackward is part of the gate, not just softmaxMasked: the fused
+      // forward's gradient goes back through the softmax, and a backend with
+      // one and not the other would fuse and then fail in the backward pass,
+      // which is a long way from where the decision was made.
+      // The soft cap rides INSIDE the fused kernel, folded into softCap's
+      // exponent constant, so the composed chain's four passes become one.
+      // softCap defaults to 30 whenever RoPE is off, which is this model — an
+      // earlier version of this gated the fusion OFF when it was set and
+      // therefore never ran at all.
+      const smBackward = ctx.backend.softmaxBackward?.bind(ctx.backend);
+      const capBackward = ctx.backend.softCapBackward?.bind(ctx.backend);
+      const capVal = useSoftCap ? softCapVal! : 0;
+      const fused = !smBackward || (useSoftCap && !capBackward)
+        ? null
+        : ctx.backend.softmaxMasked?.(qk.data, mask, invSqrt, capVal);
+      let attnWeights: Variable;
+      if (fused && smBackward) {
+        /* Bound to a local so the closure below keeps the narrowing — an
+         * optional method read inside a callback is `possibly undefined` again
+         * however the caller guarded it. */
+        const softmaxBack = smBackward;
+        const out = new Variable(fused, true);
+        ctx.tape.record({
+          output: out,
+          inputs: [qk],
+          // The chain in reverse: through the softmax, then the mask, then the
+          // scale. Still three operations, because only the FORWARD is fused —
+          // the composed backward is what it always was, so this cannot be a
+          // regression on that side.
+          // The chain in reverse. Only the FORWARD is fused, so this is the
+          // same composed backward as before minus one pass: softCap's
+          // gradient takes the RAW scores, which the tape holds, because the
+          // scale lives in a constant rather than in a materialised
+          // intermediate. Without the cap there is nothing to differentiate
+          // through and the scale is a plain multiply.
+          //
+          // EVERY TEMPORARY HERE IS RELEASED, and the third argument is how.
+          // The composed ops in ops.ts are handed this callback and use it; a
+          // hand-written backward that ignores it leaks one full [B,H,T,T]
+          // tensor per operation per layer per step — 141 MB a step at this
+          // shape, which exhausted the card during warmup at step 16 and
+          // surfaced as "allocation of 983040 floats failed", a size rather
+          // than a cause.
+          backward: (g, B, release) => {
+            const dSoft = softmaxBack(out.data, g);
+            const dCap = B.maskedFill(dSoft, mask, 0);
+            release?.(dSoft);
+            if (!useSoftCap) {
+              const dx = B.scale(dCap, invSqrt);
+              release?.(dCap);
+              return [dx];
+            }
+            // d/dx[cap*tanh(s*x/cap)] = s*(1 - tanh^2(s*x/cap)); the kernel's
+            // own scale slot absorbs the leading s, so this takes the RAW
+            // scores and no scaled intermediate has to exist.
+            const dx = capBackward!(dCap, qk.data, capVal, invSqrt);
+            release?.(dCap);
+            return [dx];
+          },
+        });
+        attnWeights = out;
+      } else {
+        const rawScores = scale(ctx, qk, invSqrt);
+        const scores = useSoftCap ? softCap(ctx, rawScores, softCapVal!) : rawScores;
+
+        const maskedScores = new Variable(
+          ctx.backend.maskedFill(scores.data, mask, -1e9),
+          true,
+        );
+        ctx.tape.record({
+          output: maskedScores,
+          inputs: [scores],
+          backward: (g, B) => [B.maskedFill(g, mask, 0)],
+        });
+
+        attnWeights = softmax(ctx, maskedScores, -1);
+      }
+      const attnDrop = dropout(ctx, attnWeights, config.dropout, training);
+      const attnOut = matmul(ctx, attnDrop, vH);
+      attnConcat = reshape(ctx, transpose(ctx, attnOut, 1, 2), [Batch * T, nEmbd]);
+    }
   }
   const projected = reshape(ctx, matmulTransposed(ctx, attnConcat, layer.attn.wo), [Batch, T, nEmbd]);
-  x = residualDropoutAdd(ctx, x, projected, config.dropout, training);
+  let ln2Out: Variable;
+  if ((config.normType ?? "layernorm") === "rmsnorm") {
+    const fused = residualDropoutAddRmsNorm(
+      ctx,
+      x,
+      projected,
+      layer.ln2.weight,
+      1e-5,
+      config.dropout,
+      training,
+    );
+    x = fused.residual;
+    ln2Out = fused.normalized;
+  } else {
+    x = residualDropoutAdd(ctx, x, projected, config.dropout, training);
+    ln2Out = applyNorm(ctx, x, layer.ln2, config, 1e-5);
+  }
 
   // 2) Norm → MLP → Residual
-  const ln2Out = applyNorm(ctx, x, layer.ln2, config, 1e-5);
   const flat = reshape(ctx, ln2Out, [Batch * T, nEmbd]);
   const activation = config.ffnActivation ?? "gelu";
 
@@ -350,7 +610,7 @@ function transformerBlock(
     // SwiGLU: h = (silu(x @ W_gate) ⊙ (x @ W_up)) @ W_proj
     const gatePre = matmulTransposed(ctx, flat, layer.mlp.fc_gate!);
     const up = matmulTransposed(ctx, flat, layer.mlp.fc_up!);
-    mlpH = matmulTransposed(ctx, siluMul(ctx, gatePre, up), layer.mlp.fc_proj!);
+    mlpH = siluMulMatmulTransposedRecompute(ctx, gatePre, up, layer.mlp.fc_proj!);
   } else if (activation === "universal") {
     // Universal Approximator: f(x) = silu(x) * gate + x * skip
     // Learnable per-channel gating — can represent any blend of SiLU and identity.
@@ -383,7 +643,19 @@ function transformerBlock(
   }
 
   const mlpOut = reshape(ctx, mlpH, [Batch, T, nEmbd]);
-  return residualDropoutAdd(ctx, x, mlpOut, config.dropout, training);
+  if (nextNorm && (config.normType ?? "layernorm") === "rmsnorm") {
+    const fused = residualDropoutAddRmsNorm(
+      ctx,
+      x,
+      mlpOut,
+      nextNorm.weight,
+      1e-5,
+      config.dropout,
+      training,
+    );
+    return { output: fused.residual, normalizedForNext: fused.normalized };
+  }
+  return { output: residualDropoutAdd(ctx, x, mlpOut, config.dropout, training) };
 }
 
 /**
@@ -397,6 +669,9 @@ function transformerBlock(
  * @param lossMask - optional [B, T] f32 per-position loss weights (assistant-only
  *   SFT). When present, the loss is the masked mean crossEntropyMasked instead of
  *   the plain crossEntropy — no behavior change when absent (pretraining path).
+ * @param lossObjective - explicit specialized loss mode. The default is ordinary
+ *   cross-entropy. Unlikelihood requires `lossMask` and treats targets as tokens
+ *   whose probability should be reduced at mask-positive positions.
  */
 export function gptForward(
   config: ModelConfig,
@@ -411,6 +686,7 @@ export function gptForward(
   dropoutRng?: DropoutRng,
   release?: (td: TensorData) => void,
   lossMask?: TensorData,
+  lossObjective: GPTLossObjective = { kind: "cross_entropy" },
 ): GPTForwardResult {
   const ctx: { tape: Tape; backend: Backend; dropoutRng?: DropoutRng; release?: (td: TensorData) => void } = { tape, backend, dropoutRng, release };
   const { nEmbd } = config;
@@ -450,8 +726,21 @@ export function gptForward(
     causalMaskCache.set(T, mask);
   }
 
+  // The non-checkpointed FP32 RMSNorm path can carry the normalized side
+  // output of each MLP residual directly into the next block (and the final
+  // head), exposing the second set of exact residual+RMSNorm fusion boundaries.
+  // Activation checkpointing currently has a single-output contract, while
+  // inter-layer mixed precision intentionally rounds x through f16 before the
+  // next norm; either condition therefore keeps the established path.
+  const carryNormalized = (config.normType ?? "layernorm") === "rmsnorm"
+    && !!backend.residualAddRmsNorm
+    && !(activationCheckpointing && training)
+    && !(mixedPrecision && training);
+  let normalizedForNext: Variable | undefined;
+
   // Transformer blocks
-  for (const layer of params.layers) {
+  for (let layerIndex = 0; layerIndex < params.layers.length; layerIndex++) {
+    const layer = params.layers[layerIndex];
     // Mixed precision: cast inter-layer activations to f16 for VRAM savings
     if (mixedPrecision && training) x = castToF16(ctx, x);
 
@@ -464,17 +753,33 @@ export function gptForward(
         const innerCtxWithRng = { ...innerCtx, dropoutRng };
         // Cast f16 input back to f32 for compute within the block
         const f32Inp = mixedPrecision ? castToF32(innerCtxWithRng, inp) : inp;
-        return transformerBlock(innerCtxWithRng, f32Inp, layer, config, B, T, mask, training);
+        return transformerBlock(innerCtxWithRng, f32Inp, layer, config, B, T, mask, training).output;
       }, x);
     } else {
       // Cast f16 input back to f32 for compute within the block
       if (mixedPrecision && training) x = castToF32(ctx, x);
-      x = transformerBlock(ctx, x, layer, config, B, T, mask, training);
+      const nextNorm = carryNormalized
+        ? (layerIndex + 1 < params.layers.length ? params.layers[layerIndex + 1].ln1 : params.lnF)
+        : undefined;
+      const block = transformerBlock(
+        ctx,
+        x,
+        layer,
+        config,
+        B,
+        T,
+        mask,
+        training,
+        normalizedForNext,
+        nextNorm,
+      );
+      x = block.output;
+      normalizedForNext = block.normalizedForNext;
     }
   }
 
   // Final norm (LayerNorm or RMSNorm per config)
-  x = applyNorm(ctx, x, params.lnF, config, 1e-5);
+  x = normalizedForNext ?? applyNorm(ctx, x, params.lnF, config, 1e-5);
 
   // Language model head: [B, T, nEmbd] → [B, T, vocabSize]
   const flat = reshape(ctx, x, [B * T, nEmbd]);
@@ -485,13 +790,17 @@ export function gptForward(
   if (targets) {
     const targetsFlat: TensorData = { shape: [B * T], dtype: "i32", data: targets.data };
     const logitsVar = reshape(ctx, logits, [B * T, config.vocabSize]);
-    if (lossMask) {
+    if (lossObjective.kind === "unlikelihood") {
+      if (!lossMask) throw new Error("unlikelihood loss requires a per-position lossMask");
+      const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };
+      loss = crossEntropyUnlikelihoodMasked(ctx, logitsVar, targetsFlat, maskFlat, lossObjective.epsilon);
+    } else if (lossMask) {
       // Assistant-only SFT: masked mean over positions (padding + user tokens
       // carry weight 0, so they contribute neither loss nor gradient).
       const maskFlat: TensorData = { shape: [B * T], dtype: "f32", data: lossMask.data };
-      loss = crossEntropyMasked(ctx, logitsVar, targetsFlat, maskFlat);
+      loss = crossEntropyMasked(ctx, logitsVar, targetsFlat, maskFlat, training);
     } else {
-      loss = crossEntropy(ctx, logitsVar, targetsFlat);
+      loss = crossEntropy(ctx, logitsVar, targetsFlat, training);
     }
   }
 

@@ -360,6 +360,69 @@ describe("data-loader resume positioning", () => {
     }
   });
 
+  it("keeps an explicit validation file wholly outside all pretraining shards", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "alpha-sharded-heldout-"));
+    try {
+      const first = join(dir, "first.txt");
+      const second = join(dir, "second.txt");
+      const validation = join(dir, "validation.txt");
+      await writeFile(first, "alpha one\nalpha two\nalpha three\n");
+      await writeFile(second, "beta one\nbeta two\nbeta three\n");
+      await writeFile(validation, "heldout red\nheldout blue\nheldout green\n");
+      const tokenizer: Tokenizer = {
+        name: "test-byte",
+        vocabSize: 256,
+        encode: (text) => Int32Array.from(Buffer.from(text, "utf8")),
+        decode: (tokens) => Buffer.from(Array.from(tokens)).toString("utf8"),
+        build: () => Effect.succeed({ type: "test-byte", vocabSize: 256, vocab: [] }),
+      };
+      const backend = new CpuRefBackend();
+      const runDir = join(dir, "run");
+      await train({
+        backend,
+        tokenizer,
+        optimizer: new AdamW(backend, { lr: 1e-3, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 }),
+        rng: new SeededRng(17),
+        modelConfig: {
+          vocabSize: 256, blockSize: 8, nLayer: 1, nEmbd: 8, nHead: 2, dropout: 0, ffnActivation: "gelu",
+        },
+        trainConfig: {
+          iters: 1, batchSize: 2, lr: 1e-3, lrMin: 1e-4, warmupIters: 0,
+          beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0, gradClip: 1,
+          evalInterval: 1, checkpointInterval: 1, evalIters: 1, seed: 17, backend: "cpu_ref",
+          tokenizer: "test-byte", optimizer: "adamw", logLevel: "info", logEvery: 1,
+          trace: false, gradAccumSteps: 1, sampleInterval: 0, spikeThreshold: 0,
+          embGradScale: 1, syncEvery: 0, gcEvery: 0, packed: true, symbio: false, symbioConfig: null,
+        },
+        dataPath: first,
+        dataPaths: [first, second],
+        valDataPath: validation,
+        runDir,
+      });
+      const config = JSON.parse(await readFile(join(runDir, "config.json"), "utf8")) as {
+        dataStats: {
+          trainTokens: number;
+          valTokens: number;
+          shards: { path: string; trainTokens: number; valTokens: number }[];
+          validation: { path: string; valTokens: number; whollyHeldOut: boolean };
+        };
+      };
+      expect(config.dataStats.shards.map((shard) => shard.path)).toEqual([first, second]);
+      expect(config.dataStats.shards.every((shard) => shard.trainTokens > 0 && shard.valTokens === 0)).toBe(true);
+      expect(config.dataStats.validation).toEqual({
+        path: validation,
+        valTokens: config.dataStats.valTokens,
+        whollyHeldOut: true,
+      });
+      expect(config.dataStats.valTokens).toBeGreaterThan(8);
+      const terminalMetric = JSON.parse((await readFile(join(runDir, "metrics.jsonl"), "utf8")).trim());
+      expect(terminalMetric.step).toBe(1);
+      expect(terminalMetric.valLoss).toEqual(expect.any(Number));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("isolates token caches by exact tokenizer-artifact identity", async () => {
     const dir = await mkdtemp(join(tmpdir(), "alpha-token-cache-"));
     try {

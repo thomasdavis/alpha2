@@ -1,0 +1,346 @@
+#!/usr/bin/env node
+
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+if (process.argv.length < 3 || process.argv.length > 9) {
+  console.error("usage: analyze_helios_buffer_lifetimes.mjs TRACE.jsonl [--step N] [--skip-first N] [--emit-plan] [--json]");
+  process.exit(2);
+}
+
+const tracePath = resolve(process.argv[2]);
+let selectedStep = null;
+let skipFirst = 0;
+let jsonOutput = false;
+let emitPlan = false;
+for (let index = 3; index < process.argv.length; index += 1) {
+  if (process.argv[index] === "--json") {
+    jsonOutput = true;
+  } else if (process.argv[index] === "--emit-plan") {
+    emitPlan = true;
+  } else if (process.argv[index] === "--step") {
+    selectedStep = Number.parseInt(process.argv[++index] ?? "", 10);
+    if (!Number.isInteger(selectedStep)) throw new Error("--step requires an integer");
+  } else if (process.argv[index] === "--skip-first") {
+    skipFirst = Number.parseInt(process.argv[++index] ?? "", 10);
+    if (!Number.isInteger(skipFirst) || skipFirst < 0) throw new Error("--skip-first requires a non-negative integer");
+  } else {
+    throw new Error(`Unknown argument: ${process.argv[index]}`);
+  }
+}
+
+const capturedRows = readFileSync(tracePath, "utf8")
+  .trim()
+  .split("\n")
+  .filter(Boolean)
+  .map((line) => JSON.parse(line))
+  .filter((row) => selectedStep === null || row.step === selectedStep);
+const rows = capturedRows.slice(skipFirst);
+if (rows.length === 0) throw new Error(`No selected traces in ${tracePath}`);
+if (emitPlan && rows.some((row) => row.traceSchemaVersion !== 2)) {
+  throw new Error("Executable static-slot plans require traceSchemaVersion=2 with host-read boundaries");
+}
+
+function align(value, alignment = 256) {
+  return Math.ceil(value / alignment) * alignment;
+}
+
+function isWrite(writeMask, position) {
+  return (writeMask & (2 ** position)) !== 0;
+}
+
+function allocateIntervals(intervals) {
+  const allocated = [];
+  let arenaBytes = 0;
+  const ordered = [...intervals].sort((a, b) => a.start - b.start || b.bytes - a.bytes || a.valueId - b.valueId);
+  for (const interval of ordered) {
+    const active = allocated
+      .filter((candidate) => candidate.lastUse >= interval.start)
+      .sort((a, b) => a.offset - b.offset);
+    let cursor = 0;
+    for (const candidate of active) {
+      const candidateStart = candidate.offset;
+      if (cursor + interval.bytes <= candidateStart) break;
+      cursor = Math.max(cursor, candidate.offset + candidate.bytes);
+      cursor = align(cursor);
+    }
+    interval.offset = cursor;
+    arenaBytes = Math.max(arenaBytes, cursor + interval.bytes);
+    allocated.push(interval);
+  }
+  return { arenaBytes: align(arenaBytes), intervals: allocated };
+}
+
+/**
+ * Build a directly executable conservative plan using reusable VkBuffer
+ * handles. Values may share a slot only when their inclusive lifetimes do not
+ * overlap and their aligned allocation sizes are identical. Keeping size
+ * classes exact makes this plan implementable without descriptor offsets,
+ * buffer-device-address rewriting, or implicit projections.
+ *
+ * For one size class this greedy interval colouring is optimal: interval
+ * graphs are perfect, so the number of slots equals peak class concurrency.
+ */
+function allocateStaticBufferSlots(intervals) {
+  const slots = [];
+  const ordered = [...intervals].sort((a, b) => a.start - b.start || b.bytes - a.bytes || a.valueId - b.valueId);
+  for (const interval of ordered) {
+    const allocationBytes = align(interval.bytes);
+    let slot = slots.find((candidate) =>
+      candidate.allocationBytes === allocationBytes && candidate.lastUse < interval.start,
+    );
+    if (!slot) {
+      slot = {
+        slotId: slots.length,
+        allocationBytes,
+        lastUse: -1,
+        assignmentCount: 0,
+      };
+      slots.push(slot);
+    }
+    interval.staticSlotId = slot.slotId;
+    interval.staticSlotBytes = slot.allocationBytes;
+    slot.lastUse = interval.lastUse;
+    slot.assignmentCount++;
+  }
+  return {
+    slots,
+    bytes: slots.reduce((sum, slot) => sum + slot.allocationBytes, 0),
+  };
+}
+
+function analyzeStep(row) {
+  const operations = row.events.filter((event) => event.event === "op");
+  const currentValue = new Map();
+  const values = [];
+  const physicalBytes = new Map();
+  let nextValueId = 0;
+  let operationIndex = 0;
+  let hostReadEvents = 0;
+  const hostReadValueIds = new Set();
+
+  function newValue({ physicalId, bytes, start, producer, external, persistentMutation }) {
+    const value = {
+      valueId: nextValueId++,
+      physicalId,
+      bytes,
+      start,
+      lastUse: start,
+      producer,
+      external,
+      persistentMutation,
+    };
+    values.push(value);
+    currentValue.set(physicalId, value);
+    return value;
+  }
+
+  for (const event of row.events) {
+    if (event.event === "host_read") {
+      if (!Number.isInteger(event.operationCount) || event.operationCount !== operationIndex) {
+        throw new Error(`Step ${row.step} host read has operationCount=${event.operationCount}, expected ${operationIndex}`);
+      }
+      if (!Number.isInteger(event.bufferId) || !Number.isFinite(event.bufferBytes) || event.bufferBytes <= 0) {
+        throw new Error(`Step ${row.step} host read has invalid buffer metadata`);
+      }
+      physicalBytes.set(event.bufferId, Math.max(physicalBytes.get(event.bufferId) ?? 0, event.bufferBytes));
+      let value = currentValue.get(event.bufferId);
+      if (!value) {
+        value = newValue({
+          physicalId: event.bufferId,
+          bytes: event.bufferBytes,
+          start: 0,
+          producer: null,
+          external: true,
+          persistentMutation: false,
+        });
+      }
+      // A host read happens after all operations counted by operationCount and
+      // before the next operation is recorded. Keeping the interval live at
+      // this boundary prevents a planned slot from being overwritten before
+      // the CPU has consumed the value.
+      value.lastUse = Math.max(value.lastUse, event.operationCount);
+      hostReadEvents++;
+      hostReadValueIds.add(value.valueId);
+      continue;
+    }
+    if (event.event !== "op") continue;
+
+    const operation = event;
+    const currentOperationIndex = operationIndex++;
+    if (!Array.isArray(operation.bufferIds) || !Array.isArray(operation.bufferBytes)) {
+      throw new Error(`Step ${row.step} operation ${currentOperationIndex} lacks bufferIds/bufferBytes; capture with the lifetime-trace revision`);
+    }
+    if (operation.bufferIds.length !== operation.bufferCount || operation.bufferBytes.length !== operation.bufferCount) {
+      throw new Error(`Step ${row.step} operation ${currentOperationIndex} buffer metadata length does not match bufferCount`);
+    }
+    for (let position = 0; position < operation.bufferCount; position += 1) {
+      const physicalId = operation.bufferIds[position];
+      const bytes = operation.bufferBytes[position];
+      if (!Number.isInteger(physicalId) || !Number.isFinite(bytes) || bytes <= 0) {
+        throw new Error(`Step ${row.step} operation ${currentOperationIndex} has invalid buffer metadata at position ${position}`);
+      }
+      physicalBytes.set(physicalId, Math.max(physicalBytes.get(physicalId) ?? 0, bytes));
+      const write = isWrite(operation.writeMask, position);
+      let value = currentValue.get(physicalId);
+      if (!write) {
+        if (!value) value = newValue({ physicalId, bytes, start: 0, producer: null, external: true, persistentMutation: false });
+        value.lastUse = Math.max(value.lastUse, currentOperationIndex);
+        continue;
+      }
+
+      const persistentMutation = operation.kind === "optimizer" || operation.kind === "inplace";
+      // In-place work mutates the value already occupying the allocation; it
+      // does not create a fresh value or a fresh static-slot assignment. This
+      // matters for partially filled transient outputs: later consumers must
+      // keep the original slot live through the continuation and final read.
+      if (value && persistentMutation) {
+        value.lastUse = Math.max(value.lastUse, currentOperationIndex);
+        continue;
+      }
+      newValue({
+        physicalId,
+        bytes,
+        start: currentOperationIndex,
+        producer: { operation: currentOperationIndex, kind: operation.kind, kernel: operation.kernel, position },
+        external: false,
+        persistentMutation,
+      });
+    }
+  }
+  if (operationIndex !== operations.length) throw new Error(`Step ${row.step} operation accounting mismatch`);
+
+  const transient = values
+    .filter((value) => !value.external && !value.persistentMutation)
+    .map((value) => ({ ...value }));
+  const { arenaBytes, intervals } = allocateIntervals(transient);
+  const staticSlots = allocateStaticBufferSlots(intervals);
+  let peakLiveBytes = 0;
+  let peakLiveOperation = 0;
+  for (let operationIndex = 0; operationIndex < operations.length; operationIndex += 1) {
+    const liveBytes = transient
+      .filter((value) => value.start <= operationIndex && value.lastUse >= operationIndex)
+      .reduce((sum, value) => sum + value.bytes, 0);
+    if (liveBytes > peakLiveBytes) {
+      peakLiveBytes = liveBytes;
+      peakLiveOperation = operationIndex;
+    }
+  }
+  const physicalBytesObserved = [...physicalBytes.values()].reduce((sum, bytes) => sum + bytes, 0);
+  const totalTransientBytesCreated = transient.reduce((sum, value) => sum + value.bytes, 0);
+  const planRows = intervals
+    .map((value) => [value.start, value.lastUse, value.bytes, value.producer.kind, value.producer.kernel, value.producer.position])
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const planFingerprint = createHash("sha256").update(JSON.stringify(planRows)).digest("hex");
+  const staticSlotRows = intervals
+    .map((value) => [
+      value.start,
+      value.lastUse,
+      value.bytes,
+      value.producer.kind,
+      value.producer.kernel,
+      value.producer.position,
+      value.staticSlotId,
+      value.staticSlotBytes,
+    ])
+    .sort((a, b) => a[0] - b[0] || a[5] - b[5] || a[6] - b[6]);
+  const staticSlotFingerprint = createHash("sha256").update(JSON.stringify(staticSlotRows)).digest("hex");
+  const topLifetimes = [...intervals]
+    .sort((a, b) => b.bytes * (b.lastUse - b.start + 1) - a.bytes * (a.lastUse - a.start + 1))
+    .slice(0, 20)
+    .map((value) => ({
+      valueId: value.valueId,
+      bytes: value.bytes,
+      start: value.start,
+      lastUse: value.lastUse,
+      lifetimeOperations: value.lastUse - value.start + 1,
+      offset: value.offset,
+      producerKind: value.producer.kind,
+      producerKernel: value.producer.kernel,
+    }));
+  const result = {
+    step: row.step,
+    operations: operations.length,
+    physicalBuffersObserved: physicalBytes.size,
+    physicalBytesObserved,
+    logicalValues: values.length,
+    externalValues: values.filter((value) => value.external).length,
+    persistentMutationValues: values.filter((value) => value.persistentMutation).length,
+    hostReadEvents,
+    hostReadValues: hostReadValueIds.size,
+    transientValues: transient.length,
+    totalTransientBytesCreated,
+    peakLiveTransientBytes: peakLiveBytes,
+    peakLiveOperation,
+    greedyArenaBytes: arenaBytes,
+    arenaFragmentationBytes: arenaBytes - peakLiveBytes,
+    temporalReuseVsCreated: arenaBytes > 0 ? totalTransientBytesCreated / arenaBytes : null,
+    staticBufferSlots: staticSlots.slots.length,
+    staticBufferSlotBytes: staticSlots.bytes,
+    staticBufferSlotReuseVsCreated: staticSlots.bytes > 0 ? totalTransientBytesCreated / staticSlots.bytes : null,
+    staticBufferSlotOverheadVsArena: arenaBytes > 0 ? staticSlots.bytes / arenaBytes : null,
+    planFingerprint,
+    staticSlotFingerprint,
+    topLifetimes,
+  };
+  if (emitPlan) {
+    result.staticSlotPlan = {
+      slots: staticSlots.slots.map(({ slotId, allocationBytes, assignmentCount }) => ({
+        slotId,
+        allocationBytes,
+        assignmentCount,
+      })),
+      assignments: intervals
+        .map((value) => ({
+          producerOperation: value.producer.operation,
+          producerKind: value.producer.kind,
+          producerKernel: value.producer.kernel,
+          producerPosition: value.producer.position,
+          start: value.start,
+          lastUse: value.lastUse,
+          logicalBytes: value.bytes,
+          slotId: value.staticSlotId,
+          slotBytes: value.staticSlotBytes,
+        }))
+        .sort((a, b) => a.producerOperation - b.producerOperation || a.producerPosition - b.producerPosition),
+    };
+  }
+  return result;
+}
+
+const analyses = rows.map(analyzeStep);
+const uniquePlanFingerprints = [...new Set(analyses.map((row) => row.planFingerprint))];
+const result = {
+  schemaVersion: 2,
+  tracePath,
+  capturedSteps: capturedRows.length,
+  skippedLeadingSteps: skipFirst,
+  steps: analyses.length,
+  planStable: uniquePlanFingerprints.length === 1,
+  uniquePlanFingerprints,
+  analyses,
+  limitations: [
+    "This is an offline interval plan, not a measured allocator or command-replay speedup.",
+    "Writable descriptors are conservatively treated as new logical versions; in-place and optimizer writes are excluded from the transient arena.",
+    "Host readback boundaries are part of value lifetimes; plans from older traces without host_read events are unsafe for execution.",
+    "Intervals overlap at a shared operation boundary, so the plan does not assume unsafe read/write aliasing inside one kernel.",
+  ],
+};
+
+if (jsonOutput) {
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.exit(0);
+}
+
+console.log("# Helios buffer-lifetime and static-arena analysis\n");
+console.log(`Trace: \`${tracePath}\``);
+console.log(`Steps analyzed: ${result.steps} (${result.skippedLeadingSteps} leading captured step(s) excluded)`);
+console.log(`Logical lifetime plan stable: **${result.planStable ? "yes" : "no"}**\n`);
+console.log("| Step | Ops | Host reads | Physical buffers | Physical GiB observed | Transient values | Transient GiB created | Peak live GiB | Greedy arena GiB | Static slots | Static slot GiB | Slot reuse | Plan fingerprint |");
+console.log("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|");
+for (const row of analyses) {
+  const gib = (bytes) => (bytes / (1024 ** 3)).toFixed(3);
+  console.log(`| ${row.step} | ${row.operations} | ${row.hostReadEvents} | ${row.physicalBuffersObserved} | ${gib(row.physicalBytesObserved)} | ${row.transientValues} | ${gib(row.totalTransientBytesCreated)} | ${gib(row.peakLiveTransientBytes)} | ${gib(row.greedyArenaBytes)} | ${row.staticBufferSlots} | ${gib(row.staticBufferSlotBytes)} | ${row.staticBufferSlotReuseVsCreated?.toFixed(2) ?? "n/a"}x | \`${row.planFingerprint.slice(0, 16)}\` |`);
+}
+console.log("\nThe arena result is a planning estimate only. It must be validated by implementing the plan, checking exact outputs/gradients, and timing a bounded RTX 3090 run.");

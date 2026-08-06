@@ -40,6 +40,16 @@ export interface TensorData {
   readonly data: TensorArray;
 }
 
+/** Tiny audit summary retained by the masked-unlikelihood primitive. It is
+ * derived from the N per-row loss outputs, never by reading the N*C model-logit
+ * tensor back to the host. */
+export interface UnlikelihoodLossStats {
+  readonly activeRows: number;
+  readonly maskMass: number;
+  readonly meanBadProbability: number;
+  readonly maxBadProbability: number;
+}
+
 // ── Backend ────────────────────────────────────────────────────────────────
 export interface Backend {
   readonly name: string;
@@ -49,7 +59,11 @@ export interface Backend {
   ones(shape: Shape, dtype?: Dtype): TensorData;
   full(shape: Shape, value: number, dtype?: Dtype): TensorData;
   randn(shape: Shape, dtype?: Dtype): TensorData;
-  fromArray(data: number[], shape: Shape, dtype?: Dtype): TensorData;
+  /* ArrayLike, not number[], so a Float32Array can be handed over without
+   * being copied into a JS array first. Every implementation only reads
+   * .length and indexes, so this widens what callers may pass and changes
+   * nothing about what they get back. */
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype?: Dtype): TensorData;
 
   // math
   add(a: TensorData, b: TensorData): TensorData;
@@ -82,12 +96,44 @@ export interface Backend {
   softmax(a: TensorData, axis?: number): TensorData;
   logSoftmax(a: TensorData, axis?: number): TensorData;
   crossEntropy(logits: TensorData, targets: TensorData): TensorData;
+  /**
+   * Optional training-only classifier fusion. Returns the ordinary mean
+   * cross-entropy and its unscaled derivative with respect to logits in one
+   * backend pass. Autograd applies any later upstream scalar. A backend may
+   * return null for an unsupported shape; callers then use the ordinary
+   * forward/backward hooks. Evaluation must use crossEntropy() so it does not
+   * calculate or retain an unused N*C gradient.
+   */
+  crossEntropyForwardBackward?(
+    logits: TensorData,
+    targets: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null;
   /** Masked (assistant-only SFT) cross-entropy. Optional — backends that don't
    *  implement it are driven through the cpu_ref path in the autograd op.
    *  logits [N,C], targets [N] class idx, mask [N] f32 per-row weights.
    *  Returns scalar = sum_i(ce_i * mask_i) / max(sum_i mask_i, 1). An all-zero
    *  mask yields exactly 0 (denominator floored at 1, no NaN). */
   crossEntropyMasked?(logits: TensorData, targets: TensorData, mask: TensorData): TensorData;
+  /** Training-only masked classifier fusion, analogous to
+   *  crossEntropyForwardBackward. gradLogits already includes mask[row] and
+   *  division by max(sum(mask),1), but not a later upstream scalar. */
+  crossEntropyMaskedForwardBackward?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null;
+  /** Masked token-unlikelihood loss for rollout-conditioned negative targets.
+   *  logits [N,C], targets [N] undesired class idx, mask [N] f32 per-row
+   *  weights. Returns sum_i(-log(max(1-p(target_i), epsilon)) * mask_i) /
+   *  max(sum_i mask_i, 1). An all-zero mask yields exactly 0. */
+  crossEntropyUnlikelihoodMasked?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    epsilon: number,
+  ): TensorData;
+  /** Statistics from the most recent masked-unlikelihood forward call. */
+  getLastCrossEntropyUnlikelihoodMaskedStats?(): UnlikelihoodLossStats | null;
 
   // reshape / slice
   reshape(a: TensorData, shape: Shape): TensorData;
@@ -108,6 +154,15 @@ export interface Backend {
   // mask
   causalMask(size: number): TensorData;
   maskedFill(a: TensorData, mask: TensorData, value: number): TensorData;
+  /*
+   * Attention's score chain in one launch: scale, causal mask, softmax.
+   *
+   * Optional, and it returns null rather than throwing when the shape does not
+   * suit the kernel — so a caller tests the RESULT, not only the method's
+   * existence. The mask is [T,T] and tiled across [B,H,T,T].
+   */
+  softmaxMasked?(a: TensorData, mask: TensorData, scale: number,
+                 cap?: number): TensorData | null;
 
   // backward (GPU-optimized, optional)
   geluBackward?(input: TensorData, gradOutput: TensorData): TensorData;
@@ -116,7 +171,11 @@ export interface Backend {
   siluMul?(a: TensorData, b: TensorData): TensorData;
   siluMulBackward?(a: TensorData, b: TensorData, gradOutput: TensorData): TensorData[];
   clampBackward?(input: TensorData, gradOutput: TensorData, lo: number, hi: number): TensorData;
-  layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number): { dx: TensorData; dw: TensorData; db: TensorData };
+  layerNormBackward?(x: TensorData, weight: TensorData, gradOutput: TensorData, eps: number, stats?: TensorData): { dx: TensorData; dw: TensorData; db: TensorData };
+  /** layerNorm forward that also returns per-row [mean, rstd] (interleaved,
+   *  [rows*2]); pass that `stats` back to layerNormBackward so it loads the
+   *  stats instead of recomputing them. Same `y` as layerNorm. */
+  layerNormStats?(x: TensorData, weight: TensorData, bias: TensorData, eps: number): { y: TensorData; stats: TensorData };
   /** Optional fused RMSNorm backward hook (mirrors layerNormBackward but with no
    *  bias gradient). Returns dx (input grad) and dw (weight grad). When absent,
    *  the autograd op falls back to a CPU loop like layerNorm's. */
@@ -127,12 +186,41 @@ export interface Backend {
    *  than N). dLogits[i,c] = (softmax(logits)[i,c] - 1{c==target_i}) * mask_i *
    *  gradOutput / max(sum(mask),1). Rows with mask 0 get exactly-zero grad. */
   crossEntropyMaskedBackward?(logits: TensorData, targets: TensorData, mask: TensorData, gradOutput: TensorData): TensorData;
+  /** Optional fused masked-unlikelihood backward hook. For a masked row i,
+   *  dLogits[i,c] = p_bad/max(1-p_bad,epsilon) *
+   *  (1{c==target_i}-p_c) * mask_i * gradOutput / max(sum(mask),1).
+   *  Rows with mask 0 get exactly-zero grad. */
+  crossEntropyUnlikelihoodMaskedBackward?(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    gradOutput: TensorData,
+    epsilon: number,
+  ): TensorData;
   embeddingBackward?(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData;
+  /* dest += A@B (0), A@B^T (1) or A^T@B (2). False when the backend cannot,
+   * which is the caller's cue to matmul-then-add as before. */
+  matmulAccumulate?(dest: TensorData, a: TensorData, b: TensorData,
+                    layout: 0 | 1 | 2): boolean;
+  /* s * (g - sum_j g_j s_j) over the last axis, in one pass. */
+  softmaxBackward?(s: TensorData, g: TensorData): TensorData;
   softCap?(input: TensorData, cap: number): TensorData;
-  softCapBackward?(gradOutput: TensorData, input: TensorData, cap: number): TensorData;
+  /* `scale` folds a score scale into the constants so the gradient can be taken
+   * against the RAW input, without a scaled intermediate. */
+  softCapBackward?(g: TensorData, a: TensorData, cap: number, scale?: number): TensorData;
 
   // fused ops (GPU-optimized, optional)
   residualDropoutAdd?(residual: TensorData, projected: TensorData, mask: TensorData): TensorData;
+  /** Fused no-dropout residual addition followed by RMSNorm. Both outputs are
+   *  returned because the residual stream continues around the following MLP
+   *  while its normalized view feeds the MLP. Backends may omit this hook;
+   *  autograd then composes add() and rmsNorm() without changing semantics. */
+  residualAddRmsNorm?(
+    residual: TensorData,
+    projected: TensorData,
+    weight: TensorData,
+    eps: number,
+  ): { residual: TensorData; normalized: TensorData };
   matmulTransposed?(a: TensorData, b: TensorData): TensorData;
   matmulTransposedA?(a: TensorData, b: TensorData): TensorData;
   addInplace?(a: TensorData, b: TensorData): void;
@@ -141,9 +229,73 @@ export interface Backend {
   // fused 3-way column slice: [rows, 3*D] → 3×[rows, D] in single dispatch
   sliceQkv?(a: TensorData): [TensorData, TensorData, TensorData];
 
+  /** Fused grouped-QKV unpack straight to head-major, RoPE-FREE. Reads a
+   *  token-major qkvFlat [batch*T, 3*H*D] and returns q/k/v each head-major
+   *  [batch, H, T, D] — one launch per plane replacing sliceQkv + three
+   *  permutes. Backend must also provide the backward. */
+  sliceQkvHeadMajor?(
+    qkv: TensorData, batch: number, T: number, H: number, D: number,
+  ): [TensorData, TensorData, TensorData];
+
+  /** Scatter one plane's head-major gradient into its columns of the shared
+   *  qkvFlat-shaped destination `into` (the three planes tile disjoint columns,
+   *  so accumulation is in place — see writeColumns/sliceQkv). Returns `into`. */
+  sliceQkvHeadMajorBackward?(
+    grad: TensorData, into: TensorData, plane: number,
+    batch: number, T: number, H: number, D: number,
+  ): TensorData;
+
+  /** Fused grouped-QKV unpack, token-major → head-major layout conversion,
+   *  and HF-Llama RoPE on Q/K. The three outputs are [B*H,T,headDim]. */
+  qkvHeadMajorRope?(
+    qkv: TensorData,
+    cos: TensorData,
+    sin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): [TensorData, TensorData, TensorData];
+  /** Exact branch backward for qkvHeadMajorRope. inverseSin is the negated
+   *  forward sine table, so Q/K use the transpose RoPE rotation. The result
+   *  has the original grouped [B*T,3*nEmbd] layout; non-selected segments are
+   *  zero so ordinary tape accumulation combines the Q, K, and V branches. */
+  qkvHeadMajorRopeBackward?(
+    grad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+    which: 0 | 1 | 2,
+  ): TensorData;
+  /** Combined exact backward for the three Q/K/V branches. Unlike the branch
+   *  hook above, this writes the complete grouped gradient in one pass and
+   *  therefore requires no zero-padded contributions or tape accumulation. */
+  qkvHeadMajorRopeBackwardCombined?(
+    qGrad: TensorData,
+    kGrad: TensorData,
+    vGrad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): TensorData;
+
   // scatter-slice backward (GPU-optimized, optional)
   // Writes grad into a zeroed output at the 2D slice position [starts, ends) within origShape.
   scatterSlice?(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData;
+  /**
+   * Write `src` into a column range of `dest`, in place, returning `dest`.
+   *
+   * For gradients that TILE a tensor rather than overlap it — q, k and v are
+   * three disjoint column ranges of one projection — so that three full-width
+   * tensors and two accumulations become three region writes.
+   */
+  writeColumns?(dest: TensorData, src: TensorData, colOffset: number): TensorData;
 
   // GPU dropout mask generation (GPU-optimized, optional)
   // Generates deterministic mask using splitmix32 hash (same as DropoutRng on CPU).
@@ -153,11 +305,29 @@ export interface Backend {
   // Q,K,V: [B*H, T, D], returns { output: [B*H, T, D], lse: [B*H, T] }
   flashAttention?(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData };
+  /** Flash Attention with its output written directly in token-major order.
+   *  Q/K/V remain [B*H,T,D]; output is [B*T,H*D]. */
+  flashAttentionTokenMajor?(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { output: TensorData; lse: TensorData };
   // dO: [B*H, T, D], O: forward output, lse: from forward
   // returns { dQ, dK, dV } each [B*H, T, D]
   flashAttentionBackward?(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData };
+  /** Backward paired with flashAttentionTokenMajor. O/dO are [B*T,H*D];
+   *  returned dQ/dK/dV retain the head-major [B*H,T,D] contract. */
+  flashAttentionBackwardTokenMajor?(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { dQ: TensorData; dK: TensorData; dV: TensorData };
+  /** Token-major Flash backward whose dQ/dK/dV kernels write their disjoint
+   *  final grouped-QKV segments directly, including inverse RoPE for Q/K. */
+  flashAttentionBackwardGroupedQkv?(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    cos: TensorData, inverseSin: TensorData,
+    T: number, batch: number, heads: number, headDim: number,
+    scale: number, softCap: number): TensorData;
 
   // rotary position embedding (optional) — applies HF-Llama rotate_half rotation.
   // x: [B*H, T, D] (head-major); cos/sin: [T, D/2] precomputed per position.

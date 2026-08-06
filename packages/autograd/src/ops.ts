@@ -86,7 +86,11 @@ function record(
   ctx: Ctx,
   data: TensorData,
   inputs: Variable[],
-  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void, needsGrad?: boolean[]) => TensorData[],
+  /* `dests` carries each input's EXISTING gradient, so a closure that can
+   * compute into it may, and signals that it did by returning that tensor. See
+   * TapeEntry.backward. */
+  backward: (outGrad: TensorData, b: Backend, release?: (td: TensorData) => void,
+             needsGrad?: boolean[], dests?: (TensorData | null)[]) => TensorData[],
   cleanup?: (release?: (td: TensorData) => void) => void,
 ): Variable {
   const out = new Variable(data, true);
@@ -164,19 +168,47 @@ export function neg(ctx: Ctx, a: Variable): Variable {
 
 export function matmul(ctx: Ctx, a: Variable, b: Variable): Variable {
   const aData = a.data, bData = b.data;
-  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release, needsGrad) => {
+  return record(ctx, ctx.backend.matmul(aData, bData), [a, b], (g, B, release, needsGrad, dests) => {
     // For 2D: dL/dA = G @ B^T, dL/dB = A^T @ G
     const ndimA = aData.shape.length;
     const ndimB = bData.shape.length;
     let ga: TensorData | null = null;
     let gb: TensorData | null = null;
+    /*
+     * ACCUMULATE STRAIGHT INTO THE DESTINATION when the input already has a
+     * gradient. The alternative the tape would do next is an elementwise add of
+     * a fresh tensor into that same buffer: four passes over the result where
+     * this is two, plus an allocation. Returning the destination is how the
+     * tape is told the accumulation already happened.
+     */
+    const acc = B.matmulAccumulate;
     if (!needsGrad || needsGrad[0]) {
-      const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
-      ga = B.matmul(g, tB);
-      if (release) release(tB);
+      const d = dests?.[0];
+      if (d && acc && acc.call(B, d, g, bData, 1)) ga = d;  /* G @ B^T */
+      /*
+       * G @ B^T, without forming B^T. matmulTransposed's second operand is
+       * stored [N,K] and used as [K,N], which is exactly the relationship this
+       * needs read the other way: B arrives stored [K,N] and is wanted as
+       * [N,K]. The transposed form costs the tensor-core kernel nothing — a
+       * fragment register already takes a load and a pack, so a strided read is
+       * the same instruction count with different immediates — where the
+       * explicit transpose is a whole extra pass over B and a whole extra
+       * tensor, on a path taken once per matmul in the backward.
+       *
+       * The sibling gradient has had this since matmulTransposedA landed; this
+       * arm was left composing.
+       */
+      else if (B.matmulTransposed) ga = B.matmulTransposed(g, bData);
+      else {
+        const tB = B.transpose(bData, ndimB - 2, ndimB - 1);
+        ga = B.matmul(g, tB);
+        if (release) release(tB);
+      }
     }
     if (!needsGrad || needsGrad[1]) {
-      if (B.matmulTransposedA) {
+      const d = dests?.[1];
+      if (d && acc && acc.call(B, d, aData, g, 2)) gb = d;  /* A^T @ G */
+      else if (B.matmulTransposedA) {
         gb = B.matmulTransposedA(aData, g);
       } else {
         const tA = B.transpose(aData, ndimA - 2, ndimA - 1);
@@ -210,17 +242,22 @@ export function matmulTransposed(ctx: Ctx, a: Variable, b: Variable): Variable {
   const out = B.matmulTransposed
     ? B.matmulTransposed(aData, bData)
     : B.matmul(aData, tBFallback!);
-  return record(ctx, out, [a, b], (g, B, release, needsGrad) => {
+  return record(ctx, out, [a, b], (g, B, release, needsGrad, dests) => {
     // C = A @ B^T where B is [N, K]
     let ga: TensorData | null = null;
     let gb: TensorData | null = null;
+    const acc = B.matmulAccumulate;
     if (!needsGrad || needsGrad[0]) {
       // dL/dA = G @ B (G is [..., M, N], B is [..., N, K] → result [..., M, K])
-      ga = B.matmul(g, bData);
+      const d = dests?.[0];
+      if (d && acc && acc.call(B, d, g, bData, 0)) ga = d;
+      else ga = B.matmul(g, bData);
     }
     if (!needsGrad || needsGrad[1]) {
       // dL/dB = G^T @ A (result [..., N, K])
-      if (B.matmulTransposedA) {
+      const d = dests?.[1];
+      if (d && acc && acc.call(B, d, g, aData, 2)) gb = d;
+      else if (B.matmulTransposedA) {
         gb = B.matmulTransposedA(g, aData);
       } else {
         const ndimG = g.shape.length;
@@ -357,6 +394,42 @@ export function silu(ctx: Ctx, a: Variable): Variable {
   });
 }
 
+/** Compute the two input gradients for silu(a) * b without retaining its output. */
+function siluMulBackwardData(
+  B: Backend,
+  aData: TensorData,
+  bData: TensorData,
+  g: TensorData,
+  release?: (td: TensorData) => void,
+  reusableSiluA?: TensorData,
+): [TensorData, TensorData] {
+  if (B.siluMulBackward) {
+    const grads = B.siluMulBackward(aData, bData, g);
+    return [grads[0], grads[1]];
+  }
+
+  // Portable fallback: da = (g*b)*silu'(a), db = g*silu(a).
+  const siluA = reusableSiluA ?? B.silu(aData);
+  const gTimesB = B.mul(g, bData);
+  const da = B.siluBackward ? B.siluBackward(aData, gTimesB) : (() => {
+    const src = aData.data as Float32Array;
+    const gradOut = gTimesB.data as Float32Array;
+    const grad = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const x = src[i];
+      const sig = 1 / (1 + Math.exp(-x));
+      grad[i] = gradOut[i] * (sig * (1 + x * (1 - sig)));
+    }
+    return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
+  })();
+  const db = B.mul(g, siluA);
+  if (release) {
+    release(gTimesB);
+    if (!reusableSiluA) release(siluA);
+  }
+  return [da, db];
+}
+
 /**
  * Fused SiLU-Mul: output = silu(a) * b — single dispatch for SwiGLU.
  * Backward: da = dout * b * silu'(a), db = dout * silu(a)
@@ -373,28 +446,134 @@ export function siluMul(ctx: Ctx, a: Variable, b: Variable): Variable {
   };
   const out = B.siluMul ? B.siluMul(aData, bData) : B.mul(siluFallback!, bData);
   return record(ctx, out, [a, b], (g, B2, release) => {
-    if (B2.siluMulBackward) return B2.siluMulBackward(aData, bData, g);
-    // Fallback: separate silu_backward and mul
-    const siluA = siluFallbackLive ?? B2.silu(aData);
-    const ga = B2.mul(g, bData);
-    const da = B2.siluBackward ? B2.siluBackward(aData, ga) : (() => {
-      const src = aData.data as Float32Array;
-      const gArr = ga.data as Float32Array;
-      const grad = new Float32Array(src.length);
-      for (let i = 0; i < src.length; i++) {
-        const x = src[i]; const sig = 1 / (1 + Math.exp(-x));
-        grad[i] = gArr[i] * (sig * (1 + x * (1 - sig)));
-      }
-      return { shape: [...aData.shape], dtype: aData.dtype, data: grad } as TensorData;
-    })();
-    const db = B2.mul(g, siluA);
-    if (release) release(ga);
+    const grads = siluMulBackwardData(
+      B2, aData, bData, g, release, siluFallbackLive ?? undefined,
+    );
     if (siluFallbackLive && release) release(siluFallbackLive);
     siluFallbackLive = null;
-    if (!siluFallbackLive && siluA !== siluFallback) {
-      if (release) release(siluA);
+    return grads;
+  }, cleanup);
+}
+
+/**
+ * Selectively rematerialized SwiGLU projection:
+ *
+ *   output = (silu(gate) * up) @ weight^T
+ *
+ * The product activation is consumed by the projection and released during
+ * the forward graph construction. Backward recomputes only that elementwise
+ * product; gate, up, and weight remain ordinary tape inputs. This avoids
+ * retaining one [tokens, ffnDim] activation per transformer layer without the
+ * much larger GEMM cost of whole-block activation checkpointing.
+ *
+ * Backends without explicit release keep the forward activation for backward,
+ * which preserves portable CPU semantics. GPU backends pass ctx.release and
+ * therefore exercise the rematerialized path.
+ */
+export function siluMulMatmulTransposedRecompute(
+  ctx: Ctx,
+  gate: Variable,
+  up: Variable,
+  weight: Variable,
+): Variable {
+  const gateData = gate.data;
+  const upData = up.data;
+  const weightData = weight.data;
+  const B = ctx.backend;
+
+  const siluFallback = B.siluMul ? null : B.silu(gateData);
+  const activation = B.siluMul
+    ? B.siluMul(gateData, upData)
+    : B.mul(siluFallback!, upData);
+
+  const transposedWeight = B.matmulTransposed
+    ? null
+    : B.transpose(weightData, weightData.shape.length - 2, weightData.shape.length - 1);
+  const out = B.matmulTransposed
+    ? B.matmulTransposed(activation, weightData)
+    : B.matmul(activation, transposedWeight!);
+
+  let forwardAuxiliaries: TensorData[] = [];
+  if (siluFallback) forwardAuxiliaries.push(siluFallback);
+  if (transposedWeight) forwardAuxiliaries.push(transposedWeight);
+  if (ctx.release) {
+    for (const auxiliary of forwardAuxiliaries) ctx.release(auxiliary);
+    forwardAuxiliaries = [];
+  }
+
+  // When explicit ownership is available the graph has already recorded every
+  // forward consumer, so release can safely defer reuse until those consumers
+  // complete. Without explicit ownership (CPU/reference backends), keep the
+  // activation as a portable fallback instead of pretending it was freed.
+  let forwardActivation: TensorData | null = activation;
+  if (ctx.release) {
+    ctx.release(activation);
+    forwardActivation = null;
+  }
+
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (forwardActivation && release) release(forwardActivation);
+    forwardActivation = null;
+    if (release) {
+      for (const auxiliary of forwardAuxiliaries) release(auxiliary);
     }
-    return [da, db];
+    forwardAuxiliaries = [];
+  };
+
+  return record(ctx, out, [gate, up, weight], (g, B2, release, needsGrad) => {
+    const needGate = !needsGrad || needsGrad[0];
+    const needUp = !needsGrad || needsGrad[1];
+    const needWeight = !needsGrad || needsGrad[2];
+    // Only dWeight consumes the SwiGLU product. Gate/up gradients require the
+    // projection adjoint, but not the forward product itself.
+    const needActivation = needWeight;
+
+    let recomputedActivation: TensorData | null = null;
+    let recomputeSiluFallback: TensorData | null = null;
+    if (needActivation) {
+      if (forwardActivation) {
+        recomputedActivation = forwardActivation;
+        forwardActivation = null;
+      } else if (B2.siluMul) {
+        recomputedActivation = B2.siluMul(gateData, upData);
+      } else {
+        recomputeSiluFallback = B2.silu(gateData);
+        recomputedActivation = B2.mul(recomputeSiluFallback, upData);
+      }
+    }
+
+    let dGate: TensorData | null = null;
+    let dUp: TensorData | null = null;
+    if (needGate || needUp) {
+      const dActivation = B2.matmul(g, weightData);
+      const [allDGate, allDUp] = siluMulBackwardData(
+        B2, gateData, upData, dActivation, release,
+      );
+      dGate = needGate ? allDGate : null;
+      dUp = needUp ? allDUp : null;
+      if (release) {
+        release(dActivation);
+        if (!needGate) release(allDGate);
+        if (!needUp) release(allDUp);
+      }
+    }
+
+    let dWeight: TensorData | null = null;
+    if (needWeight) {
+      if (B2.matmulTransposedA) {
+        dWeight = B2.matmulTransposedA(g, recomputedActivation!);
+      } else {
+        const tG = B2.transpose(g, g.shape.length - 2, g.shape.length - 1);
+        dWeight = B2.matmul(tG, recomputedActivation!);
+        if (release) release(tG);
+      }
+    }
+
+    if (release) {
+      if (recomputedActivation) release(recomputedActivation);
+      if (recomputeSiluFallback) release(recomputeSiluFallback);
+    }
+    return [dGate!, dUp!, dWeight!];
   }, cleanup);
 }
 
@@ -515,6 +694,22 @@ export function layerNorm(
 ): Variable {
   const xData = x.data;
   const wData = weight.data;
+
+  /*
+   * Save-stats path: the forward returns this row's [mean, rstd] and the
+   * backward LOADS them instead of recomputing mean+variance — two of the
+   * backward's four reductions gone (layerNormBackward is 31% of roofline). The
+   * result is bit-identical: a loaded stat is the same f32 the forward wrote.
+   */
+  if (ctx.backend.layerNormStats && ctx.backend.layerNormBackward) {
+    const { y, stats } = ctx.backend.layerNormStats(xData, wData, bias.data, eps);
+    return record(ctx, y, [x, weight, bias], (g, B) => {
+      if (!B.layerNormBackward) throw new Error("layerNormBackward hook disappeared");
+      const { dx, dw, db } = B.layerNormBackward(xData, wData, g, eps, stats);
+      return [dx, dw, db];
+    });
+  }
+
   return record(ctx, ctx.backend.layerNorm(xData, wData, bias.data, eps), [x, weight, bias], (g, B) => {
     if (B.layerNormBackward) {
       const { dx, dw, db } = B.layerNormBackward(xData, wData, g, eps);
@@ -575,6 +770,51 @@ export function layerNorm(
  * no mean-subtraction. Mirrors layerNorm's autograd structure — uses the
  * backend's fused rmsNormBackward when present, otherwise a CPU-loop fallback.
  */
+function rmsNormBackwardData(
+  B: Backend,
+  xData: TensorData,
+  wData: TensorData,
+  g: TensorData,
+  eps: number,
+): [TensorData, TensorData] {
+  if (B.rmsNormBackward) {
+    const { dx, dw } = B.rmsNormBackward(xData, wData, g, eps);
+    return [dx, dw];
+  }
+  // CPU fallback.
+  //   out_j = x_j * r * w_j,   r = 1/sqrt(mean(x^2)+eps)
+  //   dw_j += g_j * x_j * r
+  //   S    = Σ_j g_j * w_j * x_j
+  //   dx_j = r*g_j*w_j - x_j * r^3 * S / dim
+  const shape = xData.shape;
+  const dim = shape[shape.length - 1];
+  const n = shapeSize(shape) / dim;
+  const xArr = xData.data as Float32Array;
+  const wArr = wData.data as Float32Array;
+  const gArr = g.data as Float32Array;
+
+  const dx = B.zeros(shape, xData.dtype);
+  const dw = B.zeros(wData.shape, wData.dtype);
+  const dxArr = dx.data as Float32Array;
+  const dwArr = dw.data as Float32Array;
+
+  for (let i = 0; i < n; i++) {
+    const off = i * dim;
+    let ms = 0;
+    for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
+    ms /= dim;
+    const r = 1 / Math.sqrt(ms + eps);
+    const r3 = r * r * r;
+    let S = 0;
+    for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
+    for (let j = 0; j < dim; j++) {
+      dwArr[j] += gArr[off + j] * xArr[off + j] * r;
+      dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
+    }
+  }
+  return [dx, dw];
+}
+
 export function rmsNorm(
   ctx: Ctx,
   x: Variable,
@@ -583,44 +823,12 @@ export function rmsNorm(
 ): Variable {
   const xData = x.data;
   const wData = weight.data;
-  return record(ctx, ctx.backend.rmsNorm(xData, wData, eps), [x, weight], (g, B) => {
-    if (B.rmsNormBackward) {
-      const { dx, dw } = B.rmsNormBackward(xData, wData, g, eps);
-      return [dx, dw];
-    }
-    // CPU fallback.
-    //   out_j = x_j * r * w_j,   r = 1/sqrt(mean(x^2)+eps)
-    //   dw_j += g_j * x_j * r
-    //   S    = Σ_j g_j * w_j * x_j
-    //   dx_j = r*g_j*w_j - x_j * r^3 * S / dim
-    const shape = xData.shape;
-    const dim = shape[shape.length - 1];
-    const n = shapeSize(shape) / dim;
-    const xArr = xData.data as Float32Array;
-    const wArr = wData.data as Float32Array;
-    const gArr = g.data as Float32Array;
-
-    const dx = B.zeros(shape, xData.dtype);
-    const dw = B.zeros(wData.shape, wData.dtype);
-    const dxArr = dx.data as Float32Array;
-    const dwArr = dw.data as Float32Array;
-
-    for (let i = 0; i < n; i++) {
-      const off = i * dim;
-      let ms = 0;
-      for (let j = 0; j < dim; j++) ms += xArr[off + j] * xArr[off + j];
-      ms /= dim;
-      const r = 1 / Math.sqrt(ms + eps);
-      const r3 = r * r * r;
-      let S = 0;
-      for (let j = 0; j < dim; j++) S += gArr[off + j] * wArr[j] * xArr[off + j];
-      for (let j = 0; j < dim; j++) {
-        dwArr[j] += gArr[off + j] * xArr[off + j] * r;
-        dxArr[off + j] = r * gArr[off + j] * wArr[j] - xArr[off + j] * r3 * S / dim;
-      }
-    }
-    return [dx, dw];
-  });
+  return record(
+    ctx,
+    ctx.backend.rmsNorm(xData, wData, eps),
+    [x, weight],
+    (g, B) => rmsNormBackwardData(B, xData, wData, g, eps),
+  );
 }
 
 // ── Rotary position embedding (RoPE) ─────────────────────────────────────────
@@ -725,6 +933,140 @@ export function rope(ctx: Ctx, x: Variable, headDim: number, posOffset: number, 
     // Rotate the incoming gradient by -angle (orthogonal transpose).
     return [ropeApply(B, g, cos, negSin)];
   });
+}
+
+/**
+ * Convert grouped token-major QKV [B*T,3*H*D] directly to the head-major
+ * [B*H,T,D] representation consumed by flash attention, applying HF-Llama
+ * RoPE to Q and K along the way. Backends without the paired forward/backward
+ * hooks retain the exact established slice → transpose → rope graph.
+ */
+export function qkvHeadMajorRope(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+): [Variable, Variable, Variable] {
+  const modelDim = heads * headDim;
+  const expectedShape = [batch * sequence, 3 * modelDim];
+  if (qkv.data.shape.length !== 2
+    || qkv.data.shape[0] !== expectedShape[0]
+    || qkv.data.shape[1] !== expectedShape[1]) {
+    throw new Error(`qkvHeadMajorRope: expected [${expectedShape}], got [${qkv.data.shape}]`);
+  }
+  if (headDim <= 0 || (headDim & 1) !== 0) {
+    throw new Error(`qkvHeadMajorRope: headDim must be positive and even, got ${headDim}`);
+  }
+
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope || !B.qkvHeadMajorRopeBackward) {
+    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkv);
+    const toHeadMajor = (value: Variable): Variable => reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, value, [batch, sequence, heads, headDim]), 1, 2),
+      [batch * heads, sequence, headDim],
+    );
+    return [
+      rope(ctx, toHeadMajor(qFlat), headDim, 0, theta),
+      rope(ctx, toHeadMajor(kFlat), headDim, 0, theta),
+      toHeadMajor(vFlat),
+    ];
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data,
+    cos,
+    sin,
+    batch,
+    sequence,
+    heads,
+    headDim,
+  );
+  const branch = (data: TensorData, which: 0 | 1 | 2): Variable => record(
+    ctx,
+    data,
+    [qkv],
+    (grad, backwardBackend) => {
+      if (!backwardBackend.qkvHeadMajorRopeBackward) {
+        throw new Error("qkvHeadMajorRope backward hook disappeared after forward");
+      }
+      return [backwardBackend.qkvHeadMajorRopeBackward(
+        grad,
+        cos,
+        negSin,
+        batch,
+        sequence,
+        heads,
+        headDim,
+        which,
+      )];
+    },
+  );
+  return [branch(qData, 0), branch(kData, 1), branch(vData, 2)];
+}
+
+/**
+ * RoPE-free sibling of qkvHeadMajorRope: convert grouped token-major QKV
+ * [B*T, 3*H*D] directly to the three head-major tensors [B, H, T, D] attention
+ * consumes, WITHOUT rotary embedding (the learned-position-embedding path).
+ * Backends without the paired forward/backward hooks fall back to the exact
+ * sliceQkv → transpose graph, so the result is identical either way.
+ */
+export function sliceQkvHeadMajor(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+): [Variable, Variable, Variable] {
+  const modelDim = heads * headDim;
+  const expected = [batch * sequence, 3 * modelDim];
+  if (qkv.data.shape.length !== 2
+    || qkv.data.shape[0] !== expected[0]
+    || qkv.data.shape[1] !== expected[1]) {
+    throw new Error(`sliceQkvHeadMajor: expected [${expected}], got [${qkv.data.shape}]`);
+  }
+
+  const B = ctx.backend;
+  if (!B.sliceQkvHeadMajor || !B.sliceQkvHeadMajorBackward) {
+    const [qFlat, kFlat, vFlat] = sliceQkv(ctx, qkv);
+    const toHeadMajor = (value: Variable): Variable => reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, value, [batch, sequence, heads, headDim]), 1, 2),
+      [batch, heads, sequence, headDim],
+    );
+    return [toHeadMajor(qFlat), toHeadMajor(kFlat), toHeadMajor(vFlat)];
+  }
+
+  const origShape = [...qkv.data.shape];
+  const [qData, kData, vData] = B.sliceQkvHeadMajor(qkv.data, batch, sequence, heads, headDim);
+  /*
+   * Each plane's gradient scatters into its own disjoint third of the qkvFlat
+   * gradient, so the three should never be added together — the tape hands the
+   * same destination to all three (the sliceQkv pattern) and each writes its
+   * columns in place. The first to arrive allocates and zero-fills, so a plane
+   * with no gradient still leaves zeros where its columns are.
+   */
+  const branch = (data: TensorData, which: 0 | 1 | 2): Variable => record(
+    ctx,
+    data,
+    [qkv],
+    (grad, backwardBackend, _release, _ng, dests) => {
+      if (!backwardBackend.sliceQkvHeadMajorBackward) {
+        throw new Error("sliceQkvHeadMajor backward hook disappeared after forward");
+      }
+      const into = dests?.[0] ?? backwardBackend.zeros(origShape, grad.dtype);
+      return [backwardBackend.sliceQkvHeadMajorBackward(
+        grad, into, which, batch, sequence, heads, headDim,
+      )];
+    },
+  );
+  return [branch(qData, 0), branch(kData, 1), branch(vData, 2)];
 }
 
 export function dropout(ctx: Ctx, a: Variable, p: number, training: boolean): Variable {
@@ -842,9 +1184,71 @@ export function residualDropoutAdd(
   }, fallbackCleanup);
 }
 
+/**
+ * Residual addition plus the immediately following RMSNorm. When dropout is
+ * inactive and the backend exposes the fused two-output primitive, this
+ * records the same autograd graph as add() followed by rmsNorm() while issuing
+ * one backend operation. With active dropout (or an unsupported backend), the
+ * ordinary compositional path remains authoritative.
+ */
+export function residualDropoutAddRmsNorm(
+  ctx: Ctx,
+  residual: Variable,
+  projected: Variable,
+  weight: Variable,
+  eps: number,
+  p: number,
+  training: boolean,
+): { residual: Variable; normalized: Variable } {
+  if ((training && p !== 0) || !ctx.backend.residualAddRmsNorm) {
+    const residualOut = residualDropoutAdd(ctx, residual, projected, p, training);
+    return {
+      residual: residualOut,
+      normalized: rmsNorm(ctx, residualOut, weight, eps),
+    };
+  }
+
+  const residualData = residual.data;
+  const projectedData = projected.data;
+  const weightData = weight.data;
+  const fused = ctx.backend.residualAddRmsNorm(residualData, projectedData, weightData, eps);
+
+  // Record the residual addition first. Its output remains a real graph node:
+  // one downstream path carries the residual stream and the other passes
+  // through RMSNorm. Reverse traversal therefore accumulates both gradients
+  // before sending them to the original residual and projection.
+  const residualOut = record(
+    ctx,
+    fused.residual,
+    [residual, projected],
+    (g, B, release) => [
+      reduceBroadcast(B, g, residualData.shape, release),
+      reduceBroadcast(B, g, projectedData.shape, release),
+    ],
+  );
+  const normalized = record(
+    ctx,
+    fused.normalized,
+    [residualOut, weight],
+    (g, B) => rmsNormBackwardData(B, fused.residual, weightData, g, eps),
+  );
+  return { residual: residualOut, normalized };
+}
+
 export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   const out = ctx.backend.softmax(a.data, axis);
   return record(ctx, out, [a], (g, B, release) => {
+    /*
+     * ONE PASS when the backend has it. The composition below is five — mul,
+     * sum, broadcast, sub, mul — each reading and writing the whole tensor to
+     * express a single row reduction and a single write.
+     *
+     * Only for the last axis, which is the only one the fused kernel covers and
+     * the only one softmax is taken over in this model.
+     */
+    const lastAxis = axis === undefined || axis === -1 ||
+                     axis === out.shape.length - 1;
+    if (lastAxis && B.softmaxBackward) return [B.softmaxBackward(out, g)];
     // dsoftmax: s * (g - sum(g * s))
     const sg = B.mul(out, g);
     const sumSg = B.sum(sg, axis ?? -1, true);
@@ -856,15 +1260,34 @@ export function softmax(ctx: Ctx, a: Variable, axis?: number): Variable {
   });
 }
 
-export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): Variable {
+export function crossEntropy(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  training = false,
+): Variable {
   const logitsData = logits.data;
+  const fused = training ? ctx.backend.crossEntropyForwardBackward?.(logitsData, targets) ?? null : null;
+  let cachedGrad: TensorData | null = fused?.gradLogits ?? null;
   let targetsLive: TensorData | null = targets;
   const cleanup = (release?: (td: TensorData) => void): void => {
-    if (!targetsLive) return;
-    if (release) release(targetsLive);
+    if (release) {
+      if (targetsLive) release(targetsLive);
+      if (cachedGrad) release(cachedGrad);
+    }
     targetsLive = null;
+    cachedGrad = null;
   };
-  return record(ctx, ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
+  return record(ctx, fused?.loss ?? ctx.backend.crossEntropy(logitsData, targets), [logits], (g, B, release) => {
+    if (cachedGrad) {
+      const rawGrad = cachedGrad;
+      cachedGrad = null; // ownership transfers to the returned gradient path
+      const upstream = (g.data as Float32Array)[0];
+      if (upstream === 1) return [rawGrad];
+      const scaled = B.scale(rawGrad, upstream);
+      if (release) release(rawGrad);
+      return [scaled];
+    }
     const tgt = targetsLive ?? targets;
     if (B.crossEntropyBackward) return [B.crossEntropyBackward(logitsData, tgt, g)];
     // CPU fallback: (softmax(logits) - one_hot(targets)) * gScalar / N
@@ -897,21 +1320,40 @@ export function crossEntropy(ctx: Ctx, logits: Variable, targets: TensorData): V
  * mask 0 contribute nothing to the loss AND get an exactly-zero gradient — the
  * property the SFT loss-masking test asserts.
  */
-export function crossEntropyMasked(ctx: Ctx, logits: Variable, targets: TensorData, mask: TensorData): Variable {
+export function crossEntropyMasked(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  mask: TensorData,
+  training = false,
+): Variable {
   const logitsData = logits.data;
   const B = ctx.backend;
   if (!B.crossEntropyMasked) throw new Error("crossEntropyMasked requires a backend with crossEntropyMasked");
+  const fused = training ? B.crossEntropyMaskedForwardBackward?.(logitsData, targets, mask) ?? null : null;
+  let cachedGrad: TensorData | null = fused?.gradLogits ?? null;
   let targetsLive: TensorData | null = targets;
   let maskLive: TensorData | null = mask;
   const cleanup = (release?: (td: TensorData) => void): void => {
     if (release) {
       if (targetsLive) release(targetsLive);
       if (maskLive) release(maskLive);
+      if (cachedGrad) release(cachedGrad);
     }
     targetsLive = null;
     maskLive = null;
+    cachedGrad = null;
   };
-  return record(ctx, B.crossEntropyMasked(logitsData, targets, mask), [logits], (g, Bk, release) => {
+  return record(ctx, fused?.loss ?? B.crossEntropyMasked(logitsData, targets, mask), [logits], (g, Bk, release) => {
+    if (cachedGrad) {
+      const rawGrad = cachedGrad;
+      cachedGrad = null;
+      const upstream = (g.data as Float32Array)[0];
+      if (upstream === 1) return [rawGrad];
+      const scaled = Bk.scale(rawGrad, upstream);
+      if (release) release(rawGrad);
+      return [scaled];
+    }
     const tgt = targetsLive ?? targets;
     const msk = maskLive ?? mask;
     if (Bk.crossEntropyMaskedBackward) return [Bk.crossEntropyMaskedBackward(logitsData, tgt, msk, g)];
@@ -939,6 +1381,85 @@ export function crossEntropyMasked(ctx: Ctx, logits: Variable, targets: TensorDa
     if (release) release(probs);
     return [result];
   }, cleanup);
+}
+
+/**
+ * Masked token-unlikelihood for model-generated negative trajectories.
+ *
+ * Forward:  loss = sum_i(-log(max(1-p(t_i),epsilon)) * mask_i)
+ *                  / max(sum_i mask_i, 1)
+ * Backward: dLogits[i,c] = p_bad/max(1-p_bad,epsilon)
+ *                           * (1{c==t_i} - p_c) * mask_i * g
+ *                           / max(sum_i mask_i, 1)
+ *
+ * The epsilon clamp is used as a stable denominator in backward, matching the
+ * declared RCR-UL experiment contract. Targets and mask are fixed data; only
+ * logits receive gradients. Mask-zero rows remain bit-exactly zero.
+ */
+export function crossEntropyUnlikelihoodMasked(
+  ctx: Ctx,
+  logits: Variable,
+  targets: TensorData,
+  mask: TensorData,
+  epsilon = 1e-6,
+): Variable {
+  if (!(epsilon > 0 && epsilon <= 1)) {
+    throw new Error(`crossEntropyUnlikelihoodMasked epsilon must be in (0,1], got ${epsilon}`);
+  }
+  const logitsData = logits.data;
+  const B = ctx.backend;
+  if (!B.crossEntropyUnlikelihoodMasked) {
+    throw new Error("crossEntropyUnlikelihoodMasked requires a backend with crossEntropyUnlikelihoodMasked");
+  }
+  let targetsLive: TensorData | null = targets;
+  let maskLive: TensorData | null = mask;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (targetsLive) release(targetsLive);
+      if (maskLive) release(maskLive);
+    }
+    targetsLive = null;
+    maskLive = null;
+  };
+  return record(
+    ctx,
+    B.crossEntropyUnlikelihoodMasked(logitsData, targets, mask, epsilon),
+    [logits],
+    (g, Bk, release) => {
+      const tgt = targetsLive ?? targets;
+      const msk = maskLive ?? mask;
+      if (Bk.crossEntropyUnlikelihoodMaskedBackward) {
+        return [Bk.crossEntropyUnlikelihoodMaskedBackward(logitsData, tgt, msk, g, epsilon)];
+      }
+
+      const probs = Bk.softmax(logitsData, -1);
+      const probsArr = probs.data as Float32Array;
+      const maskArr = msk.data as Float32Array;
+      const tgtArr = tgt.data;
+      const [N, C] = logitsData.shape;
+      const gScalar = (g.data as Float32Array)[0];
+      let sumMask = 0;
+      for (let i = 0; i < N; i++) sumMask += maskArr[i];
+      const normalizedUpstream = gScalar / Math.max(sumMask, 1);
+      const out = new Float32Array(N * C);
+      for (let i = 0; i < N; i++) {
+        const m = maskArr[i];
+        if (m === 0) continue;
+        const off = i * C;
+        const t = tgtArr[i];
+        const pBad = probsArr[off + t];
+        const ratio = pBad / Math.max(1 - pBad, epsilon);
+        const rowScale = ratio * m * normalizedUpstream;
+        for (let c = 0; c < C; c++) {
+          out[off + c] = ((c === t ? 1 : 0) - probsArr[off + c]) * rowScale;
+        }
+      }
+      const result: TensorData = { shape: [...logitsData.shape], dtype: logitsData.dtype, data: out };
+      if (release) release(probs);
+      return [result];
+    },
+    cleanup,
+  );
 }
 
 // ── Flash Attention ────────────────────────────────────────────────────────
@@ -982,12 +1503,244 @@ export function flashAttention(
   }, cleanup);
 }
 
+/**
+ * One-tape-entry form of grouped-QKV layout/RoPE followed by flash attention.
+ * Forward still uses the backend's two exact physical operations. Backward can
+ * consume dQ, dK, and dV together and write the complete grouped QKV gradient
+ * once, avoiding three zero-padded branch tensors and their accumulation.
+ */
+export function qkvFlashAttention(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+  scaleValue: number,
+  softCapValue: number,
+): Variable {
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope
+    || !B.qkvHeadMajorRopeBackwardCombined
+    || !B.flashAttention
+    || !B.flashAttentionBackward) {
+    const [q, k, v] = qkvHeadMajorRope(
+      ctx, qkv, batch, sequence, heads, headDim, theta,
+    );
+    return flashAttention(ctx, q, k, v, sequence, scaleValue, softCapValue);
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data, cos, sin, batch, sequence, heads, headDim,
+  );
+  const { output, lse } = B.flashAttention(
+    qData, kData, vData, sequence, scaleValue, softCapValue,
+  );
+  let qForBackward: TensorData | null = qData;
+  let kForBackward: TensorData | null = kData;
+  let vForBackward: TensorData | null = vData;
+  let lseForBackward: TensorData | null = lse;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (qForBackward) release(qForBackward);
+      if (kForBackward) release(kForBackward);
+      if (vForBackward) release(vForBackward);
+      if (lseForBackward) release(lseForBackward);
+    }
+    qForBackward = null;
+    kForBackward = null;
+    vForBackward = null;
+    lseForBackward = null;
+  };
+
+  return record(ctx, output, [qkv], (grad, backwardBackend, release) => {
+    if (!backwardBackend.flashAttentionBackward
+      || !backwardBackend.qkvHeadMajorRopeBackwardCombined) {
+      throw new Error("qkvFlashAttention backward hooks disappeared after forward");
+    }
+    if (!qForBackward || !kForBackward || !vForBackward || !lseForBackward) {
+      throw new Error("qkvFlashAttention backward state was released before use");
+    }
+    const { dQ, dK, dV } = backwardBackend.flashAttentionBackward(
+      qForBackward,
+      kForBackward,
+      vForBackward,
+      output,
+      grad,
+      lseForBackward,
+      sequence,
+      scaleValue,
+      softCapValue,
+    );
+    const grouped = backwardBackend.qkvHeadMajorRopeBackwardCombined(
+      dQ,
+      dK,
+      dV,
+      cos,
+      negSin,
+      batch,
+      sequence,
+      heads,
+      headDim,
+    );
+    if (release) {
+      release(dQ);
+      release(dK);
+      release(dV);
+    }
+    return [grouped];
+  }, cleanup);
+}
+
+/**
+ * Token-major-output counterpart to qkvFlashAttention. The physical Flash
+ * kernel writes [B*T,H*D] directly, so the output projection consumes it
+ * without a full attention-output transpose. Its paired backward reads O/dO
+ * in that same layout before the combined QKV/RoPE gradient write.
+ */
+export function qkvFlashAttentionTokenMajor(
+  ctx: Ctx,
+  qkv: Variable,
+  batch: number,
+  sequence: number,
+  heads: number,
+  headDim: number,
+  theta: number,
+  scaleValue: number,
+  softCapValue: number,
+): Variable {
+  const B = ctx.backend;
+  if (!B.qkvHeadMajorRope
+    || !B.qkvHeadMajorRopeBackwardCombined
+    || !B.flashAttentionTokenMajor
+    || !B.flashAttentionBackwardTokenMajor) {
+    const headMajor = qkvFlashAttention(
+      ctx, qkv, batch, sequence, heads, headDim, theta, scaleValue, softCapValue,
+    );
+    return reshape(
+      ctx,
+      transpose(ctx, reshape(ctx, headMajor, [batch, heads, sequence, headDim]), 1, 2),
+      [batch * sequence, heads * headDim],
+    );
+  }
+
+  const { cos, sin, negSin } = ropeTables(sequence, headDim, theta, 0);
+  const [qData, kData, vData] = B.qkvHeadMajorRope(
+    qkv.data, cos, sin, batch, sequence, heads, headDim,
+  );
+  const { output, lse } = B.flashAttentionTokenMajor(
+    qData, kData, vData, sequence, batch, heads, scaleValue, softCapValue,
+  );
+  let qForBackward: TensorData | null = qData;
+  let kForBackward: TensorData | null = kData;
+  let vForBackward: TensorData | null = vData;
+  let lseForBackward: TensorData | null = lse;
+  const cleanup = (release?: (td: TensorData) => void): void => {
+    if (release) {
+      if (qForBackward) release(qForBackward);
+      if (kForBackward) release(kForBackward);
+      if (vForBackward) release(vForBackward);
+      if (lseForBackward) release(lseForBackward);
+    }
+    qForBackward = null;
+    kForBackward = null;
+    vForBackward = null;
+    lseForBackward = null;
+  };
+
+  return record(ctx, output, [qkv], (grad, backwardBackend, release) => {
+    if ((!backwardBackend.flashAttentionBackwardGroupedQkv
+      && !backwardBackend.flashAttentionBackwardTokenMajor)
+      || !backwardBackend.qkvHeadMajorRopeBackwardCombined) {
+      throw new Error("qkvFlashAttentionTokenMajor backward hooks disappeared after forward");
+    }
+    if (!qForBackward || !kForBackward || !vForBackward || !lseForBackward) {
+      throw new Error("qkvFlashAttentionTokenMajor backward state was released before use");
+    }
+    if (backwardBackend.flashAttentionBackwardGroupedQkv) {
+      const grouped = backwardBackend.flashAttentionBackwardGroupedQkv(
+        qForBackward,
+        kForBackward,
+        vForBackward,
+        output,
+        grad,
+        lseForBackward,
+        cos,
+        negSin,
+        sequence,
+        batch,
+        heads,
+        headDim,
+        scaleValue,
+        softCapValue,
+      );
+      return [grouped];
+    }
+    const { dQ, dK, dV } = backwardBackend.flashAttentionBackwardTokenMajor!(
+      qForBackward,
+      kForBackward,
+      vForBackward,
+      output,
+      grad,
+      lseForBackward,
+      sequence,
+      batch,
+      heads,
+      scaleValue,
+      softCapValue,
+    );
+    const grouped = backwardBackend.qkvHeadMajorRopeBackwardCombined(
+      dQ, dK, dV, cos, negSin, batch, sequence, heads, headDim,
+    );
+    if (release) {
+      release(dQ);
+      release(dK);
+      release(dV);
+    }
+    return [grouped];
+  }, cleanup);
+}
+
 // ── Slice ──────────────────────────────────────────────────────────────────
 
 /** Slice a tensor: out = a[starts:ends] along each dimension. */
 export function slice(ctx: Ctx, a: Variable, starts: number[], ends: number[]): Variable {
   const origShape = [...a.data.shape];
-  return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release) => {
+  return record(ctx, ctx.backend.slice(a.data, starts, ends), [a], (g, B, release, _ng, dests) => {
+    /*
+     * WHEN THE SLICE IS A COLUMN RANGE, WRITE IT WHERE IT BELONGS.
+     *
+     * q, k and v are three disjoint column ranges of one qkv projection, so
+     * their gradients TILE that tensor and must never be added together. Each
+     * was building its own full-width gradient — two zero tensors and a
+     * three-way cat — and the tape then accumulated the three. Per layer that
+     * is six zero fills, three full-width writes and two read-add-write passes,
+     * about 82 MB moved where the data is 6, and across eighteen layers it was
+     * the largest entry in the accumulation census by a factor of three: 637 MB
+     * of 849 a step.
+     *
+     * Given the destination the tape already offers, each writes its own range
+     * and returns that same tensor, which is how the tape is told the
+     * accumulation has happened. Only the first of the three to run allocates,
+     * and it zero-fills, because whether all three arrive is the caller's
+     * business — a branch with no gradient must leave zeros in its columns, not
+     * whatever the pool last held there.
+     *
+     * Restricted to a LAST-AXIS range of an otherwise whole tensor, which is
+     * the case that matters and the only one `writeColumns` describes: any
+     * other slice writes a non-contiguous region and needs a different kernel.
+     */
+    const ndimA = origShape.length;
+    const columnRange = B.writeColumns
+      && starts.every((v, d) => d === ndimA - 1 || v === 0)
+      && ends.every((v, d) => d === ndimA - 1 || v === origShape[d]);
+    if (columnRange) {
+      const into = dests?.[0] ?? B.zeros(origShape, g.dtype);
+      return [B.writeColumns!(into, g, starts[ndimA - 1])];
+    }
+
     // Fast path: use GPU scatterSlice if backend supports it
     if (B.scatterSlice) {
       return [B.scatterSlice(g, origShape, starts, ends)];
@@ -1035,30 +1788,41 @@ export function sliceQkv(ctx: Ctx, a: Variable): [Variable, Variable, Variable] 
   if (B.sliceQkv) {
     const [qData, kData, vData] = B.sliceQkv(data);
     const origShape = [...data.shape];
-    const q = record(ctx, qData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 0], [rows, D])];
+    /*
+     * THE THREE GRADIENTS TILE ONE TENSOR AND DO NOT OVERLAP, so they should
+     * never be added together. Each was building its own full-width gradient —
+     * two zero tensors and a three-way cat — and the tape then accumulated the
+     * three: per layer six zero fills, three full-width writes and two
+     * read-add-write passes, ~82 MB where the data is 6, and it was the single
+     * largest entry in the accumulation census (637 MB of 849 a step).
+     *
+     * Given the destination the tape already offers, each one writes its own
+     * third and returns that same tensor, which is how the tape is told the
+     * accumulation has happened. Only the FIRST of the three to run allocates,
+     * and it zero-fills because whether all three arrive is the caller's
+     * business, not this function's — a q with no gradient must still leave
+     * zeros where its columns are, not whatever the pool last held.
+     */
+    const scatter = (g: TensorData, B2: Backend, dest: TensorData | null | undefined,
+                     off: number, release?: (td: TensorData) => void): TensorData => {
+      if (B2.writeColumns) {
+        const into = dest ?? B2.zeros(origShape, g.dtype);
+        return B2.writeColumns(into, g, off);
+      }
+      if (B2.scatterSlice) return B2.scatterSlice(g, origShape, [0, off], [rows, off + D]);
       const z0 = B2.zeros([rows, D], g.dtype);
       const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([g, z0, z1], 1);
+      const parts = off === 0 ? [g, z0, z1] : off === D ? [z0, g, z1] : [z0, z1, g];
+      const res = B2.cat(parts, 1);
       if (release) { release(z0); release(z1); }
-      return [res];
-    });
-    const k = record(ctx, kData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, D], [rows, 2 * D])];
-      const z0 = B2.zeros([rows, D], g.dtype);
-      const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([z0, g, z1], 1);
-      if (release) { release(z0); release(z1); }
-      return [res];
-    });
-    const v = record(ctx, vData, [a], (g, B2, release) => {
-      if (B2.scatterSlice) return [B2.scatterSlice(g, origShape, [0, 2 * D], [rows, 3 * D])];
-      const z0 = B2.zeros([rows, D], g.dtype);
-      const z1 = B2.zeros([rows, D], g.dtype);
-      const res = B2.cat([z0, z1, g], 1);
-      if (release) { release(z0); release(z1); }
-      return [res];
-    });
+      return res;
+    };
+    const q = record(ctx, qData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], 0, release)]);
+    const k = record(ctx, kData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], D, release)]);
+    const v = record(ctx, vData, [a], (g, B2, release, _ng, dests) =>
+      [scatter(g, B2, dests?.[0], 2 * D, release)]);
     return [q, k, v];
   }
 

@@ -203,6 +203,120 @@ describe("gradcheck: tiny GPT (Llama-form: rmsnorm + rope + tied + swiglu)", () 
     runGradcheck(config);
   });
 
+  it("model-level fused residual-add RMSNorm path matches the unfused graph", () => {
+    class FusedModelBackend extends CpuRefBackend {
+      fusedCalls = 0;
+
+      residualAddRmsNorm(
+        residual: TensorData,
+        projected: TensorData,
+        weight: TensorData,
+        eps: number,
+      ): { residual: TensorData; normalized: TensorData } {
+        this.fusedCalls++;
+        const residualOut = super.add(residual, projected);
+        return {
+          residual: residualOut,
+          normalized: super.rmsNorm(residualOut, weight, eps),
+        };
+      }
+    }
+
+    const batch = makeBatch(config, 99);
+    const run = (backend: CpuRefBackend) => {
+      const params = initGPT(config, backend, new SeededRng(20260722));
+      const tape = new Tape();
+      const result = gptForward(config, params, backend, tape, batch.tokens, batch.targets, false);
+      tape.backward(result.loss!, backend);
+      return {
+        loss: (result.loss!.data.data as Float32Array)[0],
+        grads: collectParamEntries(params).map(([name, variable]) => [
+          name,
+          Array.from(variable.grad!.data as Float32Array),
+        ] as const),
+      };
+    };
+
+    const baseline = run(new CpuRefBackend());
+    const fusedBackend = new FusedModelBackend();
+    const actual = run(fusedBackend);
+    // One attention-residual fusion plus one MLP-residual/next-norm fusion per
+    // block (the final block feeds the model's final RMSNorm).
+    expect(fusedBackend.fusedCalls).toBe(config.nLayer * 2);
+    expect(actual.loss).toBe(baseline.loss);
+    expect(actual.grads).toEqual(baseline.grads);
+  });
+
+  it("model routes every RoPE flash layer through the fused QKV layout without changing logits", () => {
+    class FusedQkvForwardBackend extends CpuRefBackend {
+      qkvCalls = 0;
+
+      qkvHeadMajorRope(
+        qkv: TensorData,
+        cos: TensorData,
+        sin: TensorData,
+        batch: number,
+        sequence: number,
+        heads: number,
+        headDim: number,
+      ): [TensorData, TensorData, TensorData] {
+        this.qkvCalls++;
+        const modelDim = heads * headDim;
+        const [q, k, v] = [0, 1, 2].map((which) => super.slice(
+          qkv,
+          [0, which * modelDim],
+          [batch * sequence, (which + 1) * modelDim],
+        ));
+        const toHeadMajor = (x: TensorData): TensorData => super.reshape(
+          super.transpose(super.reshape(x, [batch, sequence, heads, headDim]), 1, 2),
+          [batch * heads, sequence, headDim],
+        );
+        return [
+          super.rope(toHeadMajor(q), cos, sin),
+          super.rope(toHeadMajor(k), cos, sin),
+          toHeadMajor(v),
+        ];
+      }
+
+      qkvHeadMajorRopeBackward(): TensorData {
+        throw new Error("forward-only model routing test must not invoke backward");
+      }
+
+      flashAttention(
+        q: TensorData,
+        k: TensorData,
+        v: TensorData,
+        sequence: number,
+        scale: number,
+        softCap: number,
+      ): { output: TensorData; lse: TensorData } {
+        const kT = super.transpose(k, 1, 2);
+        if (softCap > 0) throw new Error("this Llama-form routing test expects softCap=0");
+        const scores = super.scale(super.matmul(q, kT), scale);
+        const masked = super.maskedFill(scores, super.causalMask(sequence), -1e9);
+        const probabilities = super.softmax(masked, -1);
+        return {
+          output: super.matmul(probabilities, v),
+          // This test is forward-only. LSE is nevertheless shape-correct so
+          // the autograd entry has the same contract as the native path.
+          lse: super.zeros([q.shape[0], sequence], "f32"),
+        };
+      }
+    }
+
+    const batch = makeBatch(config, 321);
+    const run = (backend: CpuRefBackend) => {
+      const params = initGPT(config, backend, new SeededRng(20260722));
+      const result = gptForward(config, params, backend, new Tape(), batch.tokens);
+      return Array.from(result.logits.data.data as Float32Array);
+    };
+    const baseline = run(new CpuRefBackend());
+    const fusedBackend = new FusedQkvForwardBackend();
+    const actual = run(fusedBackend);
+    expect(fusedBackend.qkvCalls).toBe(config.nLayer);
+    actual.forEach((value, index) => expect(value).toBeCloseTo(baseline[index], 5));
+  });
+
   it("structural invariants: no wpe, single tied embedding, no norm biases", () => {
     const params = initGPT(config, B, new SeededRng(20260722));
     const names = collectParamEntries(params).map(([n]) => n);

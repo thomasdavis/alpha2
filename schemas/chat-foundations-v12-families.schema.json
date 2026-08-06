@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["batch_id", "families"],
+  "properties": {
+    "batch_id": { "type": "string", "minLength": 1 },
+    "families": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "family_id",
+          "focus",
+          "operation",
+          "invariant",
+          "must_change",
+          "forbidden_shortcut",
+          "scenes"
+        ],
+        "properties": {
+          "family_id": { "type": "string", "minLength": 1 },
+          "focus": { "type": "string", "minLength": 1 },
+          "operation": { "type": "string", "minLength": 1 },
+          "invariant": { "type": "string", "minLength": 1 },
+          "must_change": { "type": "string", "minLength": 1 },
+          "forbidden_shortcut": { "type": "string", "minLength": 1 },
+          "scenes": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "scene_id",
+                "kind",
+                "turns",
+                "relation_to_base",
+                "learning_signal"
+              ],
+              "properties": {
+                "scene_id": { "type": "string", "minLength": 1 },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "base",
+                    "paraphrase",
+                    "minimal_change",
+                    "irrelevant_detail",
+                    "hard_negative",
+                    "cross_domain_transfer",
+                    "compare_and_apply",
+                    "update_and_revise"
+                  ]
+                },
+                "turns": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["role", "content"],
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "enum": ["user", "assistant"]
+                      },
+                      "content": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                },
+                "relation_to_base": { "type": "string", "minLength": 1 },
+                "learning_signal": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

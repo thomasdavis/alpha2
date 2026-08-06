@@ -1,0 +1,634 @@
+/*
+ * dispatch.c — see dispatch.h.
+ */
+#include "dispatch.h"
+
+#include "../prometheus/elementwise.h"
+#include "../prometheus/hmma.h"
+
+#include <string.h>
+
+/* Reinterpret a float as the word the constant bank actually stores. The bank
+ * is untyped; this is only a spelling. */
+static NvU32 bits(float f) {
+  NvU32 u;
+  memcpy(&u, &f, 4);
+  return u;
+}
+
+/*
+ * The common tail of every dispatch: look the program up, resolve the handles,
+ * launch.
+ *
+ * Handles are resolved HERE rather than by each caller so that a stale one is
+ * caught in one place. helios_tensor_addr returns zero for a dead handle, and a
+ * launch with a null buffer address would fault the channel -- so the check is
+ * explicit and the operation simply fails instead.
+ */
+static int run(helios_context *ctx, helios_key key, const helios_tensor *ts,
+               unsigned nts, const NvU32 *scalars, unsigned nscalars) {
+  const helios_program *p = helios_program_get(key);
+  if (!p) return -1;
+
+  NvU64 addrs[HERMES_CBUF0_PARAM_COUNT];
+  if (nts > HERMES_CBUF0_PARAM_COUNT) return -1;
+  for (unsigned i = 0; i < nts; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  /*
+   * BATCHED: enqueue and let the caller flush.
+   *
+   * Launches queue into one submission and the host waits once, instead of
+   * spinning on a fence per launch. A WAIT_FOR_IDLE between them is what makes
+   * that safe -- dispatches on one channel pipeline and do not serialise, which
+   * the synchronous design hid because its fence wait was the barrier.
+   *
+   * The caller flushes before reading device memory; in TypeScript that barrier
+   * sits on the tensor's  property rather than at call sites, because one
+   * missed read site is a bug with no symptom where it was caused.
+   */
+  /*
+   * SYNCHRONOUS. Switch this to helios_enqueue to turn batching on.
+   *
+   * It is off because at SCALE it still hangs, while the two-launch case now
+   * passes -- so what remains is something that only appears with many launches
+   * queued, and the pushbuffer wrap was one such thing and not the only one.
+   * Shipping a stack that deadlocks would be worse than shipping a slow one.
+   */
+  /*
+   * SYNCHRONOUS. Flip to helios_enqueue to turn batching on.
+   *
+   * Batching is CORRECT where it has been measured -- 32 launches deep, and a
+   * 20-operation chain that enqueues 20 times and drains once -- and it does
+   * not complete inside gptForward. So the remaining fault is specific to a
+   * shape or a path the model uses and not to the submission machinery, which
+   * is the opposite of what "it hangs at scale" suggested.
+   *
+   * The enqueued/flushes counters in stats() are what will localise it: a
+   * healthy step shows many enqueues per flush, and the operation after the
+   * last flush is the one that did not complete.
+   */
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, p->gridY, p->blockX,
+                        p->sharedBytes, addrs, nts, scalars, nscalars);
+}
+
+int hl_elementwise(helios_context *ctx, unsigned op, helios_tensor out,
+                   helios_tensor a, helios_tensor b, unsigned n,
+                   const float *scalars, unsigned nscalars) {
+  const helios_key k = {HL_ELEMENTWISE, op, n, 0};
+  NvU32 s[HERMES_CBUF0_SCALAR_COUNT];
+  if (nscalars > HERMES_CBUF0_SCALAR_COUNT) return -1;
+  for (unsigned i = 0; i < nscalars; i++) s[i] = bits(scalars[i]);
+
+  /* A unary operation still passes three slots: the emitter reads the second
+   * input only for the binary cases, and passing a live handle it will not read
+   * costs nothing, while passing NONE would fail the resolve above. */
+  const helios_tensor ts[3] = {out, a, b != HELIOS_TENSOR_NONE ? b : a};
+  return run(ctx, k, ts, 3, s, nscalars);
+}
+
+/*
+ * Zero a freshly carved device buffer, with the fill kernel.
+ *
+ * Registered with the tensor pool at load time because the pool is below this
+ * file and cannot dispatch for itself. See helios_zero_fn in tensor.h for why
+ * video memory needs it and system memory does not.
+ */
+static int zero_tensor(helios_context *ctx, helios_tensor t, NvU64 bytes) {
+  const float zero = 0.0f;
+  return hl_elementwise(ctx, PR_EW_FILL, t, t, t, (unsigned)(bytes / 4), &zero, 1);
+}
+
+__attribute__((constructor)) static void register_zero_fn(void) {
+  helios_tensor_set_zero_fn(zero_tensor);
+}
+
+int hl_reduce(helios_context *ctx, int mean, helios_tensor out, helios_tensor a,
+              helios_tensor scratch, unsigned n) {
+  /*
+   * One pass if it fits in a block, two if it does not.
+   *
+   * The tree needs a power of two, so the second pass reduces the partials
+   * ROUNDED UP, relying on the caller having zeroed the scratch beyond the
+   * block count. Zero is the identity for a sum. It is not the identity for a
+   * maximum, which is why this function only does sums and means and a
+   * whole-tensor max would need its own padding value.
+   */
+  unsigned width = 1;
+  while (width < n && width < PR_MAX_BLOCK) width *= 2;
+
+  if (n <= width && width <= PR_MAX_BLOCK && n <= PR_MAX_BLOCK) {
+    const helios_key k = {HL_REDUCE, mean ? PR_RED_MEAN : PR_RED_SUM, width, 0};
+    const helios_tensor ts[2] = {out, a};
+    const NvU32 s[1] = {bits(1.0f / (float)n)};
+    return run(ctx, k, ts, 2, s, mean ? 1 : 0);
+  }
+
+  const unsigned blocks = (n + PR_MAX_BLOCK - 1) / PR_MAX_BLOCK;
+  const helios_key pk = {HL_REDUCE_PARTIAL, PR_COMBINE_ADD, PR_MAX_BLOCK,
+                         blocks};
+  const helios_tensor pts[2] = {scratch, a};
+  if (run(ctx, pk, pts, 2, NULL, 0) != 0) return -1;
+
+  unsigned second = 1;
+  while (second < blocks) second *= 2;
+  const helios_key fk = {HL_REDUCE, mean ? PR_RED_MEAN : PR_RED_SUM, second, 0};
+  const helios_tensor fts[2] = {out, scratch};
+  /* The mean divides by the TOTAL count, not by the number of partials. */
+  const NvU32 s[1] = {bits(1.0f / (float)n)};
+  return run(ctx, fk, fts, 2, s, mean ? 1 : 0);
+}
+
+int hl_reduce_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                   unsigned width, unsigned rows) {
+  /* The partial reduction writes one value per block, so one block per row IS a
+   * row-wise reduction -- the kernel written for the first pass of a
+   * whole-tensor sum, used for what it already was. */
+  const helios_key k = {HL_REDUCE_PARTIAL, PR_COMBINE_ADD, width, rows};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, NULL, 0);
+}
+
+int hl_column_sum(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  helios_tensor b, unsigned rows, unsigned cols) {
+  /* `b` is optional: zero means the plain sum, anything else the sum of the
+   * elementwise product. */
+  const helios_key k = {HL_COLUMN_SUM, rows, cols, b ? 1u : 0u};
+  const helios_tensor ts[3] = {out, a, b};
+  return run(ctx, k, ts, b ? 3 : 2, 0, 0);
+}
+
+int hl_softmax_masked(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor mask, unsigned width, unsigned rows,
+                      float scale, float cap) {
+  /*
+   * `cap` of zero means no soft cap and the scale is applied as a multiply;
+   * anything else selects the variant that folds BOTH into softCap's exponent
+   * constant, which is what the model runs (softCap defaults to 30 whenever
+   * RoPE is off).
+   *
+   * s0 = 2*log2(e)*scale/cap, because the kernel evaluates
+   * cap*(1 - 2/(exp2(s0*x) + 1)) and that IS cap*tanh(scale*x/cap). Which
+   * constant belongs in which slot is a property of the rearrangement, not of
+   * the textbook formula — the same reason gelu's and softCap's own folded
+   * constants come from the addon rather than being restated by callers.
+   *
+   * Getting the two slots the wrong way round still SUMS TO ONE, because a
+   * softmax renormalises whatever it is handed. The check that catches it is
+   * element-by-element against the composed chain, not a property test.
+   */
+  const int capped = cap > 0.0f;
+  const helios_key k = {HL_NORMALIZE,
+                        capped ? PR_NORM_SOFTMAX_MASKED_CAP : PR_NORM_SOFTMAX_MASKED,
+                        width, rows};
+  const helios_tensor ts[3] = {out, a, mask};
+  const float twoLog2e = 2.0f * 1.4426950408889634f;
+  const NvU32 s[2] = {capped ? bits(twoLog2e * scale / cap)
+                             : bits(1.4426950408889634f),
+                      capped ? bits(cap) : bits(scale)};
+  return run(ctx, k, ts, 3, s, 2);
+}
+
+int hl_normalize_affine(helios_context *ctx, unsigned op, helios_tensor out,
+                        helios_tensor a, helios_tensor weight,
+                        helios_tensor bias, unsigned width, unsigned rows,
+                        float eps) {
+  const helios_key k = {HL_NORMALIZE, op, width, rows};
+  /* The ORDER is the kernel's parameter order and nothing checks it: slot 0
+   * out, 1 a, 2 weight, 3 bias. rmsNorm never reads slot 3, but it is still
+   * passed so both forms share one launch shape. */
+  const helios_tensor ts[4] = {out, a, weight, bias ? bias : weight};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 4, s, 2);
+}
+
+int hl_normalize_affine_stats(helios_context *ctx, helios_tensor out,
+                              helios_tensor a, helios_tensor weight,
+                              helios_tensor bias, helios_tensor stats,
+                              unsigned width, unsigned rows, float eps) {
+  /* layerNorm forward that also saves per-row [mean, rstd] into `stats`
+   * (interleaved, 2 floats/row) in slot 4 — one slot, because the six-deep
+   * param bank has no room for two. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_AFFINE_STATS, width, rows};
+  const helios_tensor ts[5] = {out, a, weight, bias ? bias : weight, stats};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 5, s, 2);
+}
+
+int hl_normalize(helios_context *ctx, unsigned op, helios_tensor out,
+                 helios_tensor a, unsigned width, unsigned rows, float eps) {
+  /* The row count is part of the KEY, not just the launch: a program built for
+   * one row and launched over eight would have every block writing row zero. */
+  const helios_key k = {HL_NORMALIZE, op, width, rows};
+  const helios_tensor ts[2] = {out, a};
+
+  /*
+   * The scalars differ BY OPERATION, and getting that wrong is subtle enough to
+   * be worth spelling out.
+   *
+   * rmsNorm and layerNorm read 1/N and epsilon. Softmax reads neither -- it
+   * needs log2(e), because the hardware provides exp2 and the kernel converts
+   * the base. Passing 1/N where log2(e) belongs was the first version of this
+   * function, and the result still SUMMED TO ONE: softmax divides by its own
+   * total, so a wrong exponent base rescales every term and the distribution
+   * renormalises itself into something plausible and entirely wrong.
+   *
+   * That is why the parity check compares element by element against the
+   * definition and not only against the "is it a distribution" property. The
+   * property held throughout.
+   */
+  if (op == PR_NORM_SOFTMAX) {
+    const NvU32 s[1] = {bits(1.4426950408889634f)}; /* log2(e) */
+    return run(ctx, k, ts, 2, s, 1);
+  }
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 2, s, 2);
+}
+
+int hl_layer_norm_backward(helios_context *ctx, helios_tensor dx,
+                           helios_tensor xhat, helios_tensor x, helios_tensor g,
+                           helios_tensor w, unsigned width, unsigned rows,
+                           float eps) {
+  /* Same key family as the forward -- one block per row, keyed on width AND
+   * row count for the same reason: a program built for one row and launched
+   * over many would have every block writing row zero. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_BACKWARD, width, rows};
+  /* The ORDER is the kernel's parameter order and nothing checks it: slot 0
+   * dx, 1 x, 2 g, 3 w, 4 xhat. Swapping x and g here compiles, runs, and
+   * produces a plausible wrong gradient. */
+  const helios_tensor ts[5] = {dx, x, g, w, xhat};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 5, s, 2);
+}
+
+int hl_layer_norm_backward_stats(helios_context *ctx, helios_tensor dx,
+                                 helios_tensor xhat, helios_tensor x,
+                                 helios_tensor g, helios_tensor w,
+                                 helios_tensor stats, unsigned width,
+                                 unsigned rows, float eps) {
+  /* layerNorm backward given the forward's saved [mean, rstd] per row in
+   * `stats` (slot 5) — loaded instead of recomputed with two reductions. */
+  const helios_key k = {HL_NORMALIZE, PR_NORM_LAYER_BACKWARD_STATS, width, rows};
+  const helios_tensor ts[6] = {dx, x, g, w, xhat, stats};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 6, s, 2);
+}
+
+/*
+ * The launch a matmul program wants, which now depends on which kernel it is.
+ *
+ * The scalar kernel tiles ROWS only, so the batch plane is the second grid
+ * dimension. The tensor-core kernel tiles both output axes, so the batch moves
+ * to the third — and its gridY comes from the program rather than the caller.
+ * Both callers pick this up from one place, because a launch that does not
+ * match its code is an invalid launch and faults asynchronously.
+ */
+static int matmul_launch(helios_context *ctx, const helios_program *p,
+                         unsigned M, unsigned N, unsigned K, unsigned batch,
+                         const NvU64 *addrs) {
+  const unsigned planes = batch ? batch : 1;
+  if (pr_hmma_applies(M, N, K))
+    return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY, planes,
+                           p->blockX, p->sharedBytes, addrs, 3, NULL, 0);
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, planes, p->blockX,
+                        p->sharedBytes, addrs, 3, NULL, 0);
+}
+
+int hl_matmul(helios_context *ctx, helios_tensor out, helios_tensor a,
+              helios_tensor b, unsigned M, unsigned N, unsigned K,
+              unsigned batch) {
+  const helios_key k = {HL_MATMUL, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
+}
+
+/* C = A @ B^T with B stored [N,K]. Same launch, different program; the key's
+ * KIND keeps the two apart in the cache. */
+int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a,
+                         helios_tensor b, unsigned M, unsigned N, unsigned K,
+                         unsigned batch) {
+  const helios_key k = {HL_MATMUL_T, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
+}
+
+/* C = A @ B^T, both operands f16, staged with cp.async. Same launch as the
+ * staged transposed GEMM; the key's KIND selects the cp.async f16 program. */
+int hl_matmul_cpasync(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor b, unsigned M, unsigned N, unsigned K,
+                      unsigned batch) {
+  const helios_key k = {HL_MATMUL_T_CP, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
+}
+
+/*
+ * C[M,N] = A[K,M]^T @ B[K,N] — the WEIGHT GRADIENT, without materialising the
+ * transpose.
+ *
+ * autograd probes for this and, not finding it, transposes the incoming
+ * gradient and calls matmul: a full-size tensor and an extra launch per weight
+ * per step, 54 of them at 18 layers and up to 24 MiB each for the LM head. The
+ * allocation census puts that path among the largest consumers of a step.
+ *
+ * Refuses when the tensor-core path does not apply, because the scalar kernel
+ * has no transposed-A form. A caller that gets -1 is expected to fall back to
+ * transpose-and-multiply, which is what it did before this existed.
+ */
+/*
+ * C[M,N] += A @ B, in one launch, for the three operand layouts.
+ *
+ * Autograd's alternative is a matmul into a fresh tensor followed by an
+ * elementwise add of it into the destination: four passes over the result where
+ * this is two, and an allocation. Accumulation is ~24% of a step's GPU time and
+ * runs at the card's bandwidth ceiling, so the way to make it cheaper is to do
+ * less of it, not to do it faster.
+ *
+ * Refuses when the tensor path does not apply — the scalar kernel has no
+ * accumulating form — so the caller keeps its old two-step route.
+ */
+/*
+ * out = s * (g - sum_j g_j s_j), one block per row.
+ *
+ * The row count is part of the KEY as well as the launch, for the reason
+ * hl_layer_norm_backward records: a program built for one row and launched over
+ * many would have every block writing row zero.
+ *
+ * ORDER: slot 0 out, 1 the softmax OUTPUT, 2 the gradient. Nothing checks it,
+ * and swapping 1 and 2 computes g*(s - dot) — a plausible wrong gradient.
+ */
+int hl_softmax_backward(helios_context *ctx, helios_tensor out, helios_tensor s,
+                        helios_tensor g, unsigned width, unsigned rows) {
+  const helios_key k = {HL_NORMALIZE, PR_NORM_SOFTMAX_BACKWARD, width, rows};
+  const helios_tensor ts[3] = {out, s, g};
+  return run(ctx, k, ts, 3, NULL, 0);
+}
+
+int hl_matmul_accumulate(helios_context *ctx, helios_tensor out, helios_tensor a,
+                         helios_tensor b, unsigned M, unsigned N, unsigned K,
+                         unsigned batch, unsigned layout) {
+  if (!pr_hmma_applies(M, N, K)) return -1;
+  const helios_kind kinds[3] = {HL_MATMUL_ACC, HL_MATMUL_T_ACC, HL_MATMUL_TA_ACC};
+  if (layout > 2) return -1;
+  const helios_key k = {kinds[layout], M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 3,
+                         NULL, 0);
+}
+
+int hl_matmul_transposed_a(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, helios_tensor b, unsigned M,
+                           unsigned N, unsigned K, unsigned batch) {
+  if (!pr_hmma_applies(M, N, K)) return -1;
+  const helios_key k = {HL_MATMUL_TA, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 3,
+                         NULL, 0);
+}
+
+int hl_transpose(helios_context *ctx, helios_tensor out, helios_tensor a,
+                 unsigned rows, unsigned cols, unsigned batch) {
+  const helios_key k = {HL_TRANSPOSE, rows, cols, batch};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, NULL, 0);
+}
+
+int hl_slice_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                  unsigned W, unsigned srcW, unsigned start, unsigned rows) {
+  const helios_key k = {HL_SLICE_ROWS, W, srcW, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  const NvU32 s[1] = {start}; /* an integer, not a float bit pattern */
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, s, 1);
+}
+
+int hl_broadcast(helios_context *ctx, helios_tensor out, helios_tensor a,
+                 unsigned mode, unsigned W, unsigned rows) {
+  const helios_key k = {HL_BROADCAST, mode, W, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, NULL, 0);
+}
+
+int hl_cat_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
+                unsigned W, unsigned dstW, unsigned start, unsigned rows) {
+  const helios_key k = {HL_CAT_ROWS, W, dstW, 0};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2] = {helios_tensor_addr(out), helios_tensor_addr(a)};
+  if (!addrs[0] || !addrs[1]) return -1;
+  const NvU32 s[1] = {start};
+  return helios_enqueue(ctx, p->code, p->count, p->gridX, rows, p->blockX,
+                        p->sharedBytes, addrs, 2, s, 1);
+}
+
+/*
+ * `batch` is B, not B*T — the last argument changed MEANING when the kernel
+ * took its third grid dimension. It is not a new parameter, so a caller that
+ * was passing B*T still compiles and would launch T times too many blocks; the
+ * one caller was changed with it, and the head-permute diff test covers the
+ * result at shapes where the two differ.
+ */
+int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
+               unsigned T, unsigned H, unsigned D, unsigned batch) {
+  const helios_key k = {HL_PERMUTE, T, H, D};
+  const helios_tensor ts[2] = {out, a};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2];
+  for (unsigned i = 0; i < 2; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  /* The batch is a LAUNCH parameter, not part of the key: the same code serves
+   * any batch, so a new batch size does not regenerate the program. */
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 2,
+                         NULL, 0);
+}
+
+int hl_slice_qkv_headmajor(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, unsigned T, unsigned H, unsigned D,
+                           unsigned plane, unsigned batch, int backward) {
+  /* plane in the high half of arg1 so the three planes are three programs; the
+   * backward direction is a separate kind. Batch rides gridZ at launch. */
+  const helios_key k = {backward ? HL_SLICE_QKV_HM_BWD : HL_SLICE_QKV_HM,
+                        T, (plane << 16) | H, D};
+  const helios_tensor ts[2] = {out, a};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2];
+  for (unsigned i = 0; i < 2; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 2,
+                         NULL, 0);
+}
+
+int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
+                 helios_tensor ids, unsigned tokens, unsigned dim) {
+  const helios_key k = {HL_EMBEDDING, dim, tokens, 0};
+  const helios_tensor ts[3] = {out, table, ids};
+  return run(ctx, k, ts, 3, NULL, 0);
+}
+
+int hl_slice(helios_context *ctx, helios_tensor out, helios_tensor a,
+             unsigned count, unsigned offset, unsigned stride) {
+  const helios_key k = {HL_SLICE, count, 0, 0};
+  const helios_tensor ts[2] = {out, a};
+  const NvU32 s[2] = {offset, stride}; /* read as integers, not floats */
+  return run(ctx, k, ts, 2, s, 2);
+}
+
+int hl_causal_mask(helios_context *ctx, helios_tensor out, helios_tensor a,
+                   unsigned rows, unsigned cols) {
+  const helios_key k = {HL_CAUSAL_MASK, cols, rows, 0};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, NULL, 0);
+}
+
+int hl_masked_fill(helios_context *ctx, helios_tensor out, helios_tensor a,
+                   helios_tensor mask, unsigned n, float value,
+                   unsigned maskWrap) {
+  /* maskWrap is the mask's element count when it is TILED and 0 when it has
+   * already been materialised to `n`. It is part of the key: the two forms emit
+   * different programs and a cache hit across them would apply the wrong one. */
+  const helios_key k = {HL_MASKED_FILL, maskWrap, n, 0};
+  const helios_tensor ts[3] = {out, a, mask};
+  const NvU32 s[1] = {bits(value)};
+  return run(ctx, k, ts, 3, s, 1);
+}
+
+int hl_cast(helios_context *ctx, int toF16, helios_tensor out, helios_tensor a,
+            unsigned n) {
+  const helios_key k = {toF16 ? HL_CAST_TO_F16 : HL_CAST_TO_F32, 0, n, 0};
+  const helios_tensor ts[2] = {out, a};
+  return run(ctx, k, ts, 2, NULL, 0);
+}
+
+int hl_dropout_mask(helios_context *ctx, helios_tensor out, unsigned n,
+                    NvU32 seed, NvU32 counter, float p) {
+  const helios_key k = {HL_DROPOUT, 0, n, 0};
+  const helios_tensor ts[1] = {out};
+  /* The threshold is p * 2^32 so the kernel compares integers -- see dropout.c
+   * for why that is better than converting the hash to a float. */
+  const NvU32 s[4] = {seed, counter, (NvU32)((double)p * 4294967296.0),
+                      bits(p < 1.0f ? 1.0f / (1.0f - p) : 0.0f)};
+  return run(ctx, k, ts, 1, s, 4);
+}
+
+int hl_cross_entropy(helios_context *ctx, helios_tensor out,
+                     helios_tensor logits, helios_tensor targets, unsigned rows,
+                     unsigned classes) {
+  const helios_key k = {HL_CROSS_ENTROPY, classes, rows, 0};
+  const helios_tensor ts[3] = {out, logits, targets};
+  const NvU32 s[2] = {bits(1.4426950408889634f), bits(0.6931471805599453f)};
+  return run(ctx, k, ts, 3, s, 2);
+}
+
+int hl_embedding_scatter(helios_context *ctx, helios_tensor grad_table,
+                         helios_tensor grad_out, helios_tensor ids,
+                         unsigned tokens, unsigned dim) {
+  const helios_key k = {HL_EMBEDDING_SCATTER, dim, tokens, 0};
+  const helios_tensor ts[3] = {grad_table, grad_out, ids};
+  return run(ctx, k, ts, 3, 0, 0);
+}
+
+int hl_cross_entropy_backward(helios_context *ctx, helios_tensor out,
+                              helios_tensor logits, helios_tensor targets,
+                              unsigned rows, unsigned classes, float scale) {
+  const helios_key k = {HL_CROSS_ENTROPY_BACKWARD, classes, rows, 0};
+  const helios_tensor ts[3] = {out, logits, targets};
+  /* log2(e) for the exponential, and the caller's already-divided scale. */
+  const NvU32 s[2] = {bits(1.4426950408889634f), bits(scale)};
+  return run(ctx, k, ts, 3, s, 2);
+}
+
+int hl_residual_rms(helios_context *ctx, helios_tensor out, helios_tensor x,
+                    helios_tensor residual, helios_tensor weight,
+                    unsigned width, unsigned rows, float eps) {
+  const helios_key k = {HL_RESIDUAL_RMS, width, rows, 0};
+  const helios_tensor ts[4] = {out, x, residual, weight};
+  const NvU32 s[2] = {bits(1.0f / (float)width), bits(eps)};
+  return run(ctx, k, ts, 4, s, 2);
+}
+
+int hl_residual_dropout(helios_context *ctx, helios_tensor out, helios_tensor x,
+                        helios_tensor residual, helios_tensor mask,
+                        unsigned width, unsigned rows, float scale) {
+  const helios_key k = {HL_RESIDUAL_DROPOUT, width, rows, 0};
+  const helios_tensor ts[4] = {out, x, residual, mask};
+  const NvU32 s[1] = {bits(scale)};
+  return run(ctx, k, ts, 4, s, 1);
+}
+
+int hl_adamw_shadow(helios_context *ctx, helios_tensor param, helios_tensor grad,
+                    helios_tensor m, helios_tensor v, helios_tensor shadow,
+                    unsigned n, float b1, float b2, float lr, float eps,
+                    float wd) {
+  /* arg0=1 selects the shadow-writing program. Slot 4 is the packed-f16 copy. */
+  const helios_key k = {HL_ADAMW, 1, n, 0};
+  const helios_tensor ts[5] = {param, grad, m, v, shadow};
+  const NvU32 s[5] = {bits(1.0f - b1), bits(1.0f - b2), bits(lr), bits(eps),
+                      bits(wd)};
+  return run(ctx, k, ts, 5, s, 5);
+}
+
+int hl_adamw(helios_context *ctx, helios_tensor param, helios_tensor grad,
+             helios_tensor m, helios_tensor v, unsigned n, float b1, float b2,
+             float lr, float eps, float wd) {
+  const helios_key k = {HL_ADAMW, 0, n, 0};
+  const helios_tensor ts[4] = {param, grad, m, v};
+  /* The kernel wants 1-b, not b: it evaluates m + (1-b1)*(g-m), which is the
+   * same arithmetic in fewer instructions. The subtraction belongs here, where
+   * it happens once per step rather than once per element. */
+  const NvU32 s[5] = {bits(1.0f - b1), bits(1.0f - b2), bits(lr), bits(eps),
+                      bits(wd)};
+  return run(ctx, k, ts, 4, s, 5);
+}

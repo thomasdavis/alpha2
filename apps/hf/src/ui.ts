@@ -9,6 +9,8 @@ export interface UiEvidence {
   readonly qaTotal: number;
   readonly meanRepeat: string;
   readonly maxRepeat: string;
+  readonly exportTop1: string;
+  readonly exportMaxLogitDifference: number;
   readonly checkpointSha256: string;
   readonly qualityGate: "PASS" | "FAIL";
 }
@@ -22,6 +24,8 @@ export const SELECTED_EVIDENCE: UiEvidence = {
   qaTotal: 200,
   meanRepeat: "0.1414",
   maxRepeat: "0.840",
+  exportTop1: "87/87",
+  exportMaxLogitDifference: 5.531e-5,
   checkpointSha256: "399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec",
   qualityGate: "FAIL",
 };

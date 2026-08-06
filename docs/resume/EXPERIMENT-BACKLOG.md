@@ -9,7 +9,25 @@ Produce a model that starts a relevant answer reliably, remains coherent under i
 history, terminates cleanly, and passes the unchanged D3 gate. Lower teacher-forced loss is supporting
 evidence, not the objective.
 
-## P0 — code and data work before any GPU spend
+## 2026-07-31 repair-v2 finding
+
+The previous backlog's initiation and data-order work was implemented and tested. Repair v2 answered all 96
+development prompts at every selector checkpoint, from both the selected checkpoint and the clean base. That
+success did not yield effective conversation: exact-comparison loops increased, EOS control weakened, and fixed
+qualitative panels showed semantic nonanswers and repeated-phrase attractors.
+
+The next problem is therefore not “make the model emit any token.” It is:
+
+- make the response contingent on the user's actual move;
+- maintain semantic direction under the model's own generated history;
+- terminate after completing the answer rather than after a template fragment or repetition attractor;
+- preserve ordinary short social dialogue while improving instruction and conceptual continuation;
+- demonstrate improvement on new families rather than repeatedly fitting the visible v2 outputs.
+
+No item below authorizes GPU spend. The next proposal must introduce a genuinely new, single declared
+intervention and a fresh development selector.
+
+## Historical P0 — implemented before repair v2
 
 ### 1. Deterministic SFT shuffling
 
@@ -90,7 +108,10 @@ Required tests:
 - selector rejects an attractive single sample when aggregate behavior regresses;
 - selector rejects immediate-EOS improvement achieved by non-terminating loops.
 
-## P1 — first future bounded experiment
+## Historical P1 — completed and rejected by repair v2
+
+The clean-base and continuation controls described below have now been executed in the bounded v2 form. Neither
+beat the selected baseline. Do not rerun this matrix unchanged.
 
 Preferred starting point: the clean base-pretrain step 61,036 checkpoint, not terminal SFT.
 
@@ -108,14 +129,35 @@ The first paid pilot exists to identify a direction, not to finish a model. No f
 may start until one candidate beats the archived baseline on aggregate generation and preserves
 mechanical correctness.
 
-## P2 — capacity decision
+## Next candidate interventions to research locally
 
-If the repaired 60M recipe still fails answer initiation, decide explicitly between:
+These are hypotheses to study and pre-register, not a menu to sweep:
 
-- a smaller, higher-quality and shorter SFT corpus matched to 60M capacity; or
-- a larger Alpha model with a separately budgeted pretrain.
+1. **Hard-negative continuation learning:** from the same conversation prefix, distinguish a directly contingent
+   continuation from a polished but irrelevant, parroting, or repetition-prone continuation. The negative must be
+   natural enough that superficial formatting cannot identify it.
+2. **Short-horizon sequence-stability objective:** directly measure whether the model's own first generated tokens
+   increase the probability of a coherent completion rather than a repeated phrase. Any auxiliary loss must be
+   validated against real free generation and must not globally ban repeats.
+3. **Response-policy balance:** measure direct answer, clarification, acknowledgement, continuation, and closure
+   behavior dynamically from the data. Avoid a hardcoded string policy table or a universal follow-up-question
+   signature.
+4. **Semantic-contingency curriculum:** concentrate on paired user moves that differ minimally but demand different
+   replies, with whole-family holdouts and same-words/different-intent controls.
+5. **Foundation adequacy control:** determine whether the base has enough general language structure to learn the
+   intervention under a one-GPU budget. Treat this as a controlled comparison, not a size benchmark.
 
-Do not silently expand model size or corpus cost inside an SFT repair. That is a new program.
+Before choosing one, perform no-training analyses over v2 hidden states/logits and compare loop-onset versus
+stable responses. The analysis must identify a testable mechanism, not merely a new corpus preference.
+
+## Later architecture and capacity decision
+
+If a properly controlled semantic-contingency intervention remains unlearnable, decide explicitly between:
+
+- a smaller, higher-quality and shorter curriculum matched to the current foundation; or
+- a different one-GPU-feasible architecture or foundation with a separately budgeted pretrain.
+
+Do not silently expand model scale or corpus cost inside an SFT repair. That is a new program.
 
 ## Experiments not worth running first
 

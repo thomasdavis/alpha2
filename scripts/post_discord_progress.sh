@@ -7,9 +7,9 @@ env_file=${ALPHA2_DISCORD_ENV_FILE:-$repo_root/.env.discord.local}
 attestation=${1:-}
 message_file=${2:-}
 
-if [[ $attestation != --qualitative-improvement || -z $message_file ]]; then
-  echo "usage: scripts/post_discord_progress.sh --qualitative-improvement MESSAGE_FILE" >&2
-  echo "Discord is reserved for controlled before/after output improvements, not routine status." >&2
+if [[ $attestation != --qualitative-improvement && $attestation != --meaningful-performance ]] || [[ -z $message_file ]]; then
+  echo "usage: scripts/post_discord_progress.sh (--qualitative-improvement|--meaningful-performance) MESSAGE_FILE" >&2
+  echo "Discord is reserved for controlled output improvements or measured meaningful performance findings, not routine status." >&2
   exit 2
 fi
 
@@ -21,7 +21,8 @@ set -a
 source "$env_file"
 set +a
 
-: "${ALPHA2_DISCORD_WEBHOOK_URL:?ALPHA2_DISCORD_WEBHOOK_URL is required}"
+webhook_url=${ALPHA2_DISCORD_WEBHOOK_URL:-${DISCORD_WEBHOOK_URL:-}}
+: "${webhook_url:?ALPHA2_DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL is required}"
 
 message_bytes=$(wc -c < "$message_file")
 (( message_bytes <= 1900 )) || {
@@ -34,6 +35,6 @@ jq -Rs '{content: .}' < "$message_file" |
     --header 'Content-Type: application/json' \
     --data-binary @- \
     --output /dev/null \
-    "$ALPHA2_DISCORD_WEBHOOK_URL"
+    "$webhook_url"
 
 echo "Discord webhook accepted $(basename -- "$message_file") ($message_bytes bytes)"

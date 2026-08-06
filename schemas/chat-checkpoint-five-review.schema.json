@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "reviewer",
+    "reference_blinded",
+    "candidate_summaries",
+    "cases",
+    "ranking",
+    "selected_candidate",
+    "selection_rationale"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "alpha-chat-checkpoint-five-review-v1"
+    },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "reference_blinded": { "type": "boolean", "const": true },
+    "candidate_summaries": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "pass_count",
+          "borderline_count",
+          "fail_count",
+          "overall_score",
+          "strengths",
+          "weaknesses"
+        ],
+        "properties": {
+          "label": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+          "pass_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "borderline_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "fail_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "overall_score": { "type": "number", "minimum": 0, "maximum": 5 },
+          "strengths": { "type": "string", "minLength": 1 },
+          "weaknesses": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 100,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source", "winner", "runner_up", "verdicts", "rationale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "winner": { "type": "string", "enum": ["A", "B", "C", "D", "E", "TIE"] },
+          "runner_up": { "type": "string", "enum": ["A", "B", "C", "D", "E", "TIE"] },
+          "verdicts": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["label", "verdict"],
+              "properties": {
+                "label": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+                "verdict": { "type": "string", "enum": ["PASS", "BORDERLINE", "FAIL"] }
+              }
+            }
+          },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "ranking": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "type": "string", "enum": ["A", "B", "C", "D", "E"] }
+    },
+    "selected_candidate": {
+      "type": "string",
+      "enum": ["A", "B", "C", "D", "E", "NONE"]
+    },
+    "selection_rationale": { "type": "string", "minLength": 1 }
+  }
+}

@@ -150,6 +150,67 @@ exact before/after outputs, the reason for improvement, aggregate results, and r
 later checkpoint earned another post. AlphaCorpus's separate factual-progress timer does not authorize routine
 model-training posts.
 
+## 2026-07-31 — Repair v2 rejects both continuation and clean-base training
+
+The operator authorized one bounded 800-step continuation pilot and, after that pilot rejected the simple
+continuation hypothesis, one 1,600-step clean-base causal control. Both used the frozen v2 corpus and development
+selector. The clean-base control was the last authorized training run in this experiment.
+
+Every v2 checkpoint answered all 96 development prompts, but every declared candidate exceeded the published
+baseline's repetition on the exact 69 shared generation-eligible IDs. Pilot A's best structural checkpoints had
+32–33 loops versus the baseline's 24. The clean-base control improved from 35 to 29 loops across its declared
+checkpoints but never reached the baseline; its qualitative panels also showed semantic errors, parroting,
+generic nonanswers, and repeated-phrase attractors.
+
+No v2 checkpoint is selected. The public model remains the earlier step-1,200 checkpoint at SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`. This does not upgrade that checkpoint's
+own quality verdict: its untouched gate remains `FAIL`.
+
+## 2026-07-31 — A failed development selector does not spend the sealed final
+
+The v2 sealed-final suite was frozen before execution at SHA-256
+`8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d`. Because no candidate passed the visible
+development and qualitative gates, the sealed-final prompts and answers were never executed or inspected. A
+future experiment may not imply a v2 final result exists.
+
+## 2026-07-31 — Preserve v2 as a public negative-result recovery branch
+
+The mounted run retains every clean-base checkpoint at 200-step intervals with optimizer and RNG state. Step
+800 and the terminal step 1,600 are additionally published in the existing recovery repository under immutable
+revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`, path `chat-repair-v2-20260731/`. Anonymous verification found
+53 nested files, matched both checkpoint LFS hashes and sizes, and reproduced the public README and checksum
+manifest byte-for-byte.
+
+This publication is a recovery and negative-result archive. It is not a model release and cannot supersede the
+selected checkpoint merely because it is newer.
+
+## 2026-07-31 — Repair v2 closes without more blind continuation
+
+The Alpha pod `omn3hktwqs7r5l` was removed after all run and evaluation evidence was copied and hash-verified.
+The unrelated live pod was not modified. Any later Alpha training needs new explicit authorization and a new
+finite intervention aimed at semantic contingency or autoregressive stability. Continuing Pilot A, continuing
+clean-base step 1,600, or repeatedly evaluating against the same visible outputs is not authorized by “resume.”
+
+## 2026-07-31 — User-requested Discord test did not change the posting rule
+
+After v2 closeout, the operator explicitly requested one webhook test using the last frozen qualitative sample.
+It was labelled as a test, identified step 1,600 as rejected, included the exact input and output, and explained
+that response initiation passed while semantic contingency failed. It was not an improvement announcement and
+does not authorize routine training posts.
+
+## 2026-08-02 — Public Alpha checkpoints and runtimes are append-only versions
+
+The operator requires every Alpha publication on BLAH to increase the version. A new checkpoint, changed
+runtime behavior, tokenizer, chat template, or decoding policy must receive a new version label, immutable
+Hugging Face revision, versioned inference path, BLAH model record, and BLAH evaluation run. Existing BLAH
+entries are never repointed or silently mutated after evaluation. Runtime-only repairs also increment the
+version because they can change measured behavior.
+
+V11 step 300 was published under this rule as `Alpha v11-m300 experimental`, BLAH model
+`Mq5PrXS1MUk2yl0eSKUXwA`, while retaining `quality_gate=FAIL`. This was an explicit operator-requested
+negative-result publication, not a selection decision. Its 24-eval mean of `0.3625` was below the earlier
+Alpha run's `0.395833`; Phase S remains prohibited and the earlier model remains separately available.
+
 ## Future supersession requirements
 
 A future decision to train again must record:
@@ -162,3 +223,25 @@ A future decision to train again must record:
 - why the new evidence justifies that change.
 
 Until then, “resume” means recover state and prepare a proposal, not start a GPU.
+
+## 2026-08-03 — Helios optimization is exact-time-driven and AMD is a first-class target
+
+The operator authorized continued Helios optimization, physical AMD compatibility, and research into published
+and novel techniques across the engine. Exact GPU timestamp attribution supersedes dispatch count as the
+immediate prioritization signal. Operation count remains an important fusion/overhead metric, but a high-count
+family is not optimized ahead of a lower-count family when measured device time says otherwise.
+
+The first result selects the portable 2 x 2 register-blocked FP32 GEMM as the current NVIDIA foundation-run
+candidate through `HELIOS_MATMUL_REG2X2=1`. This is an evidence-backed run setting, not yet an unconditional
+default for unknown devices. It passed awkward-shape numerical checks, identical six-step training trajectory,
+and the 105-test NVIDIA parity/gradient suite while raising matched steady throughput by 26.1%. Physical AMD
+measurement is still required before making a cross-vendor default claim.
+
+Every expensive Helios operation will be pursued in three explicit lanes: the strongest relevant published
+algorithm, a correct capability-driven portable implementation, and a separately labeled Helios-native
+hypothesis with a baseline and a falsifying control. Failed or order-biased experiments remain evidence. Vendor
+specialization is allowed behind capabilities and parity tests; no vendor name alone admits or rejects a device.
+
+The full Alpha foundation run remains unstarted while exact optimization continues. Engine speed is not model
+quality, does not authorize Discord model samples, and does not create a Hugging Face or BLAH version. The model
+program still requires foundation training, chat post-training, free-generation selection, and behavioral proof.

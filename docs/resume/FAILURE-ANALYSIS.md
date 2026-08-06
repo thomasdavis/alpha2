@@ -24,6 +24,13 @@ equal conversation weighting, explicit first-content-token weighting, and indepe
 checkpoint: changing only `<|assistant|> ` to `<|assistant|>` changed a code-fence loop into an ordinary response
 and EOS under both fast and reference inference. See `CHAT-REPAIR-2026-07-31.md`.
 
+Repair v2 then separated the remaining failure more sharply. A de-templated, shuffled 1,024-token corpus with
+clean target-loop audits and stronger answer-start/EOS weighting made every declared continuation and clean-base
+checkpoint answer all 96 selector prompts. Those checkpoints nevertheless produced more loops, weaker stopping,
+and semantically noncontingent replies than the published baseline on exact shared prompts. Answer initiation is
+therefore repaired in the v2 training regime; it is no longer an adequate proxy for conversation. See
+`CHAT-REPAIR-V2-2026-07-31.md`.
+
 ## Generation-boundary correction
 
 | Text | Token IDs | Meaning |
@@ -154,6 +161,11 @@ temperature zero would be a serving defect and should be investigated separately
 
 ## Practical conclusion
 
-If the program is ever reopened, the first repair target is the SFT recipe and its selection gate—not
-the server and not a temperature trick. Deterministic shuffling, source balancing, explicit answer-start
-measurement, and generation-gated checkpoint selection should be proven before another full run.
+The first repair target was the SFT recipe and its selection gate—not the server or a temperature trick.
+Deterministic shuffling, a corrected mixture, explicit answer-start protection, longer context, and
+generation-gated selection were implemented. They solved emptiness but did not solve useful conversation.
+
+If training is authorized again, the next repair target is semantic contingency and autoregressive stability:
+the model must answer the user's actual move, maintain direction under its own generated prefix, avoid parroting
+and repeated-phrase attractors, and stop after a complete answer. A new finite intervention must demonstrate that
+behavior on fresh families. Blindly continuing either v2 trajectory is contradicted by the evidence.

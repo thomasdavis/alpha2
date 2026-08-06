@@ -11,6 +11,7 @@ import {
   type Dtype,
   type NumericArray,
   type Shape,
+  type UnlikelihoodLossStats,
   shapeSize,
   shapeStrides,
   dtypeArray,
@@ -109,6 +110,11 @@ function multiToFlat(coords: number[], strides: number[]): number {
 export class CpuRefBackend implements Backend {
   readonly name = "cpu_ref";
   private readonly rng = new SeededRng(42);
+  private lastUnlikelihoodStats: UnlikelihoodLossStats | null = null;
+
+  getLastCrossEntropyUnlikelihoodMaskedStats(): UnlikelihoodLossStats | null {
+    return this.lastUnlikelihoodStats;
+  }
 
   // ── creation ────────────────────────────────────────────────────────────
 
@@ -136,7 +142,7 @@ export class CpuRefBackend implements Backend {
     return t;
   }
 
-  fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype: Dtype = "f32"): TensorData {
     const size = shapeSize(shape);
     if (data.length !== size) {
       throw new Error(`Data length ${data.length} does not match shape size ${size}`);
@@ -647,6 +653,51 @@ export class CpuRefBackend implements Backend {
     // Floor the denominator at 1 so an all-zero mask (padding-only row / no
     // assistant tokens) yields exactly 0 instead of 0/0 = NaN.
     loss /= Math.max(sumMask, 1);
+
+    const Ctor = dtypeArray(logits.dtype);
+    return makeTensor([], logits.dtype, Ctor.from([loss]) as NumericArray);
+  }
+
+  crossEntropyUnlikelihoodMasked(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    epsilon: number,
+  ): TensorData {
+    // Penalize probability assigned to undesired rollout tokens:
+    // -log(max(1 - p_bad, epsilon)), averaged over positive mask mass.
+    if (!(epsilon > 0 && epsilon <= 1)) {
+      throw new Error(`crossEntropyUnlikelihoodMasked epsilon must be in (0,1], got ${epsilon}`);
+    }
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const logProbs = this.logSoftmax(logits, 1);
+    const td = numData(targets);
+    const lpd = numData(logProbs);
+    const md = numData(mask);
+
+    let loss = 0;
+    let sumMask = 0;
+    let activeRows = 0;
+    let weightedProbability = 0;
+    let maxBadProbability = 0;
+    for (let i = 0; i < N; i++) {
+      const m = md[i];
+      if (m === 0) continue;
+      const pBad = Math.exp(lpd[i * C + td[i]]);
+      loss -= Math.log(Math.max(1 - pBad, epsilon)) * m;
+      sumMask += m;
+      activeRows++;
+      weightedProbability += pBad * m;
+      maxBadProbability = Math.max(maxBadProbability, pBad);
+    }
+    loss /= Math.max(sumMask, 1);
+    this.lastUnlikelihoodStats = {
+      activeRows,
+      maskMass: sumMask,
+      meanBadProbability: weightedProbability / Math.max(sumMask, 1),
+      maxBadProbability,
+    };
 
     const Ctor = dtypeArray(logits.dtype);
     return makeTensor([], logits.dtype, Ctor.from([loss]) as NumericArray);

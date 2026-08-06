@@ -1,0 +1,149 @@
+/* Tokens per second at a SHAPE YOU NAME, because the benchmark's shape is 0.11M
+ * parameters and nobody trains that.
+ *
+ * bench-scale.mjs is hard-wired to 2 layers, 64 embd, 4 heads, vocab 64 and 32
+ * tokens — about 110,000 parameters. It is the right size for deciding whether
+ * a kernel is correct and the wrong size for deciding anything about training
+ * cost: at that shape a step is almost entirely fixed overhead, so tokens/sec
+ * measures the host, and the arithmetic that dominates a real model is absent.
+ *
+ * Usage: node bench-shape.mjs <nLayer> <nEmbd> <nHead> <vocab> <seq> <batch> [backend]
+ *   node bench-shape.mjs 18 640 10 12288 1024 4 native
+ *
+ * Same discipline as bench-scale: warm by TIME (this card idles at 210 MHz
+ * against 2100 and cannot be clock-locked in a container), report the MEDIAN
+ * with the spread, release intermediates and end the step, and hold a real
+ * barrier before stopping the clock.
+ */
+import { NativeHeliosBackend, HeliosBackend } from "/workspace/alpha2/packages/helios/dist/index.js";
+import { CpuRefBackend } from "/workspace/alpha2/packages/tensor/dist/index.js";
+import { SeededRng } from "/workspace/alpha2/packages/core/dist/index.js";
+import { Tape } from "/workspace/alpha2/packages/autograd/dist/index.js";
+import { initGPT, gptForward } from "/workspace/alpha2/packages/model/dist/index.js";
+
+const nLayer = Number(process.argv[2] ?? 18);
+const nEmbd = Number(process.argv[3] ?? 640);
+const nHead = Number(process.argv[4] ?? 10);
+const vocabSize = Number(process.argv[5] ?? 12288);
+const SEQ = Number(process.argv[6] ?? 1024);
+const BATCH = Number(process.argv[7] ?? 1);
+const which = process.argv[8] ?? "native";
+const WARMUP_MS = Number(process.env.WARMUP_MS ?? 4000);
+const SAMPLES = Number(process.env.SAMPLES ?? 9);
+
+const C = { vocabSize, blockSize: SEQ, nLayer, nEmbd, nHead, dropout: 0 };
+
+/* Parameters, counted rather than asserted — the whole point of this file is
+ * that the number is not what people assume. GPT-2 form, untied head. */
+const perLayer = 4 * nEmbd * nEmbd + 4 * nEmbd     /* attention: wqkv+proj, biases */
+               + 8 * nEmbd * nEmbd + 5 * nEmbd     /* mlp 4x, biases */
+               + 4 * nEmbd;                        /* two layernorms */
+const params = vocabSize * nEmbd + SEQ * nEmbd + nLayer * perLayer + 2 * nEmbd
+             + vocabSize * nEmbd;
+console.log(`${nLayer}L ${nEmbd}d ${nHead}h vocab ${vocabSize} seq ${SEQ} batch ${BATCH} — ` +
+            `~${(params / 1e6).toFixed(1)}M parameters, ${BATCH * SEQ} tokens/step — ${which}\n`);
+
+const make = { native: () => new NativeHeliosBackend(0), vulkan: () => new HeliosBackend(),
+               cpu: () => new CpuRefBackend() }[which];
+if (!make) { console.error(`unknown backend ${which}`); process.exit(2); }
+const B = make();
+const P = initGPT(C, B, new SeededRng(7));
+
+const kept = new Set();
+(function walk(v, d) {
+  if (!v || typeof v !== "object" || d > 6) return;
+  if (v.buffer && v.shape) { kept.add(v); return; }
+  if (v.data) kept.add(v.data);
+  for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, d + 1);
+})(P, 0);
+const rel = B.releaseGpuTensor ? (td) => { if (td && !kept.has(td)) B.releaseGpuTensor(td); } : undefined;
+
+/* Every Variable that carries a gradient, so the step can hand them back. */
+const paramVars = [];
+(function walkV(v, d) {
+  if (!v || typeof v !== "object" || d > 6) return;
+  if (v.requiresGrad !== undefined && v.data) { paramVars.push(v); return; }
+  for (const x of Array.isArray(v) ? v : Object.values(v)) walkV(x, d + 1);
+})(P, 0);
+
+function step() {
+  const n = BATCH * SEQ;
+  const tape = new Tape();
+  const tok = B.fromArray(Array.from({ length: n }, (_, i) => i % C.vocabSize), [BATCH, SEQ]);
+  const tgt = B.fromArray(Array.from({ length: n }, (_, i) => (i + 1) % C.vocabSize), [BATCH, SEQ]);
+  const out = gptForward(C, P, B, tape, tok, tgt, true, false, false, undefined, rel);
+  const loss = out.loss.data.data[0];
+  tape.backward(out.loss, B, rel);
+
+  /*
+   * RELEASE THE GRADIENTS, because a training step consumes them.
+   *
+   * The release callback frees intermediates; it cannot free the gradients,
+   * which are the backward pass's RESULT and are still attached to every
+   * parameter when it returns. In a real step the optimizer reads them and they
+   * go; a benchmark with no optimizer keeps every one, and at 105M parameters
+   * that is the whole of the growth — the LM head's dW alone is 640 x 12,288,
+   * 31.5 MB, and there are two of them.
+   *
+   * Measured at 2 layers: 34 tensors and 99.1 MB survive a step, 67.5 MB of it
+   * matmul outputs that are weight gradients and 30.2 MB `zeros` that are the
+   * accumulators autograd's fallbacks allocate for them.
+   */
+  for (const v of paramVars) {
+    if (v.grad) { rel?.(v.grad); v.grad = null; }
+  }
+  /*
+   * CLEAR THE TAPE, which is where the intermediates actually go.
+   *
+   * The release callback frees what each operation hands back; the tape still
+   * holds every recorded entry's output and every fallback's scratch, and its
+   * own docstring says so — "without this, GPU buffers are only freed when
+   * V8's FinalizationRegistry fires... and leads to GPU OOM during multi-step
+   * training". Nothing here was calling it.
+   */
+  tape.clear(rel);
+  B.finishStepOps?.();
+  if (B.flushAndWait) B.flushAndWait();
+  else if (B.syncGpu) B.syncGpu();
+  return loss;
+}
+
+let loss = 0, warm = 0;
+const t0 = Date.now();
+try {
+  while (warm < 2 || Date.now() - t0 < WARMUP_MS) { loss = step(); warm++; }
+} catch (e) {
+  console.log(`FAILED during warmup after ${warm} steps: ${e.message}`);
+  process.exit(1);
+}
+
+/*
+ * GPU time BESIDE wall time, because they answer different questions.
+ *
+ * The native context counts the nanoseconds it spends spinning on the
+ * end-of-step fence (statSpinNs), which is GPU time by construction: the host
+ * is doing nothing else while it waits. Printed next to the median it says
+ * whether a step is limited by kernels or by the host that queues them, and
+ * that decides whether the next piece of work belongs in the emitter or in
+ * the backend. Without it a slow step is just slow.
+ */
+const spin = () => B.hl?.stats ? B.hl.stats().spinNs : null;
+const spin0 = spin();
+const wall0 = process.hrtime.bigint();
+const ms = [];
+for (let i = 0; i < SAMPLES; i++) {
+  const t = process.hrtime.bigint();
+  loss = step();
+  ms.push(Number(process.hrtime.bigint() - t) / 1e6);
+}
+const wallTotal = Number(process.hrtime.bigint() - wall0) / 1e6;
+const spinTotal = spin0 === null ? null : (spin() - spin0) / 1e6;
+ms.sort((a, b) => a - b);
+const med = ms[Math.floor(ms.length / 2)];
+const st = B.stats ? B.stats() : null;
+console.log(`${(BATCH * SEQ / (med / 1000)).toFixed(0).padStart(8)} tok/s   median ${med.toFixed(1)} ms  ` +
+            `[${ms[0].toFixed(1)}-${ms[ms.length - 1].toFixed(1)}]  loss ${loss.toFixed(4)}  (${warm} warm)` +
+            (st && st.allocations !== undefined ? `  held ${(st.allocations * 4 / 1024).toFixed(2)} GB` : "") +
+            (spinTotal === null ? "" :
+              `\n${" ".repeat(9)}GPU ${(spinTotal / SAMPLES).toFixed(1)} ms/step = ` +
+              `${(spinTotal / wallTotal * 100).toFixed(0)}% of wall, host ${((wallTotal - spinTotal) / SAMPLES).toFixed(1)} ms/step`));

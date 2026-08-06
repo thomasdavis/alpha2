@@ -1,0 +1,20 @@
+{
+  "schema": "alpha-chat-foundations-v8-build-config-v1",
+  "seed": "alpha-chat-foundations-v8-20260802",
+  "max_tokens": 512,
+  "tokenizer": "/mnt/donto-data/alpha-corpora/tokenizers/bpe-byte-12k-20260722.json",
+  "generation_directory": "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/generation/batches",
+  "review_directory": "/mnt/donto-data/donto-resources/research/alpha-chat-foundations-v8-20260802/review",
+  "evaluation_freeze": "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/evaluation-freeze.json",
+  "blah_baseline": "/mnt/donto-data/donto-resources/benchmarks/alpha-evals-20260802/frozen-baseline-24.json",
+  "rendered_holdouts": [
+    "/mnt/donto-data/donto-resources/research/alpha-chat-semantic-repair-v4-20260801/planned-v2/corpus/dev.txt"
+  ],
+  "development_batches_per_focus": 1,
+  "review_thresholds": {
+    "semantic_correctness": 4,
+    "response_contingency": 4,
+    "naturalness": 4,
+    "compactness": 3
+  }
+}

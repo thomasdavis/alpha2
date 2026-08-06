@@ -1,0 +1,10 @@
+{
+  "name": "alpha-gpu-operation-universe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "validate": "python3 tools/validate_registry.py"
+  }
+}

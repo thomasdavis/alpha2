@@ -43,6 +43,19 @@ export function fourGramRepeatRate(tokens: readonly number[]): number {
   return repeated / total;
 }
 
+/** Generated-content token indices whose token completes a 4-gram already
+ * observed earlier in the same content trajectory. */
+export function repeatedFourGramCompletionPositions(tokens: readonly number[]): number[] {
+  const positions: number[] = [];
+  const seen = new Set<string>();
+  for (let start = 0; start + 3 < tokens.length; start++) {
+    const gram = `${tokens[start]},${tokens[start + 1]},${tokens[start + 2]},${tokens[start + 3]}`;
+    if (seen.has(gram)) positions.push(start + 3);
+    else seen.add(gram);
+  }
+  return positions;
+}
+
 export function normalizedAnswerTokens(text: string): string[] {
   return [...text.toLocaleLowerCase("en-US").matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
 }

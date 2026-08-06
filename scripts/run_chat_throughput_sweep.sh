@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Correctness-gated end-to-end throughput sweep for Alpha's real chat workload.
+# Run only on an idle NVIDIA host after building the repository. Every row uses
+# the same checkpoint, token stream, optimizer schedule, and seed. Risky rows
+# are retained as evidence even when they fail.
+
+: "${TRAIN_DATA:?set TRAIN_DATA to the rendered training corpus}"
+: "${VAL_DATA:?set VAL_DATA to the rendered validation corpus}"
+: "${TOKENIZER:?set TOKENIZER to the native tokenizer artifact}"
+: "${INIT_CHECKPOINT:?set INIT_CHECKPOINT to the clean native checkpoint}"
+
+OUT_ROOT=${OUT_ROOT:-/tmp/alpha-chat-throughput-sweep}
+STEPS=${STEPS:-30}
+SKIP_STEPS=${SKIP_STEPS:-5}
+NODE_BIN=${NODE_BIN:-node}
+
+if [[ ! "$STEPS" =~ ^[0-9]+$ ]] || (( STEPS < 10 )); then
+  echo "STEPS must be an integer >= 10" >&2
+  exit 2
+fi
+if [[ ! "$SKIP_STEPS" =~ ^[0-9]+$ ]] || (( SKIP_STEPS < 1 || SKIP_STEPS >= STEPS )); then
+  echo "SKIP_STEPS must be an integer in [1, STEPS)" >&2
+  exit 2
+fi
+for file in "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" "$INIT_CHECKPOINT"; do
+  [[ -f "$file" ]] || { echo "missing input: $file" >&2; exit 2; }
+done
+[[ -f apps/cli/dist/main.js ]] || { echo "build apps/cli before running the sweep" >&2; exit 2; }
+
+mkdir "$OUT_ROOT"
+sha256sum "$TRAIN_DATA" "$VAL_DATA" "$TOKENIZER" "$INIT_CHECKPOINT" > "$OUT_ROOT/INPUT-HASHES.sha256"
+
+# Bind every sweep to the exact executable source state.  A commit alone is
+# insufficient when kernel experiments are intentionally benchmarked before
+# selection, so preserve the porcelain status and the complete tracked diff as
+# first-class evidence instead of silently treating HEAD as the executed tree.
+git rev-parse HEAD > "$OUT_ROOT/SOURCE-COMMIT.txt"
+git status --porcelain=v1 --untracked-files=all > "$OUT_ROOT/SOURCE-STATUS.txt"
+git diff --binary HEAD > "$OUT_ROOT/SOURCE-DIFF.patch"
+{
+  "$NODE_BIN" --version
+  npm --version
+  uname -a
+} > "$OUT_ROOT/RUNTIME.txt"
+sha256sum \
+  packages/helios/src/backend.ts \
+  packages/helios/src/kernels/matmul-coop.ts \
+  packages/helios/src/kernels/matmul.ts \
+  packages/train/src/trainer.ts \
+  apps/cli/dist/main.js \
+  package-lock.json \
+  > "$OUT_ROOT/SOURCE-FILES.sha256"
+
+run_row() {
+  local name=$1 wg=$2 coop=$3 fp16=$4 block=$5 batch=$6 pool=$7 phase_sync=$8
+  local run_dir="$OUT_ROOT/$name"
+  local log="$OUT_ROOT/$name.log"
+  local phase_sync_value=0
+  [[ "$phase_sync" == "on" ]] && phase_sync_value=1
+  mkdir "$run_dir"
+  printf 'row=%s wg=%s coop=%s fp16=%s block=%s batch=%s pool=%s phase_sync=%s\n' \
+    "$name" "$wg" "$coop" "$fp16" "$block" "$batch" "$pool" "$phase_sync" | tee "$run_dir/row.txt"
+
+  local -a env_args=(
+    "HELIOS_WG_SIZE=$wg"
+    "HELIOS_MAX_OUTPUT_POOL_ENTRIES=$pool"
+    "ALPHA_FAIL_ON_SMOKE_TEST=1"
+    "ALPHA_SAMPLE_FROM_CHECKPOINT=0"
+    "ALPHA_GPU_METRICS_SAMPLE_EVERY=1"
+    "HELIOS_PROFILE_GPU_OPS=1"
+    "ALPHA_PROFILE_PHASE_SYNC=$phase_sync_value"
+  )
+  if [[ "$coop" == "off" ]]; then
+    env_args+=("HELIOS_DISABLE_COOP_MAT=1")
+  else
+    env_args+=("HELIOS_DISABLE_COOP_MAT=0")
+  fi
+  if [[ "$block" != "1024" ]]; then
+    env_args+=("ALPHA_ALLOW_RESUME_MISMATCH=1")
+  fi
+  printf '%s\n' "${env_args[@]}" > "$run_dir/controlled-environment.txt"
+
+  set +e
+  env "${env_args[@]}" \
+    "$NODE_BIN" --expose-gc apps/cli/dist/main.js train \
+      --data="$TRAIN_DATA" --valData="$VAL_DATA" --requireValData=true --sft=false \
+      --domain=alpha_llama --tokenizerArtifacts="$TOKENIZER" --initCheckpoint="$INIT_CHECKPOINT" \
+      --vocabSize=12288 --block="$block" --layers=16 --dim=512 --heads=8 --dropout=0 \
+      --activation=swiglu --ffnDim=1408 --normType=rmsnorm --posEnc=rope --ropeTheta=10000 \
+      --tieEmbeddings=true --backend=helios --gpuProfile=none --optim=adamw \
+      --batch="$batch" --accumSteps=1 --steps="$STEPS" --lr=0.0003 --lrMin=0.00003 \
+      --warmupIters=10 --beta1=0.9 --beta2=0.95 --eps=0.00000001 --weightDecay=0.1 \
+      --gradClip=1.0 --spikeThreshold=0 --evalInterval="$STEPS" \
+      --checkpointInterval="$STEPS" --evalIters=1 --sampleInterval=0 --logEvery=1 \
+      --seed=1337 --strictPlanning=false --remote=false --fp16="$fp16" --minGpuSize=1 \
+      --no-fallback=true --packed=true --symbio=false --postSamples=false --trace=true \
+      --runDir="$run_dir" 2>&1 | tee "$log"
+  local status=${PIPESTATUS[0]}
+  set -e
+  printf '%s\n' "$status" > "$run_dir/exit-code.txt"
+
+  # A 30-step row produces the same ~660 MiB optimizer-bearing checkpoint as a
+  # long run. Preserve it losslessly for parity/debugging without allowing eight
+  # disposable sweep rows to exhaust the pod overlay. The decompressed digest
+  # remains the native-checkpoint identity.
+  local checkpoint="$run_dir/checkpoint-$STEPS.json"
+  if [[ -f "$checkpoint" ]]; then
+    (
+      cd "$run_dir"
+      sha256sum "checkpoint-$STEPS.json" > checkpoint-raw.sha256
+      zstd -T0 -6 --rm "checkpoint-$STEPS.json"
+      zstd -t "checkpoint-$STEPS.json.zst"
+      sha256sum "checkpoint-$STEPS.json.zst" > checkpoint-zst.sha256
+      local expected_raw actual_raw
+      expected_raw=$(cut -d' ' -f1 checkpoint-raw.sha256)
+      actual_raw=$(zstd -dc "checkpoint-$STEPS.json.zst" | sha256sum | cut -d' ' -f1)
+      [[ "$actual_raw" == "$expected_raw" ]] || {
+        echo "decompressed checkpoint hash mismatch for $name" >&2
+        exit 1
+      }
+    )
+  fi
+}
+
+run_row b0_fp32_wg64           64  off false 1024 16  512 off
+run_row b1_fp32_wg128         128  off false 1024 16  512 off
+run_row b2_fp32_wg256         256  off false 1024 16  512 off
+run_row b3_fp32_wg128_pool768 128  off false 1024 16  768 off
+run_row b4_coop_wg128         128  on  false 1024 16  512 off
+run_row b5_mixed_wg128        128  on  true  1024 16  512 off
+run_row b6_fp32_block512      128  off false 512  32  512 off
+run_row b7_fp32_phase_sync     64  off false 1024 16  512 on
+
+python3 scripts/summarize_chat_throughput_sweep.py \
+  --root "$OUT_ROOT" --skip-steps "$SKIP_STEPS" --exclude-final \
+  | tee "$OUT_ROOT/SUMMARY.md"

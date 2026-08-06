@@ -1,34 +1,122 @@
-# CURRENT GOAL — recover the original Alpha chat model
+# CURRENT GOAL — execute the 2026-08-04 handoff program
 
-**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE AGAIN BY OPERATOR DIRECTION; PUBLISHED STEP 1,200 IS THE FAILURE-ANALYSIS BASELINE; NO PAID POD LIVE YET
+**Set:** 2026-08-04 · **Owner:** ajax + agent · **Status:** ACTIVE. **Phase A COMPLETE**; Phase B unauthorized; no GPU rented.
+
+**The goal is the handoff document.** Not a paraphrase of it, and not a sub-goal derived from it:
+
+```
+/mnt/donto-data/donto-resources/research/alpha-helios-reimagined/alpha-handoff-2026-08-04.md
+docs/resume/HANDOFF-TO-NEXT-MODEL-2026-08-04.md            (repo pointer)
+https://alpha.donto.org/research/alpha-handoff-2026-08-04.html
+```
+
+Its §12 "Strict order for the next operator" is the plan of record. Its §13 physical-run acceptance
+protocol is the gate for every proposed speedup. Its §2 one-minute recovery is the entry check for
+every session. Where this file and the handoff disagree, **the handoff wins** and this file is wrong.
+
+The handoff supersedes nothing below: the product goal (a genuinely chatty Alpha) remains the point,
+and the handoff's Phase C is that goal. Performance work exists to make it affordable to iterate on,
+which is the handoff's own framing — "performance work should eventually support, not postpone
+forever, a better model run."
+
+## Standing constraints carried from the handoff
+
+- **Phase B is not authorized.** Renting a GPU requires new explicit authorization each time.
+- **Never compose unvalidated multipliers.** A 1.08x allocator result and a 1.17x arithmetic result do
+  not imply 1.26x without a paired combined measurement.
+- **Four states are distinct and must not be conflated:** implemented, locally verified, physically
+  measured, quality-promoted.
+- **Keep ordinary math exact** until physical parity of X25–X31 is established.
+- **Do not weaken the capability guard.** It rejects devices whose subgroup width would silently
+  corrupt gradients.
+
+## Progress against §12 Phase A
+
+| Item | State |
+|---|---|
+| 1–3. Verify revision, manifest, clean tree; read current records | done 2026-08-04 |
+| 4. Reproduce the X38 microbenchmark before reinterpreting it | **done — X41** (3/3 byte-parity; 0.050–0.066% of host) |
+| 5. Instrument the native interval beneath JS packing | **done — X39** |
+| 6. Print host subintervals beside device dispatch time | **done — X39** (`[host_phases]`, env-gated) |
+| 7. Attack the currently binding constraint, then re-profile | **done — X42.** Constraint is GPU arithmetic (78.37% of step); host-side implementation declined at 1.011x-1.033x |
+| 8. Source-guided implementation only where the mechanism maps faithfully | **done — X42.** None warranted locally; the mechanisms that address the constraint are X25-X31, implemented and blocked on physical parity |
+| 9. Keep ordinary math exact until X25–X31 parity is physical | holding |
+| 10. Verify whether `x10b_consumed_metric.py` is still an open question | **done — X41**; open, unrun, correctly ranked below host work (1.12x ceiling at S=1024) |
+
+## Subordinate goals
+
+These are means, not ends, and are subordinate to the handoff:
+
+- [GOAL-THROUGHPUT-2026-08-03.md](docs/resume/GOAL-THROUGHPUT-2026-08-03.md) — tokens/s ladder; superseded
+  in part by the 3090 measurements recorded in the handoff overlay (active target 50,000 tok/s).
+- [GOAL-EXTREME-PERFORMANCE-2026-08-03.md](docs/resume/GOAL-EXTREME-PERFORMANCE-2026-08-03.md) — the
+  four-factor cost decomposition.
+- [X40](docs/resume/X40-OPERATION-COUNT-IS-REDUCTIONS-NOT-GEMMS.md) — operation-count reduction target.
+  **Its stated value was corrected by [X42](docs/resume/X42-THE-BOTTLENECK-MOVED-CORRECTING-X40.md)** to
+  1.021x-1.033x, and the implementation is declined on that basis. Held for a future device where host
+  becomes binding again.
+
+---
+
+# PRODUCT GOAL (carried, now Phase C of the handoff) — recover the original Alpha chat model
+
+**Set:** 2026-07-31 · **Owner:** ajax + Codex · **Status:** ACTIVE PRODUCT GOAL; V11 COMPLETE AND REJECTED; SAME-DATASET RECIPE AUDIT COMPLETE; DEDICATED ALPHA GPU LIVE; V12 RECIPE REPLICATION NEXT
+
+## 2026-08-02 superseding state
+
+The authoritative current correction is
+[docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md](docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md).
+Public models using Alpha's pretraining composition, exact shuffled pretraining
+dataset, and exact Smol-SmolTalk SFT source were inspected and directly sampled.
+The one-billion-token base comparator repeats like Alpha; the successful public
+same-Smoltalk SFT recipe instead used packed full-sequence causal loss for two
+epochs. Alpha used one un-packed assistant-only pass. V11's all-token probe was
+only 2.46 million positions over 10,862 rows and initialized from an already
+post-trained model, so it did not test that recipe.
+
+The proposed synthetic contrast-family V12 generation is parked before any API
+generation or GPU training. V12 now means a clean-base, packed, full-sequence,
+two-pass Smol-SmolTalk recipe replication, preceded by an identical-window
+learning-rate pilot and selected only through held-out free conversation. The
+dedicated Alpha pod is live and available; the operator has authorized continued
+bounded training without repeated approval prompts.
+
+The exact V12 train/test renderings are now built and validation-PASS under
+`/mnt/donto-data/alpha-corpora/chat-recipe-v12/`: 450,402 training conversations,
+23,710 held-out test conversations, zero structural issues, zero remaining exact
+train/test overlaps, and 4,096/4,096 sampled conversations with identical native
+Alpha and Hugging Face token IDs. The frozen training contract is
+[docs/resume/CHAT-RECIPE-V12-CONTRACT.md](docs/resume/CHAT-RECIPE-V12-CONTRACT.md).
 
 The operator explicitly returned Alpha to its original product goal: a small model that can chat naturally and
 effectively. The synthetic-curriculum/SQLite program is preserved as a side project, but it is paused and is not
 the active training objective.
 
-The authoritative execution record is
-[docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). The corrective run starts from
-the clean pre-SFT base, uses a compact deterministically shuffled conversation corpus, weights conversations
-equally, independently protects assistant starts and EOS, and selects by free generation rather than validation
-loss. Checkpoint 1,200 is selected at SHA-256
-`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec`.
+The latest completed training record is
+[docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md](docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md). The earlier selected repair
+is recorded in [docs/resume/CHAT-REPAIR-2026-07-31.md](docs/resume/CHAT-REPAIR-2026-07-31.md). Checkpoint 1,200
+remains selected at SHA-256
+`399f776b49acc0c8834ff8a7f2390454e2c5f2d833a264e3f83ff546e973cfec` because no v2 candidate beat it on
+untouched comparable conversation behavior.
 
 The selected candidate looked structurally chatty on development—48/48 nonempty EOS-terminated responses—but
 the untouched suite measured only 55/100 structural passes, 70/100 nonempty replies, 31 loops, and 0/200 exact
 closed-book QA. The quality gate therefore remains FAIL. Native/Transformers parity passed 87/87 positions; the
-checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and the paid
-pod was removed. On 2026-07-31 the operator explicitly directed the project to continue until Alpha is a genuinely
-effective chat model. The next paid run is authorized only after the frozen failures are stratified and a new
-finite contract isolates the intervention; do not blindly continue step 2,200 or reuse the narrow development
-suite as the selector.
+checkpoint, complete evidence, standard export, public Space, and live CPU backend are published, and its paid
+pod was removed. On 2026-07-31 the operator explicitly directed the product goal to continue until Alpha is a
+genuinely effective chat model.
 
-Repair v2 has now frozen a corrected 24,701-conversation corpus at block 1,024, including 23,529 training rows
-and 1,172 corpus-development rows. All rows are structurally valid; exhaustive native-tokenizer mask audits pass;
-no target answer crosses the loop threshold; and the most common four-token answer start is only 0.28% of turns.
-The visible 96-prompt development selector, fixed 12-prompt qualitative panel, and disjoint 150-prompt sealed final
-are hash-bound. The exact bounded continuation launcher is `scripts/run_chat_repair_v2.sh`. The published
-step-1,200 checkpoint is being measured on the new development suite before the paid RTX 4090 pilot; the sealed
-final remains unexecuted.
+Repair v2 froze a corrected 24,701-conversation corpus at block 1,024 and two bounded experiments. Pilot A
+continued the selected checkpoint for 800 steps; the predeclared Pilot B control ran 1,600 steps from the clean
+pre-SFT base. Every v2 checkpoint answered all 96 development prompts, but repetition and semantic contingency
+were worse than the selected baseline on the exact 69 shared prompts. No v2 checkpoint was selected, and the
+sealed-final suite remains unexecuted and uninspected.
+
+All v2 evidence is local at `/mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/` and public at training
+archive revision `c1117378c0bc8b81b408be09c000f80ea9f027d7`. Alpha pod `omn3hktwqs7r5l` was removed after
+verified recovery. A newer dedicated Alpha pod is now live. The next paid run is not a continuation of either
+failed trajectory: it is the finite same-dataset recipe replication above, with selection by generated
+conversation rather than loss.
 
 Model size is not the goal. The active constraint is that experiments train safely and economically on one
 rented GPU, with scale chosen by measured conversational return and actual hardware utilization.

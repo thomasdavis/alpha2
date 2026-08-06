@@ -10,31 +10,34 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { HeliosBackend, destroyDevice, getDeviceInfo } from "@alpha/helios";
 import { CpuRefBackend } from "@alpha/tensor";
+import { assessHeliosTrainingDevice } from "@alpha/train";
 
-// Skip the whole suite unless a real NVIDIA GPU is present (vendorId 0x10de).
-// Software Vulkan (llvmpipe) initializes but rejects the coop-matmul pipelines
-// these tests exercise, so anything else — including no Vulkan at all — skips.
-let hasNvidiaGpu = false;
+// Skip unless a physical Vulkan GPU satisfies the current Helios kernel
+// capability contract. This intentionally admits AMD RDNA wave32 devices.
+let hasSupportedGpu = false;
+let deviceInfo: ReturnType<typeof getDeviceInfo> | null = null;
 try {
-  hasNvidiaGpu = getDeviceInfo().vendorId === 0x10de;
+  deviceInfo = getDeviceInfo();
+  hasSupportedGpu = assessHeliosTrainingDevice(deviceInfo).supported;
 } catch {
-  hasNvidiaGpu = false;
+  hasSupportedGpu = false;
 }
-if (!hasNvidiaGpu) {
-  console.log("[gpu-perf] no NVIDIA GPU detected — suite skipped");
+if (!hasSupportedGpu) {
+  console.log("[gpu-perf] no capability-compatible physical GPU detected — suite skipped");
 }
 
-const gpu = hasNvidiaGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
+const gpu = hasSupportedGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
 const cpu = new CpuRefBackend();
 
 // Force GPU dispatch for small tensors in tests
-if (hasNvidiaGpu) gpu.setMinGpuSize(1);
+if (hasSupportedGpu) gpu.setMinGpuSize(1);
 
 afterAll(() => {
-  if (hasNvidiaGpu) destroyDevice();
+  if (hasSupportedGpu) destroyDevice();
 });
 
-const describeGpu = describe.skipIf(!hasNvidiaGpu);
+const describeGpu = describe.skipIf(!hasSupportedGpu);
+const describeCoopGpu = describe.skipIf(!hasSupportedGpu || deviceInfo?.coopMatSupported !== true);
 
 // ── Helper ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,86 @@ function maxDiff(a: Float32Array, b: Float32Array): number {
     max = Math.max(max, Math.abs(a[i] - b[i]));
   }
   return max;
+}
+
+const RANK_ONE_FACTORS = [1, -1, 0.5, -0.5] as const;
+const RANK_ONE_BASIS = [0.25, -0.25, 0.125, -0.125] as const;
+
+function rankOneFactor(i: number): number {
+  return RANK_ONE_FACTORS[i % RANK_ONE_FACTORS.length];
+}
+
+function rankOneBasis(i: number): number {
+  return RANK_ONE_BASIS[i % RANK_ONE_BASIS.length];
+}
+
+function rankOneNorm(inner: number): number {
+  let norm = 0;
+  for (let k = 0; k < inner; k++) norm += rankOneBasis(k) ** 2;
+  return norm;
+}
+
+function assertRankOneProduct(
+  actual: Float32Array,
+  rows: number,
+  columns: number,
+  inner: number,
+): void {
+  const norm = rankOneNorm(inner);
+  let worstIndex = -1;
+  let worstError = 0;
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const index = row * columns + column;
+      const expected = rankOneFactor(row) * rankOneFactor(column + 1) * norm;
+      const error = Math.abs(actual[index] - expected);
+      if (error > worstError) {
+        worstError = error;
+        worstIndex = index;
+      }
+    }
+  }
+  expect(
+    worstError,
+    `rank-one oracle: index=${worstIndex} actual=${actual[worstIndex]} maxAbs=${worstError}`,
+  ).toBeLessThanOrEqual(1e-4);
+}
+
+/**
+ * A deterministic, dense value field whose entries and pairwise products are
+ * exactly representable in both f16 and f32.  With the production K=512, the
+ * integer numerator of every dot product stays below 2^24, so the complete
+ * result is exactly representable in f32 regardless of accumulation order.
+ * This gives the cooperative kernel no tolerance in which to hide a lane,
+ * shared-memory, or output-tile mapping error.
+ */
+function denseDyadic(index: number, salt: number, range: number, denominator: number): number {
+  let mixed = Math.imul((index + salt) | 0, 0x45d9f3b);
+  mixed ^= mixed >>> 16;
+  mixed = Math.imul(mixed, 0x45d9f3b);
+  mixed ^= mixed >>> 16;
+  return ((mixed >>> 0) % range - Math.floor(range / 2)) / denominator;
+}
+
+function assertExactDenseProduct(actual: Float32Array, expected: Float32Array): void {
+  expect(actual.length).toBe(expected.length);
+  let mismatchCount = 0;
+  let worstIndex = -1;
+  let worstError = 0;
+  for (let index = 0; index < actual.length; index++) {
+    const error = Math.abs(actual[index] - expected[index]);
+    if (error !== 0) mismatchCount++;
+    if (error > worstError) {
+      worstError = error;
+      worstIndex = index;
+    }
+  }
+  expect(
+    mismatchCount,
+    `dense dyadic oracle: mismatches=${mismatchCount}/${actual.length} ` +
+      `worstIndex=${worstIndex} actual=${actual[worstIndex]} ` +
+      `expected=${expected[worstIndex]} maxAbs=${worstError}`,
+  ).toBe(0);
 }
 
 // ── Barrier correctness tests ────────────────────────────────────────────────
@@ -160,6 +243,56 @@ describeGpu("checkFinite GPU kernel", () => {
     const t = gpu.fromArray(Array.from(arr), [size]);
     const result = gpu.checkFinite(t);
     expect((result.data as Float32Array)[0]).toBe(1.0);
+  });
+});
+
+describeGpu("Row-parallel column reduction", () => {
+  it("matches RMSNorm weight gradients on an awkward dense shape", () => {
+    const rows = 257;
+    const columns = 96;
+    const xValues = Array.from(
+      { length: rows * columns },
+      (_, index) => denseDyadic(index, 211, 256, 128),
+    );
+    const gradValues = Array.from(
+      { length: rows * columns },
+      (_, index) => denseDyadic(index, 307, 128, 256),
+    );
+    const weightValues = Array.from(
+      { length: columns },
+      (_, index) => 0.75 + denseDyadic(index, 401, 64, 256),
+    );
+    const expectedDw = new Float32Array(columns);
+    for (let row = 0; row < rows; row++) {
+      const offset = row * columns;
+      let meanSquare = 0;
+      for (let column = 0; column < columns; column++) {
+        meanSquare += xValues[offset + column] ** 2;
+      }
+      const inverseRms = 1 / Math.sqrt(meanSquare / columns + 1e-5);
+      for (let column = 0; column < columns; column++) {
+        expectedDw[column] += gradValues[offset + column] * xValues[offset + column] * inverseRms;
+      }
+    }
+
+    try {
+      for (const rowLanes of [4, 8, 16] as const) {
+        gpu.setColumnSumRowLanes(rowLanes);
+        const actual = gpu.rmsNormBackward!(
+          gpu.fromArray(xValues, [rows, columns]),
+          gpu.fromArray(weightValues, [columns]),
+          gpu.fromArray(gradValues, [rows, columns]),
+          1e-5,
+        );
+        expect(gpu.lastColumnSumKernel).toBe(`column_sum_row_lanes_${rowLanes}`);
+        expect(maxDiff(
+          new Float32Array(actual.dw.data as Float32Array),
+          expectedDw,
+        )).toBeLessThanOrEqual(2e-4);
+      }
+    } finally {
+      gpu.setColumnSumRowLanes(0);
+    }
   });
 });
 
@@ -310,6 +443,132 @@ describeGpu("Matmul correctness", () => {
       if (!isFinite(result[i])) { allFinite = false; break; }
     }
     expect(allFinite).toBe(true);
+  });
+});
+
+// These shapes deliberately cross the 20M-FLOP cooperative super-tile gate and
+// use Alpha's hidden/FFN widths. The rank-one construction has a closed-form,
+// binary-exact result, so the oracle checks every output without an O(MNK) CPU
+// reference. Dispatch counters and kernel identity prevent a fallback from
+// masquerading as cooperative-matrix coverage.
+describeCoopGpu("Cooperative matmul production-pattern oracle", () => {
+  const tokenRows = 1024;
+  const hidden = 512;
+  const ffn = 1408;
+
+  it("validates ordinary forward orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: tokenRows * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
+    );
+    const b = Array.from(
+      { length: hidden * ffn },
+      (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmul(
+      gpu.fromArray(a, [tokenRows, hidden]),
+      gpu.fromArray(b, [hidden, ffn]),
+    );
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_basic_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
+    expect(after.lastCoopShape).toEqual({
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: false,
+    });
+    assertRankOneProduct(values, tokenRows, ffn, hidden);
+  });
+
+  it("validates transposed-B forward orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: tokenRows * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden)) * rankOneBasis(index % hidden),
+    );
+    const b = Array.from(
+      { length: ffn * hidden },
+      (_, index) => rankOneFactor(Math.floor(index / hidden) + 1) * rankOneBasis(index % hidden),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposed(
+      gpu.fromArray(a, [tokenRows, hidden]),
+      gpu.fromArray(b, [ffn, hidden]),
+    );
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
+    expect(after.lastCoopShape).toEqual({
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
+    });
+    assertRankOneProduct(values, tokenRows, ffn, hidden);
+  });
+
+  it("matches the generic FP32 path exactly on a dense production transposed-B workload", () => {
+    const a = Array.from(
+      { length: tokenRows * hidden },
+      (_, index) => denseDyadic(index, 17, 256, 128),
+    );
+    const b = Array.from(
+      { length: ffn * hidden },
+      (_, index) => denseDyadic(index, 101, 64, 512),
+    );
+    const aTensor = gpu.fromArray(a, [tokenRows, hidden]);
+    const bTensor = gpu.fromArray(b, [ffn, hidden]);
+
+    // These dyadic inputs survive f16 conversion exactly.  Pausing cooperative
+    // dispatch therefore yields an exact FP32 reference for the same values the
+    // cooperative kernel receives, without an O(MNK) host implementation.
+    gpu.coopMatmulPaused = true;
+    let expected: Float32Array;
+    try {
+      expected = new Float32Array(gpu.matmulTransposed(aTensor, bTensor).data as Float32Array);
+    } finally {
+      gpu.coopMatmulPaused = false;
+    }
+
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposed(aTensor, bTensor);
+    const actual = new Float32Array(output.data as Float32Array);
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r4x4_");
+    expect(after.lastCoopShape).toEqual({
+      M: tokenRows, N: ffn, K: hidden, batchSize: 1, transposedA: false, transposedB: true,
+    });
+    assertExactDenseProduct(actual, expected);
+  });
+
+  it("validates transposed-A weight-gradient orientation and proves direct cooperative dispatch", () => {
+    const a = Array.from(
+      { length: tokenRows * hidden },
+      (_, index) => rankOneBasis(Math.floor(index / hidden)) * rankOneFactor(index % hidden),
+    );
+    const b = Array.from(
+      { length: tokenRows * ffn },
+      (_, index) => rankOneBasis(Math.floor(index / ffn)) * rankOneFactor((index % ffn) + 1),
+    );
+    const before = gpu.getMatmulCoopStats();
+    const output = gpu.matmulTransposedA(
+      gpu.fromArray(a, [tokenRows, hidden]),
+      gpu.fromArray(b, [tokenRows, ffn]),
+    );
+    const values = output.data as Float32Array;
+    const after = gpu.getMatmulCoopStats();
+
+    expect(after.coopDirectDispatches - before.coopDirectDispatches).toBe(1);
+    expect(after.lastCoopKernel).toContain("matmul_coop_transposed_a_");
+    expect(after.lastCoopKernel).toContain("_s2x2_r2x2_");
+    expect(after.lastCoopShape).toEqual({
+      M: hidden, N: ffn, K: tokenRows, batchSize: 1, transposedA: true, transposedB: false,
+    });
+    assertRankOneProduct(values, hidden, ffn, tokenRows);
   });
 });
 

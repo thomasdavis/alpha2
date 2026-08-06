@@ -9,6 +9,7 @@
   "scripts": {
     "build:native": "node native/build.mjs",
     "build": "npm run build:native && tsc -b",
+    "inspect:coop": "node dist/inspect-cooperative-matrix-capabilities.js",
     "clean": "rm -rf dist native/*.node",
     "test": "vitest run"
   },

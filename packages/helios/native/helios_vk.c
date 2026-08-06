@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 // ── Vulkan type definitions (no SDK headers needed) ─────────────────────────
 
@@ -35,7 +36,7 @@ typedef uint32_t VkFlags;
 typedef uint32_t VkBool32;
 typedef uint64_t VkDeviceSize;
 
-typedef enum { VK_SUCCESS = 0 } VkResult;
+typedef enum { VK_SUCCESS = 0, VK_INCOMPLETE = 5 } VkResult;
 typedef enum {
   VK_STRUCTURE_TYPE_APPLICATION_INFO = 0,
   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1,
@@ -76,6 +77,8 @@ typedef enum {
   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 0x00000002,
   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 0x00000004,
 } VkMemoryPropertyFlagBits;
+
+#define VK_MEMORY_HEAP_DEVICE_LOCAL_BIT 0x00000001
 
 typedef enum {
   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
@@ -127,8 +130,109 @@ typedef uint64_t VkFence;
 typedef uint64_t VkSemaphore;
 
 // Structs
-// Full VkPhysicalDeviceProperties is ~824 bytes. We define the fields we read
-// and pad the rest so Vulkan doesn't write past our allocation.
+// Exact prefix of VkPhysicalDeviceLimits through timestampPeriod, copied from
+// the Khronos-generated Vulkan header.  Do not replace this with a byte offset:
+// VkPhysicalDeviceLimits has 8-byte alignment, so padding between the UUID and
+// limits differs from the naïve sum of preceding field widths.
+typedef struct {
+  uint32_t maxImageDimension1D;
+  uint32_t maxImageDimension2D;
+  uint32_t maxImageDimension3D;
+  uint32_t maxImageDimensionCube;
+  uint32_t maxImageArrayLayers;
+  uint32_t maxTexelBufferElements;
+  uint32_t maxUniformBufferRange;
+  uint32_t maxStorageBufferRange;
+  uint32_t maxPushConstantsSize;
+  uint32_t maxMemoryAllocationCount;
+  uint32_t maxSamplerAllocationCount;
+  VkDeviceSize bufferImageGranularity;
+  VkDeviceSize sparseAddressSpaceSize;
+  uint32_t maxBoundDescriptorSets;
+  uint32_t maxPerStageDescriptorSamplers;
+  uint32_t maxPerStageDescriptorUniformBuffers;
+  uint32_t maxPerStageDescriptorStorageBuffers;
+  uint32_t maxPerStageDescriptorSampledImages;
+  uint32_t maxPerStageDescriptorStorageImages;
+  uint32_t maxPerStageDescriptorInputAttachments;
+  uint32_t maxPerStageResources;
+  uint32_t maxDescriptorSetSamplers;
+  uint32_t maxDescriptorSetUniformBuffers;
+  uint32_t maxDescriptorSetUniformBuffersDynamic;
+  uint32_t maxDescriptorSetStorageBuffers;
+  uint32_t maxDescriptorSetStorageBuffersDynamic;
+  uint32_t maxDescriptorSetSampledImages;
+  uint32_t maxDescriptorSetStorageImages;
+  uint32_t maxDescriptorSetInputAttachments;
+  uint32_t maxVertexInputAttributes;
+  uint32_t maxVertexInputBindings;
+  uint32_t maxVertexInputAttributeOffset;
+  uint32_t maxVertexInputBindingStride;
+  uint32_t maxVertexOutputComponents;
+  uint32_t maxTessellationGenerationLevel;
+  uint32_t maxTessellationPatchSize;
+  uint32_t maxTessellationControlPerVertexInputComponents;
+  uint32_t maxTessellationControlPerVertexOutputComponents;
+  uint32_t maxTessellationControlPerPatchOutputComponents;
+  uint32_t maxTessellationControlTotalOutputComponents;
+  uint32_t maxTessellationEvaluationInputComponents;
+  uint32_t maxTessellationEvaluationOutputComponents;
+  uint32_t maxGeometryShaderInvocations;
+  uint32_t maxGeometryInputComponents;
+  uint32_t maxGeometryOutputComponents;
+  uint32_t maxGeometryOutputVertices;
+  uint32_t maxGeometryTotalOutputComponents;
+  uint32_t maxFragmentInputComponents;
+  uint32_t maxFragmentOutputAttachments;
+  uint32_t maxFragmentDualSrcAttachments;
+  uint32_t maxFragmentCombinedOutputResources;
+  uint32_t maxComputeSharedMemorySize;
+  uint32_t maxComputeWorkGroupCount[3];
+  uint32_t maxComputeWorkGroupInvocations;
+  uint32_t maxComputeWorkGroupSize[3];
+  uint32_t subPixelPrecisionBits;
+  uint32_t subTexelPrecisionBits;
+  uint32_t mipmapPrecisionBits;
+  uint32_t maxDrawIndexedIndexValue;
+  uint32_t maxDrawIndirectCount;
+  float maxSamplerLodBias;
+  float maxSamplerAnisotropy;
+  uint32_t maxViewports;
+  uint32_t maxViewportDimensions[2];
+  float viewportBoundsRange[2];
+  uint32_t viewportSubPixelBits;
+  size_t minMemoryMapAlignment;
+  VkDeviceSize minTexelBufferOffsetAlignment;
+  VkDeviceSize minUniformBufferOffsetAlignment;
+  VkDeviceSize minStorageBufferOffsetAlignment;
+  int32_t minTexelOffset;
+  uint32_t maxTexelOffset;
+  int32_t minTexelGatherOffset;
+  uint32_t maxTexelGatherOffset;
+  float minInterpolationOffset;
+  float maxInterpolationOffset;
+  uint32_t subPixelInterpolationOffsetBits;
+  uint32_t maxFramebufferWidth;
+  uint32_t maxFramebufferHeight;
+  uint32_t maxFramebufferLayers;
+  VkFlags framebufferColorSampleCounts;
+  VkFlags framebufferDepthSampleCounts;
+  VkFlags framebufferStencilSampleCounts;
+  VkFlags framebufferNoAttachmentsSampleCounts;
+  uint32_t maxColorAttachments;
+  VkFlags sampledImageColorSampleCounts;
+  VkFlags sampledImageIntegerSampleCounts;
+  VkFlags sampledImageDepthSampleCounts;
+  VkFlags sampledImageStencilSampleCounts;
+  VkFlags storageImageSampleCounts;
+  uint32_t maxSampleMaskWords;
+  VkBool32 timestampComputeAndGraphics;
+  float timestampPeriod;
+} VkPhysicalDeviceLimits_timestamp_prefix;
+
+// Full VkPhysicalDeviceProperties is currently under 1 KiB. We define the
+// exact fields through timestampPeriod and pad the remainder so Vulkan cannot
+// write past our allocation as future tail fields are added.
 typedef struct {
   uint32_t apiVersion;
   uint32_t driverVersion;
@@ -137,8 +241,47 @@ typedef struct {
   uint32_t deviceType;
   char     deviceName[256];
   uint8_t  pipelineCacheUUID[16];
-  uint8_t  _padding[1024]; // covers VkPhysicalDeviceLimits + VkPhysicalDeviceSparseProperties
+  VkPhysicalDeviceLimits_timestamp_prefix limits;
+  uint8_t  _padding[1024];
 } VkPhysicalDeviceProperties_partial;
+
+// Core Vulkan 1.1 subgroup properties and Vulkan 1.3 / EXT subgroup-size
+// control. Helios emits subgroup arithmetic in several kernels, so these are
+// correctness capabilities rather than vendor-tuning trivia.
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES 1000094000
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES 1000225000
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES 1000225002
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t subgroupSize;
+  VkFlags supportedStages;
+  VkFlags supportedOperations;
+  VkBool32 quadOperationsInAllStages;
+} VkPhysicalDeviceSubgroupProperties;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkBool32 subgroupSizeControl;
+  VkBool32 computeFullSubgroups;
+} VkPhysicalDeviceSubgroupSizeControlFeatures;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  uint32_t minSubgroupSize;
+  uint32_t maxSubgroupSize;
+  uint32_t maxComputeWorkgroupSubgroups;
+  VkFlags requiredSubgroupSizeStages;
+} VkPhysicalDeviceSubgroupSizeControlProperties;
+
+typedef struct {
+  VkStructureType sType;
+  void* pNext;
+  VkPhysicalDeviceProperties_partial properties;
+} VkPhysicalDeviceProperties2_full;
 
 typedef struct { VkFlags queueFlags; uint32_t queueCount; uint32_t timestampValidBits; uint32_t minImageTransferGranularity[3]; } VkQueueFamilyProperties;
 
@@ -255,7 +398,10 @@ typedef struct { VkStructureType sType; const void* pNext; VkFlags flags; uint32
 
 // Cooperative matrix (VK_KHR_cooperative_matrix)
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR 1000506000
-#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR 1000506002
+// VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR.  Do not confuse this
+// with VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR
+// (1000506002), which is a different structure.
+#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR 1000506001
 
 // VkComponentTypeKHR values
 #define VK_COMPONENT_TYPE_FLOAT16_KHR 0
@@ -694,9 +840,49 @@ static int stagingRingInited = 0;
 static VkPhysicalDeviceMemoryProperties memProps;
 static char deviceNameStr[256] = {0};
 static uint32_t vendorId = 0;
+static uint32_t deviceId = 0;
+static uint32_t deviceType = 0;
+static uint32_t deviceApiVersion = 0;
+static uint32_t deviceDriverVersion = 0;
+static double deviceLocalMemoryBytes = 0.0;
+static uint32_t maxComputeSharedMemorySize = 0;
+static uint32_t maxComputeWorkGroupInvocations = 0;
+static uint32_t maxComputeWorkGroupSize[3] = {0, 0, 0};
+static uint32_t subgroupSize = 0;
+static VkFlags subgroupSupportedStages = 0;
+static VkFlags subgroupSupportedOperations = 0;
+static int subgroupQuadOperationsInAllStages = 0;
+static int subgroupSizeControlSupported = 0;
+static int computeFullSubgroupsSupported = 0;
+static uint32_t minSubgroupSize = 0;
+static uint32_t maxSubgroupSize = 0;
+static uint32_t maxComputeWorkgroupSubgroups = 0;
+static VkFlags requiredSubgroupSizeStages = 0;
+static uint32_t computeTimestampValidBits = 0;
 static VkQueryPool timestampPool = 0;
+// Opt-in, per-dispatch profiling uses a separate pool so it never perturbs the
+// standalone gpuTime() helper's two queries.  The TypeScript graph currently
+// caps a batch at 2048 dispatches; two batch-boundary queries plus a start/end
+// pair for every dispatch are sufficient to profile the real command buffer
+// without replaying stateful optimizer or in-place kernels.
+#define PROFILE_MAX_DISPATCHES 2048
+#define PROFILE_QUERY_COUNT (2 + 2 * PROFILE_MAX_DISPATCHES)
+static VkQueryPool profileTimestampPool = 0;
 static int timestampsSupported = 0;
 static float timestampPeriodNs = 1.0f;  // ns per tick (most GPUs = 1.0)
+
+// Vulkan only guarantees the least-significant timestampValidBits bits. Some
+// implementations expose fewer than 64 bits and leave the upper bits
+// undefined, so plain uint64 subtraction can produce bogus durations after a
+// wrap or on a different vendor. Subtraction in the masked ring is correct for
+// intervals shorter than one counter period, as every Helios probe is.
+static uint64_t timestampTickDelta(uint64_t end, uint64_t start) {
+  if (computeTimestampValidBits >= 64) return end - start;
+  if (computeTimestampValidBits == 0) return 0;
+  uint64_t mask = (UINT64_C(1) << computeTimestampValidBits) - UINT64_C(1);
+  return (end - start) & mask;
+}
+
 static int f16Supported = 0;            // can use f16 storage buffers
 static PFN_vkGetPhysicalDeviceFeatures2 fp_vkGetPhysicalDeviceFeatures2;
 static PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr;
@@ -704,6 +890,73 @@ static PFN_vkGetInstanceProcAddr fp_vkGetInstanceProcAddr;
 // Push descriptors (VK_KHR_push_descriptor)
 static int hasPushDescriptors = 0;
 static PFN_vkCmdPushDescriptorSetKHR fp_vkCmdPushDescriptorSetKHR = NULL;
+
+// ── Native host-interval instrumentation (X39) ──────────────────────────────
+// X38 rejected JS field packing as the location of the ~344 ms host interval:
+// a 3.57x faster encoder saved 0.0663% of it. The remaining interval must be
+// located in native Vulkan object lifecycle, descriptor work, command
+// recording, submission, or waits rather than assumed.
+//
+// This accumulator splits napi_batchExecuteAllImpl into disjoint phases. It is
+// opt-in via HELIOS_HOST_TIMING=1 so the default dispatch path is unchanged,
+// and it deliberately separates ring_wait (a GPU-completion wait, not host
+// work) from genuine host cost, because charging that interval to the host
+// would recreate exactly the misattribution X8 warned about.
+#define HT_RING_WAIT   0
+#define HT_POOL_RESET  1
+#define HT_CMD_BEGIN   2
+#define HT_DECODE      3
+#define HT_BARRIER     4
+#define HT_DESC_ALLOC  5
+#define HT_DESC_UPDATE 6
+#define HT_BIND        7
+#define HT_PUSH_CONST  8
+#define HT_CMD_DISPATCH 9
+#define HT_CMD_END     10
+#define HT_SUBMIT      11
+#define HT_PHASE_COUNT 12
+
+static const char* htPhaseNames[HT_PHASE_COUNT] = {
+  "ring_wait", "pool_reset", "cmd_begin", "decode", "barrier",
+  "desc_alloc", "desc_update", "bind", "push_const", "cmd_dispatch",
+  "cmd_end", "submit"
+};
+
+static int hostTimingEnabled = -1;      // -1 = not yet resolved from env
+static uint64_t htNs[HT_PHASE_COUNT];
+static uint64_t htCalls[HT_PHASE_COUNT];
+static uint64_t htBatches = 0;
+static uint64_t htDispatches = 0;
+static uint64_t htClockReads = 0;
+
+static inline uint64_t htNow(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static inline int htOn(void) {
+  if (hostTimingEnabled < 0) {
+    const char* e = getenv("HELIOS_HOST_TIMING");
+    hostTimingEnabled = (e && e[0] == '1') ? 1 : 0;
+  }
+  return hostTimingEnabled;
+}
+
+// Marks the start of a phase. Returns 0 when disabled so the caller's
+// arithmetic stays trivial and the branch is predictable.
+static inline uint64_t htBegin(void) {
+  if (!htOn()) return 0;
+  htClockReads++;
+  return htNow();
+}
+
+static inline void htEnd(int phase, uint64_t t0) {
+  if (!hostTimingEnabled || t0 == 0) return;
+  htClockReads++;
+  htNs[phase] += htNow() - t0;
+  htCalls[phase]++;
+}
 
 // Async transfer queue (separate DMA engine)
 static VkQueue transferQueue = NULL;
@@ -717,6 +970,11 @@ static int hasAsyncTransfer = 0;
 static int coopMatSupported = 0;
 static uint32_t coopMatM = 0, coopMatN = 0, coopMatK = 0;
 static int coopMat2Supported = 0;
+// Preserve the driver's complete advertised tuple list for capability-gated
+// experiments.  The selected f16xf16->f32 tile above remains the production
+// choice; this list is evidence, not an implicit request to use other types.
+static VkCooperativeMatrixPropertiesKHR* coopMatProperties = NULL;
+static uint32_t coopMatPropertyCount = 0;
 
 // Buffer Device Address (Vulkan 1.2 core)
 static int hasBDA = 0;
@@ -819,9 +1077,9 @@ static PFN_vkGetQueryPoolResults                  fp_vkGetQueryPoolResults;
 
 #define SLAB_INITIAL_SIZE   (64 * 1024 * 1024)    // 64 MB per slab
 #define SLAB_MAX_SIZE       (256 * 1024 * 1024)   // 256 MB max per slab (limit fragmentation waste)
-#define MAX_SLABS           64
+#define MAX_SLABS           128
 #define MAX_SLAB_FREE_RANGES 4096
-#define SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)  // 8 GB max total per pool
+#define DEFAULT_SLAB_POOL_MAX_BYTES ((VkDeviceSize)8 * 1024 * 1024 * 1024)
 
 typedef struct {
   VkDeviceSize offset;
@@ -851,6 +1109,8 @@ static SlabPool devicePool = {0};      // device-local (persistent/param buffers
 static SlabPool deviceTempPool = {0};  // device-local (temporary/intermediate buffers)
 static SlabPool hostPool = {0};        // host-visible + coherent
 static VkDeviceSize slabAlignment = 256;  // queried at init from a probe buffer
+static VkDeviceSize tempSlabPoolMaxBytes = DEFAULT_SLAB_POOL_MAX_BYTES;
+static int tempSlabPoolCapExplicit = 0;
 
 static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
@@ -969,10 +1229,17 @@ static int slabPoolAlloc(SlabPool* pool, VkDeviceSize size, VkDeviceSize require
   // Need a new slab
   if (pool->slabCount >= MAX_SLABS) return 0;
 
-  // Check total pool bytes cap to prevent unbounded VRAM growth from fragmentation
+  // Check total pool bytes cap to prevent unbounded VRAM growth from fragmentation.
+  // The temporary pool is configurable because the right tradeoff depends on
+  // device VRAM: a larger arena avoids thousands of driver allocations per
+  // static training step, while constrained cards need the conservative 8 GiB
+  // default. Persistent and host pools retain that default.
   VkDeviceSize totalPoolBytes = 0;
   for (uint32_t i = 0; i < pool->slabCount; i++) totalPoolBytes += pool->slabs[i].capacity;
-  if (totalPoolBytes >= SLAB_POOL_MAX_BYTES) return 0;
+  VkDeviceSize poolMaxBytes = pool == &deviceTempPool
+    ? tempSlabPoolMaxBytes
+    : DEFAULT_SLAB_POOL_MAX_BYTES;
+  if (totalPoolBytes >= poolMaxBytes) return 0;
 
   VkDeviceSize slabSize = SLAB_INITIAL_SIZE;
   // Make slab big enough for this allocation
@@ -1052,6 +1319,7 @@ static PipelineSlot pipelines[MAX_PIPELINES];
 static uint64_t temporaryBufferRequests = 0;
 static uint64_t slabFallbackCount = 0;
 static uint64_t tempSlabResetCount = 0;
+static int disableTempSlabs = 0;
 
 // Per-buffer write tracking for fine-grained barriers within a batch (O(1) lookup)
 static uint32_t bufWriteDispatch[MAX_BUFFERS]; // dispatch index of last write per buffer slot
@@ -1247,13 +1515,30 @@ static void waitTimelineValue(uint64_t value) {
 // ── N-API: initDevice() ─────────────────────────────────────────────────────
 
 static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
+  if (coopMatProperties) {
+    free(coopMatProperties);
+    coopMatProperties = NULL;
+  }
+  coopMatPropertyCount = 0;
   const char* dbgP = getenv("HELIOS_DEBUG_PIPELINES");
   debugPipelines = (dbgP && dbgP[0] == '1') ? 1 : 0;
   const char* dbgCoop = getenv("HELIOS_DEBUG_COOP_PROPS");
   debugCoopProps = (dbgCoop && dbgCoop[0] == '1') ? 1 : 0;
   const char* spinEnv = getenv("HELIOS_SPIN_WAIT");
   if (spinEnv) spinWaitIters = atoi(spinEnv);
-
+  const char* disableTempSlabsEnv = getenv("HELIOS_DISABLE_TEMP_SLABS");
+  disableTempSlabs = (disableTempSlabsEnv && disableTempSlabsEnv[0] == '1') ? 1 : 0;
+  const char* tempSlabPoolMbEnv = getenv("HELIOS_TEMP_SLAB_POOL_MB");
+  if (tempSlabPoolMbEnv) {
+    char* end = NULL;
+    unsigned long long requestedMb = strtoull(tempSlabPoolMbEnv, &end, 10);
+    if (end != tempSlabPoolMbEnv && *end == '\0' && requestedMb >= 64 && requestedMb <= 65536) {
+      tempSlabPoolMaxBytes = (VkDeviceSize)requestedMb * 1024 * 1024;
+      tempSlabPoolCapExplicit = 1;
+    } else {
+      fprintf(stderr, "[helios:native] ignoring invalid HELIOS_TEMP_SLAB_POOL_MB=%s (expected 64..65536)\n", tempSlabPoolMbEnv);
+    }
+  }
   // Load Vulkan loader. Try common absolute paths first so nix-based shells
   // can still find the host driver without mutating LD_LIBRARY_PATH.
   vk_lib = dlopen("/usr/lib/x86_64-linux-gnu/libvulkan.so.1", RTLD_NOW);
@@ -1387,10 +1672,42 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   free(devs);
 
   strncpy(deviceNameStr, bestProps.deviceName, 255);
+  deviceNameStr[255] = '\0';
   vendorId = bestProps.vendorID;
+  deviceId = bestProps.deviceID;
+  deviceType = bestProps.deviceType;
+  deviceApiVersion = bestProps.apiVersion;
+  deviceDriverVersion = bestProps.driverVersion;
+  maxComputeSharedMemorySize = bestProps.limits.maxComputeSharedMemorySize;
+  maxComputeWorkGroupInvocations = bestProps.limits.maxComputeWorkGroupInvocations;
+  memcpy(maxComputeWorkGroupSize, bestProps.limits.maxComputeWorkGroupSize,
+    sizeof(maxComputeWorkGroupSize));
 
   // Get memory properties
   fp_vkGetPhysicalDeviceMemoryProperties(physDevice, &memProps);
+  deviceLocalMemoryBytes = 0.0;
+  for (uint32_t i = 0; i < memProps.memoryHeapCount; i++) {
+    if (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+      deviceLocalMemoryBytes += (double)memProps.memoryHeaps[i].size;
+    }
+  }
+  if (!tempSlabPoolCapExplicit && deviceLocalMemoryBytes > 0.0) {
+    // The original fixed 8 GiB cap left substantial reusable-intermediate
+    // pressure on 24 GiB devices. Use at most half of device-local memory for
+    // transient slabs while retaining at least half for parameters, optimizer
+    // state, output pools, and driver allocations. Cap the automatic policy at
+    // 12 GiB; larger experiments can still opt in explicitly.
+    const VkDeviceSize autoCap = (VkDeviceSize)(deviceLocalMemoryBytes * 0.5);
+    const VkDeviceSize autoMax = (VkDeviceSize)12 * 1024 * 1024 * 1024;
+    tempSlabPoolMaxBytes = autoCap < autoMax ? autoCap : autoMax;
+  }
+  if (disableTempSlabs) {
+    fprintf(stderr, "[helios:native] temporary slab allocation disabled\n");
+  } else {
+    fprintf(stderr, "[helios:native] temporary slab pool cap=%lluMB (%s)\n",
+      (unsigned long long)(tempSlabPoolMaxBytes / 1024 / 1024),
+      tempSlabPoolCapExplicit ? "explicit" : "device-adaptive");
+  }
 
   // Find compute queue family
   uint32_t qfCount = 0;
@@ -1423,6 +1740,7 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
   free(qfProps);
+  computeTimestampValidBits = timestampValidBits;
 
   if (computeQueueFamily == UINT32_MAX) {
     napi_throw_error(env, NULL, "No compute queue family found");
@@ -1450,13 +1768,17 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
   }
 
-  // Probe device extensions (cooperative matrix, push descriptors, DGC)
+  // Probe device extensions (cooperative matrix, push descriptors, DGC,
+  // subgroup-size control). Subgroup arithmetic is cross-vendor, but the
+  // native width is not universally 32 (AMD CDNA, for example, is wave64).
   coopMatSupported = 0;
   coopMat2Supported = 0;
   int hasCoopMatExt = 0;
   int hasCoopMat2Ext = 0;
   hasPushDescriptors = 0;
   int hasDGCExt = 0;
+  int hasSubgroupSizeControlExt = 0;
+  uint32_t subgroupSizeControlSpecVersion = 0;
   if (fp_vkEnumerateDeviceExtensionProperties) {
     uint32_t extCount = 0;
     fp_vkEnumerateDeviceExtensionProperties(physDevice, NULL, &extCount, NULL);
@@ -1476,8 +1798,80 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
         if (strcmp(exts[i].extensionName, "VK_EXT_device_generated_commands") == 0) {
           hasDGCExt = 1;
         }
+        if (strcmp(exts[i].extensionName, "VK_EXT_subgroup_size_control") == 0) {
+          hasSubgroupSizeControlExt = 1;
+          subgroupSizeControlSpecVersion = exts[i].specVersion;
+        }
       }
       free(exts);
+    }
+  }
+
+  // Query base subgroup properties on every Vulkan 1.1+ implementation. Query
+  // size-control properties only when exposed by the EXT path or Vulkan 1.3.
+  subgroupSize = 0;
+  subgroupSupportedStages = 0;
+  subgroupSupportedOperations = 0;
+  subgroupQuadOperationsInAllStages = 0;
+  subgroupSizeControlSupported = 0;
+  computeFullSubgroupsSupported = 0;
+  minSubgroupSize = 0;
+  maxSubgroupSize = 0;
+  maxComputeWorkgroupSubgroups = 0;
+  requiredSubgroupSizeStages = 0;
+
+  typedef void (*PFN_vkGetPhysicalDeviceProperties2_full)(VkPhysicalDevice, VkPhysicalDeviceProperties2_full*);
+  PFN_vkGetPhysicalDeviceProperties2_full fp_getProps2 =
+    (PFN_vkGetPhysicalDeviceProperties2_full)dlsym(vk_lib, "vkGetPhysicalDeviceProperties2");
+  const uint32_t apiMajor = deviceApiVersion >> 22;
+  const uint32_t apiMinor = (deviceApiVersion >> 12) & 0x3ff;
+  const int hasCoreSubgroupSizeControl = apiMajor > 1 || (apiMajor == 1 && apiMinor >= 3);
+  if (fp_getProps2) {
+    VkPhysicalDeviceSubgroupProperties subgroupProps = {0};
+    subgroupProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroupControlProps = {0};
+    if (hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) {
+      subgroupControlProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+      subgroupProps.pNext = &subgroupControlProps;
+    }
+
+    VkPhysicalDeviceProperties2_full props2 = {0};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &subgroupProps;
+    fp_getProps2(physDevice, &props2);
+
+    subgroupSize = subgroupProps.subgroupSize;
+    subgroupSupportedStages = subgroupProps.supportedStages;
+    subgroupSupportedOperations = subgroupProps.supportedOperations;
+    subgroupQuadOperationsInAllStages = subgroupProps.quadOperationsInAllStages ? 1 : 0;
+    if (hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) {
+      minSubgroupSize = subgroupControlProps.minSubgroupSize;
+      maxSubgroupSize = subgroupControlProps.maxSubgroupSize;
+      maxComputeWorkgroupSubgroups = subgroupControlProps.maxComputeWorkgroupSubgroups;
+      requiredSubgroupSizeStages = subgroupControlProps.requiredSubgroupSizeStages;
+    } else {
+      minSubgroupSize = subgroupSize;
+      maxSubgroupSize = subgroupSize;
+    }
+  }
+
+  // Version 2 of VK_EXT_subgroup_size_control added the feature structure.
+  // Version 1 explicitly permits applications to assume both features. Vulkan
+  // 1.3 exposes the same feature structure in core.
+  if ((hasSubgroupSizeControlExt || hasCoreSubgroupSizeControl) && fp_vkGetPhysicalDeviceFeatures2) {
+    if (hasSubgroupSizeControlExt && subgroupSizeControlSpecVersion == 1 && !hasCoreSubgroupSizeControl) {
+      subgroupSizeControlSupported = 1;
+      computeFullSubgroupsSupported = 1;
+    } else {
+      VkPhysicalDeviceSubgroupSizeControlFeatures subgroupControlFeatures = {0};
+      subgroupControlFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+      VkPhysicalDeviceFeatures2 features2sg = {0};
+      features2sg.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+      features2sg.pNext = &subgroupControlFeatures;
+      fp_vkGetPhysicalDeviceFeatures2(physDevice, &features2sg);
+      subgroupSizeControlSupported = subgroupControlFeatures.subgroupSizeControl ? 1 : 0;
+      computeFullSubgroupsSupported = subgroupControlFeatures.computeFullSubgroups ? 1 : 0;
     }
   }
 
@@ -1549,13 +1943,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     memset(&dgcProperties, 0, sizeof(dgcProperties));
     dgcProperties.sType = VK_STRUCTURE_TYPE_DGC_PROPERTIES_EXT;
     // Chain DGC properties into a properties2 query
-    typedef struct { VkStructureType sType; void* pNext; uint8_t _pad[512]; } VkPhysicalDeviceProperties2_generic;
-    VkPhysicalDeviceProperties2_generic props2 = {0};
+    VkPhysicalDeviceProperties2_full props2 = {0};
     props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props2.pNext = &dgcProperties;
-    typedef void (*PFN_vkGetPhysicalDeviceProperties2)(VkPhysicalDevice, void*);
-    PFN_vkGetPhysicalDeviceProperties2 fp_getProps2 =
-      (PFN_vkGetPhysicalDeviceProperties2)dlsym(vk_lib, "vkGetPhysicalDeviceProperties2");
     if (fp_getProps2) {
       fp_getProps2(physDevice, &props2);
       fprintf(stderr, "[helios:native] DGC properties: maxSequences=%u maxTokens=%u maxStride=%u computeStages=0x%x\n",
@@ -1673,6 +2063,9 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     .ppEnabledExtensionNames = enabledExtCount > 0 ? enabledExtensions : NULL,
   };
   res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+  VkResult initialCreateResult = res;
+  VkResult optionalFreeCreateResult = VK_SUCCESS;
+  VkResult computeOnlyCreateResult = VK_SUCCESS;
   if (res != VK_SUCCESS) {
     // Retry without optional features
     f16Supported = 0;
@@ -1686,8 +2079,31 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     devCreate.enabledExtensionCount = 0;
     devCreate.ppEnabledExtensionNames = NULL;
     res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+    optionalFreeCreateResult = res;
+    // Some containerized NVIDIA runtimes enumerate a dedicated transfer queue
+    // but refuse logical-device creation when that queue family is requested.
+    // Preserve compute instead of making an optional DMA queue fatal.
+    if (res != VK_SUCCESS && queueCreateCount > 1) {
+      transferQueueFamily = UINT32_MAX;
+      queueCreateCount = 1;
+      devCreate.queueCreateInfoCount = queueCreateCount;
+      res = fp_vkCreateDevice(physDevice, &devCreate, NULL, &device);
+      computeOnlyCreateResult = res;
+    }
     if (res != VK_SUCCESS) {
-      napi_throw_error(env, NULL, "vkCreateDevice failed");
+      char errorMessage[256];
+      snprintf(
+        errorMessage,
+        sizeof(errorMessage),
+        "vkCreateDevice failed (initial=%d optionalFree=%d computeOnly=%d computeQueueFamily=%u transferQueueFamily=%u queueCreateCount=%u)",
+        (int)initialCreateResult,
+        (int)optionalFreeCreateResult,
+        (int)computeOnlyCreateResult,
+        computeQueueFamily,
+        transferQueueFamily,
+        queueCreateCount
+      );
+      napi_throw_error(env, NULL, errorMessage);
       return NULL;
     }
   }
@@ -1763,15 +2179,26 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     }
     if (fp_getCoopMatProps) {
       uint32_t propCount = 0;
-      fp_getCoopMatProps(physDevice, &propCount, NULL);
-      if (propCount > 0) {
+      VkResult countResult = fp_getCoopMatProps(physDevice, &propCount, NULL);
+      if ((countResult == VK_SUCCESS || countResult == VK_INCOMPLETE) && propCount > 0) {
         VkCooperativeMatrixPropertiesKHR* props =
           (VkCooperativeMatrixPropertiesKHR*)malloc(sizeof(VkCooperativeMatrixPropertiesKHR) * propCount);
+        if (!props) {
+          napi_throw_error(env, NULL, "Unable to allocate cooperative matrix property list");
+          return NULL;
+        }
         for (uint32_t i = 0; i < propCount; i++) {
           props[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
           props[i].pNext = NULL;
         }
-        fp_getCoopMatProps(physDevice, &propCount, props);
+        VkResult propertyResult = fp_getCoopMatProps(physDevice, &propCount, props);
+        if (propertyResult != VK_SUCCESS && propertyResult != VK_INCOMPLETE) {
+          free(props);
+          props = NULL;
+          propCount = 0;
+        }
+        coopMatProperties = props;
+        coopMatPropertyCount = propCount;
         if (debugCoopProps) {
           fprintf(stderr, "[helios:native] cooperative matrix properties count=%u\n", propCount);
           for (uint32_t i = 0; i < propCount; i++) {
@@ -1850,7 +2277,6 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
               coopMatM, coopMatN, coopMatK, bestIdx);
           }
         }
-        free(props);
       }
     }
   }
@@ -2009,21 +2435,24 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
     if (res != VK_SUCCESS) {
       timestampsSupported = 0;
       timestampPool = 0;
+    } else {
+      VkQueryPoolCreateInfo profileQpInfo = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = PROFILE_QUERY_COUNT,
+      };
+      // A device can still train and use gpuTime() if this larger diagnostic
+      // pool cannot be allocated.  The profiled entry point reports that exact
+      // limitation instead of weakening the ordinary path.
+      res = fp_vkCreateQueryPool(device, &profileQpInfo, NULL, &profileTimestampPool);
+      if (res != VK_SUCCESS) profileTimestampPool = 0;
     }
   }
 
-  // Extract timestampPeriod from device properties (float at known offset)
-  // VkPhysicalDeviceLimits starts at offset 292 in VkPhysicalDeviceProperties.
-  // timestampPeriod is at offset 276 within VkPhysicalDeviceLimits.
-  // Total offset from start of struct: 292 + 276 = 568 bytes.
-  // We access it as raw bytes from our padded struct.
-  {
-    uint8_t fullProps[1024];
-    memset(fullProps, 0, sizeof(fullProps));
-    fp_vkGetPhysicalDeviceProperties(physDevice, (VkPhysicalDeviceProperties_partial*)fullProps);
-    float period;
-    memcpy(&period, fullProps + 568, sizeof(float));
-    if (period > 0.0f) timestampPeriodNs = period;
+  // The device reports nanoseconds per timestamp tick. This must come from the
+  // typed Vulkan property, not a hand-computed byte offset (see struct above).
+  if (bestProps.limits.timestampPeriod > 0.0f) {
+    timestampPeriodNs = bestProps.limits.timestampPeriod;
   }
 
   // Init resource slots
@@ -2090,6 +2519,72 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
   napi_create_uint32(env, vendorId, &val);
   napi_set_named_property(env, result, "vendorId", val);
 
+  napi_create_uint32(env, deviceId, &val);
+  napi_set_named_property(env, result, "deviceId", val);
+
+  napi_create_uint32(env, deviceType, &val);
+  napi_set_named_property(env, result, "deviceType", val);
+
+  napi_create_uint32(env, deviceApiVersion, &val);
+  napi_set_named_property(env, result, "apiVersion", val);
+
+  napi_create_uint32(env, deviceDriverVersion, &val);
+  napi_set_named_property(env, result, "driverVersion", val);
+
+  napi_create_double(env, deviceLocalMemoryBytes, &val);
+  napi_set_named_property(env, result, "deviceLocalMemoryBytes", val);
+
+  napi_create_uint32(env, maxComputeSharedMemorySize, &val);
+  napi_set_named_property(env, result, "maxComputeSharedMemorySize", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupInvocations, &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupInvocations", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[0], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeX", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[1], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeY", val);
+
+  napi_create_uint32(env, maxComputeWorkGroupSize[2], &val);
+  napi_set_named_property(env, result, "maxComputeWorkGroupSizeZ", val);
+
+  napi_create_uint32(env, subgroupSize, &val);
+  napi_set_named_property(env, result, "subgroupSize", val);
+
+  napi_create_uint32(env, subgroupSupportedStages, &val);
+  napi_set_named_property(env, result, "subgroupSupportedStages", val);
+
+  napi_create_uint32(env, subgroupSupportedOperations, &val);
+  napi_set_named_property(env, result, "subgroupSupportedOperations", val);
+
+  napi_get_boolean(env, subgroupQuadOperationsInAllStages, &val);
+  napi_set_named_property(env, result, "subgroupQuadOperationsInAllStages", val);
+
+  napi_get_boolean(env, subgroupSizeControlSupported, &val);
+  napi_set_named_property(env, result, "subgroupSizeControlSupported", val);
+
+  napi_get_boolean(env, computeFullSubgroupsSupported, &val);
+  napi_set_named_property(env, result, "computeFullSubgroupsSupported", val);
+
+  napi_create_uint32(env, minSubgroupSize, &val);
+  napi_set_named_property(env, result, "minSubgroupSize", val);
+
+  napi_create_uint32(env, maxSubgroupSize, &val);
+  napi_set_named_property(env, result, "maxSubgroupSize", val);
+
+  napi_create_uint32(env, maxComputeWorkgroupSubgroups, &val);
+  napi_set_named_property(env, result, "maxComputeWorkgroupSubgroups", val);
+
+  napi_create_uint32(env, requiredSubgroupSizeStages, &val);
+  napi_set_named_property(env, result, "requiredSubgroupSizeStages", val);
+
+  napi_create_uint32(env, computeTimestampValidBits, &val);
+  napi_set_named_property(env, result, "timestampValidBits", val);
+
+  napi_create_double(env, timestampPeriodNs, &val);
+  napi_set_named_property(env, result, "timestampPeriodNs", val);
+
   napi_get_boolean(env, f16Supported, &val);
   napi_set_named_property(env, result, "f16Supported", val);
 
@@ -2119,6 +2614,36 @@ static napi_value napi_initDevice(napi_env env, napi_callback_info info) {
 
   napi_get_boolean(env, coopMat2Supported, &val);
   napi_set_named_property(env, result, "coopMat2Supported", val);
+
+  napi_value coopPropsArray;
+  napi_create_array_with_length(env, coopMatPropertyCount, &coopPropsArray);
+  for (uint32_t i = 0; i < coopMatPropertyCount; i++) {
+    napi_value prop;
+    napi_value field;
+    napi_create_object(env, &prop);
+
+    napi_create_uint32(env, coopMatProperties[i].MSize, &field);
+    napi_set_named_property(env, prop, "MSize", field);
+    napi_create_uint32(env, coopMatProperties[i].NSize, &field);
+    napi_set_named_property(env, prop, "NSize", field);
+    napi_create_uint32(env, coopMatProperties[i].KSize, &field);
+    napi_set_named_property(env, prop, "KSize", field);
+    napi_create_uint32(env, coopMatProperties[i].AType, &field);
+    napi_set_named_property(env, prop, "AType", field);
+    napi_create_uint32(env, coopMatProperties[i].BType, &field);
+    napi_set_named_property(env, prop, "BType", field);
+    napi_create_uint32(env, coopMatProperties[i].CType, &field);
+    napi_set_named_property(env, prop, "CType", field);
+    napi_create_uint32(env, coopMatProperties[i].ResultType, &field);
+    napi_set_named_property(env, prop, "ResultType", field);
+    napi_get_boolean(env, coopMatProperties[i].saturatingAccumulation, &field);
+    napi_set_named_property(env, prop, "saturatingAccumulation", field);
+    napi_create_uint32(env, coopMatProperties[i].scope, &field);
+    napi_set_named_property(env, prop, "scope", field);
+
+    napi_set_element(env, coopPropsArray, i, prop);
+  }
+  napi_set_named_property(env, result, "cooperativeMatrixProperties", coopPropsArray);
 
   return result;
 }
@@ -2186,7 +2711,7 @@ static napi_value napi_createBuffer(napi_env env, napi_callback_info info) {
   // persistent params from blocking slab reclamation when intermediates are freed.
   SlabPool* pool = useHostPool ? &hostPool : &deviceTempPool;
   SlabAlloc salloc;
-  int slabCompatible = (useHostPool || temporary)
+  int slabCompatible = (useHostPool || (temporary && !disableTempSlabs))
     ? (memReq.memoryTypeBits & (1u << pool->memoryTypeIdx)) != 0
     : 0;
   int usedSlab = slabCompatible && slabPoolAlloc(pool, memReq.size, memReq.alignment, &salloc);
@@ -2660,11 +3185,13 @@ static napi_value napi_getAllocatorStats(napi_env env, napi_callback_info info) 
   setNumberProperty(env, result, "deviceSlabLiveBytes", (double)deviceLive);
   setNumberProperty(env, result, "deviceSlabLiveRefs", (double)deviceRefs);
   setNumberProperty(env, result, "tempSlabCount", (double)deviceTempPool.slabCount);
+  setNumberProperty(env, result, "tempSlabPoolMaxBytes", (double)tempSlabPoolMaxBytes);
   setNumberProperty(env, result, "tempSlabCapacityBytes", (double)tempCapacity);
   setNumberProperty(env, result, "tempSlabUsedBytes", (double)tempUsed);
   setNumberProperty(env, result, "tempSlabLiveBytes", (double)tempLive);
   setNumberProperty(env, result, "tempSlabLiveRefs", (double)tempRefs);
   setNumberProperty(env, result, "tempSlabResets", (double)tempSlabResetCount);
+  setNumberProperty(env, result, "tempSlabsDisabled", (double)disableTempSlabs);
   setNumberProperty(env, result, "hostSlabCount", (double)hostPool.slabCount);
   setNumberProperty(env, result, "hostSlabCapacityBytes", (double)hostCapacity);
   setNumberProperty(env, result, "hostSlabUsedBytes", (double)hostUsed);
@@ -2882,42 +3409,54 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     // Must wait for any in-flight dispatch to finish before re-recording cmd buffer
     waitTimelineValue(lastDispatchTimeline);
 
-    // Reset persistent descriptor pool (frees all prior sets)
-    fp_vkResetDescriptorPool(device, singleDescPool, 0);
+    // X56: a buffer-device-address kernel declares ZERO descriptor bindings and
+    // reaches its operands through 64-bit addresses in push constants. Writing
+    // bufCount descriptors into a set whose layout has no bindings faults, which
+    // is why sum_reduce_bda could not be executed on this path at all.
+    //
+    // Buffers are still passed by the caller and still matter -- they keep the
+    // allocations resident and drive barriers -- they are simply not bound.
+    const int usesDescriptors = (ps->numBindings > 0);
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
 
-    // Allocate descriptor set from persistent pool
-    VkDescriptorSetAllocateInfo dsAllocInfo = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-      .descriptorPool = singleDescPool,
-      .descriptorSetCount = 1,
-      .pSetLayouts = &ps->descLayout,
-    };
-    VkDescriptorSet descSet;
-    VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
-    if (res != VK_SUCCESS) {
-      napi_throw_error(env, NULL, "vkAllocateDescriptorSets failed");
-      return NULL;
-    }
+    if (usesDescriptors) {
+      // Reset persistent descriptor pool (frees all prior sets)
+      fp_vkResetDescriptorPool(device, singleDescPool, 0);
 
-    // Write descriptors (stack arrays — no malloc)
-    VkDescriptorBufferInfo bufInfos[32];
-    VkWriteDescriptorSet writes[32];
-    for (uint32_t i = 0; i < bufCount; i++) {
-      bufInfos[i] = (VkDescriptorBufferInfo){
-        .buffer = buffers[bufSlots[i]].buffer,
-        .offset = 0,
-        .range = VK_WHOLE_SIZE,
+      // Allocate descriptor set from persistent pool
+      VkDescriptorSetAllocateInfo dsAllocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = singleDescPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &ps->descLayout,
       };
-      writes[i] = (VkWriteDescriptorSet){
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = descSet,
-        .dstBinding = i,
-        .descriptorCount = 1,
-        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .pBufferInfo = &bufInfos[i],
-      };
+      VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      if (res != VK_SUCCESS) {
+        napi_throw_error(env, NULL, "vkAllocateDescriptorSets failed");
+        return NULL;
+      }
+
+      // Write descriptors (stack arrays — no malloc)
+      VkDescriptorBufferInfo bufInfos[32];
+      VkWriteDescriptorSet writes[32];
+      uint32_t writeCount = bufCount < ps->numBindings ? bufCount : ps->numBindings;
+      for (uint32_t i = 0; i < writeCount; i++) {
+        bufInfos[i] = (VkDescriptorBufferInfo){
+          .buffer = buffers[bufSlots[i]].buffer,
+          .offset = 0,
+          .range = VK_WHOLE_SIZE,
+        };
+        writes[i] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = descSet,
+          .dstBinding = i,
+          .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &bufInfos[i],
+        };
+      }
+      fp_vkUpdateDescriptorSets(device, writeCount, writes, 0, NULL);
     }
-    fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
 
     // Reset and re-record dispatch command buffer (no ONE_TIME_SUBMIT — reusable)
     fp_vkResetCommandBuffer(dispatchCmdBuf, 0);
@@ -2926,7 +3465,9 @@ static napi_value napi_dispatch(napi_env env, napi_callback_info info) {
     };
     fp_vkBeginCommandBuffer(dispatchCmdBuf, &beginInfo);
     fp_vkCmdBindPipeline(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
-    fp_vkCmdBindDescriptorSets(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    if (usesDescriptors) {
+      fp_vkCmdBindDescriptorSets(dispatchCmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+    }
     if (pushSize > 0) {
       fp_vkCmdPushConstants(dispatchCmdBuf, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushData);
     }
@@ -3436,7 +3977,12 @@ static napi_value napi_batchDispatchMany(napi_env env, napi_callback_info info) 
 // Combined batchBegin + batchDispatchMany + batchSubmit in a single N-API call.
 // Saves ~4-6μs per flush by eliminating 2 N-API boundary crossings.
 
-static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
+static napi_value napi_batchExecuteAllImpl(napi_env env, napi_callback_info info, int profile) {
+  if (profile && (!timestampsSupported || !profileTimestampPool)) {
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: per-dispatch GPU timestamps are not supported on this device");
+    return NULL;
+  }
+
   size_t argc = 2;
   napi_value args[2];
   napi_get_cb_info(env, info, &argc, args, NULL, NULL);
@@ -3447,8 +3993,14 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
 
   uint32_t count;
   napi_get_value_uint32(env, args[1], &count);
+  if (profile && count > PROFILE_MAX_DISPATCHES) {
+    napi_throw_range_error(env, NULL, "batchExecuteAllProfiled: dispatch count exceeds profiling pool capacity");
+    return NULL;
+  }
 
   // ── batchBegin logic (inlined) ──
+  uint64_t htT = htBegin();
+  if (htT) htBatches++;
   uint32_t slot = g_ringHead;
   if (g_ring[slot].timelineValue > 0) {
     uint64_t completed;
@@ -3457,18 +4009,27 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
       waitTimelineValue(g_ring[slot].timelineValue);
     }
   }
+  htEnd(HT_RING_WAIT, htT);
 
+  htT = htBegin();
   if (g_ring[slot].descPool) {
     fp_vkResetDescriptorPool(device, g_ring[slot].descPool, 0);
   }
+  htEnd(HT_POOL_RESET, htT);
   dispatchCacheValid = 0;
 
+  htT = htBegin();
   fp_vkResetCommandBuffer(g_ring[slot].cmd, 0);
   VkCommandBufferBeginInfo beginInfo = {
     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
   fp_vkBeginCommandBuffer(g_ring[slot].cmd, &beginInfo);
+  htEnd(HT_CMD_BEGIN, htT);
+
+  if (profile) {
+    fp_vkCmdResetQueryPool(g_ring[slot].cmd, profileTimestampPool, 0, 2 + 2 * count);
+  }
 
   {
     VkMemoryBarrier memBarrier = {
@@ -3485,6 +4046,15 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
   batchDispatchCount = 0;
   bufWriteGeneration++;
 
+  if (profile) {
+    // The batch time intentionally begins after the inherited global barrier.
+    // Per-dispatch intervals begin after dependency barriers and therefore
+    // measure the dispatched kernel rather than charging predecessor hazards
+    // to an arbitrary successor.
+    fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      profileTimestampPool, 0);
+  }
+
   // ── batchDispatchMany logic (inlined) ──
   VkCommandBuffer ringCmd = g_ring[slot].cmd;
   VkDescriptorPool ringDescPool = g_ring[slot].descPool;
@@ -3495,7 +4065,8 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
   VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
 
   for (uint32_t d = 0; d < count; d++) {
-    if (ptr + 12 > end) break;
+    uint64_t htD = htBegin();
+    if (ptr + 12 > end) { htEnd(HT_DECODE, htD); break; }
 
     int32_t pipeSlot;
     memcpy(&pipeSlot, ptr, 4); ptr += 4;
@@ -3534,8 +4105,11 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
       pushPtr = ptr;
       ptr += pushSize;
     }
+    htEnd(HT_DECODE, htD);
+    if (htD) htDispatches++;
 
     // Barriers
+    uint64_t htB = htBegin();
     if (batchDispatchCount > 0) {
       VkBufferMemoryBarrier bufBarriers[32];
       uint32_t barrierCount = 0;
@@ -3566,6 +4140,8 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
       }
     }
 
+    htEnd(HT_BARRIER, htB);
+
     // Write tracking
     for (uint32_t i = 0; i < bufCount; i++) {
       if ((writeMask >> i) & 1) {
@@ -3578,13 +4154,28 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
     VkDescriptorBufferInfo bufInfos[32];
     VkWriteDescriptorSet writes[32];
 
+    uint64_t htBind = htBegin();
     if (ps->pipeline != lastBoundPipeline) {
       fp_vkCmdBindPipeline(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->pipeline);
       lastBoundPipeline = ps->pipeline;
     }
+    htEnd(HT_BIND, htBind);
 
-    if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
-      for (uint32_t i = 0; i < bufCount; i++) {
+    // X58: a buffer-device-address kernel declares zero descriptor bindings and
+    // reaches operands through 64-bit addresses in push constants. Writing
+    // bufCount descriptors against an empty layout is invalid, and skipping the
+    // work outright removes the desc_update phase for those ops -- X39 measured
+    // desc_update at 23.4% of host time, per-dispatch, so this is the phase BDA
+    // conversion actually eliminates.
+    //
+    // Buffers stay in bufSlots: they still drive residency and the barrier pass
+    // above. They are simply never bound.
+    const uint32_t descWrites = bufCount < ps->numBindings ? bufCount : ps->numBindings;
+
+    if (ps->numBindings == 0) {
+      /* BDA kernel: no descriptor work at all. */
+    } else if (hasPushDescriptors && fp_vkCmdPushDescriptorSetKHR) {
+      for (uint32_t i = 0; i < descWrites; i++) {
         bufInfos[i] = (VkDescriptorBufferInfo){
           .buffer = buffers[bufSlots[i]].buffer,
           .offset = 0,
@@ -3599,8 +4190,10 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
           .pBufferInfo = &bufInfos[i],
         };
       }
+      uint64_t htPd = htBegin();
       fp_vkCmdPushDescriptorSetKHR(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-        ps->layout, 0, bufCount, writes);
+        ps->layout, 0, descWrites, writes);
+      htEnd(HT_DESC_UPDATE, htPd);
     } else {
       VkDescriptorSetAllocateInfo dsAllocInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -3609,12 +4202,14 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
         .pSetLayouts = &ps->descLayout,
       };
       VkDescriptorSet descSet;
+      uint64_t htA = htBegin();
       VkResult res = fp_vkAllocateDescriptorSets(device, &dsAllocInfo, &descSet);
+      htEnd(HT_DESC_ALLOC, htA);
       if (res != VK_SUCCESS) {
         napi_throw_error(env, NULL, "batchExecuteAll: vkAllocateDescriptorSets failed");
         return NULL;
       }
-      for (uint32_t i = 0; i < bufCount; i++) {
+      for (uint32_t i = 0; i < descWrites; i++) {
         bufInfos[i] = (VkDescriptorBufferInfo){
           .buffer = buffers[bufSlots[i]].buffer,
           .offset = 0,
@@ -3629,23 +4224,49 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
           .pBufferInfo = &bufInfos[i],
         };
       }
-      fp_vkUpdateDescriptorSets(device, bufCount, writes, 0, NULL);
+      uint64_t htU = htBegin();
+      fp_vkUpdateDescriptorSets(device, descWrites, writes, 0, NULL);
+      htEnd(HT_DESC_UPDATE, htU);
+      uint64_t htBd = htBegin();
       fp_vkCmdBindDescriptorSets(ringCmd, VK_PIPELINE_BIND_POINT_COMPUTE, ps->layout, 0, 1, &descSet, 0, NULL);
+      htEnd(HT_BIND, htBd);
     }
 
     if (pushSize > 0 && pushPtr) {
+      uint64_t htPc = htBegin();
       fp_vkCmdPushConstants(ringCmd, ps->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushSize, pushPtr);
+      htEnd(HT_PUSH_CONST, htPc);
     }
+    if (profile) {
+      uint32_t queryBase = 2 + batchDispatchCount * 2;
+      fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        profileTimestampPool, queryBase);
+    }
+    uint64_t htDi = htBegin();
     fp_vkCmdDispatch(ringCmd, gX, gY, gZ);
+    htEnd(HT_CMD_DISPATCH, htDi);
+    if (profile) {
+      uint32_t queryBase = 2 + batchDispatchCount * 2;
+      fp_vkCmdWriteTimestamp(ringCmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        profileTimestampPool, queryBase + 1);
+    }
     batchDispatchCount++;
   }
 
   // ── batchSubmit logic (inlined) ──
+  if (profile) {
+    fp_vkCmdWriteTimestamp(g_ring[slot].cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      profileTimestampPool, 1);
+  }
+  uint64_t htE = htBegin();
   fp_vkEndCommandBuffer(g_ring[slot].cmd);
+  htEnd(HT_CMD_END, htE);
 
   uint64_t tv = 0;
+  uint64_t htS = htBegin();
   if (batchDispatchCount > 0) {
     tv = submitCmdBufAsync(g_ring[slot].cmd);
+    htEnd(HT_SUBMIT, htS);
     if (tv == 0) {
       batchRecording = 0;
       batchDispatchCount = 0;
@@ -3658,11 +4279,109 @@ static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
 
   g_ringHead = (g_ringHead + 1) % RING_SIZE;
   batchRecording = 0;
+  uint32_t recordedDispatchCount = batchDispatchCount;
   batchDispatchCount = 0;
 
-  napi_value result;
-  napi_create_double(env, (double)tv, &result);
+  if (!profile) {
+    napi_value result;
+    napi_create_double(env, (double)tv, &result);
+    return result;
+  }
+
+  // Profiling is intentionally synchronous and opt-in.  Reading timestamps
+  // from the exact submitted batch avoids unsafe replay of in-place kernels.
+  if (tv > 0) waitTimelineValue(tv);
+  uint32_t queryCount = 2 + recordedDispatchCount * 2;
+  uint64_t* ticks = (uint64_t*)calloc(queryCount, sizeof(uint64_t));
+  if (!ticks) {
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: timestamp allocation failed");
+    return NULL;
+  }
+  VkResult queryResult = fp_vkGetQueryPoolResults(device, profileTimestampPool, 0, queryCount,
+    (size_t)queryCount * sizeof(uint64_t), ticks, sizeof(uint64_t),
+    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+  if (queryResult != VK_SUCCESS) {
+    free(ticks);
+    napi_throw_error(env, NULL, "batchExecuteAllProfiled: timestamp readback failed");
+    return NULL;
+  }
+
+  napi_value result, value, timesArrayBuffer, timesTypedArray;
+  napi_create_object(env, &result);
+  napi_create_double(env, (double)tv, &value);
+  napi_set_named_property(env, result, "timeline", value);
+  double batchUs = (double)timestampTickDelta(ticks[1], ticks[0]) *
+    (double)timestampPeriodNs / 1000.0;
+  napi_create_double(env, batchUs, &value);
+  napi_set_named_property(env, result, "batchGpuTimeUs", value);
+  napi_create_uint32(env, recordedDispatchCount, &value);
+  napi_set_named_property(env, result, "dispatchCount", value);
+
+  void* timesData = NULL;
+  napi_create_arraybuffer(env, (size_t)recordedDispatchCount * sizeof(double),
+    &timesData, &timesArrayBuffer);
+  double* timesUs = (double*)timesData;
+  for (uint32_t d = 0; d < recordedDispatchCount; d++) {
+    uint32_t queryBase = 2 + d * 2;
+    timesUs[d] = (double)timestampTickDelta(ticks[queryBase + 1], ticks[queryBase]) *
+      (double)timestampPeriodNs / 1000.0;
+  }
+  napi_create_typedarray(env, napi_float64_array, recordedDispatchCount,
+    timesArrayBuffer, 0, &timesTypedArray);
+  napi_set_named_property(env, result, "dispatchTimesUs", timesTypedArray);
+  free(ticks);
   return result;
+}
+
+// ── X39 host-timing accessors ───────────────────────────────────────────────
+// getHostTiming() returns disjoint native phase totals in microseconds plus the
+// call counts that produced them, so a per-call mean can be derived rather than
+// inferred. clockReads and the measured per-read cost let the caller subtract
+// instrumentation overhead instead of assuming it is negligible.
+static napi_value napi_getHostTiming(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value result, phases, value;
+  napi_create_object(env, &result);
+  napi_create_object(env, &phases);
+  for (int i = 0; i < HT_PHASE_COUNT; i++) {
+    napi_value entry;
+    napi_create_object(env, &entry);
+    napi_create_double(env, (double)htNs[i] / 1000.0, &value);
+    napi_set_named_property(env, entry, "us", value);
+    napi_create_double(env, (double)htCalls[i], &value);
+    napi_set_named_property(env, entry, "calls", value);
+    napi_set_named_property(env, phases, htPhaseNames[i], entry);
+  }
+  napi_set_named_property(env, result, "phases", phases);
+  napi_get_boolean(env, htOn() ? true : false, &value);
+  napi_set_named_property(env, result, "enabled", value);
+  napi_create_double(env, (double)htBatches, &value);
+  napi_set_named_property(env, result, "batches", value);
+  napi_create_double(env, (double)htDispatches, &value);
+  napi_set_named_property(env, result, "dispatches", value);
+  napi_create_double(env, (double)htClockReads, &value);
+  napi_set_named_property(env, result, "clockReads", value);
+  return result;
+}
+
+static napi_value napi_resetHostTiming(napi_env env, napi_callback_info info) {
+  (void)info;
+  memset(htNs, 0, sizeof(htNs));
+  memset(htCalls, 0, sizeof(htCalls));
+  htBatches = 0;
+  htDispatches = 0;
+  htClockReads = 0;
+  napi_value undef;
+  napi_get_undefined(env, &undef);
+  return undef;
+}
+
+static napi_value napi_batchExecuteAll(napi_env env, napi_callback_info info) {
+  return napi_batchExecuteAllImpl(env, info, 0);
+}
+
+static napi_value napi_batchExecuteAllProfiled(napi_env env, napi_callback_info info) {
+  return napi_batchExecuteAllImpl(env, info, 1);
 }
 
 // ── N-API: waitTimeline(value) ───────────────────────────────────────────────
@@ -3881,7 +4600,8 @@ static napi_value napi_gpuTime(napi_env env, napi_callback_info info) {
     sizeof(timestamps), timestamps, sizeof(uint64_t),
     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 
-  double elapsedUs = (double)(timestamps[1] - timestamps[0]) * (double)timestampPeriodNs / 1000.0;
+  double elapsedUs = (double)timestampTickDelta(timestamps[1], timestamps[0]) *
+    (double)timestampPeriodNs / 1000.0;
   // Return per-iteration average
   elapsedUs /= (double)iters;
 
@@ -4607,6 +5327,7 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   transferQueueFamily = UINT32_MAX;
   hasAsyncTransfer = 0;
 
+  if (profileTimestampPool) { fp_vkDestroyQueryPool(device, profileTimestampPool, NULL); profileTimestampPool = 0; }
   if (timestampPool) { fp_vkDestroyQueryPool(device, timestampPool, NULL); timestampPool = 0; }
   timestampsSupported = 0;
   fp_vkDestroyFence(device, persistentFence, NULL);
@@ -4636,6 +5357,12 @@ static napi_value napi_destroy(napi_env env, napi_callback_info info) {
   fp_vkDestroyDevice(device, NULL);
   fp_vkDestroyInstance(instance, NULL);
 
+  if (coopMatProperties) {
+    free(coopMatProperties);
+    coopMatProperties = NULL;
+  }
+  coopMatPropertyCount = 0;
+
   device = NULL;
   instance = NULL;
   if (vk_lib) { dlclose(vk_lib); vk_lib = NULL; }
@@ -4661,6 +5388,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "batchDispatchMany", NULL, napi_batchDispatchMany, NULL, NULL, NULL, napi_default, NULL },
     { "batchSubmit",     NULL, napi_batchSubmit,     NULL, NULL, NULL, napi_default, NULL },
     { "batchExecuteAll", NULL, napi_batchExecuteAll, NULL, NULL, NULL, napi_default, NULL },
+    { "batchExecuteAllProfiled", NULL, napi_batchExecuteAllProfiled, NULL, NULL, NULL, napi_default, NULL },
     { "waitTimeline",    NULL, napi_waitTimeline,    NULL, NULL, NULL, napi_default, NULL },
     { "getCompleted",    NULL, napi_getCompleted,    NULL, NULL, NULL, napi_default, NULL },
     { "gpuTime",         NULL, napi_gpuTime,         NULL, NULL, NULL, napi_default, NULL },
@@ -4672,6 +5400,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "dgcGetCommandBuffer", NULL, napi_dgcGetCommandBuffer, NULL, NULL, NULL, napi_default, NULL },
     { "dgcGetBufferAddress", NULL, napi_dgcGetBufferAddress, NULL, NULL, NULL, napi_default, NULL },
     { "batchExecuteAllDGC", NULL, napi_batchExecuteAllDGC, NULL, NULL, NULL, napi_default, NULL },
+    { "getHostTiming",   NULL, napi_getHostTiming,   NULL, NULL, NULL, napi_default, NULL },
+    { "resetHostTiming", NULL, napi_resetHostTiming, NULL, NULL, NULL, napi_default, NULL },
   };
   napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;

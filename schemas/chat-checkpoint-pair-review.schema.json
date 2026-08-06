@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reviewer", "reference_blinded", "candidate_summaries", "source_summaries", "cases", "ranking", "selected_candidate", "selection_rationale"],
+  "properties": {
+    "schema": { "type": "string", "const": "alpha-chat-checkpoint-pair-review-v1" },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "reference_blinded": { "type": "boolean", "const": true },
+    "candidate_summaries": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "pass_count", "borderline_count", "fail_count", "overall_score", "strengths", "weaknesses"],
+        "properties": {
+          "label": { "type": "string", "enum": ["A", "B"] },
+          "pass_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "borderline_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "fail_count": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "overall_score": { "type": "number", "minimum": 0, "maximum": 5 },
+          "strengths": { "type": "string", "minLength": 1 },
+          "weaknesses": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "source_summaries": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "a_pass", "b_pass", "a_wins", "b_wins", "ties", "winner", "finding"],
+        "properties": {
+          "source": { "type": "string", "enum": ["foundational-answer", "quantitative-reasoning", "instruction-control", "context-grounding", "negation-contrast", "uncertainty-honesty", "language-pragmatics", "multi-turn-update", "premise-resistance", "ordinary-conversation"] },
+          "a_pass": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "b_pass": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "a_wins": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "b_wins": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "ties": { "type": "integer", "minimum": 0, "maximum": 10 },
+          "winner": { "type": "string", "enum": ["A", "B", "TIE"] },
+          "finding": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 100,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source", "a_verdict", "b_verdict", "winner", "rationale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "a_verdict": { "type": "string", "enum": ["PASS", "BORDERLINE", "FAIL"] },
+          "b_verdict": { "type": "string", "enum": ["PASS", "BORDERLINE", "FAIL"] },
+          "winner": { "type": "string", "enum": ["A", "B", "TIE"] },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "ranking": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "string", "enum": ["A", "B"] }
+    },
+    "selected_candidate": { "type": "string", "enum": ["A", "B", "NONE"] },
+    "selection_rationale": { "type": "string", "minLength": 1 }
+  }
+}

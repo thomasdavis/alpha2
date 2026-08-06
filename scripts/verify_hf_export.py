@@ -22,8 +22,18 @@ PASS (exit 0): top-1 agreement 100% of positions AND max abs logit diff < --tol
                (default 1e-3, fp32 both sides).
 """
 import argparse
+import hashlib
 import json
+from pathlib import Path
 import sys
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
@@ -31,6 +41,7 @@ def main() -> int:
     ap.add_argument("--export-dir", required=True, help="HF model dir from `alpha export-hf`")
     ap.add_argument("--alpha-logits", required=True, help="JSON from `alpha logits --json --out=`")
     ap.add_argument("--tol", type=float, default=1e-3, help="max abs logit diff threshold")
+    ap.add_argument("--json-out", help="optional machine-readable parity report")
     args = ap.parse_args()
 
     try:
@@ -120,13 +131,49 @@ def main() -> int:
     print(f"[verify] max abs logit diff   : {global_max_abs:.3e}  (threshold {args.tol:.1e})")
     print(f"[verify] tokenizer parity     : {len(prompts)-tok_mismatches}/{len(prompts)} prompts exact")
 
-    passed = (total_top1_match == total_pos) and (global_max_abs < args.tol)
+    passed = (total_top1_match == total_pos) and (global_max_abs < args.tol) and tok_mismatches == 0
     print(f"[verify] RESULT               : {'PASS ✅' if passed else 'FAIL ❌'}")
+    if args.json_out:
+        export_dir = Path(args.export_dir).resolve()
+        alpha_logits = Path(args.alpha_logits).resolve()
+        report = {
+            "schema": "alpha-hf-export-parity-v1",
+            "status": "PASS" if passed else "FAIL",
+            "export": {
+                "path": str(export_dir),
+                "model_sha256": sha256_file(export_dir / "model.safetensors"),
+                "tokenizer_sha256": sha256_file(export_dir / "tokenizer.json"),
+                "config_sha256": sha256_file(export_dir / "config.json"),
+            },
+            "alpha_logits": {
+                "path": str(alpha_logits),
+                "sha256": sha256_file(alpha_logits),
+                "prompts": len(prompts),
+            },
+            "requirements": {
+                "top1_exact": True,
+                "tokenizer_exact": True,
+                "max_abs_logit_tolerance": args.tol,
+            },
+            "observed": {
+                "positions": total_pos,
+                "top1_matches": total_top1_match,
+                "tokenizer_matches": len(prompts) - tok_mismatches,
+                "max_abs_logit_delta": global_max_abs,
+            },
+        }
+        output_path = Path(args.json_out).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(output_path)
     if not passed:
         if total_top1_match != total_pos:
             print("[verify]   → top-1 disagreement: check RoPE convention / weight orientation", file=sys.stderr)
         if global_max_abs >= args.tol:
             print("[verify]   → logit drift: check rms_norm_eps, rope_theta, head split", file=sys.stderr)
+        if tok_mismatches:
+            print("[verify]   → tokenizer drift: exported tokenizer does not reproduce Alpha token ids", file=sys.stderr)
     return 0 if passed else 1
 
 

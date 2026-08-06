@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "reviewer",
+    "reference_blinded",
+    "candidate_summaries",
+    "cases",
+    "ranking",
+    "selected_candidate",
+    "selection_rationale"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "alpha-chat-checkpoint-comparison-review-v1" },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "reference_blinded": { "type": "boolean", "const": true },
+    "candidate_summaries": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "pass_count", "borderline_count", "fail_count", "overall_score", "strengths", "weaknesses"],
+        "properties": {
+          "label": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H"] },
+          "pass_count": { "type": "integer", "minimum": 0, "maximum": 24 },
+          "borderline_count": { "type": "integer", "minimum": 0, "maximum": 24 },
+          "fail_count": { "type": "integer", "minimum": 0, "maximum": 24 },
+          "overall_score": { "type": "number", "minimum": 0, "maximum": 5 },
+          "strengths": { "type": "string", "minLength": 1 },
+          "weaknesses": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "winner", "runner_up", "verdicts", "rationale"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "winner": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H"] },
+          "runner_up": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H"] },
+          "verdicts": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["label", "verdict"],
+              "properties": {
+                "label": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H"] },
+                "verdict": { "type": "string", "enum": ["PASS", "BORDERLINE", "FAIL"] }
+              }
+            }
+          },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "ranking": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H"] }
+    },
+    "selected_candidate": { "type": "string", "enum": ["A", "B", "C", "D", "E", "F", "G", "H", "NONE"] },
+    "selection_rationale": { "type": "string", "minLength": 1 }
+  }
+}

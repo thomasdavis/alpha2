@@ -22,10 +22,10 @@
  *   0: Q [B*H, T, D] f32 (readonly)
  *   1: K [B*H, T, D] f32 (readonly)
  *   2: V [B*H, T, D] f32 (readonly)
- *   3: O [B*H, T, D] f32 (write)
+ *   3: O [B*H, T, D] or token-major [B*T,H*D] f32 (write)
  *   4: LSE [B*H, T]  f32 (write)
  *
- * Push constants: { T, scale, _pad0, _pad1 }
+ * Push constants: { T, scale, softCap, heads_for_token_major }
  * Dispatch: (ceil(T/Br), B*H, 1)
  */
 
@@ -100,6 +100,7 @@ export function kernelFlashAttentionCoop2Forward(
   qTilesPerWG = 1,
   localSize = 64,
   doubleBuf = false,
+  tokenMajorOutput = false,
 ): Uint32Array {
   const WG = localSize;
   const qTiles = Math.max(1, Math.trunc(qTilesPerWG));
@@ -581,6 +582,13 @@ export function kernelFlashAttentionCoop2Forward(
   const ptrTpc = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrTpc, pc.varId, const0u]);
   const TF = b.id(); b.emit(Op.Load, [tF32, TF, ptrTpc]);
   const T = b.id(); b.emit(Op.ConvertFToU, [tU32, T, TF]);
+  let outputHeads = 0;
+  if (tokenMajorOutput) {
+    const const3u = b.id(); b.constant(tU32, const3u, 3);
+    const ptrHeads = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrHeads, pc.varId, const3u]);
+    const headsF = b.id(); b.emit(Op.Load, [tF32, headsF, ptrHeads]);
+    outputHeads = b.id(); b.emit(Op.ConvertFToU, [tU32, outputHeads, headsF]);
+  }
   const ptrScale = b.id(); b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, const1u]);
   const scale = b.id(); b.emit(Op.Load, [tF32, scale, ptrScale]);
   let scaleInvSoftCap = 0;
@@ -616,6 +624,19 @@ export function kernelFlashAttentionCoop2Forward(
   // Base offsets
   const TD = b.id(); b.emit(Op.IMul, [tU32, TD, T, constD]);
   const baseOff = b.id(); b.emit(Op.IMul, [tU32, baseOff, bhIdx, TD]);
+  let outputBaseOff = baseOff;
+  let outputStride = constD;
+  if (tokenMajorOutput) {
+    const batch = b.id(); b.emit(Op.UDiv, [tU32, batch, bhIdx, outputHeads]);
+    const head = b.id(); b.emit(Op.UMod, [tU32, head, bhIdx, outputHeads]);
+    const batchTimesT = b.id(); b.emit(Op.IMul, [tU32, batchTimesT, batch, T]);
+    const modelD = b.id(); b.emit(Op.IMul, [tU32, modelD, outputHeads, constD]);
+    outputBaseOff = b.id(); b.emit(Op.IMul, [tU32, outputBaseOff, batchTimesT, modelD]);
+    const headOffset = b.id(); b.emit(Op.IMul, [tU32, headOffset, head, constD]);
+    const withHead = b.id(); b.emit(Op.IAdd, [tU32, withHead, outputBaseOff, headOffset]);
+    outputBaseOff = withHead;
+    outputStride = modelD;
+  }
   const lseBaseOff = b.id(); b.emit(Op.IMul, [tU32, lseBaseOff, bhIdx, T]);
   const constBrQTiles = b.id(); b.constant(tU32, constBrQTiles, Br * qTiles);
   const qBlockGroupBase = b.id(); b.emit(Op.IMul, [tU32, qBlockGroupBase, qBlockIdx, constBrQTiles]);
@@ -1357,15 +1378,14 @@ export function kernelFlashAttentionCoop2Forward(
 
     b.emit(Op.Label, [labelOWriteDirect]);
     {
-      const qBlockBaseD = b.id(); b.emit(Op.IMul, [tU32, qBlockBaseD, qBlockBase, constD]);
-      const oGlobalTileBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalTileBase, baseOff, qBlockBaseD]);
-      const constStrideD = b.id(); b.constant(tU32, constStrideD, D);
+      const qBlockBaseD = b.id(); b.emit(Op.IMul, [tU32, qBlockBaseD, qBlockBase, outputStride]);
+      const oGlobalTileBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalTileBase, outputBaseOff, qBlockBaseD]);
       for (let rn = 0; rn < pvTiles; rn++) {
         const constColOff = b.id(); b.constant(tU32, constColOff, rn * coopN);
         const tileBaseOff = b.id(); b.emit(Op.IAdd, [tU32, tileBaseOff, oGlobalTileBase, constColOff]);
         const ptrOTile = b.id(); b.emit(Op.AccessChain, [bufO.tPtr, ptrOTile, bufO.varId, const0u, tileBaseOff]);
         const oTile = b.id(); b.emit(Op.Load, [tCoopAcc, oTile, varO[rn]]);
-        b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrOTile, oTile, constRowMajor, constStrideD]);
+        b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrOTile, oTile, constRowMajor, outputStride]);
       }
     }
     b.emit(Op.Branch, [labelOWriteMerge]);
@@ -1396,8 +1416,8 @@ export function kernelFlashAttentionCoop2Forward(
       b.emit(Op.BranchConditional, [oInBounds, labelOWriteTail, labelOWriteTailEnd]);
       b.emit(Op.Label, [labelOWriteTail]);
 
-      const qRowOD = b.id(); b.emit(Op.IMul, [tU32, qRowOD, qRowO, constD]);
-      const oGlobalBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalBase, baseOff, qRowOD]);
+      const qRowOD = b.id(); b.emit(Op.IMul, [tU32, qRowOD, qRowO, outputStride]);
+      const oGlobalBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalBase, outputBaseOff, qRowOD]);
 
       for (let d = 0; d < dimsPerThread; d++) {
         const constDIdx = b.id(); b.constant(tU32, constDIdx, d);
@@ -1513,15 +1533,14 @@ export function kernelFlashAttentionCoop2Forward(
 
     b.emit(Op.Label, [labelProbeWriteDirect]);
     {
-      const qBlockBaseD = b.id(); b.emit(Op.IMul, [tU32, qBlockBaseD, qBlockBase, constD]);
-      const oGlobalTileBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalTileBase, baseOff, qBlockBaseD]);
-      const constStrideD = b.id(); b.constant(tU32, constStrideD, D);
+      const qBlockBaseD = b.id(); b.emit(Op.IMul, [tU32, qBlockBaseD, qBlockBase, outputStride]);
+      const oGlobalTileBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalTileBase, outputBaseOff, qBlockBaseD]);
       for (let rn = 0; rn < pvTiles; rn++) {
         const constColOff = b.id(); b.constant(tU32, constColOff, rn * coopN);
         const tileBaseOff = b.id(); b.emit(Op.IAdd, [tU32, tileBaseOff, oGlobalTileBase, constColOff]);
         const ptrOTile = b.id(); b.emit(Op.AccessChain, [bufO.tPtr, ptrOTile, bufO.varId, const0u, tileBaseOff]);
         const oTile = b.id(); b.emit(Op.Load, [tCoopAcc, oTile, varO[rn]]);
-        b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrOTile, oTile, constRowMajor, constStrideD]);
+        b.emit(Op.OpCooperativeMatrixStoreKHR, [ptrOTile, oTile, constRowMajor, outputStride]);
       }
     }
     b.emit(Op.Branch, [labelProbeWriteMerge]);
@@ -1550,8 +1569,8 @@ export function kernelFlashAttentionCoop2Forward(
       b.emit(Op.BranchConditional, [oInBounds, labelProbeWriteTail, labelProbeWriteTailEnd]);
       b.emit(Op.Label, [labelProbeWriteTail]);
 
-      const qRowOD = b.id(); b.emit(Op.IMul, [tU32, qRowOD, qRowO, constD]);
-      const oGlobalBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalBase, baseOff, qRowOD]);
+      const qRowOD = b.id(); b.emit(Op.IMul, [tU32, qRowOD, qRowO, outputStride]);
+      const oGlobalBase = b.id(); b.emit(Op.IAdd, [tU32, oGlobalBase, outputBaseOff, qRowOD]);
 
       for (let d = 0; d < dimsPerThread; d++) {
         const constDIdx = b.id(); b.constant(tU32, constDIdx, d);

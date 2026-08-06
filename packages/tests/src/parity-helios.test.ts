@@ -1,9 +1,9 @@
 /**
  * parity-helios — CPU (cpu_ref) vs GPU (Helios) numerical parity.
  *
- * The whole suite lives inside `describeGpu` and SKIPS unless a real NVIDIA
- * GPU is present (same detection as gpu-perf.test.ts), so it is a no-op on the
- * dev box and runs for real on the GPU pods.
+ * The whole suite lives inside `describeGpu` and skips unless a physical GPU
+ * satisfies the current Helios training capabilities. Vendor identity is not
+ * part of the decision, so the same suite validates NVIDIA and AMD RDNA.
  *
  * Coverage, in order of trust:
  *   1. per-op forward parity (matmul/softmax/layerNorm/gelu/silu/siluMul/
@@ -25,7 +25,7 @@ import { CpuRefBackend } from "@alpha/tensor";
 import { SeededRng, type ModelConfig, type TensorData, type Backend } from "@alpha/core";
 import { Tape, Variable, castToF16, castToF32, sum, rmsNorm, rope } from "@alpha/autograd";
 import { initGPT, gptForward, collectParamEntries } from "@alpha/model";
-import { AdamW } from "@alpha/train";
+import { AdamW, assessHeliosTrainingDevice } from "@alpha/train";
 
 // ── Tolerances (edit here) ───────────────────────────────────────────────────
 const FWD_REL_TOL = 1e-3;
@@ -40,26 +40,55 @@ const ADAMW_ABS_TOL = 1e-5;
 const TRAIN_STEPS = 100;
 const TRAIN_LOSS_PCT = 0.05; // final helios loss must be within 5% of cpu_ref
 
-// ── GPU detection (identical to gpu-perf.test.ts) ────────────────────────────
-let hasNvidiaGpu = false;
+// ── Capability-based GPU detection ──────────────────────────────────────────
+//
+// X43 local correctness lane. `ALPHA_PARITY_ALLOW_SOFTWARE_DEVICE=1` lets this
+// suite run on a software Vulkan device (lavapipe) that the training capability
+// guard rejects.
+//
+// Why that is safe here and NOT a weakening of the guard:
+//   * `assessHeliosTrainingDevice` is untouched, and the trainer still refuses
+//     to train on such a device. Nothing in the training path changes.
+//   * The guard exists because a wrong subgroup width corrupts gradients
+//     SILENTLY during training. Every assertion in this suite compares against
+//     cpu_ref, so an incorrect result fails LOUDLY instead. That is the
+//     opposite failure mode, which is why the same restriction is not required.
+//   * Correctness only. It is deliberately not applied to the performance
+//     suite, where software-device timings would be meaningless.
+//
+// A pass here does not license promotion; it catches numerical regressions
+// before renting hardware rather than after.
+const ALLOW_SOFTWARE_DEVICE = process.env.ALPHA_PARITY_ALLOW_SOFTWARE_DEVICE === "1";
+let hasSupportedGpu = false;
+let usingSoftwareDevice = false;
 try {
-  hasNvidiaGpu = getDeviceInfo().vendorId === 0x10de;
+  hasSupportedGpu = assessHeliosTrainingDevice(getDeviceInfo()).supported;
+  if (!hasSupportedGpu && ALLOW_SOFTWARE_DEVICE) {
+    hasSupportedGpu = true;
+    usingSoftwareDevice = true;
+  }
 } catch {
-  hasNvidiaGpu = false;
+  hasSupportedGpu = false;
 }
-if (!hasNvidiaGpu) {
-  console.log("[parity-helios] no NVIDIA GPU detected — suite skipped");
+if (!hasSupportedGpu) {
+  console.log("[parity-helios] no capability-compatible physical GPU detected — suite skipped");
+} else if (usingSoftwareDevice) {
+  console.log(
+    `[parity-helios] CORRECTNESS-ONLY run on an unsupported device ` +
+    `(${getDeviceInfo()?.deviceName}). Numerical parity is meaningful; ` +
+    `performance and promotion are not.`,
+  );
 }
 
-const gpu = hasNvidiaGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
+const gpu = hasSupportedGpu ? new HeliosBackend() : (null as unknown as HeliosBackend);
 const cpu = new CpuRefBackend();
-if (hasNvidiaGpu) gpu.setMinGpuSize(1);
+if (hasSupportedGpu) gpu.setMinGpuSize(1);
 
 afterAll(() => {
-  if (hasNvidiaGpu) destroyDevice();
+  if (hasSupportedGpu) destroyDevice();
 });
 
-const describeGpu = describe.skipIf(!hasNvidiaGpu);
+const describeGpu = describe.skipIf(!hasSupportedGpu);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -197,12 +226,46 @@ describeGpu("per-op forward parity", () => {
     assertClose("siluMul", f32(g), f32(cRef), FWD_REL_TOL, FWD_ABS_TOL);
   });
 
-  it("crossEntropy [6,10]", () => {
+  it("crossEntropy [6,10] retains the non-vec4 forward case", () => {
     const logits = rnd(11, 60, -3, 3);
     const targets: TensorData = { shape: [6], dtype: "i32", data: Int32Array.from([1, 3, 0, 9, 4, 7]) };
     const c = cpu.crossEntropy(cpu.fromArray(logits, [6, 10]), targets);
     const g = gpu.crossEntropy(gpu.fromArray(logits, [6, 10]), targets);
     relCloseScalar("crossEntropy", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
+  });
+
+  it("crossEntropyBackward [6,16] uses direct fused dlogits parity", () => {
+    const N = 6, C = 16;
+    const logits = rnd(111, N * C, -3, 3);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0, 15, 4, 7]) };
+    const upstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([0.75]) };
+    const probs = cpu.softmax(cpu.fromArray(logits, [N, C]), -1).data as Float32Array;
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / C);
+      const col = idx % C;
+      return (p - (col === targets.data[row] ? 1 : 0)) * 0.75 / N;
+    });
+    const actual = gpu.crossEntropyBackward!(gpu.fromArray(logits, [N, C]), targets, upstream);
+    assertClose("crossEntropyBackward fused online", f32(actual), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+
+  it("crossEntropyForwardBackward [6,16] fuses training loss and cached dlogits", () => {
+    const N = 6, C = 16;
+    const logits = rnd(112, N * C, -3, 3);
+    const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from([1, 3, 0, 15, 4, 7]) };
+    const logitsCpu = cpu.fromArray(logits, [N, C]);
+    const fused = gpu.crossEntropyForwardBackward!(gpu.fromArray(logits, [N, C]), targets);
+    expect(fused).not.toBeNull();
+    const expectedLoss = cpu.crossEntropy(logitsCpu, targets);
+    relCloseScalar("crossEntropyForwardBackward loss", f32(fused!.loss)[0], f32(expectedLoss)[0], LOSS_REL_TOL);
+
+    const probs = cpu.softmax(logitsCpu, -1).data as Float32Array;
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / C);
+      const col = idx % C;
+      return (p - (col === targets.data[row] ? 1 : 0)) / N;
+    });
+    assertClose("crossEntropyForwardBackward dlogits", f32(fused!.gradLogits), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
   });
 
   it("embedding [12,8] gather + repeated-index backward", () => {
@@ -214,13 +277,14 @@ describeGpu("per-op forward parity", () => {
     assertClose("embedding", f32(g), f32(c), FWD_REL_TOL, FWD_ABS_TOL);
 
     const gradValues = rnd(52, 6 * 8, -1, 1);
-    const grad = gpu.fromArray(gradValues, [6, 8]);
-    const backward = gpu.embeddingBackward!(indices, grad, 12);
+    const backward = gpu.embeddingBackward!(indices, gpu.fromArray(gradValues, [6, 8]), 12);
+    const replay = gpu.embeddingBackward!(indices, gpu.fromArray(gradValues, [6, 8]), 12);
     const reference = new Float32Array(12 * 8);
     for (let row = 0; row < indexValues.length; row++) {
       for (let d = 0; d < 8; d++) reference[indexValues[row] * 8 + d] += gradValues[row * 8 + d];
     }
     assertClose("embeddingBackward", f32(backward), reference, FWD_REL_TOL, FWD_ABS_TOL);
+    expect(Array.from(f32(replay))).toEqual(Array.from(f32(backward)));
   });
 
   it("softCap cap=30 [64]", () => {
@@ -263,6 +327,118 @@ describeGpu("masked cross-entropy parity", () => {
     // Masked-out rows (1 and 4) are bit-exactly zero on GPU too.
     const gd = f32(g);
     for (const r of [1, 4]) for (let c = 0; c < C; c++) expect(gd[r * C + c]).toBe(0);
+  });
+
+  it("crossEntropyMaskedForwardBackward fuses weighted loss and cached dlogits", () => {
+    const fusedN = 6, fusedC = 16;
+    const fusedLogits = rnd(151, fusedN * fusedC, -3, 3);
+    const fusedTargetsArray = [1, 3, 0, 15, 4, 7];
+    const fusedMaskArray = [1, 0, 0.5, 1, 0, 1];
+    const fusedTargets: TensorData = {
+      shape: [fusedN], dtype: "i32", data: Int32Array.from(fusedTargetsArray),
+    };
+    const fusedMask: TensorData = {
+      shape: [fusedN], dtype: "f32", data: Float32Array.from(fusedMaskArray),
+    };
+    const logitsCpu = cpu.fromArray(fusedLogits, [fusedN, fusedC]);
+    const fused = gpu.crossEntropyMaskedForwardBackward!(
+      gpu.fromArray(fusedLogits, [fusedN, fusedC]), fusedTargets, fusedMask,
+    );
+    expect(fused).not.toBeNull();
+    const expectedLoss = cpu.crossEntropyMasked!(logitsCpu, fusedTargets, fusedMask);
+    relCloseScalar("crossEntropyMaskedForwardBackward loss", f32(fused!.loss)[0], f32(expectedLoss)[0], LOSS_REL_TOL);
+
+    const probs = cpu.softmax(logitsCpu, -1).data as Float32Array;
+    const denominator = fusedMaskArray.reduce((a, b) => a + b, 0);
+    const reference = Float32Array.from(probs, (p, idx) => {
+      const row = Math.floor(idx / fusedC);
+      const col = idx % fusedC;
+      return (p - (col === fusedTargetsArray[row] ? 1 : 0))
+        * fusedMaskArray[row] / Math.max(denominator, 1);
+    });
+    assertClose("crossEntropyMaskedForwardBackward dlogits", f32(fused!.gradLogits), reference, GRAD_REL_TOL, GRAD_ABS_TOL);
+  });
+
+  it("crossEntropyMaskedForwardBackward preserves the all-zero-mask contract", () => {
+    const fusedN = 3, fusedC = 16;
+    const fusedLogits = rnd(152, fusedN * fusedC, -3, 3);
+    const fusedTargets: TensorData = {
+      shape: [fusedN], dtype: "i32", data: Int32Array.from([1, 3, 15]),
+    };
+    const zeroMask: TensorData = {
+      shape: [fusedN], dtype: "f32", data: new Float32Array(fusedN),
+    };
+    const fused = gpu.crossEntropyMaskedForwardBackward!(
+      gpu.fromArray(fusedLogits, [fusedN, fusedC]), fusedTargets, zeroMask,
+    );
+    expect(fused).not.toBeNull();
+    expect(f32(fused!.loss)[0]).toBe(0);
+    for (const value of f32(fused!.gradLogits)) expect(value).toBe(0);
+  });
+});
+
+// ── 1.6 Masked token-unlikelihood parity (RCR-UL) ───────────────────────────
+
+describeGpu("masked token-unlikelihood parity", () => {
+  const N = 6, C = 10;
+  const logitData = rnd(151, N * C, -3, 3);
+  const targetIdx = [1, 3, 0, 9, 4, 7];
+  const maskVals = [1, 0, 0.5, 1, 0, 1];
+  const epsilon = 1e-6;
+  const targets: TensorData = { shape: [N], dtype: "i32", data: Int32Array.from(targetIdx) };
+  const mask: TensorData = { shape: [N], dtype: "f32", data: Float32Array.from(maskVals) };
+
+  it("crossEntropyUnlikelihoodMasked forward matches cpu_ref", () => {
+    const c = cpu.crossEntropyUnlikelihoodMasked!(cpu.fromArray(logitData, [N, C]), targets, mask, epsilon);
+    const g = gpu.crossEntropyUnlikelihoodMasked!(gpu.fromArray(logitData, [N, C]), targets, mask, epsilon);
+    relCloseScalar("crossEntropyUnlikelihoodMasked", f32(g)[0], f32(c)[0], LOSS_REL_TOL);
+    const cpuStats = cpu.getLastCrossEntropyUnlikelihoodMaskedStats!();
+    const gpuStats = gpu.getLastCrossEntropyUnlikelihoodMaskedStats!();
+    expect(gpuStats?.activeRows).toBe(cpuStats?.activeRows);
+    expect(gpuStats?.maskMass).toBeCloseTo(cpuStats!.maskMass, 6);
+    expect(gpuStats?.meanBadProbability).toBeCloseTo(cpuStats!.meanBadProbability, 5);
+    expect(gpuStats?.maxBadProbability).toBeCloseTo(cpuStats!.maxBadProbability, 5);
+  });
+
+  it("crossEntropyUnlikelihoodMaskedBackward matches analytic reference", () => {
+    const upstream = 0.75;
+    const grad: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([upstream]) };
+    const g = gpu.crossEntropyUnlikelihoodMaskedBackward!(
+      gpu.fromArray(logitData, [N, C]), targets, mask, grad, epsilon,
+    );
+    const probs = cpu.softmax(cpu.fromArray(logitData, [N, C]), -1).data as Float32Array;
+    const denom = maskVals.reduce((a, b) => a + b, 0);
+    const ref = new Float32Array(N * C);
+    for (let i = 0; i < N; i++) {
+      const pBad = probs[i * C + targetIdx[i]];
+      const rowScale = pBad / Math.max(1 - pBad, epsilon) * maskVals[i] * upstream / Math.max(denom, 1);
+      for (let c = 0; c < C; c++) {
+        ref[i * C + c] = ((c === targetIdx[i] ? 1 : 0) - probs[i * C + c]) * rowScale;
+      }
+    }
+    assertClose("crossEntropyUnlikelihoodMaskedBackward", f32(g), ref, GRAD_REL_TOL, GRAD_ABS_TOL);
+    const gd = f32(g);
+    for (const r of [1, 4]) for (let c = 0; c < C; c++) expect(gd[r * C + c]).toBe(0);
+  });
+
+  it("all-zero mask and zero upstream gradient remain exact zero", () => {
+    const zeroMask: TensorData = { shape: [N], dtype: "f32", data: new Float32Array(N) };
+    const logits = gpu.fromArray(logitData, [N, C]);
+    const zeroLoss = gpu.crossEntropyUnlikelihoodMasked!(logits, targets, zeroMask, epsilon);
+    expect(f32(zeroLoss)[0]).toBe(0);
+    expect(gpu.getLastCrossEntropyUnlikelihoodMaskedStats!()).toEqual({
+      activeRows: 0,
+      maskMass: 0,
+      meanBadProbability: 0,
+      maxBadProbability: 0,
+    });
+    const unitUpstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([1]) };
+    const zeroMaskGrad = f32(gpu.crossEntropyUnlikelihoodMaskedBackward!(logits, targets, zeroMask, unitUpstream, epsilon));
+    for (const value of zeroMaskGrad) expect(value).toBe(0);
+
+    const zeroUpstream: TensorData = { shape: [], dtype: "f32", data: Float32Array.from([0]) };
+    const zeroUpstreamGrad = f32(gpu.crossEntropyUnlikelihoodMaskedBackward!(logits, targets, mask, zeroUpstream, epsilon));
+    for (const value of zeroUpstreamGrad) expect(value).toBe(0);
   });
 });
 
@@ -397,6 +573,55 @@ describeGpu("AdamW step parity", () => {
       assertClose(`adamw ${name}`, g, afterC.get(name)!, ADAMW_REL_TOL, ADAMW_ABS_TOL);
     }
   });
+
+  it("one paired CE plus RCR-UL step matches cpu_ref and replays deterministically", () => {
+    const positive = makeBatch(GPT_CONFIG, 199);
+    const negative = makeBatch(GPT_CONFIG, 299);
+    const positiveMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    const negativeMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    for (let i = 0; i < positiveMaskData.length; i++) positiveMaskData[i] = i % 3 === 0 ? 0 : 1;
+    for (let i = 0; i < negativeMaskData.length; i++) negativeMaskData[i] = i % 7 === 0 ? 1 : 0;
+    const positiveMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: positiveMaskData };
+    const negativeMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: negativeMaskData };
+    const cfg = { lr: 5e-5, beta1: 0.9, beta2: 0.95, eps: 1e-8, weightDecay: 0 };
+
+    const stepOnce = (backend: Backend) => {
+      const params = initGPT(GPT_CONFIG, backend, new SeededRng(GPT_SEED));
+      const tape = new Tape();
+      const release = releaser(backend);
+      const positiveResult = gptForward(
+        GPT_CONFIG, params, backend, tape, positive.tokens, positive.targets,
+        true, false, false, undefined, release, positiveMask,
+      );
+      tape.backward(positiveResult.loss!, backend, release);
+      tape.clear(release);
+      const negativeResult = gptForward(
+        GPT_CONFIG, params, backend, tape, negative.tokens, negative.targets,
+        true, false, false, undefined, release, negativeMask,
+        { kind: "unlikelihood", epsilon: 1e-6 },
+      );
+      const ulUpstream = backend.full([], 0.5, "f32");
+      tape.backward(negativeResult.loss!, backend, release, ulUpstream);
+      tape.clear(release);
+      const opt = new AdamW(backend, cfg);
+      const pmap = new Map<string, TensorData>();
+      const gmap = new Map<string, TensorData>();
+      for (const [name, variable] of collectParamEntries(params)) {
+        pmap.set(name, variable.data);
+        if (variable.grad) gmap.set(name, variable.grad);
+      }
+      opt.step(pmap, gmap);
+      return new Map([...pmap].map(([name, tensor]) => [name, Float32Array.from(f32(tensor))]));
+    };
+
+    const cpuAfter = stepOnce(cpu);
+    const gpuAfter = stepOnce(gpu);
+    const replayAfter = stepOnce(gpu);
+    for (const [name, expected] of cpuAfter) {
+      assertClose(`paired adamw ${name}`, gpuAfter.get(name)!, expected, ADAMW_REL_TOL, ADAMW_ABS_TOL);
+      expect(Array.from(replayAfter.get(name)!)).toEqual(Array.from(gpuAfter.get(name)!));
+    }
+  });
 });
 
 // ── 4.5 Mixed-precision f16 casts (Helios-only: cpu_ref has no castDtype) ────
@@ -460,6 +685,25 @@ describeGpu("mixed precision (f16 casts)", () => {
     expect(Number.isFinite(mpLoss), `mp loss non-finite (${mpLoss})`).toBe(true);
     expect(Math.abs(mpLoss - fpLoss) / Math.max(Math.abs(fpLoss), 1e-6),
       `mp loss ${mpLoss} vs fp32 ${fpLoss}`).toBeLessThan(0.05);
+
+    const ulMaskData = new Float32Array(BATCH * GPT_CONFIG.blockSize);
+    for (let i = 0; i < ulMaskData.length; i++) ulMaskData[i] = i % 5 === 0 ? 1 : 0;
+    const ulMask: TensorData = { shape: [BATCH, GPT_CONFIG.blockSize], dtype: "f32", data: ulMaskData };
+    const params = initGPT(GPT_CONFIG, gpu, new SeededRng(GPT_SEED));
+    const tape = new Tape();
+    const ulResult = gptForward(
+      GPT_CONFIG, params, gpu, tape, batch.tokens, batch.targets,
+      true, false, true, undefined, releaser(gpu), ulMask,
+      { kind: "unlikelihood", epsilon: 1e-6 },
+    );
+    expect(Number.isFinite(f32(ulResult.loss!.data)[0])).toBe(true);
+    tape.backward(ulResult.loss!, gpu, releaser(gpu));
+    for (const [name, variable] of collectParamEntries(params)) {
+      expect(variable.grad, `${name}: RCR-UL mixed-precision grad null`).not.toBeNull();
+      for (const value of f32(variable.grad!)) {
+        expect(Number.isFinite(value), `${name}: non-finite RCR-UL grad`).toBe(true);
+      }
+    }
   });
 });
 

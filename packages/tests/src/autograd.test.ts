@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
+import type { TensorData } from "@alpha/core";
 import { CpuRefBackend } from "@alpha/tensor";
-import { Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu, gelu, checkpoint } from "@alpha/autograd";
+import {
+  Variable, Tape, add, mul, matmul, sum, mean, softmax, crossEntropy, relu,
+  gelu, checkpoint, scale, rmsNorm, residualDropoutAddRmsNorm, qkvHeadMajorRope,
+} from "@alpha/autograd";
 
 describe("Autograd", () => {
   const B = new CpuRefBackend();
@@ -23,6 +27,228 @@ describe("Autograd", () => {
     expect(a.grad).not.toBeNull();
     const ga = Array.from(a.grad!.data);
     expect(ga).toEqual([1, 1, 1]);
+  });
+
+  it("moves single-owner gradients and clones only genuine aliases", () => {
+    class CountingBackend extends CpuRefBackend {
+      cloneCalls = 0;
+      override clone(a: TensorData): TensorData {
+        this.cloneCalls++;
+        return super.clone(a);
+      }
+    }
+
+    const backend = new CountingBackend();
+    const tape = new Tape();
+    const ctx = { tape, backend };
+    const a = new Variable(backend.fromArray([1, 2, 3], [3]), true);
+    const b = new Variable(backend.fromArray([4, 5, 6], [3]), true);
+    const scaled = scale(ctx, add(ctx, a, b), 2);
+    const loss = sum(ctx, scaled);
+
+    tape.backward(loss, backend);
+
+    // sum and scale each have one gradient consumer, so their buffers move.
+    // add aliases its upstream gradient across two inputs: one clone remains
+    // necessary and the last consumer takes ownership of the original.
+    expect(backend.cloneCalls).toBe(1);
+    expect(a.grad).not.toBe(b.grad);
+    expect(Array.from(a.grad!.data)).toEqual([2, 2, 2]);
+    expect(Array.from(b.grad!.data)).toEqual([2, 2, 2]);
+  });
+
+  it("fused residual-add RMSNorm preserves both outputs and their combined gradients", () => {
+    class FusedReferenceBackend extends CpuRefBackend {
+      fusedCalls = 0;
+
+      residualAddRmsNorm(
+        residual: TensorData,
+        projected: TensorData,
+        weight: TensorData,
+        eps: number,
+      ): { residual: TensorData; normalized: TensorData } {
+        this.fusedCalls++;
+        const residualOut = super.add(residual, projected);
+        return {
+          residual: residualOut,
+          normalized: super.rmsNorm(residualOut, weight, eps),
+        };
+      }
+    }
+
+    const inputs = {
+      residual: [0.2, -0.7, 1.3, 0.4, -0.2, 0.9],
+      projected: [-0.1, 0.5, 0.2, -0.6, 0.8, -0.3],
+      weight: [0.8, 1.1, -0.4],
+    };
+
+    const run = (backend: CpuRefBackend, fused: boolean) => {
+      const tape = new Tape();
+      const ctx = { tape, backend };
+      const residual = new Variable(backend.fromArray(inputs.residual, [2, 3]), true);
+      const projected = new Variable(backend.fromArray(inputs.projected, [2, 3]), true);
+      const weight = new Variable(backend.fromArray(inputs.weight, [3]), true);
+      let residualOut: Variable;
+      let normalized: Variable;
+      if (fused) {
+        ({ residual: residualOut, normalized } = residualDropoutAddRmsNorm(
+          ctx, residual, projected, weight, 1e-5, 0, true,
+        ));
+      } else {
+        residualOut = add(ctx, residual, projected);
+        normalized = rmsNorm(ctx, residualOut, weight, 1e-5);
+      }
+      // Both returned values contribute with different coefficients. This
+      // verifies that the residual graph node receives and combines its direct
+      // path and RMSNorm path before propagating to both original inputs.
+      const loss = sum(ctx, add(ctx, scale(ctx, residualOut, 0.3), scale(ctx, normalized, -0.7)));
+      const residualValues = Array.from(residualOut.data.data as Float32Array);
+      const normalizedValues = Array.from(normalized.data.data as Float32Array);
+      tape.backward(loss, backend);
+      return {
+        residualValues,
+        normalizedValues,
+        residualGrad: Array.from(residual.grad!.data as Float32Array),
+        projectedGrad: Array.from(projected.grad!.data as Float32Array),
+        weightGrad: Array.from(weight.grad!.data as Float32Array),
+      };
+    };
+
+    const baseline = run(new CpuRefBackend(), false);
+    const fusedBackend = new FusedReferenceBackend();
+    const actual = run(fusedBackend, true);
+    expect(fusedBackend.fusedCalls).toBe(1);
+    for (const key of Object.keys(baseline) as Array<keyof typeof baseline>) {
+      expect(actual[key]).toHaveLength(baseline[key].length);
+      actual[key].forEach((value, index) => {
+        expect(value).toBeCloseTo(baseline[key][index], 6);
+      });
+    }
+  });
+
+  it("fused QKV head-major RoPE preserves layout, values, and all branch gradients", () => {
+    class FusedQkvReferenceBackend extends CpuRefBackend {
+      forwardCalls = 0;
+      backwardCalls = 0;
+
+      qkvHeadMajorRope(
+        qkv: TensorData,
+        cos: TensorData,
+        sin: TensorData,
+        batch: number,
+        sequence: number,
+        heads: number,
+        headDim: number,
+      ): [TensorData, TensorData, TensorData] {
+        this.forwardCalls++;
+        const modelDim = heads * headDim;
+        const half = headDim / 2;
+        const outShape = [batch * heads, sequence, headDim];
+        const size = batch * sequence * modelDim;
+        const source = qkv.data as Float32Array;
+        const cData = cos.data as Float32Array;
+        const sData = sin.data as Float32Array;
+        const outputs = [new Float32Array(size), new Float32Array(size), new Float32Array(size)];
+        for (let b = 0; b < batch; b++) for (let h = 0; h < heads; h++) {
+          for (let t = 0; t < sequence; t++) {
+            const src = (b * sequence + t) * 3 * modelDim + h * headDim;
+            const dst = ((b * heads + h) * sequence + t) * headDim;
+            for (let i = 0; i < half; i++) {
+              const c = cData[t * half + i];
+              const s = sData[t * half + i];
+              for (let branch = 0; branch < 3; branch++) {
+                const a = source[src + branch * modelDim + i];
+                const bb = source[src + branch * modelDim + i + half];
+                if (branch < 2) {
+                  outputs[branch][dst + i] = a * c - bb * s;
+                  outputs[branch][dst + i + half] = bb * c + a * s;
+                } else {
+                  outputs[branch][dst + i] = a;
+                  outputs[branch][dst + i + half] = bb;
+                }
+              }
+            }
+          }
+        }
+        return [
+          { shape: outShape, dtype: "f32", data: outputs[0] },
+          { shape: outShape, dtype: "f32", data: outputs[1] },
+          { shape: outShape, dtype: "f32", data: outputs[2] },
+        ];
+      }
+
+      qkvHeadMajorRopeBackward(
+        grad: TensorData,
+        cos: TensorData,
+        inverseSin: TensorData,
+        batch: number,
+        sequence: number,
+        heads: number,
+        headDim: number,
+        which: 0 | 1 | 2,
+      ): TensorData {
+        this.backwardCalls++;
+        const modelDim = heads * headDim;
+        const half = headDim / 2;
+        const out = new Float32Array(batch * sequence * 3 * modelDim);
+        const g = grad.data as Float32Array;
+        const cData = cos.data as Float32Array;
+        const sData = inverseSin.data as Float32Array;
+        for (let b = 0; b < batch; b++) for (let h = 0; h < heads; h++) {
+          for (let t = 0; t < sequence; t++) {
+            const src = ((b * heads + h) * sequence + t) * headDim;
+            const dst = (b * sequence + t) * 3 * modelDim + which * modelDim + h * headDim;
+            for (let i = 0; i < half; i++) {
+              const a = g[src + i];
+              const bb = g[src + i + half];
+              if (which < 2) {
+                const c = cData[t * half + i];
+                const s = sData[t * half + i];
+                out[dst + i] = a * c - bb * s;
+                out[dst + i + half] = bb * c + a * s;
+              } else {
+                out[dst + i] = a;
+                out[dst + i + half] = bb;
+              }
+            }
+          }
+        }
+        return { shape: [batch * sequence, 3 * modelDim], dtype: "f32", data: out };
+      }
+    }
+
+    const batch = 2, sequence = 3, heads = 2, headDim = 4;
+    const modelDim = heads * headDim;
+    const input = Array.from(
+      { length: batch * sequence * 3 * modelDim },
+      (_, i) => Math.sin(i * 0.37) * 1.7,
+    );
+    const run = (backend: CpuRefBackend) => {
+      const tape = new Tape();
+      const ctx = { tape, backend };
+      const qkv = new Variable(backend.fromArray(input, [batch * sequence, 3 * modelDim]), true);
+      const [q, k, v] = qkvHeadMajorRope(
+        ctx, qkv, batch, sequence, heads, headDim, 10000,
+      );
+      const loss = sum(ctx, add(ctx, add(ctx, scale(ctx, q, 0.3), scale(ctx, k, -0.7)), scale(ctx, v, 1.1)));
+      const values = [q, k, v].map((x) => Array.from(x.data.data as Float32Array));
+      tape.backward(loss, backend);
+      return { values, grad: Array.from(qkv.grad!.data as Float32Array) };
+    };
+
+    const baseline = run(new CpuRefBackend());
+    const fusedBackend = new FusedQkvReferenceBackend();
+    const actual = run(fusedBackend);
+    expect(fusedBackend.forwardCalls).toBe(1);
+    expect(fusedBackend.backwardCalls).toBe(3);
+    for (let branch = 0; branch < 3; branch++) {
+      actual.values[branch].forEach((value, index) => {
+        expect(value).toBeCloseTo(baseline.values[branch][index], 6);
+      });
+    }
+    actual.grad.forEach((value, index) => {
+      expect(value).toBeCloseTo(baseline.grad[index], 6);
+    });
   });
 
   it("mul backward", () => {

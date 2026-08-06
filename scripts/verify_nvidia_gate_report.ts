@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-/** Fail closed unless the complete 46-test Helios NVIDIA gate actually executed and passed. */
+/** Fail closed unless the complete 50-test Helios NVIDIA gate actually executed and passed. */
 
 import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
@@ -34,8 +34,8 @@ async function main(): Promise<void> {
   const expected = {
     numFailedTestSuites: 0,
     numPendingTestSuites: 0,
-    numTotalTests: 46,
-    numPassedTests: 46,
+    numTotalTests: 50,
+    numPassedTests: 50,
     numFailedTests: 0,
     numPendingTests: 0,
     numTodoTests: 0,
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     throw new Error(`unexpected NVIDIA gate files: ${actualFiles.join(", ")}`);
   }
   const assertions = report.testResults.flatMap((result: any) => result.assertionResults ?? []);
-  if (assertions.length !== 46) throw new Error(`assertion rows ${assertions.length} != 46`);
+  if (assertions.length !== 50) throw new Error(`assertion rows ${assertions.length} != 50`);
   const nonPassed = assertions.filter((assertion: any) => assertion.status !== "passed");
   if (nonPassed.length > 0) {
     throw new Error(`${nonPassed.length} NVIDIA gate assertions did not execute and pass`);
@@ -75,8 +75,8 @@ async function main(): Promise<void> {
       report_sha256: createHash("sha256").update(reportText).digest("hex"),
       files: actualFiles,
       test_suites: 2,
-      tests_executed: 46,
-      passed: 46,
+      tests_executed: 50,
+      passed: 50,
       failed: 0,
       skipped: 0,
       todo: 0,

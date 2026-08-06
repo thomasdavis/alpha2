@@ -16,6 +16,7 @@ import {
   type TensorData,
   type Dtype,
   type Shape,
+  type UnlikelihoodLossStats,
   shapeSize,
   shapeStrides,
   dtypeArray,
@@ -25,8 +26,18 @@ import {
   broadcastStrides,
 } from "@alpha/core";
 
-import { getNative, initDevice, getDeviceInfo, type NativeAddon } from "./device.js";
+import { appendFileSync } from "node:fs";
+
+import { getNative, initDevice, getDeviceInfo, type NativeAddon, type NativeDeviceInfo, type NativeHostTiming } from "./device.js";
 import { getKernelSpirv } from "./kernels.js";
+import { loadStaticSlotPlan, type StaticSlotPlan } from "./static-slot-plan.js";
+import {
+  CoopF16x3BalancePlanRuntime,
+  coopF16x3GraphFingerprint,
+  loadCoopF16x3BalancePlan,
+  type CoopF16x3CalibrationEntry,
+  type CoopF16x3MatmulDescriptor,
+} from "./coop-balance-plan.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -42,14 +53,284 @@ const COOP_PAD_MIN_FLOPS = 2_000_000; // only pad large GEMMs where tensor-core 
 const COOP_TRANSPOSED_A_MIN_FLOPS = 8_000_000; // transpose+coop path should only run when GEMM dominates transpose cost
 const LARGE_TILE_THRESHOLD_DEFAULT = 65_536; // prefer tile=32 once output plane reaches this size
 const MATMUL_GPU_FLOPS_THRESHOLD = 50_000; // route medium GEMMs to GPU sooner
+// The fixed-order embedding-gradient gather is bitwise deterministic but does
+// O(outputElements * tokenPositions) work. Keep it for bounded replay and
+// correctness workloads; production training retains the linear-work atomic
+// scatter. This is a work budget, not a model- or vendor-specific special case.
+const DETERMINISTIC_EMBEDDING_BACKWARD_MAX_WORK = 50_000_000;
 
 const WG_CANDIDATES = [64, 128, 256, 512, 1024] as const;
 let WG_SIZE = 128;  // stable default on L4; can be overridden by env/auto-tuning
 let wgAutoTuned = false;
 const ENABLE_WG_AUTOTUNE = process.env.HELIOS_WG_AUTOTUNE === "1";
 const DISABLE_BATCH_DISPATCH_MANY = process.env.HELIOS_DISABLE_BATCH_DISPATCH_MANY === "1";
+// Detailed operation accounting is deliberately opt-in: it adds Map updates to
+// every recorded GPU operation and is intended for bounded performance sweeps,
+// not production training runs.
+const PROFILE_GPU_OPS = process.env.HELIOS_PROFILE_GPU_OPS === "1";
+// Timestamp the dispatches in their real batched command buffer. This path is
+// synchronous and deliberately diagnostic-only: it changes scheduling enough
+// that its aggregate throughput must not be reported as the production rate.
+const PROFILE_GPU_TIMESTAMPS = process.env.HELIOS_PROFILE_GPU_TIMESTAMPS === "1";
+// A structural signature records the exact ordered operation topology and flush
+// boundaries while deliberately excluding buffer handles and tensor values.
+// It is diagnostic-only: stable signatures across steps are the prerequisite
+// for ahead-of-time graph compilation and command replay.
+const PROFILE_GRAPH_SIGNATURE = process.env.HELIOS_PROFILE_GRAPH_SIGNATURE === "1";
+const PROFILE_GRAPH_TRACE = process.env.HELIOS_PROFILE_GRAPH_TRACE === "1";
+
+/*
+ * WHICH allocations are never handed back — a census, not a counter.
+ *
+ * gpuMemStats already says the backend leaks: at 105M seq 64 batch 1 it holds
+ * 203 more live buffers after every step than before, 62.7 MB a step, forever,
+ * and at batch 16 that is what makes vkAllocateMemory fail on an 8 GB card.
+ * A counter can say how much; it cannot say WHERE, and the native leak that
+ * looked identical turned out to sit one frame below the line everyone
+ * suspected — the fix aimed at the visible temporary moved nothing.
+ *
+ * So record a stack per residency and drop it on release; what remains at the
+ * end of a step is the leak with its call site attached. gpuResidence is a
+ * WeakMap and cannot be walked, hence the parallel Map. It holds its keys
+ * alive, which is exactly wrong for production and exactly right here: a
+ * census that lets its subjects be collected under-reports.
+ *
+ * Off unless HELIOS_LEAK_CENSUS=1.
+ */
+const LEAK_CENSUS = process.env.HELIOS_LEAK_CENSUS === "1";
+const leakCensus = new Map<object, string>();
+function censusAdd(info: object): void {
+  if (!LEAK_CENSUS) return;
+  const st = new Error().stack ?? "";
+  /* Frame 0 is Error, 1 is censusAdd, 2 is the residency site — the caller of
+   * that is what distinguishes one allocation from another. */
+  leakCensus.set(info, st.split("\n").slice(2, 7).join("\n"));
+}
+function censusDrop(info: object): void {
+  if (LEAK_CENSUS) leakCensus.delete(info);
+}
+/** Aggregate the surviving stacks, commonest first. */
+export function heliosLeakCensus(top = 8): string {
+  if (!LEAK_CENSUS) return "HELIOS_LEAK_CENSUS=1 not set — nothing recorded";
+  const byStack = new Map<string, number>();
+  for (const st of leakCensus.values()) byStack.set(st, (byStack.get(st) ?? 0) + 1);
+  return [...byStack.entries()].sort((a, b) => b[1] - a[1]).slice(0, top)
+    .map(([st, n]) => `  ${String(n).padStart(5)} x\n${st}`).join("\n\n");
+}
+/** Forget everything recorded so far, so one step can be read in isolation. */
+export function heliosLeakCensusReset(): void { leakCensus.clear(); }
+// Matched-control switch for the residual-add + RMSNorm fusion. The public
+// backend hook remains available so the autograd topology is identical; only
+// the physical implementation changes from one dispatch back to add+rmsnorm.
+const DISABLE_RESIDUAL_ADD_RMSNORM =
+  process.env.HELIOS_DISABLE_RESIDUAL_ADD_RMSNORM === "1";
+// Matched-control switch for grouped-QKV unpack + head-major layout + RoPE.
+// The public hooks and autograd topology remain unchanged; the disabled path
+// composes the established slice/transpose/rope kernels on the same backend.
+const DISABLE_QKV_HEAD_MAJOR_ROPE =
+  process.env.HELIOS_DISABLE_QKV_HEAD_MAJOR_ROPE === "1";
+// Matched-control switch for collapsing three zero-padded QKV branch gradients
+// and their two grouped additions into one complete inverse-layout write.
+const DISABLE_QKV_COMBINED_BACKWARD =
+  process.env.HELIOS_DISABLE_QKV_COMBINED_BACKWARD === "1";
+// An offline, warmup-excluded lifetime trace can be compiled into a fixed set
+// of reusable VkBuffer handles. Physical r6 testing found that a complete plan
+// can preserve loss while corrupting backward gradients before structural
+// validation can observe the error. Keep the research implementation
+// reproducible, but require an explicit unsafe acknowledgement until the
+// missing alias/dependency semantics are understood.
+const STATIC_SLOT_PLAN_PATH = process.env.HELIOS_STATIC_SLOT_PLAN?.trim() ?? "";
+if (STATIC_SLOT_PLAN_PATH && process.env.HELIOS_STATIC_SLOT_PLAN_UNSAFE !== "1") {
+  throw new Error(
+    "HELIOS_STATIC_SLOT_PLAN is experimental and failed full-step numerical parity; " +
+      "set HELIOS_STATIC_SLOT_PLAN_UNSAFE=1 only for bounded research reproduction",
+  );
+}
+const STATIC_SLOT_PLAN: StaticSlotPlan | null = STATIC_SLOT_PLAN_PATH
+  ? loadStaticSlotPlan(STATIC_SLOT_PLAN_PATH)
+  : null;
+const STATIC_SLOT_PLAN_WARMUP_STEPS = Math.max(
+  0,
+  Number.parseInt(process.env.HELIOS_STATIC_SLOT_PLAN_WARMUP_STEPS ?? "1", 10) || 0,
+);
+// Generic FP32 GEMMs have multiple portable Vulkan implementations.  The old
+// size threshold is retained as the zero-overhead default, while this opt-in
+// path measures the real device/driver/shape combination once and caches the
+// winner.  It deliberately does not run during full-graph timestamp profiling:
+// standalone probes would contaminate that diagnostic's accounting.
+const ENABLE_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE === "1";
+const LOG_MATMUL_TILE_AUTOTUNE = process.env.HELIOS_MATMUL_TILE_AUTOTUNE_LOG === "1";
+const ENABLE_MATMUL_REG2X2 = process.env.HELIOS_MATMUL_REG2X2 === "1";
+const ENABLE_MATMUL_REG4X2 = process.env.HELIOS_MATMUL_REG4X2 === "1";
+// R4x2 is not universally better across physical layouts. Keep transposed-B
+// separately selectable, and keep both transposed input remaps independently
+// gated, so the measured portfolio does not assume one loader fits every
+// physical tensor layout.
+const ENABLE_MATMUL_REG4X2_TRANSPOSED_B =
+  process.env.HELIOS_MATMUL_REG4X2_TRANSPOSED_B === "1";
+type ColumnSumRowLanes = 0 | 4 | 8 | 16;
+function parseColumnSumRowLanes(): ColumnSumRowLanes {
+  const raw = process.env.HELIOS_COLUMN_SUM_ROW_LANES?.trim() ?? "0";
+  if (raw === "" || raw === "0") return 0;
+  if (raw === "1" || raw === "8") return 8;
+  if (raw === "4" || raw === "16") return Number(raw) as ColumnSumRowLanes;
+  console.warn(
+    `[helios] ignoring invalid HELIOS_COLUMN_SUM_ROW_LANES=${JSON.stringify(raw)}; ` +
+      "expected 0, 4, 8, or 16",
+  );
+  return 0;
+}
+const COLUMN_SUM_ROW_LANES = parseColumnSumRowLanes();
+const ENABLE_MATMUL_TRANSPOSED_B_COALESCED =
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_COALESCED === "1";
+const ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 =
+  process.env.HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 === "1";
+const ENABLE_MATMUL_TRANSPOSED_A_COALESCED =
+  process.env.HELIOS_MATMUL_TRANSPOSED_A_COALESCED === "1";
+const MATMUL_TILE_OVERRIDE_ENV = process.env.HELIOS_MATMUL_TILE?.trim() ?? "";
+let MATMUL_TILE_OVERRIDE: 16 | 32 | null = null;
+if (MATMUL_TILE_OVERRIDE_ENV) {
+  const parsed = Number(MATMUL_TILE_OVERRIDE_ENV);
+  if (parsed === 16 || parsed === 32) {
+    MATMUL_TILE_OVERRIDE = parsed;
+  } else {
+    console.warn(
+      `[helios] ignoring HELIOS_MATMUL_TILE=${MATMUL_TILE_OVERRIDE_ENV}; expected 16 or 32`,
+    );
+  }
+}
 const DEBUG_COOP = process.env.HELIOS_DEBUG_COOP === "1";
+/*
+ * Take the tensor-core path out, to tell a PRECISION difference from a BUG.
+ *
+ * Vulkan's loss disagrees with cpu_ref and with the native backend from batch 2
+ * onward (4.1795 against 4.1904), and at the model's real matmul shape the
+ * operation differs by 1.8e-2 — about 0.25% relative, which is far too large for
+ * f32 (1e-7) and about right for fp16 inputs. That is the signature of the
+ * cooperative-matrix path, not of a wrong index, and the two want separating
+ * before either is chased: one is a bug to fix, the other is a trade to declare.
+ */
+const DISABLE_COOP = process.env.HELIOS_DISABLE_COOP === "1";
 const ENABLE_COOP_F16_ACCUM = process.env.HELIOS_COOP_F16_ACCUM === "1";
+// Opt-in FP32 emulation on tensor cores: decompose each FP32 operand into an
+// FP16 high part plus an FP16 residual and accumulate high*high + high*low +
+// low*high in FP32. X32 keeps both slices tile-local; no global split buffers.
+const ENABLE_COOP_F16X3 = process.env.HELIOS_COOP_F16X3 === "1";
+function parseCoopF16x3BalanceExponent(): number {
+  const raw = process.env.HELIOS_COOP_F16X3_BALANCE_EXP?.trim() ?? "";
+  if (!raw) return 0;
+  const exponent = Number(raw);
+  if (!Number.isInteger(exponent) || Math.abs(exponent) > 120) {
+    throw new Error(
+      `HELIOS_COOP_F16X3_BALANCE_EXP must be an integer in [-120, 120], got ${JSON.stringify(raw)}`,
+    );
+  }
+  return exponent;
+}
+const COOP_F16X3_BALANCE_EXP = parseCoopF16x3BalanceExponent();
+if (COOP_F16X3_BALANCE_EXP !== 0 && !ENABLE_COOP_F16X3) {
+  throw new Error("HELIOS_COOP_F16X3_BALANCE_EXP requires HELIOS_COOP_F16X3=1");
+}
+
+function coopF16x3BalanceSuffix(exponent = COOP_F16X3_BALANCE_EXP): string {
+  if (exponent === 0) return "";
+  const sign = exponent < 0 ? "n" : "p";
+  return `_be${sign}${Math.abs(exponent)}`;
+}
+
+// X34: calibration is deliberately a bounded diagnostic.  It appends one
+// immutable JSONL record per observed step and is absent from the normal graph.
+// A compiled plan is separately fingerprinted and matched operation-by-operation.
+const COOP_F16X3_CHECKPOINT_FINGERPRINT =
+  process.env.HELIOS_COOP_F16X3_CHECKPOINT_FINGERPRINT?.trim().toLowerCase() ?? "";
+const COOP_F16X3_BALANCE_PLAN_PATH = process.env.HELIOS_COOP_F16X3_BALANCE_PLAN?.trim() ?? "";
+const COOP_F16X3_CALIBRATION_OUT = process.env.HELIOS_COOP_F16X3_CALIBRATION_OUT?.trim() ?? "";
+const COOP_F16X3_CALIBRATION_STEPS = Math.max(
+  1,
+  Number.parseInt(process.env.HELIOS_COOP_F16X3_CALIBRATION_STEPS ?? "1", 10) || 1,
+);
+if ((COOP_F16X3_BALANCE_PLAN_PATH || COOP_F16X3_CALIBRATION_OUT) && !ENABLE_COOP_F16X3) {
+  throw new Error("FP16x3 balance plans and calibration require HELIOS_COOP_F16X3=1");
+}
+if ((COOP_F16X3_BALANCE_PLAN_PATH || COOP_F16X3_CALIBRATION_OUT) &&
+    !/^[0-9a-f]{64}$/.test(COOP_F16X3_CHECKPOINT_FINGERPRINT)) {
+  throw new Error(
+    "HELIOS_COOP_F16X3_CHECKPOINT_FINGERPRINT must be the exact lowercase SHA-256 checkpoint fingerprint",
+  );
+}
+if (COOP_F16X3_BALANCE_PLAN_PATH && COOP_F16X3_BALANCE_EXP !== 0) {
+  throw new Error("HELIOS_COOP_F16X3_BALANCE_PLAN and HELIOS_COOP_F16X3_BALANCE_EXP are mutually exclusive");
+}
+if (COOP_F16X3_BALANCE_PLAN_PATH && COOP_F16X3_CALIBRATION_OUT) {
+  throw new Error("FP16x3 plan application and calibration are separate modes");
+}
+const COOP_F16X3_BALANCE_PLAN = COOP_F16X3_BALANCE_PLAN_PATH
+  ? loadCoopF16x3BalancePlan(COOP_F16X3_BALANCE_PLAN_PATH)
+  : null;
+
+function coopF16x3SharedBytes(
+  coopM: number,
+  coopN: number,
+  coopK: number,
+  kMulti: number,
+  subgroupTilesX: number,
+  subgroupTilesY: number,
+  regTilesM: number,
+  regTilesN: number,
+): number {
+  const parsedPad = parseInt(process.env.HELIOS_COOP_SHMEM_PAD ?? "8", 10);
+  const pad = Number.isFinite(parsedPad) && parsedPad >= 0 ? parsedPad : 8;
+  const kTile = coopK * kMulti;
+  const aElements = coopM * regTilesM * (kTile + pad) * subgroupTilesY;
+  const bElements = kTile * (coopN * regTilesN + pad) * subgroupTilesX;
+  // Two-byte FP16 elements, doubled for high and residual tiles.
+  return 4 * (aElements + bElements);
+}
+// The cooperative shader can either consume pre-cast f16 SSBOs or load f32
+// operands and narrow each reusable tile into f16 workgroup memory.  The
+// pre-cast path wins isolated GEMM microbenchmarks, but a training graph pays
+// for whole-tensor cast dispatches and their lifetimes.  Keep the historical
+// default while exposing the fused graph-level alternative explicitly.
+const COOP_PRECAST_F16_INPUT = process.env.HELIOS_COOP_PRECAST_F16_INPUT !== "0";
+// Diagnostic shape gates for cooperative-matrix training parity work.  Each
+// entry is either a logical MxNxK triple (for example "10240x1920x640") or a
+// layout-qualified key (for example "tb:10240x1920x640").  Unqualified keys
+// retain the historical all-layout behavior.  Qualified keys are required for
+// causal bisection because forward, ordinary-backward, and transposed-A
+// backward can share dimensions while exercising different storage layouts.
+// ALLOW is an optional positive list; DENY is applied after it.  These gates
+// remain generic and opt-in: no model-specific dimensions are baked into
+// Helios.
+function parseCoopShapeSet(name: string): ReadonlySet<string> {
+  const raw = process.env[name]?.trim() ?? "";
+  if (!raw) return new Set<string>();
+  const parsed = new Set<string>();
+  for (const entry of raw.split(",")) {
+    const key = entry.trim().toLowerCase();
+    if (!/^(?:(?:nn|tb|ta):)?\d+x\d+x\d+$/.test(key)) {
+      console.warn(
+        `[helios] ignoring invalid ${name} entry ${JSON.stringify(entry)}; ` +
+          "expected MxNxK or (nn|tb|ta):MxNxK",
+      );
+      continue;
+    }
+    parsed.add(key);
+  }
+  return parsed;
+}
+const COOP_SHAPE_ALLOW = parseCoopShapeSet("HELIOS_COOP_SHAPE_ALLOW");
+const COOP_SHAPE_DENY = parseCoopShapeSet("HELIOS_COOP_SHAPE_DENY");
+function coopShapeKey(M: number, N: number, K: number): string {
+  return `${M}x${N}x${K}`;
+}
+type CoopShapeLayout = "nn" | "tb" | "ta";
+function coopShapeIsEnabled(layout: CoopShapeLayout, M: number, N: number, K: number): boolean {
+  const key = coopShapeKey(M, N, K);
+  const qualified = `${layout}:${key}`;
+  const allowed = COOP_SHAPE_ALLOW.size === 0 || COOP_SHAPE_ALLOW.has(key) || COOP_SHAPE_ALLOW.has(qualified);
+  const denied = COOP_SHAPE_DENY.has(key) || COOP_SHAPE_DENY.has(qualified);
+  return allowed && !denied;
+}
 const ENABLE_COOP_F16IN_S2X2 = process.env.HELIOS_COOP_F16IN_S2X2 !== "0";
 const COOP_F16IN_S2X2_MIN_FLOPS = 20_000_000;
 const COOP_SUBGROUP_TILES_ENV = process.env.HELIOS_COOP_F16IN_SUBGROUP_TILES?.trim() ?? "";
@@ -122,7 +403,7 @@ type FlashCoop2ScopeTag = "wg" | "sg";
 type FlashDispatchPath = "scalar" | "coop2";
 
 export interface FlashDispatchDebug {
-  requestedOp: "flashAttention" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
+  requestedOp: "flashAttention" | "flashAttentionTokenMajor" | "flashAttentionCoop2" | "flashAttentionCoop2Probe";
   executedPath: FlashDispatchPath;
   mode: "full" | "qk" | "qk_mask" | "qk_softmax" | "pv" | "kv_only" | "kv_synth" | "per_elem_only";
   softCap: number;
@@ -317,14 +598,36 @@ function ensureGpuRawBits(vk: NativeAddon, td: TensorData): number {
   if (existing) return existing.handle;
   const byteSize = td.data.length * 4;
   const handle = acquireBuffer(vk, byteSize);
-  // Upload raw bytes — don't convert int to float values
+  /*
+   * The shader reads these as u32, so what must reach it is INTEGER bits — and
+   * an index tensor does not always arrive holding them.
+   *
+   * An Int32Array is reinterpreted and is correct. Anything else took the
+   * `toF32` branch, which uploads float VALUES: the bits of 7.0 are 0x40E00000,
+   * so the shader read row 1,088,421,888 rather than row 7. Token ids and
+   * cross-entropy targets both reach this through fromArray, which stores f32,
+   * so every embedding lookup in the model addressed far outside its table and
+   * came back as row ZERO — every token receiving the same vector.
+   *
+   * It was invisible because it is size-gated. Every caller has a CPU fallback
+   * that reads `.data[i]` as a number and is correct, so shapes below the GPU
+   * threshold agreed with cpu_ref exactly and only larger ones were wrong. And
+   * the damage did not announce itself: at initialisation every row of an
+   * embedding table is a similar-scale random vector, so reading one row
+   * everywhere shifted the loss by 0.26% and looked like a precision question
+   * for eleven hypotheses.
+   *
+   * Converted HERE, in the one function all eleven call sites share, rather
+   * than at each of them.
+   */
   if (td.data instanceof Int32Array) {
     vk.uploadBuffer(handle, i32AsF32(td.data));
   } else {
-    vk.uploadBuffer(handle, toF32(td));
+    vk.uploadBuffer(handle,
+      i32AsF32(Int32Array.from(td.data as ArrayLike<number>, (v) => v | 0)));
   }
   const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
-  gpuResidence.set(td, info);
+  gpuResidence.set(td, info); censusAdd(info);
   gpuCleanup.register(td, info);
   return handle;
 }
@@ -432,6 +735,10 @@ function autoTuneWgSize(vk: NativeAddon): void {
 
 const pipelineCache = new Map<string, number>();
 let waitTimelineCount = 0;
+// Wall time spent inside synchronous GPU-completion calls during the current
+// step. This is distinct from timestamped kernel execution: a wait can return
+// immediately after useful overlap, while profiled timestamp readback blocks.
+let gpuBlockingTimeMsThisStep = 0;
 
 function makePipelineCacheKey(name: string, numBindings: number, pushSize = PUSH_SIZE, wgSize = WG_SIZE): string {
   return `${name}:${numBindings}:${pushSize}:${wgSize}`;
@@ -461,7 +768,9 @@ function getPipeline(vk: NativeAddon, name: string, numBindings: number, pushSiz
 function waitTimelineTracked(vk: NativeAddon, timelineValue: number): void {
   if (timelineValue <= 0) return;
   waitTimelineCount++;
+  const started = performance.now();
   vk.waitTimeline(timelineValue);
+  gpuBlockingTimeMsThisStep += performance.now() - started;
 }
 
 // ── Buffer pool (device-local) ──────────────────────────────────────────────
@@ -469,17 +778,28 @@ function waitTimelineTracked(vk: NativeAddon, timelineValue: number): void {
 // Adaptive pool cap: allow more entries for small buffers (cheap), fewer for large.
 // Prevents both vk.destroyBuffer thrashing (small) and VRAM hoarding (large).
 function poolMaxForSize(byteSize: number): number {
-  if (byteSize <= 262_144) return 256;   // ≤256KB: up to 256 entries (64MB max)
-  if (byteSize <= 4_194_304) return 32;  // ≤4MB: up to 32 entries (128MB max)
-  return 8;                               // >4MB: 8 entries (conservative)
+  if (byteSize <= 262_144) return OUTPUT_POOL_SMALL_PER_CLASS;
+  if (byteSize <= 4_194_304) return OUTPUT_POOL_MEDIUM_PER_CLASS;
+  return OUTPUT_POOL_LARGE_PER_CLASS;
 }
+function nonNegativeEnvInt(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+const OUTPUT_POOL_SMALL_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_SMALL_PER_CLASS", 256);
+const OUTPUT_POOL_MEDIUM_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_MEDIUM_PER_CLASS", 32);
+const OUTPUT_POOL_LARGE_PER_CLASS = nonNegativeEnvInt("HELIOS_OUTPUT_POOL_LARGE_PER_CLASS", 8);
 const bufferPool = new Map<number, number[]>();
+// Diagnostic-only handle metadata for the opt-in graph/lifetime trace. Keeping
+// it behind PROFILE_GRAPH_TRACE avoids per-allocation map work in normal runs.
+const traceBufferSizeByHandle = new Map<number, number>();
 let bufferPoolEntries = 0;
 let bufferPoolBytes = 0;
 const MAX_BUFFER_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_BUFFER_POOL_ENTRIES ?? "512", 10));
 const MAX_OUTPUT_POOL_ENTRIES = Math.max(0, parseInt(process.env.HELIOS_MAX_OUTPUT_POOL_ENTRIES ?? "512", 10));
 const LIVE_ALLOC_SOFT_CAP = Math.max(0, parseInt(process.env.HELIOS_LIVE_ALLOC_SOFT_CAP ?? "8000", 10));
 const LIVE_ALLOC_HARD_CAP = Math.max(LIVE_ALLOC_SOFT_CAP + 1, parseInt(process.env.HELIOS_LIVE_ALLOC_HARD_CAP ?? "10000", 10));
+const EXACT_BUFFER_SIZES = process.env.HELIOS_EXACT_BUFFER_SIZES === "1";
 
 let _totalAllocCount = 0;
 let _totalAllocBytes = 0;
@@ -515,6 +835,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
     while (regions.length > 0 && getLiveAllocCount() > targetLive) {
       const region = regions.pop()!;
       vk.destroyBuffer(region.handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(region.handle);
       if (_liveAllocCount > 0) _liveAllocCount--;
       outputPoolEntries--;
       outputPoolBytes -= size;
@@ -528,6 +849,7 @@ function trimPoolsForAllocPressure(vk: NativeAddon, aggressive = false): void {
       while (handles.length > 0 && getLiveAllocCount() > targetLive) {
         const handle = handles.pop()!;
         vk.destroyBuffer(handle);
+        if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
         if (_liveAllocCount > 0) _liveAllocCount--;
         bufferPoolEntries--;
         bufferPoolBytes -= size;
@@ -548,6 +870,7 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
     bufferPoolEntries--;
     bufferPoolBytes -= rounded;
     _flowBufferPoolHits++;
+    if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.set(handle, rounded);
     return handle;
   }
   _totalAllocCount++;
@@ -559,7 +882,9 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
       // Output/intermediate tensors are short-lived and belong in the native
       // device-local slab pool. Uploaded inputs, parameters, and optimizer
       // state remain individual allocations so they cannot pin temp slabs.
-      return vk.createBuffer(rounded, 0, temporary ? 1 : 0);
+      const handle = vk.createBuffer(rounded, 0, temporary ? 1 : 0);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.set(handle, rounded);
+      return handle;
     } catch (err) {
       if (_liveAllocCount > 0) _liveAllocCount--;
       throw err;
@@ -587,6 +912,11 @@ function acquireBuffer(vk: NativeAddon, byteSize: number, temporary = false): nu
     let outPoolBytes = 0, outPoolCount = 0;
       for (const [sz, regs] of outputPool) { outPoolCount += regs.length; outPoolBytes += sz * regs.length; }
     console.error(`[helios OOM] output pool: ${outPoolCount} regions, ${(outPoolBytes / 1048576).toFixed(1)}MB`);
+      try {
+        console.error(`[helios OOM] native allocator: ${JSON.stringify(vk.getAllocatorStats?.() ?? {})}`);
+      } catch (statsError) {
+        console.error(`[helios OOM] native allocator stats unavailable: ${String(statsError)}`);
+      }
       throw e;
     }
   }
@@ -602,6 +932,7 @@ function releaseBuffer(vk: NativeAddon, handle: number, byteSize: number): void 
     bufferPoolBytes += rounded;
   } else {
     vk.destroyBuffer(handle);
+    if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
     _liveAllocCount--;
     _flowDestroys++;
   }
@@ -613,7 +944,13 @@ const PUSH_SIZE = 8;  // bytes — all kernels use 2 x f32 push constants
 
 // ── GPU residence tracking ──────────────────────────────────────────────────
 
-interface GpuHandle { handle: number; byteSize: number; refs: number; released: boolean }
+interface GpuHandle {
+  handle: number;
+  byteSize: number;
+  refs: number;
+  released: boolean;
+  staticSlotId?: number;
+}
 
 /** Maps TensorData → its GPU buffer. Keyed on the object identity. */
 const gpuResidence = new WeakMap<object, GpuHandle>();
@@ -650,6 +987,11 @@ const gpuCleanup = new FinalizationRegistry<GpuHandle>((info) => {
   if (info.released) return; // already explicitly released
   info.refs--;
   _diagFrReleasesThisStep++;
+  if (info.staticSlotId !== undefined) {
+    // Static slots are owned by the plan runtime, not by any one TensorData.
+    if (info.refs <= 0) info.released = true;
+    return;
+  }
   if (info.refs <= 0) {
     info.released = true;
     try {
@@ -679,7 +1021,7 @@ function ensureGpu(vk: NativeAddon, td: TensorData): number {
   }
   vk.uploadBuffer(handle, uploadData);
   const info: GpuHandle = { handle, byteSize: rounded, refs: 1, released: false };
-  gpuResidence.set(td, info);
+  gpuResidence.set(td, info); censusAdd(info);
   gpuCleanup.register(td, info);
   _flowEnsureGpuUploads++;
   return handle;
@@ -690,7 +1032,7 @@ function shareGpuResidence(src: TensorData, dst: TensorData): void {
   const gpuInfo = gpuResidence.get(src);
   if (gpuInfo) {
     gpuInfo.refs++;
-    gpuResidence.set(dst, gpuInfo);
+    gpuResidence.set(dst, gpuInfo); censusAdd(gpuInfo);
     gpuCleanup.register(dst, gpuInfo);
   }
 }
@@ -710,7 +1052,12 @@ function releaseGpuBufferFor(td: TensorData): void {
   if (!info || info.released) return;
   info.refs--;
   gpuResidence.delete(td);
+  censusDrop(info);
   _diagReleasesThisStep++;
+  if (info.staticSlotId !== undefined) {
+    if (info.refs <= 0) info.released = true;
+    return;
+  }
   if (info.refs <= 0) {
     info.released = true;
     gpuResidence.delete(td);
@@ -741,6 +1088,7 @@ function invalidateCache(td: TensorData): void {
         // does not set per-buffer lastWriteTimeline, so readBuffer alone
         // won't wait for in-place ops like AdamW on mapped/coherent memory).
         waitTimelineTracked(vk, tv);
+        graph.traceHostRead(handle);
         const raw = vk.readBuffer(handle);
         cached = raw.length > expected ? raw.subarray(0, expected) : raw;
       }
@@ -756,11 +1104,16 @@ interface OutputRegion {
   handle: number;
   byteSize: number;
   readyValue: number;  // timeline value when this region becomes available
+  staticSlotId?: number;
 }
 
 const outputPool = new Map<number, OutputRegion[]>();
 let outputPoolEntries = 0;
 let outputPoolBytes = 0;
+// Only allocated when a static plan is requested, preserving the normal hot
+// path. It lets record() replace a just-acquired dynamic output with the
+// preplanned handle, including multi-output kernels.
+const unsubmittedOutputRegions = STATIC_SLOT_PLAN ? new Map<number, OutputRegion>() : null;
 
 // Cached timeline completion value — avoids N-API call per-op.
 // Refreshed lazily: only re-queries GPU when cache is stale (after flush).
@@ -780,6 +1133,10 @@ function invalidateCompletedCache(): void { _completedCacheDirty = true; }
  * Collapses many similar sizes into fewer size classes for better reuse.
  */
 function roundPoolSize(bytes: number): number {
+  // Exact classes avoid material tail waste for stable, large training shapes.
+  // The coarse policy remains the default because it can improve reuse when a
+  // workload emits many nearby dynamic sizes. Tensor byte counts are f32-aligned.
+  if (EXACT_BUFFER_SIZES) return Math.max(4, bytes);
   if (bytes <= 4096) return 4096;
   if (bytes <= 1_048_576) return Math.ceil(bytes / 262144) * 262144;  // 256KB bins up to 1MB
   return Math.ceil(bytes / 4_194_304) * 4_194_304;  // 4MB bins above 1MB
@@ -799,12 +1156,15 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
         outputPoolEntries--;
         outputPoolBytes -= rounded;
         _flowOutputPoolHits++;
+        if (unsubmittedOutputRegions) unsubmittedOutputRegions.set(region.handle, region);
         return region;
       }
     }
   }
   _flowOutputPoolMisses++;
-  return { handle: acquireBuffer(vk, rounded, true), byteSize: rounded, readyValue: 0 };
+  const region = { handle: acquireBuffer(vk, rounded, true), byteSize: rounded, readyValue: 0 };
+  if (unsubmittedOutputRegions) unsubmittedOutputRegions.set(region.handle, region);
+  return region;
 }
 
 /**
@@ -816,6 +1176,8 @@ function acquireOutputRegion(vk: NativeAddon, byteSize: number): OutputRegion {
 const pendingDestroys: { handle: number; readyValue: number }[] = [];
 
 function releaseOutputRegion(region: OutputRegion, submitValue: number): void {
+  if (region.staticSlotId !== undefined) return;
+  if (unsubmittedOutputRegions) unsubmittedOutputRegions.delete(region.handle);
   region.readyValue = submitValue;
   let pool = outputPool.get(region.byteSize);
   if (!pool) { pool = []; outputPool.set(region.byteSize, pool); }
@@ -840,6 +1202,7 @@ function processPendingDestroys(vk: NativeAddon): void {
   for (let i = 0; i < pendingDestroys.length; i++) {
     if (pendingDestroys[i].readyValue <= completed) {
       vk.destroyBuffer(pendingDestroys[i].handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(pendingDestroys[i].handle);
       _liveAllocCount--;
       _flowDestroys++;
     } else {
@@ -859,7 +1222,10 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
     shape: [...shape],
     dtype: "f32",
     get data(): Float32Array {
-      if (!cached) cached = vk.readBuffer(region.handle);
+      if (!cached) {
+        graph.traceHostRead(region.handle);
+        cached = vk.readBuffer(region.handle);
+      }
       return cached;
     },
   };
@@ -871,7 +1237,34 @@ function lazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion, timelin
 
 // ── Compute graph / lazy evaluation ──────────────────────────────────────────
 
-const MAX_PENDING_OPS = 2048; // auto-flush when this many ops are pending
+const MAX_PENDING_OPS = 2048;
+// X49: flush-boundary split so a long DGC-eligible run can actually use the
+// DGC path. Opt-out via HELIOS_DISABLE_DGC_SPLIT_RUNS=1.
+const DGC_SPLIT_RUNS = process.env.HELIOS_DISABLE_DGC_SPLIT_RUNS !== "1";
+
+// X58: collapse the gradient-norm reduction tree by writing per-tensor partials
+// into slots of one buffer (X50's fix, using the X56/X57 BDA reduction).
+// Opt-IN while it is new: the tree remains the default until this has run on
+// real hardware. Set HELIOS_SUMSQ_SLOT_REDUCE=1 to enable.
+const SUMSQ_SLOT_REDUCE = process.env.HELIOS_SUMSQ_SLOT_REDUCE === "1";
+const SUMSQ_BDA_PUSH_BYTES = 24;   // u64 src + u64 dst + u32 len + u32 outOffset
+const STRIDE_THRESHOLD = 65536;    // grid-stride reduction above 64K elements
+const EMPTY_PUSH = new Float32Array(0);
+
+/** Pack the BDA reduction push block as exact u32 words (see PendingOp.pushU32). */
+function bdaPush(
+  src: [number, number],
+  dst: [number, number],
+  len: number,
+  outOffset: number,
+): Uint32Array {
+  const w = new Uint32Array(6);
+  w[0] = src[0] >>> 0; w[1] = src[1] >>> 0;
+  w[2] = dst[0] >>> 0; w[3] = dst[1] >>> 0;
+  w[4] = len >>> 0;    w[5] = outOffset >>> 0;
+  return w;
+}
+const DGC_RUN_MIN = Number(process.env.HELIOS_DGC_RUN_MIN ?? "16"); // auto-flush when this many ops are pending
 
 type PendingOpKind = "binary" | "unary" | "softmax" | "softmax_online" | "layernorm" | "matmul" | "reduce_sum" | "backward" | "optimizer" | "inplace";
 
@@ -891,6 +1284,188 @@ interface PendingOp {
   flags?: number;           // packed dispatch flags (gY + hasGZ bit)
   packedBytes?: number;     // encoded byte size for batchDispatchMany payload
   elementCount?: number;    // actual element count (for DGC: scalar BDA kernel dispatch)
+  // X58: raw push bytes, as u32 words. Buffer-device-address kernels carry
+  // 64-bit addresses in their push block, and the default Float32Array path
+  // packs by reading each word as a float and re-writing it with setFloat32 --
+  // which CANONICALIZES NaN bit patterns. An address whose upper word lands on
+  // a NaN encoding would be silently corrupted. When present this is packed
+  // with setUint32 instead, preserving the bits exactly.
+  pushU32?: Uint32Array;
+}
+
+class StaticSlotRuntime {
+  private readonly handles = new Map<number, { handle: number; byteSize: number }>();
+  private active = false;
+  private step = 0;
+  private bindingsThisStep = 0;
+  private completedActiveSteps = 0;
+
+  constructor(private readonly plan: StaticSlotPlan, private readonly warmupSteps: number) {}
+
+  beginStep(): { activated: boolean } {
+    if (this.active) {
+      throw new Error("[helios static slots] prior training phase was not explicitly finished");
+    }
+    this.step++;
+    this.bindingsThisStep = 0;
+    const nextActive = this.step > this.warmupSteps;
+    const activated = nextActive && !this.active;
+    this.active = nextActive;
+    return { activated };
+  }
+
+  finishStep(operationCount: number): void {
+    if (!this.active) return;
+    if (operationCount !== this.plan.operationCount) {
+      throw new Error(
+        `[helios static slots] training phase recorded ${operationCount}/${this.plan.operationCount} planned operations`,
+      );
+    }
+    if (this.bindingsThisStep !== this.plan.assignmentCount) {
+      throw new Error(
+        `[helios static slots] training phase bound ${this.bindingsThisStep}/${this.plan.assignmentCount} planned values`,
+      );
+    }
+    this.completedActiveSteps++;
+    this.active = false;
+  }
+
+  bindOperation(vk: NativeAddon, operationIndex: number, op: PendingOp): void {
+    if (!this.active) return;
+    if (operationIndex >= this.plan.operationCount) {
+      throw new Error(
+        `[helios static slots] operation ${operationIndex} exceeds planned count ${this.plan.operationCount}`,
+      );
+    }
+    const assignments = this.plan.assignmentsByOperation.get(operationIndex);
+    if (!assignments || assignments.length === 0) return;
+    const handles = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+    for (const assignment of assignments) {
+      if (assignment.producerKind !== op.kind || assignment.producerKernel !== op.kernel) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} expected ${assignment.producerKind}/${assignment.producerKernel}, ` +
+            `got ${op.kind}/${op.kernel}`,
+        );
+      }
+      const oldHandle = handles[assignment.producerPosition];
+      const target = unsubmittedOutputRegions?.get(oldHandle);
+      if (!target) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} binding ${assignment.producerPosition} is not a fresh output region`,
+        );
+      }
+      if (target.byteSize !== assignment.logicalBytes) {
+        throw new Error(
+          `[helios static slots] op ${operationIndex} binding ${assignment.producerPosition} size ` +
+            `${target.byteSize} != planned ${assignment.logicalBytes}`,
+        );
+      }
+      const slotSpec = this.plan.slots[assignment.slotId];
+      let slot = this.handles.get(assignment.slotId);
+      if (!slot) {
+        slot = { handle: acquireBuffer(vk, slotSpec.allocationBytes, true), byteSize: slotSpec.allocationBytes };
+        this.handles.set(assignment.slotId, slot);
+      }
+
+      // The old region has not appeared in a command yet. Return a copy to the
+      // ordinary pool, then mutate the caller-owned region so the TensorData
+      // and every descriptor see the stable slot handle.
+      unsubmittedOutputRegions!.delete(oldHandle);
+      releaseOutputRegion({ ...target }, target.readyValue);
+      target.handle = slot.handle;
+      target.byteSize = slot.byteSize;
+      target.readyValue = 0;
+      target.staticSlotId = assignment.slotId;
+      handles[assignment.producerPosition] = slot.handle;
+      this.bindingsThisStep++;
+    }
+    if (op.allBufs) {
+      op.allBufs = handles;
+    } else {
+      const outputPosition = op.inputBufs.length;
+      const assignment = assignments.find((row) => row.producerPosition === outputPosition);
+      if (!assignment) {
+        throw new Error(`[helios static slots] op ${operationIndex} planned a non-output binding without allBufs`);
+      }
+      op.outputRegion.handle = handles[outputPosition];
+    }
+  }
+
+  destroy(vk: NativeAddon): void {
+    for (const { handle } of this.handles.values()) {
+      vk.destroyBuffer(handle);
+      if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
+      if (_liveAllocCount > 0) _liveAllocCount--;
+    }
+    this.handles.clear();
+  }
+
+  stats(): Record<string, number> {
+    return {
+      staticSlotPlanEnabled: 1,
+      staticSlotPlanActive: this.active ? 1 : 0,
+      staticSlotPlanStep: this.step,
+      staticSlotPlanSlotsDeclared: this.plan.slots.length,
+      staticSlotPlanSlotsAllocated: this.handles.size,
+      staticSlotPlanBytesDeclared: this.plan.totalSlotBytes,
+      staticSlotPlanBytesAllocated: [...this.handles.values()].reduce((sum, slot) => sum + slot.byteSize, 0),
+      staticSlotPlanAssignments: this.plan.assignmentCount,
+      staticSlotBindingsThisStep: this.bindingsThisStep,
+      staticSlotCompletedSteps: this.completedActiveSteps,
+    };
+  }
+}
+
+const staticSlotRuntime = STATIC_SLOT_PLAN
+  ? new StaticSlotRuntime(STATIC_SLOT_PLAN, STATIC_SLOT_PLAN_WARMUP_STEPS)
+  : null;
+
+export type GraphTraceEvent =
+  | {
+      event: "op";
+      order: number;
+      kind: PendingOpKind;
+      kernel: string;
+      bufferCount: number;
+      bufferIds: number[];
+      bufferBytes: number[];
+      writeMask: number;
+      groups: [number, number, number];
+      pushSize: number;
+      shape: number[];
+      elementCount: number | null;
+    }
+  | {
+      event: "flush";
+      order: number;
+      operationCount: number;
+      withWait: boolean;
+    }
+  | {
+      event: "host_read";
+      order: number;
+      operationCount: number;
+      bufferId: number;
+      bufferBytes: number;
+    };
+
+export interface GpuStepStats {
+  profilingEnabled: boolean;
+  timingEnabled: boolean;
+  operations: number;
+  flushes: number;
+  waitedFlushes: number;
+  dgcFlushes: number;
+  timestampedFlushes: number;
+  batchGpuTimeUs: number;
+  dispatchGpuTimeUs: number;
+  /** Host wall time spent inside synchronous GPU-completion calls. */
+  gpuBlockingTimeMs: number;
+  operationsPerFlush: number;
+  graphSignature: string | null;
+  graphTrace: GraphTraceEvent[] | null;
+  byKind: Array<{ name: string; count: number; gpuTimeUs: number }>;
+  byKernel: Array<{ name: string; count: number; gpuTimeUs: number }>;
 }
 
 /**
@@ -901,6 +1476,8 @@ interface PendingOp {
  */
 class ComputeGraph {
   private pending: PendingOp[] = [];
+  /** X49: length of the trailing DGC-eligible run in `pending`. */
+  private _pendingTrailingEligible = 0;
   private pendingPackedBytes = 0;
   private vk: NativeAddon | null = null;
   private _lastFlushTimeline = 0;
@@ -908,6 +1485,58 @@ class ComputeGraph {
   totalOpsRecorded = 0;
   get deferredReleaseCount(): number { return this.deferredReleases.length; }
   opsThisStep = 0;
+  flushesThisStep = 0;
+  waitedFlushesThisStep = 0;
+  dgcFlushesThisStep = 0;
+  timestampedFlushesThisStep = 0;
+  batchGpuTimeUsThisStep = 0;
+  dispatchGpuTimeUsThisStep = 0;
+  private opsByKindThisStep = new Map<PendingOpKind, number>();
+  private opsByKernelThisStep = new Map<string, number>();
+  private gpuTimeByKindThisStep = new Map<PendingOpKind, number>();
+  private gpuTimeByKernelThisStep = new Map<string, number>();
+  private graphHashA = 0x811c9dc5;
+  private graphHashB = 0x9e3779b9;
+  private graphTraceThisStep: GraphTraceEvent[] = [];
+  private graphTraceBufferIds = new Map<number, number>();
+  private graphTraceNextBufferId = 0;
+
+  private graphTraceBufferId(handle: number): number {
+    const existing = this.graphTraceBufferIds.get(handle);
+    if (existing !== undefined) return existing;
+    const id = this.graphTraceNextBufferId++;
+    this.graphTraceBufferIds.set(handle, id);
+    return id;
+  }
+
+  traceHostRead(handle: number): void {
+    if (!PROFILE_GRAPH_TRACE) return;
+    this.graphTraceThisStep.push({
+      event: "host_read",
+      order: this.graphTraceThisStep.length,
+      operationCount: this.opsThisStep,
+      bufferId: this.graphTraceBufferId(handle),
+      bufferBytes: traceBufferSizeByHandle.get(handle) ?? 0,
+    });
+  }
+
+  private mixGraphWord(value: number): void {
+    if (!PROFILE_GRAPH_SIGNATURE) return;
+    const word = value >>> 0;
+    this.graphHashA = Math.imul(this.graphHashA ^ word, 0x01000193) >>> 0;
+    this.graphHashB = Math.imul((this.graphHashB + word + 0x7f4a7c15) >>> 0, 0x85ebca6b) >>> 0;
+  }
+
+  private mixGraphText(value: string): void {
+    if (!PROFILE_GRAPH_SIGNATURE) return;
+    for (let i = 0; i < value.length; i++) this.mixGraphWord(value.charCodeAt(i));
+    this.mixGraphWord(0xff);
+  }
+
+  private graphSignature(): string | null {
+    if (!PROFILE_GRAPH_SIGNATURE) return null;
+    return `${this.graphHashA.toString(16).padStart(8, "0")}${this.graphHashB.toString(16).padStart(8, "0")}`;
+  }
 
   // DGC state: pipeline slot for the BDA binary op kernel, -1 if not set up
   private dgcBinaryPipeSlot = -1;
@@ -975,11 +1604,140 @@ class ComputeGraph {
         op.pushSize;                    // push constants bytes
     }
 
+    if (staticSlotRuntime && this.vk) {
+      staticSlotRuntime.bindOperation(this.vk, this.opsThisStep, op);
+    }
+
+    if (PROFILE_GRAPH_SIGNATURE) {
+      this.mixGraphWord(0x4f500001);
+      this.mixGraphText(op.kind);
+      this.mixGraphText(op.kernel);
+      this.mixGraphWord(bufCount);
+      this.mixGraphWord(op.writeMask);
+      this.mixGraphWord(op.groups[0]);
+      this.mixGraphWord(op.groups[1]);
+      this.mixGraphWord(op.groups[2]);
+      this.mixGraphWord(op.pushSize);
+      this.mixGraphWord(op.shape.length);
+      for (const dimension of op.shape) this.mixGraphWord(dimension);
+      this.mixGraphWord(op.elementCount ?? 0xffffffff);
+    }
+    if (PROFILE_GRAPH_TRACE) {
+      const bufferHandles = op.allBufs ?? [...op.inputBufs, op.outputRegion.handle];
+      this.graphTraceThisStep.push({
+        event: "op",
+        order: this.graphTraceThisStep.length,
+        kind: op.kind,
+        kernel: op.kernel,
+        bufferCount: bufCount,
+        bufferIds: bufferHandles.map((handle) => this.graphTraceBufferId(handle)),
+        bufferBytes: bufferHandles.map((handle) => traceBufferSizeByHandle.get(handle) ?? 0),
+        writeMask: op.writeMask,
+        groups: [...op.groups],
+        pushSize: op.pushSize,
+        shape: [...op.shape],
+        elementCount: op.elementCount ?? null,
+      });
+    }
+
+    // X49: split the flush at the end of a long DGC-eligible run.
+    //
+    // The DGC fast path requires EVERY op in a flush to be eligible. A real
+    // training flush carries ~243 mixed ops, so that condition is essentially
+    // never true and every recorded profile shows dgc=0 — an implemented,
+    // device-supported capability that can never fire.
+    //
+    // The real graph has exactly one long eligible run (127 consecutive `add`
+    // ops, verified in the preserved RTX 3090 trace; all other eligible ops are
+    // isolated singletons). Flushing the prefix separately leaves that run as
+    // the whole pending queue, so `allEligible` becomes true and DGC fires.
+    //
+    // This changes only WHERE a flush boundary falls. Multiple flushes per step
+    // are already the normal path (5–7 observed), and ordering is preserved
+    // because the flushes are sequential, so no dispatch mechanics change.
+    if (DGC_SPLIT_RUNS && this.dgcReady && !PROFILE_GPU_TIMESTAMPS) {
+      const eligible = this.isDgcEligibleOp(op);
+      if (!eligible && this._pendingTrailingEligible >= DGC_RUN_MIN) {
+        const runLen = this._pendingTrailingEligible;
+        const trail = this.pending.splice(this.pending.length - runLen, runLen);
+        let trailBytes = 0;
+        for (const t of trail) trailBytes += t.packedBytes ?? 0;
+        this.pendingPackedBytes -= trailBytes;
+        this.flush();                       // prefix: mixed ops, regular path
+        this.pending = trail;               // run alone: allEligible -> DGC
+        this.pendingPackedBytes = trailBytes;
+        this.flush();
+      }
+      this._pendingTrailingEligible = eligible ? this._pendingTrailingEligible + 1 : 0;
+    }
+
     this.pending.push(op);
     this.pendingPackedBytes += op.packedBytes;
     this.totalOpsRecorded++;
     this.opsThisStep++;
+    if (PROFILE_GPU_OPS || PROFILE_GPU_TIMESTAMPS) {
+      this.opsByKindThisStep.set(op.kind, (this.opsByKindThisStep.get(op.kind) ?? 0) + 1);
+      this.opsByKernelThisStep.set(op.kernel, (this.opsByKernelThisStep.get(op.kernel) ?? 0) + 1);
+    }
     if (this.pending.length >= MAX_PENDING_OPS) this.flush();
+  }
+
+  /** X49: same eligibility test the DGC fast path applies at flush time. */
+  private isDgcEligibleOp(op: PendingOp): boolean {
+    return this.dgcEligiblePipelines.has(op.pipeline)
+      && op.inputBufs.length === 2
+      && !op.allBufs;
+  }
+
+  resetStepStats(): void {
+    this.opsThisStep = 0;
+    this.flushesThisStep = 0;
+    this.waitedFlushesThisStep = 0;
+    this.dgcFlushesThisStep = 0;
+    this.timestampedFlushesThisStep = 0;
+    this.batchGpuTimeUsThisStep = 0;
+    this.dispatchGpuTimeUsThisStep = 0;
+    gpuBlockingTimeMsThisStep = 0;
+    this.opsByKindThisStep.clear();
+    this.opsByKernelThisStep.clear();
+    this.gpuTimeByKindThisStep.clear();
+    this.gpuTimeByKernelThisStep.clear();
+    this.graphHashA = 0x811c9dc5;
+    this.graphHashB = 0x9e3779b9;
+    this.graphTraceThisStep = [];
+    this.graphTraceBufferIds.clear();
+    this.graphTraceNextBufferId = 0;
+  }
+
+  getStepStats(): GpuStepStats {
+    const rows = (
+      counts: Map<string, number>,
+      times: Map<string, number>,
+    ): Array<{ name: string; count: number; gpuTimeUs: number }> =>
+      [...counts.entries()]
+        .map(([name, count]) => ({ name, count, gpuTimeUs: times.get(name) ?? 0 }))
+        .sort((a, b) =>
+          PROFILE_GPU_TIMESTAMPS
+            ? b.gpuTimeUs - a.gpuTimeUs || b.count - a.count || a.name.localeCompare(b.name)
+            : b.count - a.count || a.name.localeCompare(b.name),
+        );
+    return {
+      profilingEnabled: PROFILE_GPU_OPS || PROFILE_GPU_TIMESTAMPS,
+      timingEnabled: PROFILE_GPU_TIMESTAMPS,
+      operations: this.opsThisStep,
+      flushes: this.flushesThisStep,
+      waitedFlushes: this.waitedFlushesThisStep,
+      dgcFlushes: this.dgcFlushesThisStep,
+      timestampedFlushes: this.timestampedFlushesThisStep,
+      batchGpuTimeUs: this.batchGpuTimeUsThisStep,
+      dispatchGpuTimeUs: this.dispatchGpuTimeUsThisStep,
+      gpuBlockingTimeMs: gpuBlockingTimeMsThisStep,
+      operationsPerFlush: this.flushesThisStep > 0 ? this.opsThisStep / this.flushesThisStep : 0,
+      graphSignature: this.graphSignature(),
+      graphTrace: PROFILE_GRAPH_TRACE ? this.graphTraceThisStep : null,
+      byKind: rows(this.opsByKindThisStep, this.gpuTimeByKindThisStep),
+      byKernel: rows(this.opsByKernelThisStep, this.gpuTimeByKernelThisStep),
+    };
   }
 
   /** Schedule an intermediate output region for release after the next flush.
@@ -1015,17 +1773,50 @@ class ComputeGraph {
         }
         this.deferredReleases = [];
       }
+      // AN EMPTY QUEUE IS NOT A FINISHED GPU.
+      //
+      // A step does not always end with ops pending: MAX_PENDING_OPS and the
+      // X49 DGC run-split both flush mid-step, so whether anything is left at
+      // the step boundary depends on the op count, which depends on the batch.
+      // Returning here without waiting made flushAndWait() a no-op on exactly
+      // those steps -- the submitted work was still running and the timer
+      // measured submission.
+      //
+      // It is why batch 256 reported 8,192 tokens in 73.9 ms against batch
+      // 128's 4,096 in 112.2 ms -- twice the work in two thirds the time -- and
+      // why the same binary measured 71,616 and then 25,910 tok/s at batch 16
+      // across two runs. Waiting on the last timeline value costs nothing when
+      // the GPU is already idle and is the whole measurement when it is not.
+      if (withWait && this.vk && this._lastFlushTimeline > 0) {
+        waitTimelineTracked(this.vk, this._lastFlushTimeline);
+      }
       return this._lastFlushTimeline;
     }
     const vk = this.vk;
     const ops = this.pending;
     this.pending = [];
+    this._pendingTrailingEligible = 0;   // X49: pending cleared, run ends here
     const packedTotalBytes = this.pendingPackedBytes;
     this.pendingPackedBytes = 0;
+    this.flushesThisStep++;
+    if (withWait) this.waitedFlushesThisStep++;
+    if (PROFILE_GRAPH_SIGNATURE) {
+      this.mixGraphWord(0x464c5553);
+      this.mixGraphWord(ops.length);
+      this.mixGraphWord(withWait ? 1 : 0);
+    }
+    if (PROFILE_GRAPH_TRACE) {
+      this.graphTraceThisStep.push({
+        event: "flush",
+        order: this.graphTraceThisStep.length,
+        operationCount: ops.length,
+        withWait,
+      });
+    }
 
     // ── DGC fast path: when all ops are DGC-eligible binary ops ──
     // Uses device-generated commands (single GPU submit, no per-op descriptor sets).
-    if (this.dgcReady && ops.length >= 2 && typeof vk.batchExecuteAllDGC === "function") {
+    if (!PROFILE_GPU_TIMESTAMPS && this.dgcReady && ops.length >= 2 && typeof vk.batchExecuteAllDGC === "function") {
       // Check if ALL ops are DGC-eligible (binary ops with 3 buffers)
       let allEligible = true;
       for (let i = 0; i < ops.length; i++) {
@@ -1037,6 +1828,7 @@ class ComputeGraph {
       }
 
       if (allEligible) {
+        this.dgcFlushesThisStep++;
         // Pack DGC format: per op [bufA(i32), bufB(i32), bufC(i32), count(u32), gX(u32), gY(u32), gZ(u32)] = 28 bytes
         // The BDA kernel is SCALAR (processes 1 element/thread), so we use the actual
         // element count and recompute dispatch groups, regardless of whether the original
@@ -1111,12 +1903,20 @@ class ComputeGraph {
         offset += 4;
       }
 
-      // Push constants (raw bytes from Float32Array)
+      // Push constants (raw bytes from Float32Array, or exact u32 words)
       if (op.pushSize > 0) {
         const words = op.pushSize >>> 2;
-        for (let i = 0; i < words; i++) {
-          view.setFloat32(offset, op.push[i], true);
-          offset += 4;
+        const raw = op.pushU32;
+        if (raw !== undefined) {
+          for (let i = 0; i < words; i++) {
+            view.setUint32(offset, raw[i], true);
+            offset += 4;
+          }
+        } else {
+          for (let i = 0; i < words; i++) {
+            view.setFloat32(offset, op.push[i], true);
+            offset += 4;
+          }
         }
       }
     }
@@ -1124,7 +1924,41 @@ class ComputeGraph {
     // Prefer combined batchExecuteAll (single N-API call) for lower dispatch overhead.
     // Falls back to 3-call path (batchBegin + batchDispatchMany + batchSubmit).
     let tv: number;
-    if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
+    if (PROFILE_GPU_TIMESTAMPS) {
+      if (typeof vk.batchExecuteAllProfiled !== "function") {
+        throw new Error(
+          "HELIOS_PROFILE_GPU_TIMESTAMPS=1 requires a native addon with batchExecuteAllProfiled()",
+        );
+      }
+      // Timestamp readback makes this native call synchronous. Count its wall
+      // time just like waitTimeline so GPU execution is not mislabeled as host
+      // graph construction in the trainer's direct split.
+      const profileStarted = performance.now();
+      const profile = vk.batchExecuteAllProfiled(packed, ops.length);
+      gpuBlockingTimeMsThisStep += performance.now() - profileStarted;
+      if (profile.dispatchCount !== ops.length || profile.dispatchTimesUs.length !== ops.length) {
+        throw new Error(
+          `Helios profiler dispatch mismatch: recorded=${profile.dispatchCount} expected=${ops.length}`,
+        );
+      }
+      tv = profile.timeline;
+      this.timestampedFlushesThisStep++;
+      this.batchGpuTimeUsThisStep += profile.batchGpuTimeUs;
+      for (let i = 0; i < ops.length; i++) {
+        const timeUs = profile.dispatchTimesUs[i];
+        const op = ops[i];
+        this.dispatchGpuTimeUsThisStep += timeUs;
+        this.gpuTimeByKindThisStep.set(
+          op.kind,
+          (this.gpuTimeByKindThisStep.get(op.kind) ?? 0) + timeUs,
+        );
+        this.gpuTimeByKernelThisStep.set(
+          op.kernel,
+          (this.gpuTimeByKernelThisStep.get(op.kernel) ?? 0) + timeUs,
+        );
+      }
+      // The native profiling path has already waited for timestamp readback.
+    } else if (!DISABLE_BATCH_DISPATCH_MANY && typeof vk.batchExecuteAll === "function") {
       tv = vk.batchExecuteAll(packed, ops.length);
       if (withWait && tv > 0) waitTimelineTracked(vk, tv);
     } else {
@@ -1167,7 +2001,13 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
   // Use region.byteSize (rounded) for pool key consistency.
   // acquireOutputRegion rounds to 4MB bins; release must match that key
   // or every iteration allocates a new buffer (vkAllocateMemory overhead).
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
+  const gpuInfo: GpuHandle = {
+    handle: region.handle,
+    byteSize: region.byteSize,
+    refs: 1,
+    released: false,
+    staticSlotId: region.staticSlotId,
+  };
   const td: TensorData = {
     shape,
     dtype: "f32",
@@ -1177,6 +2017,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
         const tv = graph.flush();
         // Wait for the batch to complete on GPU before reading
         waitTimelineTracked(vk, tv);
+        graph.traceHostRead(region.handle);
         const raw = vk.readBuffer(region.handle);
         // Buffer may be larger than shape (4MB pool rounding) — truncate
         const expected = shapeSize(shape);
@@ -1186,7 +2027,7 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
     },
   };
   // Track GPU residence so subsequent ops can find this buffer
-  gpuResidence.set(td, gpuInfo);
+  gpuResidence.set(td, gpuInfo); censusAdd(gpuInfo);
   gpuCleanup.register(td, gpuInfo);
   _diagAllocsThisStep++;
   return td;
@@ -1195,7 +2036,13 @@ function graphLazyTensor(vk: NativeAddon, shape: Shape, region: OutputRegion): T
 /** Like graphLazyTensor but for f16 output buffers (2 bytes per element). */
 function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion): TensorData {
   const size = shapeSize(shape);
-  const gpuInfo: GpuHandle = { handle: region.handle, byteSize: region.byteSize, refs: 1, released: false };
+  const gpuInfo: GpuHandle = {
+    handle: region.handle,
+    byteSize: region.byteSize,
+    refs: 1,
+    released: false,
+    staticSlotId: region.staticSlotId,
+  };
   const td: TensorData = {
     shape: [...shape],
     dtype: "f16",
@@ -1204,30 +2051,23 @@ function graphLazyTensorF16(vk: NativeAddon, shape: Shape, region: OutputRegion)
       const tv = graph.flush();
       waitTimelineTracked(vk, tv);
       // readBuffer returns Float32Array; reinterpret as Uint16Array
+      graph.traceHostRead(region.handle);
       const f32 = vk.readBuffer(region.handle);
       return new Uint16Array(f32.buffer, f32.byteOffset, size);
     },
   };
-  gpuResidence.set(td, gpuInfo);
+  gpuResidence.set(td, gpuInfo); censusAdd(gpuInfo);
   gpuCleanup.register(td, gpuInfo);
   return td;
 }
 
 // ── HeliosBackend ───────────────────────────────────────────────────────────
 
-export interface GpuDeviceInfo {
-  deviceName: string;
-  vendorId: number;
-  f16Supported: boolean;
-  hasAsyncTransfer: boolean;
-  coopMatSupported: boolean;
-  coopMat2Supported: boolean;
-  coopMatM: number;
-  coopMatN: number;
-  coopMatK: number;
-  hasPushDescriptors: boolean;
+export interface GpuDeviceInfo extends NativeDeviceInfo {
   workgroupSize: number;
   minGpuSize: number;
+  computeSubgroupArithmeticSupported: boolean;
+  nativeSubgroup32: boolean;
 }
 
 export interface CoopMatmulStats {
@@ -1238,6 +2078,40 @@ export interface CoopMatmulStats {
   coopPaddedBatchedDispatches: number;
   coopTransposedARewriteDispatches: number;
   coopHitRate: number;
+  lastCoopKernel: string | null;
+  lastCoopShape: {
+    M: number;
+    N: number;
+    K: number;
+    batchSize: number;
+    transposedA: boolean;
+    transposedB: boolean;
+  } | null;
+  shapeCounts: Array<{
+    key: string;
+    kernel: string;
+    M: number;
+    N: number;
+    K: number;
+    batchSize: number;
+    transposedA: boolean;
+    transposedB: boolean;
+    count: number;
+  }>;
+}
+
+type MatmulTile = 16 | 32;
+
+export interface MatmulTileAutotuneDecision {
+  key: string;
+  kernel: string;
+  shape: { M: number; N: number; K: number; batchSize: number };
+  tile: MatmulTile;
+  tile16GpuTimeUs: number | null;
+  tile32GpuTimeUs: number | null;
+  tile16SamplesUs: number[];
+  tile32SamplesUs: number[];
+  reason: "measured" | "override" | "capability" | "heuristic" | "probe-fallback";
 }
 
 export class HeliosBackend implements Backend {
@@ -1248,9 +2122,12 @@ export class HeliosBackend implements Backend {
   private _f16Supported = false;
   private _deviceName = "";
   private _vendorId = 0;
+  private _nativeDeviceInfo: NativeDeviceInfo | null = null;
   private _hasAsyncTransfer = false;
   private _coopMatSupported = false;
   private _coopMatPaused = false; // Temporarily disable coop matmul (e.g. during backward)
+  private _columnSumRowLanes: ColumnSumRowLanes = COLUMN_SUM_ROW_LANES;
+  private _lastColumnSumKernel: string | null = null;
   private _coopMat2Supported = false;
   private _coopM = 0;
   private _coopN = 0;
@@ -1264,8 +2141,27 @@ export class HeliosBackend implements Backend {
   private _coopPadded2DDispatches = 0;
   private _coopPaddedBatchedDispatches = 0;
   private _coopTransposedARewriteDispatches = 0;
+  private _lastCoopKernel: string | null = null;
+  private _lastCoopShape: CoopMatmulStats["lastCoopShape"] = null;
+  private _coopShapeCounts = new Map<string, CoopMatmulStats["shapeCounts"][number]>();
   private _coopF16InputCache = new Map<TensorData, TensorData>();
   private _coopF16InputCacheLastFlushTimeline = -1;
+  private _coopF16x3BalancePlanRuntime = COOP_F16X3_BALANCE_PLAN
+    ? new CoopF16x3BalancePlanRuntime(COOP_F16X3_BALANCE_PLAN, COOP_F16X3_CHECKPOINT_FINGERPRINT)
+    : null;
+  private _coopF16x3CalibrationStep = 0;
+  private _coopF16x3CalibrationActive = false;
+  private _coopF16x3CalibrationScalars = new Map<TensorData, TensorData>();
+  private _coopF16x3CalibrationEntries: Array<{
+    descriptor: CoopF16x3MatmulDescriptor;
+    maxAbsA: TensorData;
+    maxAbsB: TensorData;
+  }> = [];
+  private _matmulTileCache = new Map<string, MatmulTile>();
+  private _matmulTileDecisions = new Map<string, MatmulTileAutotuneDecision>();
+  private _matmulReg2x2WarningEmitted = false;
+  private _matmulReg4x2WarningEmitted = false;
+  private _matmulReg4x2K32WarningEmitted = false;
   private _flashCoop2ScopeResolved: FlashCoop2ScopeTag | null = null;
   private _lastFlashDispatchDebug: FlashDispatchDebug | null = null;
   private _flashDispatchDebugEnabled = parseFlashDispatchDebugEnabled();
@@ -1278,6 +2174,7 @@ export class HeliosBackend implements Backend {
   private _flashCoop2BlockCols = parseFlashCoop2BlockCols();
   private _flashCoop2SkipLseWrite = parseFlashCoop2SkipLseWrite();
   private _flashCoop2DoubleBuf = parseFlashCoop2DoubleBuf();
+  private _lastUnlikelihoodStats: UnlikelihoodLossStats | null = null;
 
 
   /** Override the minimum element count for GPU dispatch (useful for benchmarking). */
@@ -1293,13 +2190,25 @@ export class HeliosBackend implements Backend {
     return this._lastFlashDispatchDebug;
   }
 
+  getLastCrossEntropyUnlikelihoodMaskedStats(): UnlikelihoodLossStats | null {
+    return this._lastUnlikelihoodStats;
+  }
+
   getWaitTimelineCount(): number {
     return waitTimelineCount;
+  }
+
+  getMatmulTileAutotuneDecisions(): MatmulTileAutotuneDecision[] {
+    return [...this._matmulTileDecisions.values()].map((decision) => ({
+      ...decision,
+      shape: { ...decision.shape },
+    }));
   }
 
   private init(): NativeAddon {
     if (!this.initialized) {
       const info = initDevice();
+      this._nativeDeviceInfo = info;
       this._f16Supported = info.f16Supported;
       this._deviceName = info.deviceName;
       this._vendorId = info.vendorId;
@@ -1348,6 +2257,56 @@ export class HeliosBackend implements Backend {
     }
     this._coopF16InputCache.clear();
     this._coopF16InputCacheLastFlushTimeline = graph.lastFlushTimeline;
+  }
+
+  private shouldUseMatmulReg2x2(batchSize: number): boolean {
+    if (!ENABLE_MATMUL_REG2X2) return false;
+    const info = this._nativeDeviceInfo;
+    const supported =
+      batchSize === 1 &&
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 256 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 16 &&
+      (info?.maxComputeWorkGroupSizeY ?? 0) >= 16 &&
+      (info?.maxComputeSharedMemorySize ?? 0) >= 4096;
+    if (!supported && !this._matmulReg2x2WarningEmitted) {
+      this._matmulReg2x2WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_REG2X2=1 requested, but this dispatch/device lacks " +
+        "the current non-batched 256-invocation/4KiB-shared-memory contract; using tiled GEMM",
+      );
+    }
+    return supported;
+  }
+
+  private shouldUseMatmulReg4x2(batchSize: number): boolean {
+    if (!ENABLE_MATMUL_REG4X2) return false;
+    const info = this._nativeDeviceInfo;
+    const supported =
+      batchSize === 1 &&
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 128 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 16 &&
+      (info?.maxComputeWorkGroupSizeY ?? 0) >= 8 &&
+      (info?.maxComputeSharedMemorySize ?? 0) >= 4096;
+    if (!supported && !this._matmulReg4x2WarningEmitted) {
+      this._matmulReg4x2WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_REG4X2=1 requested, but this dispatch/device lacks " +
+        "the current non-batched 128-invocation/4KiB-shared-memory contract; using another GEMM path",
+      );
+    }
+    return supported;
+  }
+
+  private shouldUseMatmulReg4x2K32(): boolean {
+    const supported = (this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0) >= 8192;
+    if (!supported && !this._matmulReg4x2K32WarningEmitted) {
+      this._matmulReg4x2K32WarningEmitted = true;
+      console.warn(
+        "[helios] HELIOS_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32=1 requested, but " +
+        "the device exposes less than the candidate's 8KiB shared-memory contract; using R42C K16",
+      );
+    }
+    return supported;
   }
 
   /**
@@ -1412,12 +2371,16 @@ export class HeliosBackend implements Backend {
     for (const [, handles] of bufferPool) {
       for (const handle of handles) {
         vk.destroyBuffer(handle);
+        if (PROFILE_GRAPH_TRACE) traceBufferSizeByHandle.delete(handle);
         if (_liveAllocCount > 0) _liveAllocCount--;
       }
     }
     bufferPool.clear();
     bufferPoolEntries = 0;
     bufferPoolBytes = 0;
+
+    // Plan-owned slots never enter either ordinary pool.
+    if (staticSlotRuntime) staticSlotRuntime.destroy(vk);
 
     // Safe to destroy now — GPU sync above guarantees all work has completed
     processPendingDestroys(vk);
@@ -1432,7 +2395,33 @@ export class HeliosBackend implements Backend {
    */
   releaseGpuTensor(td: TensorData): void {
     releaseGpuBufferFor(td);
-    this._coopF16InputCache.delete(td);
+    /*
+     * RELEASE THE CAST, not just the map entry — this line WAS the leak.
+     *
+     * Every operand of a cooperative-matrix matmul gets an f16 copy cached
+     * here against the source TensorData. Deleting the entry without freeing
+     * the buffer orphans it: the map no longer knows about it, so the eviction
+     * pass that exists precisely to free these
+     * (evictCoopF16InputCacheForCompletedBatch) finds nothing, and the
+     * allocation lives until the process does. Every intermediate is released
+     * every step, so every step orphaned its casts.
+     *
+     * Measured at 105M seq 64 batch 1: 203 buffers and 62.7 MB leaked per
+     * step, and the leak census attributed ALL of them to castDtype via
+     * getCoopInputBuffer — 73 from matmul, 73 from matmulTransposed, 54 from
+     * flash attention. That is what made batch 8 fail to allocate on an 8 GB
+     * card while batch 1 ran fine.
+     *
+     * Safe: releaseGpuBufferFor defers the actual free to the next graph
+     * flush via the timeline semaphore, so a cast still referenced by queued
+     * work outlives the queue — the same guarantee the source tensor gets one
+     * line above.
+     */
+    const casted = this._coopF16InputCache.get(td);
+    if (casted !== undefined) {
+      releaseGpuBufferFor(casted);
+      this._coopF16InputCache.delete(td);
+    }
   }
 
   /** GPU memory diagnostics: pool sizes and estimated VRAM usage. */
@@ -1444,6 +2433,9 @@ export class HeliosBackend implements Backend {
       deferredReleases: graph.deferredReleaseCount,
       pendingDestroys: pendingDestroys.length,
       outputPoolSizeClasses: outputPool.size,
+      outputPoolSmallPerClass: OUTPUT_POOL_SMALL_PER_CLASS,
+      outputPoolMediumPerClass: OUTPUT_POOL_MEDIUM_PER_CLASS,
+      outputPoolLargePerClass: OUTPUT_POOL_LARGE_PER_CLASS,
       totalAllocs: _totalAllocCount,
       totalAllocMB: Math.round(_totalAllocBytes / 1024 / 1024),
       liveAllocs: _liveAllocCount,
@@ -1460,6 +2452,10 @@ export class HeliosBackend implements Backend {
       flowBufferPoolHits: _flowBufferPoolHits,
       flowEnsureGpuHits: _flowEnsureGpuHits,
       flowEnsureGpuUploads: _flowEnsureGpuUploads,
+      ...(staticSlotRuntime ? staticSlotRuntime.stats() : {
+        staticSlotPlanEnabled: 0,
+        staticSlotPlanActive: 0,
+      }),
       ...nativeAllocatorStats,
     };
     // Only reset per-step diag counters (not flow totals)
@@ -1487,7 +2483,12 @@ export class HeliosBackend implements Backend {
   /** Get GPU device info. Forces init if not already done. */
   getDeviceInfo(): GpuDeviceInfo {
     this.init();
+    const native = this._nativeDeviceInfo!;
+    const computeSubgroupArithmeticSupported =
+      (native.subgroupSupportedStages & 0x00000020) !== 0 &&
+      (native.subgroupSupportedOperations & 0x00000004) !== 0;
     return {
+      ...native,
       deviceName: this._deviceName,
       vendorId: this._vendorId,
       f16Supported: this._f16Supported,
@@ -1500,6 +2501,8 @@ export class HeliosBackend implements Backend {
       hasPushDescriptors: this._hasPushDescriptors,
       workgroupSize: WG_SIZE,
       minGpuSize: this._minGpuSize,
+      computeSubgroupArithmeticSupported,
+      nativeSubgroup32: native.subgroupSize === 32,
     };
   }
 
@@ -1507,6 +2510,27 @@ export class HeliosBackend implements Backend {
    *  Use during backward pass to avoid f16 precision loss on large gradients. */
   set coopMatmulPaused(v: boolean) { this._coopMatPaused = v; }
   get coopMatmulPaused(): boolean { return this._coopMatPaused; }
+
+  /** Opt-in row-parallel RMSNorm weight-gradient reduction. */
+  set columnSumRowLanes(v: boolean) { this._columnSumRowLanes = v ? 8 : 0; }
+  get columnSumRowLanes(): boolean { return this._columnSumRowLanes !== 0; }
+  setColumnSumRowLanes(v: ColumnSumRowLanes): void { this._columnSumRowLanes = v; }
+  getColumnSumRowLanes(): ColumnSumRowLanes { return this._columnSumRowLanes; }
+  get lastColumnSumKernel(): string | null { return this._lastColumnSumKernel; }
+
+  /**
+   * X39: disjoint native host-phase totals for the dispatch path.
+   * Returns null unless HELIOS_HOST_TIMING=1 gated the native accumulator.
+   */
+  getNativeHostTiming(): NativeHostTiming | null {
+    const vk: NativeAddon = getNative();
+    if (typeof vk.getHostTiming !== "function") return null;
+    return vk.getHostTiming();
+  }
+
+  resetNativeHostTiming(): void {
+    getNative().resetHostTiming?.();
+  }
 
   getMatmulCoopStats(): CoopMatmulStats {
     const hit = this._matmulDispatches > 0 ? this._coopDispatches / this._matmulDispatches : 0;
@@ -1518,7 +2542,41 @@ export class HeliosBackend implements Backend {
       coopPaddedBatchedDispatches: this._coopPaddedBatchedDispatches,
       coopTransposedARewriteDispatches: this._coopTransposedARewriteDispatches,
       coopHitRate: hit,
+      lastCoopKernel: this._lastCoopKernel,
+      lastCoopShape: this._lastCoopShape ? { ...this._lastCoopShape } : null,
+      shapeCounts: [...this._coopShapeCounts.values()]
+        .map((entry) => ({ ...entry }))
+        .sort((a, b) => a.key.localeCompare(b.key)),
     };
+  }
+
+  private recordCoopShape(
+    kernel: string,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+    transposedA: boolean,
+    transposedB: boolean,
+  ): void {
+    const key = `${transposedA ? "ta" : transposedB ? "tb" : "nn"}:${coopShapeKey(M, N, K)}:b${batchSize}`;
+    const existing = this._coopShapeCounts.get(key);
+    if (existing) {
+      existing.count++;
+      existing.kernel = kernel;
+      return;
+    }
+    this._coopShapeCounts.set(key, {
+      key,
+      kernel,
+      M,
+      N,
+      K,
+      batchSize,
+      transposedA,
+      transposedB,
+      count: 1,
+    });
   }
 
   /**
@@ -1528,45 +2586,168 @@ export class HeliosBackend implements Backend {
   smokeTest(): { verified: boolean; throughputGBps: number } {
     this.init();
     graph.flush();
+    const tensors: TensorData[] = [];
+    try {
+      const size = 65536;
+      const a = this.full([size], 1.0);
+      const b = this.full([size], 2.0);
+      const c = this.add(a, b);
+      tensors.push(a, b, c);
+      graph.flush();
 
-    const size = 65536;
-    const a = this.full([size], 1.0);
-    const b = this.full([size], 2.0);
-    const c = this.add(a, b);
-    graph.flush();
+      // Verify result
+      const data = c.data as Float32Array;
+      let correct = 0;
+      for (let i = 0; i < Math.min(64, data.length); i++) {
+        if (Math.abs(data[i] - 3.0) < 1e-6) correct++;
+      }
+      const verified = correct === Math.min(64, data.length);
 
-    // Verify result
-    const data = c.data as Float32Array;
-    let correct = 0;
-    for (let i = 0; i < Math.min(64, data.length); i++) {
-      if (Math.abs(data[i] - 3.0) < 1e-6) correct++;
+      // Quick throughput benchmark: 1M element add
+      const benchSize = 1_048_576;
+      const ba = this.full([benchSize], 1.0);
+      const bb = this.full([benchSize], 2.0);
+      tensors.push(ba, bb);
+      const start = performance.now();
+      for (let i = 0; i < 10; i++) {
+        const output = this.add(ba, bb);
+        tensors.push(output);
+      }
+      graph.flush();
+      // Force readback to include full round-trip
+      const last = this.add(ba, bb);
+      tensors.push(last);
+      graph.flush();
+      void (last.data as Float32Array)[0];
+      const elapsed = performance.now() - start;
+      const bytesPerOp = benchSize * 4 * 3; // 2 reads + 1 write
+      const throughputGBps = (11 * bytesPerOp) / (elapsed * 1e6);
+
+      return { verified, throughputGBps };
+    } finally {
+      // The smoke test runs before model initialization. Explicitly retire every
+      // temporary tensor and destroy its pools so this preflight cannot consume
+      // the small amount of VRAM headroom needed by the exact training shape.
+      // FinalizationRegistry is intentionally not relied on for timely cleanup.
+      for (let i = tensors.length - 1; i >= 0; i--) {
+        this.releaseGpuTensor(tensors[i]);
+      }
+      this.purgeBufferPools();
     }
-    const verified = correct === Math.min(64, data.length);
-
-    // Quick throughput benchmark: 1M element add
-    const benchSize = 1_048_576;
-    const ba = this.full([benchSize], 1.0);
-    const bb = this.full([benchSize], 2.0);
-    const start = performance.now();
-    for (let i = 0; i < 10; i++) {
-      this.add(ba, bb);
-    }
-    graph.flush();
-    // Force readback to include full round-trip
-    const last = this.add(ba, bb);
-    graph.flush();
-    void (last.data as Float32Array)[0];
-    const elapsed = performance.now() - start;
-    const bytesPerOp = benchSize * 4 * 3; // 2 reads + 1 write
-    const throughputGBps = (11 * bytesPerOp) / (elapsed * 1e6);
-
-    return { verified, throughputGBps };
   }
 
   /** Get count of GPU ops dispatched this step (reset with resetStepOps). */
   get gpuOpsThisStep(): number { return graph.opsThisStep; }
   get gpuOpsTotal(): number { return graph.totalOpsRecorded; }
-  resetStepOps(): void { graph.opsThisStep = 0; }
+  resetStepOps(): void {
+    const transition = staticSlotRuntime?.beginStep();
+    if (transition?.activated) {
+      // The warm-up path populated the ordinary pools. Retire it before
+      // reserving plan-owned slots so the first active step measures the fixed
+      // plan rather than an accidental union of both allocators.
+      this.purgeBufferPools();
+    }
+    graph.resetStepStats();
+    this._coopF16x3BalancePlanRuntime?.beginStep();
+    this._coopF16x3CalibrationStep++;
+    this._coopF16x3CalibrationActive =
+      COOP_F16X3_CALIBRATION_OUT.length > 0 &&
+      this._coopF16x3CalibrationStep <= COOP_F16X3_CALIBRATION_STEPS;
+    this._coopF16x3CalibrationScalars.clear();
+    this._coopF16x3CalibrationEntries = [];
+  }
+  finishStepOps(): void {
+    staticSlotRuntime?.finishStep(graph.opsThisStep);
+    this._coopF16x3BalancePlanRuntime?.finishStep();
+    this.finishCoopF16x3CalibrationStep();
+  }
+  getGpuStepStats(): GpuStepStats { return graph.getStepStats(); }
+
+  private coopF16x3Descriptor(
+    layout: "nn" | "tb" | "ta",
+    a: TensorData,
+    b: TensorData,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+  ): CoopF16x3MatmulDescriptor {
+    return {
+      layout,
+      M,
+      N,
+      K,
+      batchSize,
+      aShape: [...a.shape],
+      bShape: [...b.shape],
+      aDtype: a.dtype,
+      bDtype: b.dtype,
+    };
+  }
+
+  private coopF16x3MaxAbsScalar(tensor: TensorData): TensorData {
+    const existing = this._coopF16x3CalibrationScalars.get(tensor);
+    if (existing) return existing;
+    const scalar = this.gpuReduceMaxAbs(tensor);
+    this._coopF16x3CalibrationScalars.set(tensor, scalar);
+    return scalar;
+  }
+
+  private coopF16x3BalanceExponent(
+    descriptor: CoopF16x3MatmulDescriptor,
+    a: TensorData,
+    b: TensorData,
+  ): number {
+    if (this._coopF16x3CalibrationActive) {
+      this._coopF16x3CalibrationEntries.push({
+        descriptor,
+        maxAbsA: this.coopF16x3MaxAbsScalar(a),
+        maxAbsB: this.coopF16x3MaxAbsScalar(b),
+      });
+    }
+    return this._coopF16x3BalancePlanRuntime?.exponentFor(descriptor) ?? COOP_F16X3_BALANCE_EXP;
+  }
+
+  private finishCoopF16x3CalibrationStep(): void {
+    if (!this._coopF16x3CalibrationActive) return;
+    if (this._coopF16x3CalibrationEntries.length === 0) {
+      throw new Error("FP16x3 calibration observed no cooperative matmuls in the training step");
+    }
+
+    const valueByScalar = new Map<TensorData, number>();
+    try {
+      // The trainer has already flushed the training graph at this boundary.
+      // The first access is therefore the only possible completion wait; each
+      // subsequent scalar is a tiny read from an already completed timeline.
+      for (const scalar of this._coopF16x3CalibrationScalars.values()) {
+        const value = Number(scalar.data[0]);
+        if (!Number.isFinite(value) || value < 0) {
+          throw new Error(`FP16x3 calibration found a non-finite operand (maxAbs=${String(value)})`);
+        }
+        valueByScalar.set(scalar, value);
+      }
+      const entries: CoopF16x3CalibrationEntry[] = this._coopF16x3CalibrationEntries.map((entry, ordinal) => ({
+        ordinal,
+        descriptor: entry.descriptor,
+        maxAbsA: valueByScalar.get(entry.maxAbsA)!,
+        maxAbsB: valueByScalar.get(entry.maxAbsB)!,
+      }));
+      const record = {
+        schemaVersion: 1 as const,
+        kind: "helios-coop-f16x3-calibration" as const,
+        checkpointFingerprint: COOP_F16X3_CHECKPOINT_FINGERPRINT,
+        createdAt: new Date().toISOString(),
+        graphFingerprint: coopF16x3GraphFingerprint(entries.map((entry) => entry.descriptor)),
+        entries,
+      };
+      appendFileSync(COOP_F16X3_CALIBRATION_OUT, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
+    } finally {
+      for (const scalar of this._coopF16x3CalibrationScalars.values()) this.releaseGpuTensor(scalar);
+      this._coopF16x3CalibrationScalars.clear();
+      this._coopF16x3CalibrationEntries = [];
+      this._coopF16x3CalibrationActive = false;
+    }
+  }
 
   // ── GPU binary ops ──────────────────────────────────────────────────────
 
@@ -1657,7 +2838,11 @@ export class HeliosBackend implements Backend {
     // Record to compute graph — deferred execution
     graph.record({
       kind: "unary",
-      kernel: kernelName,
+      // Keep the profiler tied to the pipeline that actually executes.  The
+      // previous logical-op label collapsed scalar, vec4, and vec4x2 variants
+      // into one row, which made operation-level tuning impossible and could
+      // falsely attribute a regression to the whole scale family.
+      kernel: actualKernel,
       pipeline,
       inputBufs: [bufA],
       outputRegion: region,
@@ -1698,7 +2883,7 @@ export class HeliosBackend implements Backend {
     return makeTensor(shape, dtype, data);
   }
 
-  fromArray(data: number[], shape: Shape, dtype: Dtype = "f32"): TensorData {
+  fromArray(data: ArrayLike<number>, shape: Shape, dtype: Dtype = "f32"): TensorData {
     const size = shapeSize(shape);
     if (data.length !== size) throw new Error(`Data length ${data.length} != shape size ${size}`);
     const Ctor = dtypeArray(dtype);
@@ -1767,7 +2952,12 @@ export class HeliosBackend implements Backend {
   }
 
   scale(a: TensorData, s: number): TensorData {
-    if (shapeSize(a.shape) >= this._minGpuSize) return this.gpuUnaryOp(a, "scale", s);
+    // A tiny tensor produced by the pending GPU graph must stay on-device.
+    // Falling through to cpuUnary would access .data, force a submit+wait, and
+    // split the static training graph merely to scale a scalar loss.
+    if (shapeSize(a.shape) >= this._minGpuSize || (a.dtype === "f32" && gpuResidence.has(a))) {
+      return this.gpuUnaryOp(a, "scale", s);
+    }
     return this.cpuUnary(a, (x) => x * s);
   }
 
@@ -1905,6 +3095,47 @@ export class HeliosBackend implements Backend {
     return graphLazyTensor(vk, outShape, finalRegion);
   }
 
+  /**
+   * Calibration-only maximum absolute value reduction. Non-finite input is
+   * converted to +Inf by the shader so the host-side gate fails closed.
+   * This method is intentionally not part of Backend: ordinary training must
+   * not acquire a permanent whole-tensor pass for FP16x3 balancing.
+   */
+  private gpuReduceMaxAbs(a: TensorData): TensorData {
+    const vk = this.init();
+    const totalSize = shapeSize(a.shape);
+    if (totalSize < 2) throw new Error("FP16x3 calibration requires a non-scalar matmul operand");
+    const pipeline = getPipeline(vk, "max_abs_reduce", 2);
+
+    let inputBuf = ensureGpu(vk, a);
+    let remaining = totalSize;
+    let finalRegion: OutputRegion | null = null;
+
+    while (remaining > 1) {
+      const numGroups = Math.ceil(remaining / WG_SIZE);
+      const region = acquireOutputRegion(vk, numGroups * 4);
+      graph.record({
+        kind: "reduce_sum",
+        kernel: "max_abs_reduce",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [numGroups, 1, 1],
+        push: push2Memo(remaining, 0),
+        pushSize: PUSH_SIZE,
+        shape: numGroups === 1 ? [] : [numGroups],
+        allBufs: [inputBuf, region.handle],
+      });
+      if (finalRegion) graph.deferRelease(finalRegion);
+      inputBuf = region.handle;
+      finalRegion = region;
+      remaining = numGroups;
+    }
+
+    if (!finalRegion) throw new Error("FP16x3 max-absolute reduction produced no output");
+    return graphLazyTensor(vk, [], finalRegion);
+  }
+
   private gpuSumAxis(a: TensorData, axis: number, keepdims: boolean): TensorData {
     const vk = this.init();
     const ndim = a.shape.length;
@@ -1958,7 +3189,8 @@ export class HeliosBackend implements Backend {
   sumOfSquares(data: TensorData): TensorData {
     const totalSize = shapeSize(data.shape);
     if (totalSize >= this._minGpuSize) {
-      return this.gpuReduceSumOfSquares(data);
+      // Without a slot destination this never returns null.
+      return this.gpuReduceSumOfSquares(data)!;
     }
     // CPU fallback: sum of element-wise squares
     this.checkFallback("sumOfSquares");
@@ -1977,6 +3209,11 @@ export class HeliosBackend implements Backend {
       return makeTensor([], "f32", Float32Array.from([0]));
     }
     if (tensors.length === 1) return this.sumOfSquares(tensors[0]);
+
+    if (SUMSQ_SLOT_REDUCE) {
+      const collapsed = this.totalSumOfSquaresSlotted(tensors);
+      if (collapsed) return collapsed;
+    }
 
     const partials = new Array<TensorData>(tensors.length);
     for (let i = 0; i < tensors.length; i++) {
@@ -2005,13 +3242,90 @@ export class HeliosBackend implements Backend {
     return partials[0];
   }
 
-  private gpuReduceSumOfSquares(a: TensorData): TensorData {
+  /**
+   * X58 — the gradient norm without the tree.
+   *
+   * X50 found `totalSumOfSquares` spends 127 separate `add` dispatches summing
+   * 128 scalars, purely because each per-tensor partial lives in its own buffer
+   * and the pairwise tree exists to bring them together.
+   *
+   * Here each tensor's reduction writes directly into slot i of ONE partials
+   * buffer, via the buffer-device-address reduction's `outOffset` (X56/X57), and
+   * a single reduction over the contiguous result finishes the job. 127
+   * dispatches become 1.
+   *
+   * BDA kernels declare no descriptor bindings, so these dispatches also skip
+   * the `desc_update` phase entirely — X39 measured that at 23.4% of host time,
+   * per-dispatch.
+   *
+   * Returns null when the route is unavailable (no BDA support, or a tensor
+   * small enough to take the CPU path), leaving the caller on the tree.
+   */
+  private totalSumOfSquaresSlotted(tensors: TensorData[]): TensorData | null {
+    const vk = this.init();
+    if (typeof vk.dgcGetBufferAddress !== "function") return null;
+
+    // Every tensor must take the grid-stride path, which is the only one whose
+    // final pass can be retargeted at a slot. Checking up front means we never
+    // record a partial result and then bail.
+    for (const t of tensors) {
+      if (shapeSize(t.shape) < STRIDE_THRESHOLD) return null;
+    }
+
+    const n = tensors.length;
+    const slotsRegion = acquireOutputRegion(vk, n * 4);
+    let slotsAddr: [number, number];
+    try {
+      slotsAddr = vk.dgcGetBufferAddress(slotsRegion.handle) as [number, number];
+    } catch {
+      return null;
+    }
+
+    // Each tensor reduces straight into its slot: the BDA write REPLACES that
+    // tensor's final reduction pass rather than adding one.
+    for (let i = 0; i < n; i++) {
+      const leftover = this.gpuReduceSumOfSquares(tensors[i], {
+        addr: slotsAddr, handle: slotsRegion.handle, index: i,
+      });
+      if (leftover !== null) return null;   // dest not honoured — abandon
+    }
+
+    // One reduction over the n contiguous slots.
+    const outRegion = acquireOutputRegion(vk, 4);
+    let outAddr: [number, number];
+    try {
+      outAddr = vk.dgcGetBufferAddress(outRegion.handle) as [number, number];
+    } catch {
+      return null;
+    }
+
+    graph.record({
+      kind: "reduce_sum",
+      kernel: "sum_reduce_bda",
+      pipeline: getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES),
+      inputBufs: [],
+      outputRegion: outRegion,
+      groups: [1, 1, 1],
+      push: EMPTY_PUSH,
+      pushU32: bdaPush(slotsAddr, outAddr, n, 0),
+      pushSize: SUMSQ_BDA_PUSH_BYTES,
+      shape: [],
+      allBufs: [slotsRegion.handle, outRegion.handle],
+    });
+
+    graph.deferRelease(slotsRegion);
+    return graphLazyTensor(vk, [], outRegion);
+  }
+
+  private gpuReduceSumOfSquares(
+    a: TensorData,
+    dest?: { addr: [number, number]; handle: number; index: number },
+  ): TensorData | null {
     const vk = this.init();
     const totalSize = shapeSize(a.shape);
 
     // For large inputs, use grid-stride kernel: fewer WGs, each thread loops
     // over many elements. Reduces 3 passes to 2 for ~8.5M elements.
-    const STRIDE_THRESHOLD = 65536; // Use stride kernel above 64K elements
     const STRIDE_WGS = 256;        // Fixed number of workgroups for stride kernel
 
     if (totalSize >= STRIDE_THRESHOLD) {
@@ -2037,10 +3351,86 @@ export class HeliosBackend implements Backend {
         allBufs: [inputBuf, region1.handle],
       });
 
-      // Pass 2: reduce partial sums → 1 value (single WG handles up to 256)
+      // Pass 2: reduce the partial sums to a single value.
+      //
+      // X58 CORRECTNESS FIX. This used to be one dispatch of a single workgroup,
+      // on the assumption noted in the old comment that "a single WG handles up
+      // to 256". That was true when WG_SIZE was 256. WG_SIZE now defaults to
+      // 128 while STRIDE_WGS is still 256, so pass 1 emits 256 partials and a
+      // single 128-thread workgroup reduced only the FIRST 128 of them --
+      // sum_reduce loads A[gidX] for gidX < wgSize and the rest were silently
+      // dropped.
+      //
+      // The result was a gradient norm roughly half its true value for every
+      // tensor at or above STRIDE_THRESHOLD. Measured with an all-ones vector,
+      // where sum-of-squares must equal the element count:
+      //
+      //   n=65536  counted 32768   n=70000  counted 37232
+      //   n=131072 counted 65536   n=200000 counted 101696
+      //
+      // Every one of those is exactly the coverage of workgroups 0..127.
+      //
+      // Reducing in a loop instead removes the assumption entirely: it is
+      // correct for any WG_SIZE, and collapses to the original single dispatch
+      // whenever numGroups <= WG_SIZE.
       if (numGroups > 1) {
+        let remaining = numGroups;
+        let src = region1;
+        let level: OutputRegion | null = null;
+
+        while (remaining > WG_SIZE) {
+          const nextGroups = Math.ceil(remaining / WG_SIZE);
+          const regionN = acquireOutputRegion(vk, nextGroups * 4);
+          graph.record({
+            kind: "reduce_sum",
+            kernel: "sum_reduce",
+            pipeline: sumPipeline,
+            inputBufs: [],
+            outputRegion: regionN,
+            groups: [nextGroups, 1, 1],
+            push: push2Memo(remaining, 0),
+            pushSize: PUSH_SIZE,
+            shape: [nextGroups],
+            allBufs: [src.handle, regionN.handle],
+          });
+          if (level) graph.deferRelease(level);
+          level = regionN;
+          src = regionN;
+          remaining = nextGroups;
+        }
+
+        const finalInput = src;
+
+        // Final pass. With a slot destination this writes into the caller's
+        // shared partials buffer through the BDA reduction and returns null --
+        // there is no per-tensor scalar to hand back, which is the point.
+        if (dest) {
+          let srcAddr: [number, number] | null = null;
+          try {
+            srcAddr = vk.dgcGetBufferAddress!(finalInput.handle) as [number, number];
+          } catch { srcAddr = null; }
+          if (srcAddr) {
+            graph.record({
+              kind: "reduce_sum",
+              kernel: "sum_reduce_bda",
+              pipeline: getPipeline(vk, "sum_reduce_bda", 0, SUMSQ_BDA_PUSH_BYTES),
+              inputBufs: [],
+              outputRegion: { handle: dest.handle, byteSize: 4, readyValue: 0 },
+              groups: [1, 1, 1],
+              push: EMPTY_PUSH,
+              pushU32: bdaPush(srcAddr, dest.addr, remaining, dest.index),
+              pushSize: SUMSQ_BDA_PUSH_BYTES,
+              shape: [],
+              allBufs: [finalInput.handle, dest.handle],
+            });
+            graph.deferRelease(region1);
+            if (level && level !== region1) graph.deferRelease(level);
+            return null;
+          }
+        }
+
         const region2 = acquireOutputRegion(vk, 4);
-        const push2 = push2Memo(numGroups, 0);
+        const push2 = push2Memo(remaining, 0);
 
         graph.record({
           kind: "reduce_sum",
@@ -2052,13 +3442,16 @@ export class HeliosBackend implements Backend {
           push: push2,
           pushSize: PUSH_SIZE,
           shape: [],
-          allBufs: [region1.handle, region2.handle],
+          allBufs: [finalInput.handle, region2.handle],
         });
 
         graph.deferRelease(region1);
+        if (level && level !== region1) graph.deferRelease(level);
         return graphLazyTensor(vk, [], region2);
       }
 
+      // numGroups == 1: no final pass to retarget, so dest is not honoured.
+      // Returning a tensor (not null) tells the caller so.
       return graphLazyTensor(vk, [], region1);
     }
 
@@ -2240,7 +3633,7 @@ export class HeliosBackend implements Backend {
     f32u16.set(u16);
     vk.uploadBuffer(handle, f32);
     const info: GpuHandle = { handle, byteSize, refs: 1, released: false };
-    gpuResidence.set(td, info);
+    gpuResidence.set(td, info); censusAdd(info);
     gpuCleanup.register(td, info);
     return handle;
   }
@@ -2269,6 +3662,24 @@ export class HeliosBackend implements Backend {
       this._coopF16InputCache.set(td, casted);
     }
     return this.ensureGpuF16(vk, casted);
+  }
+
+  /**
+   * Select the storage basis consumed by one cooperative dispatch.  A mixed
+   * f16/f32 pair still uses the pre-cast path because both shader bindings
+   * must have the same scalar width.  When both operands are f32 and graph
+   * fusion is enabled, the shader narrows only the tiles it stages in shared
+   * memory and no full-size cast tensor is materialized.
+   */
+  private coopUsesPrecastF16Inputs(a: TensorData, b: TensorData): boolean {
+    return COOP_PRECAST_F16_INPUT || a.dtype === "f16" || b.dtype === "f16";
+  }
+
+  private getCoopF32InputBuffer(vk: NativeAddon, td: TensorData): number {
+    if (td.dtype !== "f32") {
+      throw new Error(`Helios fused-f32 cooperative matmul requires f32 inputs (got ${td.dtype})`);
+    }
+    return ensureGpu(vk, td);
   }
 
   // ── GPU softmax/layerNorm ───────────────────────────────────────────────
@@ -2781,11 +4192,135 @@ export class HeliosBackend implements Backend {
     return makeTensor(residual.shape, residual.dtype, out);
   }
 
+  residualAddRmsNorm(
+    residual: TensorData,
+    projected: TensorData,
+    weight: TensorData,
+    eps: number,
+  ): { residual: TensorData; normalized: TensorData } {
+    if (DISABLE_RESIDUAL_ADD_RMSNORM) {
+      const residualOut = this.add(residual, projected);
+      return {
+        residual: residualOut,
+        normalized: this.rmsNorm(residualOut, weight, eps),
+      };
+    }
+    const size = shapeSize(residual.shape);
+    const dim = residual.shape[residual.shape.length - 1];
+    if (
+      size >= this._minGpuSize
+      && this.shapesEqual(residual.shape, projected.shape)
+      && shapeSize(weight.shape) === dim
+    ) {
+      const vk = this.init();
+      const bufResidual = ensureGpu(vk, residual);
+      const bufProjected = ensureGpu(vk, projected);
+      const bufWeight = ensureGpu(vk, weight);
+      const residualRegion = acquireOutputRegion(vk, size * 4);
+      const normalizedRegion = acquireOutputRegion(vk, size * 4);
+      const numRows = size / dim;
+      const pipeline = getPipeline(vk, "residual_add_rmsnorm", 5, PUSH_SIZE, WG_SIZE);
+
+      graph.record({
+        kind: "layernorm",
+        kernel: "residual_add_rmsnorm",
+        pipeline,
+        inputBufs: [],
+        outputRegion: residualRegion,
+        groups: [numRows, 1, 1],
+        push: push2Memo(dim, eps),
+        pushSize: PUSH_SIZE,
+        shape: residual.shape,
+        allBufs: [
+          bufResidual,
+          bufProjected,
+          bufWeight,
+          residualRegion.handle,
+          normalizedRegion.handle,
+        ],
+        writeMask: 0b11000,
+      });
+
+      return {
+        residual: graphLazyTensor(vk, residual.shape, residualRegion),
+        normalized: graphLazyTensor(vk, residual.shape, normalizedRegion),
+      };
+    }
+
+    // CPU reference path for small tensors and correctness tests.
+    this.checkFallback("residualAddRmsNorm");
+    if (!this.shapesEqual(residual.shape, projected.shape)) {
+      throw new Error(
+        `residualAddRmsNorm: residual [${residual.shape}] and projected [${projected.shape}] must match`,
+      );
+    }
+    if (shapeSize(weight.shape) !== dim) {
+      throw new Error(`residualAddRmsNorm: expected ${dim} weights, got ${shapeSize(weight.shape)}`);
+    }
+    const residualIn = residual.data as Float32Array;
+    const projectedIn = projected.data as Float32Array;
+    const weights = weight.data as Float32Array;
+    const residualOut = new Float32Array(size);
+    const normalizedOut = new Float32Array(size);
+    const rows = size / dim;
+    for (let row = 0; row < rows; row++) {
+      const offset = row * dim;
+      let sumSquares = 0;
+      for (let col = 0; col < dim; col++) {
+        const value = residualIn[offset + col] + projectedIn[offset + col];
+        residualOut[offset + col] = value;
+        sumSquares += value * value;
+      }
+      const invRms = 1 / Math.sqrt(sumSquares / dim + eps);
+      for (let col = 0; col < dim; col++) {
+        normalizedOut[offset + col] = residualOut[offset + col] * invRms * weights[col];
+      }
+    }
+    return {
+      residual: makeTensor(residual.shape, residual.dtype, residualOut),
+      normalized: makeTensor(residual.shape, residual.dtype, normalizedOut),
+    };
+  }
+
   crossEntropyBackward(logits: TensorData, targets: TensorData, gradOutput: TensorData): TensorData {
     const vk = this.init();
     const [N, C] = logits.shape;
     const totalElements = N * C;
     const gradScalar = (gradOutput.data as Float32Array)[0];
+
+    // Default large-vocabulary path: normalize logits and form dlogits in one
+    // online vec4 kernel. The former path materialized an N*C probability
+    // tensor, then read it in a second dispatch to write another N*C tensor.
+    // Alpha's [10240,12288] training shape made each of those buffers ~480 MiB.
+    // Keep the legacy route selectable for numerical bisection and for shapes
+    // that cannot use aligned vec4 storage.
+    const useFusedOnline = process.env.HELIOS_CE_BACKWARD_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (useFusedOnline) {
+      const dimVec4 = C >>> 2;
+      const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const pipeline = getPipeline(vk, "ce_backward_fused_online", 3, 3 * 4, ceWg);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const push = new Float32Array([dimVec4, N, gradScalar / N]);
+
+      graph.record({
+        kind: "backward",
+        kernel: "ce_backward_fused_online",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufLogits, bufTargets, region.handle],
+      });
+      return graphLazyTensor(vk, logits.shape, region);
+    }
 
     // Compute softmax on GPU (stays lazy — no flush needed)
     const probs = this.softmax(logits, -1);
@@ -2853,6 +4388,35 @@ export class HeliosBackend implements Backend {
     for (let i = 0; i < N; i++) sumMask += maskArr[i];
     const invDenom = gradScalar / Math.max(sumMask, 1);
 
+    const useFusedOnline = process.env.HELIOS_CE_BACKWARD_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (useFusedOnline) {
+      const dimVec4 = C >>> 2;
+      const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ce_masked_backward_fused_online", 4, 3 * 4, ceWg);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const push = new Float32Array([dimVec4, N, invDenom]);
+
+      graph.record({
+        kind: "backward",
+        kernel: "ce_masked_backward_fused_online",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: logits.shape,
+        allBufs: [bufLogits, bufTargets, bufMask, region.handle],
+      });
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
     // softmax on GPU (stays lazy — no flush)
     const probs = this.softmax(logits, -1);
 
@@ -2905,6 +4469,78 @@ export class HeliosBackend implements Backend {
     return makeTensor(logits.shape, logits.dtype, out);
   }
 
+  crossEntropyUnlikelihoodMaskedBackward(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    gradOutput: TensorData,
+    epsilon: number,
+  ): TensorData {
+    if (!(epsilon > 0 && epsilon <= 1)) {
+      throw new Error(`crossEntropyUnlikelihoodMaskedBackward epsilon must be in (0,1], got ${epsilon}`);
+    }
+    const vk = this.init();
+    const [N, C] = logits.shape;
+    const totalElements = N * C;
+    const gradScalar = (gradOutput.data as Float32Array)[0];
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const invDenom = gradScalar / Math.max(sumMask, 1);
+
+    // The probability tensor remains GPU-resident and feeds the fused
+    // unlikelihood derivative; no model-sized host readback occurs.
+    const probs = this.softmax(logits, -1);
+
+    if (totalElements >= this._minGpuSize) {
+      const bufProbs = ensureGpu(vk, probs);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ul_masked_backward", 4, 4 * 4);
+      const region = acquireOutputRegion(vk, totalElements * 4);
+      const groups = Math.ceil(totalElements / WG_SIZE);
+
+      const push = new Float32Array(4);
+      const pushU = new Uint32Array(push.buffer);
+      push[0] = totalElements;
+      pushU[1] = C;
+      push[2] = invDenom;
+      push[3] = epsilon;
+
+      graph.record({
+        kind: "backward",
+        kernel: "ul_masked_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [groups, 1, 1],
+        push,
+        pushSize: 4 * 4,
+        shape: logits.shape,
+        allBufs: [bufProbs, bufTargets, bufMask, region.handle],
+      });
+
+      releaseGpuBufferFor(probs);
+      return graphLazyTensor(vk, logits.shape, region);
+    }
+
+    this.checkFallback("crossEntropyUnlikelihoodMaskedBackward");
+    const probsArr = probs.data as Float32Array;
+    const out = new Float32Array(totalElements);
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue;
+      const off = i * C;
+      const target = targets.data[i];
+      const pBad = probsArr[off + target];
+      const rowScale = pBad / Math.max(1 - pBad, epsilon) * invDenom * m;
+      for (let j = 0; j < C; j++) {
+        out[off + j] = ((j === target ? 1 : 0) - probsArr[off + j]) * rowScale;
+      }
+    }
+    return makeTensor(logits.shape, logits.dtype, out);
+  }
+
   embeddingBackward(indices: TensorData, gradOutput: TensorData, vocabSize: number): TensorData {
     const vk = this.init();
     const nIdx = shapeSize(indices.shape);
@@ -2916,29 +4552,37 @@ export class HeliosBackend implements Backend {
       const bufIndices = ensureGpuRawBits(vk, indices);
       const bufGradOut = ensureGpu(vk, gradOutput);
 
-      // Allocate output via output pool and zero it on GPU (avoids CPU→GPU upload)
+      const useDeterministicGather = outputSize * nIdx <= DETERMINISTIC_EMBEDDING_BACKWARD_MAX_WORK;
+      const kernelName = useDeterministicGather
+        ? "embedding_backward_deterministic"
+        : "embedding_backward";
+
+      // The scatter path accumulates into a zeroed output. The deterministic
+      // gather writes every output element once and therefore needs no fill.
       const outByteSize = outputSize * 4;
       const region = acquireOutputRegion(vk, outByteSize);
-      vk.fillBuffer(region.handle, outByteSize, 0);
+      if (!useDeterministicGather) vk.fillBuffer(region.handle, outByteSize, 0);
 
-      // Dispatch the scatter-add kernel
-      const pipeline = getPipeline(vk, "embedding_backward", 3, 2 * 4);
-      const groups = Math.ceil(totalElements / WG_SIZE);
+      const pushSize = useDeterministicGather ? 3 * 4 : 2 * 4;
+      const pipeline = getPipeline(vk, kernelName, 3, pushSize);
+      const dispatchElements = useDeterministicGather ? outputSize : totalElements;
+      const groups = Math.ceil(dispatchElements / WG_SIZE);
 
-      const push = new Float32Array(2);
+      const push = new Float32Array(useDeterministicGather ? 3 : 2);
       const pushU = new Uint32Array(push.buffer);
-      push[0] = totalElements;  // float value for bounds check
+      push[0] = dispatchElements;  // float value for bounds check
       pushU[1] = dim;           // u32 bits — kernel bitcasts f32→u32
+      if (useDeterministicGather) pushU[2] = nIdx;
 
       graph.record({
         kind: "backward",
-        kernel: "embedding_backward",
+        kernel: kernelName,
         pipeline,
         inputBufs: [],
         outputRegion: region,
         groups: [groups, 1, 1],
         push,
-        pushSize: 2 * 4,
+        pushSize,
         shape: [vocabSize, dim],
         allBufs: [bufIndices, bufGradOut, region.handle],
       });
@@ -3105,12 +4749,18 @@ export class HeliosBackend implements Backend {
         writeMask: 0b11000, // dx and dw_partial are both written
       });
 
-      const pipeline2 = getPipeline(vk, "column_sum", 2);
+      const columnSumKernel = this._columnSumRowLanes !== 0
+        ? `column_sum_row_lanes_${this._columnSumRowLanes}`
+        : "column_sum";
+      this._lastColumnSumKernel = columnSumKernel;
+      const pipeline2 = getPipeline(vk, columnSumKernel, 2);
       const push2 = push2Memo(dim, numRows);
-      const groups = Math.ceil(dim / WG_SIZE);
+      const groups = this._columnSumRowLanes !== 0
+        ? Math.ceil(dim / 32)
+        : Math.ceil(dim / WG_SIZE);
       graph.record({
         kind: "backward",
-        kernel: "column_sum",
+        kernel: columnSumKernel,
         pipeline: pipeline2,
         inputBufs: [],
         outputRegion: dwRegion,
@@ -3156,15 +4806,228 @@ export class HeliosBackend implements Backend {
     return { dx: dxOut, dw: dwOut };
   }
 
+  /**
+   * Select the portable FP32 tiled GEMM kernel for one exact device/driver and
+   * shape.  A tile-32 shader uses 1024 local invocations, so it is only a legal
+   * candidate when Vulkan reports that capability.  In autotune mode both
+   * legal candidates execute against the real resident inputs and the exact
+   * output region already reserved for the graph dispatch.  This avoids a
+   * transient duplicate allocation for the largest vocabulary projections.
+   */
+  private selectMatmulTile(
+    vk: NativeAddon,
+    kernel: string,
+    bufA: number,
+    bufB: number,
+    outputRegion: OutputRegion,
+    M: number,
+    N: number,
+    K: number,
+    batchSize: number,
+  ): MatmulTile {
+    const info = this._nativeDeviceInfo;
+    const key = [
+      info?.vendorId ?? 0,
+      info?.deviceId ?? 0,
+      info?.driverVersion ?? 0,
+      kernel,
+      M,
+      N,
+      K,
+      batchSize,
+    ].join(":");
+    const cached = this._matmulTileCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const shape = { M, N, K, batchSize };
+    const tile32Supported =
+      (info?.maxComputeWorkGroupInvocations ?? 0) >= 1024 &&
+      (info?.maxComputeWorkGroupSizeX ?? 0) >= 1024;
+    const heuristicTile: MatmulTile = tile32Supported && M * N >= LARGE_TILE_THRESHOLD ? 32 : 16;
+
+    const remember = (
+      tile: MatmulTile,
+      reason: MatmulTileAutotuneDecision["reason"],
+      tile16GpuTimeUs: number | null = null,
+      tile32GpuTimeUs: number | null = null,
+      tile16SamplesUs: number[] = [],
+      tile32SamplesUs: number[] = [],
+    ): MatmulTile => {
+      const decision: MatmulTileAutotuneDecision = {
+        key,
+        kernel,
+        shape,
+        tile,
+        tile16GpuTimeUs,
+        tile32GpuTimeUs,
+        tile16SamplesUs,
+        tile32SamplesUs,
+        reason,
+      };
+      this._matmulTileCache.set(key, tile);
+      this._matmulTileDecisions.set(key, decision);
+      if (LOG_MATMUL_TILE_AUTOTUNE) {
+        console.error(`[helios matmul tile] ${JSON.stringify(decision)}`);
+      }
+      return tile;
+    };
+
+    if (MATMUL_TILE_OVERRIDE !== null) {
+      if (MATMUL_TILE_OVERRIDE === 32 && !tile32Supported) {
+        console.warn(
+          `[helios] tile-32 override is unsupported on ${info?.deviceName ?? "this device"}; using tile 16`,
+        );
+        return remember(16, "capability");
+      }
+      return remember(MATMUL_TILE_OVERRIDE, "override");
+    }
+
+    if (!ENABLE_MATMUL_TILE_AUTOTUNE || PROFILE_GPU_TIMESTAMPS) {
+      return remember(heuristicTile, tile32Supported ? "heuristic" : "capability");
+    }
+
+    // Inputs may be graph-produced lazy tensors.  Resolve all earlier work
+    // before standalone replay, otherwise the probe can race their writers.
+    graph.flushAndWait();
+    const push = push4Memo(M, N, K, 0);
+    const candidates: MatmulTile[] = tile32Supported ? [16, 32] : [16];
+    let tile16GpuTimeUs: number | null = null;
+    let tile32GpuTimeUs: number | null = null;
+    const tile16SamplesUs: number[] = [];
+    const tile32SamplesUs: number[] = [];
+    const probeErrors: string[] = [];
+    const pipelines = new Map<MatmulTile, number>();
+
+    // Compile and prewarm each legal candidate before collecting any evidence.
+    // This avoids selecting the second candidate merely because it inherited
+    // higher clocks and warm caches from the first candidate's cold launch.
+    for (const tile of candidates) {
+      const suffix = tile === 32 ? "_T32" : "";
+      try {
+        const pipeline = getPipeline(vk, `${kernel}${suffix}`, 3, 16);
+        pipelines.set(tile, pipeline);
+        vk.gpuTime(
+          pipeline,
+          [bufA, bufB, outputRegion.handle],
+          Math.ceil(N / tile),
+          Math.ceil(M / tile),
+          batchSize,
+          push,
+          1,
+          2,
+        );
+      } catch (error) {
+        probeErrors.push(`tile${tile} warmup: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // Measure in both orders.  The minimum of the two counterbalanced samples
+    // estimates each kernel's warm steady-state path while discounting transient
+    // clock ramp and interference from whichever candidate happened to run first.
+    for (const order of [candidates, [...candidates].reverse()]) {
+      for (const tile of order) {
+        const pipeline = pipelines.get(tile);
+        if (pipeline === undefined) continue;
+        try {
+          const elapsed = vk.gpuTime(
+            pipeline,
+            [bufA, bufB, outputRegion.handle],
+            Math.ceil(N / tile),
+            Math.ceil(M / tile),
+            batchSize,
+            push,
+            3,
+            1,
+          );
+          if (!Number.isFinite(elapsed) || elapsed <= 0) {
+            throw new Error(`invalid GPU time ${elapsed}`);
+          }
+          if (tile === 16) tile16SamplesUs.push(elapsed);
+          else tile32SamplesUs.push(elapsed);
+        } catch (error) {
+          probeErrors.push(`tile${tile} sample: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
+    if (tile16SamplesUs.length > 0) tile16GpuTimeUs = Math.min(...tile16SamplesUs);
+    if (tile32SamplesUs.length > 0) tile32GpuTimeUs = Math.min(...tile32SamplesUs);
+
+    let selected: MatmulTile | null = null;
+    if (tile16GpuTimeUs !== null) selected = 16;
+    if (
+      tile32GpuTimeUs !== null &&
+      (tile16GpuTimeUs === null || tile32GpuTimeUs < tile16GpuTimeUs)
+    ) {
+      selected = 32;
+    }
+    if (selected === null) {
+      console.warn(
+        `[helios] matmul tile probes failed for ${kernel} ${M}x${N}x${K}: ${probeErrors.join("; ")}`,
+      );
+      return remember(
+        heuristicTile,
+        "probe-fallback",
+        tile16GpuTimeUs,
+        tile32GpuTimeUs,
+        tile16SamplesUs,
+        tile32SamplesUs,
+      );
+    }
+    return remember(
+      selected,
+      "measured",
+      tile16GpuTimeUs,
+      tile32GpuTimeUs,
+      tile16SamplesUs,
+      tile32SamplesUs,
+    );
+  }
+
   private gpuMatmul(a: TensorData, b: TensorData): TensorData {
     const vk = this.init();
     this._matmulDispatches++;
     const aNdim = a.shape.length, bNdim = b.shape.length;
-    const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
+    const K = a.shape[aNdim - 1], N = b.shape[bNdim - 1];
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
+    /*
+     * A SHARED WEIGHT HAS NO BATCH TO STRIDE, so folding A's leading dimensions
+     * into the row count is the only correct reading.
+     *
+     * [B,T,C] x [C,N] is what every linear layer in the model computes, and this
+     * took A's batch as the DISPATCH batch and sent it to matmul_batched -- a
+     * kernel that strides BOTH operands by the batch index. B has one plane, so
+     * batch 0 read it correctly and every later batch read past its end into
+     * whatever the pool last held. The output came back part uninitialised.
+     *
+     * It was invisible at batch 1, where batchSize is 1 and the plain 2-D path
+     * runs, and that is exactly where it hid: the loss agreed with cpu_ref and
+     * the native backend at batch 1 and broke at batch 2, staying wrong (4.1795
+     * against 4.1904) for every batch above it. Found by comparing operations
+     * against cpu_ref at a batched shape rather than comparing whole models,
+     * which only ever said that something was wrong.
+     *
+     * Rows are contiguous either way -- [B,T,C] is row-major, so B*T rows of C
+     * is the same memory -- which is why flattening is a re-reading of the shape
+     * and not a copy. The native backend has always computed M this way.
+     */
+    const rowsPerBatch = a.shape[aNdim - 2];
+    if (bNdim === 2 && aNdim > 2) {
+      /* Flatten and re-enter, rather than threading a special case through the
+       * five dispatch paths below. Each of them derives its own output shape
+       * from aBatch and M, so a flattened M with a non-empty aBatch would make
+       * the coop paths build [B, B*T, N] -- correct data, wrong shape, and a
+       * second bug chasing the first. Re-entering uses the 2-D path exactly as
+       * it is already tested, and reshape is a view. */
+      const flat = this.reshape(a, [batchSize * rowsPerBatch, K]);
+      const flatOut = this.gpuMatmul(flat, b);
+      return this.reshape(flatOut, [...aBatch, rowsPerBatch, N]);
+    }
+    const M = rowsPerBatch;
+    const outShape = [...aBatch, rowsPerBatch, N];
+    const coopInputDtypesOk = !DISABLE_COOP && this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("nn", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -3192,19 +5055,20 @@ export class HeliosBackend implements Backend {
       return coopPadded;
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    // All discrete GPUs we target (A100, L4, etc.) support 1024 invocations per workgroup
-    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
+    const bufA = ensureGpu(vk, a);
+    const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1 ? "matmul" : "matmul_batched";
+    const outBytes = batchSize * M * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg4x2 = this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
+      ? 32
+      : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
+    const suffix = useReg4x2 ? "_R42" : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul${suffix}`, 3, 16);
-      const bufA = ensureGpu(vk, a);
-      const bufB = ensureGpu(vk, b);
-      const outBytes = M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
@@ -3219,17 +5083,13 @@ export class HeliosBackend implements Backend {
         groups: [gX, gY, 1],
         push,
         pushSize: 16,
-        shape: [...aBatch, M, N],
+        shape: outShape,
       });
 
-      return graphLazyTensor(vk, [...aBatch, M, N], region);
+      return graphLazyTensor(vk, outShape, region);
     } else {
       // Batched matmul — dispatch all batches in one GPU submission
       const pipeline = getPipeline(vk, `matmul_batched${suffix}`, 3, 16);
-      const bufA = ensureGpu(vk, a);
-      const bufB = ensureGpu(vk, b);
-      const outBytes = batchSize * M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       const push = push4Memo(M, N, K, 0);
       const gX = Math.ceil(N / TILE);
@@ -3244,10 +5104,10 @@ export class HeliosBackend implements Backend {
         groups: [gX, gY, batchSize],
         push,
         pushSize: 16,
-        shape: [...aBatch, M, N],
+        shape: outShape,
       });
 
-      return graphLazyTensor(vk, [...aBatch, M, N], region);
+      return graphLazyTensor(vk, outShape, region);
     }
   }
 
@@ -3260,6 +5120,16 @@ export class HeliosBackend implements Backend {
    */
   matmulTransposed(a: TensorData, b: TensorData): TensorData {
     const aNdim = a.shape.length, bNdim = b.shape.length;
+    /* A SHARED WEIGHT HAS NO BATCH TO STRIDE — see gpuMatmul. Taking M as A's
+     * second-to-last axis counts one batch element's rows and silently drops
+     * the rest, which is invisible at batch 1 where they coincide. Flatten and
+     * re-enter, then restore A's leading axes on the result. */
+    if (bNdim === 2 && aNdim > 2) {
+      const K0 = a.shape[aNdim - 1];
+      const rows = shapeSize(a.shape) / K0;
+      const out = this.matmulTransposed(this.reshape(a, [rows, K0]), b);
+      return this.reshape(out, [...a.shape.slice(0, -1), b.shape[bNdim - 2]]);
+    }
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
     const N = b.shape[bNdim - 2]; // B is [N, K], so N is dim -2
     // Use compute FLOPs threshold like regular matmul
@@ -3276,6 +5146,24 @@ export class HeliosBackend implements Backend {
    */
   matmulTransposedA(a: TensorData, b: TensorData): TensorData {
     const aNdim = a.shape.length, bNdim = b.shape.length;
+    /*
+     * THIS ONE COMPUTES dW, and getting M wrong here is worse than a wrong
+     * answer — it is a quietly wrong GRADIENT.
+     *
+     * A^T x B sums over every row of both operands, and for [B,T,C] and [B,T,N]
+     * that is B*T rows. Taking M as the second-to-last axis gives T, so the
+     * weight gradient accumulated ONE batch element and discarded the other
+     * B-1. The shape check passed because it compared the same wrong number on
+     * both sides, and the forward loss never moved because nothing here touches
+     * it. At batch 1 the two agree, which is why it has held up so far.
+     */
+    if (aNdim > 2 || bNdim > 2) {
+      const K0 = a.shape[aNdim - 1], N0 = b.shape[bNdim - 1];
+      const rows = shapeSize(a.shape) / K0;
+      if (shapeSize(b.shape) / N0 === rows)
+        return this.matmulTransposedA(this.reshape(a, [rows, K0]),
+                                      this.reshape(b, [rows, N0]));
+    }
     const M = a.shape[aNdim - 2], K = a.shape[aNdim - 1];
     const bM = b.shape[bNdim - 2], N = b.shape[bNdim - 1];
     if (bM !== M) throw new Error("matmulTransposedA shape mismatch");
@@ -3294,7 +5182,7 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("tb", M, N, K);
 
     // Try cooperative matrix (tensor core) path for aligned dimensions
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -3320,22 +5208,35 @@ export class HeliosBackend implements Backend {
       return coopPadded;
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = M * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
-
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1 ? "matmul_transposed" : "matmul_transposed_batched";
+    const outBytes = batchSize * M * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg4x2 =
+      ENABLE_MATMUL_REG4X2_TRANSPOSED_B && this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
+      ? 32
+      : this.selectMatmulTile(vk, kernel, bufA, bufB, region, M, N, K, batchSize);
+    const useReg4x2K32 =
+      useReg4x2 &&
+      ENABLE_MATMUL_TRANSPOSED_B_COALESCED &&
+      ENABLE_MATMUL_TRANSPOSED_B_REDUCTION_TILE_32 &&
+      this.shouldUseMatmulReg4x2K32();
+    const suffix = useReg4x2
+      ? useReg4x2K32
+        ? "_R42CK32"
+        : ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R42C" : "_R42"
+      : useReg2x2
+        ? ENABLE_MATMUL_TRANSPOSED_B_COALESCED ? "_R2C" : "_R2"
+        : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(M / TILE);
     const push = push4Memo(M, N, K, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed${suffix}`, 3, 16);
-      const outBytes = M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3352,8 +5253,6 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, [...aBatch, M, N], region);
     } else {
       const pipeline = getPipeline(vk, `matmul_transposed_batched${suffix}`, 3, 16);
-      const outBytes = batchSize * M * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3378,11 +5277,10 @@ export class HeliosBackend implements Backend {
     const aBatch = a.shape.slice(0, aNdim - 2);
     let batchSize = 1;
     for (const d of aBatch) batchSize *= d;
-    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b);
-
     // matmul_transposed_a computes C[K,N] = A[M,K]^T × B[M,N].
     const outM = K;
     const loopK = M;
+    const coopInputDtypesOk = this.canUseCoopMatmulDtypes(a, b) && coopShapeIsEnabled("ta", outM, N, loopK);
 
     // Direct cooperative path for aligned transposed-A GEMMs.
     if (coopInputDtypesOk && this._coopMatSupported &&
@@ -3406,22 +5304,37 @@ export class HeliosBackend implements Backend {
       return this.gpuMatmulTransposed(aT, bT, outM, N, loopK);
     }
 
-    // Use tile=32 for large matrices (better memory efficiency, half the inner loop)
-    // Tile=16 for small matrices (better occupancy when parallelism is limited)
-    const useLargeTile = outM * N >= LARGE_TILE_THRESHOLD;
-    const TILE = useLargeTile ? 32 : 16;
-    const suffix = useLargeTile ? "_T32" : "";
-
     const bufA = ensureGpu(vk, a);
     const bufB = ensureGpu(vk, b);
+    const kernel = batchSize === 1
+      ? "matmul_transposed_a"
+      : "matmul_transposed_a_batched";
+    const outBytes = batchSize * outM * N * 4;
+    const region = acquireOutputRegion(vk, outBytes);
+    const useReg4x2 = this.shouldUseMatmulReg4x2(batchSize);
+    const useReg2x2 = !useReg4x2 && this.shouldUseMatmulReg2x2(batchSize);
+    const TILE = useReg4x2 || useReg2x2
+      ? 32
+      : this.selectMatmulTile(
+          vk,
+          kernel,
+          bufA,
+          bufB,
+          region,
+          outM,
+          N,
+          loopK,
+          batchSize,
+        );
+    const suffix = useReg4x2
+      ? ENABLE_MATMUL_TRANSPOSED_A_COALESCED ? "_R42C" : "_R42"
+      : useReg2x2 ? "_R2" : TILE === 32 ? "_T32" : "";
     const gX = Math.ceil(N / TILE);
     const gY = Math.ceil(outM / TILE);
     const push = push4Memo(outM, N, loopK, 0);
 
     if (batchSize === 1) {
       const pipeline = getPipeline(vk, `matmul_transposed_a${suffix}`, 3, 16);
-      const outBytes = outM * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3438,8 +5351,6 @@ export class HeliosBackend implements Backend {
       return graphLazyTensor(vk, [...aBatch, outM, N], region);
     } else {
       const pipeline = getPipeline(vk, `matmul_transposed_a_batched${suffix}`, 3, 16);
-      const outBytes = batchSize * outM * N * 4;
-      const region = acquireOutputRegion(vk, outBytes);
 
       graph.record({
         kind: "matmul",
@@ -3464,6 +5375,16 @@ export class HeliosBackend implements Backend {
     M: number, N: number, K: number,
     aBatch: number[], batchSize: number, transposed: boolean,
   ): TensorData {
+    const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
+      a.dtype === "f32" && b.dtype === "f32";
+    const balanceExponent = useFp16x3 &&
+      (this._coopF16x3BalancePlanRuntime !== null || this._coopF16x3CalibrationActive)
+      ? this.coopF16x3BalanceExponent(
+          this.coopF16x3Descriptor(transposed ? "tb" : "nn", a, b, M, N, K, batchSize),
+          a,
+          b,
+        )
+      : COOP_F16X3_BALANCE_EXP;
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -3574,7 +5495,29 @@ export class HeliosBackend implements Backend {
     // With kMulti=2: shmem = 16KB/WG → 3 WGs/SM, better latency hiding.
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    const normalKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    // FP16x3 doubles the shared operand tiles. Cap K packing and disable
+    // double buffering below so the common s2x2 path stays within Ada's
+    // workgroup shared-memory budget.
+    let localKMulti = useFp16x3 ? Math.min(normalKMulti, 2) : normalKMulti;
+    if (useFp16x3) {
+      const maxShared = this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0;
+      while (localKMulti > 1 && coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      ) > maxShared) {
+        localKMulti = Math.max(1, Math.floor(localKMulti / 2));
+      }
+      const requiredShared = coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      );
+      if (maxShared <= 0 || requiredShared > maxShared) {
+        throw new Error(
+          `Helios FP16x3 requires ${requiredShared} bytes of shared memory; device exposes ${maxShared}`,
+        );
+      }
+    }
     const kTileK = this._coopK * localKMulti;
 
     // Split-K: partition K-reduction across multiple WGs for better SM occupancy.
@@ -3603,7 +5546,7 @@ export class HeliosBackend implements Backend {
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
-    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF && !useFp16x3 ? "_db" : "";
     const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
 
     let variant: string;
@@ -3615,11 +5558,16 @@ export class HeliosBackend implements Backend {
         : (batchSize > 1 ? "batched" : "basic");
     }
 
+    const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
+    const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix(balanceExponent)}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
     const kernelName =
-      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      emulationSuffix +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
+    this.recordCoopShape(kernelName, M, N, K, batchSize, false, transposed);
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} M=${M} N=${N} K=${K} batch=${batchSize} transposed=${transposed} splitK=${splitK}`,
@@ -3627,8 +5575,12 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = this.getCoopInputBuffer(vk, a);
-    const bufB = this.getCoopInputBuffer(vk, b);
+    const bufA = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, a)
+      : this.getCoopF32InputBuffer(vk, a);
+    const bufB = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, b)
+      : this.getCoopF32InputBuffer(vk, b);
 
     if (useSplitK) {
       // Split-K path: dispatch matmul to temp buffer, then reduce.
@@ -3652,6 +5604,12 @@ export class HeliosBackend implements Backend {
         pushSize: 16,
         shape: [splitK, M, N],
       });
+      this._lastCoopKernel = kernelName;
+      this._lastCoopShape = {
+        M, N, K, batchSize,
+        transposedA: false,
+        transposedB: transposed,
+      };
       if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
 
       // Reduction: sum across split dimension using sum_axis kernel
@@ -3706,6 +5664,12 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, M, N],
     });
+    this._lastCoopKernel = kernelName;
+    this._lastCoopShape = {
+      M, N, K, batchSize,
+      transposedA: false,
+      transposedB: transposed,
+    };
     if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, M, N], region);
@@ -3716,6 +5680,16 @@ export class HeliosBackend implements Backend {
     outM: number, N: number, loopK: number,
     aBatch: number[], batchSize: number,
   ): TensorData {
+    const useFp16x3 = ENABLE_COOP_F16X3 && !ENABLE_COOP_F16_ACCUM &&
+      a.dtype === "f32" && b.dtype === "f32";
+    const balanceExponent = useFp16x3 &&
+      (this._coopF16x3BalancePlanRuntime !== null || this._coopF16x3CalibrationActive)
+      ? this.coopF16x3BalanceExponent(
+          this.coopF16x3Descriptor("ta", a, b, outM, N, loopK, batchSize),
+          a,
+          b,
+        )
+      : COOP_F16X3_BALANCE_EXP;
     let subgroupTilesX = 1;
     let subgroupTilesY = 1;
     let regTilesM = 1;
@@ -3817,7 +5791,26 @@ export class HeliosBackend implements Backend {
     // For high-WG shapes (≥512), kMulti=4 is better: fewer barrier cycles
     // outweigh the occupancy penalty since many waves keep SMs busy.
     const baseWGs = gX * gY;
-    const localKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    const normalKMulti = (baseWGs < COOP_KMULTI_ADAPT_MIN_WGS && this._kMulti >= 4) ? 2 : this._kMulti;
+    let localKMulti = useFp16x3 ? Math.min(normalKMulti, 2) : normalKMulti;
+    if (useFp16x3) {
+      const maxShared = this._nativeDeviceInfo?.maxComputeSharedMemorySize ?? 0;
+      while (localKMulti > 1 && coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      ) > maxShared) {
+        localKMulti = Math.max(1, Math.floor(localKMulti / 2));
+      }
+      const requiredShared = coopF16x3SharedBytes(
+        this._coopM, this._coopN, this._coopK, localKMulti,
+        subgroupTilesX, subgroupTilesY, regTilesM, regTilesN,
+      );
+      if (maxShared <= 0 || requiredShared > maxShared) {
+        throw new Error(
+          `Helios FP16x3 requires ${requiredShared} bytes of shared memory; device exposes ${maxShared}`,
+        );
+      }
+    }
     const kTileK = this._coopK * localKMulti;
     let splitK = 1;
     if (COOP_SPLIT_K !== 0 && batchSize === 1) {
@@ -3840,13 +5833,18 @@ export class HeliosBackend implements Backend {
       (subgroupTilesX === 1 && subgroupTilesY === 1) ? "" : `_s${subgroupTilesX}x${subgroupTilesY}`;
     const regTileSuffix =
       (regTilesM === 1 && regTilesN === 1) ? "" : `_r${regTilesM}x${regTilesN}`;
-    const dbSuffix = ENABLE_COOP_DOUBLE_BUF ? "_db" : "";
+    const dbSuffix = ENABLE_COOP_DOUBLE_BUF && !useFp16x3 ? "_db" : "";
     const kmSuffix = localKMulti > 1 ? `_km${localKMulti}` : "";
     const skPrefix = useSplitK ? "splitk_" : "";
+    const usePrecastF16Inputs = !useFp16x3 && this.coopUsesPrecastF16Inputs(a, b);
+    const inputStorageSuffix = usePrecastF16Inputs ? "_f16in" : "";
+    const emulationSuffix = useFp16x3 ? `_f16x3${coopF16x3BalanceSuffix(balanceExponent)}` : "";
     const kernelName =
-      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}_f16in` +
+      `matmul_coop_${skPrefix}${variant}_${this._coopM}_${this._coopN}_${this._coopK}${inputStorageSuffix}` +
       (ENABLE_COOP_F16_ACCUM ? "_f16acc" : "") +
+      emulationSuffix +
       subgroupSuffix + regTileSuffix + dbSuffix + kmSuffix;
+    this.recordCoopShape(kernelName, outM, N, loopK, batchSize, true, false);
     if (DEBUG_COOP) {
       console.error(
         `[helios:coop] enter kernel=${kernelName} outM=${outM} N=${N} K=${loopK} batch=${batchSize} transposedA=true splitK=${splitK} kMulti=${localKMulti}`,
@@ -3854,8 +5852,12 @@ export class HeliosBackend implements Backend {
     }
     const pipeline = getPipeline(vk, kernelName, 3, 16);
     if (DEBUG_COOP) console.error(`[helios:coop] pipeline ready kernel=${kernelName} handle=${pipeline}`);
-    const bufA = this.getCoopInputBuffer(vk, a);
-    const bufB = this.getCoopInputBuffer(vk, b);
+    const bufA = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, a)
+      : this.getCoopF32InputBuffer(vk, a);
+    const bufB = usePrecastF16Inputs
+      ? this.getCoopInputBuffer(vk, b)
+      : this.getCoopF32InputBuffer(vk, b);
 
     if (useSplitK) {
       const kChunk = alignUp(Math.ceil(loopK / splitK), kTileK);
@@ -3874,6 +5876,12 @@ export class HeliosBackend implements Backend {
         pushSize: 16,
         shape: [splitK, outM, N],
       });
+      this._lastCoopKernel = kernelName;
+      this._lastCoopShape = {
+        M: outM, N, K: loopK, batchSize,
+        transposedA: true,
+        transposedB: false,
+      };
       if (DEBUG_COOP) console.error(`[helios:coop] recorded splitK transA kernel g=(${gX},${gY},${splitK}) kChunk=${kChunk}`);
 
       const totalOutput = outM * N;
@@ -3921,6 +5929,12 @@ export class HeliosBackend implements Backend {
       pushSize: 16,
       shape: [...aBatch, outM, N],
     });
+    this._lastCoopKernel = kernelName;
+    this._lastCoopShape = {
+      M: outM, N, K: loopK, batchSize,
+      transposedA: true,
+      transposedB: false,
+    };
     if (DEBUG_COOP) console.error(`[helios:coop] recorded kernel=${kernelName} g=(${gX},${gY},${batchSize})`);
 
     return graphLazyTensor(vk, [...aBatch, outM, N], region);
@@ -4024,7 +6038,12 @@ export class HeliosBackend implements Backend {
 
   addInplace(a: TensorData, b: TensorData): void {
     const size = shapeSize(a.shape);
-    if (size >= this._minGpuSize) {
+    // Preserve device residency for scalar loss accumulation. The historical
+    // size-only gate made the trainer's nominally GPU-side accumulation read
+    // every microbatch loss back to the host before backward.
+    const residentScalars = a.dtype === "f32" && b.dtype === "f32"
+      && gpuResidence.has(a) && gpuResidence.has(b);
+    if (size >= this._minGpuSize || residentScalars) {
       const vk = this.init();
       const bufA = ensureGpu(vk, a);
       const bufB = ensureGpu(vk, b);
@@ -4111,6 +6130,31 @@ export class HeliosBackend implements Backend {
 
   flashAttention(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap: number): { output: TensorData; lse: TensorData } {
+    return this.flashAttentionImpl(Q, K, V, T, scale, softCap, 1, Q.shape[0], false);
+  }
+
+  flashAttentionTokenMajor(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { output: TensorData; lse: TensorData } {
+    if (Q.shape[0] !== batch * heads) {
+      throw new Error(`flashAttentionTokenMajor expected BH=${batch * heads}, got ${Q.shape[0]}`);
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_TOKEN_MAJOR === "1") {
+      const { output: headMajor, lse } = this.flashAttention(Q, K, V, T, scale, softCap);
+      const headView = this.reshape(headMajor, [batch, heads, T, Q.shape[2]]);
+      const transposed = this.transpose(headView, 1, 2);
+      const output = this.reshape(transposed, [batch * T, heads * Q.shape[2]]);
+      releaseGpuBufferFor(headMajor);
+      releaseGpuBufferFor(headView);
+      releaseGpuBufferFor(transposed);
+      return { output, lse };
+    }
+    return this.flashAttentionImpl(Q, K, V, T, scale, softCap, batch, heads, true);
+  }
+
+  private flashAttentionImpl(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean): { output: TensorData; lse: TensorData } {
     const vk = this.init();
     // Q/K/V are [BH, T, D] where BH = batch * nHeads
     const BH = Q.shape[0];
@@ -4128,14 +6172,14 @@ export class HeliosBackend implements Backend {
     let fallbackReason: string | undefined;
     if (canUseCoop2Forward) {
       if (this._flashFwdCoop2Strict) {
-        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+        return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
       }
       if (this._flashFwdCoop2Ready === true) {
-        return this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+        return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
       }
       if (this._flashFwdCoop2Ready === null) {
         try {
-          const result = this.flashAttentionCoop2(Q, K, V, T, scale, softCap);
+          const result = this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, batch, heads, tokenMajorOutput);
           this._flashFwdCoop2Ready = true;
           return result;
         } catch (err) {
@@ -4174,7 +6218,8 @@ export class HeliosBackend implements Backend {
     const Br = safeFlashTile(T, 32);
     const Bc = safeFlashTile(T, Math.min(16, Br));
     const scSuffix = softCap > 0 ? "_sc" : "";
-    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}`;
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const kernelName = `flash_attn_fwd${scSuffix}_${Br}_${Bc}_${D}${tokenMajorSuffix}`;
     const pipelineLookup = getPipelineLookup(vk, kernelName, 5, 16);
     const pipeline = pipelineLookup.handle;
 
@@ -4189,7 +6234,7 @@ export class HeliosBackend implements Backend {
     const lseBytes = BH * T * 4;
     const lseRegion = acquireOutputRegion(vk, lseBytes);
 
-    const push = push4Memo(T, scale, softCap, 0);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
     const gX = Math.ceil(T / Br);
 
     graph.record({
@@ -4201,13 +6246,13 @@ export class HeliosBackend implements Backend {
       groups: [gX, BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
+      shape: tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
       writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
-      requestedOp: "flashAttention",
+      requestedOp: tokenMajorOutput ? "flashAttentionTokenMajor" : "flashAttention",
       executedPath: "scalar",
       mode: "full",
       softCap,
@@ -4221,7 +6266,8 @@ export class HeliosBackend implements Backend {
       fallbackReason,
     });
 
-    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const output = graphLazyTensor(vk,
+      tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
   }
@@ -4309,6 +6355,12 @@ export class HeliosBackend implements Backend {
 
   flashAttentionCoop2(Q: TensorData, K: TensorData, V: TensorData,
     T: number, scale: number, softCap = 0): { output: TensorData; lse: TensorData } {
+    return this.flashAttentionCoop2Impl(Q, K, V, T, scale, softCap, 1, Q.shape[0], false);
+  }
+
+  private flashAttentionCoop2Impl(Q: TensorData, K: TensorData, V: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean): { output: TensorData; lse: TensorData } {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
@@ -4323,7 +6375,8 @@ export class HeliosBackend implements Backend {
     const qtSuffix = qTilesPerWG > 1 ? `_qt${qTilesPerWG}` : "";
     const noLseSuffix = skipLseWrite ? "_nolse" : "";
     const dbSuffix = this._flashCoop2DoubleBuf ? "_db" : "";
-    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}`;
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const baseKernelName = `flash_attn_coop2_fwd${scSuffix}${in16Suffix}${noLseSuffix}_${Br}_${Bc}_${D}${qtSuffix}_ls${localSize}${dbSuffix}${tokenMajorSuffix}`;
     const { kernelName, pipeline, pipelineKey, pipelineCreated, scope, fallbackReason } =
       this.resolveFlashCoop2Pipeline(vk, baseKernelName);
 
@@ -4336,7 +6389,7 @@ export class HeliosBackend implements Backend {
     const lseBytes = BH * T * 4;
     const lseRegion = acquireOutputRegion(vk, lseBytes);
 
-    const push = push4Memo(T, scale, softCap, 0);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
     const gX = Math.ceil(T / (Br * qTilesPerWG));
 
     graph.record({
@@ -4348,13 +6401,13 @@ export class HeliosBackend implements Backend {
       groups: [gX, BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
+      shape: tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D],
       allBufs: [bufQ, bufK, bufV, oRegion.handle, lseRegion.handle],
       writeMask: 0b11000, // O and LSE are both written
     });
 
     this.setLastFlashDispatchDebug({
-      requestedOp: "flashAttentionCoop2",
+      requestedOp: tokenMajorOutput ? "flashAttentionTokenMajor" : "flashAttentionCoop2",
       executedPath: "coop2",
       mode: "full",
       softCap,
@@ -4369,7 +6422,8 @@ export class HeliosBackend implements Backend {
       fallbackReason,
     });
 
-    const output = graphLazyTensor(vk, [BH, T, D], oRegion);
+    const output = graphLazyTensor(vk,
+      tokenMajorOutput ? [batch * T, heads * D] : [BH, T, D], oRegion);
     const lse = graphLazyTensor(vk, [BH, T], lseRegion);
     return { output, lse };
   }
@@ -4557,9 +6611,87 @@ export class HeliosBackend implements Backend {
   flashAttentionBackward(Q: TensorData, K: TensorData, V: TensorData,
     O: TensorData, dO: TensorData, lse: TensorData,
     T: number, scale: number, softCap: number): { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    const result = this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, 1, Q.shape[0], false,
+    );
+    if ("groupedQkv" in result) throw new Error("unexpected grouped Flash backward result");
+    return result;
+  }
+
+  flashAttentionBackwardTokenMajor(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, batch: number, heads: number, scale: number, softCap: number):
+    { dQ: TensorData; dK: TensorData; dV: TensorData } {
+    if (Q.shape[0] !== batch * heads) {
+      throw new Error(`flashAttentionBackwardTokenMajor expected BH=${batch * heads}, got ${Q.shape[0]}`);
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_TOKEN_MAJOR === "1") {
+      const toHeadMajor = (value: TensorData): { value: TensorData; temps: TensorData[] } => {
+        const tokenView = this.reshape(value, [batch, T, heads, Q.shape[2]]);
+        const transposed = this.transpose(tokenView, 1, 2);
+        const headView = this.reshape(transposed, [batch * heads, T, Q.shape[2]]);
+        return { value: headView, temps: [tokenView, headView, transposed] };
+      };
+      const outputHeadMajor = toHeadMajor(O);
+      const gradHeadMajor = toHeadMajor(dO);
+      const result = this.flashAttentionBackward(
+        Q, K, V, outputHeadMajor.value, gradHeadMajor.value, lse, T, scale, softCap,
+      );
+      for (const temp of [...outputHeadMajor.temps, ...gradHeadMajor.temps]) {
+        releaseGpuBufferFor(temp);
+      }
+      return result;
+    }
+    const result = this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, batch, heads, true,
+    );
+    if ("groupedQkv" in result) throw new Error("unexpected grouped Flash backward result");
+    return result;
+  }
+
+  flashAttentionBackwardGroupedQkv(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    cos: TensorData, inverseSin: TensorData,
+    T: number, batch: number, heads: number, headDim: number,
+    scale: number, softCap: number): TensorData {
+    if (Q.shape[0] !== batch * heads || Q.shape[2] !== headDim) {
+      throw new Error("flashAttentionBackwardGroupedQkv shape contract mismatch");
+    }
+    if (process.env.HELIOS_DISABLE_FLASH_GROUPED_QKV_BACKWARD === "1") {
+      const { dQ, dK, dV } = this.flashAttentionBackwardTokenMajor(
+        Q, K, V, O, dO, lse, T, batch, heads, scale, softCap,
+      );
+      const grouped = this.qkvHeadMajorRopeBackwardCombined(
+        dQ, dK, dV, cos, inverseSin, batch, T, heads, headDim,
+      );
+      releaseGpuBufferFor(dQ);
+      releaseGpuBufferFor(dK);
+      releaseGpuBufferFor(dV);
+      return grouped;
+    }
+    const result = this.flashAttentionBackwardImpl(
+      Q, K, V, O, dO, lse, T, scale, softCap, batch, heads, true,
+      cos, inverseSin,
+    );
+    if (!("groupedQkv" in result)) throw new Error("missing grouped Flash backward result");
+    return result.groupedQkv;
+  }
+
+  private flashAttentionBackwardImpl(Q: TensorData, K: TensorData, V: TensorData,
+    O: TensorData, dO: TensorData, lse: TensorData,
+    T: number, scale: number, softCap: number, batch: number, heads: number,
+    tokenMajorOutput: boolean, groupedCos?: TensorData, groupedInverseSin?: TensorData):
+    { dQ: TensorData; dK: TensorData; dV: TensorData } | { groupedQkv: TensorData } {
     const vk = this.init();
     const BH = Q.shape[0];
     const D = Q.shape[2];
+    const groupedQkvOutput = groupedCos !== undefined && groupedInverseSin !== undefined;
+    if ((groupedCos === undefined) !== (groupedInverseSin === undefined)) {
+      throw new Error("grouped Flash backward requires both cosine and inverse-sine tables");
+    }
+    if (groupedQkvOutput && D % 8 !== 0) {
+      throw new Error("grouped Flash backward requires head dimension divisible by 8");
+    }
     const requestedBr = parseInt(process.env.HELIOS_FLASH_BWD_BR ?? "32", 10);
     const requestedBrDKV = parseInt(process.env.HELIOS_FLASH_BWD_BR_DKV ?? "32", 10);
     const requestedBcDQ = parseInt(process.env.HELIOS_FLASH_BWD_BC_DQ ?? "16", 10);
@@ -4569,6 +6701,8 @@ export class HeliosBackend implements Backend {
     const BcDQ = safeFlashTile(T, Math.min(requestedBcDQ, Br));
     const BcDKV = safeFlashTile(T, requestedBcDKV);
     const scSuffix = softCap > 0 ? "_sc" : "";
+    const tokenMajorSuffix = tokenMajorOutput ? "_tm" : "";
+    const groupedQkvSuffix = groupedQkvOutput ? "_gqkv" : "";
 
     const bufQ = ensureGpu(vk, Q);
     const bufK = ensureGpu(vk, K);
@@ -4576,6 +6710,8 @@ export class HeliosBackend implements Backend {
     const bufO = ensureGpu(vk, O);
     const bufDO = ensureGpu(vk, dO);
     const bufLSE = ensureGpu(vk, lse);
+    const bufCos = groupedQkvOutput ? ensureGpu(vk, groupedCos!) : 0;
+    const bufInverseSin = groupedQkvOutput ? ensureGpu(vk, groupedInverseSin!) : 0;
 
     // Step 1: dQ kernel computes D_precomp inline (saves 2 dispatch calls ~60µs)
     // D_precomp: [BH, T] — Di = dot(dO[i,:], O[i,:]), computed inside dQ kernel
@@ -4583,11 +6719,15 @@ export class HeliosBackend implements Backend {
     const dPreRegion = acquireOutputRegion(vk, dPreBytes);
 
     // dQ kernel: bindings [Q, K, V, dO, O, LSE, Dpre_out, dQ_out]
-    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}`;
-    const dqPipeline = getPipeline(vk, dqKernel, 8, 16);
+    const dqKernel = `flash_attn_bwd_dq${scSuffix}_${Br}_${BcDQ}_${D}${tokenMajorSuffix}${groupedQkvSuffix}`;
+    const dqBindingCount = groupedQkvOutput ? 10 : 8;
+    const dqPipeline = getPipeline(vk, dqKernel, dqBindingCount, 16);
     const dqBytes = BH * T * D * 4;
-    const dqRegion = acquireOutputRegion(vk, dqBytes);
-    const push = push4Memo(T, scale, softCap, 0);
+    const groupedRegion = groupedQkvOutput
+      ? acquireOutputRegion(vk, 3 * dqBytes)
+      : null;
+    const dqRegion = groupedRegion ?? acquireOutputRegion(vk, dqBytes);
+    const push = push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0);
 
     graph.record({
       kind: "backward",
@@ -4598,31 +6738,44 @@ export class HeliosBackend implements Backend {
       groups: [Math.ceil(T / Br), BH, 1],
       push,
       pushSize: 16,
-      shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
+      shape: groupedQkvOutput ? [batch * T, 3 * heads * D] : [BH, T, D],
+      allBufs: groupedQkvOutput
+        ? [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle, bufCos, bufInverseSin]
+        : [bufQ, bufK, bufV, bufDO, bufO, bufLSE, dPreRegion.handle, dqRegion.handle],
       writeMask: 0b11000000, // Dpre and dQ are both written
     });
 
     // Step 2: dKV kernel reads D_precomp written by dQ kernel
-    const dkvKernel = `flash_attn_bwd_dkv${scSuffix}_${BrDKV}_${BcDKV}_${D}`;
-    const dkvPipeline = getPipeline(vk, dkvKernel, 8, 16);
+    // Experimental ILP variant: each invocation processes several query rows
+    // per loop body. Keep it opt-in until a physical device profile proves
+    // that the extra registers/code size beat the selected scalar kernel.
+    const dkvVariant = !tokenMajorOutput && process.env.HELIOS_FLASH_BWD_DKV_V2 === "1" ? "_v2" : "";
+    const dkvKernel = `flash_attn_bwd_dkv${dkvVariant}${scSuffix}_${BrDKV}_${BcDKV}_${D}${tokenMajorSuffix}${groupedQkvSuffix}`;
+    const dkvBindingCount = groupedQkvOutput ? 9 : 8;
+    const dkvPipeline = getPipeline(vk, dkvKernel, dkvBindingCount, 16);
     const dkBytes = BH * T * D * 4;
-    const dkRegion = acquireOutputRegion(vk, dkBytes);
+    const dkRegion = groupedRegion ?? acquireOutputRegion(vk, dkBytes);
     const dvBytes = BH * T * D * 4;
-    const dvRegion = acquireOutputRegion(vk, dvBytes);
+    const dvRegion = groupedRegion ?? acquireOutputRegion(vk, dvBytes);
 
     graph.record({
-      kind: "backward",
+      // The grouped path fills the K/V ranges of the buffer whose Q range was
+      // produced above. Mark it as an in-place continuation so static-slot
+      // analysis retains one value lifetime instead of inventing a second
+      // fresh allocation for the same physical buffer.
+      kind: groupedQkvOutput ? "inplace" : "backward",
       kernel: dkvKernel,
       pipeline: dkvPipeline,
       inputBufs: [],
       outputRegion: dkRegion,
       groups: [Math.ceil(T / BcDKV), BH, 1],
-      push: push4Memo(T, scale, softCap, 0),
+      push: push4Memo(T, scale, softCap, tokenMajorOutput ? heads : 0),
       pushSize: 16,
-      shape: [BH, T, D],
-      allBufs: [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
-      writeMask: 0b11000000, // dK and dV are both written
+      shape: groupedQkvOutput ? [batch * T, 3 * heads * D] : [BH, T, D],
+      allBufs: groupedQkvOutput
+        ? [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, bufCos, bufInverseSin]
+        : [bufQ, bufK, bufV, bufDO, bufLSE, dPreRegion.handle, dkRegion.handle, dvRegion.handle],
+      writeMask: groupedQkvOutput ? 0b1000000 : 0b11000000,
     });
 
     // Release intermediate D_precomp buffer — only needed between dQ and dKV kernels.
@@ -4630,6 +6783,9 @@ export class HeliosBackend implements Backend {
     // hitting Vulkan's live allocation limit and corrupting training.
     graph.deferRelease(dPreRegion);
 
+    if (groupedRegion) {
+      return { groupedQkv: graphLazyTensor(vk, [batch * T, 3 * heads * D], groupedRegion) };
+    }
     const dQ = graphLazyTensor(vk, [BH, T, D], dqRegion);
     const dK = graphLazyTensor(vk, [BH, T, D], dkRegion);
     const dV = graphLazyTensor(vk, [BH, T, D], dvRegion);
@@ -4648,7 +6804,33 @@ export class HeliosBackend implements Backend {
     if (totalElements >= this._minGpuSize) {
       const vk = this.init();
       const bufWeight = ensureGpu(vk, weight);
-      const bufIndices = ensureGpuRawBits(vk, indices);
+      /*
+       * THE INDICES MUST BE INTEGER BITS, and the model does not supply them.
+       *
+       * ensureGpuRawBits uploads the tensor's bytes untouched, so the shader
+       * reads whatever bit pattern is there as a u32 row number. Token ids reach
+       * this through fromArray, which stores f32 — and the bits of 7.0 are
+       * 0x40E00000, not 7. Every lookup addressed far outside the table and came
+       * back as row ZERO, so every token in the model received the same
+       * embedding vector.
+       *
+       * The CPU fallback below reads `indices.data[i]` as a NUMBER and is
+       * therefore correct, which is what made this size-gated and invisible:
+       * small models took that path and agreed with cpu_ref exactly, and only
+       * shapes above _minGpuSize were wrong. It also explains why the resulting
+       * loss looked plausible rather than broken — at initialisation every row
+       * of the table is a similar-scale random vector, so reading one row
+       * everywhere is wrong by an amount that does not announce itself.
+       *
+       * Converted here rather than at the call sites: the interface takes an
+       * index tensor and says nothing about its dtype, so this is the layer that
+       * has to reconcile the two.
+       */
+      const idxAsInt = indices.dtype === "i32"
+        ? indices
+        : makeTensor(indices.shape, "i32",
+                     Int32Array.from(indices.data as ArrayLike<number>, (v) => v | 0));
+      const bufIndices = ensureGpuRawBits(vk, idxAsInt);
 
       const useVec4 = (dim & 3) === 0;
       const kernelName = useVec4 ? "embedding_forward_vec4" : "embedding_forward";
@@ -4774,6 +6956,115 @@ export class HeliosBackend implements Backend {
     return this.cpuLogSoftmax(a, axis);
   }
 
+  crossEntropyForwardBackward(
+    logits: TensorData,
+    targets: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null {
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const totalElements = N * C;
+    const supported = process.env.HELIOS_CE_TRAINING_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (!supported) return null;
+
+    const vk = this.init();
+    const dimVec4 = C >>> 2;
+    const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+    const bufLogits = ensureGpu(vk, logits);
+    const bufTargets = ensureGpuRawBits(vk, targets);
+    const lossRegion = acquireOutputRegion(vk, N * 4);
+    const gradRegion = acquireOutputRegion(vk, totalElements * 4);
+    const pipeline = getPipeline(vk, "ce_training_fused_online", 4, 3 * 4, ceWg);
+    const push = new Float32Array([dimVec4, N, 1 / N]);
+
+    graph.record({
+      kind: "backward",
+      kernel: "ce_training_fused_online",
+      pipeline,
+      inputBufs: [],
+      outputRegion: gradRegion,
+      groups: [N, 1, 1],
+      push,
+      pushSize: 3 * 4,
+      shape: logits.shape,
+      allBufs: [bufLogits, bufTargets, lossRegion.handle, gradRegion.handle],
+      writeMask: 0b1100,
+    });
+
+    const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
+    const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
+    const totalLoss = this.gpuReduceSum(perRowLosses, false);
+    // Keep the scalar lazy. Reading totalLoss.data here used to force the
+    // entire forward graph to submit and wait before backward could even be
+    // constructed. scale() recognizes a device-resident scalar and records a
+    // tiny GPU op instead of falling through to CPU.
+    const meanLoss = this.scale(totalLoss, 1 / N);
+    releaseGpuBufferFor(perRowLosses);
+    if (totalLoss !== perRowLosses) releaseGpuBufferFor(totalLoss);
+    return {
+      loss: meanLoss,
+      gradLogits,
+    };
+  }
+
+  crossEntropyMaskedForwardBackward(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+  ): { loss: TensorData; gradLogits: TensorData } | null {
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const totalElements = N * C;
+    const supported = process.env.HELIOS_CE_TRAINING_KERNEL !== "legacy"
+      && totalElements >= this._minGpuSize
+      && C >= 16
+      && (C & 3) === 0;
+    if (!supported) return null;
+
+    const maskValues = mask.data as Float32Array;
+    let denominator = 0;
+    for (let i = 0; i < N; i++) denominator += maskValues[i];
+    denominator = Math.max(denominator, 1);
+
+    const vk = this.init();
+    const dimVec4 = C >>> 2;
+    const ceWg = Math.min(WG_SIZE, Math.max(32, 1 << Math.ceil(Math.log2(Math.max(1, dimVec4)))));
+    const bufLogits = ensureGpu(vk, logits);
+    const bufTargets = ensureGpuRawBits(vk, targets);
+    const bufMask = ensureGpu(vk, mask);
+    const lossRegion = acquireOutputRegion(vk, N * 4);
+    const gradRegion = acquireOutputRegion(vk, totalElements * 4);
+    const pipeline = getPipeline(vk, "ce_masked_training_fused_online", 5, 3 * 4, ceWg);
+    const push = new Float32Array([dimVec4, N, 1 / denominator]);
+
+    graph.record({
+      kind: "backward",
+      kernel: "ce_masked_training_fused_online",
+      pipeline,
+      inputBufs: [],
+      outputRegion: gradRegion,
+      groups: [N, 1, 1],
+      push,
+      pushSize: 3 * 4,
+      shape: logits.shape,
+      allBufs: [bufLogits, bufTargets, bufMask, lossRegion.handle, gradRegion.handle],
+      writeMask: 0b11000,
+    });
+
+    const perRowLosses = graphLazyTensor(vk, [N], lossRegion);
+    const gradLogits = graphLazyTensor(vk, logits.shape, gradRegion);
+    const totalLoss = this.gpuReduceSum(perRowLosses, false);
+    const meanLoss = this.scale(totalLoss, 1 / denominator);
+    releaseGpuBufferFor(perRowLosses);
+    if (totalLoss !== perRowLosses) releaseGpuBufferFor(totalLoss);
+    return {
+      loss: meanLoss,
+      gradLogits,
+    };
+  }
+
   crossEntropy(logits: TensorData, targets: TensorData): TensorData {
     const N = logits.shape[0];
     const C = logits.shape[1];
@@ -4872,6 +7163,102 @@ export class HeliosBackend implements Backend {
     let loss = 0;
     for (let i = 0; i < N; i++) loss -= logProbs.data[i * C + targets.data[i]] * maskArr[i];
     loss /= denom;
+    return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
+  }
+
+  crossEntropyUnlikelihoodMasked(
+    logits: TensorData,
+    targets: TensorData,
+    mask: TensorData,
+    epsilon: number,
+  ): TensorData {
+    if (!(epsilon > 0 && epsilon <= 1)) {
+      throw new Error(`crossEntropyUnlikelihoodMasked epsilon must be in (0,1], got ${epsilon}`);
+    }
+    const N = logits.shape[0];
+    const C = logits.shape[1];
+    const maskArr = mask.data as Float32Array;
+    let sumMask = 0;
+    for (let i = 0; i < N; i++) sumMask += maskArr[i];
+    const denom = Math.max(sumMask, 1);
+
+    if (N * C >= this._minGpuSize) {
+      const vk = this.init();
+      // One workgroup per row performs a stable log-sum-exp, converts the
+      // target log-probability to -log(max(1-p_bad,epsilon)), applies the mask,
+      // and writes one scalar. Only that N-wide result is reduced/read back.
+      const bufLogits = ensureGpu(vk, logits);
+      const bufTargets = ensureGpuRawBits(vk, targets);
+      const bufMask = ensureGpu(vk, mask);
+      const pipeline = getPipeline(vk, "ul_fwd_masked", 4, 3 * 4);
+      const region = acquireOutputRegion(vk, N * 4);
+
+      const push = new Float32Array(3);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = N;
+      pushU[1] = C;
+      push[2] = epsilon;
+
+      graph.record({
+        kind: "unary",
+        kernel: "ul_fwd_masked",
+        pipeline,
+        inputBufs: [],
+        outputRegion: region,
+        groups: [N, 1, 1],
+        push,
+        pushSize: 3 * 4,
+        shape: [N],
+        allBufs: [bufLogits, bufTargets, bufMask, region.handle],
+      });
+
+      const perRowLosses = graphLazyTensor(vk, [N], region);
+      const totalLoss = this.gpuReduceSum(perRowLosses, false);
+      const total = (totalLoss.data as Float32Array)[0];
+      // Read back only the N per-row scalar losses (not the N*C logits). Since
+      // loss_i = -log(1-p_bad_i)*mask_i, recover the clamped p_bad audit value.
+      const perRow = perRowLosses.data as Float32Array;
+      let activeRows = 0;
+      let weightedProbability = 0;
+      let maxBadProbability = 0;
+      for (let i = 0; i < N; i++) {
+        const m = maskArr[i];
+        if (m === 0) continue;
+        const pBad = 1 - Math.exp(-perRow[i] / m);
+        activeRows++;
+        weightedProbability += pBad * m;
+        maxBadProbability = Math.max(maxBadProbability, pBad);
+      }
+      this._lastUnlikelihoodStats = {
+        activeRows,
+        maskMass: sumMask,
+        meanBadProbability: weightedProbability / Math.max(sumMask, 1),
+        maxBadProbability,
+      };
+      return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([total / denom]));
+    }
+
+    const logProbs = this.cpuLogSoftmax(logits, 1);
+    let loss = 0;
+    let activeRows = 0;
+    let weightedProbability = 0;
+    let maxBadProbability = 0;
+    for (let i = 0; i < N; i++) {
+      const m = maskArr[i];
+      if (m === 0) continue;
+      const pBad = Math.exp(logProbs.data[i * C + targets.data[i]]);
+      loss -= Math.log(Math.max(1 - pBad, epsilon)) * m;
+      activeRows++;
+      weightedProbability += pBad * m;
+      maxBadProbability = Math.max(maxBadProbability, pBad);
+    }
+    loss /= denom;
+    this._lastUnlikelihoodStats = {
+      activeRows,
+      maskMass: sumMask,
+      meanBadProbability: weightedProbability / Math.max(sumMask, 1),
+      maxBadProbability,
+    };
     return makeTensor([], logits.dtype, dtypeArray(logits.dtype).from([loss]));
   }
 
@@ -5190,6 +7577,367 @@ export class HeliosBackend implements Backend {
       graphLazyTensor(vk, outShape, r1),
       graphLazyTensor(vk, outShape, r2),
     ];
+  }
+
+  qkvHeadMajorRope(
+    qkv: TensorData,
+    cos: TensorData,
+    sin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): [TensorData, TensorData, TensorData] {
+    const modelDim = heads * headDim;
+    const rows = batch * sequence;
+    if (headDim <= 0 || (headDim & 1) !== 0) {
+      throw new Error(`qkvHeadMajorRope: headDim must be positive and even, got ${headDim}`);
+    }
+    if (qkv.shape.length !== 2 || qkv.shape[0] !== rows || qkv.shape[1] !== 3 * modelDim) {
+      throw new Error(
+        `qkvHeadMajorRope: expected [${rows},${3 * modelDim}], got [${qkv.shape}]`,
+      );
+    }
+    if (cos.shape[0] !== sequence || cos.shape[1] !== headDim / 2
+      || sin.shape[0] !== sequence || sin.shape[1] !== headDim / 2) {
+      throw new Error(
+        `qkvHeadMajorRope: expected cos/sin [${sequence},${headDim / 2}], got `
+          + `[${cos.shape}] and [${sin.shape}]`,
+      );
+    }
+
+    if (DISABLE_QKV_HEAD_MAJOR_ROPE) {
+      const [qFlat, kFlat, vFlat] = this.sliceQkv(qkv);
+      const toHeadMajor = (x: TensorData): TensorData => this.reshape(
+        this.transpose(this.reshape(x, [batch, sequence, heads, headDim]), 1, 2),
+        [batch * heads, sequence, headDim],
+      );
+      return [
+        this.rope(toHeadMajor(qFlat), cos, sin),
+        this.rope(toHeadMajor(kFlat), cos, sin),
+        toHeadMajor(vFlat),
+      ];
+    }
+
+    const outputShape: Shape = [batch * heads, sequence, headDim];
+    const outputSize = shapeSize(outputShape);
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const qkvBuffer = ensureGpu(vk, qkv);
+      const cosBuffer = ensureGpu(vk, cos);
+      const sinBuffer = ensureGpu(vk, sin);
+      const qRegion = acquireOutputRegion(vk, outputSize * 4);
+      const kRegion = acquireOutputRegion(vk, outputSize * 4);
+      const vRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(5);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize >>> 1;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      const pipeline = getPipeline(vk, "qkv_head_major_rope", 6, 5 * 4);
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope",
+        pipeline,
+        inputBufs: [],
+        outputRegion: qRegion,
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
+        push,
+        pushSize: 5 * 4,
+        shape: outputShape,
+        allBufs: [
+          qkvBuffer,
+          cosBuffer,
+          sinBuffer,
+          qRegion.handle,
+          kRegion.handle,
+          vRegion.handle,
+        ],
+        writeMask: 0b111000,
+      });
+      return [
+        graphLazyTensor(vk, outputShape, qRegion),
+        graphLazyTensor(vk, outputShape, kRegion),
+        graphLazyTensor(vk, outputShape, vRegion),
+      ];
+    }
+
+    this.checkFallback("qkvHeadMajorRope");
+    const source = qkv.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const sinData = sin.data as Float32Array;
+    const qOut = new Float32Array(outputSize);
+    const kOut = new Float32Array(outputSize);
+    const vOut = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const sourceBase = (b * sequence + t) * (3 * modelDim) + h * headDim;
+          const outputBase = ((b * heads + h) * sequence + t) * headDim;
+          const tableBase = t * half;
+          for (let i = 0; i < half; i++) {
+            const c = cosData[tableBase + i];
+            const s = sinData[tableBase + i];
+            const qA = source[sourceBase + i];
+            const qB = source[sourceBase + i + half];
+            const kA = source[sourceBase + modelDim + i];
+            const kB = source[sourceBase + modelDim + i + half];
+            qOut[outputBase + i] = qA * c - qB * s;
+            qOut[outputBase + i + half] = qB * c + qA * s;
+            kOut[outputBase + i] = kA * c - kB * s;
+            kOut[outputBase + i + half] = kB * c + kA * s;
+            vOut[outputBase + i] = source[sourceBase + 2 * modelDim + i];
+            vOut[outputBase + i + half] = source[sourceBase + 2 * modelDim + i + half];
+          }
+        }
+      }
+    }
+    return [
+      makeTensor(outputShape, qkv.dtype, qOut),
+      makeTensor(outputShape, qkv.dtype, kOut),
+      makeTensor(outputShape, qkv.dtype, vOut),
+    ];
+  }
+
+  qkvHeadMajorRopeBackward(
+    grad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+    which: 0 | 1 | 2,
+  ): TensorData {
+    const modelDim = heads * headDim;
+    const expectedGradShape: Shape = [batch * heads, sequence, headDim];
+    if (!this.shapesEqual(grad.shape, expectedGradShape)) {
+      throw new Error(
+        `qkvHeadMajorRopeBackward: expected grad [${expectedGradShape}], got [${grad.shape}]`,
+      );
+    }
+    if (which !== 0 && which !== 1 && which !== 2) {
+      throw new Error(`qkvHeadMajorRopeBackward: invalid branch ${which}`);
+    }
+    const outputShape: Shape = [batch * sequence, 3 * modelDim];
+    const outputSize = shapeSize(outputShape);
+
+    if (DISABLE_QKV_HEAD_MAJOR_ROPE) {
+      const unrotated = which < 2 ? this.rope(grad, cos, inverseSin) : grad;
+      const tokenMajor = this.reshape(
+        this.transpose(this.reshape(unrotated, [batch, heads, sequence, headDim]), 1, 2),
+        [batch * sequence, modelDim],
+      );
+      return this.scatterSlice(
+        tokenMajor,
+        outputShape,
+        [0, which * modelDim],
+        [batch * sequence, (which + 1) * modelDim],
+      );
+    }
+
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const gradBuffer = ensureGpu(vk, grad);
+      const cosBuffer = ensureGpu(vk, cos);
+      const inverseSinBuffer = ensureGpu(vk, inverseSin);
+      const outputRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(6);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize >>> 1;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      pushU[5] = which;
+      const pipeline = getPipeline(vk, "qkv_head_major_rope_backward", 4, 6 * 4);
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope_backward",
+        pipeline,
+        inputBufs: [],
+        outputRegion,
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
+        push,
+        pushSize: 6 * 4,
+        shape: outputShape,
+        allBufs: [gradBuffer, cosBuffer, inverseSinBuffer, outputRegion.handle],
+      });
+      return graphLazyTensor(vk, outputShape, outputRegion);
+    }
+
+    this.checkFallback("qkvHeadMajorRopeBackward");
+    const gradData = grad.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const inverseSinData = inverseSin.data as Float32Array;
+    const output = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const gradBase = ((b * heads + h) * sequence + t) * headDim;
+          const outputBase = (b * sequence + t) * (3 * modelDim)
+            + which * modelDim + h * headDim;
+          const tableBase = t * half;
+          for (let i = 0; i < half; i++) {
+            const gA = gradData[gradBase + i];
+            const gB = gradData[gradBase + i + half];
+            if (which < 2) {
+              const c = cosData[tableBase + i];
+              const sInv = inverseSinData[tableBase + i];
+              output[outputBase + i] = gA * c - gB * sInv;
+              output[outputBase + i + half] = gB * c + gA * sInv;
+            } else {
+              output[outputBase + i] = gA;
+              output[outputBase + i + half] = gB;
+            }
+          }
+        }
+      }
+    }
+    return makeTensor(outputShape, grad.dtype, output);
+  }
+
+  qkvHeadMajorRopeBackwardCombined(
+    qGrad: TensorData,
+    kGrad: TensorData,
+    vGrad: TensorData,
+    cos: TensorData,
+    inverseSin: TensorData,
+    batch: number,
+    sequence: number,
+    heads: number,
+    headDim: number,
+  ): TensorData {
+    const expectedGradShape: Shape = [batch * heads, sequence, headDim];
+    if (headDim <= 0 || (headDim & 1) !== 0) {
+      throw new Error(
+        `qkvHeadMajorRopeBackwardCombined: headDim must be positive and even, got ${headDim}`,
+      );
+    }
+    for (const [name, grad] of [["q", qGrad], ["k", kGrad], ["v", vGrad]] as const) {
+      if (!this.shapesEqual(grad.shape, expectedGradShape)) {
+        throw new Error(
+          `qkvHeadMajorRopeBackwardCombined: expected ${name} grad [${expectedGradShape}], `
+            + `got [${grad.shape}]`,
+        );
+      }
+    }
+    if (cos.shape[0] !== sequence || cos.shape[1] !== headDim / 2
+      || inverseSin.shape[0] !== sequence || inverseSin.shape[1] !== headDim / 2) {
+      throw new Error(
+        `qkvHeadMajorRopeBackwardCombined: expected cos/inverseSin `
+          + `[${sequence},${headDim / 2}], got [${cos.shape}] and [${inverseSin.shape}]`,
+      );
+    }
+    const modelDim = heads * headDim;
+    const outputShape: Shape = [batch * sequence, 3 * modelDim];
+    const outputSize = shapeSize(outputShape);
+
+    if (DISABLE_QKV_COMBINED_BACKWARD) {
+      const q = this.qkvHeadMajorRopeBackward(
+        qGrad, cos, inverseSin, batch, sequence, heads, headDim, 0,
+      );
+      const k = this.qkvHeadMajorRopeBackward(
+        kGrad, cos, inverseSin, batch, sequence, heads, headDim, 1,
+      );
+      const v = this.qkvHeadMajorRopeBackward(
+        vGrad, cos, inverseSin, batch, sequence, heads, headDim, 2,
+      );
+      const qk = this.add(q, k);
+      const combined = this.add(qk, v);
+      // The matched control intentionally materialises the three padded
+      // branches and two adds, but these temporaries have no Tape variables of
+      // their own. Register deterministic deferred release after their graph
+      // consumers have been recorded instead of waiting for JavaScript GC.
+      releaseGpuBufferFor(q);
+      releaseGpuBufferFor(k);
+      releaseGpuBufferFor(v);
+      releaseGpuBufferFor(qk);
+      return combined;
+    }
+
+    if (outputSize >= this._minGpuSize) {
+      const vk = this.init();
+      const qBuffer = ensureGpu(vk, qGrad);
+      const kBuffer = ensureGpu(vk, kGrad);
+      const vBuffer = ensureGpu(vk, vGrad);
+      const cosBuffer = ensureGpu(vk, cos);
+      const inverseSinBuffer = ensureGpu(vk, inverseSin);
+      const outputRegion = acquireOutputRegion(vk, outputSize * 4);
+      const push = new Float32Array(5);
+      const pushU = new Uint32Array(push.buffer);
+      pushU[0] = outputSize >>> 1;
+      pushU[1] = sequence;
+      pushU[2] = heads;
+      pushU[3] = headDim;
+      pushU[4] = modelDim;
+      const pipeline = getPipeline(
+        vk,
+        "qkv_head_major_rope_backward_combined",
+        6,
+        5 * 4,
+      );
+      graph.record({
+        kind: "unary",
+        kernel: "qkv_head_major_rope_backward_combined",
+        pipeline,
+        inputBufs: [],
+        outputRegion,
+        groups: [Math.ceil((outputSize >>> 1) / WG_SIZE), 1, 1],
+        push,
+        pushSize: 5 * 4,
+        shape: outputShape,
+        allBufs: [
+          qBuffer,
+          kBuffer,
+          vBuffer,
+          cosBuffer,
+          inverseSinBuffer,
+          outputRegion.handle,
+        ],
+      });
+      return graphLazyTensor(vk, outputShape, outputRegion);
+    }
+
+    this.checkFallback("qkvHeadMajorRopeBackwardCombined");
+    const qData = qGrad.data as Float32Array;
+    const kData = kGrad.data as Float32Array;
+    const vData = vGrad.data as Float32Array;
+    const cosData = cos.data as Float32Array;
+    const inverseSinData = inverseSin.data as Float32Array;
+    const output = new Float32Array(outputSize);
+    const half = headDim >>> 1;
+    const sources = [qData, kData, vData];
+    for (let b = 0; b < batch; b++) {
+      for (let h = 0; h < heads; h++) {
+        for (let t = 0; t < sequence; t++) {
+          const gradBase = ((b * heads + h) * sequence + t) * headDim;
+          const tableBase = t * half;
+          for (let which = 0; which < 3; which++) {
+            const outputBase = (b * sequence + t) * (3 * modelDim)
+              + which * modelDim + h * headDim;
+            for (let i = 0; i < half; i++) {
+              const gA = sources[which][gradBase + i];
+              const gB = sources[which][gradBase + i + half];
+              if (which < 2) {
+                const c = cosData[tableBase + i];
+                const sInv = inverseSinData[tableBase + i];
+                output[outputBase + i] = gA * c - gB * sInv;
+                output[outputBase + i + half] = gB * c + gA * sInv;
+              } else {
+                output[outputBase + i] = gA;
+                output[outputBase + i + half] = gB;
+              }
+            }
+          }
+        }
+      }
+    }
+    return makeTensor(outputShape, qGrad.dtype, output);
   }
 
   scatterSlice(grad: TensorData, origShape: Shape, starts: number[], ends: number[]): TensorData {

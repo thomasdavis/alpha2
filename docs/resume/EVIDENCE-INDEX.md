@@ -3,6 +3,309 @@
 This index answers “where is the proof?” without requiring a future session to search the whole data
 disk.
 
+The current self-contained transfer package is:
+
+    docs/resume/HANDOFF-TO-NEXT-AGENT-2026-08-03.md
+
+It records the exact repository/runtime/publication snapshot, product boundary, selected throughput baseline,
+open and rejected experiments, evidence map, and next-action order. The mounted records below remain the
+authority for raw measurements.
+
+The mandatory mounted-disk preservation policy and cross-experiment register are:
+
+    /mnt/donto-data/donto-resources/research/alpha-helios/PRESERVATION-POLICY.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/EVIDENCE-REGISTER.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/CURRENT-BOTTLENECK-LEDGER-2026-08-03.md
+    /mnt/donto-data/donto-resources/research/alpha-helios/PERFORMANCE-PRIOR-ART-AND-OPPORTUNITY-AUDIT-2026-08-03.md
+
+Raw research, controls, failures, rejected candidates, machine metadata, and checksums must remain on the mounted
+drive; repository prose is an index, not a substitute for those artifacts.
+
+## 2026-08-03 Helios exact profiler and register-blocked GEMM
+
+Authoritative evidence and rejected-measurement record:
+
+    docs/resume/HELIOS-PROFILER-REGISTER-BLOCKING-EVIDENCE-2026-08-03.md
+
+Program and AMD compatibility contract:
+
+    docs/resume/HELIOS-OPTIMIZATION-AND-AMD-PROGRAM-2026-08-03.md
+
+The exact RTX 4090 profile found generic FP32 GEMMs consumed about 80.2% of measured dispatch time. The new
+portable 2 x 2 register-blocked kernel reduced exact one-step dispatch time from 3,216,809.1 to 2,030,423.3
+microseconds (-36.9%), generic-matmul time from 2,541,982.1 to 1,361,243.1 microseconds (-46.5%), and raised
+matched steady median throughput from the historical 3,579 to 4,513 tokens/s (+26.1%). The six-step printed
+training and validation trajectory matched. Both the default and optimized implementations passed 105 real GPU
+parity/gradient tests.
+
+Implementation and executable checks:
+
+- `scripts/smoke-helios-dispatch-profiler.mjs`
+- `scripts/smoke-helios-matmul-autotune.mjs`
+- `HELIOS_PROFILE_GPU_TIMESTAMPS=1` for exact non-replayed per-dispatch timing
+- `HELIOS_MATMUL_REG2X2=1` for the measured portable candidate
+
+The odd-dimension test covers all three GEMM layouts at `M=113`, `N=157`, `K=93`; it passes on RTX 4090 and
+Mesa llvmpipe. Physical AMD validation remains open and is not implied by software Vulkan evidence.
+
+### Gradient-buffer ownership follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-gradient-ownership-20260803/
+
+Corrected profiler labels showed that 637 `scale_vec4x2` dispatches were autograd gradient clones. The selected
+ownership-aware tape transfers the final consumer's buffer and clones only true aliases. In the exact graph it
+removed 728 operations (2,431 to 1,703) and reduced dispatch time from 2,186,644.2 to 1,926,446.8 microseconds.
+A current-source, trace-on control toggled by `ALPHA_DISABLE_GRADIENT_BUFFER_MOVE=1` measured 4,121.0 tokens/s;
+the candidate measured 6,123.2 (+48.6%). The longer selected trace-off run measured 18 warm steps at
+p10/median/p90 6,432.6 / 6,567.7 / 6,666.5 tokens/s, with a minimum of 6,411.7 and maximum of 6,677.8. Matched
+losses and validation loss were exact and maximum gradient-norm difference was `6.913e-7`. A fixed-order bounded
+embedding-gradient gather closed an intermittent one-ulp atomic-order replay mismatch without replacing the fast
+production scatter; the case passed in 10 fresh GPU processes and the physical suite passed 29 files / 283 tests.
+
+The same evidence record preserves the rejected dKV V2 experiment: +74.7% dKV GPU time, +15.6% full-graph
+dispatch time, and -2.8% steady throughput. It is not selected.
+
+### Layout-aware R4x2/R2 follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-r42-portfolio-20260803/
+
+A portable 16 x 8-workgroup, 4 x 2-output kernel improved ordinary and transposed-A multiplication but regressed
+transposed-B, so the selected portfolio uses R4x2 / R2 / R4x2 by layout. Across 18 warm production steps, median
+throughput rose from 6,567.7 to 6,836.8 tokens/s (+4.10%), with p10/p90 6,638.4 / 6,970.6. Maximum loss and
+gradient-norm differences were `9.537e-7` and `4.308e-8`; terminal held-out loss, learning rate, and clipping
+coefficients matched. The full RTX 4090 suite passed 29 files / 283 tests. The artifact README and digest ledger
+cover the all-R4x2 profile, selected hybrid profile, sustained run, physical/software smokes, and full test output.
+
+The first portfolio was bound as kernel policy `layout-portfolio-r42-r2-v1` before the coalesced follow-up below
+superseded it. At the measured median, the frozen token contract estimated to 78.9 device-hours or
+USD 54.44 at USD 0.69/hour before run overhead. This is engine evidence only, not a new model version.
+
+### Coalesced transposed-B follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-coalesced-20260803/
+
+R42C remaps physical B loads so adjacent X invocations traverse contiguous K elements and transpose only into
+shared memory. The paired R2C control was correct but neutral. R42C reduced transposed-B time from 570,078.2 to
+467,672.1 us (-17.96%), exact full-graph dispatch time from 1,759,004.2 to 1,640,182.0 us (-6.75%), and raised
+the 18-warm-step median from 6,836.8 to 7,048.9 tokens/s (+3.10%). Its p10/p90 was 6,844.8 / 7,200.8.
+
+Maximum loss and gradient-norm differences were `9.537e-7` and `3.681e-8`; terminal held-out loss, learning rate,
+and clipping coefficients matched. The full RTX 4090 suite passed 29 files / 283 tests. The foundation launcher
+supersedes the prior policy with `layout-portfolio-r42c-r2-v2`, binding the coalesced flag and transposed-B R4x2
+selection. At the measured median, the frozen contract estimates to 76.5 device-hours or USD 52.80 at USD
+0.69/hour before overhead.
+
+### Coalesced transposed-A follow-up
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-matmul-transposed-a-coalesced-20260803/
+
+R42C-A remaps physical `[K,M]` A loads so adjacent X invocations traverse contiguous M values and transpose only
+into the shared `[32,16]` tile. Two exact controls measured 336,395.8 and 338,954.0 us across 91 transposed-A
+calls; three candidates measured 290,239.8-292,475.6 us. Candidate median is 13.61% below the control midpoint.
+
+In a candidate-first 20-step production run followed by its control, warm median throughput rose from 7,085.0
+to 7,253.8 tokens/s (+2.38%). Loss was exact across all steps, maximum gradient-norm difference was `2.154e-8`,
+and terminal validation, learning rate, and clipping coefficients matched. The full RTX 4090 suite passed 29
+files / 283 tests. The launcher now binds `layout-portfolio-r42c-r42ca-r2-v3` at selected source commit
+`028e9b31524e6d89b2caee76dad2ae47b8896e03`. At the measured median, the frozen contract estimates to 74.37
+device-hours or USD 51.31 at USD 0.69/hour before overhead.
+
+### Experimental R42CK32 local preflight
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-r42ck32-local-preflight-20260803/
+
+Source commit `2ca869249da901763b7f4a69db939226753b198f` adds an opt-in transposed-B R42C shader with a 32-wide K tile and
+8 KiB total shared memory. The intended `matmul_transposed_R42CK32` dispatch passed the awkward
+`M=113`, `N=157`, `K=93` Mesa smoke with maximum absolute error `3.338e-6`; the selected K16 R42C/R42C-A control
+smokes and the complete local 233-pass/50-gated/0-fail suite also passed. This archive is a local correctness
+preflight, not physical speed evidence. K32 remains absent from the selected launcher until a future physical
+K16/K32 A/B establishes end-to-end value.
+
+RunPod `wtupxv15debnvh` was deleted after the selected and experimental source were pushed. Its pre-deletion
+dirty worktree, untracked scripts, all stashes, and small root artifacts were preserved with transfer hash parity
+at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-runpod-shutdown-wtupxv15debnvh-20260803/
+
+### Cooperative GEMM production-pattern oracle preflight
+
+Canonical mounted evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-production-oracle-preflight-20260803/
+
+The legacy cooperative path is now known to have two distinct correctness failures: cooperative forward changed
+the first loss from 2.7419 to 6.9667 even with FP16/loss scaling disabled, while the later experimental
+cooperative backward separately produced extreme gradients and memory/cast pressure. Three new closed-form
+rank-one tests exercise ordinary and transposed-B products at `[1024,512,1408]`, plus the transposed-A
+`[1024,512]^T @ [1024,1408]` weight-gradient shape. They require the production `s2x2_r4x4` forward tile,
+the selected `s2x2_r2x2` weight-gradient tile, direct cooperative-dispatch telemetry, and check every output to
+`1e-4`. A fourth dense, non-low-rank dyadic test compares the suspect production transposed-B tile to the
+generic FP32 path with **zero tolerance**: its f16 inputs, pairwise products, and complete K=512 dot products are
+exactly representable in f32. The full local package suite passes 233 tests with 54 GPU-gated and zero failures.
+These four cases remain explicitly unproven on physical cooperative-matrix hardware; no speed claim exists yet.
+
+The follow-up contract audit also streamed all 57,688,576 parameters from the exact base checkpoint. Maximum
+absolute value was 4.6417856 and zero stored values exceeded f16's 65,504 maximum, falsifying stored-weight
+overflow as the B4 cause. It records the historical sweep's missing exact source binding and the launcher repair
+that now preserves commit, dirty status, tracked patch, source hashes, runtime, and controlled environment:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-coop-forward-contract-audit-20260803/
+
+## 2026-08-03 row-parallel column-sum preflight
+
+The selected RMSNorm weight-gradient reduction launches one useful thread per model column and makes it serially
+walk every token row. In the 97M foundation contract that means roughly 512 useful threads each walking 24,576
+rows, and the exact RTX profile attributes 37 calls / 59,809.7 us to `column_sum`. The opt-in
+`column_sum_row_lanes_{4,8,16}` family instead uses `[32,rowLanes,1]` workgroups: several row lanes collaborate on
+each column, then reduce through 512 B, 1 KiB, or 2 KiB of workgroup memory. Adjacent column lanes retain
+contiguous reads, and the shaders use no atomics or subgroup-size assumption.
+
+The candidate compiled and executed on llvmpipe with subgroup size 8. On an awkward dense 257 x 96 RMSNorm
+backward fixture all three variants stayed within `4.2915e-6` maximum weight-gradient error against the host
+reference. The local package
+suite passes 233 tests with 55 physical-GPU-gated and zero failures. This is portability and correctness
+preflight only: the family is disabled unless `HELIOS_COLUMN_SUM_ROW_LANES=4|8|16`, and it has no speed claim or
+production status before a provenance-bound physical-GPU profile and sustained trajectory comparison.
+
+## 2026-08-03 reproducible profiler summaries
+
+`scripts/summarize_helios_profile.mjs` parses raw `[gpu_ops]` lines directly, averages any number of samples,
+retains the profiler's dynamic operation kinds and kernel identities, calculates per-call time and measured
+dispatch share, and hashes every input log. It emits Markdown for operator review or JSON for later comparisons.
+The two selected transposed-A candidate profiles reproduce the canonical `1,670,607.05 us` mean dispatch total.
+The generated reference report is preserved at:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-profile-summary-tool-20260803/
+
+The corresponding physical experiment is encoded in
+`scripts/run_helios_column_sum_sweep.sh`. It uses mirrored order for both exact timestamp and sustained phases,
+captures source/input/runtime provenance before execution, and disables checkpoint writes. It remains unexecuted;
+the presence of the script is not physical timing evidence.
+
+## 2026-08-02 Helios chat-throughput sweep
+
+Authoritative outcome:
+
+    docs/resume/HELIOS-CHAT-THROUGHPUT-SWEEP-OUTCOME-2026-08-02.md
+
+Canonical mounted-drive evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-chat-throughput-20260802/
+
+The eight-row, identical-window RTX 4090 sweep found no safe full-context
+improvement over the 5,333.6 tok/s FP32 reference. Both cooperative/mixed
+precision paths failed correctness. The synchronized attribution row measured
+502 ms forward versus 2,682.5 ms backward. All six successful compressed
+checkpoints pass `zstd -t` and their per-row digest ledgers.
+
+| Artifact | SHA-256 |
+|---|---|
+| `SUMMARY.md` | `84f52591b97e9542a5f9988517da6730d5cc766df1ef0b4a9990481be58e2663` |
+| `summary.json` | `a28c9c53799d3054bd8947f6cdffa0b6f27c1f0fbffedb42bd6f8a8d1feb1c3f` |
+| `ARTIFACTS.sha256` | `4ed1c05cee21aca81f9710b03c00477b0d6a11d8d60cc8475bedc15f90dcbcb5` |
+
+## 2026-08-02 foundation-candidate feasibility and LR pilot
+
+Decision and exact pilot contract:
+
+    docs/resume/FOUNDATION-CANDIDATE-FEASIBILITY-2026-08-02.md
+
+Canonical measured evidence:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-foundation-feasibility-20260802/
+
+Frozen corpus controls:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `foundation-2b-manifest.json` | `be6975e2ffe327beafdc35174321c79a778b3ac33e248eba28ab591081dcb2e0` |
+| `foundation-val-005-64m.txt` | `17e30fa2e50e1a1f116cceed95381b76edd1be595d402c4dd053bd55a7eafd60` |
+| `foundation-val-005-64m.manifest.json` | `f010da477d29189211d04ee05253906310658e0b61aac06069d48c84be24f384` |
+
+The 136.9M row was rejected on measured cost. The 97,098,880-parameter row at
+batch 24 is authorized only for the three 384-step LR arms. No foundation
+checkpoint, HF/BLAH version, or Discord improvement exists yet.
+
+## 2026-08-02 same-dataset recipe audit
+
+Canonical audit:
+
+    docs/resume/SAME-DATASET-RECIPE-AUDIT-2026-08-02.md
+
+Mounted evidence:
+
+    /mnt/donto-data/donto-resources/research/alpha-same-dataset-recipe-audit-20260802/
+
+The audit found that the successful public same-Smoltalk SFT recipe used packed
+full-sequence causal loss for two epochs, whereas Alpha's flagship used one
+un-packed assistant-only pass. The proposed synthetic V12 generation is parked
+until the existing-data recipe is tested from the clean base.
+
+Both declared V12 learning-rate arms are now complete and rejected:
+
+    docs/resume/CHAT-RECIPE-V12-LR3E4-OUTCOME.md
+    docs/resume/CHAT-RECIPE-V12-LR1E3-OUTCOME.md
+
+The `1e-3` arm completed 2,000/2,000 finite steps and all eight frozen
+checkpoint evaluations. Its best regression window was step 1,000 at 34/69
+structural passes with 36 loops, versus the public Alpha baseline at 55/69 with
+24 loops. No checkpoint was selected or published. Native checkpoints and the
+compact evaluation mirror are preserved under:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-recipe-v12-20260802/
+
+Frozen V12 contract:
+
+    docs/resume/CHAT-RECIPE-V12-CONTRACT.md
+
+Validated corpus:
+
+    /mnt/donto-data/alpha-corpora/chat-recipe-v12/
+
+| Artifact | SHA-256 / result |
+|---|---|
+| train text, 450,402 rows | `e15e19f100040565faac1ed0381ed6e3db2a06c2b9a197b756fc0dd7c20b8f2a` |
+| test text, 23,710 rows | `0b6e240d5ffcbb3a26d961bcd81f37787830ff9ebfe37d4e0faa528fcdcd701c` |
+| corpus manifest | `68365ae0e2e6c4289a5ab1fd4458fd67b92085dd15475f4ccbe6723448046617` |
+| structure | 474,112 / 474,112 clean |
+| exact train/test overlap | zero after nine held-out exclusions |
+| tokenizer parity | 4,096 / 4,096 sampled rows exact |
+
+## 2026-08-02 chat foundations v11
+
+Authoritative outcome:
+
+    docs/resume/CHAT-FOUNDATIONS-V11-OUTCOME.md
+
+Run root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-foundations-v11-20260802/
+
+Research and evaluation mirror:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-foundations-v11-20260802/
+
+The step-300 native checkpoint SHA-256 is
+`6226c1443741058089f110b89dfa341e0325851098d3aaf049a501c1ca3393f9`. The reference-blinded GPT-5.5
+review SHA-256 is `29355fb8a4e8093472b08f0bb4438964383749c00dd2be8faf625ea468a40a1a`; it ranked V8 first and selected
+`NONE`. V11 is a rejected negative result.
+
+The operator-requested experimental publication is Hugging Face revision
+`29f0372fb94c1d249421daca50c3fbd263dc1309` and BLAH model `Mq5PrXS1MUk2yl0eSKUXwA`. BLAH run
+`XEDqvFu4Adbj86rKEVUqEg` completed all 24 eval definitions with mean `0.3625`, below the earlier Alpha
+run's `0.395833`. The exact model, run, results, logs, and eval definitions are preserved under
+`blah-evaluation/` with hashes recorded in the outcome document.
+
 ## 2026-07-31 chat repair
 
 Root:
@@ -44,6 +347,161 @@ Final selected frozen outputs:
 | `final-heldout-pair-analysis.json` | `8e6b245c9932ca93887549a6e839ce61337eb52a7925a4d3bc9930a978b29763` |
 
 Final machine result: 55/100 structural, 70/100 nonempty, 31 loops, and 0/200 closed-book QA exact. Gate FAIL.
+
+## 2026-07-31 chat repair v2
+
+Root:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/
+
+Authoritative narrative:
+
+    docs/resume/CHAT-REPAIR-V2-2026-07-31.md
+
+Primary files:
+
+| Evidence | Purpose |
+|---|---|
+| `pilot-a/evaluations/baseline-step1200-development/` | published baseline on the frozen v2 selector |
+| `pilot-a/evaluations/pilot-a-eval-step-{200,400,600,800}/` | bounded continuation outputs and exact shared-ID comparisons |
+| `pilot-b/run/config.json` | executed clean-base configuration |
+| `pilot-b/run/repair-contract.json` | exact clean-base input and intervention contract |
+| `pilot-b/run/metrics.jsonl` | complete 1,600-step finite trajectory |
+| `pilot-b/run/MANIFEST.sha256` | all eight optimizer-bearing checkpoints plus run state |
+| `pilot-b/evaluations/pilot-b-eval-step-{400,800,1200,1600}/` | raw outputs, machine summaries, exact comparisons, and fixed panels |
+| `pilot-b/remote-logs/` | launcher and evaluator logs copied from the pod |
+| `pilot-b/runpod-before-termination.txt` | exact Alpha and unrelated pod state before removal |
+| `pilot-b/runpod-after-termination.txt` | proof the Alpha pod was removed and the unrelated pod preserved |
+| `hf-recovery-archive/CHECKSUMS.sha256` | complete 53-file public recovery payload seal |
+
+The exact comparable 69-prompt result rejected every v2 checkpoint. The published baseline had 24 loop flags;
+Pilot A's best was 30, and the clean-base control's best was 29. All v2 checkpoints were nonempty on all 96
+development prompts, demonstrating that response initiation and conversational competence are separate.
+
+Clean-base checkpoint hashes:
+
+| Step | SHA-256 |
+|---:|---|
+| 200 | `689c377420dc928b34200aef75fe06738160a6c8c45adafe8ea5fb9c2488bad4` |
+| 400 | `276d8fe12f30ffa9acc80336712baa5aac4d459b89e585ad536352fe61574332` |
+| 600 | `d0b440470c7863afa75e470fea19548f8bc9ddc15c951e380c2f54ee416151dd` |
+| 800 | `fc83b3cd8493e1b554a436a61025a80a13359317e0ad0327ec0320ebafafa0b4` |
+| 1,000 | `f50b47c61788a69305ad94ea6bd428762e3ce8c2fe8e75e3139d231fe62b8f5a` |
+| 1,200 | `ffac13d2fde9de551224c9764e26a0f36acf2b5acc64a6b30fad0ef092afdce1` |
+| 1,400 | `fd1968b554b0b460ae9e0d49fc8e1a1da0b701d0a027976ba0e5c826dd1ca930` |
+| 1,600 | `1aa3e071d1999254903b95b1c46cd3ab8907f826ebf3cf3c2078c7c52c318be8` |
+
+Public negative-result archive:
+
+    https://huggingface.co/ajaxdavis/alpha-60m-training-checkpoints/tree/c1117378c0bc8b81b408be09c000f80ea9f027d7/chat-repair-v2-20260731
+
+Anonymous publication proof:
+
+| Item | Verified value |
+|---|---|
+| Immutable revision | `c1117378c0bc8b81b408be09c000f80ea9f027d7` |
+| Nested files | 53 |
+| Checkpoint LFS metadata | step 800 and step 1,600 SHA/size both matched |
+| README SHA-256 | `3235310d50eb4da238d8658106eb484abb3d2f96068f259730f6b7f6206ec953` |
+| `CHECKSUMS.sha256` SHA-256 | `b733f5704e722faadd2e6e46cd9505be44e7952da75d3d001aa65ac92cc6cf5f` |
+
+Post-rejection live browser proof:
+
+    /mnt/donto-data/alpha-runs/alpha-chat-repair-v2-20260731/public-verification/space-live-selected-step1200-20260731.png
+    SHA-256 54a56df6d34bcfac0e68727953feb4bc2846c77226730f876ae9a2f19d685d14
+
+The real browser submitted `Hey, how is your day going?`, displayed `It's going well, thank you. How about you?`,
+retained the visible quality-fail status, one main landmark, and no horizontal overflow. Health and evidence
+endpoints bound the runtime to selected step 1,200 and its exact checkpoint SHA.
+
+The sealed-final suite SHA-256 is
+`8b71ab5f8843b14a8bbe56a473ea9cd0672b873024632c023abbe4935e48eb1d`; it was never executed or inspected.
+No v2 model-improvement Discord announcement was made.
+
+## 2026-08-01 chat repair v3 local preflight
+
+Authoritative records:
+
+    docs/resume/CHAT-REPAIR-V3-EXPERIMENT-CONTRACT.md
+    docs/resume/CHAT-REPAIR-V3-LOCAL-PREFLIGHT-2026-08-01.md
+
+Implementation commits:
+
+    8341dd0  train: implement matched rollout unlikelihood preflight
+    5753ca9  research: bind v3 to native context
+    b367f6b  research: accelerate v3 rollouts with native parity
+    957a02b  research: freeze v3 checkpoint evaluation
+    db7daed  research: make v3 evaluation freeze reproducible
+
+Canonical corrected freeze:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-20260801/
+
+Deterministic replay:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r3-replay-20260801/
+
+The canonical and replay builds contain identical bytes for all six selected/excluded artifacts. The freeze is
+native to the selected checkpoint's 512-token context, caps prompts at 384 tokens, reserves 128 generated tokens,
+and has zero over-limit rows.
+
+| Artifact | SHA-256 |
+|---|---|
+| rollout candidates | `c8df6ccd79c4eb813d87c48eee9d2462837a944d24aeba1263c87515282e670a` |
+| positive cohort | `3c9dcc8d44db15491dc94e0167e864da4fc436a49edbdbf9bac6b4b0652377da` |
+| rollout exclusions | `bbea8330f6730eba9e60f578c125bddd092537f6b1e82d67d5afdece39551e2d` |
+| fresh development selector | `0133dcda7d6ae3d5d7ed315e528e6cf566f332a355ed6189525f7a9f2b90c683` |
+| qualitative panel | `c4c869f6c1dc30a9fa644d5e45782683f200db4f80bc9c54995abf0dd0983000` |
+| development exclusions | `7e574f35703d80c1c0bca7a6599a079a29fd4729270854beff174e2d9e116557` |
+| canonical freeze manifest | `976ef6b37949c729a2abad77f50f46c685dcb63269af1a1963dca58428e11231` |
+
+Corrected native rollout smoke:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-smoke-r3-20260801/
+
+The 24-row, six-per-source native smoke contains 946 generated decisions. Its first output terminated at learned
+EOS but had 4-gram repeat rate `0.5102040816326531`, confirming a mechanically eligible failed trajectory. The
+batched fp32 Transformers export reproduced every one of the 946 selected tokens, every runner-up token ID,
+output text, and stop exactly. Maximum chosen-logit drift was `2.2649765014648438e-05`. Evidence:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-hf-cpu-smoke-r3-20260801/
+    raw-rollouts.jsonl SHA-256 f60c80f972ca5449689f7c440e36ef1e73828e351face5c2122d411cc5bf7317
+    native-parity-report.json SHA-256 04ecc1f3883e53a79cd3caa6b6cf3011a74b1492c3eddda19d796b587a3ce290
+
+Both smokes are partial diagnostic evidence, not the complete rollout ledger. The compiler requires this PASS
+report if the accelerated generator produces the complete ledger.
+
+Canonical development-only evaluation freeze:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-canonical-20260801/
+
+Independent byte-identical replay:
+
+    /mnt/donto-data/donto-resources/research/
+      alpha-chat-repair-v3-evaluation-freeze-r2-replay-20260801/
+
+| Artifact | SHA-256 |
+|---|---|
+| evaluation contract | `c0270b2fb544fec5e03addb168841c20183ab7b7522a0937e3e0647ae0b509ce` |
+| exact eligible-69 prompts | `4ba67c07fea204bbc76d76fb2b9208519bdd0029aa48046bb8143b6bcdedb584` |
+
+The first r1 attempt is retained as negative provenance evidence: its 69 prompt bytes replayed exactly, but its
+contract hash included wall-clock/output-path variation. R2 removes those non-semantic inputs and `cmp` passes on
+both files. The eligible-69 set is disjoint from fresh96 by normalized prompt, preserves original v2 order, and
+ranges to 508 prompt tokens. Two partial reference-blinded CPU evaluator smokes are preserved at:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-hf-cpu-smoke-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-eval-regression-hf-cpu-smoke-20260801/
+
+Local result: 223 tests passed, 50 NVIDIA assertions skipped on non-NVIDIA llvmpipe, and 0 failed. The full
+rollout ledger, compiled mask cohort, real 50/50 NVIDIA proof, and both training arms remain open. No improvement
+or candidate exists yet. The following r2 directories are retained but superseded because their 1,024-token
+freeze did not match the selected checkpoint's native context:
+
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r2-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-freeze-r2-replay-20260801/
+    /mnt/donto-data/donto-resources/research/alpha-chat-repair-v3-rollout-smoke-20260801/
 
 ## Terminal run
 
@@ -197,3 +655,20 @@ payload for the public training-checkpoint repository.
 
 Do not use an old HANDOFF live endpoint or pod ID as current truth. The historical section is retained
 only to reconstruct the paid trajectory.
+
+## RTX 3090 critical path and dKV tile correctness — 2026-08-03
+
+Canonical engine note:
+
+    docs/resume/HELIOS-RTX3090-CRITICAL-PATH-EVIDENCE-2026-08-03.md
+
+Artifact root:
+
+    /mnt/donto-data/donto-resources/benchmarks/alpha-helios-3090-kernel-profile-20260803-r7/
+
+The warmed 97.1M-parameter batch-10 profile attributes 84.59% of dispatch time to three GEMM kernels and flash
+attention dKV backward. Physical tests reject R42CK32 as neutral/slightly slower and reject dKV-v2 as 4.50x
+slower. A non-square dKV sweep found an apparent 118-148 ms speedup that was actually skipped causal work and
+`NaN` gradients. Correct causal block indexing plus complete cooperative staging restored finite, reference-matched
+training; the corrected non-square candidates were slower than selected 32 x 32. All false-positive and repaired
+runs are retained. The pod was deleted and the post-delete RunPod list was empty.

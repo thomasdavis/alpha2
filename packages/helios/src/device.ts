@@ -9,13 +9,74 @@ import { createRequire } from "node:module";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import type { CooperativeMatrixProperty } from "./cooperative-matrix-capabilities.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Native addon interface ──────────────────────────────────────────────────
 
+/**
+ * Capability snapshot returned by the native Vulkan bridge.
+ *
+ * Values describe the loaded physical device and driver, not an inferred
+ * vendor profile. Keep this record additive and fingerprintable: training
+ * admission and kernel selection must depend on capabilities rather than a
+ * hard-coded NVIDIA/AMD allow-list.
+ */
+export interface NativeDeviceInfo {
+  deviceName: string;
+  vendorId: number;
+  deviceId: number;
+  deviceType: number;
+  apiVersion: number;
+  driverVersion: number;
+  deviceLocalMemoryBytes: number;
+  maxComputeSharedMemorySize: number;
+  maxComputeWorkGroupInvocations: number;
+  maxComputeWorkGroupSizeX: number;
+  maxComputeWorkGroupSizeY: number;
+  maxComputeWorkGroupSizeZ: number;
+  subgroupSize: number;
+  subgroupSupportedStages: number;
+  subgroupSupportedOperations: number;
+  subgroupQuadOperationsInAllStages: boolean;
+  subgroupSizeControlSupported: boolean;
+  computeFullSubgroupsSupported: boolean;
+  minSubgroupSize: number;
+  maxSubgroupSize: number;
+  maxComputeWorkgroupSubgroups: number;
+  requiredSubgroupSizeStages: number;
+  timestampValidBits: number;
+  timestampPeriodNs: number;
+  f16Supported: boolean;
+  hasAsyncTransfer: boolean;
+  coopMatSupported: boolean;
+  coopMat2Supported: boolean;
+  coopMatM: number;
+  coopMatN: number;
+  coopMatK: number;
+  /** Complete tuple list returned by vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR. */
+  cooperativeMatrixProperties: CooperativeMatrixProperty[];
+  hasPushDescriptors: boolean;
+  hasBDA: boolean;
+  hasDGC: boolean;
+}
+
+/**
+ * X39 native host-interval breakdown. Phases are disjoint segments of the
+ * native dispatch path. `ring_wait` is a GPU-completion wait rather than host
+ * work and must not be treated as removable overhead.
+ */
+export interface NativeHostTiming {
+  enabled: boolean;
+  batches: number;
+  dispatches: number;
+  clockReads: number;
+  phases: Record<string, { us: number; calls: number }>;
+}
+
 export interface NativeAddon {
-  initDevice():   { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean };
+  initDevice(): NativeDeviceInfo;
   createBuffer(byteLength: number, hostVisible?: number, temporary?: number): number;
   getAllocatorStats?(): {
     activeBuffers: number;
@@ -30,6 +91,7 @@ export interface NativeAddon {
     tempSlabLiveBytes: number;
     tempSlabLiveRefs: number;
     tempSlabResets: number;
+    tempSlabsDisabled: number;
     hostSlabCount: number;
     hostSlabCapacityBytes: number;
     trackedVkMemoryAllocations: number;
@@ -49,8 +111,19 @@ export interface NativeAddon {
   batchDispatchMany(packed: ArrayBuffer, count: number): void;
   batchSubmit(): number;
   batchExecuteAll?(packed: ArrayBuffer, count: number): number;
+  batchExecuteAllProfiled?(packed: ArrayBuffer, count: number): {
+    timeline: number;
+    batchGpuTimeUs: number;
+    dispatchCount: number;
+    dispatchTimesUs: Float64Array;
+  };
   batchExecuteAllDGC?(packed: ArrayBuffer, count: number): number;
+  /** X39: disjoint native host-phase totals. Only populated when HELIOS_HOST_TIMING=1. */
+  getHostTiming?(): NativeHostTiming;
+  resetHostTiming?(): void;
   dgcSetup?(pipelineSlot: number, pushConstantSize: number, maxSequences: number): boolean;
+  /** Device address of a buffer as [lo, hi] u32 words. Requires BDA support. */
+  dgcGetBufferAddress?(bufferSlot: number): [number, number];
   dgcInfo?(): { hasBDA: boolean; hasDGC: boolean; stride: number; maxSequences: number };
   waitTimeline(value: number): void;
   getCompleted(): number;
@@ -62,7 +135,8 @@ export interface NativeAddon {
 // ── Loading ─────────────────────────────────────────────────────────────────
 
 let _native: NativeAddon | null = null;
-let _deviceInfo: { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } | null = null;
+let _deviceInfo: NativeDeviceInfo | null = null;
+let _nativeAddonPath: string | null = null;
 
 function findNativeAddon(): string {
   const envOverride = process.env.HELIOS_NATIVE_ADDON;
@@ -96,12 +170,13 @@ function findNativeAddon(): string {
 }
 
 /** Load the native addon and initialize the Vulkan device. */
-export function initDevice(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean; hasBDA: boolean; hasDGC: boolean } {
+export function initDevice(): NativeDeviceInfo {
   if (_deviceInfo) return _deviceInfo;
 
   const addonPath = findNativeAddon();
   const require = createRequire(import.meta.url);
   _native = require(addonPath) as NativeAddon;
+  _nativeAddonPath = addonPath;
 
   _deviceInfo = _native.initDevice();
   return _deviceInfo;
@@ -116,9 +191,15 @@ export function getNative(): NativeAddon {
 }
 
 /** Get device info. */
-export function getDeviceInfo(): { deviceName: string; vendorId: number; f16Supported: boolean; hasAsyncTransfer: boolean; coopMatSupported: boolean; coopMat2Supported: boolean; coopMatM: number; coopMatN: number; coopMatK: number; hasPushDescriptors: boolean } {
+export function getDeviceInfo(): NativeDeviceInfo {
   if (!_deviceInfo) initDevice();
   return _deviceInfo!;
+}
+
+/** Exact native addon binary loaded for the current device session. */
+export function getNativeAddonPath(): string {
+  if (!_nativeAddonPath) initDevice();
+  return _nativeAddonPath!;
 }
 
 /** Destroy the Vulkan device and release all resources. */
@@ -127,5 +208,6 @@ export function destroyDevice(): void {
     _native.destroy();
     _native = null;
     _deviceInfo = null;
+    _nativeAddonPath = null;
   }
 }

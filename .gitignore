@@ -30,3 +30,13 @@ third_party/
 # secrets — never commit real env files
 **/.env
 !**/.env.example
+
+# from-scratch GPU stack build output
+packages/helios/native/.build/
+
+# perf workbench DB (rebuilt by tools/alphaperf.py backfill)
+alphaperf.db
+alphaperf.db-wal
+alphaperf.db-shm
+gpu-op-universe/node_modules/
+gpu-op-universe/**/dist/

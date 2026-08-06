@@ -345,7 +345,27 @@ export function kernelSoftmax(wgSize = 256): Uint32Array {
  * Push constants: { dimVec4: f32, numRows: f32 }
  * Dispatch: (numRows, 1, 1) workgroups of (wgSize, 1, 1)
  */
-export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
+type OnlineSoftmaxOutput =
+  | "probabilities"
+  | "cross_entropy_backward"
+  | "cross_entropy_masked_backward"
+  | "cross_entropy_training"
+  | "cross_entropy_masked_training";
+
+/**
+ * Shared online-normalization generator.
+ *
+ * The cross-entropy variants deliberately normalize and form dlogits in the
+ * same kernel.  The historical path first wrote an N*C probability tensor,
+ * then read it back in a second dispatch to form another N*C dlogits tensor.
+ * For language-model vocabularies that is a very large, wholly avoidable VRAM
+ * round trip.  Keeping this generator shared with softmax also keeps the
+ * numerical reduction order identical to the already exercised online kernel.
+ */
+function kernelSoftmaxOnlineImpl(
+  wgSize: number,
+  outputKind: OnlineSoftmaxOutput,
+): Uint32Array {
   const SUBGROUP_SIZE = 32;
   const numSubgroups = Math.max(1, wgSize / SUBGROUP_SIZE);
   const b = new SpirVBuilder();
@@ -358,11 +378,35 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   // vec4 type
   const tVec4F32 = b.id();
   b.typeVector(tVec4F32, p.tF32, 4);
+  const tVec4Bool = b.id();
+  b.typeVector(tVec4Bool, p.tBool, 4);
 
-  // Buffers: input (vec4, readonly), output (vec4, write)
+  const isCrossEntropy = outputKind !== "probabilities";
+  const isMaskedCrossEntropy = outputKind === "cross_entropy_masked_backward"
+    || outputKind === "cross_entropy_masked_training";
+  const isTrainingCrossEntropy = outputKind === "cross_entropy_training"
+    || outputKind === "cross_entropy_masked_training";
+
+  // Buffers: input (vec4, readonly), optional targets/mask, output (vec4).
+  // Output is always the final binding so Helios's default write mask remains
+  // correct for every variant.
   const bufA = declareStorageBufferVec4(b, tVec4F32, 0, 0, true);
-  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, 1, false, true);
-  const pc = declareParamsPushConstant(b, p.tF32, 2); // dimVec4, numRows
+  const bufTargets = isCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true)
+    : null;
+  const bufMask = isMaskedCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true)
+    : null;
+  const bufLosses = isTrainingCrossEntropy
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, isMaskedCrossEntropy ? 3 : 2, false)
+    : null;
+  const outputBinding = isTrainingCrossEntropy
+    ? isMaskedCrossEntropy ? 4 : 3
+    : isMaskedCrossEntropy ? 3
+    : isCrossEntropy ? 2
+    : 1;
+  const bufC = declareStorageBufferVec4(b, tVec4F32, 0, outputBinding, false, true);
+  const pc = declareParamsPushConstant(b, p.tF32, isCrossEntropy ? 3 : 2);
 
   // Constants
   const constWgSize = b.id();
@@ -373,6 +417,12 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.constantF32(p.tF32, constNegMax, -3.4028235e+38);
   const const1f = b.id();
   b.constantF32(p.tF32, const1f, 1.0);
+  const const2u = b.id();
+  b.constant(p.tU32, const2u, 2);
+  const const3u = b.id();
+  b.constant(p.tU32, const3u, 3);
+  const const4u = b.id();
+  b.constant(p.tU32, const4u, 4);
   const scopeSubgroup = b.id();
   b.constant(p.tU32, scopeSubgroup, Scope.Subgroup);
   const const5u = b.id();
@@ -633,12 +683,84 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
     b.emit(Op.Load, [p.tF32, globalSum, ptrGSum]);
   }
 
-  // Precompute 1/sum and splat vectors for Phase 2
+  // Precompute 1/sum and splat vectors for Phase 2.
   const invSum = b.id(); b.emit(Op.FDiv, [p.tF32, invSum, const1f, globalSum]);
   const splatGMax = b.id();
   b.emit(Op.CompositeConstruct, [tVec4F32, splatGMax, globalMax, globalMax, globalMax, globalMax]);
   const splatInvSum = b.id();
   b.emit(Op.CompositeConstruct, [tVec4F32, splatInvSum, invSum, invSum, invSum, invSum]);
+
+  // Cross-entropy variants additionally load the row target and upstream
+  // scale once.  The masked variant folds its row weight into that scale.
+  let targetU = p.const0u;
+  let outputScale = const1f;
+  let rowMask = const1f;
+  if (isCrossEntropy) {
+    const ptrTarget = b.id();
+    b.emit(Op.AccessChain, [bufTargets!.tPtrF32, ptrTarget, bufTargets!.varId, p.const0u, row]);
+    const targetF = b.id();
+    b.emit(Op.Load, [p.tF32, targetF, ptrTarget]);
+    targetU = b.id();
+    b.emit(Op.Bitcast, [p.tU32, targetU, targetF]);
+
+    const ptrScale = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrScale, pc.varId, const2u]);
+    outputScale = b.id();
+    b.emit(Op.Load, [p.tF32, outputScale, ptrScale]);
+
+    if (isMaskedCrossEntropy) {
+      const ptrMask = b.id();
+      b.emit(Op.AccessChain, [bufMask!.tPtrF32, ptrMask, bufMask!.varId, p.const0u, row]);
+      const maskValue = b.id();
+      b.emit(Op.Load, [p.tF32, maskValue, ptrMask]);
+      rowMask = maskValue;
+      const maskedScale = b.id();
+      b.emit(Op.FMul, [p.tF32, maskedScale, outputScale, maskValue]);
+      outputScale = maskedScale;
+    }
+  }
+
+  if (isTrainingCrossEntropy) {
+    // Loss uses the same max/sum pair as dlogits. Only lane 0 writes the row
+    // scalar; all workgroup lanes then continue into the second logits pass.
+    const targetVecIndex = b.id();
+    b.emit(Op.ShiftRightLogical, [p.tU32, targetVecIndex, targetU, const2u]);
+    const targetLane = b.id();
+    b.emit(Op.BitwiseAnd, [p.tU32, targetLane, targetU, const3u]);
+    const targetGlobalVec = b.id();
+    b.emit(Op.IAdd, [p.tU32, targetGlobalVec, rowOffset, targetVecIndex]);
+    const ptrTargetVec = b.id();
+    b.emit(Op.AccessChain, [bufA.tPtrVec4, ptrTargetVec, bufA.varId, p.const0u, targetGlobalVec]);
+    const targetVec = b.id();
+    b.emit(Op.Load, [tVec4F32, targetVec, ptrTargetVec]);
+    const targetLogit = b.id();
+    b.emit(Op.VectorExtractDynamic, [p.tF32, targetLogit, targetVec, targetLane]);
+    const logSum = b.id();
+    b.emit(Op.ExtInst, [p.tF32, logSum, p.glslStd, GLSLstd450.Log, globalSum]);
+    const logSumExp = b.id();
+    b.emit(Op.FAdd, [p.tF32, logSumExp, logSum, globalMax]);
+    const unmaskedRowLoss = b.id();
+    b.emit(Op.FSub, [p.tF32, unmaskedRowLoss, logSumExp, targetLogit]);
+    let rowLoss = unmaskedRowLoss;
+    if (isMaskedCrossEntropy) {
+      rowLoss = b.id();
+      b.emit(Op.FMul, [p.tF32, rowLoss, unmaskedRowLoss, rowMask]);
+    }
+    const isLane0 = b.id();
+    b.emit(Op.IEqual, [p.tBool, isLane0, localIdx, p.const0u]);
+    const writeLossLabel = b.id();
+    const afterLossLabel = b.id();
+    b.emit(Op.SelectionMerge, [afterLossLabel, 0]);
+    b.emit(Op.BranchConditional, [isLane0, writeLossLabel, afterLossLabel]);
+    b.emit(Op.Label, [writeLossLabel]);
+    const ptrLoss = b.id();
+    b.emit(Op.AccessChain, [bufLosses!.tPtrF32, ptrLoss, bufLosses!.varId, p.const0u, row]);
+    b.emit(Op.Store, [ptrLoss, rowLoss]);
+    b.emit(Op.Branch, [afterLossLabel]);
+    b.emit(Op.Label, [afterLossLabel]);
+  }
+  const zeroVec = b.id();
+  b.emit(Op.CompositeConstruct, [tVec4F32, zeroVec, p.const0f, p.const0f, p.const0f, p.const0f]);
 
   // ── Phase 2: Normalize: output = exp(input - max) * invSum ──
   b.emit(Op.Store, [varIdx, localIdx]);
@@ -672,10 +794,46 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.emit(Op.ExtInst, [tVec4F32, expV2, p.glslStd, GLSLstd450.Exp, shifted2]);
   const normalized = b.id();
   b.emit(Op.FMul, [tVec4F32, normalized, expV2, splatInvSum]);
+
+  let outputValue = normalized;
+  if (isCrossEntropy) {
+    // This vec4 represents scalar columns [4*i, 4*i+1, 4*i+2, 4*i+3].
+    // Construct the local one-hot vector without ever materializing N*C
+    // probabilities or one-hot values in memory.
+    const baseCol = b.id();
+    b.emit(Op.IMul, [p.tU32, baseCol, curIdx2, const4u]);
+    const col1 = b.id(); b.emit(Op.IAdd, [p.tU32, col1, baseCol, p.const1u]);
+    const col2 = b.id(); b.emit(Op.IAdd, [p.tU32, col2, baseCol, const2u]);
+    const col3 = b.id(); b.emit(Op.IAdd, [p.tU32, col3, baseCol, const3u]);
+    const eq0 = b.id(); b.emit(Op.IEqual, [p.tBool, eq0, baseCol, targetU]);
+    const eq1 = b.id(); b.emit(Op.IEqual, [p.tBool, eq1, col1, targetU]);
+    const eq2 = b.id(); b.emit(Op.IEqual, [p.tBool, eq2, col2, targetU]);
+    const eq3 = b.id(); b.emit(Op.IEqual, [p.tBool, eq3, col3, targetU]);
+    const hot0 = b.id(); b.emit(Op.Select, [p.tF32, hot0, eq0, const1f, p.const0f]);
+    const hot1 = b.id(); b.emit(Op.Select, [p.tF32, hot1, eq1, const1f, p.const0f]);
+    const hot2 = b.id(); b.emit(Op.Select, [p.tF32, hot2, eq2, const1f, p.const0f]);
+    const hot3 = b.id(); b.emit(Op.Select, [p.tF32, hot3, eq3, const1f, p.const0f]);
+    const oneHot = b.id();
+    b.emit(Op.CompositeConstruct, [tVec4F32, oneHot, hot0, hot1, hot2, hot3]);
+    const diff = b.id();
+    b.emit(Op.FSub, [tVec4F32, diff, normalized, oneHot]);
+    const scaleVec = b.id();
+    b.emit(Op.CompositeConstruct, [tVec4F32, scaleVec, outputScale, outputScale, outputScale, outputScale]);
+    const scaled = b.id();
+    b.emit(Op.FMul, [tVec4F32, scaled, diff, scaleVec]);
+
+    // Canonicalize both signs of exact zero component-wise. In particular,
+    // masked target rows would otherwise contain -0, violating the existing
+    // backend-independent exact-zero contract.
+    const isZero = b.id();
+    b.emit(Op.FOrdEqual, [tVec4Bool, isZero, scaled, zeroVec]);
+    outputValue = b.id();
+    b.emit(Op.Select, [tVec4F32, outputValue, isZero, zeroVec, scaled]);
+  }
   // Store to output
   const ptrC2 = b.id();
   b.emit(Op.AccessChain, [bufC.tPtrVec4, ptrC2, bufC.varId, p.const0u, globalIdx2]);
-  b.emit(Op.Store, [ptrC2, normalized]);
+  b.emit(Op.Store, [ptrC2, outputValue]);
 
   b.emit(Op.Branch, [labelP2Cont]);
   b.emit(Op.Label, [labelP2Cont]);
@@ -691,6 +849,37 @@ export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
 
   return b.build();
+}
+
+/** Two-pass online softmax with vec4 loads. */
+export function kernelSoftmaxOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "probabilities");
+}
+
+/**
+ * Two-pass fused cross-entropy backward from logits directly to dlogits.
+ * This removes the full-size probability tensor and the follow-up dispatch.
+ */
+export function kernelCrossEntropyBackwardFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_backward");
+}
+
+/** Fused masked-mean cross-entropy backward, directly from logits. */
+export function kernelCrossEntropyBackwardMaskedFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_masked_backward");
+}
+
+/**
+ * Training classifier: writes per-row losses and mean-loss dlogits together.
+ * The caller reduces the small loss vector; backward reuses the cached dlogits.
+ */
+export function kernelCrossEntropyTrainingFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_training");
+}
+
+/** Masked training classifier: weighted loss rows and dlogits in one pass. */
+export function kernelCrossEntropyMaskedTrainingFusedOnline(wgSize = 256): Uint32Array {
+  return kernelSoftmaxOnlineImpl(wgSize, "cross_entropy_masked_training");
 }
 
 // ── Kernel: Persistent CTA softmax (grid-stride row loop for L2 reuse) ────
@@ -3508,17 +3697,25 @@ export function kernelLayerNormBackwardVec4(wgSize = 256): Uint32Array {
  *   2. invRms = 1 / sqrt(ms + eps)
  *   3. out = x * invRms * weight
  *
- * Bindings: 0=X(in), 1=weight(in), 2=C(out)
+ * Plain bindings: 0=X(in), 1=weight(in), 2=C(out)
+ * Residual-add bindings: 0=residual(in), 1=projected(in), 2=weight(in),
+ *   3=residualOut(out), 4=C(out)
  * Push constants: { dim: f32, eps: f32 }
  * Dispatch: (numRows, 1, 1)
  */
-export function kernelRmsNorm(wgSize = 256): Uint32Array {
+function kernelRmsNormImpl(wgSize: number, residualAdd: boolean): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
   const bufX = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
-  const bufW = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
-  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const bufProjected = residualAdd
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true)
+    : null;
+  const bufW = declareStorageBuffer(b, p.tF32, p.tU32, 0, residualAdd ? 2 : 1, true);
+  const bufResidualOut = residualAdd
+    ? declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false)
+    : null;
+  const bufC = declareStorageBuffer(b, p.tF32, p.tU32, 0, residualAdd ? 4 : 2, false);
   const pc = declareParamsPushConstant(b, p.tF32, 2);
 
   const constWgSize = b.id();
@@ -3544,7 +3741,13 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   const scopeWg = b.id();
   b.constant(p.tU32, scopeWg, Scope.Workgroup);
   const semAcqRelWg = b.id();
-  b.constant(p.tU32, semAcqRelWg, MemorySemantics.AcquireRelease | MemorySemantics.WorkgroupMemory);
+  b.constant(
+    p.tU32,
+    semAcqRelWg,
+    MemorySemantics.AcquireRelease
+      | MemorySemantics.WorkgroupMemory
+      | (residualAdd ? MemorySemantics.UniformMemory : 0),
+  );
 
   const tPtrFnU32 = b.id();
   b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
@@ -3653,8 +3856,20 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   emitAccLoop((gi) => {
     const ptr = b.id();
     b.emit(Op.AccessChain, [bufX.tPtrF32, ptr, bufX.varId, p.const0u, gi]);
-    const v = b.id();
-    b.emit(Op.Load, [p.tF32, v, ptr]);
+    const xv = b.id();
+    b.emit(Op.Load, [p.tF32, xv, ptr]);
+    let v = xv;
+    if (residualAdd) {
+      const ptrProjected = b.id();
+      b.emit(Op.AccessChain, [bufProjected!.tPtrF32, ptrProjected, bufProjected!.varId, p.const0u, gi]);
+      const projected = b.id();
+      b.emit(Op.Load, [p.tF32, projected, ptrProjected]);
+      v = b.id();
+      b.emit(Op.FAdd, [p.tF32, v, xv, projected]);
+      const ptrResidualOut = b.id();
+      b.emit(Op.AccessChain, [bufResidualOut!.tPtrF32, ptrResidualOut, bufResidualOut!.varId, p.const0u, gi]);
+      b.emit(Op.Store, [ptrResidualOut, v]);
+    }
     const sq = b.id();
     b.emit(Op.FMul, [p.tF32, sq, v, v]);
     return sq;
@@ -3703,7 +3918,8 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   const gi = b.id();
   b.emit(Op.IAdd, [p.tU32, gi, rowOffset, ci]);
   const ptrX = b.id();
-  b.emit(Op.AccessChain, [bufX.tPtrF32, ptrX, bufX.varId, p.const0u, gi]);
+  const phase2Input = residualAdd ? bufResidualOut! : bufX;
+  b.emit(Op.AccessChain, [phase2Input.tPtrF32, ptrX, phase2Input.varId, p.const0u, gi]);
   const xv = b.id();
   b.emit(Op.Load, [p.tF32, xv, ptrX]);
   const ptrW = b.id();
@@ -3731,6 +3947,22 @@ export function kernelRmsNorm(wgSize = 256): Uint32Array {
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
   return b.build();
+}
+
+/** Ordinary RMSNorm readout. */
+export function kernelRmsNorm(wgSize = 256): Uint32Array {
+  return kernelRmsNormImpl(wgSize, false);
+}
+
+/**
+ * Fuses residual + projected with the immediately following RMSNorm. Phase 1
+ * writes the residual stream while accumulating its sum of squares; phase 2
+ * reads that result once to emit the normalized view. Compared with separate
+ * add and RMSNorm kernels this removes one full residual-stream read and one
+ * dispatch without changing either output.
+ */
+export function kernelResidualAddRmsNorm(wgSize = 256): Uint32Array {
+  return kernelRmsNormImpl(wgSize, true);
 }
 
 // ── Kernel: RMSNorm backward (one workgroup per row) ─────────────────────────
@@ -4582,25 +4814,31 @@ export function kernelCrossEntropyForwardFused(wgSize = 256): Uint32Array {
  * Push constants: { N: u32, C: u32 }
  * Dispatch: (N, 1, 1) workgroups
  */
-export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
+export function kernelCrossEntropyForwardMasked(wgSize = 256, unlikelihood = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
+  const constOne = b.id();
+  b.constantF32(p.tF32, constOne, 1.0);
 
   const bufLogits = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
   const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
   const bufMask = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
   const bufOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
 
-  // Push constants: { N: u32, C: u32 }
+  // Push constants: CE { N: u32, C: u32 };
+  // unlikelihood variant additionally has { epsilon: f32 }.
   const tPCStruct = b.id();
-  b.typeStruct(tPCStruct, [p.tU32, p.tU32]);
+  b.typeStruct(tPCStruct, unlikelihood ? [p.tU32, p.tU32, p.tF32] : [p.tU32, p.tU32]);
   b.addDecorate(tPCStruct, Decoration.Block);
   b.addMemberDecorate(tPCStruct, 0, Decoration.Offset, 0);
   b.addMemberDecorate(tPCStruct, 1, Decoration.Offset, 4);
+  if (unlikelihood) b.addMemberDecorate(tPCStruct, 2, Decoration.Offset, 8);
   const tPtrPCStruct = b.id();
   b.typePointer(tPtrPCStruct, StorageClass.PushConstant, tPCStruct);
   const tPtrU32PC = b.id();
   b.typePointer(tPtrU32PC, StorageClass.PushConstant, p.tU32);
+  const tPtrF32PC = b.id();
+  b.typePointer(tPtrF32PC, StorageClass.PushConstant, p.tF32);
   const pcVar = b.id();
   b.variable(tPtrPCStruct, pcVar, StorageClass.PushConstant);
 
@@ -4667,6 +4905,14 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   const totalN = b.id(); b.emit(Op.Load, [p.tU32, totalN, ptrPC0]);
   const ptrPC1 = b.id(); b.emit(Op.AccessChain, [tPtrU32PC, ptrPC1, pcVar, p.const1u]);
   const vocabC = b.id(); b.emit(Op.Load, [p.tU32, vocabC, ptrPC1]);
+  let epsilonF = p.const0f;
+  if (unlikelihood) {
+    const const2u = b.id(); b.constant(p.tU32, const2u, 2);
+    const ptrPCEpsilon = b.id();
+    b.emit(Op.AccessChain, [tPtrF32PC, ptrPCEpsilon, pcVar, const2u]);
+    epsilonF = b.id();
+    b.emit(Op.Load, [p.tF32, epsilonF, ptrPCEpsilon]);
+  }
 
   const rowOffset = b.id();
   b.emit(Op.IMul, [p.tU32, rowOffset, row, vocabC]);
@@ -4879,8 +5125,25 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   const logitTarget = b.id();
   b.emit(Op.Load, [p.tF32, logitTarget, ptrLogitTarget]);
 
-  const lossRaw = b.id();
-  b.emit(Op.FSub, [p.tF32, lossRaw, logSumExp, logitTarget]);
+  let lossRaw: number;
+  if (unlikelihood) {
+    // p_bad = exp(logit[target] - logSumExp)
+    const targetLogProb = b.id();
+    b.emit(Op.FSub, [p.tF32, targetLogProb, logitTarget, logSumExp]);
+    const pBad = b.id();
+    b.emit(Op.ExtInst, [p.tF32, pBad, p.glslStd, GLSLstd450.Exp, targetLogProb]);
+    const oneMinusPBad = b.id();
+    b.emit(Op.FSub, [p.tF32, oneMinusPBad, constOne, pBad]);
+    const safeOneMinus = b.id();
+    b.emit(Op.ExtInst, [p.tF32, safeOneMinus, p.glslStd, GLSLstd450.FMax, oneMinusPBad, epsilonF]);
+    const logSafe = b.id();
+    b.emit(Op.ExtInst, [p.tF32, logSafe, p.glslStd, GLSLstd450.Log, safeOneMinus]);
+    lossRaw = b.id();
+    b.emit(Op.FNegate, [p.tF32, lossRaw, logSafe]);
+  } else {
+    lossRaw = b.id();
+    b.emit(Op.FSub, [p.tF32, lossRaw, logSumExp, logitTarget]);
+  }
 
   // masked loss = lossRaw * mask[row]
   const ptrMask = b.id();
@@ -4901,6 +5164,11 @@ export function kernelCrossEntropyForwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.FunctionEnd, []);
 
   return b.build();
+}
+
+/** Fused masked token-unlikelihood forward; see the RCR-UL experiment contract. */
+export function kernelCrossEntropyForwardUnlikelihoodMasked(wgSize = 256): Uint32Array {
+  return kernelCrossEntropyForwardMasked(wgSize, true);
 }
 
 // ── Kernel: Cross-Entropy Forward Fused Vec4 (online 2-pass) ─────────────────
@@ -6220,7 +6488,7 @@ export function kernelCrossEntropyBackward(wgSize = 256): Uint32Array {
  * Out/Mask were swapped at bindings 2/3, silently zeroing masked GPU SFT grads.
  * Push: [totalElements (f32), C (u32 bits), invDenom (f32)]
  */
-export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
+export function kernelCrossEntropyBackwardMasked(wgSize = 256, unlikelihood = false): Uint32Array {
   const b = new SpirVBuilder();
   const p = preamble(b, wgSize, 1, 1);
 
@@ -6228,7 +6496,7 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   const bufTargets = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
   const bufMask    = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, true);
   const bufOut     = declareStorageBuffer(b, p.tF32, p.tU32, 0, 3, false);
-  const pc = declareParamsPushConstant(b, p.tF32, 3);
+  const pc = declareParamsPushConstant(b, p.tF32, unlikelihood ? 4 : 3);
 
   const constOne  = b.id(); b.constantF32(p.tF32, constOne, 1.0);
   const constZero = b.id(); b.constantF32(p.tF32, constZero, 0.0);
@@ -6266,6 +6534,15 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   const invN = b.id();
   b.emit(Op.Load, [p.tF32, invN, ptrPcInvN]);
 
+  let epsilonF = p.const0f;
+  if (unlikelihood) {
+    const const3u = b.id(); b.constant(p.tU32, const3u, 3);
+    const ptrPcEpsilon = b.id();
+    b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcEpsilon, pc.varId, const3u]);
+    epsilonF = b.id();
+    b.emit(Op.Load, [p.tF32, epsilonF, ptrPcEpsilon]);
+  }
+
   const row = b.id();
   b.emit(Op.UDiv, [p.tU32, row, gidX, cU]);
   const col = b.id();
@@ -6289,9 +6566,34 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   b.emit(Op.Load, [p.tF32, prob, ptrProb]);
 
   const diff = b.id();
-  b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
+  if (unlikelihood) {
+    b.emit(Op.FSub, [p.tF32, diff, isTarget, prob]);
+  } else {
+    b.emit(Op.FSub, [p.tF32, diff, prob, isTarget]);
+  }
   const scaled = b.id();
-  b.emit(Op.FMul, [p.tF32, scaled, diff, invN]);
+  if (unlikelihood) {
+    // ratio = p_bad / max(1-p_bad, epsilon), shared by every class in the row.
+    const targetOffset = b.id();
+    b.emit(Op.IMul, [p.tU32, targetOffset, row, cU]);
+    const targetGlobalIdx = b.id();
+    b.emit(Op.IAdd, [p.tU32, targetGlobalIdx, targetOffset, targetU]);
+    const ptrPBad = b.id();
+    b.emit(Op.AccessChain, [bufProbs.tPtrF32, ptrPBad, bufProbs.varId, p.const0u, targetGlobalIdx]);
+    const pBad = b.id();
+    b.emit(Op.Load, [p.tF32, pBad, ptrPBad]);
+    const oneMinusPBad = b.id();
+    b.emit(Op.FSub, [p.tF32, oneMinusPBad, constOne, pBad]);
+    const safeDenom = b.id();
+    b.emit(Op.ExtInst, [p.tF32, safeDenom, p.glslStd, GLSLstd450.FMax, oneMinusPBad, epsilonF]);
+    const ratio = b.id();
+    b.emit(Op.FDiv, [p.tF32, ratio, pBad, safeDenom]);
+    const ratioScale = b.id();
+    b.emit(Op.FMul, [p.tF32, ratioScale, ratio, invN]);
+    b.emit(Op.FMul, [p.tF32, scaled, diff, ratioScale]);
+  } else {
+    b.emit(Op.FMul, [p.tF32, scaled, diff, invN]);
+  }
 
   // multiply by mask[row]
   const ptrMask = b.id();
@@ -6308,15 +6610,28 @@ export function kernelCrossEntropyBackwardMasked(wgSize = 256): Uint32Array {
   const result = b.id();
   b.emit(Op.Select, [p.tF32, result, maskIsNonZero, maskedResult, constZero]);
 
+  // A zero upstream gradient can also produce -0 for an active row. Preserve
+  // NaNs, but canonicalize either sign of an exact-zero result to +0 so the
+  // primitive's exact-zero contract is backend-independent.
+  const resultIsZero = b.id();
+  b.emit(Op.FOrdEqual, [p.tBool, resultIsZero, result, constZero]);
+  const canonicalResult = b.id();
+  b.emit(Op.Select, [p.tF32, canonicalResult, resultIsZero, constZero, result]);
+
   const ptrOut = b.id();
   b.emit(Op.AccessChain, [bufOut.tPtrF32, ptrOut, bufOut.varId, p.const0u, gidX]);
-  b.emit(Op.Store, [ptrOut, result]);
+  b.emit(Op.Store, [ptrOut, canonicalResult]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);
   b.emit(Op.Return, []);
   b.emit(Op.FunctionEnd, []);
   return b.build();
+}
+
+/** Masked token-unlikelihood backward over already-computed softmax probabilities. */
+export function kernelCrossEntropyBackwardUnlikelihoodMasked(wgSize = 256): Uint32Array {
+  return kernelCrossEntropyBackwardMasked(wgSize, true);
 }
 
 // ── Kernel: Embedding backward ─────────────────────────────────────────────
@@ -6446,6 +6761,150 @@ export function kernelEmbeddingBackward(wgSize = 256): Uint32Array {
   b.emit(Op.Label, [labelCasContinue]);
   b.emit(Op.Branch, [labelCasHead]);
   b.emit(Op.Label, [labelCasMerge]);
+
+  b.emit(Op.Branch, [labelEnd]);
+  b.emit(Op.Label, [labelEnd]);
+  b.emit(Op.Return, []);
+  b.emit(Op.FunctionEnd, []);
+  return b.build();
+}
+
+/**
+ * Deterministic embedding backward for bounded workloads.
+ *
+ * The scatter-add kernel above is the efficient production path, but repeated
+ * token IDs can reach a weight element in different orders.  Because f32
+ * addition is not associative, a portable CAS loop is race-free without being
+ * bitwise deterministic.  This gather formulation assigns exactly one shader
+ * invocation to each output weight element and visits source positions in a
+ * fixed order.  It needs no atomics and writes every output element exactly
+ * once.
+ *
+ * Work is O(vocabSize * dim * nIdx), so the backend selects it only for bounded
+ * correctness/replay workloads.  Large training shapes retain the O(nIdx *
+ * dim) atomic scatter path.
+ *
+ * Bindings: 0=indices (i32 as f32 bits, in), 1=gradOutput (f32, in),
+ * 2=gradWeight (f32, out)
+ * Push: [outputElements (as f32), dim (as f32 bits of u32),
+ *        nIdx (as f32 bits of u32)]
+ */
+export function kernelEmbeddingBackwardDeterministic(wgSize = 256): Uint32Array {
+  const b = new SpirVBuilder();
+  const p = preamble(b, wgSize, 1, 1);
+
+  const bufIndices = declareStorageBuffer(b, p.tF32, p.tU32, 0, 0, true);
+  const bufGradOut = declareStorageBuffer(b, p.tF32, p.tU32, 0, 1, true);
+  const bufGradW = declareStorageBuffer(b, p.tF32, p.tU32, 0, 2, false);
+  const pc = declareParamsPushConstant(b, p.tF32, 3);
+
+  const tPtrFnU32 = b.id();
+  b.typePointer(tPtrFnU32, StorageClass.Function, p.tU32);
+  const tPtrFnF32 = b.id();
+  b.typePointer(tPtrFnF32, StorageClass.Function, p.tF32);
+
+  const fnMain = b.id();
+  b.addEntryPoint(ExecutionModel.GLCompute, fnMain, "main", [p.vGlobalId]);
+  b.addExecutionMode(fnMain, ExecutionMode.LocalSize, wgSize, 1, 1);
+
+  const labelEntry = b.id();
+  const labelEnd = b.id();
+  b.emit(Op.Function, [p.tVoid, fnMain, FunctionControl.None, p.tFnVoid]);
+  b.emit(Op.Label, [labelEntry]);
+
+  const varSample = b.id();
+  b.emit(Op.Variable, [tPtrFnU32, varSample, StorageClass.Function]);
+  const varAcc = b.id();
+  b.emit(Op.Variable, [tPtrFnF32, varAcc, StorageClass.Function]);
+
+  const gidVec = b.id();
+  b.emit(Op.Load, [p.tVec3U32, gidVec, p.vGlobalId]);
+  const gidX = b.id();
+  b.emit(Op.CompositeExtract, [p.tU32, gidX, gidVec, 0]);
+
+  const outputElementsF = loadPushLen(b, p, pc);
+  emitBoundsCheck(b, p, outputElementsF, gidX, labelEnd);
+
+  const ptrPcDim = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcDim, pc.varId, p.const1u]);
+  const dimF = b.id();
+  b.emit(Op.Load, [p.tF32, dimF, ptrPcDim]);
+  const dimU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, dimU, dimF]);
+
+  const ptrPcNIdx = b.id();
+  b.emit(Op.AccessChain, [pc.tPtrF32, ptrPcNIdx, pc.varId, p.const2u]);
+  const nIdxF = b.id();
+  b.emit(Op.Load, [p.tF32, nIdxF, ptrPcNIdx]);
+  const nIdxU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, nIdxU, nIdxF]);
+
+  const vocabRow = b.id();
+  b.emit(Op.UDiv, [p.tU32, vocabRow, gidX, dimU]);
+  const dimIdx = b.id();
+  b.emit(Op.UMod, [p.tU32, dimIdx, gidX, dimU]);
+
+  b.emit(Op.Store, [varSample, p.const0u]);
+  b.emit(Op.Store, [varAcc, p.const0f]);
+
+  const labelLoopHead = b.id();
+  const labelLoopBody = b.id();
+  const labelLoopContinue = b.id();
+  const labelLoopMerge = b.id();
+  b.emit(Op.Branch, [labelLoopHead]);
+  b.emit(Op.Label, [labelLoopHead]);
+  const sample = b.id();
+  b.emit(Op.Load, [p.tU32, sample, varSample]);
+  const sampleInRange = b.id();
+  b.emit(Op.ULessThan, [p.tBool, sampleInRange, sample, nIdxU]);
+  b.emit(Op.LoopMerge, [labelLoopMerge, labelLoopContinue, 0]);
+  b.emit(Op.BranchConditional, [sampleInRange, labelLoopBody, labelLoopMerge]);
+
+  b.emit(Op.Label, [labelLoopBody]);
+  const ptrIdx = b.id();
+  b.emit(Op.AccessChain, [bufIndices.tPtrF32, ptrIdx, bufIndices.varId, p.const0u, sample]);
+  const idxF = b.id();
+  b.emit(Op.Load, [p.tF32, idxF, ptrIdx]);
+  const idxU = b.id();
+  b.emit(Op.Bitcast, [p.tU32, idxU, idxF]);
+  const rowMatches = b.id();
+  b.emit(Op.IEqual, [p.tBool, rowMatches, idxU, vocabRow]);
+
+  const labelMatch = b.id();
+  const labelAfterMatch = b.id();
+  b.emit(Op.SelectionMerge, [labelAfterMatch, 0]);
+  b.emit(Op.BranchConditional, [rowMatches, labelMatch, labelAfterMatch]);
+
+  b.emit(Op.Label, [labelMatch]);
+  const sampleOffset = b.id();
+  b.emit(Op.IMul, [p.tU32, sampleOffset, sample, dimU]);
+  const gradOffset = b.id();
+  b.emit(Op.IAdd, [p.tU32, gradOffset, sampleOffset, dimIdx]);
+  const ptrGrad = b.id();
+  b.emit(Op.AccessChain, [bufGradOut.tPtrF32, ptrGrad, bufGradOut.varId, p.const0u, gradOffset]);
+  const gradValue = b.id();
+  b.emit(Op.Load, [p.tF32, gradValue, ptrGrad]);
+  const acc = b.id();
+  b.emit(Op.Load, [p.tF32, acc, varAcc]);
+  const updatedAcc = b.id();
+  b.emit(Op.FAdd, [p.tF32, updatedAcc, acc, gradValue]);
+  b.emit(Op.Store, [varAcc, updatedAcc]);
+  b.emit(Op.Branch, [labelAfterMatch]);
+
+  b.emit(Op.Label, [labelAfterMatch]);
+  b.emit(Op.Branch, [labelLoopContinue]);
+  b.emit(Op.Label, [labelLoopContinue]);
+  const nextSample = b.id();
+  b.emit(Op.IAdd, [p.tU32, nextSample, sample, p.const1u]);
+  b.emit(Op.Store, [varSample, nextSample]);
+  b.emit(Op.Branch, [labelLoopHead]);
+
+  b.emit(Op.Label, [labelLoopMerge]);
+  const result = b.id();
+  b.emit(Op.Load, [p.tF32, result, varAcc]);
+  const ptrOut = b.id();
+  b.emit(Op.AccessChain, [bufGradW.tPtrF32, ptrOut, bufGradW.varId, p.const0u, gidX]);
+  b.emit(Op.Store, [ptrOut, result]);
 
   b.emit(Op.Branch, [labelEnd]);
   b.emit(Op.Label, [labelEnd]);

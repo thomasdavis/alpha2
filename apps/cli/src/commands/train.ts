@@ -11,6 +11,7 @@ import type { SampleGeneration } from "@alpha/train";
 import { defaultModelConfig, defaultTrainConfig, getDomain, domains } from "@alpha/core";
 import type { ModelConfig, TrainConfig, TensorData } from "@alpha/core";
 import { loadArtifacts, saveArtifacts } from "@alpha/tokenizers";
+import { estimateGPTParamCount } from "@alpha/model";
 import { loadSymbioConfig, applySymbioModelPreset, applySymbioTrainPreset, deserializeGraph } from "@alpha/symbiogenesis";
 import { Effect } from "effect";
 
@@ -29,41 +30,6 @@ interface TrainingPlanningOptions {
   minTokensPerParam: number;
   warnDatasetPasses: number;
   maxDatasetPasses: number;
-}
-
-function estimateFfnDim(config: ModelConfig): number {
-  if (config.ffnDim && config.ffnDim > 0) return config.ffnDim;
-  if ((config.ffnActivation ?? "gelu") === "swiglu") {
-    return Math.ceil((8 / 3) * config.nEmbd / 64) * 64;
-  }
-  return 4 * config.nEmbd;
-}
-
-function estimateModelParams(config: ModelConfig): number {
-  const n = config.nEmbd;
-  const l = config.nLayer;
-  const v = config.vocabSize;
-  const f = estimateFfnDim(config);
-  const activation = config.ffnActivation ?? "gelu";
-
-  // Global parameters (untied embeddings + final LN + lmHead).
-  let total = 2 * v * n + (config.blockSize * n) + (2 * n);
-
-  // Per-layer: attn weights + layer norms + MLP weights (+ activation extras).
-  let perLayer = (4 * n * n) + (4 * n);
-  if (activation === "swiglu") {
-    perLayer += 3 * n * f;
-  } else {
-    perLayer += 2 * n * f;
-  }
-  if (activation === "universal") {
-    perLayer += 2 * f;
-  } else if (activation === "kan_spline") {
-    perLayer += 5 * f;
-  }
-
-  total += l * perLayer;
-  return total;
 }
 
 function estimateCharsPerToken(tokenizerName: string): number {
@@ -110,7 +76,7 @@ async function emitTrainingPlanningWarnings(args: {
   const { dataPath, dataPaths, valDataPath, trainConfig, modelConfig, backendName, tokenizerName, planning } = args;
   const accum = Math.max(1, trainConfig.gradAccumSteps);
   const plannedTokens = trainConfig.iters * trainConfig.batchSize * modelConfig.blockSize * accum;
-  const params = Math.max(1, estimateModelParams(modelConfig));
+  const params = Math.max(1, estimateGPTParamCount(modelConfig));
   const tokensPerParam = plannedTokens / params;
   const estDatasetTokens = await estimateDatasetTokens(dataPaths ?? [dataPath], tokenizerName);
   const issues: PlanningIssue[] = [];
@@ -191,6 +157,30 @@ export async function trainCmd(args: string[]): Promise<void> {
   kv = await loadConfig(kv);
 
   const dataManifestPath = kv["dataManifest"];
+  const sft = boolArg(kv, "sft", false);
+  const hasRcrUlData = kv["rcrUlData"] !== undefined;
+  const hasRcrUlWeight = kv["rcrUlWeight"] !== undefined;
+  const hasRcrUlEpsilon = kv["rcrUlEpsilon"] !== undefined;
+  const hasAnyRcrUlFlag = hasRcrUlData || hasRcrUlWeight || hasRcrUlEpsilon;
+  if (hasAnyRcrUlFlag && (!hasRcrUlData || !hasRcrUlWeight)) {
+    throw new Error("RCR-UL requires both --rcrUlData=<frozen-jsonl> and --rcrUlWeight=<lambda>");
+  }
+  if (hasAnyRcrUlFlag && !sft) {
+    throw new Error("RCR-UL requires --sft=true");
+  }
+  const rcrUl = hasAnyRcrUlFlag
+    ? {
+        dataPath: requireArg(kv, "rcrUlData", "frozen RCR-UL JSONL"),
+        weight: floatArg(kv, "rcrUlWeight", Number.NaN),
+        epsilon: floatArg(kv, "rcrUlEpsilon", 1e-6),
+      }
+    : undefined;
+  if (rcrUl && (!Number.isFinite(rcrUl.weight) || rcrUl.weight < 0)) {
+    throw new Error(`--rcrUlWeight must be finite and non-negative: ${String(kv["rcrUlWeight"])}`);
+  }
+  if (rcrUl && (!Number.isFinite(rcrUl.epsilon) || rcrUl.epsilon <= 0 || rcrUl.epsilon > 1e-6)) {
+    throw new Error(`--rcrUlEpsilon must be finite and in (0,1e-6]: ${String(kv["rcrUlEpsilon"] ?? 1e-6)}`);
+  }
   if (kv["resume"] && kv["initCheckpoint"]) throw new Error("--resume and --initCheckpoint are mutually exclusive");
   if (dataManifestPath && kv["data"]) throw new Error("pass either --data or --dataManifest, not both");
   const loadedDataManifest = dataManifestPath ? await loadPretrainShardManifest(dataManifestPath) : null;
@@ -202,8 +192,14 @@ export async function trainCmd(args: string[]): Promise<void> {
   }
   const dataPath = dataPaths?.[0] ?? requireArg(kv, "data", "path to training text");
   const valDataPath = kv["valData"];
-  if (dataPaths && valDataPath) throw new Error("--valData cannot be combined with --dataManifest; every shard is split 90/10");
-  if (dataPaths && boolArg(kv, "sft", false)) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
+  if (dataPaths && sft) throw new Error("--dataManifest is pretraining-only; SFT expects one conversation file");
+  if (dataPaths && valDataPath) {
+    const path = await import("node:path");
+    const resolvedVal = path.resolve(valDataPath);
+    if (dataPaths.includes(resolvedVal)) {
+      throw new Error("--valData must not name a training shard from --dataManifest");
+    }
+  }
 
   // Look up domain config for defaults
   const domainId = kv["domain"];
@@ -507,7 +503,8 @@ export async function trainCmd(args: string[]): Promise<void> {
       : undefined,
     activationCheckpointing: boolArg(kv, "checkpoint", false),
     mixedPrecision: mixedPrecisionEnabled,
-    sft: boolArg(kv, "sft", false),
+    sft,
+    rcrUl,
   });
 
   const coopStats = typeof backendAny.getMatmulCoopStats === "function"
@@ -522,6 +519,9 @@ export async function trainCmd(args: string[]): Promise<void> {
       ` padded_batched=${coopStats.coopPaddedBatchedDispatches}` +
       ` transposed_a_rewrite=${coopStats.coopTransposedARewriteDispatches}`,
     );
+    if (process.env.HELIOS_COOP_REPORT_SHAPES === "1") {
+      console.log(`coop_shapes: ${JSON.stringify(coopStats.shapeCounts ?? [])}`);
+    }
   }
 
   // Post-training sample generation
