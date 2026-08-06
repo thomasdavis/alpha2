@@ -225,14 +225,22 @@ Read the live version with `alphaperf.py loop`; this is the shape of it.
   128-bit `LDGSTS` moves a tile row straight to shared — no register, no pack, no store —
   and per k-step the 12+8+8 collapse to 2 LDGSTS (42→~18 instrs, tensor 33→78%). f16 in
   memory is numerically FREE (the staged path already rounds operands to f16 before the
-  tensor cores). **Milestone 1 DONE:** `emit_hmma_cpasync_f16` (NT layout) is correct on
-  hardware (`prometheus.gemm.cpasync-f16-nt`, tested). **Remaining:**
-  - **M2** double-buffer the pipeline (stage next tile while multiplying current) — the
-    actual latency-hiding win; single-buffered hides nothing.
-  - **M3** backend `castDtype` (f16 raw byte buffers via the cast kernel) + a matmulF16
-    entry + `diff-matmul-f16.mjs` + MEASURE TFLOP/s on real shapes (the C harness maxes at
-    ~64KB operands, so measurement needs the backend).
-  - **M4** wire into the model (qkv/mlp-fc NT forwards cast to f16).
+  tensor cores). **DONE + MEASURED:** `emit_hmma_cpasync_f16` (NT, single-buffered) is
+  correct on hardware and wired to `hl.matmulCpasync`. Measured on the m1536 NT forwards
+  (`probe-cpasync-gemm.mjs`): **+10%** — qkv 21.7→23.8, mlp fc 21.1→22.8, lm head
+  22.7→25.8 TFLOP/s, lm head reaching cuBLAS's 24-32 range. NOT the 2x the instruction
+  count predicted: single-buffered still DEPBAR-waits per k-step and the register round
+  trip was only ~10% of the cost. **M2 double-buffering REFUTED (0.67x, worse than staged)**
+  — occupancy already hides the copy latency across blocks (register-limited ~4 blocks/SM),
+  so within-block overlap is unneeded and its extra instructions + doubled shared only cost.
+  **Remaining:**
+  - **M4 (next)** wire the single-buffered cp.async GEMM into the model: cast qkv/mlp-fc
+    NT-forward operands to f16 buffers, route through hl.matmulCpasync, confirm loss
+    bit-identical, measure the gate delta (~+3-4% end-to-end expected — the +10% is on the
+    forward projections, ~30-40% of the step).
+  - **f16 accumulate — RE-TEST now.** It was refuted as +4% because the kernel was
+    issue-bound not tensor-bound; cp.async moved it toward tensor-bound (24 vs 21), so its
+    90.3-vs-45.5 ceiling may finally pay. Measure again on the cp.async kernel.
   - **M5** the nn/ta layouts (non-K-contiguous operand needs transpose-on-stage).
 - **Also open (todo in the DB):** batched Q@K^T (nt) is 2-3x slow — 4 staging requests/warp
   vs 1; fix is a 32-k staging tile (~2.1 ms).
