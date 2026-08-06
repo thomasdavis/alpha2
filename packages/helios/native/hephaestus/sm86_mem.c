@@ -285,6 +285,19 @@ hp_word hp_ldgdepbar(hp_control c) { return hp_base(HP_OP_LDGDEPBAR, c); }
  * The 0x8000 at bit 47 is the scoreboard selector and the LE comparison, taken
  * verbatim from the captures; neither has been isolated, and a different
  * scoreboard must be captured rather than derived.
+ *
+ * ⚠️ HARDWARE FINDING, 2026-08-06. A validation kernel (global -> shared via
+ * LDGSTS, DEPBAR 0, then read the shared back) returned ZEROES — the read ran
+ * before the copy landed — even though every one of the three instructions is
+ * bit-identical to ptxas. So the bits being right is NOT the whole contract:
+ * the async scoreboard LDGSTS increments and DEPBAR waits on is not wired up by
+ * the encoding alone. What ptxas ALSO does, and this does not yet, is carry the
+ * scoreboard in the CONTROL field of the instructions BETWEEN the commit and
+ * the consumer, and possibly a `.E` addressing bit interaction. Getting that
+ * right is the first step of the GEMM-staging integration, not a property of
+ * the encoder — which is why the validation kernel was not kept as a standing
+ * test. Decode the control fields of a full ptxas cp.async pipeline loop before
+ * relying on these three in a real kernel.
  */
 hp_word hp_depbar(unsigned groups, hp_control c) {
   hp_word w = hp_base(HP_OP_DEPBAR, c);
