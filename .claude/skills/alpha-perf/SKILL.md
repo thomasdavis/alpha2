@@ -234,14 +234,18 @@ Read the live version with `alphaperf.py loop`; this is the shape of it.
   — occupancy already hides the copy latency across blocks (register-limited ~4 blocks/SM),
   so within-block overlap is unneeded and its extra instructions + doubled shared only cost.
   **Remaining:**
-  - **M4 (next)** wire the single-buffered cp.async GEMM into the model: cast qkv/mlp-fc
-    NT-forward operands to f16 buffers, route through hl.matmulCpasync, confirm loss
-    bit-identical, measure the gate delta (~+3-4% end-to-end expected — the +10% is on the
-    forward projections, ~30-40% of the step).
-  - **f16 accumulate — RE-TEST now.** It was refuted as +4% because the kernel was
-    issue-bound not tensor-bound; cp.async moved it toward tensor-bound (24 vs 21), so its
-    90.3-vs-45.5 ceiling may finally pay. Measure again on the cp.async kernel.
-  - **M5** the nn/ta layouts (non-K-contiguous operand needs transpose-on-stage).
+  - **M4 DONE + REFUTED as wired.** Routing the model's NT forwards through cp.async with
+    a PER-CALL cast (HELIOS_CPASYNC_MM flag) measured 16,283 vs 19,926 tok/s — 0.82x, NET
+    NEGATIVE, loss identical. The cast is two extra global passes + two allocs per GEMM
+    (held 4.20→4.67 GB), costing more than the raw +10% saves. Flag stays OFF.
+  - **⭐ M5 (THE real lever now): PERSISTENT f16 operands.** The +10% only pays if the
+    operands are ALREADY f16 — an f16 activation/weight dtype carried through the stack
+    (f16 weight buffers refreshed once per optimizer step; activations produced f16 by the
+    previous op), so hl.matmulCpasync runs with ZERO per-call cast. Large change (touches
+    every activation-producing op); build incrementally, loss-check each step. This also
+    unlocks re-testing f16-accumulate (refuted at +4% while issue-bound; cp.async moved the
+    kernel toward tensor-bound, so its 90.3-vs-45.5 ceiling may finally pay).
+  - Then the nn/ta layouts (non-K-contiguous operand needs transpose-on-stage).
 - **Also open (todo in the DB):** batched Q@K^T (nt) is 2-3x slow — 4 staging requests/warp
   vs 1; fix is a 32-k staging tile (~2.1 ms).
 - **REFUTED — do not retry:** f16-accumulate alone (4%, kernel is issue-bound not
