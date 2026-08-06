@@ -1,6 +1,6 @@
 ---
 name: alpha-perf
-description: Boot and drive the alpha2 native+Vulkan GPU-performance autoresearch loop — scaling the from-scratch Helios stack toward 50,000 tokens/second for a ~100M-parameter model on an RTX 3070. Provides the pod access, the goal gate, the alphaperf sqlite research DB (measurements + the 2,644-operation universe + the experiment loop), the measurement discipline, the SASS capture recipe, the current state and the proven/refuted levers. Use whenever working on alpha2/Helios throughput, the native or Vulkan backend, the tensor-core GEMM, the sm_86 assembler, kernel lowering, or any "make it faster" task on this stack.
+description: Boot and drive the alpha2 native+Vulkan GPU-performance autoresearch loop — scaling the from-scratch Helios stack toward 50,000 tokens/second for a ~100M-parameter model on an RTX 3070. This skill is the stable METHOD (pod access, goal gate, measurement discipline, SASS capture recipe, the loop); all STATE — every measurement, the proven/refuted levers, the current ceiling, and the 2,644-operation universe of things still to try — lives in the alphaperf sqlite DB, which you QUERY constantly (before proposing any lever, search whether it was already tried/refuted; to pick what to build next, ask the DB for untried ops) and WRITE back every cycle. Use whenever working on alpha2/Helios throughput, the native or Vulkan backend, the tensor-core GEMM, the sm_86 assembler, kernel lowering, or any "make it faster" task on this stack.
 ---
 
 # alpha-perf — the 3070 → 50k tok/s autoresearch loop
@@ -35,8 +35,11 @@ loss) in the DB, and repeat. The DB is the loop's memory; keep it current every 
    throughput commit this program has made kept `loss 9.5818` to the digit. A moved loss
    is a correctness regression until proven otherwise.
 
-Corollary — **a dead lever stays dead.** The DB records REFUTED experiments precisely so
-the same idea is not re-tried. Read `alphaperf.py loop` before proposing anything.
+Corollary — **a dead lever stays dead, and the DB is how you know.** It records REFUTED
+experiments precisely so the same idea is not re-tried. Before proposing ANYTHING, SEARCH
+the DB for it (`alphaperf.py loop`, and `sql` over `finding`/`experiment` — see §6). This
+file is the method; the DB is the state. Never read a current number from this file —
+query it.
 
 ---
 
@@ -210,63 +213,49 @@ loop's control fields before relying on a new async instruction.
 
 ---
 
-## 6. Where the number is, and where it's going (state as of 2026-08-06)
+## 6. THE STATE LIVES IN THE DB — query it, never read numbers from this file
 
-Read the live version with `alphaperf.py loop`; this is the shape of it.
+**This file is the METHOD and it is STABLE. It carries no results, no current
+tok/s, no "state as of" — those go stale and mislead.** Every number, every
+lever's verdict, every ceiling, every next idea lives in `alphaperf.db`, and the
+DB is the single source of truth. Do not paste findings back into this skill;
+record them in the DB (§3). If you catch yourself writing a measured number into
+this file, stop — it belongs in a `finding`, `experiment`, `gemm` or `gate` row.
 
-**⭐ THE MEASURED CEILING — read this before promising 30k.** There is NO factor
-lever left in the GEMM. cp.async removed the staging bottleneck (+10% raw), and
-f16-accumulate on the cp.async kernel is only **+6%** (not the 2x its 90.3-vs-45.5
-ceiling promises) — the kernel is STILL not tensor-pipe-bound. So cp.async +
-f16-accumulate tops the GEMM at **~25-27 TFLOP/s, cuBLAS's LOWER range**, and 30k
-needs 17.4 TFLOP/s SUSTAINED across the WHOLE step (every GEMM at peak, non-GEMM
-near zero). The honest ladder — cp.async on ALL GEMMs (fwd nt + bwd nn/ta) +
-f16-accumulate + non-GEMM fusion — lands around **24-25k**. 30k is at or beyond
-the f32-quality roofline for a 100M model on this card, which agrees with the
-user's own "30-45k extremely aggressive" note. Getting to 30k likely requires
-accepting f16-accumulate's numerics (it MOVES the loss — needs a convergence
-validation run, not a free flip) as part of the full stack, and even then it is
-marginal. Report this honestly; do not claim a lever will reach 30k without the
-sustained-step arithmetic behind it.
+**QUERY THE DB CONSTANTLY — at least at these three moments every cycle:**
 
-- **The step is GEMM-bound (~69% of GPU). The non-GEMM half is AT the bandwidth roofline**
-  (gelu/geluBwd/addInplace 340-402 GB/s vs a 345 control) — the reduction was the one
-  off-roofline op and warp-shuffle fixed it (layerNorm 65→34 us). So the only non-GEMM
-  lever left is FUSION; everything else is the GEMM.
-- **The GEMM k-loop is 42 instructions, only 33% tensor** — it moves each tile through a
-  register round trip (12 LDG + 8 F2FP + 8 STS). That is the whole reason it sustains
-  15-21 TFLOP/s against cuBLAS's 24-32.
-- **THE LEVER: cp.async + f16-in-memory staging.** When operands are f16 in global, one
-  128-bit `LDGSTS` moves a tile row straight to shared — no register, no pack, no store —
-  and per k-step the 12+8+8 collapse to 2 LDGSTS (42→~18 instrs, tensor 33→78%). f16 in
-  memory is numerically FREE (the staged path already rounds operands to f16 before the
-  tensor cores). **DONE + MEASURED:** `emit_hmma_cpasync_f16` (NT, single-buffered) is
-  correct on hardware and wired to `hl.matmulCpasync`. Measured on the m1536 NT forwards
-  (`probe-cpasync-gemm.mjs`): **+10%** — qkv 21.7→23.8, mlp fc 21.1→22.8, lm head
-  22.7→25.8 TFLOP/s, lm head reaching cuBLAS's 24-32 range. NOT the 2x the instruction
-  count predicted: single-buffered still DEPBAR-waits per k-step and the register round
-  trip was only ~10% of the cost. **M2 double-buffering REFUTED (0.67x, worse than staged)**
-  — occupancy already hides the copy latency across blocks (register-limited ~4 blocks/SM),
-  so within-block overlap is unneeded and its extra instructions + doubled shared only cost.
-  **Remaining:**
-  - **M4 DONE + REFUTED as wired.** Routing the model's NT forwards through cp.async with
-    a PER-CALL cast (HELIOS_CPASYNC_MM flag) measured 16,283 vs 19,926 tok/s — 0.82x, NET
-    NEGATIVE, loss identical. The cast is two extra global passes + two allocs per GEMM
-    (held 4.20→4.67 GB), costing more than the raw +10% saves. Flag stays OFF.
-  - **⭐ M5 (THE real lever now): PERSISTENT f16 operands.** The +10% only pays if the
-    operands are ALREADY f16 — an f16 activation/weight dtype carried through the stack
-    (f16 weight buffers refreshed once per optimizer step; activations produced f16 by the
-    previous op), so hl.matmulCpasync runs with ZERO per-call cast. Large change (touches
-    every activation-producing op); build incrementally, loss-check each step. This also
-    unlocks re-testing f16-accumulate (refuted at +4% while issue-bound; cp.async moved the
-    kernel toward tensor-bound, so its 90.3-vs-45.5 ceiling may finally pay).
-  - Then the nn/ta layouts (non-K-contiguous operand needs transpose-on-stage).
-- **Also open (todo in the DB):** batched Q@K^T (nt) is 2-3x slow — 4 staging requests/warp
-  vs 1; fix is a 32-k staging tile (~2.1 ms).
-- **REFUTED — do not retry:** f16-accumulate alone (4%, kernel is issue-bound not
-  tensor-bound — it pays only AFTER cp.async makes the kernel tensor-bound), bigger batch
-  (rate falls as operands leave cache), split-K (+8% time), flash-attention (~3% at seq64),
-  every geometry/register-tile/occupancy/barrier sweep (~1% each).
+1. **Before proposing ANY lever, search whether it has already been tried.** A
+   huge amount of this program's value is in NOT re-running a dead experiment.
+   ```bash
+   python3 tools/alphaperf.py loop                    # throughput + recent + open + REFUTED
+   python3 tools/alphaperf.py sql "SELECT verdict,summary,note FROM finding WHERE summary LIKE '%<lever>%'"
+   python3 tools/alphaperf.py sql "SELECT verdict,hypothesis,note FROM experiment WHERE lever LIKE '%<lever>%'"
+   ```
+   If it is `refuted`, read the note and do NOT retry it — find a different angle.
+   If it is `todo`/`inprogress`, continue it. If absent, it is genuinely new.
+
+2. **When picking WHAT to build next, ask the DB for untried operations and open
+   levers** — the operation universe (§3) is a menu of things the stack could
+   implement, and the frontier shows what is still `stub`:
+   ```bash
+   python3 tools/alphaperf.py roadmap                 # impl frontier: stub/…/optimized
+   python3 tools/alphaperf.py sql "SELECT id,summary FROM operation WHERE impl_status='stub' AND family='<f>' ORDER BY id"
+   python3 tools/alphaperf.py sql "SELECT category,summary,value FROM finding WHERE status IN ('todo','inprogress') ORDER BY id DESC"
+   python3 tools/alphaperf.py sql "SELECT mnemonic,state,blocks FROM isa WHERE state!='encoded'"  # ISA gaps + what they cost
+   ```
+   Also profile fresh (§2) — the binding constraint moves as levers land.
+
+3. **After every measurement, WRITE it back** — advance the op's `impl_status`,
+   log the `experiment` (win OR loss), update the driving `finding`. The DB only
+   stays the source of truth if every cycle feeds it (§3).
+
+**The current honest picture is a QUERY, not a paragraph here:** run
+`alphaperf.py loop` for throughput + open + refuted levers, `roadmap` for the
+implementation frontier, and `sql "SELECT * FROM finding WHERE status='confirmed'
+ORDER BY id DESC"` for the measured ceilings (e.g. whether a factor lever remains
+in the GEMM — that has been measured; find it in the DB, do not assume it from
+memory). If the DB and this file ever disagree about a number, the DB is right
+and this file should not have had the number.
 
 ---
 
