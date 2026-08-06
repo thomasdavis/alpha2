@@ -9,6 +9,7 @@
 #include "../prometheus/colsum.h"
 #include "../prometheus/mask.h"
 #include "../prometheus/indexing.h"
+#include "../prometheus/qkv_headmajor.h"
 
 #include <string.h>
 
@@ -252,6 +253,25 @@ static int emit(const helios_key *key, helios_program *p) {
         const NvU32 R = pr_permute_rows(key->arg0, key->arg2);
         p->blockX = key->arg2 * R; /* D * R */
         p->gridX = key->arg1;      /* H */
+        p->gridY = key->arg0 / R;  /* T / R */
+      }
+      return 0;
+
+    case HL_SLICE_QKV_HM:
+    case HL_SLICE_QKV_HM_BWD:
+      /* Same launch shape as permute — h on X, t on Y, b on Z — but the source
+       * is a grouped qkvFlat row of width 3H and the plane (q/k/v) is baked in.
+       * arg1 packs the plane in its high half so one shape's three planes are
+       * three cached programs. The backward kind swaps load and store. */
+      {
+        const unsigned H = key->arg1 & 0xFFFFu;
+        const unsigned plane = key->arg1 >> 16;
+        const int backward = (key->kind == HL_SLICE_QKV_HM_BWD);
+        const NvU32 R = pr_permute_rows(key->arg0, key->arg2);
+        p->count = pr_emit_qkv_headmajor(p->code, key->arg0, H, key->arg2,
+                                         plane, backward);
+        p->blockX = key->arg2 * R; /* D * R */
+        p->gridX = H;              /* H */
         p->gridY = key->arg0 / R;  /* T / R */
       }
       return 0;

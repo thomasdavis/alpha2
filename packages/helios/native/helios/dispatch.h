@@ -154,6 +154,13 @@ int hl_cat_rows(helios_context *ctx, helios_tensor out, helios_tensor a,
 int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                unsigned T, unsigned H, unsigned D, unsigned planes);
 
+/* One plane of a grouped token-major qkvFlat [B*T, 3*H*D] to head-major
+ * [B, H, T, D]. plane selects q/k/v; backward=1 scatters a head-major gradient
+ * back to that plane's columns (out = qkvFlat-grad, a = head-major grad). */
+int hl_slice_qkv_headmajor(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, unsigned T, unsigned H, unsigned D,
+                           unsigned plane, unsigned batch, int backward);
+
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
                  helios_tensor ids, unsigned tokens, unsigned dim);
 

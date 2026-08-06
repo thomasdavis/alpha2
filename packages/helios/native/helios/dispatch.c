@@ -465,6 +465,26 @@ int hl_permute(helios_context *ctx, helios_tensor out, helios_tensor a,
                          NULL, 0);
 }
 
+int hl_slice_qkv_headmajor(helios_context *ctx, helios_tensor out,
+                           helios_tensor a, unsigned T, unsigned H, unsigned D,
+                           unsigned plane, unsigned batch, int backward) {
+  /* plane in the high half of arg1 so the three planes are three programs; the
+   * backward direction is a separate kind. Batch rides gridZ at launch. */
+  const helios_key k = {backward ? HL_SLICE_QKV_HM_BWD : HL_SLICE_QKV_HM,
+                        T, (plane << 16) | H, D};
+  const helios_tensor ts[2] = {out, a};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[2];
+  for (unsigned i = 0; i < 2; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return helios_enqueue3(ctx, p->code, p->count, p->gridX, p->gridY,
+                         batch ? batch : 1, p->blockX, p->sharedBytes, addrs, 2,
+                         NULL, 0);
+}
+
 int hl_embedding(helios_context *ctx, helios_tensor out, helios_tensor table,
                  helios_tensor ids, unsigned tokens, unsigned dim) {
   const helios_key k = {HL_EMBEDDING, dim, tokens, 0};

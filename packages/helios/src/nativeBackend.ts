@@ -1987,6 +1987,49 @@ export class NativeHeliosBackend implements Backend {
    * matrix -- and the batch is handled by launching it once per leading index,
    * which is a loop and is honest about being one.
    */
+  /*
+   * Slice a grouped token-major qkvFlat [B*T, 3*H*D] straight to the three
+   * head-major tensors [B, H, T, D] attention consumes — one fused launch per
+   * plane in place of sliceQkv plus three permutes. RoPE-free (the gate uses
+   * learned position embeddings). See prometheus/qkv_headmajor.c.
+   */
+  sliceQkvHeadMajor(qkv: TensorData, batch: number, T: number, H: number, D: number):
+      [TensorData, TensorData, TensorData] {
+    const dq = this.device(qkv);
+    const plane = (p: number): NativeTensor => {
+      const out = this.make([batch, H, T, D], "f32");
+      this.check(
+        this.hl.sliceQkvHeadMajor(out.buffer.handle, dq.buffer.handle,
+                                  T, H, D, p, batch, 0),
+        "sliceQkvHeadMajor", dq,
+      );
+      return out;
+    };
+    const q = plane(0), k = plane(1), v = plane(2);
+    if (dq !== qkv) dq.buffer.release(this.hl);
+    return [q, k, v];
+  }
+
+  /*
+   * Scatter one plane's head-major gradient into its columns of the shared
+   * qkvFlat-shaped destination `into`. The tape hands the same `into` to all
+   * three planes (see sliceQkv's backward), each writes its own disjoint third,
+   * so the accumulation is in place with no zero-fill or add here — `into` was
+   * already zeroed by whichever plane allocated it. Returns `into`.
+   */
+  sliceQkvHeadMajorBackward(grad: TensorData, into: TensorData, plane: number,
+                            batch: number, T: number, H: number, D: number): TensorData {
+    const dg = this.device(grad);
+    const di = this.device(into);
+    this.check(
+      this.hl.sliceQkvHeadMajor(di.buffer.handle, dg.buffer.handle,
+                                T, H, D, plane, batch, 1),
+      "sliceQkvHeadMajorBackward", dg,
+    );
+    if (dg !== grad && dg !== di) dg.buffer.release(this.hl);
+    return di;
+  }
+
   transpose(a: TensorData, dim0?: number, dim1?: number): TensorData {
     const rank = a.shape.length;
 

@@ -115,6 +115,10 @@ export interface NativeAddon {
   /** out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
    * powers of two — the kernel decomposes the plane index with shifts. */
   permute(out: number, a: number, T: number, H: number, D: number, planes: number): boolean;
+  /** One plane of a grouped qkvFlat [B*T,3*H*D] to head-major [B,H,T,D] (backward=0),
+   * or scatter a head-major gradient back to that plane's columns (backward=1). */
+  sliceQkvHeadMajor(out: number, qkv: number, T: number, H: number, D: number,
+                    plane: number, batch: number, backward: number): boolean;
   /** out[r][c] = in[r][start + c], over `rows` rows. */
   sliceRows(out: number, a: number, W: number, srcW: number, start: number, rows: number): boolean;
   /** out[r][start + c] = in[r][c], over `rows` rows — the inverse of sliceRows. */

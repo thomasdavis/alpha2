@@ -174,6 +174,14 @@ static napi_value js_permute(napi_env env, napi_callback_info info) {
       env, hl_permute(ctx, U32(0), U32(1), U32(2), U32(3), U32(4), U32(5)));
 }
 
+/* (out, qkv, T, H, D, plane, batch, backward) */
+static napi_value js_slice_qkv_headmajor(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(
+      env, hl_slice_qkv_headmajor(ctx, U32(0), U32(1), U32(2), U32(3), U32(4),
+                                  U32(5), U32(6), U32(7)));
+}
+
 /* (out, table, ids, tokens, dim) */
 static napi_value js_embedding(napi_env env, napi_callback_info info) {
   CTX;
@@ -274,6 +282,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "softmaxBackward", js_softmax_backward);
   hl_export(env, exports, "transpose", js_transpose);
   hl_export(env, exports, "permute", js_permute);
+  hl_export(env, exports, "sliceQkvHeadMajor", js_slice_qkv_headmajor);
   hl_export(env, exports, "sliceRows", js_slice_rows);
   hl_export(env, exports, "catRows", js_cat_rows);
   hl_export(env, exports, "broadcastRows", js_broadcast);

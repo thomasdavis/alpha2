@@ -225,6 +225,22 @@ export interface Backend {
   // fused 3-way column slice: [rows, 3*D] → 3×[rows, D] in single dispatch
   sliceQkv?(a: TensorData): [TensorData, TensorData, TensorData];
 
+  /** Fused grouped-QKV unpack straight to head-major, RoPE-FREE. Reads a
+   *  token-major qkvFlat [batch*T, 3*H*D] and returns q/k/v each head-major
+   *  [batch, H, T, D] — one launch per plane replacing sliceQkv + three
+   *  permutes. Backend must also provide the backward. */
+  sliceQkvHeadMajor?(
+    qkv: TensorData, batch: number, T: number, H: number, D: number,
+  ): [TensorData, TensorData, TensorData];
+
+  /** Scatter one plane's head-major gradient into its columns of the shared
+   *  qkvFlat-shaped destination `into` (the three planes tile disjoint columns,
+   *  so accumulation is in place — see writeColumns/sliceQkv). Returns `into`. */
+  sliceQkvHeadMajorBackward?(
+    grad: TensorData, into: TensorData, plane: number,
+    batch: number, T: number, H: number, D: number,
+  ): TensorData;
+
   /** Fused grouped-QKV unpack, token-major → head-major layout conversion,
    *  and HF-Llama RoPE on Q/K. The three outputs are [B*H,T,headDim]. */
   qkvHeadMajorRope?(

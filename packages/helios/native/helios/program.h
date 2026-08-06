@@ -74,6 +74,8 @@ typedef enum {
   HL_BROADCAST,   /* arg0 = mode (0 tile, 1 row), arg1 = width */
   HL_CAT_ROWS,    /* arg0 = piece width, arg1 = destination width */
   HL_PERMUTE,     /* arg0 = T, arg1 = H, arg2 = D — swaps the middle two axes */
+  HL_SLICE_QKV_HM,     /* arg0 = T, arg1 = (plane<<16)|H, arg2 = D — grouped qkv -> head-major */
+  HL_SLICE_QKV_HM_BWD, /* same key; scatters head-major grad back to qkvFlat */
   HL_EMBEDDING,   /* arg0 = dim */
   HL_EMBEDDING_SCATTER, /* arg0 = dim, arg1 = tokens */
   HL_SLICE,
