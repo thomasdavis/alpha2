@@ -20,4 +20,7 @@ unsigned pr_emit_imma_tile(hp_word *p);
 unsigned pr_emit_imma_gemm(hp_word *p, unsigned M, unsigned N, unsigned K);
 /* One-tile convenience (M=16, N=8): the original single-warp test. */
 unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K);
+/* Single-warp shared-staged 16x8 tile — verifies int8 fragments read from
+ * SHARED via LDS (the staged kernel's core new mechanic). */
+unsigned pr_emit_imma_shared_tile(hp_word *p, unsigned K);
 #endif

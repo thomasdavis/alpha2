@@ -200,3 +200,109 @@ unsigned pr_emit_imma_gemm(hp_word *p, unsigned M, unsigned N, unsigned K) {
 unsigned pr_emit_imma_gemm_16x8(hp_word *p, unsigned K) {
   return pr_emit_imma_gemm(p, 16, 8, K);
 }
+
+/*
+ * pr_emit_imma_shared_tile — the ONE mechanic the staged fast kernel adds that
+ * the grid kernel never exercised: int8 fragments read from SHARED via LDS,
+ * not from global. One warp, one 16x8 output tile over K.
+ *
+ * Each k-step: 32 threads cooperatively copy A[16][32] and B[8][32] from global
+ * into a shared tile (TS=8 words/row = MMA_K/4, no pad), barrier, then LDS the
+ * m16n8k32 fragments from shared (the SAME layout verified from global — a0/a2
+ * row g, a1/a3 row g+8, k-halves a word apart) and IMMA-accumulate. LDS/STS use
+ * .X4: the address register is a WORD index (scaled x4) and the offset is BYTES.
+ *
+ * Correctness-first: the staging is serialized (LDG setbar / STS wait) so an
+ * in-flight LDG never has its address register (R_ADDR) recomputed under it —
+ * the same clobber the tile hit. The staged kernel double-buffers this away.
+ */
+#define IMMA_TS 8u             /* shared tile stride, words per row (MMA_K/4) */
+#define IMMA_AW (16u * IMMA_TS) /* A tile size in shared words */
+
+enum {
+  R_SHA = 22,   /* shared STORE word for the current staged word */
+  R_SHF = 23,   /* A fragment base word (row g, word l) */
+  R_LDW = 24,   /* the word in flight from global to shared */
+  R_ROW = 25,   /* tile row being staged */
+  R_COL = 26,   /* this thread's word column, tid&7 */
+  R_SHFB = 27,  /* B fragment base word */
+  R_TROW = 28,  /* tid>>3, this thread's row offset within a 4-row pass */
+};
+
+unsigned pr_emit_imma_shared_tile(hp_word *p, unsigned K) {
+  unsigned n = 0;
+  const unsigned steps = K / 32u;
+
+  p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
+  p[n++] = hp_mov_imm(R_ESIZE, 1, hp_ctrl_wait(BAR_ID)); /* byte LDG */
+  p[n++] = hp_shr_imm(R_G, R_TID, 2, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_L, R_G, (uint32_t)-4, R_TID, hp_ctrl_safe());
+  p[n++] = hp_shr_imm(R_TROW, R_TID, 3, hp_ctrl_safe());              /* tid>>3 */
+  p[n++] = hp_imad_imm(R_COL, R_TROW, (uint32_t)-8, R_TID, hp_ctrl_safe()); /* tid&7 */
+
+  /* Fragment base WORDS: A row g word l; B col g word l, past A's tile. */
+  p[n++] = hp_imad_imm(R_SHF, R_G, IMMA_TS, R_L, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_SHFB, R_G, IMMA_TS, R_L, hp_ctrl_safe());
+  p[n++] = hp_iadd3_imm(R_SHFB, R_SHFB, IMMA_AW, hp_ctrl_safe());
+
+  p[n++] = hp_mov_imm(R_C0, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_C1, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_C2, 0, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_C3, 0, hp_ctrl_safe());
+
+  for (unsigned ks = 0; ks < steps; ks++) {
+    const unsigned kso = ks * 32u;
+    /* Stage A (16 rows, 4 rows per pass) then B (8 rows, 2 passes). Each word:
+     * global byte = row*K + kso + col*4; shared word = [AW +] row*TS + col. */
+    for (unsigned pass = 0; pass < 6; pass++) {
+      const int isB = pass >= 4;
+      const unsigned base4 = (isB ? pass - 4u : pass) * 4u;
+      const unsigned param = isB ? 2u : 1u;
+      const unsigned shbase = isB ? IMMA_AW : 0u;
+      p[n++] = hp_iadd3_imm(R_ROW, R_TROW, (int)base4, hp_ctrl_safe());
+      p[n++] = hp_imad_imm(R_TMP, R_ROW, K, HP_RZ, hp_ctrl_safe());   /* row*K */
+      p[n++] = hp_iadd3_imm(R_TMP, R_TMP, (int)kso, hp_ctrl_safe());  /* + kso */
+      p[n++] = hp_imad_imm(R_TMP, R_COL, 4, R_TMP, hp_ctrl_safe());   /* + col*4 */
+      p[n++] = hp_imad_wide_const(R_ADDR, R_TMP, R_ESIZE, 0,
+                                  HERMES_CBUF0_PARAM_N(param), hp_ctrl_safe());
+      p[n++] = hp_ldg(R_LDW, R_ADDR, 0, hp_ctrl_setbar(BAR_LOAD));
+      /* shared store word = shbase + row*TS + col. */
+      p[n++] = hp_imad_imm(R_SHA, R_ROW, IMMA_TS, R_COL, hp_ctrl_safe());
+      if (shbase)
+        p[n++] = hp_iadd3_imm(R_SHA, R_SHA, (int)shbase, hp_ctrl_safe());
+      p[n++] = hp_sts(R_SHA, R_LDW, 0, hp_ctrl_wait(BAR_LOAD));
+    }
+    p[n++] = hp_bar_sync(hp_ctrl_safe());
+
+    /* Fragments from shared (.X4: R_SHF/R_SHFB in words, offsets in bytes). Row
+     * g+8 is 8*TS*4 bytes on; the k-half is (MMA_K/4/2)=4 words = 16 bytes on. */
+    p[n++] = hp_lds(R_A0, R_SHF, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(R_A1, R_SHF, 8u * IMMA_TS * 4u, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(R_A2, R_SHF, 16u, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(R_A3, R_SHF, 8u * IMMA_TS * 4u + 16u, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(R_B0, R_SHFB, 0, hp_ctrl_setbar(BAR_LOAD));
+    p[n++] = hp_lds(R_B1, R_SHFB, 16u, hp_ctrl_setbar(BAR_LOAD));
+
+    /* Every IMMA waits its fragment LDS and sets BAR_MMA; the C RAW across
+     * k-steps is ordered by the post-multiply bar_sync (which waits BAR_MMA),
+     * so no per-IMMA wait on the previous C write is needed. */
+    p[n++] = hp_imma_acc(R_C0, R_A0, R_B0, R_C0,
+                         hp_ctrl_wait_setbar(BAR_LOAD, BAR_MMA));
+    /* The next k-step's staging STS must not overwrite the tile until this
+     * IMMA has read its fragments — a full barrier after the multiply. */
+    p[n++] = hp_bar_sync(hp_ctrl_wait(BAR_MMA));
+  }
+
+  /* Store D[16][8] (slot 0): same fixed offsets as the tile. */
+  p[n++] = hp_imad_imm(R_CIDX, R_G, 8, HP_RZ, hp_ctrl_safe());
+  p[n++] = hp_imad_imm(R_CIDX, R_L, 2, R_CIDX, hp_ctrl_safe());
+  p[n++] = hp_mov_imm(R_ESIZE, 4, hp_ctrl_safe());
+  p[n++] = hp_imad_wide_const(R_OUT, R_CIDX, R_ESIZE, 0,
+                              HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C0, 0, hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C1, 4, hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C2, 256, hp_ctrl_safe());
+  p[n++] = hp_stg(R_OUT, R_C3, 260, hp_ctrl_safe());
+  p[n++] = hp_exit(hp_ctrl_safe());
+  return n;
+}

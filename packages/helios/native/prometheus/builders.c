@@ -139,6 +139,12 @@ unsigned bld_imma_gemm2(hp_word *p, NvU64 out, NvU64 in) {
   return pr_emit_imma_gemm(p, IMMA_GEMM2_M, IMMA_GEMM2_N, IMMA_GEMM2_K);
 }
 
+unsigned bld_imma_shared(hp_word *p, NvU64 out, NvU64 in) {
+  (void)out;
+  (void)in;
+  return pr_emit_imma_shared_tile(p, IMMA_GEMM_K);
+}
+
 unsigned bld_sum(hp_word *p, NvU64 out, NvU64 in) {
   (void)out; (void)in;
   return pr_emit_reduction(p, PR_RED_SUM, PR_N);
