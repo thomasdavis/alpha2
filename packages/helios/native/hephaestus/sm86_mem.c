@@ -286,18 +286,29 @@ hp_word hp_ldgdepbar(hp_control c) { return hp_base(HP_OP_LDGDEPBAR, c); }
  * verbatim from the captures; neither has been isolated, and a different
  * scoreboard must be captured rather than derived.
  *
- * ⚠️ HARDWARE FINDING, 2026-08-06. A validation kernel (global -> shared via
- * LDGSTS, DEPBAR 0, then read the shared back) returned ZEROES — the read ran
- * before the copy landed — even though every one of the three instructions is
- * bit-identical to ptxas. So the bits being right is NOT the whole contract:
- * the async scoreboard LDGSTS increments and DEPBAR waits on is not wired up by
- * the encoding alone. What ptxas ALSO does, and this does not yet, is carry the
- * scoreboard in the CONTROL field of the instructions BETWEEN the commit and
- * the consumer, and possibly a `.E` addressing bit interaction. Getting that
- * right is the first step of the GEMM-staging integration, not a property of
- * the encoder — which is why the validation kernel was not kept as a standing
- * test. Decode the control fields of a full ptxas cp.async pipeline loop before
- * relying on these three in a real kernel.
+ * ⚠️ HARDWARE FINDING, 2026-08-06, NOW DECODED. A validation kernel (LDGSTS,
+ * LDGDEPBAR, DEPBAR 0, then read the shared back) returned ZEROES — the read
+ * ran before the copy landed — even though all three instructions are
+ * bit-identical to ptxas. The bits are not the whole contract: the async
+ * scoreboard is wired by the CONTROL FIELDS, and the probe left them at safe.
+ *
+ * Decoded from a real ptxas pipeline (tools/cpasync_pipeline.cu):
+ *   - LDGSTS carries a READ barrier on its own address register (ptxas control
+ *     0x0003e800 -> rbar 1, 0x0005e800 -> rbar 2), so the source-address
+ *     register can be reused for the next tile. That is NOT the copy completion.
+ *   - LDGDEPBAR SETS WRITE BARRIER 0 (ptxas control 0x000e2200 -> wbar 0). THIS
+ *     associates the committed group with async scoreboard SB0. The probe used
+ *     hp_ctrl_safe (wbar 7 = none), so SB0 was never armed, DEPBAR.LE SB0
+ *     waited on an empty scoreboard and returned at once, and the LDS read stale
+ *     shared. That single missing write barrier is the whole bug.
+ *   - DEPBAR.LE SB0, N gates the group COUNT; the consumer is then ordered by a
+ *     BAR.SYNC.DEFER_BLOCKING.
+ *
+ * ⇒ CALLER CONTRACT, for the GEMM staging: emit hp_ldgdepbar(hp_ctrl_setbar(0)),
+ * then hp_depbar(N, ...), then a block barrier before the shared read. The write
+ * barrier is NOT optional and hp_ctrl_safe does not set it. The validation
+ * kernel is not kept as a standing test — a failing hw test is its own lie —
+ * but this wiring is what it was missing, and it is step 1 of the integration.
  */
 hp_word hp_depbar(unsigned groups, hp_control c) {
   hp_word w = hp_base(HP_OP_DEPBAR, c);

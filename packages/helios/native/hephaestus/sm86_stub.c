@@ -85,13 +85,14 @@ static const hp_isa_entry TABLE[] = {
      "convert f32 on the way. The GEMM's staging is load-to-register, pack, "
      "store-to-shared, and this deletes two thirds of that. Double buffering "
      "was measured at 3-5% and declined, but that measured BARRIERS, not the "
-     "register round trip. ⚠️ ENCODED bit-for-bit but a hardware probe read "
-     "ZEROES — the async scoreboard is not wired by the encoding alone; see the "
-     "2026-08-06 note in sm86_mem.c. One offset field's granularity also "
-     "unproven"},
+     "register round trip. ENCODED + WIRING DECODED 2026-08-06 (LDGDEPBAR sets "
+     "wbar 0; see sm86_mem.c) — ready to thread into the GEMM staging, which the "
+     "SASS says would delete 28 of the 42 k-step instructions. One offset "
+     "field's granularity still unproven"},
     {"LDGDEPBAR", HP_ISA_ENCODED,
-     "closes a cp.async group. Without it the copies are never committed and "
-     "DEPBAR has nothing to wait on"},
+     "closes a cp.async group AND must SET WRITE BARRIER 0 (ptxas ctrl "
+     "0x000e2200) to arm async scoreboard SB0 — pass hp_ctrl_setbar(0). Decoded "
+     "2026-08-06; a safe control leaves SB0 unarmed and DEPBAR returns at once"},
     {"DEPBAR", HP_ISA_ENCODED,
      "waits until at most N cp.async groups are outstanding. N=0 drains and is "
      "no better than a synchronous load; the instruction earns its place at 1 "
