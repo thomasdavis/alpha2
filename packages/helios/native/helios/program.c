@@ -133,6 +133,25 @@ static int emit(const helios_key *key, helios_program *p) {
       p->sharedBytes = pr_colsum_shared();
       return 0;
 
+    case HL_MATMUL_T_CP:
+      /*
+       * The cp.async f16 GEMM (NT). Requires the same shape divisibility as the
+       * staged path — it reuses pr_hmma_applies, pr_hmma_threads, the block
+       * geometry and the register count — but its operands are f16 and it stages
+       * with cp.async. Falls through to the scalar fallback below only if the
+       * shape does not divide, exactly like the staged path.
+       */
+      if (pr_hmma_applies(key->arg0, key->arg1, key->arg2)) {
+        p->count = pr_emit_hmma_cpasync(p->code, key->arg0, key->arg1, key->arg2, 0);
+        p->blockX = pr_hmma_threads();
+        p->gridX = key->arg0 / pr_hmma_block_rows();
+        p->gridY = key->arg1 / pr_hmma_block_cols();
+        p->sharedBytes = pr_hmma_shared();
+        p->regs = pr_hmma_regs();
+        return 0;
+      }
+      return -1; /* no scalar f16 fallback — the caller keeps the f32 path */
+
     case HL_MATMUL:
     case HL_MATMUL_T:
     case HL_MATMUL_TA:

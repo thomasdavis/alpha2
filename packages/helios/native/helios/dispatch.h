@@ -111,6 +111,13 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
                          helios_tensor b, unsigned M, unsigned N, unsigned K,
                          unsigned batch);
 
+/* C = A @ B^T with BOTH operands stored f16 (a, b are f16 buffers the caller
+ * produced with the cast kernel), staged with cp.async. C is f32. Returns -1 if
+ * the shape does not divide the tile. See emit_hmma_cpasync_f16. */
+int hl_matmul_cpasync(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor b, unsigned M, unsigned N, unsigned K,
+                      unsigned batch);
+
 /* out = s * (g - sum_j g_j s_j) over each row: softmax's backward, fused. */
 int hl_softmax_backward(helios_context *ctx, helios_tensor out, helios_tensor s,
                         helios_tensor g, unsigned width, unsigned rows);

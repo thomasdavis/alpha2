@@ -301,6 +301,23 @@ int hl_matmul_transposed(helios_context *ctx, helios_tensor out, helios_tensor a
   return matmul_launch(ctx, p, M, N, K, batch, addrs);
 }
 
+/* C = A @ B^T, both operands f16, staged with cp.async. Same launch as the
+ * staged transposed GEMM; the key's KIND selects the cp.async f16 program. */
+int hl_matmul_cpasync(helios_context *ctx, helios_tensor out, helios_tensor a,
+                      helios_tensor b, unsigned M, unsigned N, unsigned K,
+                      unsigned batch) {
+  const helios_key k = {HL_MATMUL_T_CP, M, N, K};
+  const helios_tensor ts[3] = {out, a, b};
+  const helios_program *p = helios_program_get(k);
+  if (!p) return -1;
+  NvU64 addrs[3];
+  for (unsigned i = 0; i < 3; i++) {
+    addrs[i] = helios_tensor_addr(ts[i]);
+    if (addrs[i] == 0) return -1;
+  }
+  return matmul_launch(ctx, p, M, N, K, batch, addrs);
+}
+
 /*
  * C[M,N] = A[K,M]^T @ B[K,N] — the WEIGHT GRADIENT, without materialising the
  * transpose.

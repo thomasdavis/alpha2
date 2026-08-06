@@ -54,6 +54,14 @@ typedef enum {
   HL_MATMUL_T_ACC,
   HL_MATMUL_TA_ACC,
   /*
+   * C = A @ B^T with BOTH operands stored f16 (NT layout), staged through
+   * shared memory with cp.async instead of the load-pack-store round trip. The
+   * operands MUST be f16 buffers (the caller casts them); the emitter reads them
+   * with 128-bit LDGSTS. A separate kind because the code and the operand dtype
+   * both differ from HL_MATMUL_T. See prometheus/hmma.c emit_hmma_cpasync_f16.
+   */
+  HL_MATMUL_T_CP,
+  /*
    * out[c] = sum over rows of in[r][c]. arg0 = rows, arg1 = cols.
    *
    * Both are part of the KEY and not only of the launch: the row count is the
