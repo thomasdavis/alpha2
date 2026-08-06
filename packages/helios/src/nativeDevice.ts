@@ -109,6 +109,8 @@ export interface NativeAddon {
   matmul(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
   /* C = A @ B^T with B stored [N,K]. Optional so a stale addon still loads. */
   matmulTransposed?(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
+  /* C = A @ B^T with both operands f16 buffers, staged with cp.async. */
+  matmulCpasync?(out: number, a: number, b: number, M: number, N: number, K: number, batch: number): boolean;
   transpose(out: number, a: number, rows: number, cols: number, batch: number): boolean;
   /** out[b][h][t][d] = in[b][t][h][d]; `planes` is b*t*h. T, H and D must be
    * powers of two — the kernel decomposes the plane index with shifts. */

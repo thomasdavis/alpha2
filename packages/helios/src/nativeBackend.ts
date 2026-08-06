@@ -87,6 +87,27 @@ const TRACE_OPS = !!process.env.HELIOS_TRACE_OPS;
  */
 const FUSED_MATMUL_TRANSPOSED = true;
 
+/*
+ * Route the NT forward projection through the cp.async f16 GEMM, behind an env
+ * flag so the gate can A/B it against the staged f32 path in ONE build. It is an
+ * env var and not a compile constant ON PURPOSE — this is a MEASUREMENT, not a
+ * shipped decision. The raw kernel is +10% (probe-cpasync-gemm.mjs), but wiring
+ * it here adds a per-call cast of both operands to f16, and whether that cast
+ * eats the win is exactly the question the gate answers. The real win needs the
+ * operands ALREADY f16 (activations/weights f16 through the stack); this flag
+ * measures how much a per-call cast leaves on the table. Numerically identical:
+ * the staged path already rounds operands to f16 before the tensor cores.
+ *
+ * MEASURED 2026-08-06: with the per-call cast it is 16,283 tok/s against the
+ * staged 19,926 — 0.82x, NET NEGATIVE, loss bit-identical. The cast is two extra
+ * global passes over the operands plus two allocations per GEMM (held memory
+ * 4.20 -> 4.67 GB), and that costs more than the raw kernel's +10% saves. So the
+ * +10% is real but only capturable with PERSISTENT f16 operands — an f16
+ * activation/weight dtype through the stack, which is the large change M5 tracks.
+ * The flag stays OFF; it is kept as the instrument that proved this.
+ */
+const CPASYNC_MM = process.env.HELIOS_CPASYNC_MM === "1";
+
 export class NativeHeliosBackend implements Backend {
   readonly name = "helios-native";
   private readonly hl: NativeAddon;
@@ -1144,6 +1165,29 @@ export class NativeHeliosBackend implements Backend {
     const M = shapeSize(a.shape) / K;
     const da = this.device(a), db = this.device(b);
     const out = this.make([...a.shape.slice(0, -1), N], "f32");
+
+    /*
+     * The cp.async f16 path — MEASURED against the staged one via the flag.
+     * Cast both operands to f16 (the weight B[N,K] is already the layout
+     * cp.async wants, K-contiguous, so no transpose), then LDGSTS them. Only
+     * where the tile divides — pr_hmma_applies is M%64, N%64, K%16 — otherwise
+     * the staged path below. The f16 buffers hold packed pairs, so their size
+     * in f32 slots is half the element count.
+     */
+    if (CPASYNC_MM && this.hl.matmulCpasync && this.hl.cast &&
+        K % 16 === 0 && M % 64 === 0 && N % 64 === 0) {
+      const aF16 = this.make([(M * K) >> 1], "f32");
+      const bF16 = this.make([(N * K) >> 1], "f32");
+      this.hl.cast(1, aF16.buffer.handle, da.buffer.handle, M * K);
+      this.hl.cast(1, bF16.buffer.handle, db.buffer.handle, N * K);
+      const rc = this.hl.matmulCpasync(out.buffer.handle, aF16.buffer.handle,
+                                       bF16.buffer.handle, M, N, K, 1);
+      aF16.buffer.release(this.hl);
+      bF16.buffer.release(this.hl);
+      if (rc) return out;
+      /* false means the shape was refused after all — fall through to staged. */
+    }
+
     this.check(this.hl.matmulTransposed!(out.buffer.handle, da.buffer.handle,
                                         db.buffer.handle, M, N, K, 1),
                "matmulTransposed", da, db);
