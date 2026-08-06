@@ -359,3 +359,9 @@ RUSTUP_HOME=/home/ajaxdavis/.rustup CARGO_HOME=/home/ajaxdavis/.cargo \
   (`tools/hmma_dump.c` + `nvdisasm`) and read it, not to guess a sixth time.
 - The DB and the operation dataset are meant to get better at their job over time — improve
   them as the work teaches you what to track.
+- **Keep every file around ~300 lines.** It is the house style and it is load-bearing: a
+  file that grows past ~300 gets SPLIT along a real seam (a new encoder class, a separate
+  kernel, an extra test file whose entry point still owns the run order), never merged into
+  one sprawling unit. Small files keep the layering legible and the linker-enforced
+  dependency rule (see the vision) honest. When a file you touch crosses ~300, split it as
+  part of the change — do not leave a 900-line kernel behind.
