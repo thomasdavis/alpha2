@@ -16,6 +16,6 @@
  * the weight decay. The bias corrections are folded into the learning rate by
  * the host, because they are the same for every element.
  */
-unsigned pr_emit_adamw(hp_word *p);
+unsigned pr_emit_adamw(hp_word *p, int with_shadow);
 
 #endif /* PROMETHEUS_OPTIMIZER_H */

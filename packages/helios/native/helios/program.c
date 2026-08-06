@@ -372,7 +372,10 @@ static int emit(const helios_key *key, helios_program *p) {
       return 0;
 
     case HL_ADAMW:
-      p->count = pr_emit_adamw(p->code);
+      /* arg0 is the shadow flag: 1 also writes a packed-f16 copy of the weight
+       * (slot 4) for the cp.async forward GEMM. A separate program from the
+       * plain update, so params that need no shadow pay nothing. */
+      p->count = pr_emit_adamw(p->code, key->arg0);
       p->blockX = PR_BLOCK;
       p->gridX = (n + PR_BLOCK - 1) / PR_BLOCK;
       return 0;

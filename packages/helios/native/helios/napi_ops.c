@@ -284,6 +284,14 @@ static napi_value js_adamw(napi_env env, napi_callback_info info) {
                                  F32(5), F32(6), F32(7), F32(8), F32(9)));
 }
 
+/* (param, grad, m, v, shadow, n, b1, b2, lr, eps, wd) */
+static napi_value js_adamw_shadow(napi_env env, napi_callback_info info) {
+  CTX;
+  return hl_result(env, hl_adamw_shadow(ctx, U32(0), U32(1), U32(2), U32(3),
+                                        U32(4), U32(5), F32(6), F32(7), F32(8),
+                                        F32(9), F32(10)));
+}
+
 napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "elementwise", js_elementwise);
   hl_export(env, exports, "reduce", js_reduce);
@@ -319,6 +327,7 @@ napi_value hl_napi_register_ops(napi_env env, napi_value exports) {
   hl_export(env, exports, "residualRms", js_residual_rms);
   hl_export(env, exports, "residualDropout", js_residual_dropout);
   hl_export(env, exports, "adamw", js_adamw);
+  hl_export(env, exports, "adamwShadow", js_adamw_shadow);
 
   /* The operation enums, so the TypeScript side names them rather than
    * hardcoding integers that would drift the moment one is inserted. */

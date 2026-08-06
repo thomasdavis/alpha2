@@ -147,6 +147,10 @@ export interface NativeAddon {
   residualDropout(out: number, x: number, res: number, mask: number, width: number, rows: number, scale: number): boolean;
   adamw(param: number, grad: number, m: number, v: number, n: number,
         b1: number, b2: number, lr: number, eps: number, wd: number): boolean;
+  /* AdamW that also writes a packed-f16 shadow of the updated weight (slot 4). */
+  adamwShadow(param: number, grad: number, m: number, v: number, shadow: number,
+              n: number, b1: number, b2: number, lr: number, eps: number,
+              wd: number): boolean;
 }
 
 let addon: NativeAddon | null = null;

@@ -219,4 +219,11 @@ int hl_adamw(helios_context *ctx, helios_tensor param, helios_tensor grad,
              helios_tensor m, helios_tensor v, unsigned n, float b1, float b2,
              float lr, float eps, float wd);
 
+/* AdamW that also writes a packed-f16 shadow of the updated weight (slot 4),
+ * so a forward GEMM can cp.async the weight with no separate cast. */
+int hl_adamw_shadow(helios_context *ctx, helios_tensor param, helios_tensor grad,
+                    helios_tensor m, helios_tensor v, helios_tensor shadow,
+                    unsigned n, float b1, float b2, float lr, float eps,
+                    float wd);
+
 #endif /* HELIOS_DISPATCH_H */

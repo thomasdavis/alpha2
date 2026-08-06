@@ -48,11 +48,18 @@ enum {
   R_TMP = 16,
   R_DENOM = 17,
   R_OUT = 18, /* R18:R19 */
+  /* The f16 weight shadow: pack this element and its neighbour, even lane stores. */
+  R_NEIGHBOR = 20,
+  R_PACKED = 21,
+  R_HALF = 22,
+  R_ONE = 23,
+  R_LOWBIT = 24,
 };
 
 #define BAR_ID 0
 #define BAR_LOAD 1
 #define BAR_MUFU 2
+#define P_SHADOW 1 /* set on odd lanes — guards the packed shadow store */
 
 /* Load one tensor's element into `dst` from parameter slot `slot`. */
 static unsigned load_at(hp_word *p, unsigned dst, unsigned slot) {
@@ -63,7 +70,7 @@ static unsigned load_at(hp_word *p, unsigned dst, unsigned slot) {
   return n;
 }
 
-unsigned pr_emit_adamw(hp_word *p) {
+unsigned pr_emit_adamw(hp_word *p, int with_shadow) {
   unsigned n = 0;
   p[n++] = hp_s2r(R_INDEX, HP_SR_CTAID_X, hp_ctrl_setbar(BAR_ID));
   p[n++] = hp_s2r(R_TID, HP_SR_TID_X, hp_ctrl_setbar(BAR_ID));
@@ -140,6 +147,35 @@ unsigned pr_emit_adamw(hp_word *p) {
   p[n++] = hp_imad_wide_const(R_OUT, R_INDEX, R_ESIZE, 0,
                               HERMES_CBUF0_PARAM_N(0), hp_ctrl_safe());
   p[n++] = hp_stg(R_OUT, R_PARAM, 0, hp_ctrl_safe());
+
+  /*
+   * A FREE f16 shadow of the updated weight (slot 4), so a forward GEMM can
+   * stage the weight straight through cp.async without a separate cast pass —
+   * the cast is the byproduct of a store the step was going to do anyway.
+   *
+   * Each even lane packs its element and its neighbour's into one 32-bit word
+   * of two f16 (F2FP, in the low-then-high order cast.c measured) and stores it
+   * at half the index. The neighbour arrives by a down-shuffle every lane must
+   * execute; the odd lane's own store is predicated off. Weights are even-sized,
+   * so every pair is covered.
+   */
+  if (with_shadow) {
+    /* SHFL has latency and sets a write barrier the pack must wait on — reading
+     * R_NEIGHBOR straight away gets a stale register (reduction.c does the same
+     * dance; the vendor's own SHFL control decodes to write-barrier 0). */
+    p[n++] = hp_shfl(HP_SHFL_DOWN, R_NEIGHBOR, R_PARAM, 1, hp_shfl_segment(32),
+                     hp_ctrl_setbar(BAR_MUFU));
+    p[n++] = hp_f2fp_pack(R_PACKED, R_NEIGHBOR, R_PARAM, hp_ctrl_wait(BAR_MUFU));
+    p[n++] = hp_shr_imm(R_HALF, R_INDEX, 1, hp_ctrl_safe());
+    p[n++] = hp_mov_imm(R_ONE, 1, hp_ctrl_safe());
+    p[n++] = hp_lop3(R_LOWBIT, R_INDEX, R_ONE, 0xC0u, hp_ctrl_safe()); /* index & 1 */
+    p[n++] = hp_isetp_gt_imm(P_SHADOW, R_LOWBIT, 0, hp_ctrl_safe());   /* odd lane */
+    p[n++] = hp_imad_wide_const(R_OUT, R_HALF, R_ESIZE, 0,
+                                HERMES_CBUF0_PARAM_N(4), hp_ctrl_safe());
+    p[n] = hp_predicated(hp_stg(R_OUT, R_PACKED, 0, hp_ctrl_safe()), P_SHADOW, 1);
+    n++;
+  }
+
   p[n++] = hp_exit(hp_ctrl_safe());
   return n;
 }

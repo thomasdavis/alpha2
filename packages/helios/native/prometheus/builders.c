@@ -83,7 +83,7 @@ unsigned bld_loop_scale(hp_word *p, NvU64 out, NvU64 in) {
 unsigned bld_adamw(hp_word *p, NvU64 out, NvU64 in) {
   (void)out;
   (void)in;
-  return pr_emit_adamw(p);
+  return pr_emit_adamw(p, 0);
 }
 
 unsigned bld_causal(hp_word *p, NvU64 out, NvU64 in) {

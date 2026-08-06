@@ -608,6 +608,18 @@ int hl_residual_dropout(helios_context *ctx, helios_tensor out, helios_tensor x,
   return run(ctx, k, ts, 4, s, 1);
 }
 
+int hl_adamw_shadow(helios_context *ctx, helios_tensor param, helios_tensor grad,
+                    helios_tensor m, helios_tensor v, helios_tensor shadow,
+                    unsigned n, float b1, float b2, float lr, float eps,
+                    float wd) {
+  /* arg0=1 selects the shadow-writing program. Slot 4 is the packed-f16 copy. */
+  const helios_key k = {HL_ADAMW, 1, n, 0};
+  const helios_tensor ts[5] = {param, grad, m, v, shadow};
+  const NvU32 s[5] = {bits(1.0f - b1), bits(1.0f - b2), bits(lr), bits(eps),
+                      bits(wd)};
+  return run(ctx, k, ts, 5, s, 5);
+}
+
 int hl_adamw(helios_context *ctx, helios_tensor param, helios_tensor grad,
              helios_tensor m, helios_tensor v, unsigned n, float b1, float b2,
              float lr, float eps, float wd) {

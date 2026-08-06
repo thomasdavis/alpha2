@@ -1194,6 +1194,34 @@ export class NativeHeliosBackend implements Backend {
     return out;
   }
 
+  /*
+   * AdamW update that also writes a packed-f16 shadow of the new weight, for a
+   * cp.async forward GEMM. In-place on param/m/v; `shadow` holds n f16 (n/2
+   * f32-words). Loss-preserving: the shadow is exactly what the GEMM would cast
+   * the f32 weight to. (The weight-shadow lifecycle for training lives here; the
+   * gate runs no optimizer, so it casts once.)
+   */
+  /* f32 -> packed f16 via the standalone cast kernel (n f16 = n/2 f32-words).
+   * The reference the adamw shadow must match bit-for-bit. */
+  castF32ToF16(a: TensorData): TensorData {
+    const n = shapeSize(a.shape);
+    const da = this.device(a);
+    const out = this.make([n >> 1], "f32");
+    this.check(this.hl.cast(1, out.buffer.handle, da.buffer.handle, n), "castF32ToF16", da);
+    return out;
+  }
+
+  adamwShadow(param: TensorData, grad: TensorData, m: TensorData, v: TensorData,
+              shadow: TensorData, n: number, b1: number, b2: number, lr: number,
+              eps: number, wd: number): void {
+    const dp = this.device(param), dg = this.device(grad);
+    const dm = this.device(m), dv = this.device(v), ds = this.device(shadow);
+    this.check(
+      this.hl.adamwShadow(dp.buffer.handle, dg.buffer.handle, dm.buffer.handle,
+                          dv.buffer.handle, ds.buffer.handle, n, b1, b2, lr, eps, wd),
+      "adamwShadow", dp, dg);
+  }
+
   private reduceAll(name: string, mean: boolean, a: TensorData): TensorData {
     this.sync(); /* the scratch is cleared on the HOST just below */
     const da = this.device(a);
