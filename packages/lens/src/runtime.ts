@@ -27,6 +27,38 @@ class AnalysisCancelledError extends Error {
 /** Analyses queued beyond this are refused rather than silently piled up. */
 const MAX_QUEUED_ANALYSES = 4;
 
+/** One blah-core-http/1 scoring item; see the evals.blah.dev CORE docs. */
+interface ScoreExample {
+  readonly kind: "choice_set" | "suffix_set" | "greedy_pair";
+  readonly prompts: readonly string[];
+}
+
+/** Shared token-span length: prefix ('left') or suffix ('right'). */
+function commonSpanLength(sequences: readonly number[][], direction: "left" | "right"): number {
+  const minLen = Math.min(...sequences.map((s) => s.length));
+  for (let i = 0; i < minLen; i++) {
+    const idx = direction === "left" ? i : -1 - i;
+    const reference = sequences[0].at(idx);
+    if (!sequences.every((s) => s.at(idx) === reference)) return i;
+  }
+  return minLen;
+}
+
+/** Cross-entropy of `target` under the logits row: logsumexp - logits[target]. */
+function negLogSoftmax(logits: Float32Array, target: number): number {
+  let max = -Infinity;
+  for (let i = 0; i < logits.length; i++) if (logits[i] > max) max = logits[i];
+  let sumExp = 0;
+  for (let i = 0; i < logits.length; i++) sumExp += Math.exp(logits[i] - max);
+  return max + Math.log(sumExp) - logits[target];
+}
+
+function argmax(logits: Float32Array): number {
+  let best = 0;
+  for (let i = 1; i < logits.length; i++) if (logits[i] > logits[best]) best = i;
+  return best;
+}
+
 /** Keep intermediaries alive across a long compute chunk. NDJSON framing
  * tolerates blank lines by design, so a heartbeat is protocol-invisible. */
 const HEARTBEAT_INTERVAL_MS = 10_000;
@@ -132,6 +164,55 @@ export class AlphaLensRuntime {
           model_revision: this.manifest.model.revision,
         });
         if (request.method === "GET" && request.url === "/v1/lens/manifest") return json(response, 200, this.manifest);
+        if (request.method === "POST" && request.url === "/v1/score") {
+          let body: unknown;
+          try { body = JSON.parse(await readRequest(request)); }
+          catch (error) { return json(response, 400, { error: `invalid JSON: ${String(error)}` }); }
+
+          if (this.queuedAnalyses >= MAX_QUEUED_ANALYSES) {
+            console.log(`[lens] score refused: ${this.queuedAnalyses} jobs already queued`);
+            return json(response, 503, { error: "runtime is saturated; try again shortly" });
+          }
+          this.queuedAnalyses++;
+          const turn = this.analysisChain;
+          let release: () => void = () => {};
+          this.analysisChain = new Promise<void>((resolve) => { release = resolve; });
+          const startedAt = Date.now();
+          try {
+            await turn;
+            const cancelled = () => response.destroyed || response.writableEnded;
+            if (cancelled()) {
+              console.log("[lens] score skipped: client left before its turn");
+              return;
+            }
+            const checkpoint = async () => {
+              if (cancelled()) throw new AnalysisCancelledError();
+              await yieldToLoop();
+            };
+            const examples = (body as { examples?: unknown[] }).examples;
+            if (!Array.isArray(examples) || examples.length === 0 || examples.length > 64) {
+              return json(response, 400, { error: "examples must be an array of 1..64 items" });
+            }
+            const results: Record<string, unknown>[] = [];
+            for (const example of examples) {
+              results.push(await this.scoreExample(example as ScoreExample, checkpoint));
+            }
+            console.log(`[lens] score done: ${examples.length} examples in ${Date.now() - startedAt}ms`);
+            json(response, 200, { results });
+          } catch (error) {
+            if (error instanceof AnalysisCancelledError) {
+              console.log(`[lens] score cancelled by client after ${Date.now() - startedAt}ms`);
+              response.destroy();
+              return;
+            }
+            console.log(`[lens] score failed: ${error instanceof Error ? error.message : String(error)}`);
+            if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+          } finally {
+            this.queuedAnalyses--;
+            release();
+          }
+          return;
+        }
         if (request.method === "POST" && request.url === "/v1/lens/analyze") {
           response.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", Connection: "keep-alive" });
           let body: unknown;
@@ -193,6 +274,112 @@ export class AlphaLensRuntime {
         else endError(response, "internal_error", error instanceof Error ? error.message : String(error));
       }
     });
+  }
+
+  /**
+   * blah-core-http/1 scoring (the evals.blah.dev CORE benchmark). Answer spans
+   * are found in TOKEN space per the protocol: common prefix across a choice
+   * set, common suffix across a schema set, without/with prefix split for a
+   * greedy pair. Every prompt is stepped through the native inference path one
+   * token at a time with a checkpoint per position, sharing the analyze
+   * queue's fairness and cancellation.
+   */
+  private async scoreExample(
+    example: ScoreExample,
+    checkpoint: () => Promise<void>,
+  ): Promise<Record<string, unknown>> {
+    const kind = example?.kind;
+    const prompts = example?.prompts;
+    if (!Array.isArray(prompts) || prompts.some((p) => typeof p !== "string" || p.length === 0)) {
+      throw new Error("each example needs a prompts array of non-empty strings");
+    }
+
+    const vocab = this.adapter.tokenizerArtifacts.vocab;
+    let bos = vocab.indexOf("<|bos|>");
+    if (bos < 0) bos = vocab.indexOf("<|end_of_text|>");
+    if (bos < 0) throw new Error("tokenizer has neither <|bos|> nor <|end_of_text|>");
+    const tokens = prompts.map((p) => [bos, ...this.adapter.encode(p)]);
+
+    if (kind === "choice_set" || kind === "suffix_set") {
+      if (tokens.length < 2) throw new Error(`${kind} needs at least two prompts`);
+      let starts: number[];
+      const ends = tokens.map((t) => t.length);
+      if (kind === "choice_set") {
+        const prefix = commonSpanLength(tokens, "left");
+        starts = tokens.map(() => prefix);
+      } else {
+        const suffix = commonSpanLength(tokens, "right");
+        starts = ends.map((e) => e - suffix);
+      }
+      const meanLosses: number[] = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const { meanLoss } = await this.scoreSequence(tokens[i], starts[i], ends[i], checkpoint);
+        meanLosses.push(meanLoss);
+      }
+      return { kind, mean_losses: meanLosses };
+    }
+
+    if (kind === "greedy_pair") {
+      if (tokens.length !== 2) throw new Error("greedy_pair needs exactly [without, with]");
+      const [without, withCont] = tokens;
+      const isPrefix =
+        without.length < withCont.length && without.every((t, i) => withCont[i] === t);
+      if (!isPrefix) throw new Error("prompt_without must be a strict token prefix of prompt_with");
+      const { greedyMatch } = await this.scoreSequence(
+        withCont, without.length, withCont.length, checkpoint,
+      );
+      return { kind, match: greedyMatch };
+    }
+
+    throw new Error(`unknown example kind: ${String(kind)}`);
+  }
+
+  /**
+   * Teacher-forced pass over one sequence (cropped to the native context,
+   * keeping the tail), returning the mean loss and greedy-match verdict over
+   * the [start, end) continuation span.
+   */
+  private async scoreSequence(
+    sequence: number[],
+    startIn: number,
+    endIn: number,
+    checkpoint: () => Promise<void>,
+  ): Promise<{ meanLoss: number; greedyMatch: boolean }> {
+    const maxLen = this.adapter.description.blockSize;
+    let tokens = sequence;
+    let start = startIn;
+    let end = endIn;
+    if (tokens.length > maxLen) {
+      const drop = tokens.length - maxLen;
+      if (start - drop < 0) throw new Error("continuation span exceeds the native context length");
+      tokens = tokens.slice(-maxLen);
+      start = start - drop;
+      end = end - drop;
+    }
+
+    const weights = this.adapter.inferenceWeights;
+    if (!weights) throw new Error("native inference weights were not prepared");
+    const session = createSession(weights);
+
+    let lossSum = 0;
+    let lossCount = 0;
+    let greedyMatch = true;
+    // logits after position p predict token p+1; spans start at >= 1 (BOS).
+    let logits = prefill(weights, session, Int32Array.of(tokens[0]));
+    for (let position = 1; position < tokens.length; position++) {
+      const target = tokens[position];
+      if (position >= start && position < end) {
+        lossSum += negLogSoftmax(logits, target);
+        lossCount++;
+        if (argmax(logits) !== target) greedyMatch = false;
+      }
+      if (position < tokens.length - 1) {
+        logits = decodeStep(weights, session, target, position);
+      }
+      await checkpoint();
+    }
+
+    return { meanLoss: lossCount > 0 ? lossSum / lossCount : Number.NaN, greedyMatch };
   }
 
   async analyze(
